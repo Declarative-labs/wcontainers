@@ -3,13 +3,19 @@
 use std::sync::Barrier;
 
 use wcontainers_webassembly_engine::function::{BoundFunction, FunctionTypeBinder, InvokeError};
-use wcontainers_webassembly_engine::memory::{MemoryStore, MemoryType, PAGE_SIZE, Sharing};
-use wcontainers_webassembly_engine::table::{TableStore, TableType};
+use wcontainers_webassembly_engine::global::{GlobalStore, Value, WriteGlobalError};
+use wcontainers_webassembly_engine::memory::{
+    GrowMemoryError, MemoryStore, MemoryType, PAGE_SIZE, Sharing,
+};
+use wcontainers_webassembly_engine::table::{
+    GrowTableError, TableStore, TableType, WriteTableError,
+};
 use wcontainers_webassembly_engine::{
     AddressType, ExternalAddress, Import, Limits, WebAssemblyEngine,
 };
 use wcontainers_webassembly_engine_wasmedge::{
-    AllocateError, Config, FunctionAddress, Instance, InstantiateError, Module, WasmEdgeEngine,
+    AllocateError, Config, FunctionAddress, GlobalAddress, Instance, InstantiateError,
+    MemoryAddress, Module, TableAddress, WasmEdgeEngine,
 };
 
 type Engine = WasmEdgeEngine<i32>;
@@ -347,7 +353,310 @@ fn a_64_bit_memory_a_module_exports_is_read_and_written() {
     let load = bind::<(i64,), i64>(&mut engine, address);
     assert_eq!(load.invoke(&mut engine, (70_000,)).ok(), Some(-5));
     assert!(matches!(
-        engine.allocate_memory(memory_type(AddressType::I64, 1, Sharing::Unshared)),
-        Err(AllocateError::AddressTypeOutsideBindings)
+        engine.allocate_memory(memory_type(AddressType::I64, 1 << 49, Sharing::Unshared)),
+        Err(AllocateError::LimitsOutsideAddressType)
     ));
+}
+
+fn memory(engine: &mut Engine, instance: &Instance, name: &str) -> MemoryAddress {
+    match engine.find_export(instance, name) {
+        Some(ExternalAddress::Memory(memory)) => memory,
+        _ => panic!("{name} is an exported memory"),
+    }
+}
+
+fn table(engine: &mut Engine, instance: &Instance, name: &str) -> TableAddress {
+    match engine.find_export(instance, name) {
+        Some(ExternalAddress::Table(table)) => table,
+        _ => panic!("{name} is an exported table"),
+    }
+}
+
+fn global(engine: &mut Engine, instance: &Instance, name: &str) -> GlobalAddress {
+    match engine.find_export(instance, name) {
+        Some(ExternalAddress::Global(global)) => global,
+        _ => panic!("{name} is an exported global"),
+    }
+}
+
+fn instantiate(engine: &mut Engine, text: &str, imports: &[Import<'_, Engine>]) -> Instance {
+    let module = compile(engine, text);
+    engine
+        .instantiate(&module, imports)
+        .expect("the module instantiates")
+}
+
+/// Exports a shared memory, an unshared one, and a mutable global, which a translated threaded module has.
+const SHARES_A_MEMORY_BESIDE_OTHER_ITEMS: &str = r#"(module
+    (memory (export "shared") 1 1 shared)
+    (memory (export "unshared") 1 2)
+    (global (export "global") (mut i32) (i32.const 1))
+    (global (export "constant") i64 (i64.const 2))
+    (func (export "read_global") (result i32) (global.get 0))
+    (func (export "load") (param i32) (result i32) (i32.load 1 (local.get 0))))"#;
+
+#[test]
+fn the_items_beside_an_exported_shared_memory_are_written() {
+    let mut engine = engine(Config::default());
+    let instance = instantiate(&mut engine, SHARES_A_MEMORY_BESIDE_OTHER_ITEMS, &[]);
+    let written = global(&mut engine, &instance, "global");
+    assert_eq!(engine.write_global(&written, Value::I32(5)), Ok(()));
+    assert!(matches!(engine.read_global(&written), Ok(Value::I32(5))));
+    let address = function(&mut engine, &instance, "read_global");
+    let read_global = bind::<(), i32>(&mut engine, address);
+    assert_eq!(read_global.invoke(&mut engine, ()).ok(), Some(5));
+    assert_eq!(
+        engine.write_global(&written, Value::I64(5)),
+        Err(WriteGlobalError::ValueTypeMismatch)
+    );
+    let constant = global(&mut engine, &instance, "constant");
+    assert_eq!(
+        engine.write_global(&constant, Value::I64(3)),
+        Err(WriteGlobalError::Constant)
+    );
+    let unshared = memory(&mut engine, &instance, "unshared");
+    assert_eq!(engine.write_memory(&unshared, 3, b"abcd"), Ok(()));
+    let mut read = [0; 4];
+    assert_eq!(engine.read_memory(&unshared, 3, &mut read), Ok(()));
+    assert_eq!(&read, b"abcd");
+    let address = function(&mut engine, &instance, "load");
+    let load = bind::<(i32,), i32>(&mut engine, address);
+    assert_eq!(
+        load.invoke(&mut engine, (3,)).ok(),
+        Some(i32::from_le_bytes(*b"abcd"))
+    );
+    assert_eq!(engine.grow_memory(&unshared, 1), Ok(()));
+    assert_eq!(engine.count_memory_pages(&unshared), 2);
+    assert_eq!(engine.grow_memory(&unshared, 1), Err(GrowMemoryError));
+    assert!(
+        engine
+            .write_memory(&unshared, 2 * PAGE_SIZE - 1, b"ab")
+            .is_err()
+    );
+    let shared = memory(&mut engine, &instance, "shared");
+    assert!(engine.to_shared_memory(&shared).is_some());
+    assert!(engine.to_shared_memory(&unshared).is_none());
+}
+
+#[test]
+fn a_shared_64_bit_memory_is_found_shared_and_imported() {
+    let config = Config::default();
+    let mut owner = engine(config.clone());
+    let instance = instantiate(
+        &mut owner,
+        r#"(module (memory (export "memory") i64 1 2 shared) (data (i64.const 5) "xyz"))"#,
+        &[],
+    );
+    let exported = memory(&mut owner, &instance, "memory");
+    let mut read = [0; 3];
+    assert_eq!(owner.read_memory(&exported, 5, &mut read), Ok(()));
+    assert_eq!(&read, b"xyz");
+    assert_eq!(owner.write_memory(&exported, 9, b"uvw"), Ok(()));
+    let shared = owner
+        .to_shared_memory(&exported)
+        .expect("the memory is shared");
+    let module = compile(
+        &owner,
+        r#"(module (import "env" "memory" (memory i64 1 2 shared))
+            (func (export "load") (param i64) (result i32) (i32.atomic.load (local.get 0))))"#,
+    );
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut other = engine(config.clone());
+            let added = other.add_shared_memory(&shared);
+            assert_eq!(other.grow_memory(&added, 1), Ok(()));
+            assert_eq!(other.count_memory_pages(&added), 2);
+            let instance = other
+                .instantiate(&module, &[import("memory", ExternalAddress::Memory(added))])
+                .expect("the module instantiates");
+            let address = function(&mut other, &instance, "load");
+            let load = bind::<(i64,), i32>(&mut other, address);
+            assert_eq!(
+                load.invoke(&mut other, (8,)).ok(),
+                Some(i32::from_le_bytes(*b"\0uvw"))
+            );
+        });
+    });
+    assert_eq!(owner.count_memory_pages(&exported), 2);
+}
+
+#[test]
+fn a_64_bit_memory_is_imported_and_allocated() {
+    let mut engine = engine(Config::default());
+    let exporter = instantiate(
+        &mut engine,
+        r#"(module (memory (export "memory") i64 1))"#,
+        &[],
+    );
+    let exported = memory(&mut engine, &exporter, "memory");
+    let sizes = r#"(module (import "env" "memory" (memory i64 1))
+        (func (export "size") (result i64) (memory.size))
+        (func (export "load") (param i64) (result i64) (i64.load (local.get 0))))"#;
+    let importer = instantiate(
+        &mut engine,
+        sizes,
+        &[import("memory", ExternalAddress::Memory(exported))],
+    );
+    let address = function(&mut engine, &importer, "size");
+    let size = bind::<(), i64>(&mut engine, address);
+    assert_eq!(size.invoke(&mut engine, ()).ok(), Some(1));
+    for sharing in [Sharing::Unshared, Sharing::Shared] {
+        let allocated = engine
+            .allocate_memory(MemoryType {
+                address_type: AddressType::I64,
+                limits: Limits {
+                    minimum: 1,
+                    maximum: Some(3),
+                },
+                sharing,
+            })
+            .expect("the memory");
+        assert_eq!(
+            engine.write_memory(&allocated, 16, &7_i64.to_le_bytes()),
+            Ok(())
+        );
+        assert_eq!(engine.grow_memory(&allocated, 2), Ok(()));
+        assert_eq!(engine.count_memory_pages(&allocated), 3);
+        assert_eq!(engine.grow_memory(&allocated, 1), Err(GrowMemoryError));
+        if sharing == Sharing::Unshared {
+            let importer = instantiate(
+                &mut engine,
+                sizes,
+                &[import("memory", ExternalAddress::Memory(allocated))],
+            );
+            let address = function(&mut engine, &importer, "load");
+            let load = bind::<(i64,), i64>(&mut engine, address);
+            assert_eq!(load.invoke(&mut engine, (16,)).ok(), Some(7));
+        } else {
+            assert!(engine.to_shared_memory(&allocated).is_some());
+        }
+    }
+}
+
+#[test]
+fn bytes_beyond_4_gib_of_a_64_bit_memory_are_read_and_written() {
+    let mut engine = engine(Config::default());
+    let pages = (1 << u32::BITS) / PAGE_SIZE + 1;
+    let instance = instantiate(
+        &mut engine,
+        &format!(
+            r#"(module (memory (export "memory") i64 {pages})
+                (func (export "load") (param i64) (result i64) (i64.load (local.get 0))))"#
+        ),
+        &[],
+    );
+    let exported = memory(&mut engine, &instance, "memory");
+    let far = 1 << u32::BITS;
+    let bytes = 0x0123_4567_89ab_cdef_i64.to_le_bytes();
+    // Across the first 4 GiB and beyond them.
+    for offset in [far - 4, far + 8] {
+        assert_eq!(engine.write_memory(&exported, offset, &bytes), Ok(()));
+        let mut read = [0; 8];
+        assert_eq!(engine.read_memory(&exported, offset, &mut read), Ok(()));
+        assert_eq!(read, bytes);
+        let address = function(&mut engine, &instance, "load");
+        let load = bind::<(i64,), i64>(&mut engine, address);
+        assert_eq!(
+            load.invoke(&mut engine, (offset.cast_signed(),)).ok(),
+            Some(0x0123_4567_89ab_cdef)
+        );
+    }
+    let end = pages * PAGE_SIZE;
+    assert!(engine.read_memory(&exported, end - 4, &mut [0; 8]).is_err());
+    assert!(engine.write_memory(&exported, end - 4, &bytes).is_err());
+}
+
+/// Exports a table and a global of typed references to functions that return an i32, and a function of that type
+/// and one of another.
+const HOLDS_TYPED_REFERENCES: &str = r#"(module
+    (type $answers (func (result i32)))
+    (table (export "table") 1 3 (ref null $answers))
+    (table (export "everywhere") i64 1 (ref null $answers))
+    (global (export "global") (mut (ref null $answers)) (ref.null $answers))
+    (func (export "answer") (type $answers) (i32.const 3))
+    (func (export "other") (result i64) (i64.const 4))
+    (func (export "call_global") (result i32) (call_ref $answers (global.get 0))))"#;
+
+#[test]
+fn typed_function_references_are_written_into_tables_and_globals() {
+    let mut engine = engine(Config::default());
+    let instance = instantiate(&mut engine, HOLDS_TYPED_REFERENCES, &[]);
+    let answer = function(&mut engine, &instance, "answer");
+    let other = function(&mut engine, &instance, "other");
+    for name in ["table", "everywhere"] {
+        let typed = table(&mut engine, &instance, name);
+        assert_eq!(engine.write_table(&typed, 0, Some(&answer)), Ok(()));
+        let read = engine
+            .read_table(&typed, 0)
+            .expect("the element is inside")
+            .expect("the element refers to a function");
+        let bound = bind::<(), i32>(&mut engine, read);
+        assert_eq!(bound.invoke(&mut engine, ()).ok(), Some(3));
+        assert_eq!(
+            engine.write_table(&typed, 0, Some(&other)),
+            Err(WriteTableError::ReferenceTypeMismatch)
+        );
+        assert_eq!(
+            engine.write_table(&typed, 1, Some(&answer)),
+            Err(WriteTableError::IndexOutsideTable)
+        );
+        assert_eq!(engine.grow_table(&typed, 1), Ok(()));
+        assert_eq!(engine.count_table_elements(&typed), 2);
+        assert_eq!(engine.write_table(&typed, 1, None), Ok(()));
+        assert!(matches!(engine.read_table(&typed, 1), Ok(None)));
+    }
+    let typed = table(&mut engine, &instance, "table");
+    let importer = instantiate(
+        &mut engine,
+        r#"(module (type $answers (func (result i32)))
+            (import "env" "table" (table 1 3 (ref null $answers)))
+            (func (export "call") (result i32) (call_indirect (type $answers) (i32.const 0))))"#,
+        &[import("table", ExternalAddress::Table(typed))],
+    );
+    let address = function(&mut engine, &importer, "call");
+    let call = bind::<(), i32>(&mut engine, address);
+    assert_eq!(call.invoke(&mut engine, ()).ok(), Some(3));
+
+    let typed = global(&mut engine, &instance, "global");
+    assert_eq!(
+        engine.write_global(&typed, Value::FunctionReference(Some(other))),
+        Err(WriteGlobalError::ValueTypeMismatch)
+    );
+    assert_eq!(
+        engine.write_global(&typed, Value::FunctionReference(Some(answer))),
+        Ok(())
+    );
+    assert!(matches!(
+        engine.read_global(&typed),
+        Ok(Value::FunctionReference(Some(_)))
+    ));
+    let address = function(&mut engine, &instance, "call_global");
+    let call_global = bind::<(), i32>(&mut engine, address);
+    assert_eq!(call_global.invoke(&mut engine, ()).ok(), Some(3));
+}
+
+#[test]
+fn a_64_bit_table_is_allocated_written_and_grown() {
+    let mut engine = engine(Config::default());
+    let instance = instantiate(&mut engine, EXPORTS_A_TABLE, &[]);
+    let answer = function(&mut engine, &instance, "answer");
+    let allocated = engine
+        .allocate_table(TableType {
+            address_type: AddressType::I64,
+            limits: Limits {
+                minimum: 1,
+                maximum: Some(2),
+            },
+        })
+        .expect("the table");
+    assert_eq!(engine.write_table(&allocated, 0, Some(&answer)), Ok(()));
+    let read = engine
+        .read_table(&allocated, 0)
+        .expect("the element is inside")
+        .expect("the element refers to a function");
+    let bound = bind::<(), i32>(&mut engine, read);
+    assert_eq!(bound.invoke(&mut engine, ()).ok(), Some(42));
+    assert_eq!(engine.grow_table(&allocated, 1), Ok(()));
+    assert_eq!(engine.grow_table(&allocated, 1), Err(GrowTableError));
+    assert_eq!(engine.count_table_elements(&allocated), 2);
 }

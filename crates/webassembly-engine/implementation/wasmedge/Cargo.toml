@@ -34,7 +34,11 @@ wcontainers-webassembly-engine = { path = "../.." }
 wasmedge-sdk = { version = "0.17.1", default-features = false, features = ["aot"] }
 wasmedge-sys = { version = "0.21.1", default-features = false, features = ["aot"] }
 # Writes the modules that link imports by name and reach what the bindings give no direct access to.
-wasm-encoder = "0.263.0"
+wasm-encoder = { version = "0.263.0", features = ["wasmparser"] }
+# Reads a module's exact types, which the bindings' types cannot describe.
+wasmparser = { version = "0.263.0", default-features = false, features = ["std"] }
+# A private folder for each compiled library.
+tempfile = "3.27.0"
 thiserror = { version = "2.0.21", default-features = false }
 
 [dev-dependencies]

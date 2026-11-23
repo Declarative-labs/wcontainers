@@ -4,10 +4,15 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
-use wasmedge_sdk::error::{CoreError, CoreExecutionError, InstanceError, WasmEdgeError};
+use wasm_encoder::reencode::{Reencode, RoundtripReencoder};
+use wasm_encoder::{
+    AbstractHeapType, CodeSection, EntityType, ExportKind, ExportSection, FunctionSection,
+    HeapType, ImportSection, InstructionSink, TypeSection,
+};
+use wasmedge_sdk::error::{CoreError, CoreExecutionError, WasmEdgeError};
 use wasmedge_sdk::{
     CompilerOptimizationLevel, CompilerOutputFormat, FuncType, ImportObjectBuilder, RefType,
     RunMode, ValType, WasmVal, WasmValType,
@@ -36,22 +41,19 @@ use wcontainers_webassembly_engine::{
 /// What WasmEdge answers when it fails.
 pub type Error = Box<WasmEdgeError>;
 
-/// What every engine value made from it shares: WasmEdge's configurations, and the helper modules compiled once.
+type ReencodeError = wasm_encoder::reencode::Error;
+
+/// What every engine value made from it shares: WasmEdge's configurations, and the helper modules compiled so far.
 #[derive(Clone)]
 pub struct Config(Arc<Shared>);
 
 struct Shared {
     /// For modules compiled ahead of time into native shared libraries and run as such.
     compiled: wasmedge_sys::Config,
-    /// For the modules that only pass on imports, which hold no code.
-    linking: wasmedge_sys::Config,
-    helpers: OnceLock<Helpers>,
-}
-
-/// Modules that reach what the bindings' safe layer gives no direct access to.
-struct Helpers {
-    copier: Module,
-    table_writer: Module,
+    /// For the modules that only declare or pass on items, which hold no code.
+    declaring: wasmedge_sys::Config,
+    /// Each helper module compiled so far, with the bytes it was compiled from.
+    helpers: Mutex<Vec<(Vec<u8>, Module)>>,
 }
 
 impl Default for Config {
@@ -59,8 +61,8 @@ impl Default for Config {
     fn default() -> Self {
         Self(Arc::new(Shared {
             compiled: configuration(RunMode::Aot).expect("WasmEdge makes a configuration"),
-            linking: configuration(RunMode::Interpreter).expect("WasmEdge makes a configuration"),
-            helpers: OnceLock::new(),
+            declaring: configuration(RunMode::Interpreter).expect("WasmEdge makes a configuration"),
+            helpers: Mutex::default(),
         }))
     }
 }
@@ -77,35 +79,64 @@ fn configuration(run_mode: RunMode) -> Result<wasmedge_sys::Config, Error> {
     // A native shared library either loads as native code or fails to load: WasmEdge never interprets it.
     config.set_aot_compiler_output_format(CompilerOutputFormat::Native);
     config.set_aot_optimization_level(CompilerOptimizationLevel::O3);
+    // WasmEdge caps every memory at 4 GiB unless told otherwise; this is the most the bindings can ask for.
+    config.set_max_memory_pages(u32::MAX);
     Ok(config)
 }
 
 impl Config {
-    fn helpers(&self) -> &Helpers {
-        self.0.helpers.get_or_init(|| Helpers {
-            copier: compile(&self.0, &copier()).expect("the copier compiles"),
-            table_writer: compile(&self.0, &table_writer()).expect("the table writer compiles"),
-        })
+    /// The helper module of the bytes, compiled the first time any engine value asks for it.
+    fn helper(&self, bytes: Vec<u8>) -> Option<Module> {
+        let mut helpers = self
+            .0
+            .helpers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, module)) = helpers.iter().find(|(compiled, _)| *compiled == bytes) {
+            return Some(module.clone());
+        }
+        let module = compile(&self.0, &bytes).ok()?;
+        helpers.push((bytes, module.clone()));
+        Some(module)
     }
 }
 
-/// Compiles the module into a native shared library, loads it, and removes the file.
-fn compile(shared: &Shared, bytes: &[u8]) -> Result<Module, Error> {
-    static COMPILED: AtomicU64 = AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "wcontainers-wasmedge-{}-{}.{}",
-        std::process::id(),
-        COMPILED.fetch_add(1, Ordering::Relaxed),
-        std::env::consts::DLL_EXTENSION
-    ));
-    let compiled = Compiler::create(Some(&shared.compiled))
+/// A new folder only this user can write in, so nobody else can put a library in the place of a compiled one.
+fn private_folder() -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("wcontainers-wasmedge-");
+    #[cfg(unix)]
+    builder
+        .permissions(<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700));
+    builder.tempdir()
+}
+
+/// Compiles the module into a native shared library in a private folder, loads it, and removes the folder.
+fn compile(shared: &Shared, bytes: &[u8]) -> Result<Module, CompileError> {
+    let folder = private_folder().map_err(CompileError::Folder)?;
+    let path = folder
+        .path()
+        .join(format!("module.{}", std::env::consts::DLL_EXTENSION));
+    // A loaded library stays mapped once its file is gone.
+    let loaded = Compiler::create(Some(&shared.compiled))
         .and_then(|compiler| compiler.compile_from_bytes(bytes, &path))
-        .and_then(|()| Loader::create(Some(&shared.compiled))?.from_file(&path));
-    // A loaded library stays mapped once its file is gone; a file a failed compilation left is not needed.
-    let _ = std::fs::remove_file(&path);
-    let module = compiled?;
-    Validator::create(Some(&shared.compiled))?.validate(&module)?;
-    Ok(Module(module))
+        .and_then(|()| Loader::create(Some(&shared.compiled))?.from_file(&path))?;
+    Validator::create(Some(&shared.compiled))?.validate(&loaded)?;
+    Ok(Module {
+        loaded,
+        description: Arc::new(describe(bytes)?),
+    })
+}
+
+/// Loads a module this crate wrote that holds no code, which needs no compiling.
+fn declare(shared: &Shared, bytes: &[u8]) -> Result<Module, Error> {
+    let loaded = Loader::create(Some(&shared.declaring))?.from_bytes(bytes)?;
+    Validator::create(Some(&shared.declaring))?.validate(&loaded)?;
+    let description = describe(bytes).expect("the modules this crate writes are readable");
+    Ok(Module {
+        loaded,
+        description: Arc::new(description),
+    })
 }
 
 /// A name no other module instance of the process has.
@@ -117,10 +148,8 @@ fn unique_name() -> String {
     )
 }
 
-/// The names helpers and host-made instances import and export under.
-const COPIER: &str = "copier";
-const TABLE_WRITER: &str = "table-writer";
-const SHARED: &str = "shared";
+/// The module and item name under which a helper imports what it reaches.
+const HELPED: &str = "helped";
 const SCRATCH: &str = "scratch";
 const TABLE: &str = "table";
 const MEMORY: &str = "memory";
@@ -133,42 +162,256 @@ const SET: &str = "set";
 
 /// The pages a 32-bit memory holds at most.
 const MOST_PAGES: u64 = (1 << u32::BITS) / PAGE_SIZE;
+/// The pages a 64-bit memory holds at most.
+const MOST_PAGES_64: u64 = 1 << (u64::BITS - PAGE_SIZE.trailing_zeros());
+/// The first byte the bindings' 32-bit offsets cannot reach.
+const BINDINGS_REACH: u64 = 1 << u32::BITS;
 
-/// A module that imports any shared 32-bit memory, defines an unshared scratch memory, and exports `load` and
-/// `store`, which copy a length of bytes at an offset of the shared memory to and from the start of the scratch
-/// memory, and `grow`, which grows the shared memory.
-fn copier() -> Vec<u8> {
-    use wasm_encoder::{
-        CodeSection, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-        MemorySection, TypeSection, ValType,
-    };
+/// What a module declares, read from its bytes: its types, and the type of each import and export.
+#[derive(Default)]
+struct Description {
+    types: TypeSection,
+    /// Whether the type at each index is a function type.
+    function_types: Vec<bool>,
+    imports: Vec<(String, String, EntityType)>,
+    exports: Vec<(String, EntityType)>,
+}
+
+impl Description {
+    fn export(&self, name: &str) -> Option<EntityType> {
+        self.exports
+            .iter()
+            .find(|(exported, _)| exported == name)
+            .map(|(_, entity)| *entity)
+    }
+
+    fn exports_a_shared_memory(&self) -> bool {
+        self.exports
+            .iter()
+            .any(|(_, entity)| matches!(entity, EntityType::Memory(memory) if memory.shared))
+    }
+
+    /// Whether references of the heap type refer to functions.
+    fn refers_to_functions(&self, heap_type: HeapType) -> bool {
+        match heap_type {
+            HeapType::Abstract { ty, .. } => {
+                matches!(ty, AbstractHeapType::Func | AbstractHeapType::NoFunc)
+            }
+            HeapType::Concrete(index) | HeapType::Exact(index) => usize::try_from(index)
+                .ok()
+                .and_then(|index| self.function_types.get(index))
+                .is_some_and(|function| *function),
+        }
+    }
+
+    /// The types a helper of an item of the reference type starts from, and the index its own types begin at.
+    fn helper_types(&self, reference: Option<wasm_encoder::RefType>) -> (TypeSection, u32) {
+        match reference.map(|reference| reference.heap_type) {
+            Some(HeapType::Concrete(_) | HeapType::Exact(_)) => (
+                self.types.clone(),
+                u32::try_from(self.function_types.len())
+                    .expect("a module has fewer types than 2^32"),
+            ),
+            _ => (TypeSection::new(), 0),
+        }
+    }
+}
+
+/// Reads what the module declares.
+fn describe(bytes: &[u8]) -> Result<Description, ReencodeError> {
+    use wasmparser::{CompositeInnerType, ExternalKind, Payload};
+    let mut reencoder = RoundtripReencoder;
+    let mut description = Description::default();
+    let (mut functions, mut tables, mut memories, mut globals, mut tags) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload? {
+            Payload::TypeSection(section) => {
+                for group in section {
+                    let group = group?;
+                    description
+                        .function_types
+                        .extend(group.types().map(|sub_type| {
+                            matches!(sub_type.composite_type.inner, CompositeInnerType::Func(_))
+                        }));
+                    reencoder.parse_recursive_type_group(description.types.ty(), group)?;
+                }
+            }
+            Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    let import = import?;
+                    let entity = reencoder.entity_type(import.ty)?;
+                    match entity {
+                        EntityType::Function(_) | EntityType::FunctionExact(_) => {
+                            functions.push(entity);
+                        }
+                        EntityType::Table(_) => tables.push(entity),
+                        EntityType::Memory(_) => memories.push(entity),
+                        EntityType::Global(_) => globals.push(entity),
+                        EntityType::Tag(_) => tags.push(entity),
+                    }
+                    description.imports.push((
+                        import.module.to_owned(),
+                        import.name.to_owned(),
+                        entity,
+                    ));
+                }
+            }
+            Payload::FunctionSection(section) => {
+                for type_index in section {
+                    functions.push(EntityType::Function(type_index?));
+                }
+            }
+            Payload::TableSection(section) => {
+                for table in section {
+                    tables.push(EntityType::Table(reencoder.table_type(table?.ty)?));
+                }
+            }
+            Payload::MemorySection(section) => {
+                for memory in section {
+                    memories.push(EntityType::Memory(reencoder.memory_type(memory?)?));
+                }
+            }
+            Payload::GlobalSection(section) => {
+                for global in section {
+                    globals.push(EntityType::Global(reencoder.global_type(global?.ty)?));
+                }
+            }
+            Payload::TagSection(section) => {
+                for tag in section {
+                    tags.push(EntityType::Tag(reencoder.tag_type(tag?)?));
+                }
+            }
+            Payload::ExportSection(section) => {
+                for export in section {
+                    let export = export?;
+                    let space = match export.kind {
+                        ExternalKind::Func | ExternalKind::FuncExact => &functions,
+                        ExternalKind::Table => &tables,
+                        ExternalKind::Memory => &memories,
+                        ExternalKind::Global => &globals,
+                        ExternalKind::Tag => &tags,
+                    };
+                    if let Some(entity) = usize::try_from(export.index)
+                        .ok()
+                        .and_then(|index| space.get(index))
+                    {
+                        description.exports.push((export.name.to_owned(), *entity));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(description)
+}
+
+fn export_kind(entity: EntityType) -> ExportKind {
+    match entity {
+        EntityType::Function(_) | EntityType::FunctionExact(_) => ExportKind::Func,
+        EntityType::Table(_) => ExportKind::Table,
+        EntityType::Memory(_) => ExportKind::Memory,
+        EntityType::Global(_) => ExportKind::Global,
+        EntityType::Tag(_) => ExportKind::Tag,
+    }
+}
+
+/// The value type of a memory's or a table's addresses.
+fn address_type(wide: bool) -> wasm_encoder::ValType {
+    if wide {
+        wasm_encoder::ValType::I64
+    } else {
+        wasm_encoder::ValType::I32
+    }
+}
+
+fn address_zero<'sink, 'bytes>(
+    sink: &'sink mut InstructionSink<'bytes>,
+    wide: bool,
+) -> &'sink mut InstructionSink<'bytes> {
+    if wide {
+        sink.i64_const(0)
+    } else {
+        sink.i32_const(0)
+    }
+}
+
+/// Pushes the function reference in the local as the reference type, trapping when the function is not of it. A
+/// null becomes the type's own null: WasmEdge casts a reference by the type it carries, and the null it gives the
+/// host carries `funcref`.
+fn function_as(sink: &mut InstructionSink<'_>, local: u32, reference: wasm_encoder::RefType) {
+    sink.local_get(local);
+    if reference == wasm_encoder::RefType::FUNCREF {
+        return;
+    }
+    if reference.nullable {
+        sink.ref_is_null()
+            .if_(wasm_encoder::BlockType::Result(wasm_encoder::ValType::Ref(
+                reference,
+            )))
+            .ref_null(reference.heap_type)
+            .else_()
+            .local_get(local)
+            .ref_cast_non_null(reference.heap_type)
+            .end();
+    } else {
+        sink.ref_cast_non_null(reference.heap_type);
+    }
+}
+
+/// Assembles a module from its sections, leaving out the empty ones.
+fn assemble(
+    types: &TypeSection,
+    imports: &ImportSection,
+    functions: &FunctionSection,
+    memories: &wasm_encoder::MemorySection,
+    exports: &ExportSection,
+    code: &CodeSection,
+) -> Vec<u8> {
+    let mut module = wasm_encoder::Module::new();
+    module.section(types).section(imports).section(functions);
+    if !memories.is_empty() {
+        module.section(memories);
+    }
+    module.section(exports).section(code);
+    module.finish()
+}
+
+/// A module that imports a memory of the type and defines an unshared scratch memory of the same address type. It
+/// exports `load` and `store`, which copy a length of bytes at an offset of the memory to and from the start of the
+/// scratch memory, and `grow`, which grows the memory.
+fn copier_module(memory: wasm_encoder::MemoryType) -> Vec<u8> {
+    use wasm_encoder::Function;
+    let wide = memory.memory64;
+    let address = address_type(wide);
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I32, ValType::I32], []);
-    types.ty().function([ValType::I32], [ValType::I32]);
+    types.ty().function([address, address], []);
+    types.ty().function([address], [address]);
     let (copy_type, grow_type) = (0, 1);
     let mut imports = ImportSection::new();
+    let most = if wide { MOST_PAGES_64 } else { MOST_PAGES };
     imports.import(
-        COPIER,
-        SHARED,
+        HELPED,
+        HELPED,
         wasm_encoder::MemoryType {
             minimum: u64::MIN,
-            maximum: Some(MOST_PAGES),
-            memory64: false,
-            shared: true,
-            page_size_log2: None,
+            maximum: memory.shared.then_some(most),
+            memory64: wide,
+            shared: memory.shared,
+            page_size_log2: memory.page_size_log2,
         },
     );
-    let (shared, scratch) = (0, 1);
+    let (helped, scratch) = (0, 1);
     let mut functions = FunctionSection::new();
     functions
         .function(copy_type)
         .function(copy_type)
         .function(grow_type);
-    let mut memories = MemorySection::new();
+    let mut memories = wasm_encoder::MemorySection::new();
     memories.memory(wasm_encoder::MemoryType {
         minimum: 1,
         maximum: None,
-        memory64: false,
+        memory64: wide,
         shared: false,
         page_size_log2: None,
     });
@@ -180,117 +423,227 @@ fn copier() -> Vec<u8> {
         .export(SCRATCH, ExportKind::Memory, scratch);
     let (offset, length) = (0, 1);
     let mut load = Function::new([]);
-    load.instructions()
-        .i32_const(0)
+    address_zero(&mut load.instructions(), wide)
         .local_get(offset)
         .local_get(length)
-        .memory_copy(scratch, shared)
+        .memory_copy(scratch, helped)
         .end();
     let mut store = Function::new([]);
-    store
-        .instructions()
-        .local_get(offset)
-        .i32_const(0)
+    let mut sink = store.instructions();
+    sink.local_get(offset);
+    address_zero(&mut sink, wide)
         .local_get(length)
-        .memory_copy(shared, scratch)
+        .memory_copy(helped, scratch)
         .end();
     let mut grow = Function::new([]);
-    grow.instructions().local_get(0).memory_grow(shared).end();
+    grow.instructions().local_get(0).memory_grow(helped).end();
     let mut code = CodeSection::new();
     code.function(&load).function(&store).function(&grow);
-    let mut module = wasm_encoder::Module::new();
-    module
-        .section(&types)
-        .section(&imports)
-        .section(&functions)
-        .section(&memories)
-        .section(&exports)
-        .section(&code);
-    module.finish()
+    assemble(&types, &imports, &functions, &memories, &exports, &code)
 }
 
-/// A module that imports any 32-bit table of functions and exports `set`, which sets an element, and `grow`,
-/// which grows it by null elements.
-fn table_writer() -> Vec<u8> {
-    use wasm_encoder::{
-        CodeSection, ExportKind, ExportSection, Function, FunctionSection, HeapType, ImportSection,
-        TypeSection, ValType,
-    };
-    let mut types = TypeSection::new();
-    types.ty().function([ValType::I32, ValType::FUNCREF], []);
-    types.ty().function([ValType::I32], [ValType::I32]);
+/// A module that imports a table of the type, whose elements refer to functions, and exports `set`, which sets an
+/// element to a function of the element type, and, when the elements may be null, `grow`, which grows it by nulls.
+fn table_writer_module(
+    mut types: TypeSection,
+    first_type: u32,
+    table: wasm_encoder::TableType,
+) -> Vec<u8> {
+    use wasm_encoder::Function;
+    let index = address_type(table.table64);
+    types
+        .ty()
+        .function([index, wasm_encoder::ValType::FUNCREF], []);
+    types.ty().function([index], [index]);
+    let (set_type, grow_type) = (first_type, first_type + 1);
     let mut imports = ImportSection::new();
     imports.import(
-        TABLE_WRITER,
-        TABLE,
+        HELPED,
+        HELPED,
         wasm_encoder::TableType {
-            element_type: wasm_encoder::RefType::FUNCREF,
-            table64: false,
             minimum: u64::MIN,
             maximum: None,
-            shared: false,
+            ..table
         },
     );
+    let helped = 0;
     let mut functions = FunctionSection::new();
-    functions.function(0).function(1);
     let mut exports = ExportSection::new();
-    exports
-        .export(SET, ExportKind::Func, 0)
-        .export(GROW, ExportKind::Func, 1);
-    let table = 0;
-    let mut set = Function::new([]);
-    set.instructions()
-        .local_get(0)
-        .local_get(1)
-        .table_set(table)
-        .end();
-    let mut grow = Function::new([]);
-    grow.instructions()
-        .ref_null(HeapType::FUNC)
-        .local_get(0)
-        .table_grow(table)
-        .end();
     let mut code = CodeSection::new();
-    code.function(&set).function(&grow);
+    let mut set = Function::new([]);
+    let mut sink = set.instructions();
+    sink.local_get(0);
+    function_as(&mut sink, 1, table.element_type);
+    sink.table_set(helped).end();
+    functions.function(set_type);
+    exports.export(SET, ExportKind::Func, 0);
+    code.function(&set);
+    if table.element_type.nullable {
+        let mut grow = Function::new([]);
+        grow.instructions()
+            .ref_null(table.element_type.heap_type)
+            .local_get(0)
+            .table_grow(helped)
+            .end();
+        functions.function(grow_type);
+        exports.export(GROW, ExportKind::Func, 1);
+        code.function(&grow);
+    }
+    let memories = wasm_encoder::MemorySection::new();
+    assemble(&types, &imports, &functions, &memories, &exports, &code)
+}
+
+/// A module that imports a mutable global of the type and exports `set`, which sets it; a reference is passed as a
+/// function reference and turned into the global's type.
+fn global_setter_module(
+    mut types: TypeSection,
+    first_type: u32,
+    global: wasm_encoder::GlobalType,
+) -> Vec<u8> {
+    use wasm_encoder::Function;
+    let parameter = match global.val_type {
+        wasm_encoder::ValType::Ref(_) => wasm_encoder::ValType::FUNCREF,
+        other => other,
+    };
+    types.ty().function([parameter], []);
+    let mut imports = ImportSection::new();
+    imports.import(HELPED, HELPED, global);
+    let mut functions = FunctionSection::new();
+    functions.function(first_type);
+    let mut exports = ExportSection::new();
+    exports.export(SET, ExportKind::Func, 0);
+    let mut set = Function::new([]);
+    let mut sink = set.instructions();
+    if let wasm_encoder::ValType::Ref(reference) = global.val_type {
+        function_as(&mut sink, 0, reference);
+    } else {
+        sink.local_get(0);
+    }
+    sink.global_set(0).end();
+    let mut code = CodeSection::new();
+    code.function(&set);
+    let memories = wasm_encoder::MemorySection::new();
+    assemble(&types, &imports, &functions, &memories, &exports, &code)
+}
+
+/// A module that imports a function of the type, given by its index among the module's types, and exports a table
+/// whose one element refers to it. The element carries the function's own type, which WasmEdge keeps for a reference
+/// read from a table and drops from one a call returns.
+fn retyper_module(description: &Description, function_type: u32) -> Vec<u8> {
+    use wasm_encoder::{ConstExpr, ElementSection, Elements, TableSection};
+    let mut imports = ImportSection::new();
+    imports.import(HELPED, HELPED, EntityType::Function(function_type));
+    let mut tables = TableSection::new();
+    tables.table(wasm_encoder::TableType {
+        element_type: wasm_encoder::RefType::FUNCREF,
+        table64: false,
+        minimum: 1,
+        maximum: Some(1),
+        shared: false,
+    });
+    let mut exports = ExportSection::new();
+    exports.export(SCRATCH, ExportKind::Table, 0);
+    let (helped, scratch) = (0, 0);
+    let mut elements = ElementSection::new();
+    elements.active(
+        Some(scratch),
+        &ConstExpr::i32_const(0),
+        Elements::Functions(std::borrow::Cow::Borrowed(&[helped])),
+    );
     let mut module = wasm_encoder::Module::new();
     module
-        .section(&types)
+        .section(&description.types)
         .section(&imports)
-        .section(&functions)
+        .section(&tables)
         .section(&exports)
-        .section(&code);
+        .section(&elements);
     module.finish()
 }
 
-/// A compiled module, loaded as native code.
+/// A module that defines and exports one memory or one table.
+fn defining_module(entity: EntityType) -> Vec<u8> {
+    let mut module = wasm_encoder::Module::new();
+    let mut exports = ExportSection::new();
+    match entity {
+        EntityType::Memory(memory) => {
+            let mut memories = wasm_encoder::MemorySection::new();
+            memories.memory(memory);
+            exports.export(MEMORY, ExportKind::Memory, 0);
+            module.section(&memories);
+        }
+        EntityType::Table(table) => {
+            let mut tables = wasm_encoder::TableSection::new();
+            tables.table(table);
+            exports.export(TABLE, ExportKind::Table, 0);
+            module.section(&tables);
+        }
+        EntityType::Function(_)
+        | EntityType::FunctionExact(_)
+        | EntityType::Global(_)
+        | EntityType::Tag(_) => {}
+    }
+    module.section(&exports);
+    module.finish()
+}
+
+/// A module that imports each item from the instance that exports it, with the type the importing module declares,
+/// and exports it under the name the importing module imports it under.
+fn forwarder(types: &TypeSection, items: &[Forwarded<'_>]) -> Vec<u8> {
+    let mut imports = ImportSection::new();
+    let mut exports = ExportSection::new();
+    let mut exported: Vec<&str> = Vec::new();
+    let (mut functions, mut tables, mut memories, mut globals, mut tags) = (0, 0, 0, 0, 0);
+    for item in items {
+        let kind = export_kind(item.entity);
+        let count = match kind {
+            ExportKind::Func => &mut functions,
+            ExportKind::Table => &mut tables,
+            ExportKind::Memory => &mut memories,
+            ExportKind::Global => &mut globals,
+            ExportKind::Tag => &mut tags,
+        };
+        let index = *count;
+        *count += 1;
+        imports.import(&item.owner, &item.name, item.entity);
+        if !exported.contains(&item.item_name) {
+            exports.export(item.item_name, kind, index);
+            exported.push(item.item_name);
+        }
+    }
+    let mut module = wasm_encoder::Module::new();
+    module.section(types).section(&imports).section(&exports);
+    module.finish()
+}
+
+/// A compiled module, loaded as native code, with what it declares.
 #[derive(Clone)]
-pub struct Module(Arc<wasmedge_sys::Module>);
+pub struct Module {
+    loaded: Arc<wasmedge_sys::Module>,
+    description: Arc<Description>,
+}
 
 /// Something that owns instances an address refers to.
 enum Owner {
-    Instance(wasmedge_sys::Instance),
-    /// A memory, table or global the host made.
-    Host(ImportModule<()>),
+    Instance(wasmedge_sys::Instance, Arc<Description>),
+    /// A global the host made.
+    Global(ImportModule<()>),
     Function(Box<dyn AsInstance>),
-    /// A shared memory, or an instance that exports one, which other engine values may hold too.
+    /// An instance that exports a shared memory, which other engine values may hold too.
     Shared(Arc<SharedOwner>),
 }
 
-enum SharedOwner {
-    Host(ImportModule<()>),
-    Instance(wasmedge_sys::Instance),
+struct SharedOwner {
+    instance: wasmedge_sys::Instance,
+    description: Arc<Description>,
 }
 
 impl Owner {
     fn as_instance(&self) -> &dyn AsInstance {
         match self {
-            Owner::Instance(instance) => instance,
-            Owner::Host(module) => module,
+            Owner::Instance(instance, _) => instance,
+            Owner::Global(module) => module,
             Owner::Function(module) => &**module,
-            Owner::Shared(shared) => match &**shared {
-                SharedOwner::Host(module) => module,
-                SharedOwner::Instance(instance) => instance,
-            },
+            Owner::Shared(shared) => &shared.instance,
         }
     }
 }
@@ -299,27 +652,25 @@ impl Owner {
 macro_rules! readable {
     ($owner:expr, $instance:ident => $body:expr, $otherwise:expr) => {
         match $owner {
-            Owner::Instance($instance) => $body,
-            Owner::Host($instance) => $body,
-            Owner::Shared(shared) => match &**shared {
-                SharedOwner::Host($instance) => $body,
-                SharedOwner::Instance($instance) => $body,
-            },
+            Owner::Instance($instance, _) => $body,
+            Owner::Global($instance) => $body,
+            Owner::Shared(shared) => {
+                let $instance = &shared.instance;
+                $body
+            }
             Owner::Function(_) => $otherwise,
         }
     };
 }
 
-/// Evaluates `$body` with `$instance` bound mutably to the owner as its own type.
+/// Evaluates `$body` with `$instance` bound mutably to the owner as its own type, or gives `$otherwise` when the
+/// bindings cannot write the owner: a shared owner is written through helpers.
 macro_rules! writable {
     ($owner:expr, $instance:ident => $body:expr, $otherwise:expr) => {
         match $owner {
-            Owner::Instance($instance) => $body,
-            Owner::Host($instance) => $body,
-            Owner::Shared(_) => panic!(
-                "WasmEdge's bindings write an instance another engine value holds only through its shared memory"
-            ),
-            Owner::Function(_) => $otherwise,
+            Owner::Instance($instance, _) => $body,
+            Owner::Global($instance) => $body,
+            Owner::Shared(_) | Owner::Function(_) => $otherwise,
         }
     };
 }
@@ -337,8 +688,8 @@ pub struct WasmEdgeEngine<HostContext: 'static> {
     /// Where host functions find the host context during a call.
     lent: Rc<Cell<Option<HostContext>>>,
     owners: Vec<Owner>,
-    copiers: Vec<(Export, Copier)>,
-    table_writers: Vec<(Export, TableWriter)>,
+    /// The helper instance linked to each item that has one.
+    helped: Vec<(Export, usize)>,
     /// A null reference to a function, which the bindings make only by reading an empty table.
     null_function: WasmValue,
     graveyard: Rc<Graveyard>,
@@ -365,23 +716,42 @@ pub struct FunctionAddress {
     _graveyard: Rc<Graveyard>,
 }
 
-/// A memory, with the copier this engine value reads and writes it through when it is shared.
+/// A memory, and how this engine value reaches its bytes.
 #[derive(Clone)]
 pub struct MemoryAddress {
     export: Export,
+    /// The memory is unshared, so its bytes are read directly.
+    direct_reads: bool,
+    /// Also, its owner is this engine value's alone, so its bytes are written and grown directly.
+    direct_writes: bool,
+    /// Reaches the bytes otherwise, and those beyond the bindings' reach.
     copier: Option<Copier>,
 }
 
-/// The instance through which one engine value reaches a shared memory's bytes.
+/// The helper instance through which one engine value reaches a memory's bytes.
 #[derive(Clone, Copy)]
 struct Copier {
     instance: usize,
+    /// It takes 64-bit offsets.
+    wide: bool,
     load: WasmValue,
     store: WasmValue,
     grow: WasmValue,
 }
 
-/// A table of functions, with the instance that writes and grows it, which a table of other references lacks.
+impl Copier {
+    fn address(&self, value: u64) -> Option<WasmValue> {
+        if self.wide {
+            Some(WasmValue::from_i64(value.cast_signed()))
+        } else {
+            u32::try_from(value)
+                .ok()
+                .map(|value| WasmValue::from_i32(value.cast_signed()))
+        }
+    }
+}
+
+/// A table, with the helper instance that writes and grows it when its elements refer to functions.
 #[derive(Clone)]
 pub struct TableAddress {
     export: Export,
@@ -390,12 +760,80 @@ pub struct TableAddress {
 
 #[derive(Clone, Copy)]
 struct TableWriter {
+    /// It takes 64-bit indices.
+    wide: bool,
+    /// The elements are typed function references, which a function's reference is cast to.
+    typed: bool,
     set: WasmValue,
-    grow: WasmValue,
+    /// Missing when the elements may not be null.
+    grow: Option<WasmValue>,
 }
 
+/// A global, its type, and the helper that sets it when the bindings cannot.
 #[derive(Clone)]
-pub struct GlobalAddress(Export);
+pub struct GlobalAddress {
+    export: Export,
+    slot: Slot,
+    mutable: bool,
+    /// It holds typed function references, which a function's reference is cast to.
+    typed: bool,
+    setter: Option<WasmValue>,
+}
+
+/// What a global holds, as far as the interface's values tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    I32,
+    I64,
+    F32,
+    F64,
+    V128,
+    Function {
+        nullable: bool,
+    },
+    /// A reference to something other than a function.
+    Other,
+}
+
+impl Slot {
+    fn of(value_type: wasm_encoder::ValType, description: &Description) -> Self {
+        match value_type {
+            wasm_encoder::ValType::I32 => Self::I32,
+            wasm_encoder::ValType::I64 => Self::I64,
+            wasm_encoder::ValType::F32 => Self::F32,
+            wasm_encoder::ValType::F64 => Self::F64,
+            wasm_encoder::ValType::V128 => Self::V128,
+            wasm_encoder::ValType::Ref(reference)
+                if description.refers_to_functions(reference.heap_type) =>
+            {
+                Self::Function {
+                    nullable: reference.nullable,
+                }
+            }
+            wasm_encoder::ValType::Ref(_) => Self::Other,
+        }
+    }
+
+    fn of_value(value: &Value<FunctionAddress>) -> Self {
+        match value {
+            Value::I32(_) => Self::I32,
+            Value::I64(_) => Self::I64,
+            Value::F32(_) => Self::F32,
+            Value::F64(_) => Self::F64,
+            Value::V128(_) => Self::V128,
+            Value::FunctionReference(_) => Self::Function { nullable: true },
+        }
+    }
+
+    fn takes(self, value: &Value<FunctionAddress>) -> bool {
+        match (self, value) {
+            (Self::Function { nullable }, Value::FunctionReference(function)) => {
+                nullable || function.is_some()
+            }
+            (slot, value) => slot != Self::Other && slot == Self::of_value(value),
+        }
+    }
+}
 
 /// The bindings give no access to tags, so no address of one exists.
 #[derive(Clone, Copy, Debug)]
@@ -411,6 +849,17 @@ pub struct SharedMemory {
     name: Arc<str>,
 }
 
+/// Why `compile` failed.
+#[derive(Debug, Error)]
+pub enum CompileError {
+    #[error("no private folder for the compiled library could be made: {0}")]
+    Folder(std::io::Error),
+    #[error("WasmEdge refused the module: {0}")]
+    Engine(#[from] Error),
+    #[error("the module's declarations could not be read: {0}")]
+    Unreadable(#[from] ReencodeError),
+}
+
 /// Why `instantiate` failed.
 #[derive(Debug, Error)]
 pub enum InstantiateError {
@@ -421,154 +870,36 @@ pub enum InstantiateError {
     },
     #[error("the imported function is exported by no instance, so WasmEdge cannot link it by name")]
     FunctionNotExported,
-    #[error("the import's type holds a reference type WasmEdge's bindings cannot describe")]
-    TypeOutsideBindings,
     #[error("WasmEdge refused the instantiation: {0}")]
-    Engine(Error),
+    Engine(#[from] Error),
 }
 
 /// Why a memory or a table could not be allocated.
 #[derive(Debug, Error)]
 pub enum AllocateError {
-    #[error("WasmEdge's bindings make only 32-bit memories and tables")]
-    AddressTypeOutsideBindings,
     #[error("the limits do not fit the address type")]
     LimitsOutsideAddressType,
+    #[error("WasmEdge refused the helper module that reaches what was allocated")]
+    HelperRefused,
     #[error("WasmEdge refused it: {0}")]
-    Engine(Error),
+    Engine(#[from] Error),
+    #[error("WasmEdge refused to instantiate it: {0}")]
+    Instantiate(#[from] InstantiateError),
 }
 
-impl From<Error> for AllocateError {
-    fn from(error: Error) -> Self {
-        Self::Engine(error)
-    }
-}
-
-impl From<Error> for InstantiateError {
-    fn from(error: Error) -> Self {
-        Self::Engine(error)
-    }
-}
-
-/// An item an instantiation links, by the names the module imports it under.
+/// An item an instantiation links, by the names the module imports it under and the export it is.
 struct Link<'name> {
     module_name: &'name str,
     item_name: &'name str,
-    item: Item,
+    export: Export,
 }
 
-enum Item {
-    Function(FunctionAddress),
-    Memory(Export),
-    Table(Export),
-    Global(Export),
-}
-
-/// What a module that passes on an import imports.
-struct Forwarded {
+/// What a module that passes on an import imports, and the name it exports it under.
+struct Forwarded<'name> {
     owner: String,
     name: Rc<str>,
-    item_name: String,
-    kind: Forward,
-}
-
-enum Forward {
-    Function(FuncType),
-    Memory(wasmedge_sdk::MemoryType),
-    Table(wasmedge_sdk::TableType),
-    Global(wasmedge_sdk::GlobalType),
-}
-
-fn encoder_value_type(value_type: ValType) -> Result<wasm_encoder::ValType, InstantiateError> {
-    Ok(match value_type {
-        ValType::I32 => wasm_encoder::ValType::I32,
-        ValType::I64 => wasm_encoder::ValType::I64,
-        ValType::F32 => wasm_encoder::ValType::F32,
-        ValType::F64 => wasm_encoder::ValType::F64,
-        ValType::V128 => wasm_encoder::ValType::V128,
-        ValType::FuncRef => wasm_encoder::ValType::FUNCREF,
-        ValType::ExternRef => wasm_encoder::ValType::EXTERNREF,
-        ValType::UnsupportedRef => return Err(InstantiateError::TypeOutsideBindings),
-    })
-}
-
-fn encoder_reference_type(reference_type: RefType) -> wasm_encoder::RefType {
-    match reference_type {
-        RefType::FuncRef => wasm_encoder::RefType::FUNCREF,
-        RefType::ExternRef => wasm_encoder::RefType::EXTERNREF,
-    }
-}
-
-/// A module that imports each item from the instance that exports it and exports it under the name another
-/// module imports it under.
-fn forwarder<'item>(
-    items: impl Iterator<Item = &'item Forwarded>,
-) -> Result<Vec<u8>, InstantiateError> {
-    use wasm_encoder::{EntityType, ExportKind, ExportSection, ImportSection, TypeSection};
-    let mut types = TypeSection::new();
-    let mut imports = ImportSection::new();
-    let mut exports = ExportSection::new();
-    let (mut functions, mut memories, mut tables, mut globals) = (0, 0, 0, 0);
-    for item in items {
-        let (entity, kind, index) = match &item.kind {
-            Forward::Function(function_type) => {
-                let parameters = function_type
-                    .args()
-                    .iter()
-                    .map(|value_type| encoder_value_type(*value_type))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let results = function_type
-                    .returns()
-                    .iter()
-                    .map(|value_type| encoder_value_type(*value_type))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let type_index = types.len();
-                types.ty().function(parameters, results);
-                functions += 1;
-                (
-                    EntityType::Function(type_index),
-                    ExportKind::Func,
-                    functions - 1,
-                )
-            }
-            Forward::Memory(memory_type) => {
-                memories += 1;
-                let memory = wasm_encoder::MemoryType {
-                    minimum: u64::MIN,
-                    maximum: memory_type.maximum().map(u64::from),
-                    memory64: false,
-                    shared: memory_type.shared(),
-                    page_size_log2: None,
-                };
-                (EntityType::Memory(memory), ExportKind::Memory, memories - 1)
-            }
-            Forward::Table(table_type) => {
-                tables += 1;
-                let table = wasm_encoder::TableType {
-                    element_type: encoder_reference_type(table_type.elem_ty()),
-                    table64: false,
-                    minimum: u64::MIN,
-                    maximum: table_type.maximum().map(u64::from),
-                    shared: false,
-                };
-                (EntityType::Table(table), ExportKind::Table, tables - 1)
-            }
-            Forward::Global(global_type) => {
-                globals += 1;
-                let global = wasm_encoder::GlobalType {
-                    val_type: encoder_value_type(global_type.value_ty())?,
-                    mutable: global_type.mutability() == wasmedge_sdk::Mutability::Var,
-                    shared: false,
-                };
-                (EntityType::Global(global), ExportKind::Global, globals - 1)
-            }
-        };
-        imports.import(&item.owner, &item.name, entity);
-        exports.export(&item.item_name, kind, index);
-    }
-    let mut module = wasm_encoder::Module::new();
-    module.section(&types).section(&imports).section(&exports);
-    Ok(module.finish())
+    item_name: &'name str,
+    entity: EntityType,
 }
 
 /// Whether `length` bytes at `offset` lie inside `size` bytes.
@@ -579,12 +910,17 @@ fn inside(size: u64, offset: u64, length: usize) -> bool {
         .is_some_and(|end| end <= size)
 }
 
+/// Whether `length` bytes at `offset` end within the bindings' reach.
+fn within_reach(offset: u64, length: usize) -> bool {
+    inside(BINDINGS_REACH, offset, length)
+}
+
 /// The size of the memory in bytes.
 fn memory_size(memory: &wasmedge_sys::Memory) -> u64 {
     u64::from(memory.size()) * PAGE_SIZE
 }
 
-/// Copies the bytes at the offset of an unshared memory into the given bytes.
+/// Copies the bytes at the offset of an unshared memory, within the bindings' reach, into the given bytes.
 fn read_unshared(
     memory: &wasmedge_sys::Memory,
     offset: u64,
@@ -596,8 +932,6 @@ fn read_unshared(
     if into.is_empty() {
         return Ok(());
     }
-    // The bindings take 32-bit offsets and lengths.
-    reachable(offset, into.len());
     let offset = usize::try_from(offset).map_err(|_| ReadMemoryError)?;
     let bytes = memory
         .slice::<u8>(offset, into.len())
@@ -617,26 +951,22 @@ fn write_unshared(
     if bytes.is_empty() {
         return Ok(());
     }
-    reachable(offset, bytes.len());
     let offset = u32::try_from(offset).map_err(|_| WriteMemoryError)?;
     memory.set_data(bytes, offset).map_err(|_| WriteMemoryError)
-}
-
-/// Stops when bytes that lie inside a memory end beyond the first 4 GiB, which the bindings cannot reach.
-fn reachable(offset: u64, length: usize) {
-    let end = u64::try_from(length)
-        .ok()
-        .and_then(|length| offset.checked_add(length));
-    assert!(
-        end.is_some_and(|end| end <= 1 << u32::BITS),
-        "WasmEdge's bindings reach only the first 4 GiB of a memory"
-    );
 }
 
 impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
     fn add_owner(&mut self, owner: Owner) -> usize {
         self.owners.push(owner);
         self.owners.len() - 1
+    }
+
+    fn description(&self, owner: usize) -> Option<Arc<Description>> {
+        match &self.owners[owner] {
+            Owner::Instance(_, description) => Some(Arc::clone(description)),
+            Owner::Shared(shared) => Some(Arc::clone(&shared.description)),
+            Owner::Global(_) | Owner::Function(_) => None,
+        }
     }
 
     fn function_address(&self, reference: WasmValue, origin: Option<Export>) -> FunctionAddress {
@@ -677,165 +1007,217 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         })
     }
 
-    /// What a module that passes the item on imports, and the owner it imports it from.
-    fn forwarded(&self, link: &Link<'_>) -> Result<(usize, Forwarded), InstantiateError> {
-        let (export, kind) = match &link.item {
-            Item::Function(function) => {
-                let export = self
-                    .origin(function)
-                    .ok_or(InstantiateError::FunctionNotExported)?;
-                let function_type = function
-                    .reference
-                    .func_ref()
-                    .and_then(|function| function.ty())
-                    .ok_or(InstantiateError::FunctionNotExported)?;
-                (export, Forward::Function(function_type))
-            }
-            Item::Memory(export) => {
-                let memory_type = readable!(
-                    &self.owners[export.owner],
-                    instance => instance.get_memory_ref(&*export.name).and_then(|memory| memory.ty()),
-                    Err(not_found(InstanceError::NotFoundMem(export.name.to_string())))
-                )?;
-                (export.clone(), Forward::Memory(memory_type))
-            }
-            Item::Table(export) => {
-                let table_type = readable!(
-                    &self.owners[export.owner],
-                    instance => instance.get_table(&*export.name).and_then(|table| table.ty()),
-                    Err(not_found(InstanceError::NotFoundTable(export.name.to_string())))
-                )?;
-                (export.clone(), Forward::Table(table_type))
-            }
-            Item::Global(export) => {
-                let global_type = readable!(
-                    &self.owners[export.owner],
-                    instance => instance.get_global(&*export.name).and_then(|global| global.ty()),
-                    Err(not_found(InstanceError::NotFoundGlobal(export.name.to_string())))
-                )?;
-                (export.clone(), Forward::Global(global_type))
-            }
-        };
-        let forwarded = Forwarded {
-            owner: self.owners[export.owner]
-                .as_instance()
-                .name()
-                .unwrap_or_default(),
-            name: export.name,
-            item_name: link.item_name.to_owned(),
-            kind,
-        };
-        Ok((export.owner, forwarded))
-    }
-
     /// Instantiates the module in a store of its own, which holds the owners of what it imports and, under each
     /// name it imports from, a module that passes those imports on.
-    fn link(
-        &mut self,
-        module: &wasmedge_sys::Module,
-        links: &[Link<'_>],
-    ) -> Result<usize, InstantiateError> {
+    fn link(&mut self, module: &Module, links: &[Link<'_>]) -> Result<usize, InstantiateError> {
         let mut store = Store::create()?;
         let mut registered = Vec::new();
-        let mut module_names: Vec<&str> = Vec::new();
-        let mut forwarded = Vec::with_capacity(links.len());
+        let mut forwarders: Vec<(&str, Vec<Forwarded<'_>>)> = Vec::new();
         for link in links {
-            let (owner, item) = self.forwarded(link)?;
+            let owner = link.export.owner;
             if !registered.contains(&owner) {
                 self.executor
                     .get_mut()
                     .register_import_module(&mut store, self.owners[owner].as_instance())?;
                 registered.push(owner);
             }
-            if !module_names.contains(&link.module_name) {
-                module_names.push(link.module_name);
+            let Some((_, _, entity)) =
+                module
+                    .description
+                    .imports
+                    .iter()
+                    .find(|(module_name, item_name, _)| {
+                        module_name == link.module_name && item_name == link.item_name
+                    })
+            else {
+                continue;
+            };
+            let forwarded = Forwarded {
+                owner: self.owners[owner].as_instance().name().unwrap_or_default(),
+                name: Rc::clone(&link.export.name),
+                item_name: link.item_name,
+                entity: *entity,
+            };
+            match forwarders
+                .iter_mut()
+                .find(|(module_name, _)| *module_name == link.module_name)
+            {
+                Some((_, items)) => items.push(forwarded),
+                None => forwarders.push((link.module_name, vec![forwarded])),
             }
-            forwarded.push((link.module_name, item));
         }
-        let loader = Loader::create(Some(&self.config.0.linking))?;
-        let validator = Validator::create(Some(&self.config.0.linking))?;
-        for module_name in module_names {
-            let items = forwarded
-                .iter()
-                .filter(|(name, _)| *name == module_name)
-                .map(|(_, item)| item);
-            let forwarding = loader.from_bytes(forwarder(items)?)?;
-            validator.validate(&forwarding)?;
+        for (module_name, items) in &forwarders {
+            let forwarding = declare(&self.config.0, &forwarder(&module.description.types, items))?;
             let instance = self.executor.get_mut().register_named_module(
                 &mut store,
-                &forwarding,
+                &forwarding.loaded,
                 module_name,
             )?;
-            self.add_owner(Owner::Instance(instance));
+            self.add_owner(Owner::Instance(instance, forwarding.description));
         }
-        let instance = self
-            .lend(|executor| executor.register_named_module(&mut store, module, unique_name()))?;
-        let shares = instance.mem_names().is_some_and(|names| {
-            names.iter().any(|name| {
-                instance
-                    .get_memory_ref(name)
-                    .and_then(|memory| memory.ty())
-                    .is_ok_and(|memory_type| memory_type.shared())
-            })
-        });
-        Ok(self.add_owner(if shares {
-            Owner::Shared(Arc::new(SharedOwner::Instance(instance)))
+        let instance = self.lend(|executor| {
+            executor.register_named_module(&mut store, &module.loaded, unique_name())
+        })?;
+        let description = Arc::clone(&module.description);
+        Ok(self.add_owner(if description.exports_a_shared_memory() {
+            Owner::Shared(Arc::new(SharedOwner {
+                instance,
+                description,
+            }))
         } else {
-            Owner::Instance(instance)
+            Owner::Instance(instance, description)
         }))
     }
 
+    /// Instantiates a module this crate wrote that defines one item.
+    fn define(&mut self, entity: EntityType) -> Result<usize, AllocateError> {
+        let module = declare(&self.config.0, &defining_module(entity))?;
+        Ok(self.link(&module, &[])?)
+    }
+
     /// The function the instance exports under the name.
-    fn exported_function(&self, owner: usize, name: &str) -> WasmValue {
-        let function = self.owners[owner]
-            .as_instance()
-            .get_func(name)
-            .expect("the helper exports the function");
-        WasmValue::from_func_ref(&*function)
+    fn exported_function(&self, owner: usize, name: &str) -> Option<WasmValue> {
+        let function = self.owners[owner].as_instance().get_func(name).ok()?;
+        Some(WasmValue::from_func_ref(&*function))
     }
 
-    /// The copier of the shared memory, made the first time it is asked for.
-    fn copier(&mut self, export: &Export) -> Copier {
-        if let Some((_, copier)) = self.copiers.iter().find(|(found, _)| found == export) {
-            return *copier;
-        }
-        let config = self.config.clone();
-        let link = Link {
-            module_name: COPIER,
-            item_name: SHARED,
-            item: Item::Memory(export.clone()),
-        };
-        let instance = self
-            .link(&config.helpers().copier.0, &[link])
-            .expect("a shared 32-bit memory links into the copier");
-        let copier = Copier {
-            instance,
-            load: self.exported_function(instance, LOAD),
-            store: self.exported_function(instance, STORE),
-            grow: self.exported_function(instance, GROW),
-        };
-        self.copiers.push((export.clone(), copier));
-        copier
+    /// The instance of the compiled helper module of the bytes for the item, linked the first time it is asked for.
+    fn helper_instance(&mut self, export: &Export, bytes: Vec<u8>) -> Option<usize> {
+        self.linked_helper(export, |config| config.helper(bytes))
     }
 
-    /// The writer of the table, made the first time it is asked for, or nothing when it holds no functions.
-    fn table_writer(&mut self, export: &Export) -> Option<TableWriter> {
-        if let Some((_, writer)) = self.table_writers.iter().find(|(found, _)| found == export) {
-            return Some(*writer);
+    /// The instance of the helper module for the item, made and linked the first time it is asked for.
+    fn linked_helper(
+        &mut self,
+        export: &Export,
+        module: impl FnOnce(&Config) -> Option<Module>,
+    ) -> Option<usize> {
+        if let Some((_, instance)) = self.helped.iter().find(|(found, _)| found == export) {
+            return Some(*instance);
         }
-        let config = self.config.clone();
+        let module = module(&self.config)?;
         let link = Link {
-            module_name: TABLE_WRITER,
-            item_name: TABLE,
-            item: Item::Table(export.clone()),
+            module_name: HELPED,
+            item_name: HELPED,
+            export: export.clone(),
         };
-        let instance = self.link(&config.helpers().table_writer.0, &[link]).ok()?;
+        let instance = self.link(&module, &[link]).ok()?;
+        self.helped.push((export.clone(), instance));
+        Some(instance)
+    }
+
+    /// The address of the memory, or nothing when a copier it needs cannot be made.
+    fn memory_address(
+        &mut self,
+        export: Export,
+        memory_type: wasm_encoder::MemoryType,
+    ) -> Option<MemoryAddress> {
+        let alone = !matches!(self.owners[export.owner], Owner::Shared(_));
+        let direct_reads = !memory_type.shared;
+        let direct_writes = direct_reads && alone;
+        let copier = if direct_writes && !memory_type.memory64 {
+            None
+        } else {
+            let instance = self.helper_instance(&export, copier_module(memory_type))?;
+            Some(Copier {
+                instance,
+                wide: memory_type.memory64,
+                load: self.exported_function(instance, LOAD)?,
+                store: self.exported_function(instance, STORE)?,
+                grow: self.exported_function(instance, GROW)?,
+            })
+        };
+        Some(MemoryAddress {
+            export,
+            direct_reads,
+            direct_writes,
+            copier,
+        })
+    }
+
+    /// The address of the table, or nothing when the writer of a table of functions cannot be made.
+    fn table_address(
+        &mut self,
+        export: Export,
+        table_type: wasm_encoder::TableType,
+        description: &Description,
+    ) -> Option<TableAddress> {
+        if !description.refers_to_functions(table_type.element_type.heap_type) {
+            return Some(TableAddress {
+                export,
+                writer: None,
+            });
+        }
+        let (types, first_type) = description.helper_types(Some(table_type.element_type));
+        let instance =
+            self.helper_instance(&export, table_writer_module(types, first_type, table_type))?;
         let writer = TableWriter {
-            set: self.exported_function(instance, SET),
+            wide: table_type.table64,
+            typed: table_type.element_type != wasm_encoder::RefType::FUNCREF,
+            set: self.exported_function(instance, SET)?,
             grow: self.exported_function(instance, GROW),
         };
-        self.table_writers.push((export.clone(), writer));
-        Some(writer)
+        Some(TableAddress {
+            export,
+            writer: Some(writer),
+        })
+    }
+
+    /// The address of the global, or nothing when a setter it needs cannot be made. A global needs one when its
+    /// owner is shared, which the bindings cannot write, or when it holds typed function references, which a
+    /// function's reference must be turned into.
+    fn global_address(
+        &mut self,
+        export: Export,
+        global_type: wasm_encoder::GlobalType,
+        description: &Description,
+    ) -> Option<GlobalAddress> {
+        let slot = Slot::of(global_type.val_type, description);
+        let typed = matches!(global_type.val_type, wasm_encoder::ValType::Ref(reference) if reference != wasm_encoder::RefType::FUNCREF);
+        let shared_owner = matches!(self.owners[export.owner], Owner::Shared(_));
+        let setter = if global_type.mutable && slot != Slot::Other && (shared_owner || typed) {
+            let reference = match global_type.val_type {
+                wasm_encoder::ValType::Ref(reference) => Some(reference),
+                _ => None,
+            };
+            let (types, first_type) = description.helper_types(reference);
+            let instance = self.helper_instance(
+                &export,
+                global_setter_module(types, first_type, global_type),
+            )?;
+            Some(self.exported_function(instance, SET)?)
+        } else {
+            None
+        };
+        Some(GlobalAddress {
+            export,
+            slot,
+            mutable: global_type.mutable,
+            typed,
+            setter,
+        })
+    }
+
+    /// The reference to the function with the type its own module gives it. A reference the bindings make carries
+    /// only `funcref`, and WasmEdge casts a reference by the type it carries, so writing it into a typed slot
+    /// takes one read from a helper's table, which a helper that imports the function from where it is exported
+    /// fills.
+    fn typed_reference(&mut self, function: &FunctionAddress) -> WasmValue {
+        let retyped = self.origin(function).and_then(|origin| {
+            let description = self.description(origin.owner)?;
+            let (EntityType::Function(type_index) | EntityType::FunctionExact(type_index)) =
+                description.export(&origin.name)?
+            else {
+                return None;
+            };
+            let bytes = retyper_module(&description, type_index);
+            let instance = self.linked_helper(&origin, |config| declare(&config.0, &bytes).ok())?;
+            let Owner::Instance(retyper, _) = &self.owners[instance] else {
+                return None;
+            };
+            retyper.get_table(SCRATCH).ok()?.get_data(0).ok()
+        });
+        retyped.unwrap_or(function.reference)
     }
 
     /// Makes an instance of the host that holds one item.
@@ -885,10 +1267,6 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
     }
 }
 
-fn not_found(error: InstanceError) -> Error {
-    Box::new(WasmEdgeError::Instance(error))
-}
-
 /// A borrowed function in the form the bindings call.
 struct Callee<'function>(&'function wasmedge_sys::Function);
 
@@ -920,15 +1298,14 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
             context: Some(host_context),
             lent: Rc::default(),
             owners: Vec::new(),
-            copiers: Vec::new(),
-            table_writers: Vec::new(),
+            helped: Vec::new(),
             null_function,
             graveyard: Rc::new(Graveyard(RefCell::default())),
         })
     }
 
-    type CompileError = Error;
-    fn compile(&self, bytes: &[u8]) -> Result<Module, Error> {
+    type CompileError = CompileError;
+    fn compile(&self, bytes: &[u8]) -> Result<Module, CompileError> {
         compile(&self.config.0, bytes)
     }
 
@@ -939,33 +1316,34 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
         imports: &[Import<'_, Self>],
     ) -> Result<Instance, InstantiateError> {
         let links = module
-            .0
-            .imports()
+            .description
+            .imports
             .iter()
-            .map(|wanted| {
-                let (module_name, item_name) = (wanted.module_name(), wanted.name());
+            .map(|(module_name, item_name, _)| {
                 let given = imports
                     .iter()
                     .find(|given| given.module_name == module_name && given.item_name == item_name)
                     .ok_or_else(|| InstantiateError::MissingImport {
-                        module_name: module_name.to_string(),
-                        item_name: item_name.to_string(),
+                        module_name: module_name.clone(),
+                        item_name: item_name.clone(),
                     })?;
-                let item = match &given.address {
-                    ExternalAddress::Function(function) => Item::Function(function.clone()),
-                    ExternalAddress::Memory(memory) => Item::Memory(memory.export.clone()),
-                    ExternalAddress::Table(table) => Item::Table(table.export.clone()),
-                    ExternalAddress::Global(global) => Item::Global(global.0.clone()),
+                let export = match &given.address {
+                    ExternalAddress::Function(function) => self
+                        .origin(function)
+                        .ok_or(InstantiateError::FunctionNotExported)?,
+                    ExternalAddress::Memory(memory) => memory.export.clone(),
+                    ExternalAddress::Table(table) => table.export.clone(),
+                    ExternalAddress::Global(global) => global.export.clone(),
                     ExternalAddress::Tag(tag) => match *tag {},
                 };
                 Ok(Link {
-                    module_name: given.module_name,
-                    item_name: given.item_name,
-                    item,
+                    module_name,
+                    item_name,
+                    export,
                 })
             })
             .collect::<Result<Vec<_>, InstantiateError>>()?;
-        self.link(&module.0, &links).map(Instance)
+        self.link(module, &links).map(Instance)
     }
 
     fn find_export(&mut self, instance: &Instance, name: &str) -> Option<ExternalAddress<Self>> {
@@ -974,29 +1352,25 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
             owner,
             name: name.into(),
         };
-        let found = &self.owners[owner];
-        if let Ok(function) = found.as_instance().get_func(name) {
+        if let Ok(function) = self.owners[owner].as_instance().get_func(name) {
             let reference = WasmValue::from_func_ref(&*function);
             return Some(ExternalAddress::Function(
                 self.function_address(reference, Some(export)),
             ));
         }
-        let memory_sharing = readable!(
-            found,
-            instance => instance.get_memory_ref(name).ok().map(|memory| memory.ty().is_ok_and(|memory_type| memory_type.shared())),
-            None
-        );
-        if let Some(shared) = memory_sharing {
-            let copier = shared.then(|| self.copier(&export));
-            return Some(ExternalAddress::Memory(MemoryAddress { export, copier }));
+        let description = self.description(owner)?;
+        match description.export(name)? {
+            EntityType::Memory(memory_type) => self
+                .memory_address(export, memory_type)
+                .map(ExternalAddress::Memory),
+            EntityType::Table(table_type) => self
+                .table_address(export, table_type, &description)
+                .map(ExternalAddress::Table),
+            EntityType::Global(global_type) => self
+                .global_address(export, global_type, &description)
+                .map(ExternalAddress::Global),
+            EntityType::Function(_) | EntityType::FunctionExact(_) | EntityType::Tag(_) => None,
         }
-        let table = readable!(found, instance => instance.get_table(name).is_ok(), false);
-        if table {
-            let writer = self.table_writer(&export);
-            return Some(ExternalAddress::Table(TableAddress { export, writer }));
-        }
-        let global = readable!(found, instance => instance.get_global(name).is_ok(), false);
-        global.then(|| ExternalAddress::Global(GlobalAddress(export)))
     }
 
     fn host_context(&mut self) -> &mut HostContext {
@@ -1251,76 +1625,57 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
 
     type AllocateMemoryError = AllocateError;
     fn allocate_memory(&mut self, memory_type: MemoryType) -> Result<MemoryAddress, AllocateError> {
-        if memory_type.address_type == AddressType::I64 {
-            return Err(AllocateError::AddressTypeOutsideBindings);
-        }
+        let memory64 = memory_type.address_type == AddressType::I64;
+        let most = if memory64 { MOST_PAGES_64 } else { MOST_PAGES };
         let Limits { minimum, maximum } = memory_type.limits;
-        let narrow = |limit: u64| {
-            u32::try_from(limit)
-                .ok()
-                .filter(|_| limit <= MOST_PAGES)
-                .ok_or(AllocateError::LimitsOutsideAddressType)
-        };
-        let shared = memory_type.sharing == Sharing::Shared;
-        let memory_type_of_wasmedge = wasmedge_sdk::MemoryType::new(
-            narrow(minimum)?,
-            maximum.map(narrow).transpose()?,
-            shared,
-        )?;
-        let memory = wasmedge_sys::Memory::create(&memory_type_of_wasmedge)?;
-        let module = Self::host_module(|module| module.add_memory(MEMORY, memory))?;
-        if shared {
-            let owner = self.add_owner(Owner::Shared(Arc::new(SharedOwner::Host(module))));
-            let export = Export {
-                owner,
-                name: MEMORY.into(),
-            };
-            let copier = Some(self.copier(&export));
-            Ok(MemoryAddress { export, copier })
-        } else {
-            let owner = self.add_owner(Owner::Host(module));
-            Ok(MemoryAddress {
-                export: Export {
-                    owner,
-                    name: MEMORY.into(),
-                },
-                copier: None,
-            })
+        if minimum > most || maximum.is_some_and(|maximum| maximum > most) {
+            return Err(AllocateError::LimitsOutsideAddressType);
         }
+        let declared = wasm_encoder::MemoryType {
+            minimum,
+            maximum,
+            memory64,
+            shared: memory_type.sharing == Sharing::Shared,
+            page_size_log2: None,
+        };
+        let owner = self.define(EntityType::Memory(declared))?;
+        let export = Export {
+            owner,
+            name: MEMORY.into(),
+        };
+        self.memory_address(export, declared)
+            .ok_or(AllocateError::HelperRefused)
     }
 
     fn count_memory_pages(&self, memory: &MemoryAddress) -> u64 {
-        let export = &memory.export;
-        readable!(
-            &self.owners[export.owner],
-            instance => instance.get_memory_ref(&*export.name).ok().map(|memory| u64::from(memory.size())),
-            None
-        )
-        .expect("a memory address refers to a memory")
+        self.pages(&memory.export)
+            .expect("a memory address refers to a memory")
     }
 
     fn grow_memory(&mut self, memory: &MemoryAddress, pages: u64) -> Result<(), GrowMemoryError> {
-        let pages = u32::try_from(pages).map_err(|_| GrowMemoryError)?;
-        if let Some(copier) = &memory.copier {
-            let grown = Self::call_helper(
-                self.executor.get_mut(),
-                copier.grow,
-                [WasmValue::from_i32(pages.cast_signed())],
-            )
-            .map_err(|_| GrowMemoryError)?;
-            return match grown.first().map(WasmValue::to_i32) {
-                Some(previous) if previous >= 0 => Ok(()),
-                _ => Err(GrowMemoryError),
-            };
-        }
         let export = &memory.export;
-        writable!(
-            &mut self.owners[export.owner],
-            instance => instance.get_memory_mut(&*export.name).ok().map(|mut memory| memory.grow(pages)),
-            None
-        )
-        .ok_or(GrowMemoryError)?
-        .map_err(|_| GrowMemoryError)
+        if memory.direct_writes {
+            let pages = u32::try_from(pages).map_err(|_| GrowMemoryError)?;
+            return writable!(
+                &mut self.owners[export.owner],
+                instance => instance.get_memory_mut(&*export.name).ok().map(|mut memory| memory.grow(pages)),
+                None
+            )
+            .ok_or(GrowMemoryError)?
+            .map_err(|_| GrowMemoryError);
+        }
+        let copier = memory.copier.as_ref().ok_or(GrowMemoryError)?;
+        let pages = copier.address(pages).ok_or(GrowMemoryError)?;
+        let grown = Self::call_helper(self.executor.get_mut(), copier.grow, [pages])
+            .map_err(|_| GrowMemoryError)?;
+        let failed = grown.first().is_none_or(|previous| {
+            if copier.wide {
+                previous.to_i64() == -1
+            } else {
+                previous.to_i32() == -1
+            }
+        });
+        if failed { Err(GrowMemoryError) } else { Ok(()) }
     }
 
     fn read_memory(
@@ -1330,45 +1685,38 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         into: &mut [u8],
     ) -> Result<(), ReadMemoryError> {
         let export = &memory.export;
-        let Some(copier) = &memory.copier else {
+        if memory.direct_reads && within_reach(offset, into.len()) {
             return readable!(
                 &self.owners[export.owner],
                 instance => instance.get_memory_ref(&*export.name).ok().map(|memory| read_unshared(&memory, offset, into)),
                 None
             )
             .unwrap_or(Err(ReadMemoryError));
-        };
-        let size = readable!(
-            &self.owners[export.owner],
-            instance => instance.get_memory_ref(&*export.name).ok().map(|memory| memory_size(&memory)),
-            None
-        )
-        .ok_or(ReadMemoryError)?;
+        }
+        let copier = memory.copier.as_ref().ok_or(ReadMemoryError)?;
+        let size = self.pages(export).ok_or(ReadMemoryError)? * PAGE_SIZE;
         if !inside(size, offset, into.len()) {
             return Err(ReadMemoryError);
         }
         let scratch = self.scratch_size(copier).ok_or(ReadMemoryError)?;
-        let mut position = u32::try_from(offset).map_err(|_| ReadMemoryError)?;
+        let mut position = offset;
         let mut executor = self.executor.borrow_mut();
         for chunk in into.chunks_mut(scratch) {
-            let length = u32::try_from(chunk.len()).map_err(|_| ReadMemoryError)?;
-            Self::call_helper(
-                &mut executor,
-                copier.load,
-                [
-                    WasmValue::from_i32(position.cast_signed()),
-                    WasmValue::from_i32(length.cast_signed()),
-                ],
-            )
-            .map_err(|_| ReadMemoryError)?;
-            let Owner::Instance(helper) = &self.owners[copier.instance] else {
+            let length = u64::try_from(chunk.len()).map_err(|_| ReadMemoryError)?;
+            let span = [copier.address(position), copier.address(length)];
+            let [Some(at), Some(length_value)] = span else {
+                return Err(ReadMemoryError);
+            };
+            Self::call_helper(&mut executor, copier.load, [at, length_value])
+                .map_err(|_| ReadMemoryError)?;
+            let Owner::Instance(helper, _) = &self.owners[copier.instance] else {
                 return Err(ReadMemoryError);
             };
             let scratch_memory = helper
                 .get_memory_ref(SCRATCH)
                 .map_err(|_| ReadMemoryError)?;
             read_unshared(&scratch_memory, u64::MIN, chunk)?;
-            position = position.wrapping_add(length);
+            position += length;
         }
         Ok(())
     }
@@ -1380,28 +1728,28 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         bytes: &[u8],
     ) -> Result<(), WriteMemoryError> {
         let export = &memory.export;
-        let Some(copier) = &memory.copier else {
+        if memory.direct_writes && within_reach(offset, bytes.len()) {
             return writable!(
                 &mut self.owners[export.owner],
                 instance => instance.get_memory_mut(&*export.name).ok().map(|mut memory| write_unshared(&mut memory, offset, bytes)),
                 None
             )
             .unwrap_or(Err(WriteMemoryError));
-        };
-        let size = readable!(
-            &self.owners[export.owner],
-            instance => instance.get_memory_ref(&*export.name).ok().map(|memory| memory_size(&memory)),
-            None
-        )
-        .ok_or(WriteMemoryError)?;
+        }
+        let copier = memory.copier.as_ref().ok_or(WriteMemoryError)?;
+        let size = self.pages(export).ok_or(WriteMemoryError)? * PAGE_SIZE;
         if !inside(size, offset, bytes.len()) {
             return Err(WriteMemoryError);
         }
         let scratch = self.scratch_size(copier).ok_or(WriteMemoryError)?;
-        let mut position = u32::try_from(offset).map_err(|_| WriteMemoryError)?;
+        let mut position = offset;
         for chunk in bytes.chunks(scratch) {
-            let length = u32::try_from(chunk.len()).map_err(|_| WriteMemoryError)?;
-            let Owner::Instance(helper) = &mut self.owners[copier.instance] else {
+            let length = u64::try_from(chunk.len()).map_err(|_| WriteMemoryError)?;
+            let span = [copier.address(position), copier.address(length)];
+            let [Some(at), Some(length_value)] = span else {
+                return Err(WriteMemoryError);
+            };
+            let Owner::Instance(helper, _) = &mut self.owners[copier.instance] else {
                 return Err(WriteMemoryError);
             };
             write_unshared(
@@ -1411,16 +1759,9 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
                 u64::MIN,
                 chunk,
             )?;
-            Self::call_helper(
-                self.executor.get_mut(),
-                copier.store,
-                [
-                    WasmValue::from_i32(position.cast_signed()),
-                    WasmValue::from_i32(length.cast_signed()),
-                ],
-            )
-            .map_err(|_| WriteMemoryError)?;
-            position = position.wrapping_add(length);
+            Self::call_helper(self.executor.get_mut(), copier.store, [at, length_value])
+                .map_err(|_| WriteMemoryError)?;
+            position += length;
         }
         Ok(())
     }
@@ -1428,13 +1769,15 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
     type SharedMemory = SharedMemory;
 
     fn to_shared_memory(&self, memory: &MemoryAddress) -> Option<SharedMemory> {
-        memory.copier?;
+        if memory.direct_reads {
+            return None;
+        }
         match &self.owners[memory.export.owner] {
             Owner::Shared(owner) => Some(SharedMemory {
                 owner: Arc::clone(owner),
                 name: Arc::from(&*memory.export.name),
             }),
-            _ => None,
+            Owner::Instance(..) | Owner::Global(_) | Owner::Function(_) => None,
         }
     }
 
@@ -1444,19 +1787,32 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         );
         let owner =
             added.unwrap_or_else(|| self.add_owner(Owner::Shared(Arc::clone(&memory.owner))));
+        let Some(EntityType::Memory(memory_type)) = memory.owner.description.export(&memory.name)
+        else {
+            panic!("a shared memory is a memory its owner exports");
+        };
         let export = Export {
             owner,
             name: Rc::from(&*memory.name),
         };
-        let copier = Some(self.copier(&export));
-        MemoryAddress { export, copier }
+        self.memory_address(export, memory_type)
+            .expect("WasmEdge links a copier to any shared memory")
     }
 }
 
 impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
+    /// The pages the memory holds.
+    fn pages(&self, export: &Export) -> Option<u64> {
+        readable!(
+            &self.owners[export.owner],
+            instance => instance.get_memory_ref(&*export.name).ok().map(|memory| u64::from(memory.size())),
+            None
+        )
+    }
+
     /// The bytes one copy through the copier's scratch memory moves.
     fn scratch_size(&self, copier: &Copier) -> Option<usize> {
-        let Owner::Instance(helper) = &self.owners[copier.instance] else {
+        let Owner::Instance(helper, _) = &self.owners[copier.instance] else {
             return None;
         };
         let scratch = helper.get_memory_ref(SCRATCH).ok()?;
@@ -1469,25 +1825,30 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
 
     type AllocateTableError = AllocateError;
     fn allocate_table(&mut self, table_type: TableType) -> Result<TableAddress, AllocateError> {
-        if table_type.address_type == AddressType::I64 {
-            return Err(AllocateError::AddressTypeOutsideBindings);
-        }
+        let table64 = table_type.address_type == AddressType::I64;
         let Limits { minimum, maximum } = table_type.limits;
-        let narrow =
-            |limit: u64| u32::try_from(limit).map_err(|_| AllocateError::LimitsOutsideAddressType);
-        let table = wasmedge_sys::Table::create(wasmedge_sdk::TableType::new(
-            RefType::FuncRef,
-            narrow(minimum)?,
-            maximum.map(narrow).transpose()?,
-        ))?;
-        let module = Self::host_module(|module| module.add_table(TABLE, table))?;
-        let owner = self.add_owner(Owner::Host(module));
+        let most = if table64 {
+            u64::MAX
+        } else {
+            u64::from(u32::MAX)
+        };
+        if minimum > most || maximum.is_some_and(|maximum| maximum > most) {
+            return Err(AllocateError::LimitsOutsideAddressType);
+        }
+        let declared = wasm_encoder::TableType {
+            element_type: wasm_encoder::RefType::FUNCREF,
+            table64,
+            minimum,
+            maximum,
+            shared: false,
+        };
+        let owner = self.define(EntityType::Table(declared))?;
         let export = Export {
             owner,
             name: TABLE.into(),
         };
-        let writer = self.table_writer(&export);
-        Ok(TableAddress { export, writer })
+        self.table_address(export, declared, &Description::default())
+            .ok_or(AllocateError::HelperRefused)
     }
 
     fn count_table_elements(&self, table: &TableAddress) -> u64 {
@@ -1502,17 +1863,26 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
 
     fn grow_table(&mut self, table: &TableAddress, elements: u64) -> Result<(), GrowTableError> {
         let writer = table.writer.ok_or(GrowTableError)?;
-        let elements = u32::try_from(elements).map_err(|_| GrowTableError)?;
-        let grown = Self::call_helper(
-            self.executor.get_mut(),
-            writer.grow,
-            [WasmValue::from_i32(elements.cast_signed())],
-        )
-        .map_err(|_| GrowTableError)?;
-        match grown.first().map(WasmValue::to_i32) {
-            Some(previous) if previous >= 0 => Ok(()),
-            _ => Err(GrowTableError),
-        }
+        let grow = writer.grow.ok_or(GrowTableError)?;
+        let elements = if writer.wide {
+            WasmValue::from_i64(elements.cast_signed())
+        } else {
+            WasmValue::from_i32(
+                u32::try_from(elements)
+                    .map_err(|_| GrowTableError)?
+                    .cast_signed(),
+            )
+        };
+        let grown = Self::call_helper(self.executor.get_mut(), grow, [elements])
+            .map_err(|_| GrowTableError)?;
+        let failed = grown.first().is_none_or(|previous| {
+            if writer.wide {
+                previous.to_i64() == -1
+            } else {
+                previous.to_i32() == -1
+            }
+        });
+        if failed { Err(GrowTableError) } else { Ok(()) }
     }
 
     fn read_table(
@@ -1532,7 +1902,8 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
         .flatten()
         .ok_or(ReadTableError::IndexOutsideTable)?
         .map_err(|_| ReadTableError::IndexOutsideTable)?;
-        if element.ty() != ValType::FuncRef {
+        // Only a table whose elements refer to functions has a writer.
+        if table.writer.is_none() {
             return Err(ReadTableError::ElementNotFunction);
         }
         Ok((!element.is_null_ref()).then(|| self.function_address(element, None)))
@@ -1552,14 +1923,23 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
                 WriteTableError::ReferenceTypeMismatch
             });
         };
-        let Ok(narrow) = u32::try_from(index) else {
-            return Err(WriteTableError::IndexOutsideTable);
+        let index_value = if writer.wide {
+            WasmValue::from_i64(index.cast_signed())
+        } else {
+            let Ok(narrow) = u32::try_from(index) else {
+                return Err(WriteTableError::IndexOutsideTable);
+            };
+            WasmValue::from_i32(narrow.cast_signed())
         };
-        let reference = function.map_or(self.null_function, |function| function.reference);
+        let reference = match function {
+            None => self.null_function,
+            Some(function) if writer.typed => self.typed_reference(function),
+            Some(function) => function.reference,
+        };
         Self::call_helper(
             self.executor.get_mut(),
             writer.set,
-            [WasmValue::from_i32(narrow.cast_signed()), reference],
+            [index_value, reference],
         )
         .map(drop)
         .map_err(|_| {
@@ -1607,41 +1987,50 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
         mutability: Mutability,
         value: Value<FunctionAddress>,
     ) -> Result<GlobalAddress, Error> {
-        let mutability = match mutability {
-            Mutability::Constant => wasmedge_sdk::Mutability::Const,
-            Mutability::Variable => wasmedge_sdk::Mutability::Var,
+        let slot = Slot::of_value(&value);
+        let mutable = mutability == Mutability::Variable;
+        let mutability = if mutable {
+            wasmedge_sdk::Mutability::Var
+        } else {
+            wasmedge_sdk::Mutability::Const
         };
         let global_type = wasmedge_sdk::GlobalType::new(value_type(&value), mutability);
         let global = wasmedge_sys::Global::create(&global_type, self.to_wasm_value(value))?;
         let module = Self::host_module(|module| module.add_global(GLOBAL, global))?;
-        let owner = self.add_owner(Owner::Host(module));
-        Ok(GlobalAddress(Export {
-            owner,
-            name: GLOBAL.into(),
-        }))
+        let owner = self.add_owner(Owner::Global(module));
+        Ok(GlobalAddress {
+            export: Export {
+                owner,
+                name: GLOBAL.into(),
+            },
+            slot,
+            mutable,
+            typed: false,
+            setter: None,
+        })
     }
 
     fn read_global(
         &self,
         global: &GlobalAddress,
     ) -> Result<Value<FunctionAddress>, ReadGlobalError> {
-        let export = &global.0;
+        let export = &global.export;
         let value = readable!(
             &self.owners[export.owner],
             instance => instance.get_global(&*export.name).ok().map(|global| global.get_value()),
             None
         )
         .ok_or(ReadGlobalError)?;
-        Ok(match value.ty() {
-            ValType::I32 => Value::I32(value.to_i32()),
-            ValType::I64 => Value::I64(value.to_i64()),
-            ValType::F32 => Value::F32(value.to_f32()),
-            ValType::F64 => Value::F64(value.to_f64()),
-            ValType::V128 => Value::V128(value.to_v128().cast_unsigned()),
-            ValType::FuncRef => Value::FunctionReference(
+        Ok(match global.slot {
+            Slot::I32 => Value::I32(value.to_i32()),
+            Slot::I64 => Value::I64(value.to_i64()),
+            Slot::F32 => Value::F32(value.to_f32()),
+            Slot::F64 => Value::F64(value.to_f64()),
+            Slot::V128 => Value::V128(value.to_v128().cast_unsigned()),
+            Slot::Function { .. } => Value::FunctionReference(
                 (!value.is_null_ref()).then(|| self.function_address(value, None)),
             ),
-            ValType::ExternRef | ValType::UnsupportedRef => return Err(ReadGlobalError),
+            Slot::Other => return Err(ReadGlobalError),
         })
     }
 
@@ -1650,19 +2039,28 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
         global: &GlobalAddress,
         value: Value<FunctionAddress>,
     ) -> Result<(), WriteGlobalError> {
-        let wanted = value_type(&value);
-        let value = self.to_wasm_value(value);
-        let export = &global.0;
+        if !global.mutable {
+            return Err(WriteGlobalError::Constant);
+        }
+        if !global.slot.takes(&value) {
+            return Err(WriteGlobalError::ValueTypeMismatch);
+        }
+        let value = match value {
+            Value::FunctionReference(Some(function)) if global.typed => {
+                self.typed_reference(&function)
+            }
+            value => self.to_wasm_value(value),
+        };
+        if let Some(setter) = global.setter {
+            // A trap here is a function of another type than the global's.
+            return Self::call_helper(self.executor.get_mut(), setter, [value])
+                .map(drop)
+                .map_err(|_| WriteGlobalError::ValueTypeMismatch);
+        }
+        let export = &global.export;
         writable!(
             &mut self.owners[export.owner],
             instance => instance.get_global_mut(&*export.name).ok().map(|mut global| {
-                let global_type = global.ty().map_err(|_| WriteGlobalError::ValueTypeMismatch)?;
-                if global_type.mutability() == wasmedge_sdk::Mutability::Const {
-                    return Err(WriteGlobalError::Constant);
-                }
-                if global_type.value_ty() != wanted {
-                    return Err(WriteGlobalError::ValueTypeMismatch);
-                }
                 global.set_value(value).map_err(|_| WriteGlobalError::ValueTypeMismatch)
             }),
             None
