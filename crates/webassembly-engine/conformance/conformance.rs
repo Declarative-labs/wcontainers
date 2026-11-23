@@ -37,6 +37,23 @@ const EXPORTS_FUNCTION: &[u8] = &[
     0x0a, 0x0a, 0x01, 0x08, 0x00, 0x41, 0xff, 0xff, 0xff, 0xff, 0x07, 0x0b, // code section
 ];
 
+/// A module whose [import section](https://webassembly.github.io/spec/core/binary/modules.html#import-section) imports a function, and that exports a function returning what the imported one returns.
+const CALLS_IMPORTED_FUNCTION: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type section: no parameters, one i32 result
+    0x02, 0x0c, 0x01, 0x03, b'e', b'n', b'v', 0x04, b'h', b'o', b'o', b'k', 0x00,
+    0x00, // import section
+    0x03, 0x02, 0x01, 0x00, // function section: one function of that type
+    0x07, 0x08, 0x01, 0x04, b'c', b'a', b'l', b'l', 0x00, 0x01, // export section
+    0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b, // code section: call the import
+];
+
+/// The name the host function is imported under.
+const HOST_FUNCTION_NAME: &str = "hook";
+
+/// The name the function that calls the import is exported under.
+const CALLER_NAME: &str = "call";
+
 /// The name the function is exported under.
 const FUNCTION_NAME: &str = "answer";
 
@@ -183,7 +200,7 @@ pub fn invokes_a_bound_function<T: FunctionTypeBinder<(), i32>>(mut subject: T) 
         panic!("the export is a function");
     };
     let function = subject
-        .bind_function(address)
+        .bind_engine_function(address)
         .ok()
         .expect("the function has the function type");
     assert_eq!(function.invoke(&mut subject, ()).ok(), Some(i32::MAX));
@@ -204,9 +221,40 @@ pub fn refuses_to_bind_another_function_type<T: FunctionTypeBinder<(), i64>>(mut
         panic!("the export is a function");
     };
     assert!(matches!(
-        subject.bind_function(address),
+        subject.bind_engine_function(address),
         Err(BindFunctionError)
     ));
+}
+
+/// Checks that a host function is invoked with the host context and that its result reaches its caller.
+pub fn invokes_a_host_function<T: FunctionTypeBinder<(), i32, HostContext = i32>>(mut subject: T) {
+    let module = subject
+        .compile(CALLS_IMPORTED_FUNCTION)
+        .ok()
+        .expect("the module compiles");
+    let address = subject.bind_host_function(|context: &mut i32, ()| {
+        *context = i32::MAX;
+        i32::MIN
+    });
+    let imports = [Import {
+        module_name: IMPORT_MODULE_NAME,
+        item_name: HOST_FUNCTION_NAME,
+        address: ExternalAddress::Function(address),
+    }];
+    let instance = subject
+        .instantiate(&module, &imports)
+        .ok()
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(address)) = subject.find_export(&instance, CALLER_NAME)
+    else {
+        panic!("the export is a function");
+    };
+    let function = subject
+        .bind_engine_function(address)
+        .ok()
+        .expect("the function has the function type");
+    assert_eq!(function.invoke(&mut subject, ()).ok(), Some(i32::MIN));
+    assert_eq!(*subject.host_context(), i32::MAX);
 }
 
 /// Runs each suite function above as its own test on a value made anew for every test.
@@ -258,6 +306,11 @@ macro_rules! tests {
         #[test]
         fn refuses_to_bind_another_function_type() {
             $crate::refuses_to_bind_another_function_type($value);
+        }
+
+        #[test]
+        fn invokes_a_host_function() {
+            $crate::invokes_a_host_function($value);
         }
     };
 }

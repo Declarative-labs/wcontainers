@@ -25,6 +25,8 @@ pub trait WebAssemblyEngine: Sized {
     type GlobalAddress: Clone;
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [tag](https://webassembly.github.io/spec/core/exec/runtime.html#tag-instances).
     type TagAddress: Clone;
+    /// A value held by the engine and lent to each [host function](https://webassembly.github.io/spec/core/exec/runtime.html#syntax-hostfunc) when it is invoked.
+    type HostContext;
     type Error;
 
     /// Compiles a module from its [binary format](https://webassembly.github.io/spec/core/binary/modules.html#binary-module).
@@ -56,6 +58,8 @@ pub trait WebAssemblyEngine: Sized {
         instance: &Self::Instance,
         name: &str,
     ) -> Option<ExternalAddress<Self>>;
+
+    fn host_context(&mut self) -> &mut Self::HostContext;
 }
 
 /// A WASM [import](https://webassembly.github.io/spec/core/syntax/modules.html#imports).
@@ -79,10 +83,16 @@ pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
     type Function: BoundFunction<Self, Parameters, Results>;
 
     /// Returns the function at the address after checking that it has the function type.
-    fn bind_function(
+    fn bind_engine_function(
         &mut self,
         address: Self::FunctionAddress,
     ) -> Result<Self::Function, BindFunctionError>;
+
+    /// Returns the address of a new [host function](https://webassembly.github.io/spec/core/exec/runtime.html#syntax-hostfunc) that runs the given function.
+    fn bind_host_function(
+        &mut self,
+        function: impl Fn(&mut Self::HostContext, Parameters) -> Results + Send + Sync + 'static,
+    ) -> Self::FunctionAddress;
 }
 
 pub trait BoundFunction<Engine: WebAssemblyEngine, Parameters, Results> {
