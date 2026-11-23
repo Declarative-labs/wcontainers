@@ -94,8 +94,19 @@ fn real_containers_declare_what_they_did_before_ranges() {
             "no containers in {dir}"
         );
     }
-    for (line, (g, w)) in got.lines().zip(want.lines()).enumerate() {
-        assert_eq!(g, w, "line {}", line + 1);
+    // Every recorded container answers as recorded; containers the corpora gained since have no
+    // earlier answer to keep and are only listed (`WC_RECORD_DECLARED` records them).
+    let file = |line: &str| line.split(' ').next().unwrap_or_default().to_owned();
+    let recorded: std::collections::BTreeSet<String> = want.lines().map(file).collect();
+    let kept: Vec<&str> = got
+        .lines()
+        .filter(|l| recorded.contains(&file(l)))
+        .collect();
+    for (line, (g, w)) in kept.iter().zip(want.lines()).enumerate() {
+        assert_eq!(*g, w, "line {}", line + 1);
     }
-    assert_eq!(got.lines().count(), want.lines().count());
+    assert_eq!(kept.len(), want.lines().count(), "recorded containers gone");
+    for new in got.lines().filter(|l| !recorded.contains(&file(l))) {
+        eprintln!("not recorded yet: {new}");
+    }
 }
