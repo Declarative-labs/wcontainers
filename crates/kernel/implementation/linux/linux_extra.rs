@@ -135,6 +135,10 @@ pub(crate) const F_GETDELEG: u32 = 1039;
 pub(crate) const F_SETDELEG: u32 = 1040;
 pub(crate) const PR_RSEQ_SLICE_EXTENSION: u32 = 79;
 
+/// The cap on a `listen` backlog, `net.core.somaxconn`'s default (`linux/socket.h`, not a uapi
+/// header).
+pub(crate) const SOMAXCONN: i32 = 4096;
+
 /// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
 /// slice extensions on from the start.
 pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;

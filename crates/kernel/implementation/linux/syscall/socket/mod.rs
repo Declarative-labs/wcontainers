@@ -1000,7 +1000,7 @@ pub(super) fn listen<S: crate::System>(
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
     // `__sys_listen`: the backlog is capped at `net.core.somaxconn`.
-    let backlog = (backlog as i32).min(4096);
+    let backlog = (backlog as i32).min(crate::linux_extra::SOMAXCONN);
     if socket.borrow().inet.is_some() {
         return inet::listen(kernel, cx, tid, &socket, backlog);
     }
