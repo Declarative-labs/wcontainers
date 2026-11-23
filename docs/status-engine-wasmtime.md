@@ -15,6 +15,9 @@ Crate: crates/webassembly-engine/implementation/wasmtime, package wcontainers-we
   the crate's comments hold no links. The whole check is one script:
   pyro-parked/wcontainers-scratch/engine-wasmtime/check.sh, run as `arm-run <checkout> --name
   engine-wasmtime -- "$(cat check.sh)"` (or x86-run).
+- Run 4 found no change to the interface, the suite or the crate since 89d4324f, so it built and ran
+  nothing; the checks the suite lacks (two threads on one shared memory, a trap after a host call, an
+  uncaught exception, every arity) are in beyond_the_suite.rs and pass with the crate's own tests.
 - Not done: the suite on this Mac. The notice of 2026-11-22 moves every build and test off the Mac, so it
   was not run there.
 - Waiting on the owner: the two points under "For the owner" that keep condition (1) from holding fully
