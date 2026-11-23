@@ -111,10 +111,11 @@ pub fn deepest_level(ours: &Caps) -> u32 {
 
 /// The GLSL versions st/mesa's GLSL compiler takes for this driver (the core profile's, the
 /// compatibility profile's) and OpenGL ES's: the versions whose programs the NIR route converts
-/// and whose state the context draws with.
+/// and whose state the context draws with. OpenGL ES's is 3.20's, which turns on
+/// `EXT_gpu_shader5`.
 const GLSL_VERSION: c_uint = 330;
 const GLSL_COMPATIBILITY_VERSION: c_uint = 130;
-const ESSL_VERSION: c_uint = 310;
+const ESSL_VERSION: c_uint = 320;
 
 /// A geometry program's limits, the least `OES_geometry_shader` allows:
 /// the stage helper sizes its records by the program's own declarations.
@@ -210,6 +211,10 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.draw_indirect = true;
     caps.texture_multisample =
         ours.has(Features::MULTISAMPLE_READ) && ours.has(Features::SAMPLE_MASK);
+    // Programs run per sample: st/mesa makes the per-sample variant of a fragment program itself,
+    // and the NIR route takes inputs at an offset or a sample and the sample positions from the
+    // values the host interpolates (`interpolate_elsewhere`).
+    caps.sample_shading = ours.has(Features::SAMPLE_SHADING);
     caps.max_texture_gather_components = naga::VectorSize::Quad as c_uint;
     caps.framebuffer_no_attachment = true;
     caps.npot_textures = true;

@@ -520,3 +520,65 @@ fn an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces() {
         .collect();
     assert_eq!(textures, [(naga::ImageDimension::D2, true)]);
 }
+
+const ELSEWHERE: &str = "#version 450
+layout(location = 0) in vec4 smooth_value;
+layout(location = 1) noperspective in vec2 linear_value;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = interpolateAtOffset(smooth_value, vec2(0.25, -0.125))
+        + interpolateAtSample(smooth_value, gl_SampleID).yxwz
+        + vec4(interpolateAtOffset(linear_value, gl_SamplePosition - 0.5), smooth_value.xy);
+}
+";
+
+/// A fragment program's inputs at locations and where in the pixel the host interpolates each.
+fn fragment_inputs(module: &naga::Module) -> Vec<(u32, Option<naga::Sampling>)> {
+    let entry = module.entry_points.first().unwrap();
+    let bindings = entry
+        .function
+        .arguments
+        .iter()
+        .flat_map(|a| match a.binding {
+            Some(ref binding) => vec![binding.clone()],
+            None => match &module.types[a.ty].inner {
+                naga::TypeInner::Struct { members, .. } => {
+                    members.iter().filter_map(|m| m.binding.clone()).collect()
+                }
+                _ => Vec::new(),
+            },
+        });
+    let mut inputs: Vec<_> = bindings
+        .filter_map(|b| match b {
+            naga::Binding::Location {
+                location, sampling, ..
+            } => Some((location, sampling)),
+            naga::Binding::BuiltIn(_) => None,
+        })
+        .collect();
+    inputs.sort_by_key(|&(location, _)| location);
+    inputs
+}
+
+#[test]
+fn inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolates_them() {
+    let stage = || {
+        Nir::from_glsl(&[(Stage::Fragment, ELSEWHERE)])
+            .unwrap()
+            .pop()
+            .unwrap()
+    };
+    assert!(stage().nir.reads_sample_positions());
+    // Two samples have no standard positions the hosts take.
+    assert!(!stage().nir.interpolate_elsewhere(2));
+    for samples in [1, 4] {
+        let mut nir = stage().nir;
+        assert!(nir.interpolate_elsewhere(samples));
+        nir.to_common_form(Stage::Fragment).unwrap();
+        let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+        wcontainers_nir::spirv::validate(&module).unwrap();
+        // Each input at the place its plain read takes it: the pixel's centre.
+        let centre = Some(naga::Sampling::Center);
+        assert_eq!(fragment_inputs(&module), [(0, centre), (1, centre)]);
+    }
+}

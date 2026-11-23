@@ -207,6 +207,8 @@ unsafe extern "C" {
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
     fn wc_nir_textures_1d_as_2d(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
+    fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
+    fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
     fn wc_nir_nearest_integer_textures(
         nir: *mut NirShader,
@@ -447,6 +449,23 @@ impl Nir {
             )
         };
         (count != STREAMED_ELSEWHERE && written != STREAMED_ELSEWHERE).then_some((outputs, strides))
+    }
+
+    /// Whether a fragment program reads where its samples are (`gl_SamplePosition`,
+    /// `interpolateAtSample`, `interpolateAtOffset` of a value read per sample), which depends on
+    /// the targets' sample count.
+    pub fn reads_sample_positions(&mut self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_reads_sample_positions(self.0) }
+    }
+
+    /// A fragment program's reads of inputs at an offset or at a sample, and of the sample
+    /// position, made from the values the common form interpolates and their slopes, for targets
+    /// of `samples` samples. False where that count's positions are needed and not known (one and
+    /// four are, WebGPU's).
+    pub fn interpolate_elsewhere(&mut self, samples: u32) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_interpolate_elsewhere(self.0, samples) }
     }
 
     /// A vertex, geometry or tessellation evaluation program's position changed by `transform`.

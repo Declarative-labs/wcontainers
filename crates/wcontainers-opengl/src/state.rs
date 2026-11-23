@@ -357,6 +357,8 @@ pub struct Shader {
     /// What a vertex or geometry program streams while stream output is bound: the stage helper's
     /// declaration, none, or why it cannot.
     pub streamed: Result<Option<StreamOutput>, &'static str>,
+    /// A fragment program that reads where its samples are, converted for the targets' count.
+    pub reads_sample_positions: bool,
 }
 
 fn factor(f: pipe_blendfactor) -> BlendFactor {
@@ -1008,10 +1010,12 @@ fn create_shader(
             None => Err("a streamed value that is neither at a location nor the position"),
         };
     }
+    let reads_sample_positions = nir.reads_sample_positions();
     object(Shader {
         stage,
         nir,
         streamed,
+        reads_sample_positions,
     })
 }
 

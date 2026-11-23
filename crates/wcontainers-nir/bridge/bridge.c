@@ -547,6 +547,214 @@ wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform t
    }
 }
 
+/* A pixel's centre from its corner, along each axis. */
+#define PIXEL_CENTRE 0.5f
+/* The sample count of the one standard pattern of more than one sample the hosts take. */
+#define FOUR_SAMPLES 4
+enum { AXIS_X, AXIS_Y, AXIS_W = 3 };
+
+/* WebGPU's standard positions of four samples, from the pixel's corner in the host's coordinates
+ * (https://www.w3.org/TR/webgpu/#:~:text=multisampled%20texture%20with%20sampleCount%20of%204). */
+static const float four_sample_positions[FOUR_SAMPLES][2] = {
+   {0.375f, 0.125f},
+   {0.875f, 0.375f},
+   {0.125f, 0.625f},
+   {0.625f, 0.875f},
+};
+
+/* What a fragment program reads of where its samples are. */
+struct sample_reads {
+   bool position;
+   bool at_sample;
+   bool at_offset;
+   bool sampled_input;
+};
+
+static nir_intrinsic_instr *
+barycentric_of(nir_intrinsic_instr *intr)
+{
+   if (intr->intrinsic != nir_intrinsic_load_interpolated_input)
+      return NULL;
+   return nir_src_as_intrinsic(intr->src[0]);
+}
+
+static bool
+gather_sample_reads(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct sample_reads *r = data;
+   if (intr->intrinsic == nir_intrinsic_load_sample_pos)
+      r->position = true;
+   nir_intrinsic_instr *bary = barycentric_of(intr);
+   if (!bary)
+      return false;
+   r->at_sample |= bary->intrinsic == nir_intrinsic_load_barycentric_at_sample;
+   r->at_offset |= bary->intrinsic == nir_intrinsic_load_barycentric_at_offset;
+   r->sampled_input |= bary->intrinsic == nir_intrinsic_load_barycentric_sample;
+   return false;
+}
+
+static struct sample_reads
+sample_reads(nir_shader *nir)
+{
+   struct sample_reads r = {0};
+   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+      nir_shader_intrinsics_pass(nir, gather_sample_reads, nir_metadata_all, &r);
+   return r;
+}
+
+bool
+wc_nir_reads_sample_positions(struct nir_shader *nir)
+{
+   wc_nir_lower_io(nir);
+   struct sample_reads r = sample_reads(nir);
+   return r.position || r.at_sample || (r.at_offset && r.sampled_input);
+}
+
+struct elsewhere {
+   unsigned samples;
+   nir_function_impl *impl;
+   bool refused;
+};
+
+/* Where sample `sample` of the targets' samples is, from the pixel's corner. */
+static nir_def *
+sample_position(nir_builder *b, const struct elsewhere *e, nir_def *sample)
+{
+   if (e->samples == 1)
+      return nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
+   nir_def *at =
+      nir_imm_vec2(b, four_sample_positions[0][AXIS_X], four_sample_positions[0][AXIS_Y]);
+   for (unsigned s = 1; s < FOUR_SAMPLES; s++) {
+      nir_def *here =
+         nir_imm_vec2(b, four_sample_positions[s][AXIS_X], four_sample_positions[s][AXIS_Y]);
+      at = nir_bcsel(b, nir_ieq_imm(b, sample, s), here, at);
+   }
+   return at;
+}
+
+/* How the program's other reads of the slot `intr` reads are interpolated: the place its value is
+ * known at, which an evaluation elsewhere starts from. */
+static nir_intrinsic_op
+known_at(nir_function_impl *impl, nir_intrinsic_instr *intr)
+{
+   const unsigned location = nir_intrinsic_io_semantics(intr).location;
+   const unsigned offset = nir_src_as_uint(intr->src[1]);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *other = nir_instr_as_intrinsic(instr);
+         nir_intrinsic_instr *bary = barycentric_of(other);
+         if (!bary || nir_intrinsic_io_semantics(other).location != location ||
+             !nir_src_is_const(other->src[1]) || nir_src_as_uint(other->src[1]) != offset)
+            continue;
+         if (bary->intrinsic == nir_intrinsic_load_barycentric_sample ||
+             bary->intrinsic == nir_intrinsic_load_barycentric_centroid)
+            return bary->intrinsic;
+      }
+   }
+   return nir_intrinsic_load_barycentric_pixel;
+}
+
+/* An input read at an offset or a sample (interpolateAtOffset, interpolateAtSample), which the
+ * common form lacks, from its value where the program's other reads take it and that value's
+ * slopes: an interpolated value is affine on the screen (over w where perspective-correct), so its
+ * derivatives, taken at the program's start where every lane of a quad runs, are exact. */
+static bool
+evaluate_elsewhere(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct elsewhere *e = data;
+   if (intr->intrinsic == nir_intrinsic_load_sample_pos) {
+      if (e->samples != 1 && e->samples != FOUR_SAMPLES) {
+         e->refused = true;
+         return false;
+      }
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_def_replace(&intr->def, sample_position(b, e, nir_load_sample_id(b)));
+      return true;
+   }
+   nir_intrinsic_instr *bary = barycentric_of(intr);
+   if (!bary || (bary->intrinsic != nir_intrinsic_load_barycentric_at_offset &&
+                 bary->intrinsic != nir_intrinsic_load_barycentric_at_sample))
+      return false;
+   const enum glsl_interp_mode mode = nir_intrinsic_interp_mode(bary);
+   const nir_intrinsic_op from = known_at(e->impl, intr);
+   const bool needs_samples = bary->intrinsic == nir_intrinsic_load_barycentric_at_sample ||
+                              from == nir_intrinsic_load_barycentric_sample;
+   if (needs_samples && e->samples != 1 && e->samples != FOUR_SAMPLES) {
+      e->refused = true;
+      return false;
+   }
+   /* A centroid's place is not known to the program; a flat value is read as it is elsewhere. */
+   if (!nir_src_is_const(intr->src[1]) || from == nir_intrinsic_load_barycentric_centroid ||
+       mode == INTERP_MODE_FLAT)
+      return false;
+   const bool perspective = mode != INTERP_MODE_NOPERSPECTIVE;
+
+   /* At the start: the value where it is known, its place from the centre, and the slopes. */
+   b->cursor = nir_before_impl(e->impl);
+   nir_def *centre = nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
+   nir_def *place = from == nir_intrinsic_load_barycentric_sample
+                       ? nir_fsub(b, sample_position(b, e, nir_load_sample_id(b)), centre)
+                       : nir_imm_vec2(b, 0, 0);
+   nir_def *known_bary = nir_load_barycentric(b, from, mode);
+   nir_def *io_offset = nir_imm_int(b, nir_src_as_uint(intr->src[1]));
+   nir_intrinsic_instr *known = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   /* Not yet inserted, so its sources are on no use list. */
+   known->src[0] = nir_src_for_ssa(known_bary);
+   known->src[1] = nir_src_for_ssa(io_offset);
+   nir_builder_instr_insert(b, &known->instr);
+   nir_def *value = &known->def;
+   nir_def *w = NULL, *w_dx = NULL, *w_dy = NULL;
+   if (perspective) {
+      /* The position's w is one over the clip w, affine on the screen; its x and y say where it
+       * was taken. */
+      nir_def *position = nir_load_frag_coord(b);
+      nir_def *taken = nir_fsub(b, nir_ffract(b, nir_trim_vector(b, position, 2)), centre);
+      w = nir_channel(b, position, AXIS_W);
+      w_dx = nir_ddx(b, w);
+      w_dy = nir_ddy(b, w);
+      nir_def *to_place = nir_fsub(b, place, taken);
+      w = nir_fadd(b, w,
+                   nir_fadd(b, nir_fmul(b, w_dx, nir_channel(b, to_place, AXIS_X)),
+                            nir_fmul(b, w_dy, nir_channel(b, to_place, AXIS_Y))));
+      value = nir_fmul(b, value, w);
+   }
+   nir_def *dx = nir_ddx(b, value);
+   nir_def *dy = nir_ddy(b, value);
+
+   /* Where it is read: the value moved from its place to the target. */
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *target = bary->intrinsic == nir_intrinsic_load_barycentric_at_offset
+                        ? bary->src[0].ssa
+                        : nir_fsub(b, sample_position(b, e, bary->src[0].ssa), centre);
+   nir_def *step = nir_fsub(b, target, place);
+   nir_def *step_x = nir_channel(b, step, AXIS_X), *step_y = nir_channel(b, step, AXIS_Y);
+   nir_def *there =
+      nir_fadd(b, value, nir_fadd(b, nir_fmul(b, dx, step_x), nir_fmul(b, dy, step_y)));
+   if (perspective) {
+      nir_def *w_there =
+         nir_fadd(b, w, nir_fadd(b, nir_fmul(b, w_dx, step_x), nir_fmul(b, w_dy, step_y)));
+      there = nir_fdiv(b, there, w_there);
+   }
+   nir_def_replace(&intr->def, there);
+   return true;
+}
+
+bool
+wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return true;
+   wc_nir_lower_io(nir);
+   struct elsewhere e = {.samples = samples, .impl = nir_shader_get_entrypoint(nir)};
+   if (nir_shader_intrinsics_pass(nir, evaluate_elsewhere, nir_metadata_none, &e)) {
+      NIR_PASS(_, nir, nir_opt_dce);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
+   return !e.refused;
+}
+
 /* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
 static bool
 texture_unit(nir_tex_instr *tex, uint32_t *unit)

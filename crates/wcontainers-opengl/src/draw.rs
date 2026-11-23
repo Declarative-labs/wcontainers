@@ -111,6 +111,9 @@ pub(crate) struct Variant {
     points_in: u32,
     /// The tessellator a control program's evaluation program declares.
     tessellator: Option<Tessellator>,
+    /// The targets' samples, for a fragment program that reads where its samples are; zero
+    /// otherwise.
+    samples: u32,
 }
 
 impl Variant {
@@ -495,6 +498,12 @@ fn convert<B: Backend>(
     }
     if !variant.swizzles.is_empty() {
         nir.swizzle_textures(&variant.swizzles);
+    }
+    if !nir.interpolate_elsewhere(variant.samples) {
+        return refused(format_args!(
+            "where the samples of targets of {} samples are (not known)",
+            variant.samples
+        ));
     }
     // The key of what is drawn: the pass-through's transform is the variant's.
     let key = if transform == variant.transform {
@@ -1740,6 +1749,12 @@ fn draw<B: Backend>(
             &context.framebuffer.state,
             bound.blend_color,
         ),
+        // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+        samples: if unsafe { &*fs }.reads_sample_positions {
+            context.framebuffer.samples.max(1)
+        } else {
+            0
+        },
         ..Variant::default()
     };
     if fragment.second_source.is_some() {
@@ -1777,6 +1792,7 @@ fn draw<B: Backend>(
         packed: elements.packed.clone(),
         points_in: 0,
         tessellator: None,
+        samples: 0,
     };
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
