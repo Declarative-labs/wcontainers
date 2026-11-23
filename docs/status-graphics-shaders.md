@@ -117,14 +117,18 @@ out of the integer twins as BGRA is (targets and storage clears of it stay refus
 Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
 96's section).
 
-## G6 reported complete for its independent check (round 7, run 114): the gap list
+## G6 reported complete for its independent check (round 7, run 115): the gap list
 
 G6 is reported complete on the crate as it stands, as round 7 of 2026-11-23 asks, with every item
 still open below under its cause and its owner. Run 113 settled the findings of G6's independent
 check of run 112 (its section below): the clamped samples' failure at seed 984 was a fault of
 this crate, fixed and drawn; the gap list's owners corrected where the check found them wrong.
 Run 114 settled the findings of the check of run 113: A10's cause measured and its owner named,
-the drawn failures at the check's seeds listed, the items of "Known gaps" added.
+the drawn failures at the check's seeds listed, the items of "Known gaps" added. Run 115 settled
+the findings of the check of run 114 (its section below): A10 measured on the cull route and on
+lines too, the NIR track's G9 run 23 ask built (`rewrite` and forced early tests), the NIR track's
+G9 run 24 asks and the rest of "Known gaps" put on this list, a DXBC container through the DXIL
+route refused by name.
 The pass bar item by item, with its figures, is the section "G6: the pass bar item by item"
 further down; the gap numbers (A1 to A35) are its entries, which hold each item's measurements.
 Bar items 1 (corpus), 2 (Chrome), 5 (built-in programs) and 6 (the cache) are met. Items 3
@@ -145,6 +149,12 @@ Absent on a back end by the plan (reported as the guest expects, nothing to buil
   outside pixel and compute programs and subgroup barriers, sparse feedback (tiled resources:
   `SparseFeedback` 3, the reader's sparse fetches 3), a SPIR-V source (A27's first group).
 - Subnormals not flushed in programs (plan 4.12, "Floating point modes", a listed loss).
+- On WebGL 2: fine derivatives (GLSL ES 3.00 has no derivative control; refused by name,
+  `FINE_DERIVATIVES`); `draw_base: Arguments` (no storage buffers to read a draw's arguments from,
+  nor indirect draws: the WebGL 2 front reads them back and draws with `Helpers`).
+- Natively on Windows only: wgpu's Direct3D 12 path has no clip distances (wgpu issue 6236), so the
+  WebGPU back end there refuses programs with them unless made on Vulkan; Chrome's WebGPU compiles
+  them. wgpu's, not this crate's.
 
 The owner's ruling (asked under "New for the owner"; today's behaviour kept):
 - A35: dxbc-spirv's deliberate fold of fxc's `dp4` pick of a component, where both real devices
@@ -169,26 +179,53 @@ The owner's ruling (asked under "New for the owner"; today's behaviour kept):
   none of this track's stages, fails the same way). Takes the owner's ruling or a line allowance in
   the rig's comparison (asked of the rig track in run 113; its status names neither yet).
 - A10: clip distances clipped in the pixel program (`CLIP_DISTANCE`, the slow path of back ends
-  without clip distances) behind the stage helper: `gs_clip` draws one texel per failing case on
-  one side only, on both routes and both back ends (WebGPU, the WebGL 2 replay). Cause, measured in
-  run 114: Direct3D clips the triangle and snaps the vertices it makes on a cut edge to its 8-bit
-  subpixel grid, which moves the kept part of that edge by up to 1/512 of a pixel; the variant tests
-  each pixel centre against the exact plane and draws the triangle's own edges. The tests now print
-  each texel's distance from such an edge: at the check's seed 7341 (12 cases) all 12 failing
-  comparisons (6 in each test) hold exactly 1 texel beyond the allowance of 2, and each lies within
-  a subpixel step of a cut edge's kept part (0.0001, 0.0002 and 0.0005 pixels, seeds 7341, 7352 and
-  7344). WARP clips as the GPU does (largest 1 apart), so ours lies up to 21 to 99 from both. The
-  plan's claim that the variant keeps "exactly the set of pixels clipping leaves" holds for the
-  exact plane, not for a snapping rasteriser. Takes the owner's ruling: list it as a loss of the
-  slow path (native clip distances, where the back end has them, are exact), or clip triangles in
-  the stage helper's compute (new records for the cut vertices, each value interpolated by its
-  kind, the pixel program not discarding there: a change in how fronts key the pixel program, so an
-  interface decision too; draws with no geometry or cull stage would keep the loss). Asked under
-  "New for the owner" (run 114).
+  without clip distances) behind the stage helper, on both routes and both back ends (WebGPU, the
+  WebGL 2 replay): `gs_clip` behind a geometry shader, and `vs_cull` and `vs_cull_read` on the cull
+  route (with `CULL_DISTANCE_LINKED` for the latter), draw a few texels on one side only, from 1 to
+  4 texels a failing case. Cause for triangles, measured in run 114 for `gs_clip` and in run 115 for
+  the cull route: Direct3D clips the triangle and snaps the vertices it makes on a cut edge to its
+  8-bit subpixel grid, which moves the kept part of that edge by up to 1/512 of a pixel; the variant
+  tests each pixel centre against the exact plane and draws the triangle's own edges, so a centre
+  within a subpixel step of a cut edge's kept part falls on either side. Measured: at seed 7341
+  (12 cases) every `gs_clip` texel beyond the allowance of 2 lies 0.0001 to 0.0005 pixels from such
+  an edge; at G6's third check's seed 6029 (16 cases) every `gs_clip` texel beyond it lies within a
+  subpixel step of one (the check's figures, for example 6043 "4 texels apart by more than 2, 4 of
+  them within a subpixel step"); the check's `vs_cull` and `vs_cull_read` triangle texels, which
+  the tests did not place then (their attribution covered `gs_clip` only), lie as close: computed
+  in run 115 from the seeded vertices (scratch `g6-r115/cull.py`), (27, 11) of 6029 TriangleList
+  and TriangleStrip lies 0.00048 pixels from the kept part of edge 9 to 10, which `vs_cull`'s plane
+  cuts (vertex 10's distance -0.093, the centre's 0.119); (41, 34) of 6034 TriangleStrip 0.00001
+  pixels from edge 16 to 14 (cut, vertex 16 at -0.329); (13, 23) of 6039 TriangleList 0.00004
+  pixels from edge 5 to 3 (cut, vertex 5 at -0.148). A texel of another colour where both draw
+  (6029 TriangleStrip (27, 11), red 131 for 115) is the same flip of the triangle on top, which
+  shows the one beneath. Since run 115 the tests place every texel apart for every clipping case
+  (`placed`: the cull route's plane, taken before the instance's move as the program computes it,
+  besides `gs_clip`'s three), so the printed counts cover the cull route too. Lines: Direct3D
+  clips a line where the plane cuts it and lights pixels by its diamond rule, so a clipped end can
+  light a pixel whose centre the distance rejects, or leave one it accepts (Known gaps, run 39); the
+  tests print each line texel's distance from the nearest point a plane cuts a line at and from the
+  nearest uncut end. The check's 6029 LineStrip indexed pairs (12, 22) and (11, 23), and (23, 40)
+  and (24, 40), are one-pixel shifts of a line's end (one texel drawn by each); both centres of
+  the first pair lie 0.14 pixels on the rejected side of `vs_cull`'s plane (a clipped end: ours
+  takes the distance at the centre's place along the line, not at the centre); the second pair's
+  centres lie 20 pixels from the plane, so it is an uncut end, the cull route drawing the strip's surviving lines as a line list: its cause is
+  not yet measured (the GPU run that prints its distance from the line's end is in g6-r115
+  gpu2.log when it has run). And where a pixel centre lies exactly on a plane, Direct3D's fill rule
+  decides where the program keeps a distance of zero (Known gaps, run 38; seen only with a plane
+  through pixel centres). WARP clips as the GPU does (largest 1 apart), so ours lies up to 21 to 99
+  from both. The plan's claim that the variant keeps "exactly the set of pixels clipping leaves"
+  holds for the exact plane, not for a snapping rasteriser. Takes the owner's ruling: list it as a
+  loss of the slow path (native clip distances, where the back end has them, are exact), or clip
+  triangles and lines in the stage helper's compute (new records for the cut vertices, each value
+  interpolated by its kind, the pixel program not discarding there: a change in how fronts key the
+  pixel program, so an interface decision too; draws with no geometry or cull stage would keep the
+  loss). Asked under "New for the owner" (runs 114 and 115).
 - A18: `filtering_in_the_program_matches_direct3d`'s second comparison (against WebGPU's own
   sampler) has no level-of-detail allowance where its main comparison has one (4 of 4,096 texels at
   one seed, at a level decision). Takes the ruling that the main comparison's allowance applies to
-  it too.
+  it too. G6's check of run 114 reproduced it at seed 6037 (Rgba8Unorm, bias, both routes, linear
+  [false, true, true], scale [0.25, 2.0]): 4 of 4,096 texels past 0.0078125 against WebGPU's own
+  sampler, where the main comparison gives 0 (4 before moving the level of detail).
 
 An interface decision (the interface track's, or the owner's; asked of the interface track in run
 113, whose status file, unchanged since 2026-11-18, records none of them yet):
@@ -222,7 +259,13 @@ the orchestrator can have them confirm, so these items stand as asked, not as ag
 - The NIR track: its status still lists `sampled_pairs`, `clip_unpositioned` and the draw bases in
   `rewrite`, and `capabilities` adding immediates, delivered here in run 88 and G6a run 6. A25
   (`ResourceArrayPair`, independent picks from a texture array and a sampler array) waits on a
-  program of its route B refused so (none named).
+  program of its route B refused so (none named). Its G9 run 23 ask (`rewrite` refusing a
+  fragment program that forces early tests with naga's unnamed capability error) is built in run
+  115 (below, "For the NIR track"); its status still lists it.
+- The WebGL 2 back end, two findings handed on while drawing: it keeps GL's previous viewport when
+  a draw names none, where the WebGPU back end uses the whole target (the interface does not say
+  what an empty `viewports` means, so an interface decision too); and its later read back calls
+  `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 A measurement on another device (no device at hand settles it):
 - A4 `swizzled` on depth: plain comparisons through green, blue or alpha and some comparison
@@ -232,6 +275,19 @@ A measurement on another device (no device at hand settles it):
 - A22: Direct3D 12 on the RTX 3080 writes zeros for the position in the output of several
   streams; ours equals Direct3D 11 (WARP's Direct3D 12 not drawn). A15: the RTX 3080 counts some
   primitives of a stream with no buffer as written, ours none (WARP not drawn).
+- `VIEWPORT_DEPTH_FLIP` is checked against the definition applied to Direct3D 11's depth, not
+  against a native swapped range: neither real Direct3D 11 nor ANGLE on it draws a depth range
+  with near beyond far as Vulkan and OpenGL define it (both gave the unswapped depths).
+- `SAMPLE_MASK` (`SampleMaskInShader`) is drawn against the native mask on WebGPU only: mozangle,
+  the ANGLE the drawn tests use, lacks OES_sample_variables, which Chrome has. On WebGL 2 it is
+  checked by Chrome compiling the corpus's shaders that write the mask and by the WebGL 2 track's
+  per-sample test in Chrome.
+- Integer values cleared into storage views: the RTX 3080's Direct3D 11 saturates otherwise than
+  WARP and the specification; the built-in clear follows the specification and WARP (run 19).
+- The order of a patch's triangles inside the RTX 3080's tessellator, and the vertex two thirds of
+  them start at (winding kept), differ from WARP's; ours is WARP's word for word. Direct3D leaves
+  the order to the device, so a domain shader's flat outputs (from a triangle's first vertex) can
+  differ from the GPU's (`tessellation_draw`, run 74).
 
 Differences the orchestrator's rule of 2026-11-22 covers (measured in run 113, g6-r113 gpu4.log:
 the geometry tests now draw each case ours draws apart from the GPU on WARP too and print both
@@ -247,7 +303,9 @@ fails there, as its allowance is not loosened here:
 - A12, depth clamped behind a geometry stage (`depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`),
   at seed 7346 (`gs_cut` TriangleStrip): 114 of 164 clamped texels apart, largest 8.3e-7 (14 units
   in the last place, allowed 4.8e-7); WARP lies up to 2.2e-5 from the GPU in 330 texels, and ours
-  up to 2.2e-5 from WARP: WARP is further from the GPU than ours is.
+  up to 2.2e-5 from WARP: WARP is further from the GPU than ours is. G6's check of run 114, seed
+  6034 (`gs_cut` TriangleStrip): 4 of 580 clamped texels apart, largest 1.6e-6 (54 steps, allowed
+  4.8e-7); WARP lies up to 3.4e-5 from the GPU in 4 texels, ours up to 3.5e-5 from WARP.
 
 This track's own open parts (no front, corpus file or real program waits on one; each is refused
 by name, not drawn, or unharmful while a feature is declared absent; its entry says what it takes):
@@ -259,7 +317,36 @@ by name, not drawn, or unharmful while a feature is declared absent; its entry s
   host process (a hostile-guest exposure; in the browser the module traps instead). Takes a carried
   patch of the reader (its casts are in a header) or upstream's. And DXBC register indices past
   `dcl_temps` sizing dxbc-spirv's lists unchecked. `mutated_bytecode_converts_or_fails_without_ending_the_process`
-  stays failing (ignored by default, run by its own command).
+  stays failing (ignored by default, its ignore reason naming it a known failure since run 115, run
+  by its own command). Mutated bytecode the converters accept can give IR the lowering refuses
+  (`Malformed`) or a module naga's validation refuses (`Invalid`): refused, not converted. A DXBC
+  container given as `Source::Dxil` is refused by name since run 115 ("a container holding no DXIL
+  program"), where dxil-spirv's own copy of dxbc-spirv asserted before
+  (`a_dxbc_program_through_the_dxil_route_is_refused_by_name`).
+- The NIR track's G9 run 24 asks of the stage helper (its "Requests to other tracks"; not started,
+  each a change of the helper's records or draws): a geometry stage's output after tessellation is
+  sized for factor 64 on every patch, past `max_buffer_size` for a few hundred patches (56 process
+  refusals in its dEQP lists; takes sizing by the counts the tessellator gives, the Known gap of
+  the tessellator's buffers below); the odd triangles of a strip with adjacency are listed in
+  Direct3D's order where OpenGL's swaps the first two (takes OpenGL's order under the API's
+  conventions, as `provoking` is given); a geometry program writing as many locations as the device
+  has attributes needs one attribute more for the position (takes a pass-through reading the
+  records from storage by the vertex index).
+- Alpha-antialiased lines on WebGL 2 (A5, run 45): the coverage is a box filter's, within 52 of the
+  RTX 3080's in the drawn test (its stated allowance); the RTX 3080 draws a line's end at about 0.64
+  where ours gives 0.5, and nothing past it where ours fades over half a pixel. Lines are cut at
+  the near plane whatever the draw's depth clipping, so with depth clipping off a line crossing it
+  loses the part Direct3D would draw clamped. Takes the GPU's end profile measured further.
+- DXIL refusals by name: constants that are NaN or infinite (`NonFiniteConstant`: naga's IR takes
+  no such literal; the DXBC route reads them from variables), a constant buffer component picked at
+  run time (`ConstantComponentIndexing`: dxil-spirv reads it through a scalar view of the buffer,
+  which WebGPU's uniform layout and WGSL's one variable per binding refuse), DXIL atomics on typed
+  buffers (naga's SPIR-V reader refuses them). Typed buffers through a texture reach at most 2048
+  times the back end's largest texture height elements (32M on ANGLE's 16384), short of Direct3D
+  10's 2^27, which the front reports.
+- fxc fails with internal errors on programs with several loops in one switch and on switches whose
+  cases call functions inlined many times: the built-in programs avoid them (nothing open; the
+  tessellation test on wgpu's Direct3D 12 catches a new one).
 - The carried GLSL writer (naga's, which the WebGL 2 track's status says is this track's): a
   vertex program's cull distances assigned as one array to `gl_CullDistance` without redeclaring
   it at the program's size (Chrome refuses the type; unharmful while WebGL 2 declares
@@ -435,6 +522,39 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## For the NIR track: forced early tests through `rewrite` (its G9 run 23 ask)
+
+Built in run 115 (commit "rewrite carries the early tests a fragment program forces in its pixel
+extras"). `rewrite` now takes a fragment program's `@early_depth_test(force)` (naga's
+`EarlyDepthTest::Force`) out of the module and sets `early_tests: true` in the reflection's
+`StageExtras::Pixel`, as the DXIL route does; the back ends take forced early tests from there
+(and refuse them by their own capabilities where they lack them). The module keeps no early test
+mode, so it validates without `Capabilities::EARLY_DEPTH_TEST`; `Allow` (conservative depth, a
+hint) is dropped too. A program forcing early tests with a reflection that has no pixel extras is
+refused as `Malformed("a fragment program forcing early tests with a reflection of no pixel
+extras")`. Test: `a_fragment_program_forcing_early_tests_carries_them_in_its_pixel_extras`
+(tests/rewrite.rs; passes on the ARM64 machine, arm1.log of run 115).
+
+## G6 run 28 (run 115, round 7 run 4): the third check's findings
+
+- A10 on the cull route and on lines (blocking): see A10 on the gap list for the measurement. The
+  geometry tests' attribution (`placed`, tests/geometry_draw.rs) now covers every case that clips:
+  `gs_clip`'s three planes and `vs_cull`'s plane on the cull route (taken before the instance's
+  move, as the program computes it), for triangles the distance from the kept part of each cut
+  edge, for lines the distance from each point a plane cuts a line at and from each uncut end.
+  Each test still fails where it failed; nothing was loosened.
+- The NIR track's G9 run 23 ask (blocking): built, the section above.
+- Known gaps missing from the gap list (blocking): every entry of "Known gaps found so far" was
+  compared with the gap list again; the run 38 and run 39 entries are now part of A10, the others
+  are each in the group that owns them (absent on a back end, a measurement on another device,
+  another track, this track's own).
+- The NIR track's G9 run 24 asks (newer than the check): on the gap list, this track's own.
+- Minor: the fuzz test's ignore reason names it a known failure (A11); a DXBC container through the
+  DXIL route is refused by name; pass bar item 1's counts of the own and runner corpora are the
+  check's (its verdicts.txt); A18 carries the check's seed 6037; A12 and `gs_cut` carry the check's
+  seed 6034 under the orchestrator's rule.
+- No unsafe code added; the count stays 94.
 
 ## G6 run 27 (run 114, round 7 run 3): the second check's findings
 
@@ -2261,6 +2381,16 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- Run 115, a correction to run 114's question below (gap A10): its premise was measured on
+  `gs_clip` only. G6's third check found most failures at its seed on the cull route (`vs_cull`,
+  `vs_cull_read`) and up to 4 texels a case, not one. The triangle texels there have the same cause
+  (each 0.00001 to 0.0005 pixels from the kept part of an edge `vs_cull`'s plane cuts, computed from
+  the seeded vertices), so the question stands for both routes. Lines add a second loss of the same
+  slow path: a clipped line's end is lit by Direct3D's diamond rule on the cut line, where the
+  program keeps the pixels whose distance at their place along the line is not negative (one pixel
+  of difference at a clipped end). One line case at the check's seed also shifts an uncut end by
+  a pixel, its cause not yet measured (A10). Clipping in the stage helper's compute would have to
+  cut lines too.
 - Run 114, one question from G6's second check (gap A10; today's behaviour kept until you rule).
   On a back end without clip distances the pixel program discards where an interpolated clip
   distance is negative. Real Direct3D (the RTX 3080 and WARP alike) instead cuts the triangle and
@@ -2479,11 +2609,11 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (170 and 158 records, 159 and 147
-     converting, counted in run 92 with `ps_lod`) and vkd3d's shader runner files (1503 DXBC, 1517
-     DXIL; 1453 and 1422 converting, counted in run 92: since run 86 the DXBC six more by A13 and
-     A14, both four more by run 90's cull distances, the DXBC four more by run 91's `calculate-lod`,
-     the DXIL four more by run 92's). Every record holds at run 92's code (its section above).
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (192 and 182 records, 178 and 168
+     converting) and vkd3d's shader runner files (1503 DXBC, 1517 DXIL; 1456 and 1428 converting),
+     as counted by G6's check of run 114 at run 114's code (its verdicts.txt); every record held
+     there. (Run 92 counted 170 and 158 own records, 159 and 147 converting, and 1453 and 1422 of
+     the runner's.)
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
    since run 47 the corpus test writes it with the WebGL 2 back end's own writing
@@ -3510,11 +3640,14 @@ G6a run 5's tip):
 
 ## Next
 
-0. G6 is reported complete for its independent check (run 114, round 7). After the check, the gap
+0. G6 is reported complete for its independent check (run 115, round 7). After the check, the gap
    list of "G6 reported complete" in the order the fronts need it; items waiting on another track
    or a ruling are not worked until those come. The order below holds for this track's own parts.
 1. This track's own open parts of the gap list ("G6 reported complete", its last group), in the
-   order the fronts need them: A7's pixel shader reading `SV_PrimitiveID` behind a geometry shader
+   order the fronts need them: A10's uncut line end at seed 6029 (read its distances in g6-r115
+   gpu2.log, or draw `geometry_draw` at seed 6029 again), the NIR track's G9 run 24 asks of the
+   stage helper (output sizing after tessellation, OpenGL's strip-with-adjacency order, records
+   read from storage past the device's attributes), A7's pixel shader reading `SV_PrimitiveID` behind a geometry shader
    that does not write it (measured first on the RTX 3080 and WARP), A26's WebGL 2 part for
    branches (selects done in run 99), A33 (rspirv), a logic operation into a multisampled target
    (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP` (A5), stream output from a
@@ -5201,6 +5334,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 115's scripts in scratch `graphics-shaders/g6-r115` are run 114's with its folder (the clone
+  `tip` moved there from g6-r114), plus `cpu2-cmd.txt` (rustfmt, clippy, every CPU test binary with
+  every corpus but the mutation run, then the literal check) and `cull.py` (the cull route's
+  seeded triangles and lines placed against a texel: `python3 -I cull.py <seed> list|strip|lines|
+  linestrip <count> <first> <instances> <x> <y>`, non-indexed draws only). Run a background GPU
+  job with a timeout of two hours: one queued behind other tracks' display-reset jobs waited past
+  30 minutes and was cut off before it started (gpu1.log).
 - Run 113's scripts in scratch `graphics-shaders/g6-r113` are run 112's with its folder, plus
   `arm-sync.sh` (makes `tip-arm` from the clone and the worktree's submodules) and `fuzz-cmd.sh`
   (the seeded fuzz restarting past each process end, `SEED` and `CASES`, then gdb backtraces of the
