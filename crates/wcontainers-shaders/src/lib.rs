@@ -251,6 +251,7 @@ pub fn rewrite(
             },
             _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
         };
+        early_tests(&mut module, &mut reflection)?;
         route_rewrites(&mut module, &mut reflection, stage, variant)?;
         // The draw's bases a vertex program reads as built-ins WGSL lacks, as the DXIL route's.
         dxil::draw_bases(&mut module, variant, &mut reflection)?;
@@ -264,6 +265,21 @@ pub fn rewrite(
         variant,
         cache::rewritten_key(route_key, variant),
     )
+}
+
+/// Early tests a fragment program forces move into its pixel extras, where the back ends take them
+/// from, as on the DXIL route; the module keeps no early test mode (`Allow` is only a hint).
+fn early_tests(module: &mut naga::Module, reflection: &mut Reflection) -> Result<(), ConvertError> {
+    if module.entry_points[0].early_depth_test.take() != Some(naga::EarlyDepthTest::Force) {
+        return Ok(());
+    }
+    match &mut reflection.extras {
+        StageExtras::Pixel { early_tests, .. } => {
+            *early_tests = true;
+            Ok(())
+        }
+        _ => Err(ConvertError::Malformed(EARLY_TESTS_OUTSIDE_PIXEL.into())),
+    }
 }
 
 /// The rewrites of 15.4 that [`rewrite`] makes, before the variant's: arrays of textures, storage
@@ -309,6 +325,10 @@ pub(crate) fn writes_storage(module: &naga::Module) -> bool {
 
 /// What [`rewrite`] takes a module to have.
 const ONE_ENTRY_POINT: &str = "a module of one entry point named by ENTRY_POINT";
+
+/// What [`rewrite`] takes a program forcing early tests to be given.
+const EARLY_TESTS_OUTSIDE_PIXEL: &str =
+    "a fragment program forcing early tests with a reflection of no pixel extras";
 
 /// Refuses, by name, the rewrites of the last vertex stage for a geometry shader that its draw's vertex
 /// program, the stage helper's pass-through, does not make.

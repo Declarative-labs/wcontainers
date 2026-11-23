@@ -189,6 +189,44 @@ fn immediates_are_taken_and_named_as_a_capability() {
     );
 }
 
+/// A fragment program forcing early tests is rewritten with them in its pixel extras, as the DXIL
+/// route gives them, and validates without naga's early-test capability.
+#[test]
+fn a_fragment_program_forcing_early_tests_carries_them_in_its_pixel_extras() {
+    let pixel = |early_tests| StageExtras::Pixel {
+        early_tests,
+        side_effects: false,
+        discards: false,
+        per_sample: false,
+    };
+    for (mode, forced) in [("@early_depth_test(force)", true), ("", false)] {
+        let module = parse(&format!(
+            "@fragment {mode} fn ENTRY() -> @location(0) vec4<f32> {{ return vec4<f32>(1.0); }}"
+        ));
+        let reflection = Reflection {
+            stage: SourceStage::Pixel,
+            extras: pixel(false),
+            ..compute_reflection(&module)
+        };
+        let converted = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
+            .unwrap_or_else(|e| panic!("{mode:?} rewritten: {e:?}"));
+        assert_eq!(converted.reflection.extras, pixel(forced), "{mode:?}");
+        let m = &converted.modules[0];
+        assert_eq!(m.module.entry_points[0].early_depth_test, None, "{mode:?}");
+        written(&format!("early_tests_{forced}"), &m.module, &m.info);
+    }
+    let module = parse(
+        "@fragment @early_depth_test(force) fn ENTRY() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+    );
+    let reflection = compute_reflection(&module);
+    let refused = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
+        .expect_err("early tests without pixel extras are refused");
+    assert!(
+        matches!(refused, ConvertError::Malformed(ref m) if m.contains("early tests")),
+        "{refused:?}"
+    );
+}
+
 #[test]
 fn a_sample_picking_its_texture_and_sampler_at_two_indices_is_refused_by_name() {
     let source = ARRAYS.replace(
