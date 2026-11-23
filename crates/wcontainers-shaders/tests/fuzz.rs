@@ -98,7 +98,8 @@ fn signing_again_gives_the_compilers_checksum() {
 }
 
 #[test]
-#[ignore = "seeded fuzz, a long run: WCONTAINERS_FUZZ_SEED, WCONTAINERS_FUZZ_CASES"]
+#[ignore = "seeded fuzz, a long run (WCONTAINERS_FUZZ_SEED, WCONTAINERS_FUZZ_CASES); a known failure: \
+            malformed DXIL can end the process in dxil-spirv's bitcode reader (gap A11)"]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     let number = |name: &str, default: u64| {
         std::env::var(name)
