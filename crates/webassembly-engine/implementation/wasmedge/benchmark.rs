@@ -18,7 +18,7 @@ use wcontainers_webassembly_engine::{
     AddressType, ExternalAddress, Import, Limits, WebAssemblyEngine,
 };
 
-/// A module that imports `env.hook: [] -> []` and exports `empty: [] -> []`, which does nothing,
+/// A module that imports `host.upcall: [] -> []` and exports `empty: [] -> []`, which does nothing,
 /// and `repeat: [i32] -> []`, which calls the hook that many times.
 fn bench_module() -> Vec<u8> {
     let mut types = TypeSection::new();
@@ -211,7 +211,7 @@ where
 /// an unshared memory of an instance that exports a shared memory, and a table of typed function references.
 pub fn measure_helpers<T>(config: T::Config)
 where
-    T: WebAssemblyEngine<HostContext = u64>,
+    T: WebAssemblyEngine<HostContext = u64> + FunctionTypeBinder<(), i32>,
 {
     let mut engine = T::new(config, 0).ok().expect("the engine is made");
     let bytes = wat::parse_str(
@@ -227,7 +227,7 @@ where
     let module = engine.compile(&bytes).ok().expect("compiles");
     let instance = engine.instantiate(&module, &[]).ok().expect("instantiates");
     let Some(ExternalAddress::Global(global)) = engine.find_export(&instance, "variable") else {
-        panic!("global is exported");
+        panic!("variable is exported");
     };
     report("write a global beside a shared memory", 1_000_000, || {
         engine
@@ -261,13 +261,59 @@ where
     };
     let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, "forty_two")
     else {
-        panic!("answer is exported");
+        panic!("forty_two is exported");
     };
     report("write a function into a typed table", 1_000_000, || {
         engine
             .write_table(&table, black_box(0), Some(&function))
             .expect("writes");
     });
+    let read = engine
+        .read_table(&table, 0)
+        .ok()
+        .flatten()
+        .expect("the table holds the function");
+    report(
+        "write a function read from a table into a typed table",
+        1_000_000,
+        || {
+            engine
+                .write_table(&table, black_box(0), Some(&read))
+                .expect("writes");
+        },
+    );
+    let calls = wat::parse_str(
+        r#"(module
+            (import "host" "routine" (func $routine (result i32)))
+            (func (export "caller") (result i32) (call $routine)))"#,
+    )
+    .expect("the text is a module");
+    let calls = engine.compile(&calls).ok().expect("compiles");
+    for (what, function) in [
+        ("call an import of an exported function", function),
+        (
+            "call an import passed on to a function no instance exports",
+            read,
+        ),
+    ] {
+        let imports = [Import {
+            module_name: "host",
+            item_name: "routine",
+            address: ExternalAddress::Function(function),
+        }];
+        let caller = engine
+            .instantiate(&calls, &imports)
+            .ok()
+            .expect("instantiates");
+        let Some(ExternalAddress::Function(address)) = engine.find_export(&caller, "caller") else {
+            panic!("caller is exported");
+        };
+        let bound = <T as FunctionTypeBinder<(), i32>>::bind_engine_function(&mut engine, address)
+            .expect("binds");
+        report(what, 1_000_000, || {
+            black_box(bound.invoke(&mut engine, ()).ok().expect("calls"));
+        });
+    }
 }
 
 fn main() {

@@ -917,6 +917,8 @@ pub struct FunctionAddress {
     /// Where the function is exported, for a reference the bindings made, which carries only `funcref`. Missing for
     /// a reference read from a table or a global, which carries the function's own type.
     origin: Option<Export>,
+    /// The reference that carries the function's own type, once a retyper gave it.
+    retyped: Cell<Option<WasmValue>>,
     _graveyard: Rc<Graveyard>,
 }
 
@@ -1190,6 +1192,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         FunctionAddress {
             reference,
             origin,
+            retyped: Cell::default(),
             _graveyard: Rc::clone(&self.graveyard),
         }
     }
@@ -1422,20 +1425,42 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         let Some(origin) = &function.origin else {
             return function.reference;
         };
-        let retyped = self.retyper_bytes(origin, function).and_then(|bytes| {
-            let instance = self.linked_helper(origin, |config| declare(&config.0, &bytes).ok())?;
-            let Owner::Instance(retyper, _) = &self.owners[instance] else {
-                return None;
-            };
-            retyper.get_table(RETYPED_FUNCTION).ok()?.get_data(0).ok()
-        });
-        if let Some(retyped) = retyped {
+        if let Some(retyped) = function.retyped.get() {
+            return retyped;
+        }
+        if let Some(retyped) = self.retyped(origin, function) {
+            function.retyped.set(Some(retyped));
             self.slow_paths.took(SlowPath::FunctionRetyped);
             retyped
         } else {
             self.slow_paths.took(SlowPath::FunctionNotRetyped);
             function.reference
         }
+    }
+
+    /// The reference read from the table of the function's retyper, made the first time it is asked for.
+    fn retyped(&mut self, origin: &Export, function: &FunctionAddress) -> Option<WasmValue> {
+        let instance = match self.helped.iter().find(|(found, _)| found == origin) {
+            Some((_, instance)) => *instance,
+            None => {
+                let bytes = self.retyper_bytes(origin, function)?;
+                self.linked_helper(origin, |config| declare(&config.0, &bytes).ok())?
+            }
+        };
+        let Owner::Instance(retyper, _) = &self.owners[instance] else {
+            return None;
+        };
+        retyper.get_table(RETYPED_FUNCTION).ok()?.get_data(0).ok()
+    }
+
+    /// The reference read from a slot, as the host passes it on: of the outer type `funcref`, with its bits, which
+    /// carry the function's own type, unchanged. The outer type WasmEdge gives a reference read from a typed slot
+    /// names a type index of the slot's module, and WasmEdge refuses such a value as a `funcref` parameter.
+    fn passable(&self, reference: WasmValue) -> WasmValue {
+        WasmValue::from(wasmedge_sys::ffi::WasmEdge_Value {
+            Value: reference.as_raw().Value,
+            Type: self.null_function.as_raw().Type,
+        })
     }
 
     /// An export that passes calls on to a function no instance exports, with the type the importing module declares
@@ -2193,7 +2218,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
         if table.writer.is_none() {
             return Err(ReadTableError::ElementNotFunction);
         }
-        Ok((!element.is_null_ref()).then(|| self.function_address(element, None)))
+        Ok((!element.is_null_ref()).then(|| self.function_address(self.passable(element), None)))
     }
 
     fn write_table(
@@ -2314,7 +2339,7 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
             Slot::F64 => Value::F64(value.to_f64()),
             Slot::V128 => Value::V128(value.to_v128().cast_unsigned()),
             Slot::Function { .. } => Value::FunctionReference(
-                (!value.is_null_ref()).then(|| self.function_address(value, None)),
+                (!value.is_null_ref()).then(|| self.function_address(self.passable(value), None)),
             ),
             Slot::Other => return Err(ReadGlobalError),
         })

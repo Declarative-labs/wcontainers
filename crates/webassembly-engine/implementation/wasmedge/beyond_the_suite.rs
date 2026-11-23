@@ -278,7 +278,7 @@ const CALLS_AN_IMPORT: &str = r#"(module
     (func (export "caller") (result i32) (call $function)))"#;
 
 #[test]
-fn a_function_read_from_a_table_is_imported_when_an_instance_exports_it() {
+fn a_function_read_from_a_table_is_imported() {
     let mut engine = engine(Config::default());
     let exporting = compile(&engine, EXPORTS_A_TABLE);
     let exporter = engine
@@ -386,7 +386,8 @@ fn every_function_the_host_writes_carries_its_own_type() {
     }
     assert_eq!(
         engine.slow_path_count(SlowPath::FunctionRetyped),
-        retyped + 4
+        retyped + 2,
+        "each address is retyped once"
     );
     assert_eq!(engine.slow_path_count(SlowPath::FunctionNotRetyped), 0);
     for (index, expected) in [(0, 7), (1, 9)] {
@@ -400,6 +401,19 @@ fn every_function_the_host_writes_carries_its_own_type() {
                 "{name} {index}"
             );
         }
+    }
+    // A reference read back from a typed table is written on as it is, into either table.
+    let read = engine
+        .read_table(&typed, 1)
+        .ok()
+        .flatten()
+        .expect("the typed table holds a function");
+    assert_eq!(engine.write_table(&typed, 0, Some(&read)), Ok(()));
+    assert_eq!(engine.write_table(&plain, 0, Some(&read)), Ok(()));
+    for name in ["call_typed", "cast_plain"] {
+        let address = function(&mut engine, &instance, name);
+        let bound = bind::<(i32,), i32>(&mut engine, address);
+        assert_eq!(bound.invoke(&mut engine, (0,)).ok(), Some(9), "{name}");
     }
     let Some(ExternalAddress::Global(cell)) = engine.find_export(&instance, "cell") else {
         panic!("cell is an exported global");
