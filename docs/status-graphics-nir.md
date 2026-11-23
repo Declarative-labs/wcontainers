@@ -13,10 +13,11 @@ the x86-64 machine (route tests 17 of 17 there); every list's whole run at e742e
   (`Variant::image_formats`, by unit, given to the shaders crate's rewrite by slot as
   `VariantKey::storage_formats`), and the screen reports `image_store_formatted`, which turns on
   `ARB_shader_image_load_store` and `ARB_shader_image_size` (and st/mesa's formatless PBO
-  download). Test `an_image_without_a_format_is_declared_in_the_format_the_variant_names`. ES
-  3.2 still does not start (KHR-GLES32: "Failed to create WGL context" at cb5396d3, desktop,
-  10:13 to 10:16 Pacific): one more of Mesa's ES 3.2 requirements is missing, not yet found; the
-  desktop extension list (`KHR-GL33.info.extensions`) is queued to name it.
+  download). Test `an_image_without_a_format_is_declared_in_the_format_the_variant_names`.
+- KHR-GLES32 STARTS (62db0bd1): with formatless stores Mesa computes ES 3.2, but its WGL frontend
+  refused every ES context above 3.1 by the requested version alone, before asking the driver
+  (`stw_ext_context.c`, a stale check); `mesa/patches/wgl-es32-contexts.patch` lets 3.2 through
+  (Mesa's own file, MIT). 831 of 909 run pass (below).
 - `EXT_gpu_shader5`'s two refused features: a program with arrays of resources or gathers at
   offsets known only at run time now goes through the shaders crate's rewrite (which splits the
   arrays, sampling an element picked at run time inside a switch, and moves the offsets into the
@@ -79,13 +80,22 @@ against run 22's whole run at d8bb7a2e (scratch `results/g9r23/full/<list>/resul
 - KHR-GLES31: 4,101; Pass 3,371, Fail 65, Crash 74, Timeout 1, Skip 590: 3,371 of 3,511, 96.01%
   (run 22: 3,288, 93.65%); `sample_variables.mask` 82 crashes pass and 21 now fail (read below).
 - KHR-GL33: 9,886; Pass 8,992, Fail 143, Crash 229, Skip 522: 8,992 of 9,364, 96.03%.
-- KHR-GLES32 (1,405): no context at e742e0be; the cause was Mesa's WGL frontend, which refuses
-  every ES context above 3.1 by its version before asking the driver (`stw_ext_context.c`);
-  patched in 62db0bd1 (`mesa/patches/wgl-es32-contexts.patch`), its run follows.
+- KHR-GLES32 at 62db0bd1 (the same driver as e742e0be with Mesa's WGL patch, which changes only
+  which ES versions WGL accepts; desktop, one GPU job, 12:16 to 12:21 Pacific): 1,405 cases;
+  Pass 831, Fail 20, Crash 57, Timeout 1, Skip 496: 831 of 909, 91.42%. NotSupported:
+  `constant_expressions` 464 (every tessellation control and evaluation variant, 232 each; the
+  geometry ones, 232, pass: dEQP's executor for those stages needs storage blocks there, which
+  the screen reports for compute and fragment programs only), `ext_texture_shadow_lod` 15 (not
+  reported), geometry_shader 9, texture_cube_map_array 4, shader_macros 2, tessellation_shader 2.
+  Failures: tessellation_shader 42 crashes (the point size an evaluation program reads, 72
+  refusals; control programs reading outputs after `barrier()`), geometry_shader 7 crashes and 7
+  failures (layered output, 18 refusals), gpu_shader5 7, texture_cube_map_array 5,
+  shader_integer_mix 3, texture_buffer 1, texture_compatibility 1. Results scratch
+  `results/g9r23/full/gles32-khr-main/results.csv`, log `logs/g9r23-gles32b.log`.
 - KHR-GL46 (19,714): no 4.6 context (G9's second part).
-- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
-  run and failed: 113,242 of 116,062, 97.57%, above the 92.9% floor (run 22: 112,521 of 116,095,
-  96.92%). Without KHR-GLES32: 113,242 of 114,657, 98.77%.
+- The bar's measure, every list that starts: 114,073 of 115,566 run, 98.71%, above the 92.9%
+  floor (run 22: 112,521 of 116,095, 96.92%, with KHR-GLES32 counted as run and failed). With
+  KHR-GLES32's 496 NotSupported counted as failed as well: 114,073 of 116,062, 98.29%.
 - The run's process refusals, most first: device lost 464 (KHR-GL33's BC textures most of them),
   blits the blitter does not make 138, the stage helper's invalid calls 134, sampling an integer
   texture 126, maps of multisampled textures 76, an evaluation program reading the point size 72,
@@ -99,8 +109,10 @@ wcontainers-nir or wcontainers-opengl; "not yet read" means no cause is named ye
 does not allow, so those are this track's next work. The RTX 3080's own OpenGL passed every case
 of every group holding a failure in G9 run 12 (77 groups); it is to be run again on today's
 groups in the independent check.
-- KHR-GLES32 1,405, and every ES 3.2 group: Mesa's WGL version check (this track, patched in
-  62db0bd1, run pending).
+- KHR-GLES32 78 failing (above) and 464 NotSupported constant expressions: storage blocks in
+  tessellation programs, which the stage helper runs as compute work, are not reported (this
+  track: report and bind them; the shaders track's stage helper if its forms refuse them);
+  `EXT_texture_shadow_lod` not reported (this track).
 - KHR-GL46 19,714: OpenGL 4.0 to 4.6 (this track, G9's second part: `ARB_gpu_shader_fp64`, the
   rest of `ARB_gpu_shader5`, transform feedback 2 and 3, ...).
 - KHR-GL33 packed_pixels 198 crashes: BC textures whose level 0 is not whole blocks lose the
