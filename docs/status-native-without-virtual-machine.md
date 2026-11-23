@@ -487,6 +487,13 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     final1-x86.log, run 10's both.sh), each test binary 3 times with /dev/kvm denied, clippy with warnings denied
     clean on both: Graviton4 186 of 186 (load 3 to 9), Xeon 156 of 156 (load 2 to 20; the translated and floor
     tests build none there).
+  - The VM executor after the commits (21:23 to 21:29 UTC, Graviton4 with KVM, load 8 to 17, scratch
+    w1/r3run1/way3-arm.out): exits, native (32,562 cases, 0 failing), floor (22), registers, host_branches,
+    interrupts and probe pass. The kernel test fails at its blocks program, "memory fault" 8 natively against 10
+    on the WebAssembly side: `dc cvau` of an unreadable page runs on Graviton4 and faults on the M5, the hardware
+    difference the native track recorded (docs/status-native.md, N4 run 20; that comparison needs the Mac). Not
+    caused here: the machine way's code is unchanged and the native test's 32,562 cases agree. busybox and speed
+    were not run.
   - No new unsafe code (the entries' change is in the zygote's assembly; the stop crate has none).
 - Not built yet (W1's bar is not met): loading pieces into the code area with their slots (the slot table's
   page-by-page mapping, a command the filter allows in [2^46, 2^47)), exits linked between pieces, resolution of
