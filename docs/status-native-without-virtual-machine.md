@@ -32,17 +32,57 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     The SVE probe reports Dropped on Graviton4 and Kept when its `svc` is replaced by a `nop`.
   - Probe values: Graviton4 user-space top 2^48, `CTR_EL0` 0xb444c004 (DIC and IDC set, L1Ip PIPT); Xeon 8488C
     top 0xfffffffffff000 (five-level paging).
+- W1, run 2 (2026-11-23), built and tested on both machines:
+  - The stub's start (zygote/*.rs, stub.rs, pages.rs): a fork request carries the stub's socket, its thread-pages
+    memfd and its memory's memfd (`SCM_RIGHTS`; the zygote closes its copies after the fork). The stub puts the
+    socket and memory at fixed numbers 8 and 9 (`dup3`), maps all 2^15 control pages read-only and register pages
+    read-write (at 2^45 + 2^32) and every signal stack (`MAP_NORESERVE`), closes the pages' fd, names thread 0's
+    exit-clear word (`set_tid_address`) and writes its id, then installs its filter. Its start is turn 1 of thread 0:
+    the filter waits in that control page, and `fork_stub` returns only once the stub has reported it installed (a
+    stub that ends first is reaped and its exit status named, `Unavailable::Zygote(FilterRefused)` and so on).
+  - Turns: the embedder writes commands and the resume into the control page, stores the answer word (release) and
+    wakes it; the stub applies `Map` (memory memfd, shared, fixed), `Protect` and `Unmap` in order, then reports
+    `Done` with the count, or `CommandRefused` with the index and error, in its register page, stores the request
+    word and wakes it. The runner waits on the request word with the futex's expected value, 100 ms at a time, and
+    on each time-out polls the socket for a hang-up. `end` ends the last thread (`exit`) and waits for the hang-up.
+  - The filter (filter.rs, classic BPF written here: no filter crate compares two arguments): the architecture,
+    then `futex`, `exit`, `exit_group`; `mmap` only of fd 9, shared and fixed, inside [64 KiB, 2^44) with a 64-bit
+    end computed with its carry, never executable, at the offset equal to the address (both words); `mprotect`
+    inside the guest area, never executable; `munmap` inside the guest area; anything else kills the process
+    (`SECCOMP_RET_KILL_PROCESS`). The rest of section 6's list (clone, recvmsg, close, sched_setaffinity,
+    rt_sigprocmask, sigaltstack) joins as the routines that make those calls are built.
+  - The window cache (windows.rs): 2 MiB windows of any stub's memfd mapped shared at first touch into one
+    reservation, 16,384 at most, evicted by the clock algorithm, copies in and out through raw pointers (a stub may
+    write the same bytes meanwhile), `forget` for a memfd about to close.
+  - Tests: tests/stub.rs (5 and one measurement): 10,000 turns and thread 0's reported id; maps at the guest's own
+    addresses at both edges of the guest area seen through /proc/<pid>/mem with the embedder's bytes, protect and
+    unmap seen in /proc/<pid>/maps; a refused command reported after those before it; ten host calls outside the
+    filter each kill the stub by SIGSYS (control page made writable, register page unmapped, signal stacks
+    replaced, executable protect, executable map, offset not the address, offset equal only in its low word, a map
+    across 2^44, a map below 64 KiB, a wrapping length); a stub stopped then killed from outside is seen ended
+    within 150 ms. tests/windows.rs (3): writes across window edges survive eviction and are the stub's bytes at the
+    guest address; three memories in a cache of two never mix; the plan's case of 64 memories of 2^43 bytes, 512
+    seeded touches each (`WCHP_SEED=1`, knobs `WCHP_MEMORIES`, `WCHP_TOUCHES`, 32,768 touches run): 16,384
+    windows mapped, 16,383 evicted, at most 16,490 host mappings against 105 before the cache, every word read back
+    through the cache and every 61st through /proc. tests/zygote.rs (8) as run 1, the stub now started for real.
+  - Verdicts: Graviton4, all 16 tests passed 3 times with /dev/kvm denied (load 9.9 to 15.9), clippy with warnings
+    denied clean. Xeon: the stub and zygote tests (13) passed with KVM readable at 13:37 UTC (load 0.2); the machine
+    stopped answering SSH at 13:39 UTC, so the KVM-denied runs and the window tests are not yet run there.
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- W1, in this order, each tested on both rented machines with /dev/kvm denied: the stub's thread-pages memfd
-  (control and register pages, signal stacks) and its request word and futex round trip, measured against the bare
-  futex slot (plan 4.3); the stub's seccomp filter and the test that a stub calling outside it is killed (3.7);
-  memfd guest memory, the window cache and copy-on-write with the adversarial fork tests (3.5, 4.2); the stop
-  signal and its windows (3.6); placement (4.3); the zygote's end and re-fork (4.1). Hand-written ARM64 pieces
+- First: rerun on the Xeon, with /dev/kvm denied, everything run 2 built (the machine was unreachable at the end of
+  run 2): the command under "How to run".
+- W1, in this order, each tested on both rented machines with /dev/kvm denied: threads (a `Clone` command on the
+  control page, the new thread's start on its own signal stack, `exit` through its exit-clear word, index reuse only
+  after the word is zero, `THREADS_PER_PROCESS` + 1 refused), with `clone` and the thread's calls added to the
+  filter; the stop signal, its handler and its windows (3.6: `sigaltstack`, `rt_sigaction` with `SA_RESTORER` on
+  x86-64, the stop blocked around commands, a stop landing in the wait returns to the wait); copy-on-write and the
+  adversarial fork tests (3.5); placement (4.3); the zygote's end and re-fork (4.1), in the process-wide host's
+  private stand-in. Hand-written ARM64 pieces
   stand in for translated code until the translator's form exists. Then the `Cpu` and `Executor` traits with the
   `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
 - I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
@@ -51,12 +91,20 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 ## How to run
 
 - W1's tests, on either rented machine: `arm-run <checkout> --name nwvm -- 'cargo test -p
-  wcontainers-executor-host-process -j 12'` (or `x86-run`). With /dev/kvm denied: build with `--no-run`, then
-  `sudo setpriv --reuid=$(id -u) --regid=$(id -g) --clear-groups -- <test binary> --test-threads 3`.
+  wcontainers-executor-host-process -j 12 -- --test-threads 3'` (or `x86-run`). With /dev/kvm denied: build with
+  `--no-run`, then `sudo setpriv --reuid=$(id -u) --regid=$(id -g) --clear-groups -- <test binary> --test-threads 3`
+  for each test binary: scratch w1/run2/nokvm.sh does it all, each run first proving /dev/kvm cannot be opened
+  (send it inline as rt.sh is sent, then `bash nokvm.sh 3`). Knobs: `WCHP_TURNS`, `WCHP_SEED`, `WCHP_MEMORIES`,
+  `WCHP_TOUCHES`.
 - The fault-visibility runs: scratch keep-rseq.py and keep-rseq-x86.py patch the remote copy (at
   /work/nwvm-w1 on each machine), then the same test command; the next sync restores the tree.
 
 ## How to run the measurements
+
+- Scratch w1/run2/: `rt.sh <cpu> <rounds>`, sent inline through `arm-run` / `x86-run --name nwvm` (it writes itself
+  to /work/target/nwvm/rt.sh; see arm-rt.out for the command), alternates W0's `/work/nwvm-w0r3/slot futex 10000 21
+  <cpu> <cpu> -` with the ignored test `turn_round_trip_on_one_cpu` (knobs `WCHP_CPU`, `WCHP_PER_BATCH`,
+  `WCHP_BATCHES`). Outputs arm-rt.out, x86-rt.out, and the KVM-denied verdicts arm-run-nokvm.out.
 
 - Scratch w0/run5/: `run5.sh <tag>` in /work/nwvm-w0r5 (sent as a tar through `arm-run --ssh` / `x86-run --ssh`,
   started detached); builds check5.c with gcc and writes <tag>-check5.out. `./check5 rt <ro|rw> <cpu> <work>
@@ -104,6 +152,13 @@ with work between calls c = 2.50 to 2.53 / 2.02 to 2.18 µs, no read-only differ
 `mmap` rule works on both; I's check X32-p +21.1% wall, X32-e +21.8% (3 rounds of 6 pairs, 9 programs, outputs equal
 the plain build's). Crossover with work between calls now 81,000 to 86,000 (Graviton4), 50,000 to 75,000 (Xeon,
 idle).
+
+W1 run 2 (2026-11-23 13:38 to 13:39 UTC, w1/run2/): the stub's turn with no commands, embedder thread and stub
+pinned to CPU 41, alternating with W0's slot in the same run, three rounds of 21 batches of 10,000, median of batch
+means: Graviton4 2,703 to 2,718 ns against the slot's 2,354 to 2,365 ns (load 7.2), Xeon 2,235 to 2,253 ns against
+2,019 to 2,040 ns (load 0.3); 1.15 and 1.10 times the slot. (The slot's figure includes two clock reads per round
+trip; the turn's does not.) This is the transport alone; the bar's figure is the guest's getppid, which needs
+translated code.
 
 W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's values and the test verdicts above
 (Graviton4 at load 13 to 36 while other tracks ran, Xeon at 0.1 to 0.6).
@@ -167,6 +222,12 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Departures from the plan
 
+- W1 run 2: the window cache evicts by the clock algorithm, an approximation of least recently used whose touch is
+  one store (plan 4.2 says so now); a stub's start is a turn the embedder waits for (plan 4.1 says so now); the
+  filter allows only the calls the stub's routines make so far, and grows with them.
+- W1 run 2: until the stop handler is built, a stub keeps the zygote's mask (every signal blocked); SIGKILL and the
+  filter's SIGSYS end it regardless.
+
 - The zygote is forked with every signal already blocked by the forking thread (and its mask restored after),
   rather than blocking them as its first act, so no handler of the embedder can run in the child (plan 4.1 says
   so now).
@@ -181,8 +242,8 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 16 in the library (14
-build on ARM64, 12 on x86-64), 1 in its test:
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 25 in the library (23
+build on ARM64, 21 on x86-64), 1 in its tests:
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
   it refers to nothing outside itself); glibc's `__rseq_offset` and `__rseq_size` (no crate has them); the two
   labels around the assembly; the slice of its code between them; the reservation's `mmap` and `munmap`;
@@ -190,6 +251,10 @@ build on ARM64, 12 on x86-64), 1 in its test:
   the jump into the zygote's code in the child, one per architecture.
 - probe.rs: `mrs ctr_el0` (no crate wraps it); the fixed `mmap` and `munmap` of the user-space search; the SVE
   probe's assembly (set p0 and FFR, `svc`, store them).
+- pages.rs: the thread pages' `mmap` where the host chooses and its `munmap`; the two views of that mapping as
+  32-bit and 64-bit atomics (the stub writes the same pages from its own process).
+- windows.rs: the reservation's `mmap` and `munmap`; mapping a window, or inaccessible memory, over one slot of
+  it; the copy out of a window and the copy into one (raw copies, since a stub may touch the bytes meanwhile).
 - tests/zygote.rs: glibc's `__rseq_size`, to show the test has a registration to drop.
 Constants no crate defines, named with their source: glibc's rseq signatures (`RSEQ_SIG`), Linux's
 `RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields.

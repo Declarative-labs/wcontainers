@@ -603,7 +603,10 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   memfd, its code area (read-execute, then closes that fd), its thread pages and signal stacks (4.3, then closes
   that fd), the slot table's fd at its fixed number, installs its
   handlers and signal stacks, unblocks the stop and fault signals, installs its filter, and becomes the memory's
-  stub. Exec is `memory_new` plus `memory_drop`: a fresh stub, as
+  stub. Its start is thread 0's first turn: the embedder writes the filter into that thread's control page before
+  the fork and waits for the turn's `Done`, so no turn reaches a stub without its filter, and a stub that ends
+  instead (its filter refused, in a sandbox that withholds seccomp) is reaped and P is unavailable, named by the
+  stub's exit status. Exec is `memory_new` plus `memory_drop`: a fresh stub, as
   Linux gives a fresh address space.
 - `thread_new` on a memory: the stub's thread that is in a kernel entry for that memory (the `clone` caller) makes
   the host thread with `clone` before it resumes, a command of its control page (3.6: applied once, with the stop
@@ -651,7 +654,7 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   slot table, the code area; shared blocks included), except the thread-pages memfd (4.3), is a window of 2 MiB at a 2 MiB-aligned offset of one memfd,
   mapped shared read-write at the kernel's side's first touch into one reservation of the host-process host, and
   found through a table keyed by (memfd, window). The windows are a cache: beyond 16,384 mapped windows (32 GiB of
-  views, against vm.max_map_count's default of 65,530 host mappings) the least recently used one is unmapped
+  views, against vm.max_map_count's default of 65,530 host mappings) the least recently used one, as the clock algorithm approximates it (one store per touch), is unmapped
   (counted "view window evicted"). Eviction happens only inside an executor call, which holds `&mut self`, so no
   slice handed out earlier is still borrowed. Measured (W0 probe run 3): mapping a window, touching one page and
   unmapping it, 8.5 µs on Graviton4 and 4.8 to 5.2 µs on the Xeon; mapping and unmapping alone 3.2 / 2.0 µs. So neither
@@ -764,7 +767,10 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 - Measured round trips for this exact shape (futex slot, ppid-like request), bare metal (W0 probe run 2, no timing
   per round trip): Graviton4 one CPU 2.29 to 2.37 µs, two CPUs 4.58 to 4.83 µs; Xeon 8488C one CPU 1.89 to 1.96 µs,
   two CPUs 4.02 to 4.16 µs; run 3's figures above include two clock reads per round trip. Cloud rows (median, one
-  CPU / two CPUs): Graviton4 c8g 2.20 / 5.58 µs, Granite Rapids 1.72 / 4.18 µs, Zen 4 5.14 / 8.46 µs.
+  CPU / two CPUs): Graviton4 c8g 2.20 / 5.58 µs, Granite Rapids 1.72 / 4.18 µs, Zen 4 5.14 / 8.46 µs. The stub's turn as built (W1 run 2: a turn with no commands, the embedder's thread and the stub
+  pinned to one CPU, alternating with W0's slot in the same run, three rounds of 21 batches of 10,000): 2.70 to 2.72
+  µs against the slot's 2.35 to 2.37 µs on Graviton4 (load 7 to 12), 2.24 to 2.25 µs against 2.02 to 2.04 µs on the
+  Xeon (load 0.2 to 0.3), 1.10 to 1.15 times the slot.
 - Rejected: seccomp user notification on an untranslated `svc` (as fast on one CPU and 0.4 µs cheaper across CPUs,
   but it gives only the number and six arguments, so exits that need the whole register file would need a second
   path; and it is not offered by every sandbox); pipes, sockets and ptrace (all dearer, measured).
