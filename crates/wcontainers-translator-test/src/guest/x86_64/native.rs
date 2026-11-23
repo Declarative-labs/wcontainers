@@ -133,7 +133,7 @@ pub(super) const FRAME_GENERAL: [libc::c_int; GENERAL_REGISTERS] = [
 
 /// A withheld register as the assembler names it.
 pub(super) fn assembled(r: Register) -> AsmRegister64 {
-    iced_x86::code_asm::get_gpr64(r).expect("a 64-bit register")
+    iced_x86::code_asm::get_gpr64(r).expect("a whole general register")
 }
 
 /// A 64-bit register's number.
@@ -202,12 +202,16 @@ fn compare_one(
         ..case.clone()
     };
     let (mut outcome, ended) = run(reference, case, host, counted)?;
-    if matches!(ended, Ended::Exit | Ended::Fault | Ended::Lookup) {
+    // A repeated string under the count is the inside's run of it on the hardware, the reference's own.
+    let hardware = counted && ended == Ended::Answered(InsideCall::Answer) && repeated_string(case);
+    if matches!(ended, Ended::Exit | Ended::Fault | Ended::Lookup) || hardware {
         // Seen through a signal frame, as the reference's run is, it is read as the reference's is.
         let seen = outcome.clone();
         X86_64::reconcile(case, &mut outcome, &seen);
     }
     let ours = outcome.stop;
+    // An answer that is the meaning's differs from the reference only where the meaning does.
+    let answered = matches!(ended, Ended::Answered(_) | Ended::FarTarget).then(|| outcome.clone());
     match compare_outcome::<X86_64>(reference, case, outcome) {
         Ok(agreement) => Ok((agreement, ended)),
         Err(report) => {
@@ -215,7 +219,7 @@ fn compare_one(
             if five_level_only(theirs) && matches!(ours, Stop::GeneralProtection | Stop::StackFault)
             {
                 Ok((Agreement::KnownFailure(FIVE_LEVEL_REFERENCE), ended))
-            } else if matches!(ended, Ended::Answered(_) | Ended::FarTarget) {
+            } else if answered.is_some_and(|answered| answered == translated::<X86_64>(case)) {
                 eprintln!("{report}");
                 Ok((Agreement::KnownFailure(MEANING_DIFFERS), ended))
             } else {
@@ -233,6 +237,22 @@ const FIVE_LEVEL_REFERENCE: &str = "the reference's 5-level paging: a page fault
 /// An answer of the inside is the meaning's, the WebAssembly output's too: where it differs from the reference,
 /// so does that output's layer 1, which is where the difference is answered.
 const MEANING_DIFFERS: &str = "answered by the meaning, which differs from the reference here as the WebAssembly output's layer 1 does";
+
+/// Whether the case's instruction is a string with a repeat prefix.
+fn repeated_string(case: &Case) -> bool {
+    wcontainers_x86::decode(case.code.code()).is_some_and(|(i, _)| {
+        (i.iced.has_rep_prefix() || i.iced.has_repne_prefix())
+            && (0..i.iced.op_count()).any(|n| {
+                matches!(
+                    i.iced.op_kind(n),
+                    iced_x86::OpKind::MemorySegRSI
+                        | iced_x86::OpKind::MemorySegESI
+                        | iced_x86::OpKind::MemoryESRDI
+                        | iced_x86::OpKind::MemoryESEDI
+                )
+            })
+    })
+}
 
 /// The end of the lower half and the start of the upper half of 5-level linear addresses.
 const FIVE_LEVEL_USER_END: u64 = 1 << 56;
@@ -253,6 +273,19 @@ fn five_level_only(stop: Stop) -> bool {
 
 /// The cases whose outcome by the inside's `answer` was compared with the meaning's.
 pub static ANSWERS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The far near transfers (`Question::NearBranch`, a first-level fault) whose answer by the CPU's rule (plan 3.3)
+/// differs from the meaning's.
+pub static FAR_UNLIKE_MEANING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the case's run ended at a near transfer to a target at or above 2^47.
+fn transfers_far(case: &Case, ended: Ended) -> bool {
+    use wcontainers_x86::answer::Question;
+    ended == Ended::FarTarget
+        || wcontainers_x86::decode(case.code.code())
+            .and_then(|(i, _)| wcontainers_x86::native::question(&i))
+            .is_some_and(|q| matches!(q, Question::NearBranch { .. }))
+}
 
 /// The counted runs that called the inside for a repeated string, which it runs on the hardware.
 pub static STRINGS_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -347,23 +380,45 @@ pub fn answered(case: &Case) -> Option<Outcome> {
 
 /// [`answered`], with the x87 pointers the block holds after the answer.
 pub fn answered_with_pointers(case: &Case) -> Option<(Outcome, Pointers)> {
+    answered_as(case, None)
+}
+
+/// The case's outcome by the inside where the lookup's first level found the target `target` of its jump, call
+/// or return at or above 2^47 (`native::far_transfer`, `answer::near_transfer`).
+pub fn answered_far(case: &Case, target: u64) -> Option<Outcome> {
+    answered_as(case, Some(target)).map(|(outcome, _)| outcome)
+}
+
+fn answered_as(case: &Case, far_target: Option<u64>) -> Option<(Outcome, Pointers)> {
     use wcontainers_guest_cpu::MemoryFault;
-    use wcontainers_x86::answer::{Consts, Fault, answer};
+    use wcontainers_x86::answer::{Consts, Fault, Notes, answer, near_transfer};
     let code = case.code.code();
     let (i, length) = wcontainers_x86::decode(code)?;
-    let question = wcontainers_x86::native::question(&i)?;
     let mut thread = vec![0; size_of::<X86Block>()];
     X86_64::from_state(&case.state, &mut thread);
     let mut block = X86Block::read_from_bytes(&thread).expect("a block");
-    let mut constants = Consts::new().expect("the constants cache");
     let mut memory = CaseMemory::new(case);
-    let stop = match answer(
-        question,
-        &mut block,
-        X86_64::case_offer(case),
-        &mut constants,
-        &mut memory,
-    ) {
+    let answered = match far_target {
+        Some(target) => {
+            let transfer = wcontainers_x86::native::far_transfer(&i)?;
+            near_transfer(transfer, target, &mut block, &mut memory).map(|()| Notes {
+                transferred: true,
+                ..Notes::default()
+            })
+        }
+        None => {
+            let question = wcontainers_x86::native::question(&i)?;
+            let mut constants = Consts::new().expect("the constants cache");
+            answer(
+                question,
+                &mut block,
+                X86_64::case_offer(case),
+                &mut constants,
+                &mut memory,
+            )
+        }
+    };
+    let stop = match answered {
         Ok(notes) => {
             if !notes.transferred {
                 block.rip += u64::from(length);
@@ -587,7 +642,7 @@ pub fn run_with_pointers(
         count_at(&host, span)?;
         // The trap after the jump into the piece stops at its first instruction at least.
         if stops.len() < 2 {
-            return Err("the trap flag stopped nowhere in the piece".into());
+            return Err("the trap flag stopped at no instruction of the piece".into());
         }
         let mut last = None;
         for (step, data, area) in &stops[..stops.len() - 1] {
@@ -638,20 +693,15 @@ pub fn run_with_pointers(
                     differences(&case.state, &state)
                 ));
             }
-            let answered = answered(case);
+            let answered = if ended == Ended::FarTarget {
+                let t = host.general[usize::from(number(T))];
+                Some(answered_far(case, t).ok_or("a first-level fault with no far transfer")?)
+            } else {
+                answered(case)
+            };
             if ended == Ended::Answered(InsideCall::Answer) && answered.is_none() {
                 let (i, _) = wcontainers_x86::decode(case.code.code()).ok_or("no instruction")?;
-                let repeated = i.iced.has_rep_prefix() || i.iced.has_repne_prefix();
-                let string = (0..i.iced.op_count()).any(|n| {
-                    matches!(
-                        i.iced.op_kind(n),
-                        iced_x86::OpKind::MemorySegRSI
-                            | iced_x86::OpKind::MemorySegESI
-                            | iced_x86::OpKind::MemoryESRDI
-                            | iced_x86::OpKind::MemoryESEDI
-                    )
-                });
-                if checked && repeated && string {
+                if checked && repeated_string(case) {
                     // Under the count the inside runs a repeated string on the hardware and adds the meaning's
                     // passes (`string_passes`, checked against the WebAssembly output's count elsewhere).
                     STRINGS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -665,20 +715,26 @@ pub fn run_with_pointers(
                 }
             }
             let meaning = translated::<X86_64>(case);
-            if answered.is_some() {
-                ANSWERS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if ended == Ended::Answered(InsideCall::Trap) {
+                trapped_as_the_meaning(case, &meaning)?;
             }
-            if let Some(answered) = answered
-                && answered != meaning
-            {
-                return Err(format!(
-                    "the inside's answer {:?} {} differs from the meaning's {:?}",
-                    answered.stop,
-                    differences(&meaning.state, &answered.state),
-                    meaning.stop
-                ));
+            let Some(answered) = answered else {
+                return Ok((meaning, ended, None));
+            };
+            ANSWERS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if answered != meaning {
+                if !transfers_far(case, ended) {
+                    return Err(format!(
+                        "the inside's answer {:?} {} differs from the meaning's {:?}",
+                        answered.stop,
+                        differences(&meaning.state, &answered.state),
+                        meaning.stop
+                    ));
+                }
+                // The CPU's rule, which the comparison with it judges; the meaning's difference is counted.
+                FAR_UNLIKE_MEANING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            return Ok((meaning, ended, None));
+            return Ok((answered, ended, None));
         }
         Ended::NotRun(_) => unreachable!("a run that was made"),
     };
@@ -693,6 +749,39 @@ pub fn run_with_pointers(
     ))
 }
 
+/// The runs that ended at the Trap route's call, whose trap by `native::trap` was the meaning's.
+pub static TRAPS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Checks that the trap the inside raises for the case's instruction (`native::trap`) is the meaning's: the same
+/// stop, with rip after the instruction for a trap and on it for a fault, nothing else changed.
+fn trapped_as_the_meaning(case: &Case, meaning: &Outcome) -> Result<(), String> {
+    use wcontainers_x86::Trap;
+    let (i, length) = wcontainers_x86::decode(case.code.code()).ok_or("no instruction")?;
+    let trap = wcontainers_x86::native::trap(&i, &X86_64::case_offer(case))
+        .ok_or_else(|| format!("the Trap route for {:?}, which has no trap", i.iced.code()))?;
+    let (stop_agrees, after) = match trap {
+        Trap::Undefined | Trap::Unsupported => (meaning.stop == Stop::Illegal, false),
+        Trap::GeneralProtection => (meaning.stop == Stop::GeneralProtection, false),
+        Trap::Overflow => (meaning.stop == Stop::GeneralProtection, true),
+        Trap::Int3 | Trap::Int1 => (matches!(meaning.stop, Stop::Breakpoint(_)), true),
+        Trap::DivideError | Trap::FloatException(_) => (false, false),
+    };
+    let mut state = case.state.clone();
+    if after {
+        state.0[RIP] += u128::from(length);
+    }
+    if !stop_agrees || meaning.state != state || !meaning.changed.is_empty() {
+        return Err(format!(
+            "the inside's trap {trap:?} for {:?} is not the meaning's {:?} ({})",
+            i.iced.code(),
+            meaning.stop,
+            differences(&state, &meaning.state)
+        ));
+    }
+    TRAPS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
 /// The fields that differ, named.
 fn differences(want: &State, got: &State) -> String {
     X86_64::REFERENCE
@@ -702,8 +791,11 @@ fn differences(want: &State, got: &State) -> String {
         .filter(|(_, (a, b))| a != b)
         .map(|(name, (a, b))| format!("{name} {a:#x} became {b:#x}"))
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(FIELDS_APART)
 }
+
+/// What separates the named fields of a report.
+const FIELDS_APART: &str = ", ";
 
 /// The data area's bytes that differ from the case's start.
 fn changed_bytes(case: &Case, now: &[u8]) -> Vec<(u32, u8)> {
@@ -757,7 +849,7 @@ fn guest_state(
                 registers[usize::from(register)] = value;
             }
             Fixup::X87Pointer(_) | Fixup::FloatStatus => {}
-            other => return Err(format!("a fix-up x86-64 never makes: {other:?}")),
+            other => return Err(format!("a fix-up this guest never makes: {other:?}")),
         }
     }
     let page = area.as_bytes();
@@ -786,7 +878,9 @@ fn guest_state(
         (Side::Before, _) => span.guest,
         (Side::After, Resume::At(address)) => address,
         (Side::After, Resume::Through(at)) => held(at)?,
-        (Side::After, Resume::Slot(_)) => return Err("an entry slot x86-64 never has".into()),
+        (Side::After, Resume::Slot(_)) => {
+            return Err("a slot of an entry, which this guest never makes".into());
+        }
     };
     let mut s = vec![0u128; FIELDS];
     for (to, from) in s.iter_mut().zip(general) {

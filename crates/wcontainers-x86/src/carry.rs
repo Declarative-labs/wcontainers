@@ -32,7 +32,7 @@ const T_LOW: Register = Register::R11D;
 const U_LOW: Register = Register::R15D;
 
 /// Bytes of a word of the thread area, as its fields are laid out.
-const WORD: usize = wcontainers_abi::WORD as usize;
+pub const AREA_WORD: usize = wcontainers_abi::WORD as usize;
 /// The registers a stand-in may be, in the order they are taken: every general register but rsp and the
 /// withheld ones.
 fn stand_ins() -> impl Iterator<Item = u8> {
@@ -42,7 +42,7 @@ fn stand_ins() -> impl Iterator<Item = u8> {
 /// Where `mov r64, imm64`'s immediate starts: after its REX prefix and opcode.
 const IMM64_AT: usize = 2;
 /// The bytes of a rel32 displacement.
-const REL32: usize = size_of::<i32>();
+pub const REL32: usize = size_of::<i32>();
 
 /// Whether the instruction names a withheld register, which a stand-in must then replace.
 pub fn names_withheld(i: &Iced) -> bool {
@@ -87,7 +87,7 @@ fn put(code: &mut HostCode, i: &Iced) {
 fn on_area(way: Way, offset: usize, displacement: i64) -> MemoryOperand {
     let offset = i64::try_from(offset).expect("an area offset is small");
     MemoryOperand {
-        displ_size: WORD as u32,
+        displ_size: AREA_WORD as u32,
         segment_prefix: way.area_segment(),
         ..MemoryOperand::with_base_displ(Register::None, offset + displacement)
     }
@@ -108,7 +108,7 @@ fn withheld_slot(number: u8) -> usize {
         .iter()
         .position(|&w| w == number)
         .expect("a withheld register");
-    WITHHELD_VALUES + k * WORD
+    WITHHELD_VALUES + k * AREA_WORD
 }
 
 fn page(offset: usize) -> Held {
@@ -127,7 +127,7 @@ fn place_address(code: &mut HostCode, r: Register, address: u64) {
     });
     put(
         code,
-        &Iced::with2(Code::Mov_r64_imm64, r, address).expect("a 64-bit constant"),
+        &Iced::with2(Code::Mov_r64_imm64, r, address).expect("a constant of a whole register"),
     );
 }
 
@@ -137,7 +137,7 @@ fn count_add(by: i64) -> Iced {
     Iced::with2(
         Code::Lea_r64_m,
         COUNT,
-        MemoryOperand::with_base_displ_size(COUNT, by, WORD as u32),
+        MemoryOperand::with_base_displ_size(COUNT, by, AREA_WORD as u32),
     )
     .expect("the count's add")
 }
@@ -224,7 +224,7 @@ fn reads_writes(i: &Iced, number: u8) -> (bool, bool) {
 /// stand-in's own in the area.
 fn stand_ins_in(way: Way, code: &mut HostCode, guest: &Iced, swaps: &[(u8, u8)]) {
     for (k, &(w, s)) in swaps.iter().enumerate() {
-        let own = STAND_IN_VALUES + k * WORD;
+        let own = STAND_IN_VALUES + k * AREA_WORD;
         put(code, &store_area(way, own, full(s)));
         code.relocate(s, page(own));
         if reads_writes(guest, w).0 {
@@ -250,7 +250,10 @@ fn stand_ins_out(way: Way, code: &mut HostCode, guest: &Iced, swaps: &[(u8, u8)]
             put(code, &store_area(way, withheld_slot(w), full(s)));
             code.home(w);
         }
-        put(code, &load_area(way, full(s), STAND_IN_VALUES + k * WORD));
+        put(
+            code,
+            &load_area(way, full(s), STAND_IN_VALUES + k * AREA_WORD),
+        );
         code.home(s);
     }
 }
@@ -323,7 +326,7 @@ impl Homes {
     /// in the area.
     fn throughout(&self, code: &mut HostCode) {
         for (k, &(w, s)) in self.pairs.iter().enumerate() {
-            code.relocate_throughout(s, page(HOME_VALUES + k * WORD));
+            code.relocate_throughout(s, page(HOME_VALUES + k * AREA_WORD));
             code.relocate_throughout(w, Held::Register(s));
         }
     }
@@ -331,7 +334,7 @@ impl Homes {
     /// The moves into the holders: each holder's own value to the area, the withheld register's into it.
     fn enter(&self, way: Way, code: &mut HostCode) {
         for (k, &(w, s)) in self.pairs.iter().enumerate() {
-            let own = HOME_VALUES + k * WORD;
+            let own = HOME_VALUES + k * AREA_WORD;
             put(code, &store_area(way, own, full(s)));
             code.relocate(s, page(own));
             put(code, &load_area(way, full(s), withheld_slot(w)));
@@ -344,7 +347,7 @@ impl Homes {
         for (k, &(w, s)) in self.pairs.iter().enumerate() {
             put(code, &store_area(way, withheld_slot(w), full(s)));
             code.home(w);
-            put(code, &load_area(way, full(s), HOME_VALUES + k * WORD));
+            put(code, &load_area(way, full(s), HOME_VALUES + k * AREA_WORD));
             code.home(s);
         }
     }
@@ -712,7 +715,8 @@ pub fn carry(
         Route::Copy | Route::Rebase | Route::Nothing | Route::Transfer
     ) && !repeated
         && m != Mnemonic::Fldcw
-        && !(route == Route::Rebase && names_high_byte(&i.iced));
+        && !(route == Route::Rebase && names_high_byte(&i.iced))
+        && !(route == Route::Transfer && far_direct(i, address));
     if !stays {
         // The inside reads and writes the guest's registers where they are between loops.
         homes.leave(way, code);
@@ -790,7 +794,7 @@ fn carry_plain(
         }
         Route::Transfer => transfer(way, code, i, address, next, homes),
         Route::Split | Route::Collision | Route::Aligned | Route::Constant | Route::Exclusive => {
-            unreachable!("x86-64 gives no {route:?} route")
+            unreachable!("this guest gives no {route:?} route")
         }
     }
     let m = i.iced.mnemonic();
@@ -808,7 +812,7 @@ fn carry_plain(
 /// is borrowed into u for `jrcxz`.
 fn x87_control_check(way: Way, code: &mut HostCode) {
     let control = MemoryOperand {
-        displ_size: WORD as u32,
+        displ_size: AREA_WORD as u32,
         segment_prefix: way.area_segment(),
         ..MemoryOperand::with_base_displ(Register::None, X87_CONTROL as i64)
     };
@@ -917,7 +921,7 @@ pub fn call(way: Way, code: &mut HostCode, kind: InsideCall) {
         Way::Process | Way::InProcess(_) => {
             let jump = Iced::with1(
                 Code::Jmp_rm64,
-                on_area(way, ENTRIES + usize::from(kind_code) * WORD, 0),
+                on_area(way, ENTRIES + usize::from(kind_code) * AREA_WORD, 0),
             )
             .expect("a jump through the area");
             let at = code.offset() as u64;
@@ -1026,7 +1030,14 @@ pub fn count(code: &mut HostCode, events: u32) {
 /// Writes the word of `code` at `place` for the place's address.
 pub fn write_place(code: &mut [u8], place: &AddressPlace) {
     let at = usize::try_from(place.start).expect("a host offset fits usize") + IMM64_AT;
-    code[at..at + WORD].copy_from_slice(&place.address.to_le_bytes());
+    code[at..at + AREA_WORD].copy_from_slice(&place.address.to_le_bytes());
+}
+
+/// Whether `i` at `address` is a direct transfer to a target at or above 2^47, which the inside answers
+/// (`Question::NearBranch`).
+fn far_direct(i: &Instruction, address: u64) -> bool {
+    i.iced.op0_kind() == OpKind::NearBranch64
+        && address.wrapping_add(i.iced.near_branch64()) >= USER_END
 }
 
 /// A branch, call, return or jump.
@@ -1042,12 +1053,13 @@ fn transfer(
     let ins = &i.iced;
     let direct = |offset: u64| address.wrapping_add(offset);
     match ins.mnemonic() {
+        _ if far_direct(i, address) => {
+            // The inside's answer: the transfer, a fault, or for a branch not taken the next instruction.
+            call(way, code, InsideCall::Answer);
+            code.after(Resume::At(next));
+        }
         Jmp | Call if ins.op_kind(0) == OpKind::NearBranch64 => {
             let target = direct(ins.near_branch64());
-            if target >= USER_END {
-                call(way, code, InsideCall::Answer);
-                return;
-            }
             if ins.mnemonic() == Call {
                 place_address(code, T, next);
                 let push = Iced::with1(Code::Push_r64, T).expect("a push");
@@ -1097,11 +1109,6 @@ fn transfer(
         }
         _ if ins.is_jcc_short_or_near() => {
             let target = direct(ins.near_branch64());
-            if target >= USER_END {
-                call(way, code, InsideCall::Answer);
-                code.after(Resume::At(next));
-                return;
-            }
             let mut jcc = *ins;
             jcc.set_code(ins.code().as_near_branch());
             let at = code.offset();
@@ -1135,11 +1142,6 @@ fn transfer(
         }
         Loop | Loope | Loopne | Jrcxz | Jecxz => {
             let target = direct(ins.near_branch64());
-            if target >= USER_END {
-                call(way, code, InsideCall::Answer);
-                code.after(Resume::At(next));
-                return;
-            }
             let at = code.offset();
             // The rel8 branch goes over the short jump after it to the taken side's exit.
             let short = Iced::with_branch(Code::Jmp_rel8_64, 0).expect("a jump");
@@ -1229,9 +1231,9 @@ fn first_level(way: Way, code: &mut HostCode) {
     let level = MemoryOperand::new(
         Register::None,
         U,
-        WORD as u32,
+        AREA_WORD as u32,
         i64::try_from(FIRST_LEVEL).expect("a small offset"),
-        WORD as u32,
+        AREA_WORD as u32,
         false,
         way.area_segment(),
     );
@@ -1243,7 +1245,7 @@ fn first_level(way: Way, code: &mut HostCode) {
 
 /// The lookup's second level: the jump to the host entry of the piece at t.
 fn second_level(code: &mut HostCode) {
-    let entry = MemoryOperand::new(U, T, WORD as u32, 0, 0, false, Register::None);
+    let entry = MemoryOperand::new(U, T, AREA_WORD as u32, 0, 0, false, Register::None);
     put(
         code,
         &Iced::with1(Code::Jmp_rm64, entry).expect("the second level"),

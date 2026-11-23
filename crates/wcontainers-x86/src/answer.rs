@@ -1,6 +1,7 @@
 //! The inside's answers to instructions of the Kernel route (plan 3.5), in plain Rust over the thread's block, as
 //! their meanings give them.
 
+use crate::condition::Condition;
 use crate::cpuid::{self, ECX, Registers, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
 use crate::user_segments::{
     CR0, DUMMY_GDT_BASE, DUMMY_IDT_BASE, DUMMY_TABLE_LIMIT, NO_LOCAL_TABLE, SEGMENTS,
@@ -226,6 +227,45 @@ pub enum Question {
         code: Code,
         at: Operand,
         bytes: u8,
+    },
+    /// A direct branch, jump or call to the instruction's address plus `offset`, a target at or above 2^47 the
+    /// lookup cannot take (plan 3.3), made where `when` holds.
+    NearBranch {
+        transfer: NearTransfer,
+        when: Taken,
+        offset: u64,
+    },
+}
+
+/// A near transfer to a target at or above 2^47, made by [`near_transfer`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NearTransfer {
+    Jump,
+    /// A call whose return address is `length` bytes past the instruction.
+    Call {
+        length: u8,
+    },
+    /// A return whose target was read from the stack's top, releasing `release` bytes beyond its slot.
+    Return {
+        release: u16,
+    },
+}
+
+/// When a direct branch of [`Question::NearBranch`] is taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taken {
+    Always,
+    /// A `jcc`'s condition on the flags.
+    When(Condition),
+    /// `loop` (`zero` none), `loope` (`zero` true) or `loopne`: rcx, or ecx with `bits` 32, less one is not
+    /// zero, and ZF is `zero`.
+    Loop {
+        bits: u8,
+        zero: Option<bool>,
+    },
+    /// `jrcxz`, or `jecxz` with `bits` 32: rcx or ecx is zero.
+    CountZero {
+        bits: u8,
     },
 }
 
@@ -609,8 +649,68 @@ pub fn answer(
             notes.transferred = true;
         }
         Question::XState { restore, wide, at } => xstate(block, memory, offer, restore, wide, at)?,
+        Question::NearBranch {
+            transfer,
+            when,
+            offset,
+        } => {
+            let count = block.gpr[general(RCX)];
+            let (taken, counted) = match when {
+                Taken::Always => (true, None),
+                Taken::When(condition) => (condition.holds(block.flags.into()), None),
+                Taken::Loop { bits, zero } => {
+                    let left = count.wrapping_sub(1) & low_bits(bits.into());
+                    let flag = block.flags & ZF as u32 != 0;
+                    let taken = left != 0 && zero.is_none_or(|zero| flag == zero);
+                    (taken, Some((bits, left)))
+                }
+                Taken::CountZero { bits } => (count & low_bits(bits.into()) == 0, None),
+            };
+            if taken {
+                // A fault leaves the count as it was.
+                near_transfer(transfer, block.rip.wrapping_add(offset), block, memory)?;
+                notes.transferred = true;
+            }
+            if let Some((bits, left)) = counted {
+                set_general(block, RCX, bits, left);
+            }
+        }
     }
     Ok(notes)
+}
+
+/// A near call's return address on the stack.
+const RETURN_SLOT: u64 = size_of::<u64>() as u64;
+
+/// Makes near transfer `transfer` of the instruction at rip to `target`, at or above 2^47 (plan 3.3), as the
+/// reference and the meaning do: a call's return address written first (a fault there changes nothing), then
+/// general protection, the registers unchanged, for a target the guest's 4-level rule leaves non-canonical; else
+/// the call's or the return's stack pointer, and rip the target, where the caller's fetch faults.
+pub fn near_transfer(
+    transfer: NearTransfer,
+    target: u64,
+    block: &mut X86Block,
+    memory: &mut impl Memory,
+) -> Result<(), Fault> {
+    let stack = block.gpr[usize::from(RSP)];
+    match transfer {
+        NearTransfer::Jump => canonical(target)?,
+        NearTransfer::Call { length } => {
+            let back = block.rip.wrapping_add(length.into());
+            let at = stack.wrapping_sub(RETURN_SLOT);
+            memory
+                .write(at, &back.to_le_bytes())
+                .map_err(Fault::Memory)?;
+            canonical(target)?;
+            block.gpr[usize::from(RSP)] = at;
+        }
+        NearTransfer::Return { release } => {
+            canonical(target)?;
+            block.gpr[usize::from(RSP)] = stack.wrapping_add(RETURN_SLOT + u64::from(release));
+        }
+    }
+    block.rip = target;
+    Ok(())
 }
 
 /// The image's offsets (Intel SDM Vol. 1 10.5.1, table 10-2), and the x87 header's bytes.

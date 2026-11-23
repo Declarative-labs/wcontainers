@@ -8,16 +8,19 @@ use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Ope
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
 use crate::answer::{
-    DescriptorRead, FloatStatus, Place, Question, Reciprocal, SegmentName, VectorEncoding,
+    DescriptorRead, FloatStatus, NearTransfer, Place, Question, Reciprocal, SegmentName, Taken,
+    VectorEncoding,
 };
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
+use crate::condition::Condition;
 use crate::decode::{Instruction, claim, told_feature};
-use crate::guest::{Control, Hook};
+use crate::guest::{Control, Hook, Trap};
 use crate::meaning::{ENTER_LEVELS, is_string, written};
 use crate::operand::{RSP, W32, W64, general};
 use crate::segments::{is_far, operand_bytes};
 use crate::x87::{Code, Operation};
 use crate::{Offer, SegmentRegister, USER_END, X86_64, carry};
+use iced_x86::ConditionCode;
 
 /// How translated code reaches guest memory, the thread area and the inside; part of the cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -382,8 +385,94 @@ pub fn question(i: &Instruction) -> Option<Question> {
             at: operand(i)?,
             bytes: crate::operand::memory_bytes(i) as u8,
         },
+        _ if transfers(i) && ins.op0_kind() == OpKind::NearBranch64 => {
+            let count_bits = if i.address32 { W32 } else { W64 };
+            Question::NearBranch {
+                transfer: match m {
+                    Call => NearTransfer::Call {
+                        length: ins.len() as u8,
+                    },
+                    _ => NearTransfer::Jump,
+                },
+                when: match m {
+                    Jmp | Call => Taken::Always,
+                    Loop => Taken::Loop {
+                        bits: count_bits,
+                        zero: None,
+                    },
+                    Loope | Loopne => Taken::Loop {
+                        bits: count_bits,
+                        zero: Some(m == Loope),
+                    },
+                    Jrcxz => Taken::CountZero { bits: W64 },
+                    Jecxz => Taken::CountZero { bits: W32 },
+                    // iced numbers the conditions from 1 in the order of a `jcc`'s low four bits.
+                    _ => Taken::When(Condition::from_code(
+                        ins.condition_code() as u8 - ConditionCode::o as u8,
+                    )),
+                },
+                offset: ins.near_branch64(),
+            }
+        }
         _ => crate::fpu::transcendental_code(i).map(Question::X87)?,
     })
+}
+
+/// The trap the inside raises for an instruction of the Trap route, as its meaning raises it (x86/meaning.rs
+/// `emit`); the pc is after the instruction for `Int3`, `Int1` and `Overflow`, else on it.
+pub fn trap(i: &Instruction, offer: &Offer) -> Option<Trap> {
+    use Mnemonic::*;
+    let ins = &i.iced;
+    if i.too_long {
+        return Some(Trap::GeneralProtection);
+    }
+    if ins.is_invalid() {
+        return Some(Trap::Undefined);
+    }
+    let c = claim(ins.code());
+    if c == CLAIM_KERNEL {
+        return Some(if ins.mnemonic() == Rsm {
+            Trap::Undefined
+        } else {
+            Trap::GeneralProtection
+        });
+    }
+    if c == CLAIM_NEVER || told_feature(c).is_some_and(|at| !offer.tells(at)) || !written(i) {
+        return Some(Trap::Unsupported);
+    }
+    Some(match ins.mnemonic() {
+        Int3 => Trap::Int3,
+        Int1 => Trap::Int1,
+        Int => match ins.immediate8() {
+            crate::BREAKPOINT_VECTOR => Trap::Int3,
+            crate::OVERFLOW_VECTOR => Trap::Overflow,
+            _ => Trap::GeneralProtection,
+        },
+        Sysenter => Trap::GeneralProtection,
+        Ud0 | Ud1 | Ud2 => Trap::Undefined,
+        _ => return None,
+    })
+}
+
+/// The near transfer of a jump or call through a register or memory, or a return, whose target the lookup's first
+/// level found at or above 2^47: the inside's [`crate::answer::near_transfer`] with that target.
+pub fn far_transfer(i: &Instruction) -> Option<NearTransfer> {
+    let ins = &i.iced;
+    let through = ins.op_count() > 0 && ins.op0_kind() != OpKind::NearBranch64;
+    match ins.mnemonic() {
+        Mnemonic::Jmp if through && !is_far(i) => Some(NearTransfer::Jump),
+        Mnemonic::Call if through && !is_far(i) => Some(NearTransfer::Call {
+            length: ins.len() as u8,
+        }),
+        Mnemonic::Ret => Some(NearTransfer::Return {
+            release: if ins.op_count() > 0 {
+                ins.immediate16()
+            } else {
+                0
+            },
+        }),
+        _ => None,
+    }
 }
 
 /// What the inside's second call is told of an instruction of the Float status route.
@@ -431,7 +520,13 @@ pub fn route(way: Way, i: &Instruction, host: &HostMatches, offer: &Offer) -> Ro
         || matches!(claim(ins.code()), CLAIM_KERNEL | CLAIM_NEVER)
         || told_feature(claim(ins.code())).is_some_and(|at| !offer.tells(at))
         || !written(i);
-    if refused || matches!(m, Int3 | Int1 | Int | Into | Ud0 | Ud1 | Ud2 | Sysenter) {
+    // `rdpid` is never offered (its processor number would be the host's).
+    if refused
+        || matches!(
+            m,
+            Int3 | Int1 | Int | Into | Ud0 | Ud1 | Ud2 | Sysenter | Rdpid
+        )
+    {
         return Route::Trap;
     }
     if matches!(
@@ -523,7 +618,6 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
             Cpuid
                 | Rdtsc
                 | Rdtscp
-                | Rdpid
                 | Xgetbv
                 | Popf
                 | Popfq

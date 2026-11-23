@@ -238,6 +238,59 @@ fn every_decoded_form_is_routed_by_the_plan() {
     );
 }
 
+/// Every form the machine and P call the inside for, on a host whose undefined results match the meanings (the
+/// rest is the gap list's item 2), has a question for `answer`, but `syscall`: a Kernel route, and a direct
+/// transfer, whose target is at or above 2^47 from an address near it. Seeded as the routing sweep.
+#[test]
+fn every_call_into_the_inside_has_a_question() {
+    use wcontainers_x86::native::question;
+    let seed = knob("X86_ROUTE_SEED", 0x5eed);
+    let cases = knob("X86_ROUTE_CASES", 200_000);
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let offer = offer();
+    let hosts = [
+        HOSTS[0],
+        HostMatches {
+            five_level_paging: true,
+            partial_writes: false,
+            undefined_results: true,
+        },
+    ];
+    let (mut asked, mut wrong) = (0u64, Vec::new());
+    for _ in 0..cases {
+        let code = instruction_like(&mut rng);
+        let Some((i, length)) = decode(&code) else {
+            continue;
+        };
+        let direct = i.iced.op_count() > 0 && i.iced.op0_kind() == OpKind::NearBranch64;
+        for way in [Way::Machine, Way::Process] {
+            for host in &hosts {
+                let r = route(way, &i, host, &offer);
+                let called = r == Route::Kernel && i.iced.mnemonic() != Mnemonic::Syscall
+                    || r == Route::Transfer && direct;
+                if !called {
+                    continue;
+                }
+                asked += 1;
+                if question(&i).is_none() {
+                    wrong.push(format!(
+                        "{way:?} {host:?}: {:02x?} {:?} ({r:?})",
+                        &code[..usize::from(length).min(code.len())],
+                        i.iced.code()
+                    ));
+                }
+            }
+        }
+    }
+    println!("seed {seed:#x}, {cases} cases, {asked} calls into the inside");
+    assert!(
+        wrong.is_empty(),
+        "{} with no question, first: {:#?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(20)]
+    );
+}
+
 /// The forms the plan and its checks named, each in the ways it differs.
 #[test]
 fn the_named_forms() {

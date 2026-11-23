@@ -10,14 +10,12 @@ use wcontainers_guest_cpu::position::Side;
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::{ENTRIES, FIRST_CALL_VECTOR, WITHHELD_VALUES};
-use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, names_withheld};
+use wcontainers_x86::carry::{AREA_WORD, COUNT, T, U, WITHHELD, names_withheld};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use wcontainers_x86::{Offer, V3, X86_64, decode, general_register};
 
 /// The ways this output is built for so far: no memory check.
 const WAYS: [Way; 2] = [Way::Machine, Way::Process];
-/// Bytes of a word of the thread area.
-const WORD: usize = wcontainers_abi::WORD as usize;
 /// Where the sweep's pieces start.
 const AT: u64 = 0x40_1000;
 
@@ -152,7 +150,7 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
             }
             _ => {
                 i.memory_displacement64()
-                    == (ENTRIES + WORD * usize::from(InsideCall::Exit.code())) as u64
+                    == (ENTRIES + AREA_WORD * usize::from(InsideCall::Exit.code())) as u64
             }
         };
         let back = offset + i.len();
@@ -216,7 +214,7 @@ struct Holders {
 fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
     use wcontainers_guest_cpu::position::Held;
     let decoded: std::collections::BTreeMap<usize, Iced> = host(&piece.bytes).into_iter().collect();
-    let slot = |k: usize| (WITHHELD_VALUES + k * WORD) as u64;
+    let slot = |k: usize| (WITHHELD_VALUES + k * AREA_WORD) as u64;
     let number = |r: Register| general_register(r).map(|g| g.number);
     let on_area = |i: &Iced, n: u32| {
         i.op_kind(n) == OpKind::Memory
@@ -387,8 +385,7 @@ fn on_slot(guest: &Iced, host: &Iced, way: Way) -> bool {
         && host.memory_segment() == way.area_segment()
         && host.memory_base() == Register::None
         && host.memory_index() == Register::None
-        && host.memory_displacement64()
-            == (WITHHELD_VALUES + k * wcontainers_abi::WORD as usize) as u64
+        && host.memory_displacement64() == (WITHHELD_VALUES + k * AREA_WORD) as u64
         && others_same
 }
 
@@ -646,7 +643,7 @@ fn a_withheld_register_takes_a_stand_in() {
 /// unless the memory form would act otherwise.
 #[test]
 fn a_withheld_operand_is_its_slot() {
-    let slot = |k: usize| (WITHHELD_VALUES + k * wcontainers_abi::WORD as usize) as u64;
+    let slot = |k: usize| (WITHHELD_VALUES + k * AREA_WORD) as u64;
     for way in WAYS {
         // mov r9d, r11d: the load form, from t's slot.
         let code = decoded("45 89 d9", way);

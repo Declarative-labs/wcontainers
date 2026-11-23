@@ -146,7 +146,7 @@ Never copied, by route:
   its first level, and a copied `rdgsbase` or `rdfsbase` (in I) would hand it a host address: the static routing
   test (section 7) fails if any of them is routed Copy in the way concerned.
 - Kernel (section 3.5): `syscall` in P and I (in the machine it is Copy: the floor owns LSTAR, section 3.6);
-  `cpuid`; `rdtsc`, `rdtscp`, `rdpid`; `xgetbv`; segment register reads and writes
+  `cpuid`; `rdtsc`, `rdtscp` (`rdpid` is never offered: Trap); `xgetbv`; segment register reads and writes
   and far transfers (`mov` from and to a segment register, `push` and `pop` of `fs` and `gs`, `lss`, `lfs`, `lgs`, far
   `call`/`jmp`/`retf`, `iretq`; a read gives the meaning's selector, never the host's or the floor's); `popf`; the
   user-mode descriptor reads (`sgdt`, `sidt`, `sldt`, `str`, `smsw`, `lar`, `lsl`, `verr`, `verw`; this host has
@@ -362,10 +362,15 @@ counterpart of ARM64's `udf`).
 So every t either reaches the entry of its own piece, enters the miss routine with t intact, or faults with t
 intact, and the host address jumped to is always one of our table's words:
 - t at or above 2^47: the first-level read faults, before the instruction has changed anything. The inside answers
-  as the meaning does (x86/guest.rs `branch_target`, 4-level canonical rule): a target that is not canonical is
-  general protection at the transfer, no address, rip on it, rsp not popped; a canonical target in the upper half
-  (the vsyscall address 0xffffffffff600000 included) is handed on, so the inside completes the pop (or a call's push)
-  and reports a page fault at the target with rip = the target, as Linux does (also under `vsyscall=none`).
+  with `answer::near_transfer` (the kind from `native::far_transfer`, the target t), as the meaning does
+  (x86/guest.rs `branch_target`, 4-level canonical rule): a target that is not canonical is general protection at
+  the transfer, no address, rip on it, rsp not popped, but a call's return address already written below rsp (the
+  reference's `call rax` to 2^63 writes it, round 3 run 3, and so does the meaning); a canonical target in the
+  upper half (the vsyscall address 0xffffffffff600000 included) is handed on, so the inside completes the pop (or a
+  call's push) and reports a page fault at the target with rip = the target, as Linux does (also under
+  `vsyscall=none`). A direct `jmp`, `call`, `jcc`, `loop` or `jrcxz` whose target is at or above 2^47 (a rel32
+  wrapping below zero, or code near 2^47) calls the inside instead of exiting, with `Question::NearBranch` (the
+  condition or count, the offset): taken, the same rule; not taken, the next instruction (a loop's count written).
   Measured on this host (check-xn0/mirror2b.out, refjump): a `ret` to 0xffffffffff700000 or 0xffff800000001000 is
   SIGSEGV SEGV_MAPERR at the target with rip the target and rsp popped; a `ret` to 0x8000000000401000 is SIGSEGV
   SI_KERNEL, address 0, rip on the `ret`, rsp not popped (this host's 5-level paging takes 0xfff0000000401000 as a
@@ -388,8 +393,7 @@ flags (rcx borrowed, `jrcxz`) 1.52 to 1.62; so the compare forms docs/native.md 
 measured: a return site the indirect predictor cannot learn (an interpreter's), and the memory the second level
 takes on busybox and python (XN1 records both).
 
-Calls: `call r/m` is the load into t (its own fault, before), the three instructions of the first level (before,
-as the reference checks the target before it pushes), `push qword ptr [rip + d]` of the guest return address from
+Calls: `call r/m` is the load into t (its own fault, before), the three instructions of the first level (before, so the inside's answer makes the push and the target's test in the reference's order), `push qword ptr [rip + d]` of the guest return address from
 the piece's pool (the commit point; its fault is before), and the second-level `jmp`. The pool is a read-only,
 non-executable range at one fixed distance from the code area (the pool page of each code page at the same
 distance), holding guest addresses only, so the code area is never read as data and may be execute-only; the
@@ -454,7 +458,7 @@ geometric mean from 1.27 to 1.15.
 ### 3.5 The Kernel route: who answers
 
 The inside answers with `answer` (section 1): `cpuid` from the same table the meaning emits (both settings),
-`xgetbv` with the offer's XCR0, `rdtsc`/`rdtscp`/`rdpid` through the clock and the processor answer the meaning
+`xgetbv` with the offer's XCR0, `rdtsc`/`rdtscp` through the clock and the processor answer the meaning
 gives, segment reads, writes and far transfers by the x86 plan's rules (a selector of 32-bit code, 0x23, is refused
 by name, "far transfer to 32-bit code, not provided"), `wrfsbase`/`wrgsbase` where they are routed, `popf` and
 `iretq` taking TF, DF, NT and ID and leaving AC clear, the descriptor reads' designed answers, the transcendentals

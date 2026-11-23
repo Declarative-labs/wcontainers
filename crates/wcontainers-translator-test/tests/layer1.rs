@@ -415,7 +415,8 @@ fn every_form_matches_the_cpu_x86_64() {
 #[test]
 fn every_form_matches_the_cpu_natively_x86_64() {
     use wcontainers_translator_test::guest::x86_64::native::{
-        ANSWERS_CHECKED, REFERENCE_HOST, SECOND_CALLS, STRINGS_RUN, compare,
+        ANSWERS_CHECKED, FAR_UNLIKE_MEANING, REFERENCE_HOST, SECOND_CALLS, STRINGS_RUN,
+        TRAPS_CHECKED, compare,
     };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
@@ -428,11 +429,14 @@ fn every_form_matches_the_cpu_natively_x86_64() {
     eprintln!(
         "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}; \
          the float status route's second call made in {}; a repeated string under the count run by the inside on \
-         the hardware in {}",
+         the hardware in {}; the inside's trap the meaning's in {}; a far transfer answered unlike the meaning (and \
+         judged against the CPU) in {}",
         ended.into_inner().unwrap(),
         ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
         SECOND_CALLS.load(std::sync::atomic::Ordering::Relaxed),
-        STRINGS_RUN.load(std::sync::atomic::Ordering::Relaxed)
+        STRINGS_RUN.load(std::sync::atomic::Ordering::Relaxed),
+        TRAPS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
+        FAR_UNLIKE_MEANING.load(std::sync::atomic::Ordering::Relaxed)
     );
     assert!(
         failures.is_empty(),
@@ -1465,7 +1469,7 @@ fn every_unoffered_code_is_drawn_x86_64() {
 fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare as natively};
-    use wcontainers_translator_test::guest::x86_64::{GS, RSP, XMM, plain};
+    use wcontainers_translator_test::guest::x86_64::{GS, RFLAGS, RSP, XMM, plain};
     use wcontainers_translator_test::layout::{CODE, DATA};
     use wcontainers_x86::{R9, R10, RAX, RBX, RCX, RDI, RSI, USER_END};
     // Where the stack, a string's destination and a bit offset are, and a GS base above 2^32 (the check's gs67.c).
@@ -1610,6 +1614,37 @@ fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
             &[0x67, 0x48, 0x0f, 0xa3, 0x05, 0xf7, 0x00, 0x00, 0xf4],
             &[(r(RAX), offset)],
         ));
+    }
+    // Direct transfers whose rel32 wraps below zero into the upper half (the tenth check): jmp, call with a stack
+    // and without one, every jcc taken and not, and the check's prefixed forms.
+    use wcontainers_x86::carry::REL32;
+    let unmapped_stack = PAGE_SIZE;
+    let farthest = CODE.wrapping_sub(1 << (u32::BITS - 1)) + PAGE_SIZE;
+    for target in [0u64.wrapping_sub(PAGE_SIZE), farthest] {
+        let rel = |opcode: &[u8]| {
+            let end = CODE + (opcode.len() + REL32) as u64;
+            [opcode, &(target.wrapping_sub(end) as u32).to_le_bytes()].concat()
+        };
+        for opcode in [
+            &[0xe9][..],
+            &[0xe8],
+            &[0x49, 0xe8],
+            &[0x66, 0xe9],
+            &[0x66, 0xe8],
+        ] {
+            for rsp in [stack, unmapped_stack] {
+                check(with(&rel(opcode), &[(RSP, rsp)]));
+            }
+        }
+        for condition in 0..16u8 {
+            for flags in [0, wcontainers_x86::ARITHMETIC_FLAGS] {
+                for prefix in [&[][..], &[0x3e], &[0x66]] {
+                    let mut case = with(&rel(&[prefix, &[0x0f, 0x80 | condition]].concat()), &[]);
+                    case.state.0[RFLAGS] |= u128::from(flags);
+                    check(case);
+                }
+            }
+        }
     }
     eprintln!("the plan's shapes natively: {same} as the CPU, known differences {known:?}");
     assert!(failures.is_empty(), "{failures:#?}");
