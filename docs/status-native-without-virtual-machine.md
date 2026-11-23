@@ -458,18 +458,56 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     Graviton4 180 of 180 (load 12 to 22), Xeon 156 of 156 (load 2.2 to 7.4). Before the leave routine (final-*.log):
     the same counts. The x86 machine did not answer SSH at 19:40 and around 20:15.
   - No new unsafe code (the route is in the zygote's assembly).
-- Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
-  `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
-  test program, register-isolation test or speed figure can run yet.
+- W1 round 3, run 1 (2026-11-23, 21:00 UTC on), with the orchestrator's leave to change the translator's ARM64 way
+  and the stop crate (both written up under "Changes to the translator and the stop crate" below):
+  - The fourth check's eight findings were already answered in run 1 (commit dec511ab; plan 3.1, 3.2, 3.4, 3.6,
+    3.8, 4.1, 6, 7, 13); nothing new to fix.
+  - The ARM64 native output has a process way (`wcontainers_arm64::Way::Process`, beside `Machine`, the default):
+    the slot table at 2^46 and a reach of 2^44 for exits and jumps through a register, and calls into the stub's
+    floor entries instead of `brk` (one branch in line to out-of-line code that keeps x30 in the register page's
+    new `link` word and calls the entry by `blr`; plan 3.2 item 3 says how and why). Its constants are
+    `wcontainers_arm64::way`'s; host-process's layout asserts them.
+  - Stop resolution is its own crate, crates/executor/implementation/arm64-stop, with the way as a parameter
+    (`resolve(way, piece, taken, ...)`, `interrupted(way, ...)`); the VM inside's `stop` module reads its syndrome
+    into `Taken` and calls it with `Way::Machine`.
+  - The stub's register page now starts with the native output's register page (128 bytes), so x28 is one address
+    for both; the stub's own words follow, the block at 256. Floor entries are 16 bytes: they keep x23 in the page
+    (`CALL_SCRATCH`) before naming themselves in it, and the embedder puts it back into the block on a `Called`
+    exit, since a jump's last-target call leaves its target in x23. A stop at an entry's first word keeps x23 from
+    the frame.
+  - tests/translated.rs (2): code the translator made for the process way names the slot table, its reach and the
+    floor entries and no `brk`, a target past 2^44 calls the floor, x30 is the page's from the store on at a call;
+    and a guest `mov x0, #7; mov x30, #0x1234; svc #0`, translated, runs in a stub, calls the system call's entry,
+    keeps the guest's x30, and resolves through the stop crate to `Stop::Syscall` at the instruction after the
+    `svc` with every guest register (the withheld ones from the page). First translated guest code run under P.
+  - Verdicts so far (Graviton4, 21:13 to 21:17 UTC, load 7 to 13): arm64, translator, guest-cpu and stop crate
+    tests pass; the VM executor's exits, native, floor and registers tests pass; host-process's floor (6), step (8)
+    and translated (2) tests pass; clippy with warnings denied clean on the five crates.
+  - Final verdicts after the code commits (21:18 to 21:22 UTC, scratch w1/r3run1/final1-arm.log and
+    final1-x86.log, run 10's both.sh), each test binary 3 times with /dev/kvm denied, clippy with warnings denied
+    clean on both: Graviton4 186 of 186 (load 3 to 9), Xeon 156 of 156 (load 2 to 20; the translated and floor
+    tests build none there).
+  - No new unsafe code (the entries' change is in the zygote's assembly; the stop crate has none).
+- Not built yet (W1's bar is not met): loading pieces into the code area with their slots (the slot table's
+  page-by-page mapping, a command the filter allows in [2^46, 2^47)), exits linked between pieces, resolution of
+  stops and faults in the executor, and so the `Executor` trait, the suites, the kernel test programs, the
+  register-isolation tests on translated code and the speed figures.
 
 ## Next
 
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
-- When the translator's `HostProcess` form lands: match the stand-ins to it (x28's page is the stub's register
-  page and the block the hardware's state here; the translator's `RegisterPage` and its saved link must sit where
-  x28 points, and its call codes must be the entries' numbers, 64 today), then resolution through `stop`, the slot
-  table's page-by-page mapping (3.1, a command the filter allows in [2^46, 2^47)), and `Cpu::registers` from the
-  resolved guest state instead of the block.
+- Next, in this order: the slot table (a memfd per memory, mapped page by page read-execute in [2^46, 2^47) by a
+  command the filter allows; a jump to an unmapped page of it is a fault the floor treats as an empty slot), a
+  loader of pieces into the code area with their slots filled and exits linked (the VM form's
+  hardware-virtualization-inside/native.rs does this for the mirror; it is not in this track's paths, so either
+  reuse it through a crate split asked of its owner or write the P loader in host-process), resolution of every
+  exit with `wcontainers-executor-arm64-stop` and `Way::Process` (calls at block pc less 4, stops and faults from
+  `Interrupted`, faults as `Taken::Access`), and `Cpu::registers` from the resolved guest state instead of the
+  block. Then the `Executor` trait (in one module, waiting on the owner's new interface), the suites with equal
+  verdicts, the register-isolation tests on translated code and the speed figures.
+- The process way's translations are never moved (`Translation::moved`): `Native::movable` is the machine way's
+  range; `wcontainers_arm64::carry::movable(Way::Process)` is the process way's, for a P loader that keeps
+  translations.
 - W1, in this order, each tested on both rented machines with /dev/kvm denied: placement's remaining bar items
   (a guest's getppid loop with work between calls within 5% of a free CPU's after its move, and at most one move a
   second with every CPU contended), which need translated code to be the guest; the copy unit measured again on
@@ -589,30 +627,25 @@ translated code.
 W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's values and the test verdicts above
 (Graviton4 at load 13 to 36 while other tracks ran, Xeon at 0.1 to 0.6).
 
-## Asked of other tracks
+## Changes to the translator and the stop crate (for the native, translator and x86 native output tracks)
 
-- For the orchestrator (asked in run 8, still open in run 9): the two tracks W1 waits on look stopped. docs/status-translator.md was last changed
-  on 2026-11-20 and docs/status-native.md on 2026-11-21, and no commit has touched the translator, the ARM64 crate
-  or the VM inside's `stop` since run 6. Either start them on the two asks below, or let this track write the ARM64
-  `HostProcess` form itself (the four places of plan 3.2, in crates/wcontainers-arm64 and the translator) and the
-  `stop` crate's split. Until one of those happens, nothing in W1 that runs guest code can be built. The x86 native
-  output has its way P already (crates/wcontainers-x86, `Way::Process`); its executor side is W3's (plan 3.10).
-- Translator and ARM64 (crates/wcontainers-translator, crates/wcontainers-arm64): a form value given to
-  `translate_native` and part of the cache key, with variants `Vm`, `HostProcess`, `InProcess`, that changes four
-  places only (plan 3.2):
-  - `carry.rs` `access` and the instructions that read or write sp. InProcess emits `ubfx u, a, #32, #24; cbnz u,
-    fault` and then the access `[base, wA, uxtw]` (or `add t, base, wA, uxtw` first, for an immediate or a pair),
-    plus the stack pointer's rules (a) to (f), including one-instruction pieces with sp in the register block.
-  - The jump through a register: the slot table at 2^46 instead of `mirror::MIRROR`, reach 2^44, and InProcess's
-    `add t, base, wN, uxtw`.
-  - `Arm64::call`: `str x30, [page, #saved_link]; bl entry_<code>` instead of `brk`.
-  - The replay check: its stop word from the register page instead of `TPIDRRO_EL0`.
-  InProcess also needs two more withheld registers.
-- Native (VM) track: `stop::resolve`, `stop::guest_state` and the slot arithmetic in
-  crates/executor/implementation/hardware-virtualization-inside/stop.rs (which uses `mirror::MIRROR` at lines 10
-  and 296) taking the slot table's base as a parameter, and `stop` and `translation` in a crate that does not pull
-  aarch64-paging, arm-gic, smccc, the kernel or the runtime; the monitor's kept translations (`Translator`,
-  hardware-virtualization/translate.rs) usable from such a crate.
+Made by this track on 2026-11-23 with the orchestrator's leave; each commit kept the ARM64 translator suites and
+the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above).
+- 89a6818e: `Native::Way` for ARM64 is `wcontainers_arm64::Way` (`Machine`, the default, as before; `Process`).
+  `translate_native` keeps making the machine way's code. `Holds::EntrySlot` (crates/wcontainers-guest-cpu) carries
+  its slot table's base, so `write_place` needs no way; x86 never uses it. `RegisterPage` has a `link` word
+  between `saved` and the exclusive monitor (`word` reads it). `encode::form::SVC` is new. The VM executor's tests
+  name `Way::Machine` where they called `route(&(), ..)`, and the runner's page sets `link: 0`; nothing else of
+  theirs changed.
+- 718e5eb3: crates/executor/implementation/arm64-stop (package wcontainers-executor-arm64-stop, no_std) holds what
+  hardware-virtualization-inside/stop.rs held, with `resolve(way, piece, taken, hardware, page, float, memory)`
+  and `interrupted(way, ..)`; `Taken` says what the exception was. The inside's `stop` module re-exports it and keeps
+  `resolve(piece, exception, ..)` and `interrupted(piece, ..)` as before, reading the syndrome into `Taken`; its
+  callers did not change. It depends on the abi, arm64 (without translate) and guest-cpu only.
+- Still asked of the native (VM) track, not done here: `translation` and the loading of pieces with their slots
+  (hardware-virtualization-inside/native.rs) and the monitor's kept translations (hardware-virtualization/
+  translate.rs) usable from a crate without the VM's dependencies, so P loads pieces the same way.
+- For the translator track, not done: the InProcess way (plan 3.2 item 1 and two more withheld registers), W2's.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
   for `ThreadOrdering::Parallel`; calling the stopper (plan 8 item 3) from `suspend_tasks`, `suspend_threads`,
@@ -658,6 +691,13 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 round 3 run 1: the ways are named `Machine` and `Process`, as the x86 native output names its own, not `Vm`
+  and `HostProcess`. A process-way call is one in-line branch to out-of-line code with an absolute `blr` to the
+  entry, not `str x30; bl entry`: a `bl` would need relocating wherever a piece is loaded, and one in-line word
+  keeps a jump's last-target layout the same in every way (plan 3.2 says so now). Entries keep x23 first (16 bytes
+  each), since a last-target call leaves its target there. No replay check exists in any way yet, so item 4 of
+  plan 3.2 changed nothing.
 
 - W1 run 8: the stops at every instruction are forced by tracing the thread from the test and stepping it there
   (exhaustive and replayable, every instruction in turn), not by a seeded delay, which cannot aim at one instruction.

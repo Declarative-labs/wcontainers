@@ -221,12 +221,23 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
      on its own signal stack (`SA_ONSTACK`).
 2. **The jump through a register**: the slot table's base and reach (3.1), and I's base add.
 3. **The call to the floor** (`Arm64::call`, today `brk #code`): a `brk` in a host process is a host SIGTRAP
-   (1.2 to 1.3 µs measured for a signal round trip, W0 probe), so `HostProcess` and `InProcess` emit
-   `str x30, [page, #saved_link]; bl entry_<code>`, the entries being one page of floor routines placed in the code
-   area at most a direct branch's reach from every piece (one such page per 128 MiB of code area). The position
-   map records the saved x30 as a relocated guest value, as it records stand-in moves.
+   (1.2 to 1.3 µs measured for a signal round trip, W0 probe), so `HostProcess` and `InProcess` call the floor's
+   entry for the call's code. As built for P (W1, `wcontainers_arm64::Way::Process`): the call is one branch in
+   line, as `brk` is one word, so a jump's last-target layout is the same in every way, to code out of line:
+   `str x30, [page, #link]; movz/movk x30, entry; blr x30; ldr x30, [page, #link]; b back`. The entry's address
+   is absolute (`PROCESS_ENTRIES` + code · 16, the zygote's code at 2^45), so a piece needs no relocation where it
+   is loaded; `bl` would. The return address names the call (the floor reports it at the `blr`, as the VM form's
+   exception address names the `brk`), and a call the kernel's side answers in place goes on at the `ldr`. The
+   position map records x30 (and any register x30 stood in for) as held in the page's `link` word from the store
+   on. Each entry keeps x23 in the stub's register page before naming itself there (`str x23, [x28,
+   #call_scratch]; movz x23, #n; b save`), since a jump's last-target call leaves its target in x23; the embedder
+   puts it back into the block. The native output's register page is the first 128 bytes of the stub's register
+   page, so x28 is the same address for both.
 4. **The replay check** (native.md section 5.7): `TPIDRRO_EL0` is the host kernel's in a host process, so the stop
-   word is a word of the thread's register page: `ldr t, [page, #stop]; sub t, t, c; cbz t, stop`.
+   word is a word of the thread's register page: `ldr t, [page, #stop]; sub t, t, c; cbz t, stop`. As of W1 the
+   native output emits no replay check in any way (none reads `TPIDRRO_EL0`), so nothing changes here yet.
+The slot table's base and reach, the entries' address and size are `wcontainers_arm64::way`'s constants, which the
+host-process layout asserts; stops resolve through `wcontainers-executor-arm64-stop` with the way as a parameter.
 Withheld registers: the VM form's three (count x18, scratch x23, register page x28) in P; two more in I (`base`
 and `u`), chosen by the same dynamic-use rule (native.md section 3.3). Everything else of the native output (routes,
 pieces, linking, count placement, the position map) is unchanged. These are the translator track's files: section
@@ -237,7 +248,8 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
 As built for P on ARM64 (W1 run 7, before the translator's form exists, with pieces written by the tests standing
 in): the register block in the register page is the hardware's state. A turn's `Enter` loads every register from it
 (FP/SIMD, FPSR, FPCR, `TPIDR_EL0`, NZCV, sp, the general registers) but x23, which holds the code's address, and
-x28, the register page, and branches there. The floor's 64 entries (`mov x23, #n; b save`) save every register
+x28, the register page, and branches there. The floor's 64 entries (`str x23, [x28, #call_scratch]; mov x23, #n;
+b save`, 16 bytes each; x23 is put back by the embedder) save every register
 into the block, the link in x30 and pc, and publish `Called` with n. A stop or a fault (SIGSEGV, SIGBUS, SIGILL,
 SIGTRAP) whose pc is in the code area saves every register from the signal frame (its `fpsimd_context`, checked by
 its tag and size, for the vector registers, FPSR and FPCR) and publishes `Interrupted` with the host pc, or `Fault`.
