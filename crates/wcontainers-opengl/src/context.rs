@@ -58,6 +58,15 @@ pub struct Framebuffer<B: Backend> {
 }
 
 impl<B: Backend> Framebuffer<B> {
+    /// Whether one of its targets is of `resource`.
+    pub fn draws_into(&self, resource: &Resource<B>) -> bool {
+        let colors = usize::from(self.state.nr_cbufs);
+        self.state.cbufs[..colors]
+            .iter()
+            .chain(std::iter::once(&self.state.zsbuf))
+            .any(|s| std::ptr::eq(s.texture.cast_const(), &resource.base))
+    }
+
     /// Copies each target's twin into its texture, after the work drawing into them (outside a
     /// pass: the open one is closed).
     pub fn copy_back_twins(

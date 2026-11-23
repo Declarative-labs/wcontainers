@@ -432,7 +432,7 @@ pub unsafe extern "C" fn transfer_flush_region<B: Backend>(
     };
     // SAFETY: as above.
     let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
-    let Some((texture, desc)) = resource.texture() else {
+    if resource.texture().is_none() {
         let start = area.x as usize;
         write_mapped_buffer(context, transfer, start..start + area.width as usize);
         return;
@@ -455,8 +455,7 @@ pub unsafe extern "C" fn transfer_flush_region<B: Backend>(
     let (level, mode) = (transfer.base.level(), transfer.mode);
     write_texels(
         context,
-        texture,
-        desc,
+        resource,
         level,
         &part,
         &transfer.bytes()[start..],
@@ -690,8 +689,7 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
 )]
 fn write_texels<B: Backend>(
     context: &mut Context<B>,
-    texture: &B::Texture,
-    desc: &TextureDesc,
+    resource: &Resource<B>,
     level: c_uint,
     area: &pipe_box,
     data: &[u8],
@@ -699,6 +697,14 @@ fn write_texels<B: Backend>(
     rows_per_layer: u32,
     mode: WriteMode,
 ) {
+    let Some((texture, desc)) = resource.texture() else {
+        return;
+    };
+    // A target's clears wait in the pass tracker for its next pass, which must come first.
+    if context.framebuffer.draws_into(resource) {
+        let mut backend = context.screen().backend();
+        outside_pass(context, &mut backend);
+    }
     let mut write = |stencil: bool, data: &[u8], row_pitch: u32, mode: WriteMode| {
         let (region, extent) = region_of::<B>(texture, desc, level, area, stencil);
         write_aspect(
@@ -809,13 +815,12 @@ pub unsafe extern "C" fn texture_unmap<B: Backend>(
     if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
         // SAFETY: the transfer holds a reference on its resource.
         let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
-        if let Some((texture, desc)) = resource.texture() {
+        if resource.texture().is_some() {
             let (rows, stride) = box_layout(resource.base.format(), &transfer.base.box_);
             let (level, area, mode) = (transfer.base.level(), transfer.base.box_, transfer.mode);
             write_texels(
                 context,
-                texture,
-                desc,
+                resource,
                 level,
                 &area,
                 transfer.bytes(),
@@ -844,10 +849,7 @@ pub unsafe extern "C" fn texture_subdata<B: Backend>(
     // SAFETY: Mesa passes this driver's context, a texture of it and a box of one level.
     let (context, ours, area) =
         unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource), *area) };
-    let Some((texture, desc)) = ours.texture() else {
-        return;
-    };
-    if desc.samples > 1 {
+    if ours.base.nr_samples > 1 {
         // SAFETY: as above; Mesa's default writes through the context's maps, whose transfer
         // helper maps a multisampled texture.
         unsafe {
@@ -878,8 +880,7 @@ pub unsafe extern "C" fn texture_subdata<B: Backend>(
     let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
     write_texels(
         context,
-        texture,
-        desc,
+        ours,
         level,
         &area,
         data,
