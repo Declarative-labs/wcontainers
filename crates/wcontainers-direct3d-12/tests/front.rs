@@ -210,34 +210,58 @@ fn root_signatures_binding_a_register_twice_for_a_stage_are_refused() {
     assert!(!check(tables(61).chain([constants(0, 0)]).collect()));
 }
 
-/// The recorder's capabilities with input slots and stage registers enough for Direct3D's 32:
-/// half the slots laid out and half fetched in the program, and a location for every register
-/// but the position, as wgpu gives on the RTX 3080 through Vulkan.
-fn with_32_registers() -> wcontainers_gpu::Caps {
+/// The recorder's capabilities with 11_0's counts: input slots and stage registers enough for
+/// Direct3D's 32, half the slots laid out and half fetched in the program and a location for
+/// every register but the position, and resource binding tier 1's counts with the helper block,
+/// as wgpu gives (and more) on the RTX 3080 through Vulkan.
+fn with_11_0_limits() -> wcontainers_gpu::Caps {
     let mut caps = record::webgpu_like_caps();
     let l = &mut caps.limits;
     (l.vertex_streams, l.storage_buffers_per_stage) = (INPUT_SLOTS / 2, INPUT_SLOTS / 2);
     l.vertex_attributes = INPUT_SLOTS;
     l.inter_stage_slots = OUTPUT_REGISTERS - 1;
+    l.textures_per_stage = TIER_1_SHADER_RESOURCES;
+    l.uniform_buffers_per_stage = TIER_1_CONSTANT_BUFFERS + 1;
     caps
 }
 
 #[test]
 fn no_device_without_32_input_slots_and_stage_registers() {
     // WebGPU's limits in Chrome on a desktop GPU fetch too few streams and pass too few values.
-    assert!(!has_abilities_of_11_0(&record::webgpu_like_caps()));
-    assert!(has_abilities_of_11_0(&with_32_registers()));
-    let mut caps = with_32_registers();
+    let mut chrome = record::webgpu_like_caps();
+    assert!(!serves_stage_registers(&chrome.limits));
+    chrome.limits.inter_stage_slots = OUTPUT_REGISTERS - 1;
+    assert!(!serves_stage_registers(&chrome.limits));
+    assert!(has_abilities_of_11_0(&with_11_0_limits()));
+    let mut caps = with_11_0_limits();
     caps.limits.inter_stage_slots -= 1;
     assert!(!has_abilities_of_11_0(&caps));
-    let mut caps = with_32_registers();
-    caps.limits.storage_buffers_per_stage -= 1;
+    let mut caps = with_11_0_limits();
+    caps.limits.vertex_streams -= 1;
     assert!(!has_abilities_of_11_0(&caps));
 }
 
 #[test]
+fn no_device_without_binding_tier_1_counts_or_eight_targets() {
+    let shorts: [fn(&mut wcontainers_gpu::Limits); 6] = [
+        |l| l.textures_per_stage -= 1,
+        // The helper block takes one of the stage's uniform buffers.
+        |l| l.uniform_buffers_per_stage = TIER_1_CONSTANT_BUFFERS,
+        |l| l.samplers_per_stage -= 1,
+        |l| l.storage_textures_per_stage = TIER_1_UNORDERED_ACCESS_AT_11_0 - 1,
+        |l| l.storage_buffers_per_stage = TIER_1_UNORDERED_ACCESS_AT_11_0 - 1,
+        |l| l.color_targets -= 1,
+    ];
+    for (i, short) in shorts.into_iter().enumerate() {
+        let mut caps = with_11_0_limits();
+        short(&mut caps.limits);
+        assert!(!has_abilities_of_11_0(&caps), "{i}");
+    }
+}
+
+#[test]
 fn webgpu_reports_11_0_and_tier_1() {
-    let caps = with_32_registers();
+    let caps = with_11_0_limits();
     assert!(has_abilities_of_11_0(&caps));
     // The recorder holds a few formats only, short of Microsoft's 11_0 table: no device.
     assert!(!unmet_format_requirements(&caps).is_empty());
@@ -355,7 +379,7 @@ fn atomics_on_typed_storage_views_are_answered_through_a_buffer() {
 
 #[test]
 fn resource_tables_give_tier_3_but_not_11_1() {
-    let mut caps = with_32_registers();
+    let mut caps = with_11_0_limits();
     caps.features |= Features::RESOURCE_TABLES | Features::SUBGROUPS | Features::LOGIC_OP;
     assert!(has_abilities_of_11_0(&caps));
     assert_eq!(options(&caps).resource_binding_tier, 3);
@@ -367,7 +391,7 @@ fn no_device_without_the_raster_and_blend_abilities_of_11_0() {
     // A depth bias clamp, independent blending and a partial sample mask are each 11_0's, and
     // served only by the back end.
     for ability in LEVEL_11_0_FIXED_FUNCTION.iter() {
-        let mut caps = with_32_registers();
+        let mut caps = with_11_0_limits();
         caps.features.remove(ability);
         assert!(!has_abilities_of_11_0(&caps), "{ability:?}");
     }
@@ -377,7 +401,7 @@ fn no_device_without_the_raster_and_blend_abilities_of_11_0() {
 fn browsers_without_polygon_mode_or_depth_clamping_get_11_0() {
     // Section 9: WebGPU's 11_0 sizes and depth32float-stencil8 give 11_0; depth clamping is done in
     // the programs, and wireframe is refused by name until the stage helper draws it.
-    let mut caps = with_32_registers();
+    let mut caps = with_11_0_limits();
     caps.features
         .remove(Features::POLYGON_MODE | Features::DEPTH_CLAMP);
     assert!(has_abilities_of_11_0(&caps));
@@ -385,13 +409,13 @@ fn browsers_without_polygon_mode_or_depth_clamping_get_11_0() {
 
 #[test]
 fn no_device_without_compute_11_0_sizes_or_d32_s8_targets() {
-    let mut caps = with_32_registers();
+    let mut caps = with_11_0_limits();
     caps.features.remove(Features::COMPUTE);
     assert!(!has_abilities_of_11_0(&caps));
-    let mut caps = with_32_registers();
+    let mut caps = with_11_0_limits();
     caps.limits.max_texture_layers = 256;
     assert!(!has_abilities_of_11_0(&caps));
-    let mut caps = with_32_registers();
+    let mut caps = with_11_0_limits();
     caps.formats.uses[Format::Depth32FloatStencil8.index()] = FormatUse::empty();
     assert!(!has_abilities_of_11_0(&caps));
 }

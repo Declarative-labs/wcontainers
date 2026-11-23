@@ -19,6 +19,16 @@ pub const FEATURE_LEVEL_11_0: u32 = required::level::L11_0;
 pub const LEVEL_11_0_TEXTURE_2D: u32 = 16384;
 pub const LEVEL_11_0_TEXTURE_3D: u32 = 2048;
 pub const LEVEL_11_0_TEXTURE_LAYERS: u32 = 2048;
+/// Resource binding tier 1's counts a stage binds at 11_0 (Microsoft's hardware tiers table):
+/// shader resource views (`D3D12_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT`), constant buffers
+/// (`D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT`), samplers
+/// (`D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT`) and unordered access views, of either kind (8 at 11_0);
+/// and the targets drawn at once (`D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT`).
+pub const TIER_1_SHADER_RESOURCES: u32 = 128;
+pub const TIER_1_CONSTANT_BUFFERS: u32 = 14;
+pub const TIER_1_SAMPLERS: u32 = 16;
+pub const TIER_1_UNORDERED_ACCESS_AT_11_0: u32 = 8;
+pub const LEVEL_11_0_TARGETS: u32 = 8;
 /// What 11_0 asks of the raster and blend blocks that the front draws only through the back end:
 /// a depth bias clamp, independent blending and a partial sample mask. Depth clamping is done in
 /// the programs where the back end lacks it (`DepthClampInShader`); wireframe without the back
@@ -52,7 +62,8 @@ pub fn unmet_format_requirements(caps: &Caps) -> Vec<(u32, Required)> {
 
 /// Whether the back end has 11_0's abilities but its formats': compute, storage writes in pixel
 /// programs, 11_0's sizes, its input slots and stage registers ([`serves_stage_registers`]),
-/// `D32_FLOAT_S8X24_UINT` depth targets and `LEVEL_11_0_FIXED_FUNCTION`.
+/// resource binding tier 1's counts and its targets ([`binds_tier_1`]), `D32_FLOAT_S8X24_UINT`
+/// depth targets and `LEVEL_11_0_FIXED_FUNCTION`.
 pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
     let l = &caps.limits;
     let sizes = l.max_texture_2d >= LEVEL_11_0_TEXTURE_2D
@@ -69,7 +80,19 @@ pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
     let fixed = caps.has(LEVEL_11_0_FIXED_FUNCTION);
     // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`
     // capability promises.
-    sizes && depth_stencil && stages && fixed && serves_stage_registers(l)
+    sizes && depth_stencil && stages && fixed && serves_stage_registers(l) && binds_tier_1(l)
+}
+
+/// Whether `limits` bind resource binding tier 1's counts in a stage, with the uniform block that
+/// holds a converted program's helper constants beside its constant buffers, and draw 11_0's
+/// targets at once.
+pub fn binds_tier_1(limits: &wcontainers_gpu::Limits) -> bool {
+    limits.textures_per_stage >= TIER_1_SHADER_RESOURCES
+        && limits.uniform_buffers_per_stage > TIER_1_CONSTANT_BUFFERS
+        && limits.samplers_per_stage >= TIER_1_SAMPLERS
+        && limits.storage_textures_per_stage >= TIER_1_UNORDERED_ACCESS_AT_11_0
+        && limits.storage_buffers_per_stage >= TIER_1_UNORDERED_ACCESS_AT_11_0
+        && limits.color_targets >= LEVEL_11_0_TARGETS
 }
 
 /// Whether `limits` serve Direct3D's 32 input slots and elements, fetched as laid out up to the
