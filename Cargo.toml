@@ -28,7 +28,37 @@ naga = { path = "third_party/naga" }
 # wgpu 30.0.2 with its browser back end passing a render pass's occlusion query set to WebGPU.
 wgpu = { path = "third_party/wgpu" }
 
+# No crate of ours writes unsafe code, except where a crate cannot do its job without it. Every crate inherits
+# these lints with `[lints]` `workspace = true`; a crate that does not has its own `[lints.rust]` table and says why.
+# Allowed to write it (they run generated code, call a hypervisor, a graphics driver or a C library):
+#   crates/executor/implementation/hardware-virtualization
+#   crates/executor/implementation/hardware-virtualization-inside
+#   crates/executor/implementation/unicorn
+#   crates/executor/implementation/wasmtime
+#   crates/wcontainers-direct3d-11
+#   crates/wcontainers-direct3d-12
+#   crates/wcontainers-directx
+#   crates/wcontainers-gpu-webgl
+#   crates/wcontainers-gpu-webgpu
+#   crates/wcontainers-graphics-test
+#   crates/wcontainers-graphics-test-forward
+#   crates/wcontainers-nir
+#   crates/wcontainers-opengl
+#   crates/wcontainers-shaders
+# TODO: not yet free of it (uses counted on 2026-11-22); each inherits these lints once it is:
+#   crates/kernel/implementation/linux (336)
+#   crates/internet-protocol/implementation/linux-socket-options (40)
+#   crates/tcp-sockets/implementation/host (23)
+#   crates/wcontainers-translator-test (16)
+#   crates/icmp-sockets/conformance (15)
+#   crates/udp-sockets/implementation/host (11)
+#   crates/runtime/implementation/single-kernel (7)
+#   crates/route-resolver/conformance (4)
+#   crates/tcp-sockets/conformance (4)
+#   crates/route-resolver/implementation/host (2)
+#   crates/wcontainers-arm64 (1)
 [workspace.lints.rust]
+unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 
 # Tests run real programs through the translator and the kernel, so unoptimized builds are too slow to be useful.
