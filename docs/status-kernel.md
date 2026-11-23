@@ -61,6 +61,14 @@ crates/runtime/implementation/single-kernel.
   removed mark) were tested apart at the tip: clippy on the kernel and the stand-in gives
   nothing; processors 1 and outside 8 pass, procaccess 2 of 4, procwrite 3 of 5, fileioctl 0 of
   1 and priorities 0 of 1, each failure on the ARM list.
+- The whole LTP comparison at 60cb4fe1 (same job, 07:04 to 08:32 UTC, load 3 to 14, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-60cb4fe1.tsv, comparison scratch
+  kernel/kc4/ltp-compare.log): by line 4169 of 4226 match the reference and 57 differ, the K6c
+  bar's count, and all 4226 verdicts match ba9f009e's. So the notice wait and the processor count
+  changed no verdict.
+- Not run, with the reason: the Mac's part of the suite (layer 1 seeds and the tests the ARM64
+  machine's kernel answers differently from Docker Desktop's): the orchestrator's ruling of
+  2026-11-22 says nothing builds or tests on the owner's Mac. The owner's linter: not to be run.
 - The literal check (the checker built on the Mac on the 21st, after its crate's last change, run
   with `nice -n 19`, about 20 s; it needs git's history, which the rented machines' copies lack;
   logs scratch kernel/kc4/literals*.log): exits 1, on other tracks' files (the shaders'
