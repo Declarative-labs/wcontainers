@@ -30,8 +30,9 @@ pub(crate) struct Tuple<B: Backend> {
     layouts: [BindingLayoutKey; MAX_BINDING_SETS],
 }
 
+/// The tuple's objects (blend, depth stencil, rasterizer, input layout ids), then its other parts.
 type TupleKey = (
-    [u64; 4],
+    (u64, u64, u64, u64),
     [u32; VERTEX_SLOTS],
     [Option<Format>; wcontainers_gpu::MAX_COLOR_TARGETS],
     Option<Format>,
@@ -43,12 +44,12 @@ type TupleKey = (
 impl<B: Backend> Tuple<B> {
     fn key(&self) -> TupleKey {
         (
-            [
+            (
                 self.blend.gpu.id,
                 self.depth_stencil.gpu.id,
                 self.raster.gpu.id,
                 self.layout.as_ref().map_or(0, |l| l.id),
-            ],
+            ),
             self.strides,
             self.targets.colors,
             self.targets.depth_stencil,
@@ -102,6 +103,17 @@ struct Last<B: Backend> {
     combination: Combination,
 }
 
+/// What `report_ahead` reports: prepared combinations drawn and not, combinations built at their
+/// first draw, and recorded combinations built at start and drawn since.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct UseCounts {
+    drawn: u64,
+    not: u64,
+    missed: u64,
+    started: u64,
+    started_drawn: u64,
+}
+
 /// The device's record of combinations drawn and prepared.
 pub(crate) struct Ahead<B: Backend> {
     /// Keyed by vertex shader id, program (vertex and pixel shader ids) and tuple.
@@ -113,7 +125,7 @@ pub(crate) struct Ahead<B: Backend> {
     /// Combinations whose record was written.
     recorded: std::collections::HashSet<Combination>,
     /// The counts last reported.
-    reported: [u64; 5],
+    reported: UseCounts,
 }
 
 impl<B: Backend> Ahead<B> {
@@ -124,7 +136,7 @@ impl<B: Backend> Ahead<B> {
             last_vertex: Weak::new(),
             last_pixel: Weak::new(),
             recorded: Default::default(),
-            reported: [0; 5],
+            reported: UseCounts::default(),
         }
     }
 
@@ -359,7 +371,13 @@ impl<B: Backend> Device<B> {
         let (drawn, not) = self.ahead.prepared_use();
         let missed = self.backend.slow_paths().count(SlowPath::PipelineMiss);
         let (started, started_drawn) = self.warm.used();
-        let counts = [drawn, not, missed, started, started_drawn];
+        let counts = UseCounts {
+            drawn,
+            not,
+            missed,
+            started,
+            started_drawn,
+        };
         if counts == self.ahead.reported {
             return;
         }
