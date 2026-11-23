@@ -17,7 +17,7 @@ wcontainers-kernel = { path = "../kernel" }
 bitflags.workspace = true
 # x86-64's forms, cases and disassembly, from iced's own tables, and layer 2's assembler (MIT).
 iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "encoder", "code_asm", "op_code_info", "instr_info", "intel"] }
-wcontainers-translator = { path = "../wcontainers-translator", features = ["measure"] }
+wcontainers-translator = { path = "../wcontainers-translator", features = ["measure", "native"] }
 wcontainers-docker = { path = "../wcontainers-docker" }
 wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
 wasm-encoder = "0.263.0"
@@ -42,6 +42,10 @@ rustc-hash = "2.1.3"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "general", "no_std"] }
 # Bounds each zig build (src/programs.rs).
 wait-timeout = "0.2.1"
+
+# The stop frame's layout and the system calls of the native output's layer 1 blob (MIT OR Apache-2.0).
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = "0.2.191"
 
 [dev-dependencies]
 flate2 = "1.1"

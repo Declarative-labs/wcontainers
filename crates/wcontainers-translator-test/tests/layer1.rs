@@ -408,6 +408,32 @@ fn every_form_matches_the_cpu_x86_64() {
     every_form_matches_the_cpu::<X86_64>();
 }
 
+/// The native output for a host process (docs/x86-native-output.md section 8): every form's cases translated,
+/// run on this machine and compared with its CPU, with the cases counted by how they ended. Linux x86-64 only,
+/// where the reference is this machine.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn every_form_matches_the_cpu_natively_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare};
+    let count = setting("WC_LAYER1_CASES", 64) as u32;
+    let ended = Mutex::new(BTreeMap::<String, u64>::new());
+    let failures =
+        run_forms::<X86_64>(X86_64::forms(), count, " natively", |reference, _, case| {
+            let (agreement, how) = compare(reference, case, REFERENCE_HOST)?;
+            *ended.lock().unwrap().entry(format!("{how:?}")).or_default() += 1;
+            Ok(agreement)
+        });
+    eprintln!(
+        "layer 1 natively, the cases by how they ended: {:?}",
+        ended.into_inner().unwrap()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} forms differ from the CPU natively",
+        failures.len()
+    );
+}
+
 #[test]
 fn unoffered_forms_are_illegal_x86_64() {
     unoffered_forms_are_illegal::<X86_64>();
