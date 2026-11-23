@@ -202,6 +202,8 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
     on another runner; `Interrupter` has no implementation for the same reason.
   - `StandaloneExecutorHost`: the process-wide part both executors need, made once, making one executor per
     container.
+    Built meanwhile as the private stand-in `HostProcessHost` (crates/executor/implementation/host-process/host.rs),
+    the one place his ruling changes.
 - Decisions in plan section 12:
   - names;
   - I's wrapping check: about 10 points faster, but an access outside the window lands in the process's own
