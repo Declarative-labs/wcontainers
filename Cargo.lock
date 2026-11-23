@@ -6139,6 +6139,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
+ "wcontainers-translator",
  "zerocopy",
 ]
 
