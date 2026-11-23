@@ -10,8 +10,7 @@ Every use left in these crates sits at one of five boundaries. For each: what it
 safe library does it, what removing it would cost.
 
 1. Calling real Direct3D 11 and 12, DXGI and Win32 (graphics-test all 342; gpu-webgpu
-   tests/direct3d.rs 19; direct3d-12 examples/check 169 and
-   tests/gpu.rs 1, `D3DCompile`). The `windows` crate (Microsoft, 0.62.2) declares every function
+   tests/direct3d.rs 19; direct3d-12 examples/check 169). The `windows` crate (Microsoft, 0.62.2) declares every function
    and every COM method `unsafe fn`. No maintained safe wrapper of Direct3D 11 or 12 exists (gfx-rs
    `d3d12` was retired into wgpu-hal, whose API is unsafe; nothing for Direct3D 11). These crates
    exist to draw the reference pictures with real Direct3D, so wgpu cannot stand in. Removing it
@@ -61,6 +60,34 @@ safe library does it, what removing it would cost.
    not tried: whether it captures in exact sRGB on macOS and waits for the compositor (DwmFlush)
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
+
+## Run 6 (2026-11-22 night)
+
+- Still no ruling (graphics brief, open-with-owner notes). The orchestrator's list of rulings the
+  owner is to hear (its "no-unsafe sweep stopped" section) holds the socket sweep's items, not
+  these five; the report of this run puts them first again.
+- Removed without a ruling: tests/gpu.rs's `D3DCompile` (boundary 1's last use outside examples/).
+  The depth clamp scene's eight shaders are now HLSL files in tests/clamp/ with compile.cmd (the
+  SDK's fxc, as the shaders crate's tests/own/ does) and the committed .dxbc, read with
+  `include_bytes!`. Checked byte for byte before the switch: a temporary test (not committed)
+  compared each file with what `D3DCompile` gave for the old source strings, all eight equal
+  (logs/clamp-blobs-equal-run6.log). The scene stays Windows-only (it uses the windows crate's
+  patch-list topology value). direct3d-12: 496 -> 495, every use now in examples/ (directx 326,
+  check 169). Commits df4afd11 (the test) and 71fd9125 (root list).
+- Checks of the change: clippy `--all-targets -D warnings` of direct3d-12 clean on Windows (desktop,
+  logs/clippy-d3d12-run6.log) and on aarch64 Linux (rented ARM machine, 96 cores, load 3.3 at the
+  start and 8.5 at the end; logs/check-d3d12-run6.log; the x86 machine did not answer). Tests on the
+  RTX 3080 through the GPU queue (logs/test-d3d12-run6.log): 55 pass in binaries of 20, 1, 18, 13,
+  3 and 0, both depth clamp tests among them; declared.rs fails at line 454 as in runs 1 and 2
+  (known, above).
+- Literal check: the rented copy is not a git checkout, so it ran on the desktop's tree
+  (logs/literals-run6.log). It fails there for reasons outside this change: Windows line endings
+  turn every multi-line string into a new finding (124 lines with `\r\n`), and other tracks'
+  uncommitted work is in the shared tree. Nothing names tests/gpu.rs or tests/clamp/. Two
+  "restated" findings land in these crates because other crates added equal constants:
+  direct3d-12 tests/declared.rs:89 (300, now also `ROWS` of the gpu-test suite) and gpu-webgl
+  src/lib.rs:4764 (256, now also the kernel's `ECHO_BLOCK`); to be judged on a Linux checkout
+  once the tree is quiet.
 
 ## Run 5 (2026-11-23 morning)
 
@@ -135,10 +162,10 @@ safe library does it, what removing it would cost.
   Cost: an upload copies the program's bytes out of the cells into one reused staging vector
   before `write_buffer` (one more pass over each uploaded range), and a read back lands in the
   staging vector before the cells. Measured: see Measurements.
-- tests: 4 of 5 uses gone (writes through `Map` use the cells); `D3DCompile` (tests/gpu.rs) stays,
-  boundary 1.
-- Package total 504 -> 496 (lines with the word, `grep -rw unsafe --include="*.rs"`), all in
-  examples/ and the one test; root Cargo.toml and the manifest say 496.
+- tests: all 5 uses gone (writes through `Map` use the cells; run 6: `D3DCompile` replaced by
+  committed fxc output, tests/clamp/).
+- Package total 504 -> 495 (lines with the word, `grep -rw unsafe --include="*.rs"`), all in
+  examples/; root Cargo.toml and the manifest say 495.
 - The other four crates: nothing removed yet; every use is at a boundary below (For the owner).
   Counts as listed: gpu-webgpu 30, gpu-webgl 167, graphics-test 342, graphics-test-forward 197.
 - `#[unsafe(no_mangle)]` was measured in the probe too: "usage of the unsafe `no_mangle`
@@ -223,7 +250,8 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
 1. The owner's rulings above. Until then the five crates stay on the root list with their counts.
 2. If ruling 2 allows a separate package: move examples/directx into it (the rig builds it with
    `cargo build -p wcontainers-direct3d-12 --examples`; tools/graphics-rig must follow), then the
-   front package inherits the workspace lints once examples/check (boundary 1) is settled too.
+   front package inherits the workspace lints once examples/check (boundary 1) is settled too
+   (its tests are free of it since run 6).
 3. gpu-webgl: if ruling 4 says web-sys, rewrite its calls on web-sys behind one module. Note the
    Direct3D 11 track builds wcontainers-directx with feature `webgl`, which draws through this
    back end natively on ANGLE (its Wine tests and programs), so web-sys alone ends that route;
