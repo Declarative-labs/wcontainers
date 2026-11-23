@@ -28,6 +28,9 @@ pub(crate) const NO_FRAGMENT: &str = "none";
 /// The output type and value of a clear drawing a float format's bits, in WGSL.
 const FLOAT_CLEAR_OUTPUT: (&str, &str) = ("vec4<f32>", "bitcast<vec4<f32>>(value)");
 
+/// The texture a depth draw reads a float's bits from in an `r32sint` texture, in WGSL.
+const SIGNED_BITS_TEXTURE: &str = "texture_2d<i32>";
+
 /// A uniform of four words, as the programs' `vec4`.
 pub(crate) type Words = [u32; 4];
 
@@ -971,8 +974,13 @@ impl WebGpu {
         let cover = self.cover();
         let (texture, depth) = match how {
             DepthSource::Float => ("texture_2d<f32>", "v.x".into()),
-            DepthSource::FloatBits => ("texture_2d<u32>", "bitcast<f32>(v.x)".into()),
-            DepthSource::FloatBitsSigned => ("texture_2d<i32>", "bitcast<f32>(v.x)".into()),
+            DepthSource::FloatBits | DepthSource::FloatBitsSigned => (
+                match how {
+                    DepthSource::FloatBitsSigned => SIGNED_BITS_TEXTURE,
+                    _ => "texture_2d<u32>",
+                },
+                "bitcast<f32>(v.x)".into(),
+            ),
             DepthSource::Unorm24 => (
                 "texture_2d<u32>",
                 format!("f32(v.x & {UNORM24_MAX}u) / {UNORM24_MAX}.0"),
