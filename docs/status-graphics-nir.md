@@ -5,6 +5,79 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 24 (2026-11-23, round 4's second run): the gap list's groups that were not yet read, read
+from run 23's own logs (`case-notes.ps1`, `g9r24-reasons.py`, the kept `.qpa` files), and the
+causes of this track's fixed. Built this run (linted with warnings denied and the nir crate's
+tests passed on the x86-64 machine; results on the rig below):
+- A staged program's arrays of resources (geometry, control and evaluation programs): the shaders
+  crate's staged forms split each array into a binding an element as its rewrite does, but the
+  driver bound the arrays whole, so the stage helper's sets lacked the elements' bindings ("a
+  binding set lacks a binding its program reads", 80 process refusals: dEQP-GLES31
+  `opaque_type_indexing.sampler.*.geometry` 38 crashes, KHR `geometry_shader.limits
+  .max_combined_texture_units`). Now bound element by element (`split_arrays`).
+- Stencil references of a one-sided stencil test: back faces took Gallium's second reference,
+  which Mesa sets only for a two-sided test (st/mesa's clear by a quad leaves it zero), so every
+  stencil clear with a scissor wrote zero into back-facing quads, which a framebuffer object's
+  quads are (`DepthStencil::two_sided`). Every one of dEQP-GLES2's and -GLES3's 148 `fbo.render`
+  failures uses a stencil attachment (`stencil_clear` 10, `recreate_color` 72,
+  `recreate_colorbuffer` 14, `shared_colorbuffer` 35, `resize` 17): a scissored stencil clear,
+  then draws testing it; the window's own (`depth_stencil_clear.stencil_scissored`) passed, its
+  quads being front faces.
+- Tessellation winding: an evaluation program's `ccw` was handed to the stage helper's
+  tessellator as Direct3D's counterclockwise, whose domain has its origin at the upper left, so
+  each winding was the other (Mesa's d3d12 driver turns it the same way). dEQP-GLES31
+  `tessellation.winding` 4, KHR-GLES31 and KHR-GLES32 `tessellation_shader.winding` 4 each.
+- Sample masks (wcontainers-nir `fit_sample_masks`, a bridge pass): `gl_SampleMaskIn` of a
+  program run per sample keeps only that sample's bit (the host gave every covered sample's:
+  dEQP-GLES31 `sample_mask_in` 18 failures); writes of `gl_SampleMask` with OpenGL's
+  single-sampled targets are dropped, which OpenGL ignores there and the host applied
+  (`sample_mask.*.singlesample_*` and `default_framebuffer` 9; `Variant::single_sampled`).
+- Uniform blocks named at run time (an array of blocks indexed by a value): each such load is a
+  load of the block named, chosen among every bound block (a bridge pass before the blocks become
+  words). dEQP-GLES31 `opaque_type_indexing.ubo` 8 crashes, KHR `gpu_shader5
+  .uniform_blocks_array_indexing` 2 ("not taken: load_ubo").
+- Draws of fewer vertices than one primitive with adjacency draw nothing (`indices::trimmed`);
+  a strip with adjacency of one to three vertices asked the stage helper for a buffer of an
+  underflowed size (dEQP-GLES31 `geometry_shading.input.triangle_strip_adjacency.vertex_count_1`
+  to `_3`).
+- BC1 without alpha (`GL_COMPRESSED_RGB_S3TC_DXT1`, Gallium's DXT1_RGB and DXT1_SRGB) is held in
+  the interface's BC1 with its views reading alpha one (`format::opaque_in_alpha`): st/mesa has
+  no other format for it, so the texture was not made and the upload raised `GL_OUT_OF_MEMORY`
+  (KHR-GL33 `pixelstoragemodes.compressedteximage2d/3d.rgb_s3tc_dxt1` 80 failures).
+- Unsafe code: wcontainers-nir 107 (two more: the bridge's two sample-mask calls); the root list
+  carries it. No dependency or licence was added.
+
+Run 24's first group run on the rig (the array, stencil and winding changes only; desktop, RTX
+3080, one GPU job that built and ran, 8 glcts at once, other tracks' jobs queued beside; scratch
+`results/g9r24/a`, log `logs/g9r24-a.log`), against the same cases of run 23's whole run:
+- dEQP-GLES2 `fbo.render`, `fragment_ops`: 2,151 of 2,151 run pass (35 failures pass).
+- dEQP-GLES3 `fbo.render`, `depth_stencil_clear`, `fragment_ops`: 3,493 of 3,493 pass (113
+  `fbo.render` and 2 `fragment_ops.scissor` failures pass).
+- dEQP-GLES31 `opaque_type_indexing`, `tessellation`, `tessellation_geometry_interaction`,
+  `primitive_bounding_box`: 858 of 909 run (38 `opaque_type_indexing` crashes, 4 winding failures
+  pass; 6 `tessellation.user_defined_io` cases that were NotSupported pass).
+- KHR-GLES31 and KHR-GLES32 `tessellation_shader`, `geometry_shader`: 209 of 265 run each (4
+  winding failures and 1 `geometry_shader.limits` crash pass in each).
+- No case that passed in run 23 fails.
+
+Run 24's second group run (every change of the run, at 8f9366e1; desktop, one GPU job, 13:20
+to 13:43 desktop time; scratch `results/g9r24/b`, log `logs/g9r24-b.log`, whose printed counts
+were lost when its client was stopped after 30 minutes in the queue; counts from the
+`results.csv` files):
+- dEQP-GLES3 `ubo`: 2,357 of 2,357 pass (unchanged; a guard for the uniform block pass).
+- dEQP-GLES31 `sample_variables`, `opaque_type_indexing`, `geometry_shading.input`,
+  `multisample_interpolation`, `sample_shading`: 685 of 701 run (Crash 11, Fail 5); against run
+  23, `sample_mask_in` 18 and `sample_mask` 9 failures, `opaque_type_indexing.ubo` 8 and
+  `triangle_strip_adjacency` 3 crashes pass.
+- KHR-GLES31 `sample_variables`, `gpu_shader5`, `shader_multisample_interpolation`: 270 of 321
+  (Crash 3, Fail 48), KHR-GLES32 `gpu_shader5`: 14 of 21; `uniform_blocks_array_indexing` now
+  runs and fails (it crashed): not yet read.
+- KHR-GL33 `pixelstoragemodes`, `texture_swizzle`: 1,275 of 1,340 run; all 80
+  `rgb_s3tc_dxt1` failures pass.
+- No case that passed in run 23 fails. Over both group runs about 320 cases that failed or
+  crashed in run 23 pass. The whole run was not repeated this run: the table below is still run
+  23's.
+
 G9 run 23 (2026-11-23, round 4's first run). Built this run, each linted with warnings denied on
 the x86-64 machine (route tests 17 of 17 there); every list's whole run at e742e0be is below:
 - Stores to images declared without a format (`image_store_formatted`, 51488cc0, cb5396d3). The
@@ -114,11 +187,17 @@ The suite of both crates at 7e686f27 (x86-64 machine, load 21 to 25): fmt clean;
 warnings denied clean with and without Mesa; with Mesa 30 tests pass and 2 are ignored (route 17,
 glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none build that need it.
 
-Next, in order (this track's rows of the gap list):
-1. The not yet read groups: KHR-GL33 pixelstoragemodes, primitive_bounding_box, sample_variables
-   and multisample interpolation, the stage helper's invalid calls, draw_indirect, gpu_shader5.
-2. Storage blocks in tessellation programs (KHR-GLES32's 464 NotSupported), the point size an
-   evaluation program reads, layered geometry output.
+Next, in order (this track's rows of the gap list, as run 24 left them):
+1. The groups still not yet read: KHR sample_variables' map of a multisampled texture
+   (`mask.*.samples_0`, `position`), KHR shader_multisample_interpolation 6, gpu_shader5's
+   `texture_gather_offset_color_*`, texture_cube_map_array `sampling` and `image_op_compute_sh`,
+   shader_image_load_store's `misc-fs` and `advanced-*`, dEQP synchronization 10,
+   tessellation_geometry_interaction.feedback ("a variable of another mode").
+2. Primitives with adjacency without a geometry program (draw_indirect 8, primitive_restart 1):
+   the base primitives' indices made on the host, with OpenGL's provoking vertices.
+3. Storage blocks in tessellation programs (KHR-GLES32's 464 NotSupported), the point size an
+   evaluation program reads, layered geometry output, an input read at the centroid and at an
+   offset, arrays of arrays of samplers.
 3. copy_image: ASTC against 128-bit formats, the 96-bit formats; fbo.render's re-specified
    buffers; blits the blitter does not make; maps of multisampled textures.
 4. The two device losses not yet traced (destroyed textures in a recorded pass, the 2D view of a
@@ -139,14 +218,16 @@ groups in the independent check.
   rest of `ARB_gpu_shader5`, transform feedback 2 and 3, ...).
 - KHR-GL33 packed_pixels 198 crashes: BC textures whose level 0 is not whole blocks lose the
   device in wgpu (the WebGPU back end; asked in G9 run 17).
-- KHR-GL33 pixelstoragemodes compressedteximage2d and 3d 80 Fail: not yet read (this track).
+- KHR-GL33 pixelstoragemodes compressedteximage2d and 3d 80 Fail: read in run 24, every one is
+  `rgb_s3tc_dxt1` (ASTC passes): `GL_OUT_OF_MEMORY` from the texture, which st/mesa can hold only
+  in Gallium's DXT1_RGB, which the driver had no format for (this track; built in run 24).
 - dEQP-GLES31 copy_image.mixed 256 Fail: copies between ASTC and 128-bit integer formats (the
   driver's ASTC textures are decoded where the device lacks ASTC, so a copy of their blocks
   meets decoded texels; this track); copy_image.non_compressed 32 crashes: the 96-bit RGB32
   formats, which the host has no format of (this track: a twin of 128 bits copied by rows).
-- dEQP-GLES2 and -GLES3 fbo.render 148 Fail: colour buffers re-specified at another size or
-  format while attached, and the 565 framebuffer WebGPU renders no format of (this track; the
-  565 part absent on WebGPU, to be reported incomplete or drawn through a twin).
+- dEQP-GLES2 and -GLES3 fbo.render 148 Fail: read again in run 24, every one is a stencil case
+  whose scissored stencil clear wrote zero (the back face's stencil reference; this track, built
+  in run 24; the earlier reading, re-specified colour buffers, was wrong).
 - dEQP-GLES2 and -GLES3 shaders.invariance 40, KHR shader_integer_mix 9, dEQP-GLES3 shaders.builtin_functions 26,
   state_query.floats 4: precision and invariance where the host's compiler reorders arithmetic
   (`invariant` has no WGSL form; the shaders track's naga writers) and not yet read (this track).
@@ -161,31 +242,58 @@ groups in the independent check.
   blitter does not make (this track).
 - dEQP-GLES3 transform_feedback 9 crashes: `gl_PointSize` streamed (this track: "a streamed value
   that is neither at a location nor the position", 22 refusals).
-- dEQP-GLES31 opaque_type_indexing 46 crashes: samplers of integer arrays whose elements'
-  samplers differ, arrays of arrays (this track), uniform blocks indexed at run time (`load_ubo`
-  refusals, this track).
+- dEQP-GLES31 opaque_type_indexing 46 crashes: read in run 24: 38 are sampler arrays in geometry
+  programs bound whole where the staged forms split them, 8 uniform blocks indexed at run time
+  (`load_ubo`); both this track's, built in run 24.
 - dEQP-GLES31 texture.border_clamp 24, KHR texture_border_clamp: a border on a comparison sampler
   (the shaders track's filter library: `BorderInShaderOnComparison`).
 - dEQP-GLES31 geometry_shading.layered 15 and instanced 6, KHR geometry_shader 14: a geometry
   program writing a layer or viewport (this track: layered targets in the stage helper's final
   draw, not built).
-- dEQP-GLES31 primitive_bounding_box 28 crashes: not yet read (this track).
-- dEQP-GLES31 shaders.sample_variables 27 Fail, KHR sample_variables 38 Fail,
-  shader_multisample_interpolation 6 and dEQP multisample_interpolation 11: not yet read (this
-  track; two-, eight- and sixteen-sample targets are made with the standard positions since
-  d8bb7a2e, and the stand-in of a multisampled integer texture reads zeros, not (0, 0, 0, 1)).
+- dEQP-GLES31 primitive_bounding_box 28 crashes: read in run 24, every one draws through
+  tessellation and a geometry program: the stage helper sizes the geometry output for the largest
+  factor of every patch and asks for more than `max_buffer_size` (the shaders track; asked under
+  "Requests").
+- dEQP-GLES31 shaders.sample_variables 27 Fail: read in run 24: `sample_mask_in` 18 (the host's
+  `gl_SampleMaskIn` holds every covered sample when run per sample) and `sample_mask` 9 (the mask
+  applied with single-sampled targets): this track, built in run 24. KHR sample_variables 38
+  Fail: `mask.*.samples_0` 36 (a single-sampled texture, the program writing the mask) and
+  `position` 2 refuse "a map of a multisampled texture": the map's cause is not yet traced (this
+  track). dEQP multisample_interpolation 11 crashes: `interpolate_at_offset.centroid_qualifier`,
+  an input read at the centroid and at an offset, which the route takes from the value at the
+  pixel's centre ("a stage value interpolated two ways"; this track: the value at a second
+  location, not built). KHR shader_multisample_interpolation 6 Fail: not yet read.
 - KHR-GLES31 tessellation_shader 46: an evaluation program reading the point size (72 refusals,
   this track: `gl_in[].gl_PointSize` through the stage helper's values), a control program
   reading outputs after `barrier()` (the stage helper runs control points one after another:
   the shaders track), primitives with adjacency (18 refusals, this track).
-- KHR-GLES31 draw_indirect 8 crashes, gpu_shader5 7, texture_cube_map_array 3,
-  shader_image_load_store 3, dEQP synchronization 10, tessellation common_edge 6 and winding 4,
-  tessellation_geometry_interaction.feedback 6, uniform_location.nested_array 6 (arrays of
-  arrays), image_load_store.early_fragment_tests 6 (forced early tests: absent on WebGPU, the
-  shaders track's capability for wgpu natively): the rest not yet read (this track).
-- The stage helper's invalid calls (134 refusals: "buffer larger than max_buffer_size", "a binding
-  set lacks a binding its program reads"): the shaders track's stage helper, or this driver's
-  bindings of it; not yet told apart (this track to read first).
+- Read in run 24 (`logs/g9r24/reasons-g9r23.txt` in scratch has every failing case with its
+  note): KHR-GLES31 draw_indirect 8 crashes are primitives with adjacency drawn without a geometry
+  program (OpenGL then draws the primitives without their adjacent vertices; this track, not
+  built; KHR-GL33 `primitive_restart.restart_mode` too). gpu_shader5 7 (and KHR-GLES32's 7):
+  `precise_qualifier` and dEQP `tessellation.common_edge.*_precise` 6 (`precise` has no form in
+  naga's writers: the shaders track), `sampler_array_indexing` ("rewrite: unsupported:
+  ResourceArrayPair", the shaders track's rewrite), `texture_gather_offset_depth_*`
+  (`BorderInShaderOnComparison`, the shaders track), `uniform_blocks_array_indexing` (its
+  refusal lifted in run 24; it now runs and fails, not yet read), `texture_gather_offset_color_*`
+  2 Fail not yet read. texture_cube_map_array 3 crashes:
+  layered geometry output (this track, not built); `sampling` and KHR-GLES32
+  `image_op_compute_sh` Fail not yet read. shader_image_load_store: `basic-glsl-earlyFragTests`
+  (forced early tests, with dEQP `image_load_store.early_fragment_tests` 6: absent on WebGPU, the
+  shaders track's capability for wgpu natively), `basic-glsl-misc-fs` ("Uses operations
+  forbidden at this stage", not yet read), `advanced-*` 3 Fail not yet read. dEQP synchronization
+  10 Fail (buffers and images aliased within and between invocations, no refusal): not yet read.
+  Tessellation winding 4 (and KHR's 4 and 4): built in run 24. tessellation_geometry_interaction
+  .feedback 6 crashes: "not taken: a variable of another mode" (this track's route, not yet read
+  further). uniform_location.nested_array 6: arrays of arrays of samplers (this track's route,
+  not built). geometry_shading.input.triangle_strip_adjacency 8: one to three vertices built in
+  run 24; eight to twelve take `gl_in[]` in Direct3D's order (the shaders track; asked).
+- The stage helper's invalid calls (134 refusals), told apart in run 24: "a binding set lacks a
+  binding its program reads" 80 were this driver's (built in run 24), "buffer larger than
+  max_buffer_size" 56 the stage helper's sizing (the shaders track; asked).
+- KHR-GL33 transform_feedback `capture_geometry_interleaved_test` and
+  `query_geometry_interleaved_test` lose the device: the stage helper's pass-through needs a
+  vertex attribute past the device's 30 (the shaders track; asked).
 - Maps of multisampled textures (76 refusals, KHR-GLES31): the host reads no multisampled
   texture back (absent on WebGPU by the plan; to be resolved through a draw, this track).
 - Device losses left: textures destroyed while a recorded pass uses them (KHR-GLES3
@@ -252,6 +360,18 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 24: `scripts/g9r24-run.sh` is run 23's one-command run under its name. Give the
+  command that starts it a time limit longer than the queue's wait (an hour or more on
+  2026-11-23): a stopped client loses the job's printed counts, though the job carries on and
+  its `results.csv` files land on the desktop as usual (`mine.ps1` shows whether it still runs). Reading a whole
+  run's failures by their causes: copy scratch `scripts/case-notes.ps1` to `C:\wc\graphics-nir`
+  and run it there (`powershell -NoProfile -ExecutionPolicy Bypass -File
+  C:\wc\graphics-nir\case-notes.ps1`; every refusal, panic and device error of every list's
+  process logs with the case running when it was printed, into `C:\wc\graphics-nir\case-notes.txt`,
+  about a minute), copy that file back, then `python3 -I scripts/g9r24-reasons.py
+  results/<run>/full <case-notes.txt> [case regex]` (scratch) counts each failing group by its
+  note. A failing case's `.qpa` (pictures and GL calls) is kept beside the process logs in the
+  list's results folder on the desktop; `scripts/qpa_images.py` writes its pictures.
 - G9 run 23's one-command run (scratch `scripts/g9r23-run.sh <log> [<lists> [<regexes>]]`, no
   lists for every list): the Mesa build and the CTS run are ONE GPU job (`gpu-job --build`), so
   both use one snapshot of the working tree. A `remote` build followed by a separate `gpu-job`
@@ -959,6 +1079,34 @@ None.
 
 ## Requests to other tracks
 
+- Shaders track (G9 run 24): the stage helper sizes a geometry stage's output after tessellation
+  for the largest factor of every patch (`patch_bounds(h.tessellation.max_factor)`, 64 where the
+  program declares no maximum, as GLSL never does), so a draw of a few hundred patches asks for a
+  buffer larger than `max_buffer_size` ("buffer larger than max_buffer_size", 56 process
+  refusals): dEQP-GLES31 `primitive_bounding_box` 28 crashes (vertex, tessellation, geometry and
+  fragment programs; 288 patches of lines, a geometry program of 5 vertices at most) and
+  `geometry_shading.input.triangle_strip_adjacency` 3. Asked: bound the output by the levels the
+  draw's patches give (the tessellator counts them first), or run such a draw in parts of
+  patches that fit.
+- Shaders track (G9 run 24): the stage helper lists the odd triangles of a triangle strip with
+  adjacency in Direct3D's order, the first vertex kept and the other two swapped (`strips.wgsl`,
+  `adjacent_place`: places i, i+3, i+4, i+6, i+2, i-2 for the triangle at strip place i); OpenGL
+  gives a geometry program those triangles with the first two swapped instead (OpenGL 4.6, table
+  10.1 "Triangles generated by triangle strips with adjacency": 2j+2, 2j-2, 2j, 2j+3, 2j+4,
+  2j+6 for odd triangle j, that is i+2, i-2, i, i+3, i+4, i+6). The same triangle and winding,
+  but `gl_in[]` in another order: dEQP-GLES31 `geometry_shading.input.triangle_strip_adjacency`
+  fails from two triangles on (vertex counts 8 to 12, one triangle passes) and KHR
+  `geometry_shader.adjacency.adjacency_*_triangle_strip`. Asked: OpenGL's order where the API is
+  OpenGL (the helper knows the API's conventions already through `provoking`).
+- Shaders track (G9 run 24): the stage helper draws a geometry program's records through vertex
+  attributes, one a location and one for the position (`record_layout(words, slots)`), so a
+  program writing as many locations as the screen reports for it (the inter-stage slots) needs
+  one attribute more than the device has: "Vertex attribute location 30 must be less than limit 30"
+  at `create_render_pipeline`, which loses the device (KHR-GL33
+  `transform_feedback.capture_geometry_interleaved_test` and `query_geometry_interleaved_test`).
+  Reporting fewer geometry outputs would put OpenGL 3.3's 128 output components out of reach.
+  Asked: a pass-through that reads the records from storage by the vertex index where they need
+  more attributes than the device has.
 - WebGPU back end (G9 run 23, a finding, not yet traced to the object): wgpu refuses a submit
   because a texture a recorded pass uses "has been destroyed" (KHR-GLES3 `packed_depth_stencil`
   blit and renderbuffers, KHR-GL33 `texture_swizzle`: 20 lost processes in run 22). The
