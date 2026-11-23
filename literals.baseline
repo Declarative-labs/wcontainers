@@ -22897,8 +22897,7 @@ restated	crates/wcontainers-shaders/tests/early_draw.rs	int	case	4096
 restated	crates/wcontainers-shaders/tests/filter_draw.rs	float	SHIFT	256.0
 restated	crates/wcontainers-shaders/tests/glsl_writer.rs	int	try_write_glsl	300
 restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	SCENE_WIDTH	256
-restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	direct3d	1024
-restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	ours_staged	1024
+restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	factor_constants	1024
 restated	crates/wcontainers-shaders/tests/variant_draw.rs	float	variants_draw_as_the_native_feature_does	16_777_215.0
 restated	crates/wcontainers-shaders/tests/variant_draw.rs	float	variants_draw_as_the_native_feature_does	16_777_215.0f32
 restated	crates/wcontainers-shaders/tests/variants.rs	int	glsl	300
