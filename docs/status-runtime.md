@@ -25,6 +25,11 @@ and crates/executor/implementation/unicorn.
   crates/kernel, crates/system or crates/runtime/interface.rs changed or is uncommitted; the kernel track is on
   KF (literals and the check's findings), and brief-kernel.md has no new direction about the runner or the
   `Send` bound. rustfmt --check of every file of single-kernel and of the suite: no diff. Nothing built or run.
+- Fifth run (2026-11-23, at dfb83e96, origin/agents and origin/main without anything newer): the same again.
+  executing.rs still has `unimplemented!` at line 471 and `unsafe fn` at 195 and 225; no commit since dfb83e96
+  touches crates/kernel, crates/system, crates/runtime or crates/executor; the kernel status's newest section
+  (KF, fifth run) and brief-kernel.md's newest entry (executor-independent addresses) say nothing of the runner
+  or the `Send` bound. Nothing of this track's was uncommitted. Nothing built or run.
 
 ## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
 
