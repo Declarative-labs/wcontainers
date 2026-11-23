@@ -548,8 +548,9 @@ brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
 
-- Unsafe code: none in this track; none planned (the translator and wcontainers-x86 keep the workspace ban; emitting
-  code into a byte buffer needs none).
+- Unsafe code: none in this track (XN1 run 1's x86/native.rs, carry.rs, area.rs, strings.rs and two test files hold
+  none; grep finds no `unsafe` in them); none planned (the translator and wcontainers-x86 keep the workspace ban;
+  emitting code into a byte buffer needs none). No imports to vet beyond fastrand, a test-only dependency.
 - Hostile-guest points the plan answers: every host address translated code jumps to is a word of our tables for any
   guest value (the mirror, plan 3.3, measured over 37 targets); no host return address is ever pushed or read back
   from guest-writable memory (plan 3.6); the guest cannot set or read the thread area's segment base (plan 3.1, the
