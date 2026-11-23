@@ -17,7 +17,84 @@ probes).
   blocking and seven minor (one of them no defect, a measurement to record); run 8 fixed all nine (list below),
   measured in scratch run8/. The run-8 fixes have not had a check of their own. Nothing is built; no code of this
   track exists yet.
-- XN1 and XN2: not started. XN1 starts with the reconciliation points under Coordination.
+- XN1 (the output with no memory check): run 1 (run 9 of the track, 2026-11-23) started it. Not complete. Done:
+  the eighth check's five findings answered in the plan (below); the shared `Route::Area`; the core's
+  `string_passes`; the route of every decoded form per way with its static routing test; the carrying code of an
+  operand on the thread area's segment in the machine and P, the 0x67 finding's code, with its test. No x86
+  executor can run a translation yet (P's executor, crates/executor/implementation/host-process, appeared in the
+  tree during this run, uncommitted; no x86 floor), so the bar's layers, programs and speed wait on one (plan 8).
+- XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
+  `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's.
+
+## Next, in order (XN1)
+
+1. The rest of `Native for X86_64` (plan 9's trait): `carry` per route (Copy with stand-ins for the withheld
+   r10, r11, r15; Rebase; Transfer through the two-level mirror; Kernel, FloatStatus, Trap and Nothing through
+   `call`), `count` (`lea r10, [r10 + k]`), `exit` and `retarget` (rel32), `stop_check`, `stopping`, `movable`.
+   `carry::area_operand` returns None today for an instruction naming a withheld register and for a RIP-relative
+   operand on the area's segment; both forms come with the stand-ins and the address places.
+2. The shared changes of plan 9 that the trait needs (Way, HostMatches, `Patch`, `InsideCall`'s three kinds,
+   `Operand`'s segment and address size, `Fixup`s, `HostCode::pool`), each its own commit with ARM64's suites run
+   on the ARM64 machine.
+3. The rep string after-code from `string_passes`, then its test against the WebAssembly output's count.
+4. `answer` and the core moves (Condition, the x87 unit, transcendental.rs), then x87_answer.rs.
+5. Encoding round trips through iced's decoder and the position map's unit tests (the bar's pre-executor part),
+   then the executor-dependent bar once P's executor runs a translation.
+
+## What XN1 run 1 changed
+
+- The eighth check's findings, in the plan: (1, blocking, way I) a string with the guest's 0x67 goes to the inside
+  in both checked forms, since its rdi side cannot be rebased (plan 4, routing test, way I tests with str67.c's
+  case); code at XN2. (2) a segment operand with the guest's 0x67: the offset part is wrapped by `lea u32, [base32 +
+  index32*scale + disp]` before the segment base is added (`[t + u]`), in the machine and P (plan 3.1) and in the
+  exact form (plan 4), `67 d7` by a 32-bit `lea`; the wrapping form needed nothing (the sum modulo 2^32 is the
+  same). Code for the machine and P done (`carry::area_operand`), the exact form's at XN2. (3) `maskmovq`
+  named beside `maskmovdqu`: Kernel on the area's segment in the machine and P, re-encoded in I, in the routing
+  test's list (plan 3.1, 4, 7). (4) the rep string count is a second implementation of the meaning's rule: named,
+  with the full rule (each pass's own length, the cap, one element a pass for compares, `lods`, 0x67, DF and TF),
+  its closed form (the check's case 91 passes), `string_passes` in the core, the after-code tested against the
+  WebAssembly output, and no cost estimate (plan 3.6, 7, 9). (5) the unmasked x87 mode needs a plain-Rust twin of
+  fpu.rs's instruction-level part: named as new code, x87_answer.rs (plan 3.1, 9).
+- `Route::Area` added to gcpu/native.rs (ARM64's carrying code takes it as unreachable), as plan 9 now says.
+- x86/strings.rs (core): `StringKind` and `BULK_STRING_BYTES` moved there from meaning.rs, and `string_passes`.
+- x86/native.rs: `Way` (machine, process, in process with its check), `HostMatches` (paging depth, partial writes,
+  undefined results), `route` for every decoded form.
+- x86/area.rs (core): the register area's first word, the guest's GS base; x86/carry.rs: the withheld registers
+  and `area_operand`, built on iced's encoder (feature `encoder` added).
+- Tests: tests/native_routes.rs (a seeded sweep of instruction-shaped bytes, every decoded form in all four ways on
+  two hosts against the plan's rules, and 54 named forms); tests/native_carry.rs (the check's gs67 case, and a
+  seeded sweep of operand shapes, both address sizes, comparing the address the host code reaches, run through
+  iced's `virtual_address`, with the meaning's).
+
+## XN1 results (rented x86 machine, Xeon 8488C, load 0.1 to 0.7, commit of this run plus other tracks' edits)
+
+- clippy with warnings denied on wcontainers-x86, wcontainers-guest-cpu, wcontainers-arm64 (all targets, `--no-deps`,
+  since the kernel interface crate, not ours, has two type-complexity findings): clean. `cargo check -p
+  wcontainers-x86 --no-default-features` (the core alone, which the kernel takes): builds.
+- `cargo test -p wcontainers-x86 -p wcontainers-guest-cpu`: 37 tests, 0 failed.
+- native_routes: seed 0x5eed 200,000 cases and seed 0x2b17 2,000,000 cases of instruction-shaped bytes, each
+  decoded form in 4 ways on 2 hosts (15,999,984 routes in the second: Copy 4,003,401, Nothing 107,840, Rebase
+  64,464, Transfer 750,824, Kernel 820,723, FloatStatus 10,576, Trap 9,740,928, Area 501,228): 0 broken; 54
+  named forms right.
+- native_carry: the gs67 case reaches 0x300000010 (and without 0x67 0x400000010); operand shapes, seed 0x5eed
+  100,000 cases and seed 11 1,000,000 cases: 0 differences from the meaning's address.
+- While this run worked, crates/executor/implementation/host-process (another track's, uncommitted) named a
+  missing test file, which stops every cargo command in the tree; the runs above put an empty file there in the
+  rented machine's copy only.
+
+## How to run XN1's tests
+
+`orchestrator/cloud/x86-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
+native_routes --test native_carry -- --nocapture'`; the sweeps take `X86_ROUTE_SEED`, `X86_ROUTE_CASES`,
+`X86_CARRY_SEED` and `X86_CARRY_CASES` (decimal, or hex with 0x for the route seed); `cargo test -p
+wcontainers-x86 --lib strings` for the pass rule.
+
+## Departures from the plan (XN1)
+
+- `route` takes the process's `Offer` beside the way and the host's matches (plan 9 gives `route(way, i, host)`),
+  since a form of a feature the process was not told of takes the Trap route and the offer says which.
+- `route` is a free function of x86/native.rs until the trait of plan 9 is changed; the trait's other methods come
+  with it.
 
 ## What run 8 changed (seventh check), finding by finding
 
@@ -462,7 +539,9 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Licences
 
-No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT, already a dependency). Plan
+XN1 run 1 turned on iced-x86's `encoder` feature (iced-x86 1.22.0, MIT, already a dependency) and added fastrand
+2.5.0 (MIT OR Apache-2.0, already in the lock for wcontainers-arm64's tests) as a dev-dependency of the x86 crate,
+for the seeded sweeps. Plan
 section 9 moves rustc_apfloat 0.2.3 (Apache-2.0 WITH LLVM-exception) and astro-float-num 0.3.7 (MIT), both already
 dependencies, into the x86 core and adds `lazy_static` 1.5 (MIT OR Apache-2.0) for its `spin_no_std` feature, which
 brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
