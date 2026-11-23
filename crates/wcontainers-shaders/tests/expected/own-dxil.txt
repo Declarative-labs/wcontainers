@@ -1,3 +1,4 @@
+cs_alpha.dxil	ok views:R32Float ; glsl absent compute
 cs_atomics.dxil	ok ; glsl absent compute
 cs_buffer_array.dxil	unsupported UnboundedResourceArray
 cs_compare.dxil	ok ; glsl absent compute
@@ -65,6 +66,7 @@ hs_quad_odd_point.dxil	ok ; glsl absent compute
 hs_quad_pow2_ccw.dxil	ok ; glsl absent compute
 hs_quad_pow2_cw.dxil	ok ; glsl absent compute
 hs_quad_pow2_point.dxil	ok ; glsl absent compute
+hs_rows_gap.dxil	ok ; glsl absent compute
 hs_tri_even_ccw.dxil	ok ; glsl absent compute
 hs_tri_even_cw.dxil	ok ; glsl absent compute
 hs_tri_even_point.dxil	ok ; glsl absent compute

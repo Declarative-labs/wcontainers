@@ -1328,6 +1328,11 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
     ] {
         cases.push((hs.into(), "ds_values".into(), gs, per, 3));
     }
+    // A domain shader reading its control points' rows at an index known only at run time, through a
+    // component mask with a gap.
+    for gs in [None, Some("gs_tess_tri")] {
+        cases.push(("hs_rows_gap".into(), "ds_rows_gap".into(), gs, 3, 1));
+    }
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {

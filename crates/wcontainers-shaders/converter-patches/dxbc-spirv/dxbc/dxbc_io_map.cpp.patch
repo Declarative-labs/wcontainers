@@ -1,0 +1,11 @@
+--- a/dxbc/dxbc_io_map.cpp
++++ b/dxbc/dxbc_io_map.cpp
+@@ -1457,7 +1457,7 @@
+   auto varBaseType = varType.getBaseType(0u);
+ 
+   if (varBaseType.isVector() && component) {
+-    uint32_t componentIndex = util::tzcnt(uint8_t(component.first())) - util::tzcnt(uint8_t(var.componentMask));
++    uint32_t componentIndex = util::popcnt(uint8_t(var.componentMask) & (uint8_t(component.first()) - 1u));
+     address.push_back(builder.makeConstant(componentIndex));
+   }
+ 

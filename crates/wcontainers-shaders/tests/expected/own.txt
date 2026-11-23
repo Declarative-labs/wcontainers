@@ -1,3 +1,4 @@
+cs_alpha.dxbc	ok views:R32Float ; glsl absent compute
 cs_atomics.dxbc	ok ; glsl absent compute
 cs_buffer_array.dxbc	unsupported UnboundedResourceArray
 cs_compare.dxbc	ok ; glsl absent compute
@@ -17,7 +18,7 @@ cs_view_kinds.dxbc	ok views:R32Float ; glsl absent compute
 cs_view_sampled.dxbc	ok views:R32Float ; glsl absent compute
 ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
-ds_rows_gap.dxbc	unsupported ComponentPastVector
+ds_rows_gap.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_tri_none.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_values.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
@@ -66,6 +67,7 @@ hs_quad_odd_point.dxbc	ok ; glsl absent compute
 hs_quad_pow2_ccw.dxbc	ok ; glsl absent compute
 hs_quad_pow2_cw.dxbc	ok ; glsl absent compute
 hs_quad_pow2_point.dxbc	ok ; glsl absent compute
+hs_rows_gap.dxbc	ok ; glsl absent compute
 hs_tri_even_ccw.dxbc	ok ; glsl absent compute
 hs_tri_even_cw.dxbc	ok ; glsl absent compute
 hs_tri_even_point.dxbc	ok ; glsl absent compute

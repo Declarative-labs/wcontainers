@@ -99,6 +99,8 @@ for %%e in (gs_rows_lines gs_rows_streams gs_rows_out) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry_rows.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Fo %%e.dxil geometry_rows.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T hs_5_0 /E hs_rows_gap /Fo hs_rows_gap.dxbc domain_rows.hlsl || exit /b 1
+"%DXC%" -nologo -T hs_6_0 -E hs_rows_gap -Fo hs_rows_gap.dxil domain_rows.hlsl || exit /b 1
 "%FXC%" /nologo /T ds_5_0 /E ds_rows_gap /Fo ds_rows_gap.dxbc domain_rows.hlsl || exit /b 1
 "%DXC%" -nologo -T ds_6_0 -E ds_rows_gap -Fo ds_rows_gap.dxil domain_rows.hlsl || exit /b 1
 for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
@@ -119,6 +121,8 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_texels -Gis -Fo ps_texels.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_through /Fo cs_through.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_through -Gis -Fo cs_through.dxil texels.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_alpha /Fo cs_alpha.dxbc texels.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_alpha -Gis -Fo cs_alpha.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_texels /Fo vs_texels.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_texels -Gis -Fo vs_texels.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_early /Fo vs_early.dxbc early.hlsl || exit /b 1
