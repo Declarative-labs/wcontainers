@@ -649,6 +649,12 @@
 ../wcontainers-shaders/tests/own/gs_cut.dxil dxbc None None
 ../wcontainers-shaders/tests/own/gs_cut.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/gs_cut.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_distances.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_distances.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_distances.dxbc dxil false None None
+../wcontainers-shaders/tests/own/gs_distances.dxil dxbc None None
+../wcontainers-shaders/tests/own/gs_distances.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/gs_distances.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/gs_instances.dxbc dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/gs_instances.dxbc ranged dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/gs_instances.dxbc dxil false None None
@@ -694,6 +700,18 @@
 ../wcontainers-shaders/tests/own/gs_points.dxil dxbc None None
 ../wcontainers-shaders/tests/own/gs_points.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/gs_points.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_provoking.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_provoking.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_provoking.dxbc dxil false None None
+../wcontainers-shaders/tests/own/gs_provoking.dxil dxbc None None
+../wcontainers-shaders/tests/own/gs_provoking.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/gs_provoking.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_provoking_last.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_provoking_last.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/gs_provoking_last.dxbc dxil false None None
+../wcontainers-shaders/tests/own/gs_provoking_last.dxil dxbc None None
+../wcontainers-shaders/tests/own/gs_provoking_last.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/gs_provoking_last.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/gs_quads.dxbc dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/gs_quads.dxbc ranged dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/gs_quads.dxbc dxil false None None
@@ -1234,6 +1252,18 @@
 ../wcontainers-shaders/tests/own/ps_pack.dxil dxbc None None
 ../wcontainers-shaders/tests/own/ps_pack.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/ps_pack.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_position_centroid.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_position_centroid.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_position_centroid.dxbc dxil false None None
+../wcontainers-shaders/tests/own/ps_position_centroid.dxil dxbc None None
+../wcontainers-shaders/tests/own/ps_position_centroid.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/ps_position_centroid.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_position_centroid_sampled.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_position_centroid_sampled.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_position_centroid_sampled.dxbc dxil false None None
+../wcontainers-shaders/tests/own/ps_position_centroid_sampled.dxil dxbc None None
+../wcontainers-shaders/tests/own/ps_position_centroid_sampled.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/ps_position_centroid_sampled.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/ps_primid.dxbc dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/ps_primid.dxbc ranged dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/ps_primid.dxbc dxil false None None
