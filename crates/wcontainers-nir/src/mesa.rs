@@ -201,6 +201,7 @@ unsafe extern "C" {
     fn wc_nir_clone(nir: *const NirShader) -> *mut NirShader;
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
     fn wc_nir_geometry_vertices_out(nir: *const NirShader) -> u32;
+    fn wc_nir_control_points_out(nir: *const NirShader) -> u32;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
@@ -369,6 +370,13 @@ impl Nir {
         unsafe { wc_nir_geometry_vertices_out(self.0) }
     }
 
+    /// The control points of a tessellation control program's output patch; zero for another
+    /// stage.
+    pub fn control_points_out(&self) -> u32 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_control_points_out(self.0) }
+    }
+
     /// gl_FragColor written to each of the first `buffers` draw buffers. Nothing for a program
     /// that does not write it, or of another stage.
     pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
@@ -440,7 +448,8 @@ impl Nir {
         (count != STREAMED_ELSEWHERE && written != STREAMED_ELSEWHERE).then_some((outputs, strides))
     }
 
-    /// A vertex program's position changed by `transform`. Nothing for another stage.
+    /// A vertex, geometry or tessellation evaluation program's position changed by `transform`.
+    /// Nothing for another stage.
     pub fn transform_position(&mut self, transform: PositionTransform) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_transform_position(self.0, transform) }

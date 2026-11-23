@@ -464,6 +464,12 @@ wc_nir_geometry_vertices_out(const struct nir_shader *nir)
    return nir->info.stage == MESA_SHADER_GEOMETRY ? nir->info.gs.vertices_out : 0;
 }
 
+uint32_t
+wc_nir_control_points_out(const struct nir_shader *nir)
+{
+   return nir->info.stage == MESA_SHADER_TESS_CTRL ? nir->info.tess.tcs_vertices_out : 0;
+}
+
 static bool
 fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *buffers)
 {
@@ -528,7 +534,8 @@ transform_position(nir_builder *b, nir_intrinsic_instr *intr, void *transform)
 void
 wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform)
 {
-   if (nir->info.stage != MESA_SHADER_VERTEX && nir->info.stage != MESA_SHADER_GEOMETRY)
+   if (nir->info.stage != MESA_SHADER_VERTEX && nir->info.stage != MESA_SHADER_GEOMETRY &&
+       nir->info.stage != MESA_SHADER_TESS_EVAL)
       return;
    wc_nir_lower_io(nir);
    if (nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform) &&

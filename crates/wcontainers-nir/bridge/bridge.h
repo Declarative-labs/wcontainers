@@ -187,6 +187,8 @@ struct nir_shader *wc_nir_clone(const struct nir_shader *nir);
 uint64_t wc_nir_number_vertex_elements(struct nir_shader *nir);
 /* The most vertices a geometry program emits an invocation; zero for another stage. */
 uint32_t wc_nir_geometry_vertices_out(const struct nir_shader *nir);
+/* The control points of a tessellation control program's output patch; zero for another stage. */
+uint32_t wc_nir_control_points_out(const struct nir_shader *nir);
 
 /* gl_FragColor written to each of the first `buffers` draw buffers, nir_lower_fragcolor's step
  * (the driver's own, as Zink's) on lowered stage values. */

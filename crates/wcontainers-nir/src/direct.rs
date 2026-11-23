@@ -759,6 +759,16 @@ pub struct Tessellator {
     pub output: TessellatorOutput,
 }
 
+/// By its declarations, for a driver keying the control programs it converts by them (the shaders
+/// crate's enums have no hash of their own).
+impl std::hash::Hash for Tessellator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(&self.domain).hash(state);
+        std::mem::discriminant(&self.partitioning).hash(state);
+        std::mem::discriminant(&self.output).hash(state);
+    }
+}
+
 /// Route B's module and what it needs of the rewrites; a geometry or tessellation program's
 /// declarations, where the program is one.
 pub struct Routed {
