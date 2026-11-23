@@ -4172,7 +4172,6 @@ dependencies = [
  "wgpu",
  "windows",
  "windows-core",
- "zerocopy",
 ]
 
 [[package]]
