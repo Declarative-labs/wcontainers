@@ -386,36 +386,12 @@ impl<B: Backend> Device<B> {
     /// (`required::LEVEL_REQUIRED`): per format, the missing bits of both words and 4- and 8-sample
     /// counts, of every format the tables require or the device has.
     pub fn unmet_format_requirements(&self) -> Vec<(u32, crate::required::Required)> {
-        let Some(rows) = crate::required::at(self.level) else {
-            return Vec::new();
-        };
-        rows.filter_map(|(dxgi, need)| {
-            let has = self.format_support(dxgi);
-            if need.3 && has.support1 == 0 {
-                return None;
-            }
-            let counts = crate::required::SAMPLE_COUNTS
-                .into_iter()
-                .filter(|&n| self.multisample_quality_levels(dxgi, n) > 0)
-                .fold(0, |c, n| c | 1 << n);
-            let other = (2..=crate::required::MOST_SAMPLES)
-                .filter(|n| !crate::required::SAMPLE_COUNTS.contains(n))
-                .any(|n| self.multisample_quality_levels(dxgi, n) > 0);
-            let counts = counts
-                | if other {
-                    crate::required::SAMPLES_OTHER
-                } else {
-                    0
-                };
-            let lacks = crate::required::Required(
-                need.0 & !has.support1,
-                need.1 & !has.support2,
-                need.2 & !counts,
-                false,
-            );
-            (lacks != crate::required::Required::default()).then_some((dxgi, lacks))
-        })
-        .collect()
+        crate::required::unmet(
+            self.level,
+            crate::required::Required::default(),
+            |dxgi| self.format_support(dxgi),
+            |dxgi, samples| self.multisample_quality_levels(dxgi, samples) > 0,
+        )
     }
 
     fn at_level(mut backend: B, level: u32) -> Result<Self> {
