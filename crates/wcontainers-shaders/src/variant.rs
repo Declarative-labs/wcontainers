@@ -917,6 +917,9 @@ fn linked_in(
     values
 }
 
+/// Clip distances read by a pixel program whose type is no sized array, which is malformed.
+const CLIP_DISTANCES_UNSIZED: &str = "clip distances that are no sized array";
+
 /// A pixel program reading its clip distances takes them from the linked values `d` (the first as
 /// many as it reads), as Direct3D interpolates them.
 fn clip_distance_reads(module: &Module, w: &mut Wrapped, d: &[Handle<Expression>]) -> Result<()> {
@@ -931,9 +934,7 @@ fn clip_distance_reads(module: &Module, w: &mut Wrapped, d: &[Handle<Expression>
         ..
     } = module.types[ty].inner
     else {
-        return Err(ConvertError::Malformed(
-            "clip distances that are no sized array".into(),
-        ));
+        return Err(ConvertError::Malformed(CLIP_DISTANCES_UNSIZED.into()));
     };
     let n = n.get() as usize;
     if n > d.len() {
