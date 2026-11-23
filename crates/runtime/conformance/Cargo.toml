@@ -8,6 +8,7 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
+oci-spec = { version = "0.10.0", default-features = false, features = ["runtime"] }
 wcontainers-runtime = { path = ".." }
 wcontainers-executor = { path = "../../executor" }
 wcontainers-kernel = { path = "../../kernel" }

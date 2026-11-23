@@ -15,6 +15,8 @@ wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-system = { path = "../../../system" }
+# The runtime interface this crate implements.
+wcontainers-runtime = { path = "../..", optional = true }
 wcontainers-clock = { path = "../../../clock" }
 wcontainers-random-source = { path = "../../../random-source" }
 wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
@@ -57,6 +59,7 @@ default = ["std"]
 # Containers, images and the local system. Without it only the loop is built, for an executor whose loop runs
 # where there is no standard library.
 std = [
+    "dep:wcontainers-runtime",
     "dep:oci-spec",
     "dep:serde_json",
     "dep:serde_ignored",

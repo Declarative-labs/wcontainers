@@ -34,6 +34,8 @@ pub mod names;
 #[cfg(feature = "std")]
 mod net;
 #[cfg(feature = "std")]
+mod runners;
+#[cfg(feature = "std")]
 mod spec;
 #[cfg(feature = "std")]
 mod system;
@@ -48,6 +50,8 @@ pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeCo
 pub use image::Image;
 #[cfg(feature = "std")]
 pub use oci_spec;
+#[cfg(feature = "std")]
+pub use runners::{IDLE_WITHOUT_WAKE, KernelContainer, RunInterrupter};
 #[cfg(feature = "std")]
 pub use spec::{MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, base_spec, bind_mount, spec_from_json};
 #[cfg(feature = "std")]
