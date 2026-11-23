@@ -49,6 +49,7 @@ mod text;
 mod transcendental;
 pub mod x87;
 
+pub mod answer;
 pub mod area;
 pub mod claims;
 pub mod condition;
@@ -85,8 +86,6 @@ pub use host::Host;
 pub use meaning::written;
 #[cfg(feature = "translate")]
 pub use operand::{General, general as general_register, size_of_memory as memory_size_bytes};
-#[cfg(feature = "translate")]
-pub use operand::{R8, R9, R10, R11, R12, R13, R14, R15, RAX, RBP, RBX, RCX, RDI, RDX, RSI};
 
 /// The x86-64 guest, 64-bit user mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -229,6 +228,23 @@ pub const XMM_BYTES: u32 = size_of::<u128>() as u32;
 /// The bit of a string compare's (`pcmpestri` and its kin) immediate that makes its elements words.
 pub const STRING_COMPARE_WORDS: u8 = 1;
 
+/// The general registers' numbers, in hardware order.
+pub const RAX: u8 = 0;
+pub const RCX: u8 = 1;
+pub const RDX: u8 = 2;
+pub const RBX: u8 = 3;
+pub const RSP: u8 = RSP_NUMBER;
+pub const RBP: u8 = 5;
+pub const RSI: u8 = 6;
+pub const RDI: u8 = 7;
+pub const R8: u8 = 8;
+pub const R9: u8 = 9;
+pub const R10: u8 = 10;
+pub const R11: u8 = 11;
+pub const R12: u8 = 12;
+pub const R13: u8 = 13;
+pub const R14: u8 = 14;
+pub const R15: u8 = 15;
 /// rsp's number in the general registers.
 pub const RSP_NUMBER: u8 = 4;
 

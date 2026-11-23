@@ -7,6 +7,7 @@ use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand, Segment};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
+use crate::answer::Question;
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
@@ -219,6 +220,15 @@ impl Native for X86_64 {
 
     fn write_place(code: &mut [u8], place: &AddressPlace) {
         carry::write_place(code, place);
+    }
+}
+
+/// What the inside's `answer` is asked for an instruction of the Kernel route, where it answers it.
+pub fn question(i: &Instruction) -> Option<Question> {
+    match i.iced.mnemonic() {
+        Mnemonic::Cpuid => Some(Question::Cpuid),
+        Mnemonic::Xgetbv => Some(Question::Xgetbv),
+        _ => crate::fpu::transcendental_code(i).map(Question::X87),
     }
 }
 

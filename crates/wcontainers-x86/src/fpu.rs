@@ -360,6 +360,50 @@ fn check_ends<E: Emitter<X86_64> + ?Sized>(
     e.check(at, bytes, access, 0);
 }
 
+/// The unit's code with the instruction's opcode, memory format and ST(i) operand, for the operation to fill in.
+fn code(i: &Instruction) -> Code {
+    let ins = &i.iced;
+    let mut c = Code::new(Operation::Load);
+    c.opcode = i.x87_opcode & ((1 << OPCODE_BITS) - 1);
+    c.format = format(i);
+    let registers: Vec<u8> = (0..ins.op_count())
+        .filter(|&n| ins.op_kind(n) == OpKind::Register)
+        .filter_map(|n| st(ins.op_register(n)))
+        .collect();
+    // The register that is not the first ST(0), and whether the destination is it.
+    match registers.as_slice() {
+        [0, other] => c.register = *other,
+        [first, _] => {
+            c.register = *first;
+            c.to_register = true;
+        }
+        [only] => c.register = *only,
+        _ => {}
+    }
+    c
+}
+
+/// The unit's code of a transcendental instruction, which has no memory operand.
+pub(crate) fn transcendental_code(i: &Instruction) -> Option<Code> {
+    use Mnemonic::*;
+    let m = i.iced.mnemonic();
+    let operation = match m {
+        Fsin => Operation::Sine,
+        Fcos => Operation::Cosine,
+        Fsincos => Operation::SineCosine,
+        Fptan => Operation::Tangent,
+        F2xm1 => Operation::ExponentMinusOne,
+        Fpatan => Operation::ArcTangent,
+        Fyl2x => Operation::Logarithm,
+        Fyl2xp1 => Operation::LogarithmPlusOne,
+        _ => return None,
+    };
+    let mut c = code(i);
+    c.operation = operation;
+    c.pops = u8::from(matches!(m, Fpatan | Fyl2x | Fyl2xp1));
+    Some(c)
+}
+
 pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let ins = &i.iced;
@@ -421,23 +465,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
         _ => (None, None),
     };
-    let mut c = Code::new(Operation::Load);
-    c.opcode = i.x87_opcode & ((1 << OPCODE_BITS) - 1);
-    c.format = format(i);
-    let registers: Vec<u8> = (0..ins.op_count())
-        .filter(|&n| ins.op_kind(n) == OpKind::Register)
-        .filter_map(|n| st(ins.op_register(n)))
-        .collect();
-    // The register that is not the first ST(0), and whether the destination is it.
-    match registers.as_slice() {
-        [0, other] => c.register = *other,
-        [first, _] => {
-            c.register = *first;
-            c.to_register = true;
-        }
-        [only] => c.register = *only,
-        _ => {}
-    }
+    let mut c = code(i);
     let data = at.filter(|_| c.format != Format::Register);
     match m {
         Fld | Fild | Fbld => {
@@ -519,17 +547,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             call(e, c, None, None, None);
         }
         Fsin | Fcos | Fsincos | Fptan | F2xm1 | Fpatan | Fyl2x | Fyl2xp1 => {
-            c.operation = match m {
-                Fsin => Operation::Sine,
-                Fcos => Operation::Cosine,
-                Fsincos => Operation::SineCosine,
-                Fptan => Operation::Tangent,
-                F2xm1 => Operation::ExponentMinusOne,
-                Fpatan => Operation::ArcTangent,
-                Fyl2x => Operation::Logarithm,
-                _ => Operation::LogarithmPlusOne,
-            };
-            c.pops = u8::from(matches!(m, Fpatan | Fyl2x | Fyl2xp1));
+            let c = transcendental_code(i).expect("a transcendental instruction");
             call(e, c, None, None, None);
         }
         Fprem | Fprem1 => {
