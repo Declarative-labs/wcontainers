@@ -12,19 +12,32 @@ track was idle (f9ecca97, extended-range swap chains in the blit models; c387985
 
 ## Where things stand
 
-Run 53 (2026-11-23, milestone G5r: the fifth check's three findings and the owner's ruling of
-2026-11-22 on feature levels). The seventh check had passed G5 on 2026-11-20; the ruling then made
-the level a hard requirement.
+Runs 53 and 54 (2026-11-23, milestone G5r: the fifth check's three findings and the owner's
+ruling of 2026-11-22 on feature levels). The seventh check had passed G5 on 2026-11-20; the ruling
+then made the level a hard requirement.
 - Finding 1, feature answers that do not match what is served: atomics were answered present in
-  run 51; in run 53 a test asks and then uses every format answer a resource can use (test
-  `every_answered_format_ability_is_served`, tests/answers.rs, GPU): for each DXGI format up to
-  `B4G4R4A4_UNORM`, textures of every answered shape with and without mip chains, targets and depth
-  targets cleared, every answered multisample count made and cleared, resolves where answered,
-  storage textures, copies to every other format of its typeless group, and a format answered
-  absent must be refused. 915 uses on the RTX 3080; one known failure, marked in the test with its
-  reason (a copy of `R32_SINT` into `D32_FLOAT` loses the device in the back end, asked of G2).
-  Writing it found one route answered but not built: storage views of formats the back end
-  cannot store into (`A8_UNORM`, held converted), now served through a buffer.
+  run 51. Test `every_answered_format_ability_is_served` (tests/answers.rs, GPU) asks and then uses
+  every format answer, each DXGI format up to `B4G4R4A4_UNORM` on a device of its own. Resources
+  (run 53): textures of every answered shape with and without mip chains, targets and depth
+  targets cleared, every answered multisample count made and cleared, resolves, storage textures,
+  copies to every other format of its group, and a format answered absent must be refused; every
+  resource made must leave the back end whole (run 54). Programs (run 54, compiled by fxc,
+  tests/answers/compile.cmd): loads, linear sampling, comparison sampling, gathers, comparison
+  gathers and multisampled loads of each sample count, each of zeros and checked to read zero;
+  typed buffer views loaded and stored; storage textures stored (checked written), loaded and
+  every answered atomic (the values returned and left checked against Direct3D's operations,
+  minimum and maximum of either sign on views of both); vertex input of the format and index
+  input, drawn and checked; draws into targets of the format, blended where answered, of every
+  answered sample count, and into its depth targets. On the RTX 3080 (run54/answers4.log): 931 uses by resources and 745 by programs, none failing.
+  Not used by it: stream output buffers (`SO_BUFFER`), display and back buffer casts (swap
+  chains), program uses of 1D, 3D and cube views (their resources are used).
+  What it found and run 54 fixed, all three in the WebGPU back end (G2 idle since 2026-11-19; this
+  track's commits f9fdaa02, 08fe9e5b, cc800174): a copy of `R32_SINT` into `D32_FLOAT` lost the
+  device (the depth draw bound a signed texture as unsigned); every `R9G9B9E5_SHAREDEXP` texture
+  was invalid (the adapter's flags gave it a resolve without drawing, so the front made it to draw
+  into); storage writes to `B8G8R8A8_UNORM` lost the device (the adapter's flags gave storage the
+  device was not asked for; now asked, and refused without it). Run 53's found storage views of
+  `A8_UNORM` answered and not built, now served through a buffer.
 - Finding 2, the level: the device reports 11_0 only where every requirement is built
   (Departures, first item; `D3D12CreateDevice` fails otherwise, naming each format short), from
   Microsoft's 11_0 format table, which now lives in the infrastructure crate (`required`). On the
@@ -33,11 +46,12 @@ the level a hard requirement.
   casts) and took the rest from other tracks' work since 2026-11-20 (gap list, formats). What 11_1
   needs that is missing is named under Departures. No device is made in a browser until its WebGPU
   meets the table (Departures).
-- Finding 3, bgfx 26-occlusion frame 10: see "Real programs" (run 53).
+- Finding 3, bgfx 26-occlusion frame 10: closed in run 54, real Direct3D 12 on WARP and on the
+  RTX 3080 itself drawing the same failure ("Real programs").
 - Nothing on the gap list waited on another track's item that has since been delivered, but the
   formats above, which the Direct3D 11 track's back end and infrastructure work served.
 
-The pass bar, item by item (results under "Results of run 53"):
+The pass bar, item by item (results under "Results of run 54"):
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080: 189 of
   198; every failing file is on the gap list.
 - Real programs: Microsoft's D3D12HelloTriangle and D3D12HelloConstBuffers, bgfx 01-cubes,
@@ -46,45 +60,34 @@ The pass bar, item by item (results under "Results of run 53"):
   in features-differing.txt under its cause; the level and use tests above.
 - The own program's 35 cases equal to real Direct3D 12.
 
-## Results of run 53
+## Results of run 54
 
 2026-11-23, RTX 3080, desktop shared with other tracks (the OpenGL track's conformance runs held
-the GPU queue between our jobs); scratch run53/, code at 26137294 but for the use test's last form
-(the known failure's marking, the NV12 plane view), features-differing.txt's update and the
-declared test's change, which run 53's last check (quick4, check4) ran:
-- Lint of the infrastructure crate, this front and the Direct3D 11 front with warnings denied:
-  clean on the desktop (lint3.log) and the rented x86 machine.
-- The crates' tests (test4.log, at the final code): all pass, among them
-  `every_answered_format_ability_is_served` (915 uses, the one known failure as marked) and
-  `the_adapter_meets_every_format_requirement_of_11_0`; `real_containers_declare_what_they_did_before_ranges`
-  failed there on a container the shaders track added meanwhile, and now holds recorded containers
-  to their answers and lists new ones (744b8e33; passes on the x86 machine). In test3.log the use
-  test also failed on its own `NV12` target view, since fixed.
-- Literal check (lit3.log, lit4.log): no finding in this track's crates; two baseline lines of this
-  front removed (bc50ec99). The Direct3D 11 track now imports the requirement table, its bits and
-  the levels from the infrastructure crate (6572e2e9, 505618c1), so lit3's seven redefinitions in
-  its files are gone in lit4.
-- Test files 189 of 198 (full3.log, logs-full3/), the same 9 as run 52.
+the GPU queue for most of the run); scratch run54/, code at 29537184 (the final code; the status
+file alone changed after it). Run 53's results are in this file's history.
+- Lint with warnings denied: the infrastructure crate, this front and the Direct3D 11 front clean
+  on the desktop (lint3.log); the WebGPU back end, the infrastructure crate and this front clean on
+  the rented x86 machine (x86-lint5.log, x86-lint6.log at the final code).
+- The crates' tests (test3.log): all pass, among them `every_answered_format_ability_is_served`
+  and `the_adapter_meets_every_format_requirement_of_11_0`; the use test's counts (answers4.log):
+  931 uses by resources and 745 by programs.
+- Literal check (lit3.log): no finding in this track's files or in the WebGPU back end's lines
+  this run wrote. Its new constant `SIGNED_BITS_TEXTURE` (fill.rs) makes the shaders track's test
+  tests/variants.rs:1955, which writes the same WGSL type, a "restated" finding there.
+- Test files 189 of 198 (full3.log, logs-full3/), the same 9 as runs 52 and 53.
 - Own program (check3.log): draw 0 of 4096 pixels beyond 1; 35 of 35 cases equal;
-  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38; features 154 of 872 differ, in
-  check3 failing only on listed lines that no longer hold (formats now served) and five new lines
-  (video and tiled bits), all moved in features-differing.txt, and in check4 (the final code) every
-  differing answer listed and none beyond real; outputs 22 of 110 and answers 2 of 40 differ, each
-  listed.
-- Shader runner (runner3.log): 218 of 302 (run 52: 214).
+  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38; features 154 of 872 differ,
+  outputs 22 of 110, answers 2 of 40, every one listed and none beyond real.
+- Shader runner (runner3.log): 218 of 302, the same as run 53.
 - Real programs (p3-*.log): Microsoft's two samples equal (0 pixels beyond 8); Godot's 2D
   platformer equal; Godot's 3D platformer the same one pixel as before (1 of 518,400 beyond 8,
   difference 48 at 921,317, frames 10, 60 and 120); bgfx 37 every frame of both runs within its
-  allowance (863 to 904 pixels beyond 8).
+  allowance (829 to 890 pixels beyond 8).
 - bgfx 01-cubes, 26-occlusion, 35-dynamic and 38-bloom (b3-*.log, references from 6 real runs):
-  every frame of both our runs within the allowance (733 to 1232 pixels beyond 8 of 20,480).
-- bgfx 26-occlusion, 20 real and 20 of our runs alternating, each run compared with each real run
-  as a reference (pairs-occl3.log, .summary): frames 10 and 60 fail none of 400 comparisons of ours
-  (and none of 380 real against real); frame 120 fails 60 of 400 of ours and 102 of 380 of real
-  against real, always one tile (224,496) with the same largest difference (217) real shows
-  against itself; every one of our runs matches some real run in every frame ("Real programs").
-- Scenes and Wine's dxgi tests not rerun (nothing they draw changed but the level gate, which the
-  test files and programs pass through).
+  every frame of both our runs within the allowance (775 to 1182 pixels beyond 8 of 20,480).
+- bgfx 26-occlusion pairs (pairs-occl3.log, pairs-occl4.log): "Real programs".
+- Scenes (scenes3.log): 110 pass, 5 fail, 1 absent ("Scenes"). Wine's five dxgi tests (dxgi3.log):
+  3 pass, the same two fail as in run 51 (no software adapter).
 
 ## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
 
@@ -93,7 +96,7 @@ test that skips what real runs, or runs fewer checks, fails. Tests failing some 
 are held to every other check. The counted set is 198 files: d3d12 (Wine's) 10,
 vkd3d-d3d12_invalid_usage 3, vkd3d-hlsl_d3d12 9, vkd3d-d3d12 176.
 
-Failing at run 53 (run53/full3.log, logs-full3/, with the rig patch; the same as run 52), each on the gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9, vkd3d-d3d12
+Failing at run 54 (run54/full3.log, logs-full3/, with the rig patch; the same as runs 52 and 53), each on the gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9, vkd3d-d3d12
 167 of 176. The 9:
 - test_create_reserved_resource: ran 4 checks of real's 22, skipped 1. Tiled resources absent.
 - test_get_resource_tiling: ran 11 of 1410, skipped 1. Tiled resources absent.
@@ -113,7 +116,7 @@ The refusals the counted test files printed (run 48's logs-full2): "logic operat
 (`RenderTargetArrayIndex`, ps_layer); none other.
 
 Whole counts by run: 129 of 198 (run 17), 157 (20), 164 (25), 169 (28), 180 (31), 184 (34), 186
-(35 to 45), 189 (46), 189 (48), 189 (49), 189 (50), 189 (51), 189 (52), 189 (53).
+(35 to 45), 189 (46), 189 (48), 189 (49), 189 (50), 189 (51), 189 (52), 189 (53), 189 (54).
 
 ## Gap list
 
@@ -177,15 +180,10 @@ and resolve bits (Departures: no resource they apply to can be made).
   icheck50/case-icheck-texture-atomics.log) gave real's atomic results through ours. The
   route's own refusals stand on the list below (in vertex and geometry shaders, multisampled, past
   slot 63, behind a geometry or domain shader); storage views through a buffer share them.
-- Not served as answered, found by `every_answered_format_ability_is_served` (a known failure there,
-  with its reason): a copy of an `R32_SINT` texture into a `D32_FLOAT` one loses the device, in the
-  WebGPU back end's depth copy by draw (`DepthReadByDraw`); copies from `R32_FLOAT` and `R32_UINT`
-  into it are served. Asked of G2; whether real Direct3D 12 takes that copy is not checked.
-- The use test covers what a resource, a clear, a resolve and a copy can use: each shape, mip
-  chains, targets, depth targets, every multisample count answered, resolves, storage textures and
-  casts within a group. Sampling, gathering, loads, blending, typed buffers and vertex input are
-  compared with real Direct3D 12 by the counted test files, the own program's cases and the
-  shader runner, not by this test (Next).
+- Nothing answered is known not to be served: `every_answered_format_ability_is_served` uses
+  every answer through resources and programs (above) with none failing (run 54). It leaves out
+  stream output buffers, swap chain formats and program uses of 1D, 3D and cube views; those are
+  compared with real Direct3D 12 by the counted test files, the own program and the shader runner.
 
 Also absent, with no failing test file: conservative rasterisation, raster order views, ray
 tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, depth bounds,
@@ -419,7 +417,7 @@ picture within 63 of 255 (Direct3D leaves the line filter to the implementation)
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
 Run with our d3d12.dll alone (our dxgi.dll serves Direct3D 12 only and every file starts with a
-Direct3D 11 part). Run 53 (run53/runner3.log): 218 of 302, 84 failing (run 52: 214, the same 88 as runs 34 to 51;
+Direct3D 11 part). Run 54 (run54/runner3.log): 218 of 302, 84 failing, as in run 53 (run 52: 214, the same 88 as runs 34 to 51;
 which four now pass, from the shaders track's work since, was not sorted in run 53). Each failing file's cause was sorted in run 44 (scratch `bin/classify30.py`; the list is
 in this file at cf55bbe8, "Shader runner"): 61 run fewer checks than real with none failing (50
 shader models above 6.0, which section 9 does not answer; the rest 64-bit integers, stencil
@@ -435,18 +433,22 @@ the lines after it are not reached).
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
-Run 52 (run52/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 51. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
-hull shaders and one pixel shader the converter refuses, the shaders track's); topology (43
-pixels beyond 1, all in line cells: the aliased line listed loss), samplers-filters (anisotropy
-cells) and msaa-alpha_to_coverage, which draw with largest difference 0 on wgpu's Direct3D 12
-path (run 36): the NVIDIA driver's Vulkan path this library draws on ("Next" 3). Absent: `B5G6R5`
-targets, minimum and maximum filtering.
+Run 54 (run54/scenes3.log): 110 outputs pass, 5 fail, 1 absent (run 52: 95, 22 and 3; the
+geometry, stream output, tessellation and raster scenes now run, the shaders track's converter
+work, and `B5G6R5` targets are served). The failing outputs: topology (43 pixels beyond 1, all in
+line cells: the aliased line listed loss), samplers-filters (anisotropy cells) and
+msaa-alpha_to_coverage, as before (each draws with largest difference 0 on wgpu's Direct3D 12 path,
+run 36: the NVIDIA driver's Vulkan path this library draws on, "Next" 4); new among the scenes that
+now run, raster-fill (64 of 16,384 pixels beyond 1 in 20 tiles, largest difference 229) and
+tessellation (310 of 32,768 beyond 4 in 87 tiles, largest difference 228): a few pixels in each of
+many tiles. Neither is traced yet, nor compared with WARP's picture of the same scene, which the
+2026-11-22 bar asks for ("Next" 2). Absent: minimum and maximum filtering.
 
 ## Real programs
 
 RTX 3080, desktop shared with other tracks, not `--alone`, debug builds, 120 frames. Frames 10, 60
 and 120 compared with real Direct3D 12's at 8 of 255.
-- Run 53: as listed under "Results of run 53". Run 52 (this file's history) and run 51 the same. Run 50: the same, bgfx against two real runs. Run 49: the same but times (Godot's 3D platformer
+- Run 54: as listed under "Results of run 54". Run 53 the same. Run 52 (this file's history) and run 51 the same. Run 50: the same, bgfx against two real runs. Run 49: the same but times (Godot's 3D platformer
   10 s), and bgfx 741 to 1225 pixels beyond 8. Run 48 (run48/p1-*.log at 3dfef503, p2-*.log at 708bd126; b1-*.log): Microsoft's
   D3D12HelloTriangle and D3D12HelloConstBuffers equal (0 pixels beyond 8; 2.6 and 2.5 s);
   Godot's 2D platformer equal (0 of 518,400 beyond 8; 3.8 s); bgfx 37-gpudrivenrendering,
@@ -461,18 +463,25 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   24-nbody draws differently on every real run, so it has no frames to compare.
 - bgfx 26-occlusion, the fifth check's finding (frame 10 failing in both of our runs, six tiles,
   largest difference 254, against references from two real runs; also seen in the third check,
-  icheck31; both at code before run 51). Run 53: not reproduced. Since run 51 our frame 10 has
-  passed in 74 runs (the seventh check's 20 runs against 20 real references and its 30-run loop,
-  runs 52 and 53's 2 each, and run 53's 20 against 20 real references, 400 comparisons, none
-  failing). Real's own frames vary: two real runs already differed in 80 of 3,600 tiles of frame 10
-  in the fifth check (the tiles the comparison then leaves out), and in run 53's pairs a real run
-  fails against another real run at frame 120 in 102 of 380 comparisons, at one tile, as ours does
-  in 60 of 400. The demo draws its cubes by occlusion results of earlier frames, which arrive at a
-  latency the overlay shows ("L: 1" on real, "L: 0" on ours: ours never runs a frame behind), so
-  which cubes a frame shows depends on timing. The check's failing frames were overwritten by later
-  runs, so whether they were one of real's outcomes cannot be shown now. Judged under the
-  2026-11-22 bar: what ours draws is within what real draws run to run; the remaining evidence
-  that would settle the old failure is gone, and it is not seen at the current code.
+  icheck31; both at code before run 51). Closed in run 54 under the 2026-11-22 bar, by runs of
+  real Direct3D 12 on the RTX 3080, of real Direct3D 12 on WARP (bgfx's `--microsoft`, its overlay
+  naming the adapter "Microsoft") and of ours, each compared with each real run as a reference
+  (scratch bin/pairs54.ps1, recompare54.ps1, pairs54.py):
+  - pairs-occl3 (20 real runs, 10 of ours; its runs marked "warp" were real runs on the RTX 3080,
+    bgfx's `--sw` choosing no software adapter): frame 10 fails in 18 of 90 comparisons of a real
+    run against another and 18 of 100 of the second ten against the first, always 5 tiles, the
+    worst at 224,608, largest difference 254, the fifth check's own failure; ours fails 10 of 100
+    there, the same tiles and difference. Frame 120: real 18 of 90, ours 10 of 100, one tile at
+    224,496.
+  - pairs-occl4 with WARP (10 runs each; the renderer and timing lines of the overlay, which name
+    the adapter, ignored, panel-occl4.log): WARP's frame 10 fails against every one of the 10
+    real references (100 of 100), 6 tiles, the worst at 224,608, largest difference 254; ours 0
+    of 100. Frames 60 and 120: WARP fails 100 and 90 of 100 at 224,496; ours 0 and 10.
+  The tile at 224,608 is the corner view of the cubes the occlusion queries let through, at
+  224,496 the line counting passing pixels: both follow occlusion results that arrive a frame or
+  more late, so which cubes show depends on timing (the overlay's latency read "L: 0" in one real
+  run on the RTX 3080 and "L: 1" in one on WARP, frames 60 and 10). Ours differs from real less often than real and WARP differ from real, in the
+  same tiles by the same amount.
 - Setup learnt on the way: the rig's forwarding library takes the name d3d12.dll and loads ours
   behind it (`WC_D3D12`), hence `wcontainers_d3d12.dll` and two forwarders; it aborts a program
   calling an export the library behind it lacks; bgfx calls `QueryVideoMemoryInfo` on the adapter
@@ -489,10 +498,13 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 - WebGL 2 back end (G3): the same for S3TC and BPTC, which WebGL takes in 2D arrays only.
 - WebGPU back end (G2), run 52: `d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT` is in the infrastructure
   crate, as asked; its `DX12_PLACEMENT_ALIGNMENT` can import it.
-- WebGPU back end (G2), new in run 53: a copy of an `R32_SINT` texture into a `D32_FLOAT` one
-  (`copy_texture_to_texture`, served by a draw, `DepthReadByDraw`) loses the device on the RTX 3080
-  (Vulkan); `R32_FLOAT` and `R32_UINT` sources are served. Repro: test
-  `every_answered_format_ability_is_served` of this crate.
+- WebGPU back end (G2), run 54, done by this track in G2's crate (G2 idle since 2026-11-19), for
+  G2 to review: the depth copy by draw from `R32_SINT` binds the source as signed (f9fdaa02,
+  cc800174); `BGRA8UNORM_STORAGE` is asked of the device and `bgra8unorm` takes no storage use
+  without it; a native resolve needs the format to be drawn into (08fe9e5b). The last two change
+  what the back end answers on adapters whose own format flags claimed more than WebGPU allows
+  (the RTX 3080 through Vulkan: `rgb9e5ufloat` loses its resolve use, which the front never
+  answered); the Direct3D 11 and OpenGL fronts' answers may move with them.
 - Shaders (G6), earlier and still open (evidence in the record at cf55bbe8): the converter
   refusals the runner prints (`TypedBufferFormatKind`, `ClipDistance` read by a pixel shader,
   DXIL `InterpolateAt`, `DxilGeometryShader`, `DxilHullShader`, `CalculateLevelOfDetail`,
@@ -510,24 +522,19 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 ## Next, in this order
 
 1. Keep the crates building after each merge the orchestrator makes into `agents`; keep the
-   literal check free of this track's findings. Apply the rig patch (sync53.sh does, in the
+   literal check free of this track's findings. Apply the rig patch (sync54.sh does, in the
    clone only) for test file runs.
-2. Extend `every_answered_format_ability_is_served` to the uses that need a program: sampling,
-   gathering, comparison, loads, multisample loads, blending, typed storage loads and stores and
-   atomics, typed buffer views and vertex input, per answered format (fxc-compiled shaders, as the
-   depth clamp test reads). Today they are compared with real Direct3D 12 by the test files, the
-   own program and the shader runner only.
-3. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
+2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
    capture), Godot's 3D platformer's one pixel (trace which draw writes it, on real, WARP and ours),
    the other refusals of the gap list.
-4. Feature level 11_1 (Departures names what it lacks) and the 11_1 format table in `required`.
-5. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
+3. Feature level 11_1 (Departures names what it lacks) and the 11_1 format table in `required`.
+4. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
    run36/dx12-path.patch; it broke three things, each another track's).
-6. Plan section 10's one library (`crates/wcontainers-directx`): by the orchestrator's ruling of
+5. Plan section 10's one library (`crates/wcontainers-directx`): by the orchestrator's ruling of
    2026-11-20, one joint step with the Direct3D 11 track after both G4 and G5 have passed their
    checks, not part of G5.
-7. The literal sweep, a part per run.
+6. The literal sweep, a part per run.
 
 ## How to run
 
@@ -537,16 +544,21 @@ every agent's worktree is on `agents`, so this track drives the rig from a clone
 scratch `tip/` (`git clone --shared`, submodules initialised), on a local branch named
 `phase-2-graphics-direct3d-12` that is never pushed, so that the desktop's copy, build folder,
 Wine log folder and this track's desktop scripts (C:\wc\out\phase-2-graphics-direct3d-12) keep
-their paths. Scratch `bin/sync53.sh` resets the clone to the worktree's HEAD, lays this track's two
-crates over it as they are in the worktree (committed or not) and applies the rig patch below; do
-not sync while a job of the clone waits. Every build command starts with `set CARGO_INCREMENTAL=0&& `
-(stale incremental objects once failed to link). Run 53's scripts (scratch bin/): `quick53.sh <n>`
-(sync, lint with the Direct3D 11 front, the crates' tests, the literal check), `files53.sh <n>`
-(build, every test file, the own program, the shader runner), `real53.sh`, `bgfx53.sh`,
-`pairs53.sh <tag> <count> [example]` (bgfx run on real and ours alternately, every run compared with
-every real run, tallied by `pairs53.py`), `run53all.sh <n>` (all of them); logs land in scratch
-run53/. On the x86 machine: `orchestrator/cloud/x86-run <scratch>/tip --name d3d12-tip -- "cargo
-clippy ..."`.
+their paths. Scratch `bin/sync54.sh` resets the clone to the worktree's HEAD, lays this track's two
+crates over it as they are in the worktree (committed or not), and the files of other crates it
+names (run 54: two of the WebGPU back end), and applies the rig patch below; do not sync while a
+job of the clone waits, and run one job of the clone at a time (a second sends its tree over the
+first's: "holds tree ..., not the sent ..."). Every build command starts with
+`set CARGO_INCREMENTAL=0&& ` (stale incremental objects once failed to link). Run 54's scripts
+(scratch bin/): `quick54.sh <n>` (sync, lint with the Direct3D 11 front, the crates' tests, the
+literal check), `answers54.sh <n>` (sync, the format use test alone, its counts shown),
+`files54.sh <n>` (build, every test file, the own program, the shader runner), `real54.sh`,
+`bgfx54.sh`, `pairs54.sh <tag> <count> [example]` (bgfx run on real, on WARP through bgfx's `--sw`
+and ours in turn, every run compared with every real run, tallied by `pairs54.py`), `scenes54.sh
+<n>` (the scenes, then Wine's five dxgi tests), `run54all.sh <n>` (all of them); logs land in
+scratch run54/. The use test's programs: `tests\answers\compile.cmd` on the desktop (the Windows
+SDK's fxc), the .dxbc files committed beside it. On the x86 machine:
+`orchestrator/cloud/x86-run <scratch>/tip --name d3d12-tip -- "cargo clippy ..."`.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p wcontainers-gpu -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
 - Tests (three draw on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
@@ -617,6 +629,7 @@ merges.
 
 ## Measurements
 
+- Run 54: no timing taken (the OpenGL track's conformance runs held the GPU queue most of the run).
 - Run 53: no timing taken (the desktop's GPU queue was shared with the OpenGL track's
   conformance runs all run).
 
@@ -650,6 +663,9 @@ merges.
 
 ## Departures from the plan
 
+- Run 54 changed the WebGPU back end, G2's crate, which this track does not own: three answered
+  format uses lost the device there and G2 has been idle since 2026-11-19; by the ruling of
+  2026-11-22 the missing ability is built in the crate that owns it ("Asked of other tracks").
 - The feature level (run 53, the owner's ruling of 2026-11-22 that no level is reported whose
   requirements are not met): `D3D12CreateDevice` makes its 11_0 device only where the back end has
   11_0's abilities (`has_abilities_of_11_0`) and the front answers every ability Microsoft's 11_0
@@ -803,5 +819,10 @@ Nothing of this track beyond the rig's setup:
   C:\wc\out\phase-2-graphics-direct3d-12\loop (5,119,280 bytes; the copied programs and libraries
   deleted). On the rented x86 machine run 51's one copy (/work/src and /work/target
   graphics-direct3d-12, 359,310,563 bytes) is deleted; run 52 used no rented machine (every heavy
-  run went to the desktop through the rig). Nothing installed in runs 49 to 52; no build output
+  run went to the desktop through the rig). Nothing installed in runs 49 to 54; no build output
   in scratch or on the Mac.
+- Run 54: the build folder deleted (8,689,786,121 bytes); the bgfx pairs' frames and logs kept as
+  evidence in C:\wc\out\phase-2-graphics-direct3d-12\run53 (20,240,385 bytes) and run54
+  (30,220,189 bytes), their copied programs and libraries deleted; the use test's shader sources
+  and fxc output in ...\answers (28,342 bytes). On the rented x86 machine the clone's copy and
+  build folder (/work/src and /work/target d3d12-tip, 2,913,387,433 bytes) deleted.
