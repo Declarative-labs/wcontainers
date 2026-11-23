@@ -6003,6 +6003,7 @@ dependencies = [
  "flate2",
  "gimli 0.34.0",
  "iced-x86",
+ "libc",
  "linux-raw-sys",
  "object 0.40.0",
  "proptest",
