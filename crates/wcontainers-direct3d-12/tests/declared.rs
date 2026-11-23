@@ -86,7 +86,14 @@ fn real_containers_declare_what_they_did_before_ranges() {
         std::fs::write(expected, &got).unwrap();
     }
     let want = std::fs::read_to_string(expected).unwrap();
-    assert!(containers().len() > 300);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let found = containers();
+    for dir in CORPORA {
+        assert!(
+            found.iter().any(|p| p.starts_with(root.join(dir))),
+            "no containers in {dir}"
+        );
+    }
     for (line, (g, w)) in got.lines().zip(want.lines()).enumerate() {
         assert_eq!(g, w, "line {}", line + 1);
     }
