@@ -230,7 +230,14 @@ Never copied, by route:
   container's behaviour for it, else Kernel (the inside's answer, or the flag computation inline where the finder
   shows the flags dead). Until an x86-64 precise set exists, the meanings are the container's behaviour; this host
   and the i7-8750H agree with them on 15,728 cases of these forms (x86-machine.md, flags-sweep). The route therefore
-  takes the host's match (section 9).
+  takes the host's match (section 9). AMD does not match (XN1 run 10, the same sweep on an EPYC 9R14): 9,447 of
+  its 15,644 distinct cases differ, every one in rflags alone (results equal): OF of shifts and rotates by more than
+  one, AF of shifts, mul, imul, div and idiv, SF, ZF and PF of mul, imul, div and idiv, and tzcnt's and lzcnt's
+  undefined ones; the logic forms, the bit tests, bsf and bsr agree. So on AMD these forms take the Kernel route
+  (or the inline flags) wherever the finder shows a flag they leave undefined live, until the instruction design
+  names a precise set the host can give; where every such flag is dead, Copy is exact on any host (the route does
+  not look at liveness yet: `route` sends every such form to Kernel on a host that differs, and their answers are
+  not built, so an AMD host cannot run x86-64 guests natively until they are).
 - Partial writes the host model leaves (section 3.6): the same rule, by the probe's match.
 
 ### 3.2 Pieces, layout and patching with variable lengths
@@ -465,8 +472,14 @@ inside's nanoseconds. Built: `cpuid`, `xgetbv`, the transcendentals, the recipro
 meaning's formula in plain Rust, with libm's correctly rounded square root and rounding as WebAssembly's), `popf`,
 the descriptor reads (from the table both share, x86/user_segments.rs), the segment register moves, pushes and
 pops, `lfs`/`lgs`/`lss` and far `jmp`/`call` through memory (the selector's address wrapping by itself under
-0x67, as the meaning's), `retf`, `iret`, `wrfsbase`/`wrgsbase`, `rdtsc`/`rdtscp`, and `xsave`/`xrstor` (the frame
-slots, the XSAVE constants and `xsave_bytes` shared with the meaning). Native layer 1 requires every answered
+0x67, as the meaning's), `retf`, `iret`, `wrfsbase`/`wrgsbase`, `rdtsc`/`rdtscp`, `xsave`/`xrstor` (the frame
+slots, the XSAVE constants and `xsave_bytes` shared with the meaning), and the partial-write forms of section 3.6:
+`enter` of any level (each push faulting by itself, then the final stack pointer's check, the registers changed
+only at the end) and every x87 store of ST(0) to memory (`Question::X87Store`: the unit's store, then the value
+written in the meaning's two parts, the status and tag words taken only once memory took it; the hook's value
+split is the core's, x87.rs `VALUE_LOW`, which fpu.rs reads). An answered x87 instruction that is not a control
+one sets the block's FIP to its own address, as the meaning does: the inside puts the register area's FIP in the
+block before an answer and writes it back after, as for the second call. Native layer 1 requires every answered
 case's outcome by `answer` equal to the meaning's; forms layer 1 leaves out (`cpuid`, `xgetbv`, whose table is
 ours; `rdtsc`, `rdtscp`, the clock; `xsave`, `xrstor`, XCR0 and XSTATE_BV by design) and the operands its random
 cases rarely reach have edge tests of their own against the meaning (tests/layer1.rs `the_inside_answers_*`).
@@ -587,6 +600,13 @@ the meaning is compared.
   and the AVX2 gathers. Route: Copy where the probe at start finds the host's pattern for each equal to the
   meaning's, else Kernel (the inside writes as the meaning does), counted "partial write form answered by the
   inside". `enter` with a level is rare; `fstp m80` is common in `long double` code, so a host that differs pays.
+  Measured on AMD (XN1 run 10, an EPYC 9R14 of a c7a.large, the same three probes): `fstp m80` and `fbstp` write
+  nothing behind the fault (0 of 9 each), `enter 0, 3` writes as here (6, 14, 22), every other form none. So an AMD
+  host differs from the meaning on two of the three and they take the Kernel route there; `HostMatches` carries one
+  `partial_writes` for the three, so `enter` with a level goes with them (rare, and the answer is the meaning's).
+  The inside's answers are built (section 3.5); tests/layer1.rs
+  `the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64` checks them against the meaning and runs
+  the three forms natively for a host whose probe finds them different.
   XN1 runs the probe on an AMD machine too.
 - The count: `lea c, [c + k]` at each run's start (no flag). A rep string instruction is an open question between
   two plans: docs/native.md section 4 says E does not count its rounds; the x86 meaning names a jump to itself, so

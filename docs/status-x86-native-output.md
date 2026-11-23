@@ -77,6 +77,11 @@ probes).
   meaning writes them, a load leaves the image's pointers in the block, `fnsave` clears them, `ldmxcsr` turns
   tracking on. Native layer 1 now makes the call wherever a run reaches it, and a new test runs every save and
   load form after x87 instructions (one piece for the stretch) against the meaning (results below).
+  Run 10: the partial-write forms are answered (`Question::Enter`, `Question::X87Store` for every x87 store of
+  ST(0) to memory), with an answered x87 instruction setting the block's FIP; a new test checks them against the
+  meaning and runs them natively through the inside for a host that differs. The partial-write probes ran on AMD
+  (EPYC 9R14): `fstp m80` and `fbstp` leave no partial write there, so such a host routes them Kernel (results
+  below).
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -92,10 +97,12 @@ probes).
    (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it. Native layer 2's blob can carry the
    replay test once the check exists (a stop word in the area, the Stop entry recording the position).
 3. `answer` for the rest of the Kernel route (plan 3.5; runs 6 to 8 built every instruction the route names but
-   these): the partial-write forms (`enter` with a level, `fstp m80`, `fbstp`) and the undefined-result forms
-   (`native::undefined_result`), routed only where the start probe finds the host differs from the meaning (not on
-   the rented machine), each a `Question` with `native::question` giving it and an edge test against the meaning in
-   tests/layer1.rs. `rdpid` has no meaning (it is not offered, so it takes the Trap route) and so no answer. Then
+   these, run 10 the partial-write forms): the undefined-result forms (`native::undefined_result`: `mul`, the
+   shifts, `bsf` and the rest, a plain-Rust twin of each meaning), routed only where the start probe finds the host
+   differs from the meaning (not on the rented machine nor the i7-8750H by the x86 track's flags sweep, but on AMD:
+   run 10 measured 9,447 of 15,644 cases differing there, and `route` does not yet keep a form whose undefined flags
+   are dead on Copy; an owner question, below), each a `Question` with `native::question` giving it and an edge test
+   against the meaning in tests/layer1.rs. The start probe that fills `HostMatches` is the executor's, not built. `rdpid` has no meaning (it is not offered, so it takes the Trap route) and so no answer. Then
    x87_answer.rs and the unmasked mode, and P's flags table. (`Condition::holds` against the meaning: run 6.)
 4. The trait's `retarget` (plan 9) in place of `link`, with ARM64's; x86's is built (run 4) and used by the native
    blobs, and `link` writes its patch.
@@ -111,6 +118,55 @@ probes).
    (the block takes the hardware's flags when tracking is on or the mode is not the default; native layer 1 runs
    with tracking on), and the note of an MXCSR read while not kept for `xsave` (the meaning warns; `answer` is not
    told tracking).
+
+## What XN1 run 10 changed
+
+- `answer`: `Question::Enter { size, level, bytes }` (each push written by itself, the copies read from rbp down,
+  the final stack pointer checked for a write, rbp, bp alone for 16 bits, and rsp changed only at the end, as the
+  meaning's `enter`) and `Question::X87Store { code, at, bytes }` (the pending check, the unit's store with the
+  operand's address as its data pointer, then the value in the meaning's two parts and the status and tag words
+  taken only once memory took it; nothing written when the unit says NOT_STORED). `native::question` gives them for
+  `enter` and every memory form of `fst`, `fstp`, `fist`, `fistp`, `fisttp` and `fbstp` (`fpu::store_code`). The
+  route is unchanged: Kernel for `enter` with a level, `fstp m80` and `fbstp` where `HostMatches::partial_writes`
+  is false.
+- An answered x87 instruction that is not a control one (the transcendentals too) sets the block's FIP to its
+  address, as the meaning does (plan 3.5: the inside carries the register area's FIP into the block and back).
+- Shared once in the core: the hook's value split (`x87::VALUE_LOW`, `VALUE_HIGH`, which fpu.rs reads) and where a
+  store's second result holds the status and tag words (`STORED_STATUS_SHIFT`, `STORED_TAGS_SHIFT`);
+  `meaning::ENTER_LEVELS` is crate-wide.
+- Test crate: `answered_with_pointers` (the x87 pointers after an answer) beside `answered`; the state's `FCW` and
+  `FTW` fields are public. tests/layer1.rs `the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64`:
+  `enter` of 64 and 16 bits, five sizes, nine levels (0 to 4, 31 to 33, 255), six stacks (writable, pushes and the
+  final check meeting the data's start, copies meeting it, read-only, off the canonical range); the 14 store forms
+  with ten ST(0) values (one, a fraction, a large negative past 10^18, past every format, tiny, quiet and
+  signalling NaN, infinity, an unnormal, empty) on 16 places across the writable data's end, the data's end and
+  the canonical range's, [ecx] with rcx's upper half set and fs:[ecx] passing 2^32, under four control words, and
+  with an invalid operation pending. Each against the meaning, FIP, FDP and FOP included; `enter` with a level,
+  `fstp m80` and `fbstp` (but fs:[ecx], whose base is not canonical) also run natively, uncounted and counted, for
+  a host with `partial_writes` false, which must reach the inside unchanged and equal the CPU.
+
+## XN1 run 10 results
+
+- Rented x86 machine (Xeon 8488C, 5-level paging), 20:12 UTC, load 1.0 before, 8 after: clippy with warnings
+  denied, `--no-deps`, on wcontainers-x86 and -translator-test (all targets) and the core without `translate`:
+  clean. The new test: 3,494 cases equal to the meaning's, pointers included; natively through the inside 732
+  equal to the CPU, 70 known failures, every one `enter` with rsp off the canonical range (the 5-level reference's
+  page fault where the meaning gives general protection); 19 s.
+- Controls (rented copy only, scratch xn1r10/controls-enter.sh, 20:15 UTC, load 8.5): all 11 caught: the final
+  check left out, rbp's upper bits lost under 16 bits, one copy too many, the frame's own push left out, an 80-bit
+  value's last two bytes not written, the status word or the tag word not taken, a NOT_STORED value written, the
+  data pointer zero, FIP not set, the pending check left out.
+- AMD (scratch xn1r10/amd-probe.sh: a c7a.large spot machine, AMD EPYC 9R14, rented for the probe and terminated,
+  checked by tag; 20:15 UTC, load 0.5): the three partial-write probes (probes/partial86.c, partial3.c,
+  check-xn0/partial2.c). `fstp m80` and `fbstp`: 0 of 9 cases leave a partial write (the Xeon: 2 of 9, the first 8
+  bytes); `enter 0, 3`: 6, 14 and 22 bytes, as the Xeon; `mov`, `movdqu`, `vmovdqu`, `fxsave64`, `xsave64`,
+  `fnsave`, the masked stores and the loads: none, as the Xeon. Output scratch xn1r10/amd-c7a.large.out.
+- AMD again (scratch xn1r10/amd-flags.sh, a second c7a.large, terminated and checked by tag; 20:19 UTC, load 0.3):
+  the x86 track's flags sweep (x86/probes/fixed/proof8 stepper6 and flags-sweep.sh) against its Xeon output
+  (fixed-sapphire/flags-sweep.out): of 15,644 distinct cases 9,447 differ, all in rflags alone (OF 4,124, AF
+  6,842, SF, ZF and PF 170 each, the last only in mul, imul, div and idiv); shifts and rotates by more than one,
+  mul, imul, div, idiv, tzcnt and lzcnt differ; and, or, xor, test, the bit tests, bsf, bsr and popcnt agree.
+  Comparison scratch xn1r10/amd-flags-compare.out, raw amd-flags-sweep.out.
 
 ## What XN1 run 9 changed
 
@@ -1109,7 +1165,14 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   proposed: its elements, as code in plan section 9.
 - Split-lock detection on cloud hosts (plan 3.6, 5): a named difference in P and I, or the inside completes the
   access.
-- Decision 14 for x86 (plan 10): partial-write and undefined-flag forms routed by the probe's match per host.
+- Decision 14 for x86 (plan 10): partial-write and undefined-flag forms routed by the probe's match per host. Run
+  10 measured that it matters: on an AMD EPYC 9R14 `fstp m80` and `fbstp` leave no partial write where the Xeon
+  leaves 8 bytes, so on AMD hosts those two take the inside (now built) unless the guest is to see AMD's behaviour.
+  Larger: AMD's undefined flags differ from the meaning's (Intel's) in 9,447 of 15,644 sweep cases (shifts,
+  rotates, mul, imul, div, idiv, tzcnt, lzcnt; results always equal). Natively on AMD, either the guest sees AMD's
+  undefined flags there (a precise set per container, the instruction design's), or each such form with a live
+  undefined flag goes to the inside or inline flags (shifts are hot). One concrete example: `rol al, 2` (c0 c0 02) of al 1
+  with rflags 0xad7 before leaves 0xad6 on the Xeon and 0x2d6 on AMD (OF), which a following `jo` reads.
 - P on a 4-level host: about 3,000 guest threads per process (plan 3.3, 5).
 
 ## Licences
@@ -1138,6 +1201,9 @@ brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
 
+- XN1 run 10's answers (answer.rs, x87.rs, fpu.rs, native.rs, meaning.rs, the test crate's native.rs, x86_64.rs
+  and layer1.rs): no unsafe code, no new crate. `enter` and the x87 stores reach guest memory only through
+  `answer::Memory`, each access all or nothing, so a fault leaves only the parts the reference leaves.
 - XN1 run 6's core moves and `answer` (answer.rs, x87.rs, transcendental.rs, fpu.rs, native.rs, lib.rs, operand.rs,
   and the test crate's native.rs and layer1.rs): no unsafe code; no new crate (lazy_static and spin were in the
   lock already). `answer` writes only the guest's own block and reads nothing outside it.
