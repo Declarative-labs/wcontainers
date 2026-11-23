@@ -36,6 +36,9 @@ pub mod support1 {
     pub const BACK_BUFFER_CAST: u32 = 0x1000000;
     pub const TYPED_UNORDERED_ACCESS_VIEW: u32 = 0x2000000;
     pub const SHADER_GATHER_COMPARISON: u32 = 0x4000000;
+    /// Direct3D 11's alone: `D3D11_FORMAT_SUPPORT_MIP_AUTOGEN` and `_CPU_LOCKABLE`.
+    pub const MIP_AUTOGEN: u32 = 0x2000;
+    pub const CPU_LOCKABLE: u32 = 0x20000;
 }
 
 /// `D3D11_FORMAT_SUPPORT2` and `D3D12_FORMAT_SUPPORT2` bits.
@@ -49,6 +52,8 @@ pub mod support2 {
     pub const UAV_TYPED_LOAD: u32 = 0x40;
     pub const UAV_TYPED_STORE: u32 = 0x80;
     pub const OUTPUT_MERGER_LOGIC_OP: u32 = 0x100;
+    /// Direct3D 11's alone: `D3D11_FORMAT_SUPPORT2_SHAREABLE`.
+    pub const SHAREABLE: u32 = 0x400;
 }
 
 /// Both words of a format's support; both zero for a format the API then refuses (`E_FAIL`).
@@ -232,11 +237,13 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     );
     bit(multisample_load, MULTISAMPLE_LOAD);
     bit(BACK_BUFFER_FORMATS.contains(&value), DISPLAY);
-    // The swap chain's buffers take views as their sRGB twins.
+    // The swap chain's buffers take views in the other formats of their group (their sRGB twins,
+    // `R10G10B10A2_UINT`).
     bit(
         matches!(
             value,
-            dxgi::R8G8B8A8_UNORM
+            dxgi::R10G10B10A2_UNORM
+                | dxgi::R8G8B8A8_UNORM
                 | dxgi::R8G8B8A8_UNORM_SRGB
                 | dxgi::B8G8R8A8_UNORM
                 | dxgi::B8G8R8A8_UNORM_SRGB
@@ -258,6 +265,26 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         s.support2 |= OUTPUT_MERGER_LOGIC_OP;
     }
     s
+}
+
+/// Whether Direct3D takes typed unordered access views of DXGI format `value`: the typed colour
+/// formats of one texel a block but the sRGB ones, the three-component 32-bit ones, the 16-bit
+/// packed ones and `B8G8R8X8_UNORM` (Microsoft's 11_0 table gives these no Typed UAV).
+pub fn storage_viewed(value: u32) -> bool {
+    !matches!(
+        value,
+        dxgi::R32G32B32_FLOAT
+            ..=dxgi::R32G32B32_SINT
+                | dxgi::B5G6R5_UNORM
+                | dxgi::B5G5R5A1_UNORM
+                | dxgi::B4G4R4A4_UNORM
+                | dxgi::B8G8R8X8_UNORM
+                | dxgi::R9G9B9E5_SHAREDEXP
+                | dxgi::R8G8_B8G8_UNORM
+                | dxgi::G8R8_G8B8_UNORM
+    ) && dxgi_format(value).is_some_and(|(f, typeless)| {
+        !typeless && !f.is_depth_stencil() && f.linear() == f && f.block().0 == 1
+    })
 }
 
 /// The atomic operations Direct3D defines on typed unordered access views of DXGI format `value`:

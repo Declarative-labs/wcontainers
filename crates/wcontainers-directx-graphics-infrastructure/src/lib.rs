@@ -7,6 +7,7 @@ mod adapter;
 pub mod d3d;
 mod format;
 mod output;
+pub mod required;
 mod support;
 mod swapchain;
 
@@ -17,8 +18,8 @@ pub use format::{
 };
 pub use output::{COLOR_SPACE_LINEAR, COLOR_SPACE_SRGB, DisplayMode, OutputDesc, presents_in, sdr};
 pub use support::{
-    FormatSupport, atomic_operations, format_support, plane_count, support1, support2,
-    takes_samples,
+    FormatSupport, atomic_operations, format_support, plane_count, storage_viewed, support1,
+    support2, takes_samples,
 };
 pub use swapchain::{
     DEFAULT_LATENCY, MAX_BUFFERS, Model, SwapChain, SwapChainDesc, SwapChainError,
