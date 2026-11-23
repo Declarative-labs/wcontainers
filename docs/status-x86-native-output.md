@@ -2,16 +2,53 @@
 
 Plan: docs/x86-native-output.md. Brief: pyro-parked/wcontainers-scratch/orchestrator/relaunch-agents/
 x86-native-output.js. Scratch: pyro-parked/wcontainers-scratch/x86-native-output (probes/, results/, check-xn0/,
-check-xn0b/ and check-xn0c/, the three independent checks' probes and outputs, and run4/, run 4's probes).
+check-xn0b/, check-xn0c/ and check-xn0d/, the four independent checks' probes and outputs, and run4/ and run5/,
+those runs' probes).
 
 ## Where things stand
 
 - XN0 (the plan, checked before anything is built): done. Run 1 (2026-11-23) wrote the plan; the first independent
   check found seven blocking and eleven minor problems, which run 2 fixed. Run 3 made the second check (scratch
   check-xn0b/): three blocking and ten minor, fixed. The third check (scratch check-xn0c/) found three blocking and
-  nine minor; run 4 fixed all twelve (list below), measured in scratch run4/. The run-4 fixes have not had a check
-  of their own. Nothing is built; no code of this track exists yet.
+  nine minor, fixed by run 4 (scratch run4/). The fourth (scratch check-xn0d/) found two blocking and six minor; run
+  5 fixed all eight (list below), measured in scratch run5/. The run-5 fixes have not had a check of their own.
+  Nothing is built; no code of this track exists yet.
 - XN1 and XN2: not started. XN1 starts with the reconciliation points under Coordination.
+
+## What run 5 changed (fourth check), finding by finding
+
+- P's `popfq` from a word siblings can write (blocking): every `popfq` of the carrying code and the stub now reads
+  a word of the flags table, a read-only page of 512 words indexed by `pext` of the value read once into a
+  register (CF PF AF ZF SF DF OF NT ID; TF and AC clear in every word). Measured (run5/flags.out): with a sibling
+  storing 0x40302 into the count-stack slot, the old form set TF and AC 6 times each in 20,000,000 rounds, the
+  table form 0 in each of 3 runs; it costs about 0.9 ns a round more (9.12 to 9.18 against 8.25 to 8.26) (plan
+  3.6).
+- Stops nested in P's resume (blocking): the handler now follows the P/I plan's 3.6: installed with `SA_NODEFER`
+  and `sa_mask` the stop signal, the stub thread blocking all but the stop and the synchronous faults, rip
+  classified by the position map or the stub's own ranges (the tail takes the exit already written, from the
+  copy), rsp moved off the alternate stack before the unblock. Measured: 200,000 stops flooded while another
+  sibling ORs TF and AC into the copy, 3 runs: 53,145 to 62,085 taken in the tail, the deepest frame 3 KiB, the
+  guest loop's flags, r12..r14 and ymm7 kept; a round trip 948 to 953 ns against 1,073 to 1,080 with
+  `rt_sigreturn` (plan 3.7).
+- The mask from the frame (minor): the handler unblocks the stop signal alone, its set a word of the stub's
+  read-only page; the P/I plan's 10-second kill stays for a stub that blocks it all the same (plan 3.7).
+- SIGTRAP and SIGBUS in P (minor): a SIGTRAP is a link's `int3` only with `SI_KERNEL` at an exit of the batch; in P
+  TF and AC are never set, so `TRAP_TRACE` or `BUS_ADRALN` is a fault of ours, the thread ended, counted
+  "unexpected host trap" (plan 3.2).
+- FIP, FDP, FOP (minor): the hardware's are never read. FIP is stored in the register area after a run's last
+  non-control x87 instruction, with a fix-up `X87Pointer` before it; a copied `fldcw` is followed by a flag-free
+  check (or a call where the flags are live), and a thread with an unmasked x87 exception runs its x87 and MMX
+  instructions through the meaning's x87 unit in the inside, which sets FDP and FOP (plan 3.1, 7, 9).
+- The rep string twin (minor): it adds nothing to c, does not store rcx again, and counts the whole instruction's
+  passes from the original's word; a fault inside counts the passes completed before the faulting element (plan
+  3.7).
+- P's link syncs (minor): registration at the stub's start named; the membarrier is a command to a stub thread in a
+  kernel entry, or to one the embedder stops first. Measured across processes (run5/plink.out): 14.92 to 79.79 µs
+  a link with a stub thread waiting (0 to 64 running threads), 15.81 to 231.34 µs when one must be stopped first
+  (1 to 64) (plan 3.2).
+- Run 4's trap counts (minor): the count was not atomic, so run 4's figures were lower bounds, and the check is the
+  workers' `ud2` with exit 0, not the printed line. Re-run with an atomic count (run5/patch2.c): 0, 115,878,
+  321,673 and 1,191,515 traps (plan 3.2).
 
 ## What run 4 changed (third check), finding by finding
 
@@ -23,8 +60,8 @@ check-xn0b/ and check-xn0c/, the three independent checks' probes and outputs, a
 - Unsynchronized cross-modifying code (blocking): links are now made by Linux's `int3` protocol in batches, three
   syncs a batch (membarrier SYNC_CORE in P and I, interrupts in the machine), new code reached only after the first
   sync; an `int3` hit resumes at the exit's unlinked path. Measured (run4/patch.out): 0 to 64 threads running the
-  exit while it was linked 20,000 times, every turn on a target, every trap resumed; one membarrier 0.65 to 5.88 µs,
-  one link 1.90 to 69.05 µs (plan 3.2).
+  exit while it was linked 20,000 times, every turn on a target (checked by each worker's `ud2`, exit 0), every
+  trap resumed; one membarrier 0.65 to 5.88 µs, one link 1.90 to 69.05 µs (plan 3.2).
 - The machine's area in the lower half (blocking): put back where docs/native.md has it, the upper canonical half,
   user-accessible pages, guest ceiling 2^47; its readable pages named in plan section 5 as native.md 7.2's
   difference (decision 4) (plan 2, 5, 6). So it is no departure.
@@ -33,8 +70,8 @@ check-xn0b/ and check-xn0c/, the three independent checks' probes and outputs, a
   3.1, 3.6). XRSTOR's mask is the offered groups, measured with the full handler (943 to 950 ns against 1,080 to
   1,088; a PKRU edit in the frame left PKRU unchanged with mask 7 and killed the process with the frame's mask)
   (plan 3.7). t may be read from the copy as a guest value only (3.7). TF and AC cleared by I's routine before
-  Rust code and by P's stub when it puts rflags back (3.6). The rep string pass count until ruled: inline, out of
-  line, `pushfq` on the area's count stack, a `RepPasses` fix-up; cost expected, measured at XN1 (3.6, 9).
+  Rust code and by P's stub when it puts rflags back (3.6; P's form replaced by the flags table in run 5). The rep
+  string pass count until ruled: inline, out of line, `pushfq` on the area's count stack, a `RepPasses` fix-up; cost expected, measured at XN1 (3.6, 9).
   Register-group tests per way and a new P thread's vector registers loaded by XRSTOR (3.6, 7, 8). Shadow stacks: P
   refuses a stub thread with one, I resumes by `rt_sigreturn` (3.1, 3.7). The exactness figure re-measured with
   exactly 2^15 first-level words (21 targets fault on the first level, 15 on the second, t kept at all) (3.3).
@@ -134,8 +171,26 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
     PKRU 0x55555554 with mask 7, and killed the child by SIGSEGV with the frame's own mask.
   - patch.c, patch.out: the `int3` link protocol with membarrier SYNC_CORE, 20,000 links, threads on their own
     processors running the exit: 0, 4, 16, 64 threads: membarrier 0.65, 1.48, 2.15, 5.88 µs; one link 1.90, 6.03,
-    16.48, 69.05 µs; 110,263, 309,928 and 1,150,833 traps resumed; every turn on one of the targets (checked in the
-    loop's code).
+    16.48, 69.05 µs; at least 110,263, 309,928 and 1,150,833 traps resumed (the count was not atomic: lower
+    bounds); every turn on one of the targets (checked by each worker's `ud2` at its end and exit 0; the printed
+    line is unconditional).
+- Run 5 (scratch run5/; load 0.3 to 0.5 before each, `gcc -O2 -pthread`, timed parts on one pinned processor):
+  - flags.c, flags.out, 3 runs: the count stack with a sibling storing 0x40302 into its slot, 20,000,000 rounds:
+    `andq` and `popfq` of that word set TF 6, 6, 6 and AC 6, 6, 6 times; the flags table 0 and 0 each run; without
+    the sibling 8.25 to 8.26 ns a round against 9.12 to 9.18. P's resume (tail off the alternate stack, unblock from
+    a read-only set, XRSTOR mask 7, the table, registers, jump), 200,000 stops flooded by one sibling while another
+    ORs TF and AC into the copy's rflags, 128 KiB alternate stack: 2 to 4 taken in guest code, 53,145 to 62,085 in
+    the tail, deepest frame 3 KiB, the guest loop's flags (CF PF ZF OF DF NT ID set, TF AC clear) and r12..r14 and
+    ymm7 kept. A round trip `tgkill` to itself, 3 rounds of 200,000 a run: 948 to 953 ns, `rt_sigreturn` 1,073 to
+    1,080.
+  - patch2.c, plink.out (run 4's patch.c with an atomic trap count; the probe's own 64 threads raised the load to
+    10 to 15): membarrier 0.74, 1.50, 2.11, 5.88 µs; one link 1.97, 5.91, 16.69, 69.99 µs; traps 0, 115,878,
+    321,673, 1,191,515; exit 0.
+  - plink.c, plink.out: P's links across processes (embedder writes a shared memfd, the stub's threads run it
+    read-execute, three futex requests a link, 20,000 links): with a stub thread waiting, 0, 4, 16, 64 running
+    threads, 14.92, 19.37, 38.83, 79.79 µs a link (traps 0 to 1,422,111); with none waiting, each request stopping
+    a running thread whose handler makes the call, 1, 4, 16, 64 threads, 15.81, 29.84, 83.96, 231.34 µs (traps
+    67,487 to 4,394,533); every stub exited 0 with every turn checked.
 - Taken from cloud/x86/x86-machine.md, not measured by this track: XSAVE 11,008 bytes, a signal frame's xstate_bv
   0x207, UMIP emulating sldt, str and smsw, split-lock detection.
 
@@ -160,6 +215,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   data (P maps it execute-only).
 - A rep string's pass count computed inline after the instruction until the count is ruled (native.md section 4
   does not count rounds).
+- x87 arithmetic is copied only while every x87 exception is masked; a copied `fldcw` is checked, and a thread
+  with one unmasked runs its x87 and MMX instructions in the inside (native.md 3.4 copies x87 arithmetic always,
+  which leaves FDP and FOP to the host). FIP is kept by a store a run in the register area, not taken from the
+  hardware.
 
 ## Coordination with other tracks (read theirs at the start of every run)
 
@@ -179,14 +238,20 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
     single step (stepping pieces instead). In I the handler sets the host's FS base before any Rust code and the
     area's again before guest code; its 3.8 swaps FS at entry and exit only.
   - The stub's routines: t is r11 and c is r10, which a host `syscall` overwrites or takes as an argument.
-  - Links in P: the embedder writes the code by the `int3` protocol (plan 3.2); a stub thread runs
-    `membarrier(PRIVATE_EXPEDITED_SYNC_CORE)` in the stub's process at the embedder's request, three times a batch,
-    answering each before the next step; the stub's SIGTRAP handler resumes an `int3` hit at the exit's unlinked
-    path.
+  - Links in P: the embedder writes the code by the `int3` protocol (plan 3.2); the stub's first thread registers
+    `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE` before any guest code; each of a batch's three syncs is a
+    command (its 4.2) to a stub thread in a kernel entry, or to one the embedder stops first, which runs
+    `membarrier(PRIVATE_EXPEDITED_SYNC_CORE)` and answers (measured 14.92 to 231.34 µs a link, run5/plink.out);
+    the stub's SIGTRAP handler resumes an `int3` hit (`SI_KERNEL`, at an exit of the batch) at the exit's unlinked
+    path, and any other SIGTRAP or an alignment SIGBUS is a fault of ours.
   - The code area may stay execute-only (its 3.4): translated code reads no data from it; it needs a pool range,
     read-only and not executable, at one fixed distance from the code area.
-  - The stub clears TF and AC in the rflags it puts back, restores vector state with the offered groups as the
-    XRSTOR mask, loads a new thread's groups from our kernel's image before its first instruction, and its threads
+  - The stub's handlers follow its 3.6 as written (mask, `SA_NODEFER`, the tail taking the exit already written;
+    run 4's x86 text restored the frame's mask and is replaced), unblock the stop signal from a read-only set, and
+    move rsp off the alternate stack before the unblock. The stub has a read-only page holding the flags table and
+    that set, and puts rflags back only by `popfq` of a table word (plan 3.6), restores vector state with the
+    offered groups as the XRSTOR mask, reads the vector image at the frame layout's place, never through
+    `fpregs`, loads a new thread's groups from our kernel's image before its first instruction, and its threads
     have no user shadow stack (refused by name otherwise). I's handler resumes by `rt_sigreturn` with the frame's
     rip set to the lookup's entry; I's routine clears TF and AC before Rust code.
   - P on a 4-level host: about 3,000 guest threads per process (32 GiB of first level each).
@@ -228,8 +293,11 @@ No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT
   with the guest's mask on the host's XCR0; 32-bit code is never entered, sigreturn included; the inside's Rust in I
   cannot clear the guest's ymm upper halves (XSAVEC); P never resumes through a signal frame a sibling can edit
   (measured: 198,432 of 200,000 diverted when it does) and has no hardware single step; P's XRSTOR mask is the
-  offered groups, never the frame's (measured: the frame's mask let an edited PKRU through); the rflags P puts back
-  have TF and AC cleared; no code is changed while another processor may run it except by the `int3` protocol
+  offered groups, never the frame's (measured: the frame's mask let an edited PKRU through); every `popfq` in P
+  reads a word of a read-only table, so no sibling store can set TF or AC (measured: clearing a writable word first
+  let 6 of 20,000,000 through, the table 0); P's handler unblocks the stop from a read-only set, never the frame's
+  mask, and keeps the alternate stack to one frame under a flood of stops (measured: 3 KiB deep at 200,000);
+  no code is changed while another processor may run it except by the `int3` protocol
   (measured over 20,000 links with 64 threads running the exit); the code area is never read as data, so it may be
   execute-only; the machine maps each processor's area only for that processor; I's handler restores the host's FS
   before Rust code. Points it hands to
@@ -245,4 +313,7 @@ returns.S`, `./returns 30 21`) and the partial probes (`gcc -O2 -mavx2`, no argu
 files>`. Run 3's: `gcc -O2 -mavx2 -mfsgsbase -fno-stack-protector -pthread -o psig psig.c && ./psig 200000` and
 `gcc -O2 -mfsgsbase -o wrfs wrfs.c && ./wrfs`, in /work/probes/xn0b. Run 4's, in /work/probes/xn0r4: `gcc -O2
 -mbmi2 -o calls calls.c calls.S && taskset -c 5 ./calls 30 21`, `gcc -O2 -mavx2 -fno-stack-protector -o resume
-resume.c && ./resume 200000`, `gcc -O2 -pthread -o patch patch.c && ./patch 20000`.
+resume.c && ./resume 200000`, `gcc -O2 -pthread -o patch patch.c && ./patch 20000`. Run 5's, in /work/probes/xn0r5:
+`gcc -O2 -pthread -fno-stack-protector -o flags flags.c && ./flags 20000000 200000 200000` (rounds, stops, round
+trips), `gcc -O2 -pthread -o plink plink.c && ./plink 20000`, `gcc -O2 -pthread -o patch2 patch2.c && ./patch2
+20000`.
