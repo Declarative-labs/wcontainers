@@ -5420,6 +5420,13 @@ impl<B: Backend> Device<B> {
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
                 copy_formats(d.desc.format, s.desc.format, self.feature_level())?;
+                // Multisampled textures are copied from 10_1; below it Direct3D drops the copy
+                // (measured on the RTX 3080).
+                if self.feature_level() < desc::level::L10_1
+                    && (d.desc.sample_count > 1 || s.desc.sample_count > 1)
+                {
+                    return Ok(());
+                }
                 // YUY2's pixel pairs are its texels; Direct3D drops an odd box or place.
                 let pairs = d.desc.format == format::YUY2;
                 let Some(src_box) = pixel_box(s.desc.format == format::YUY2, src_box) else {

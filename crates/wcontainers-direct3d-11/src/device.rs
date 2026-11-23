@@ -716,14 +716,15 @@ impl<B: Backend> Device<B> {
         if format::back_buffer_cast(dxgi) && s.support1 & DISPLAY != 0 {
             s.support1 |= BACK_BUFFER_CAST;
         }
-        // A format held but neither drawn into nor a depth format, or any format where no
-        // multisampling is reported, has no multisampled textures (`CheckMultisampleQualityLevels`
-        // answers no count of it), so the multisample loads and resolves Microsoft's tables require
-        // of it apply to no texture, and are reported as Direct3D's drivers report them (the RTX
-        // 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`; the 10_0 table requires resolves without
-        // requiring a sample count).
-        let no_samples = !caps.has(Features::SAMPLE_MASK)
-            || s.support1 & (RENDER_TARGET | crate::desc::support::DEPTH_STENCIL) == 0;
+        // A format of which no multisampled texture is made (held but neither drawn into nor a
+        // depth format, drawn only singly, as integer twins and the 32-bit float pairs and
+        // quadruples core WebGPU are, or any format where no multisampling is reported:
+        // `CheckMultisampleQualityLevels` answers no count of it) has the multisample loads and
+        // resolves Microsoft's tables require of it apply to no texture, so they are reported as
+        // Direct3D's drivers report them (the RTX 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`; the
+        // 10_0 table requires resolves without requiring a sample count).
+        let no_samples =
+            !caps.has(Features::SAMPLE_MASK) || s.support1 & MULTISAMPLE_RENDERTARGET == 0;
         if s.support1 != 0
             && no_samples
             && let Some((_, row)) =
