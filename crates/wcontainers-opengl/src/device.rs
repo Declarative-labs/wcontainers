@@ -30,6 +30,7 @@ pub fn webgpu() -> Option<(WebGpu, CString)> {
     let instance = INSTANCE.get_or_init(|| {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = HOST_BACKENDS;
+        desc.flags |= WebGpu::INSTANCE_FLAGS;
         wgpu::Instance::new(desc)
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
