@@ -48,12 +48,12 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/executor/implementation/wasmtime (52, an executor)
 #   crates/executor/implementation/unicorn (37, an executor)
 #   crates/wcontainers-gpu-webgpu (30)
-#   crates/internet-protocol/implementation/linux-socket-options (21)
+#   crates/internet-protocol/implementation/linux-socket-options (20)
 #   crates/wcontainers-translator-test (16)
 #   crates/wcontainers-direct3d-11 (10)
-#   crates/tcp-sockets/implementation/host (6)
 #   crates/runtime/implementation/single-kernel (2)
 #   crates/route-resolver/conformance (2)
+#   crates/tcp-sockets/implementation/host (1)
 #   crates/icmp-sockets/conformance (1)
 [workspace.lints.rust]
 unsafe_code = "forbid"
