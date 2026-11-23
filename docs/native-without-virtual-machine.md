@@ -439,14 +439,17 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   A frame without the FP/SIMD record (W1 run 10): Linux puts the interrupted FP/SIMD registers in the frame's first
   record (`fpsimd_context`), but gVisor on ARM64 (release 20261109.0, systrap) puts no record there, keeps them
   itself until the handler returns, and enters the handler with them zeroed (measured, scratch w1/run10/gframe.c).
-  Where the record is absent, a P handler of a stop or fault in translated code saves the general registers from the
-  frame as before, then returns through the frame (`rt_sigreturn`) into its own next routine, the frame's pc, sp,
-  pstate, x9, x10 and x27 rewritten and the stop added to its mask, so the host restores the interrupted FP/SIMD
-  registers and that routine stores them (counted per guest process, "signal frame without FP/SIMD registers",
-  warned once per guest process). It is the only handler of P that returns; the stub's filter allows `rt_sigreturn`
-  on ARM64 for it, which gives an escaped stub nothing it lacks (it already sets its own registers, and
-  `rt_sigprocmask` and `sigaltstack` are allowed as they come). Forced on every exit on Linux, the floor's tests
-  pass too.
+  gVisor also keeps that state for good when a handler never returns: a stop flood of 42 million stops grew its
+  sentry to 377 GB until the host's out-of-memory killer ended it (W1 run 10). So where the record is absent every
+  P handler that goes on in the stub leaves by returning through its frame (`rt_sigreturn`) into the routine it
+  would have jumped to, with every general register and sp as the handler holds them, pstate zero and the stop
+  added to the frame's mask (so the stop is blocked there as after a jump, and its unblock is unchanged); a handler
+  that ends the thread or the stub needs none. A stop or fault in translated code saves the general registers from
+  the frame as before and returns into a routine that stores the FP/SIMD registers the host restored (counted per
+  guest process, "signal frame without FP/SIMD registers", warned once per guest process). The stub's filter allows
+  `rt_sigreturn` on ARM64 for it, which gives an escaped stub nothing it lacks (it already sets its own registers,
+  and `rt_sigprocmask` and `sigaltstack` are allowed as they come). Forced on every handler on Linux, the stop,
+  floor and step tests pass too.
   So no signal mask is changed on a kernel entry path but a resume that carries commands (a mask change is a host
   system call: 125 ns on Graviton4 and 87 to 89 ns on the Xeon, W0 probe run 3).
 - A slice (`Next::Run { slice_nanoseconds }`): P: the runner's futex wait carries the slice as its time-out and

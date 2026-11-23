@@ -405,7 +405,7 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     outputs gframe*-arm.out): the frame's pc is right, but gVisor's frame has no FP/SIMD record (`fpsimd_context`;
     the first record's magic reads 0) and the handler starts with v0 to v31, FPSR and FPCR zeroed; gVisor keeps
     them itself until the handler returns. The save took the missing record for a broken frame and ended the stub.
-  - Fixed (plan 3.6): where the record is missing, the handler saves the general registers from the frame, then
+  - Fixed first for exits from code (plan 3.6): where the record is missing, the handler saves the general registers from the frame, then
     returns through it (`rt_sigreturn`) into its own next routine (pc, sp, pstate, x9, x10 and x27 rewritten, the
     stop added to the frame's mask), which stores the FP/SIMD registers the host restored and goes on to the exit.
     The stub counts each in its register page (`VECTORS_BY_RETURN`); the embedder's `Stub` adds it up when it reads
@@ -417,6 +417,21 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     equal to the model (it failed before). With the route forced on every exit on Linux (the remote copy's `cbz w7`
     made a `b`), every floor test but that count passes (701 of 700 before the count was fixed to count re-entries),
     so the route also holds where the host restores from the frame.
+  - Found next, and fixed: gVisor also keeps that state for good when a handler never returns. A 12,000-round
+    stop flood under gVisor grew its sentry to 377 GB of memory until the host's out-of-memory killer ended it
+    (20:20 UTC on Graviton4, the machine's dmesg; runsc exit 137; nothing else was killed). So now every handler
+    that goes on in the stub leaves through one routine (`.Lwchp_leave`, target in x16): a jump where the frame held
+    the record, else a return through the frame with every general register and sp as the handler holds them,
+    pstate zero and the stop added to the mask, into the same target. Stops and faults in translated code return
+    into the routine that stores the FP/SIMD registers. Handlers that end the thread or the stub need none. The
+    frame's kind is read once at each handler's entry (`wchp_frame_kind`, x15).
+  - Under gVisor after the change (scratch w1/run10/gleave-arm.out, gleave2-arm.out): the 2,000-round stop flood
+    takes 20 s against 269 s before, and the sentry's memory stays at 47 MB (largest of its samples every 5 s). It
+    still fails its own coverage check (3,815,032 stops sent, 1,880,016 landed in the wait, 17 in the publish, 1 in
+    the code, none in the enter or the save), left failing there as above.
+  - Forced on every handler on Linux (the remote copy's `cbnz w3` made a `nop`; scratch w1/run10/leave1-arm.out):
+    the floor (stop flood at 2,000 rounds), step, stop, slice, touch, threads and memory tests all pass, 701 of 701
+    exits from code by the return. Natively every test binary passes, clippy clean.
   - New gVisor limit, recorded in plan 6: an execute-only mapping can be read there (scratch w1/run10/xonly.c:
     the read succeeds, the write faults `SEGV_ACCERR`). So under gVisor translated code can read its code area,
     and `translated_code_can_neither_read_nor_write_the_code_area` fails there on its load (left failing).
@@ -433,9 +448,10 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     step test's /proc read, as in run 9; the floor binary as a whole passed its 900 s limit (the full 20,000-round
     stop flood), so its verdicts under gVisor are the separate runs above (calls, stops, faults and register
     isolation pass; the code-area read and the flood's coverage fail).
-  - Final verdicts after the last code commit, each test binary 3 times with /dev/kvm denied, clippy with warnings
-    denied clean on both: Graviton4 (scratch w1/run10/final-arm.log, load 15) 180 of 180; Xeon (19:42 UTC,
-    final-x86.log, load 5.9 to 2.8) 156 of 156 (the x86 machine did not answer SSH at 19:40).
+  - Final verdicts after the last code commit (20:34 to 20:37 UTC, scratch w1/run10/final2-arm.log and
+    final2-x86.log), each test binary 3 times with /dev/kvm denied, clippy with warnings denied clean on both:
+    Graviton4 180 of 180 (load 12 to 22), Xeon 156 of 156 (load 2.2 to 7.4). Before the leave routine (final-*.log):
+    the same counts. The x86 machine did not answer SSH at 19:40 and around 20:15.
   - No new unsafe code (the route is in the zygote's assembly).
 - Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
@@ -723,7 +739,8 @@ build on ARM64, 25 on x86-64), 1 in its tests:
   signal's code and address, from the frame on the thread's own signal stack, which a guest thread of the same stub
   could write; that reading only chooses among our own targets or is reported to the kernel as the guest's fault.
 - The return route for frames without FP/SIMD registers (run 10) is in the same assembly (no new use): it writes
-  six words and the mask of the frame at x2 on the thread's own signal stack and returns through it; plan 12 item
+  the general registers, sp, pc, pstate and mask of the frame at x2 on the thread's own signal stack and returns
+  through it; plan 12 item
   14 is the one way it is weaker than the rest.
 Constants no crate defines, named with their source: glibc's rseq signatures (`RSEQ_SIG`), Linux's
 `RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields, Linux's `struct fpsimd_context`
