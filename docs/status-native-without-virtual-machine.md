@@ -117,17 +117,66 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     (81 of 81; load 18 to 24, other tracks' jobs), clippy with warnings denied clean on both. The ended-thread checks first failed 2 of 3 runs on
     each machine: the host lists a thread in /proc until it reaps it, a moment after clearing its exit-clear word;
     the tests now wait up to 1 s for the list (the product never reads /proc).
+- W1, run 4 (2026-11-23), built and tested on both machines:
+  - The `Cpu` calls (executor.rs, `HostProcessExecutor`, made from an `Arc<HostProcessHost>`, which now holds the one
+    window cache): every method of `wcontainers_abi::Cpu`. A memory is a stub whose whole guest area is its memfd
+    mapped with no access; `set_permissions` records the kernel's permissions by range (rangemap) and queues an
+    `mprotect` for the stub's next turn; `read`, `write` and `zero` (a punched hole) go through the window cache;
+    registers live in the register page (offset 128, as the floor will save them); `code_changed` has nothing to
+    drop yet. A memory keeps one spare host thread (its stub's first, or the last dropped), so a memory with no
+    guest thread still has a stub thread to apply commands; a further `thread_new` is a turn of one of its threads
+    carrying the `clone` command.
+  - Copy-on-write (3.5): one owner per private page. A fork lends the source's data extents (`SEEK_DATA` on its
+    memfd) and its own borrowings' owners to the child, takes write from every writable range of the source's view
+    by a round trip before it returns, and starts the child's view with no access. A fault the kernel's
+    permissions allow is the executor's: the page is copied from its owner (any access) or given to its first
+    borrower (a write; the rest then borrow from that one), and the widest range of one state around it gets the
+    kernel's permissions at the next resume. `Cpu::read` of a borrowed page reads the owner's. An owner dropped
+    while lending keeps its memfd, not its process, until nothing is borrowed from it (departure below).
+  - Shared blocks: one memfd per block; `shared_map` gives up the range's private pages and queues `MapShared`,
+    whose memfd the embedder sends over the stub's socket (`SCM_RIGHTS`) just before the turn whose page holds the
+    command; the stub receives it with `MSG_DONTWAIT` (a missing one is refused with EAGAIN, never waited for),
+    maps it (the lowest descriptor, 0) and closes it. The filter allows exactly that: `recvmsg` on fd 8 with
+    `MSG_DONTWAIT`, `close` of fd 0, `mmap` of fd 0 at any offset under the same bounds as the memory's. A fork child
+    maps its parent's blocks; `shared_unmap` copies the block's bytes into the memory's own; `zero` ends the sharing.
+  - Slices (3.6): a turn's wait carries its slice; when it passes the runner sends the stop, again every 100 ms, and
+    after 10 s (`STOP_IGNORED`) the zygote kills the stub ("thread ignored its stop", counted, warned).
+  - Tests: tests/memory.rs (10): the kernel's reads, writes, zeros and permissions against loads and stores, the
+    edges of the guest area refused; registers per thread, a dropped thread's index made again; a fork's exact copy
+    counts (one copy per event, none where the page is already the toucher's); forking twice before a copy and a
+    child forking before copying (four processes, every word checked by load and by `read`); an owner ended while
+    lending, its borrowers and a grandchild still reading its pages, nothing copied for it; forged fault reports
+    (every access at the page and outside it, three times) doing only what real accesses would, then C's copy equal
+    to the fork's instant; a queue of 190 commands applied in two rounds; a block shared by two processes and a fork
+    child, then unmapped and zeroed; one block mapped 10,000 times (`WCHP_MAPS`) leaving 2 descriptors in the stub;
+    a seeded model (`WCHP_SEED`, `WCHP_STEPS`, default 30,000 steps) of up to six processes with forks, ends, the
+    kernel's writes and zeros, loads, stores and permission changes, every process's copy of the touched page
+    checked after each step. Seeds 1 to 5 at 100,000 steps each passed on Graviton4 (about 3,800 forks, 19,500
+    copies, 1,200 retired owners per seed). The model catches a fork without its write protection within 13 to 77
+    steps (seeds 1 to 3), the fork tests too; at 3,000 steps checking only the touched word it did not, hence the
+    current default and checks. tests/stub.rs (+1): a block not sent is refused with EAGAIN; one sent is mapped and
+    read; mapped executable, over the signal stacks or below the guest area, the stub is killed by SIGSYS.
+    tests/slice.rs (3): slices of 1, 5 and 20 ms end the spin as stopped within 100 ms of the slice and a turn back
+    in time sends none; a stub held stopped by the host for 350 ms is sent its stop at least 4 times, the turn ends
+    once, and every stop sent lands (one in the turn); a stub held stopped is killed after 10 s, 95 to 102 stops
+    sent.
+  - Verdicts (14:48 to 14:50 UTC, scratch w1/run4/slice-arm.log and slice-x86.log): all 41 tests of the 10 test
+    binaries passed 3 times with /dev/kvm denied on Graviton4 (123 of 123, load 8 to 10) and on the Xeon (123 of
+    123, load 1.8 to 3.7), clippy with warnings denied clean on both.
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- W1, in this order, each tested on both rented machines with /dev/kvm denied: copy-on-write and the adversarial fork tests
-  (3.5); placement (4.3), its CPU table in `HostProcessHost`; the runner's resend of an ignored stop every 100 ms
-  and the kill after 10 s (3.6). Hand-written ARM64 pieces
-  stand in for translated code until the translator's form exists. Then the `Cpu` and `Executor` traits with the
-  `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
+- W1, in this order, each tested on both rented machines with /dev/kvm denied: placement (4.3), its CPU table in
+  `HostProcessHost`, the stub moving itself (`sched_setaffinity` of the calling thread in the filter), the share
+  sampling; the host mappings each command creates counted up front so `OutOfMemory` comes before a host refusal
+  (4.2; today a refused command makes the touch answer `OutOfMemory`); the copy unit's measurement (3.5, u = 0
+  now). Hand-written pieces stand in for translated code until the translator's form exists. Then the `Executor`
+  trait with the `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
+- The adversarial fork with a sibling writing in a loop meanwhile (plan 13) needs a second thread running during a
+  `Cpu` call, which today's kernel and its one-thread `with_parts` loop never do (3.9): built with parallel threads.
 - I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
   ("reservation refused") in an embedder that made an in-process host first.
 
@@ -140,6 +189,9 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   and exits 1 if any run failed (send it inline: `arm-run <checkout> --name nwvm -- "set -- 3; $(grep -v '^#!'
   nokvm.sh)"`, or `x86-run`); outputs w1/run3/arm-nokvm.out and x86-nokvm.out. Knobs: `WCHP_TURNS`, `WCHP_SEED`, `WCHP_MEMORIES`,
   `WCHP_TOUCHES`, `WCHP_STOPS`, `WCHP_ROUNDS`.
+- Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
+  fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
+  lines; the fetched log does not).
 - The fault-visibility runs: scratch keep-rseq.py and keep-rseq-x86.py patch the remote copy (at
   /work/nwvm-w1 on each machine), then the same test command; the next sync restores the tree.
 
@@ -268,6 +320,14 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Departures from the plan
 
+- W1 run 4: an owner that ends while it lends pages keeps its memfd (its stub ended and reaped) until no page is
+  borrowed from it, instead of copying each into a borrower: nothing is copied, as on Linux (plan 3.5 says so now).
+  A `Cpu::read` of a borrowed page reads the owner's instead of copying it. Views may be stricter than the rules
+  allow and are put right at the executor's own faults; a fork protects every writable range of the parent, not
+  only its lent pages (fewer commands, one fault more on a page the parent writes that was not lent). A
+  `thread_new` past a memory's spare is its own round trip, not a command riding on the next resume. A fork
+  refused part-way (a command the host refuses) drops the child and answers `OutOfMemory`.
+
 - W1 run 3: P's stop signal is the kernel's first real-time signal, fixed, not chosen from the embedder's
   dispositions: it is only ever sent to a stub, which holds no C library (plan 3.6 and 3.7 say so now; I's choice is
   unchanged). Both architectures name our own restorer (`SA_RESTORER`), since the stub has no vDSO. A thread's
@@ -311,6 +371,9 @@ build on ARM64, 22 on x86-64), 1 in its tests:
 - windows.rs: the reservation's `mmap` and `munmap`; mapping a window, or inaccessible memory, over one slot of
   it; the copy out of a window and the copy into one (raw copies, since a stub may touch the bytes meanwhile).
 - tests/zygote.rs: glibc's `__rseq_size`, to show the test has a registration to drop.
+- The stub's routine that receives a shared block's memfd and maps it is in the same assembly (no new use); it
+  reads the control message the host kernel wrote on its own stack, checks its length, level and type, and maps
+  only what the filter allows.
 - The stub's handlers live in the zygote's assembly (no new use): they read the interrupted pc, and for a fault the
   signal's code and address, from the frame on the thread's own signal stack, which a guest thread of the same stub
   could write; that reading only chooses among our own targets or is reported to the kernel as the guest's fault.
@@ -319,7 +382,9 @@ Constants no crate defines, named with their source: glibc's rseq signatures (`R
 
 ## Dependencies and licences
 
-host-process, Linux only: rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
+host-process, Linux only: rangemap 1.8.0 (MIT OR Apache-2.0) for permissions, page states and shared ranges by
+range, zerocopy 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT) for a register block as bytes (both already in the
+lock file), rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
 Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
 LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly, wcontainers-abi; for its tests only, fastrand 2.5.0
 (Apache-2.0 OR MIT). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented

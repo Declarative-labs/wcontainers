@@ -326,24 +326,32 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
     executor's own `mprotect`. This instant is the fork's instant: a sibling thread's write lands before it (and is
     in the child) or faults after it. The child cannot run, and the kernel cannot read or write it, before the call
     returns.
-  - A borrowed page is inaccessible in the borrower's view. The borrower's touch (a fault, or a `Cpu` read or
-    write of it) copies the owner's page into the borrower's memfd, which then owns it. Reads included: a fork
+  - A borrowed page is inaccessible in the borrower's view. The borrower's touch (a fault, or a `Cpu::write` of
+    it) copies the owner's page into the borrower's memfd, which then owns it. Reads included: a fork
     child pays for every unit it touches, not only those it writes. In P that is a round trip (c, 4.3) plus the
-    copy and one mapping command (1.15 µs measured for an `mmap` of a page, 3.5's figures), so about 3.5 µs per
+    copy and one protection command (391 ns measured for an `mprotect` of a page, 3.5's figures), so about 3 µs per
     unit expected; in I the in-process fault (1.31 µs) plus the copy. Section 7 counts it.
-  - Before an owner's page that is lent changes (the guest's first write faults; a `Cpu::write` or `zero`; an
-    unmapping; the owner's end or exec), the page is copied into one borrower, which becomes the owner, and every
+  - Before an owner's page that is lent changes (the guest's first write faults; a `Cpu::write` or `zero`; a
+    shared block mapped over it), the page is copied into one borrower, which becomes the owner, and every
     other borrower now borrows from it: one copy per event, whatever the number of borrowers. Then the old owner's
-    page is free to change. The new owner's view gains access with its next applied command (a touch before that
-    faults and applies it).
+    page is free to change. The new owner's view gains access at its next touch (a fault the executor resolves).
   - A borrower that ends or unmaps the page leaves the lent set without a copy. An owner that ends or execs while
-    it lends pages copies each into one borrower first (the rule above), so a parent that forks and exits at once
-    (a daemon's double fork) pays a copy of every page its child still borrows, where Linux pays none; counted
-    "pages copied at an owner's end", and part of section 7's copied units.
+    it lends pages keeps its memfd, not its process (its stub is ended and reaped), until no page is borrowed from
+    it, each page punched out as its last borrower leaves it: nothing is copied for it, as on Linux, so a parent that
+    forks and exits at once (a daemon's double fork) pays nothing more; counted ("owner ended while lending").
+  - A `Cpu::read` of a borrowed page reads the owner's page; it copies nothing.
+  - Views are never looser than these rules allow, and may be stricter: a fork child's view starts with no access
+    at all, `set_permissions` over a range with a borrowed page gives the view no access there and over one with a
+    lent page no write, and a fork takes write from every writable range of the parent's view. A fault the
+    kernel's permissions allow is the executor's (it never reaches the kernel): it copies or gives away the page as
+    the access needs and gives the widest range around it whose pages all share one state what the kernel allows,
+    at the thread's next resume. The decision is made from the executor's records alone, so a forged fault report
+    does only what a real access of that guest would.
   The copy source is always write-protected in every view of its owner (it is lent), so every copy is of the page as
   it was at the fork's instant, as on Linux. Copies are made in units of 2^u pages (u by measurement in W1, from 0
   to 9, against the number of host mappings it creates: mprotect splits a mapping at the unit's edges, and the host's
-  vm.max_map_count is 65530 by default, 1048576 on the Ubuntu machines here).
+  vm.max_map_count is 65530 by default, 1048576 on the Ubuntu machines here); built with u = 0 (one page) until
+  that measurement.
 - **Written marks and watches are the kernel's** (`Process::take_dirty_memory`, `Process::watch_memory`): the
   kernel keeps both itself and makes them with `Cpu::set_permissions` (write taken away until the first write,
   which comes back as a fault exit; crates/kernel/implementation/linux/memory.rs `take_dirty` and `reapply`), and
@@ -889,8 +897,11 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   id the embedder names), `kill` (SIGKILL to its own unreaped child, 4.1), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
   `getppid`, `set_tid_address`, `seccomp(SECCOMP_SET_MODE_FILTER)`, `dup3` (fds to their fixed numbers, before the
   filter), with the mappings of 4.1 and 4.3. The stub's
-  own filter then allows: `futex`; `mmap`, `munmap`, `mprotect` bounded as 3.7; `clone` with 4.1's thread flags;
-  `recvmsg` on its socket (and `write` on it with parallel threads); `close`; `sched_setaffinity` on the calling
+  own filter then allows: `futex`; `mmap`, `munmap`, `mprotect` bounded as 3.7 (`mmap` of the memory's memfd at
+  the offset equal to the address, or of a shared block's memfd, which is the lowest descriptor, 0, at any offset);
+  `clone` with 4.1's thread flags; `recvmsg` on its socket with `MSG_DONTWAIT` (a block's memfd, sent before the
+  turn that maps it, so it never waits) (and `write` on it with parallel threads); `close` of descriptor 0 (the
+  block's, once mapped); `sched_setaffinity` on the calling
   thread; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`; on x86-64 `membarrier`, and
   `arch_prctl` (`ARCH_SET_GS` only) where the host lacks FSGSBASE (3.10). No `rt_sigreturn` (3.6).
 - I adds: `timer_create`, `timer_settime` and `timer_delete` for slices, `rt_sigreturn`; `arch_prctl` on x86-64
