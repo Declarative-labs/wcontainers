@@ -413,7 +413,7 @@ impl Translation {
                 moved(address);
             }
             for fixup in &mut span.fixups {
-                if let Fixup::Address { value, .. } = fixup {
+                if let Fixup::Address { value, .. } | Fixup::X87Pointer(value) = fixup {
                     moved(value);
                 }
             }

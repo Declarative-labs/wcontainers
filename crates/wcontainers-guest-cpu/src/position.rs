@@ -114,6 +114,8 @@ pub enum Fixup {
     Forget { status: u8, read: [Option<Held>; 2] },
     /// The block takes the hardware's float status.
     FloatStatus,
+    /// The register page's last x87 instruction pointer gets this guest address, not yet stored there (x86).
+    X87Pointer(u64),
 }
 
 /// What a stop at one host instruction means for the guest. A span holds from its start to the next span.
@@ -213,13 +215,16 @@ pub enum NativeReason {
     /// The page test in front of a load or store of 16 bytes or fewer, which the host's model is not relied on
     /// to do as the meaning does.
     HostModelResultRouted,
+    /// A repeated string instruction the inside runs, so that the count takes its passes as the meaning's does.
+    RepeatedStringCounted,
 }
 
 impl NativeReason {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::WithheldRegisterNamed,
         Self::AccessMayCrossPage,
         Self::HostModelResultRouted,
+        Self::RepeatedStringCounted,
     ];
 
     /// The fixed names their counters and warnings carry, in the order of [`Self::ALL`].
@@ -227,6 +232,7 @@ impl NativeReason {
         "withheld register named by the guest",
         "access that may cross a page probed",
         "host-model result routed",
+        "repeated string counted by the inside",
     ];
 
     /// Its place in [`Self::ALL`].

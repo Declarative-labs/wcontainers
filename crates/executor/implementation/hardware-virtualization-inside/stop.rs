@@ -277,6 +277,8 @@ pub fn fixed_up(
                 fixed.exclusive_high = if two_words { read(word, word) } else { 0 };
             }
             Fixup::FloatStatus => float.take(h.fpsr, h.fpcr),
+            // x86's alone: ARM64 code never carries it.
+            Fixup::X87Pointer(_) => {}
         }
     }
     (hardware, fixed)
