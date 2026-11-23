@@ -296,21 +296,13 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    if crate::container::program_type(dxil) == Some(crate::ir::program::GEOMETRY)
-        && container::geometry_input_primitive(dxil)
-            .is_some_and(|p| p >= container::FIRST_PATCH_PRIMITIVE)
-    {
-        return Err(ConvertError::Unsupported(
-            crate::refusal::GEOMETRY_PATCH_INPUT,
-        ));
-    }
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
     if let Some(name) = absent_extension(&spirv) {
         return Err(ConvertError::Unsupported(name));
     }
     widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
-    let geometry = geometry::prepare(&mut spirv)?;
+    let geometry = geometry::prepare(&mut spirv, dxil)?;
     let tessellation = tessellation::prepare(&mut spirv, dxil)?;
     let selected = selected::prepare(&mut spirv)?;
     let mut declared = images::prepare(&mut spirv);

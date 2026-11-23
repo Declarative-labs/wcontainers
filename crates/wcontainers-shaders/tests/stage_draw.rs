@@ -2192,25 +2192,10 @@ fn list_indices(seed: u64, count: u32) -> Vec<u8> {
 
 /// A geometry shader taking patches of four control points, drawn without tessellation (`gs_patch`:
 /// each patch a quadrilateral, its points picked at run time, its colour by the patch's number), run
-/// as compute by the stage helper on WebGPU: every texel equal to real Direct3D 11's on the RTX 3080.
-/// fxc's build; dxc's is refused by name, as dxil-spirv converts no geometry shader taking patches.
+/// as compute by the stage helper on WebGPU: every texel equal to real Direct3D 11's on the RTX 3080
+/// drawing fxc's build, for fxc's and dxc's builds.
 #[test]
 fn geometry_shaders_taking_patches_draw_as_direct3d_does() {
-    let refused = convert(
-        Source::Dxil(&bytecode("gs_patch.dxil")),
-        &VariantKey::default(),
-        None,
-    );
-    assert!(
-        matches!(
-            refused,
-            Err(wcontainers_shaders::ConvertError::Unsupported(
-                wcontainers_shaders::refusal::GEOMETRY_PATCH_INPUT
-            ))
-        ),
-        "{:?}",
-        refused.err()
-    );
     let mut backend = webgpu();
     let gpu = d3d11::create(Driver::Hardware, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
     eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
@@ -2238,23 +2223,26 @@ fn geometry_shaders_taking_patches_draw_as_direct3d_does() {
             };
             let data = (vertices.as_slice(), indices.as_slice());
             let reference = direct3d_geometry(&gpu, "gs_patch", case, data);
-            let picture = ours_geometry(&mut backend, "gs_patch", case, data, false);
-            let d = apart(&reference, &picture);
-            let count = d.iter().filter(|x| **x != 0).count();
-            let drawn = drawn_texels(&reference);
-            compared += 1;
-            eprintln!("{name}: {drawn} texels drawn by direct3d, {count} differ");
-            if drawn == 0 || count != 0 {
-                for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
-                    let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
-                    let at = t * 4;
-                    eprintln!(
-                        "  ({px}, {py}): direct3d {:?}, ours {:?}",
-                        &reference[at..at + 4],
-                        &picture[at..at + 4]
-                    );
+            for dxil in [false, true] {
+                let name = format!("{name} {}", if dxil { "dxil" } else { "dxbc" });
+                let picture = ours_geometry(&mut backend, "gs_patch", case, data, dxil);
+                let d = apart(&reference, &picture);
+                let count = d.iter().filter(|x| **x != 0).count();
+                let drawn = drawn_texels(&reference);
+                compared += 1;
+                eprintln!("{name}: {drawn} texels drawn by direct3d, {count} differ");
+                if drawn == 0 || count != 0 {
+                    for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
+                        let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
+                        let at = t * 4;
+                        eprintln!(
+                            "  ({px}, {py}): direct3d {:?}, ours {:?}",
+                            &reference[at..at + 4],
+                            &picture[at..at + 4]
+                        );
+                    }
+                    failures.push(name);
                 }
-                failures.push(name);
             }
         }
     }

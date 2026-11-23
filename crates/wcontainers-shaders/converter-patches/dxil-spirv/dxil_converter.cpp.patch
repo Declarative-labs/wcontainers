@@ -1,0 +1,17 @@
+--- a/dxil_converter.cpp
++++ b/dxil_converter.cpp
+@@ -7395,6 +7395,14 @@
+ 			break;
+ 
+ 		default:
++			// A patch of 1 to 32 control points (D3D_PRIMITIVE_1_CONTROL_POINT_PATCH is 8), drawn
++			// without tessellation: its control points are the primitive's vertices. No execution
++			// mode names such an input; the module's user takes it from the container.
++			if (unsigned(input_primitive) >= 8 && unsigned(input_primitive) <= 39)
++			{
++				execution_mode_meta.stage_input_num_vertex = unsigned(input_primitive) - 7;
++				break;
++			}
+ 			LOGE("Unexpected input primitive (%u).\n", unsigned(input_primitive));
+ 			return false;
+ 		}

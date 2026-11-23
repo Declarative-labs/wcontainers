@@ -58,8 +58,9 @@ fn output_primitive(mode: ExecutionMode) -> Option<u64> {
 }
 
 /// Makes a Geometry entry point's SPIR-V a compute program naga's reader takes, and returns what it
-/// declared; `None` for any other execution model.
-pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertError> {
+/// declared; `None` for any other execution model. A patch input, which no execution mode names, is
+/// the container's `dxil`.
+pub(crate) fn prepare(spirv: &mut Vec<u32>, dxil: &[u8]) -> Result<Option<Declared>, ConvertError> {
     let Some(entry) = staged::entry(spirv, ExecutionModel::Geometry) else {
         return Ok(None);
     };
@@ -83,6 +84,11 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
         if let Some(p) = output_primitive(mode) {
             declared.output = p;
         }
+    }
+    if let Some(p) = crate::container::geometry_input_primitive(dxil)
+        .and_then(|p| p.checked_sub(crate::container::FIRST_PATCH_PRIMITIVE))
+    {
+        declared.input = primitive::PATCH + 1 + u64::from(p);
     }
     let within = |stream: u32| match (stream as usize) < stage::STREAMS {
         true => Ok(stream),
@@ -312,7 +318,7 @@ mod tests {
                 declares[literal] = past;
             }
             for mut words in [emits, declares] {
-                match prepare(&mut words) {
+                match prepare(&mut words, dxil) {
                     Err(ConvertError::Malformed(why)) => assert_eq!(why, STREAM_PAST_DIRECT3D),
                     other => panic!("{past}: {:?}", other.map(|d| d.map(|d| d.stream_mask))),
                 }

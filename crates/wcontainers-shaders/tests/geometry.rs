@@ -99,39 +99,30 @@ fn geometry_shaders_declare_what_they_are() {
 }
 
 /// A geometry shader taking patches of four control points (`gs_patch`) takes them as primitives of
-/// four vertices, in the compute and the replay form; dxc's build is refused by name, as dxil-spirv
-/// converts no such input.
+/// four vertices, in the compute and the replay form, from fxc's and dxc's builds.
 #[test]
 fn geometry_shaders_take_patches_as_primitives() {
     let replay = VariantKey {
         flags: VariantFlags::GEOMETRY_REPLAY,
         ..Default::default()
     };
-    for key in [VariantKey::default(), replay] {
-        let c = convert(Source::Dxbc(&own("gs_patch.dxbc")), &key, None).unwrap();
-        assert_eq!(
-            c.reflection.extras,
-            StageExtras::Geometry {
-                input_vertices: 4,
-                max_output_vertices: 4,
-                output_vertices: 3,
-                instances: 1,
-                streams: 1,
-            }
-        );
-        c.modules.iter().for_each(|m| drop(wgsl(m)));
+    let (dxbc, dxil) = (own("gs_patch.dxbc"), own("gs_patch.dxil"));
+    for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+        for key in [VariantKey::default(), replay.clone()] {
+            let c = convert(source, &key, None).unwrap();
+            assert_eq!(
+                c.reflection.extras,
+                StageExtras::Geometry {
+                    input_vertices: 4,
+                    max_output_vertices: 4,
+                    output_vertices: 3,
+                    instances: 1,
+                    streams: 1,
+                }
+            );
+            c.modules.iter().for_each(|m| drop(wgsl(m)));
+        }
     }
-    assert_eq!(
-        convert(
-            Source::Dxil(&own("gs_patch.dxil")),
-            &VariantKey::default(),
-            None
-        )
-        .err(),
-        Some(ConvertError::Unsupported(
-            wcontainers_shaders::refusal::GEOMETRY_PATCH_INPUT
-        ))
-    );
 }
 
 /// Geometry shaders writing cull distances beside clip distances in one register (`gs_cull`,

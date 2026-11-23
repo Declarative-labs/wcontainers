@@ -47,7 +47,6 @@ pub const GEOMETRY_INPUT: &str = "GeometryInput";
 pub const GEOMETRY_INPUT_SHAPE: &str = "GeometryInputShape";
 pub const GEOMETRY_OUTPUT: &str = "GeometryOutput";
 /// A DXIL geometry shader taking patches: dxil-spirv converts no such input primitive.
-pub const GEOMETRY_PATCH_INPUT: &str = "GeometryPatchInput";
 /// A geometry shader writing cull distances, in the replay form (WebGL 2): the replay's slots keep
 /// one vertex of a primitive, not all of them, so no slot can tell whether its primitive is dropped.
 pub const GEOMETRY_CULL_DISTANCE_REPLAY: &str = "GeometryCullDistanceReplay";
