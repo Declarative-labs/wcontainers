@@ -102,6 +102,28 @@ against run 22's whole run at d8bb7a2e (scratch `results/g9r23/full/<list>/resul
   layered geometry output 56, a border on a comparison sampler 52, comparisons with a bias or
   gradients 34.
 
+G9's FIRST PART IS COMPLETE for its independent check: every list that starts was run whole at
+one driver (KHR-GLES32 at the same driver with Mesa's WGL patch), the bar's measure is 98.71%
+against the 92.9% floor, and every failing group is in the gap list below with its cause and
+owner, those not yet read named as such. The check asked for: a sample of each list on the rig
+against this table, the NotSupported groups case by case (the 33 that turned NotSupported and
+KHR-GLES32's 496 are read above), and the RTX 3080's own OpenGL (`-Driver system`) on the
+failing groups. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) follows that check.
+
+The suite of both crates at 7e686f27 (x86-64 machine, load 21 to 25): fmt clean; clippy with
+warnings denied clean with and without Mesa; with Mesa 30 tests pass and 2 are ignored (route 17,
+glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none build that need it.
+
+Next, in order (this track's rows of the gap list):
+1. The not yet read groups: KHR-GL33 pixelstoragemodes, primitive_bounding_box, sample_variables
+   and multisample interpolation, the stage helper's invalid calls, draw_indirect, gpu_shader5.
+2. Storage blocks in tessellation programs (KHR-GLES32's 464 NotSupported), the point size an
+   evaluation program reads, layered geometry output.
+3. copy_image: ASTC against 128-bit formats, the 96-bit formats; fbo.render's re-specified
+   buffers; blits the blitter does not make; maps of multisampled textures.
+4. The two device losses not yet traced (destroyed textures in a recorded pass, the 2D view of a
+   3D texture).
+
 ## Gap list (G9's first part, at e742e0be)
 
 Every failing group of the table with its cause and owner. "This track" means work left in
