@@ -1,7 +1,8 @@
 # Native without a virtual machine: the plan for both forms
 
-Status: plan (W0), 2026-11-23, run 6 (every finding of the first, second and third checks answered, and of the
-track's own readings in runs 5 and 6).
+Status: plan (W0) accepted, 2026-11-23; W1 run 1 answered the fourth check's findings (the zygote's inherited
+restartable sequences, K2 named as W1's need, the SVE ABI, the zygote's end, I's checked address, the probe fault's
+counter, the wait window, aliasing instruction caches).
 Brief: the owner's ruling of 2026-11-23 and brief-native.md (including its section on register groups). It builds on docs/native.md (the
 virtual-machine form, "the VM form" below) and reuses its native output, count, position map and replay check; where
 this plan says "as native.md", that section holds. The x86-64 native output's own plan, docs/x86-native-output.md
@@ -128,9 +129,14 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   someone else's reservation breaks any program and is not detected.
 - **The ceiling**: `Cpu::address_space()` is [LOWEST_ADDRESS, 2^44) in P (the VM form has 2^45: the slot table at
   2^47 would need the host's stack and vDSO moved; 16 TiB is the ruled "lower ceiling", brief 2026-11-18) and
-  [LOWEST_ADDRESS, 2^32 - GUARD) in I. The kernel places mappings low first and never depends on the ceiling (K2),
-  so the guest sees the same addresses under every executor; a process that reaches its ceiling is the existing
-  `on_process_outgrown` case. I's 4 GiB per process is the price of an access cut to its window for free; a larger
+  [LOWEST_ADDRESS, 2^32 - GUARD) in I. Today's kernel takes its ceiling from `Cpu::address_space().end`
+  (crates/kernel/implementation/linux/container.rs, where a container starts) and places mappings top-down below it,
+  so under P a guest gets other addresses and another memory size than under the WebAssembly output (about 2^32),
+  and a program whose path depends on a pointer counts differently. K2 (placement low first, the memory size given
+  at start; asked of the kernel track, section 10, as native.md asks it) removes the difference. Until K2 lands,
+  P's bar against the WebAssembly output is equal verdicts, and the tests that compare addresses, memory size or the
+  count at a stop wait on it by name (13), as the VM form's N6 and N11 do. A process that reaches its ceiling is the
+  existing `on_process_outgrown` case. I's 4 GiB per process is the price of an access cut to its window for free; a larger
   window needs one more instruction per access (an `and` with the window's mask), not measured, the owner's choice
   (section 12).
 
@@ -146,13 +152,16 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
      pair; `add t, base, wA, uxtw; <access> [t]` for the forms that take only a base register (exclusives
      `LDXR`/`STXR` and their pairs, acquire and release `LDAR`/`STLR`/`LDAPR` and their unscaled forms, LSE atomics
      `CAS`, `SWP`, `LDADD` and the rest, `LD1` to `LD4` and `ST1` to `ST4` structures and their replicating and lane
-     forms). Here `a` is the access's first byte in t (or the base register itself when the access has no offset),
-     `u` a second withheld scratch, `base` a withheld register holding the slot base. The base-only forms pay one
-     instruction more than the measured sequence (its harness never emitted them; section 7 lists them among I's
-     costs left out). The check ignores the top byte as Linux's Top Byte Ignore
-     does and touches no flags. Pairs and multi-register forms check their last byte too (the access's span, as the
-     Aligned route computes it), and an immediate reaches at most 64 KiB past the window, into the unmapped 4 GiB
-     above it. `fault` is out of line and reports the guest address and access with exact registers (the check
+     forms). Here `a` is the guest address the access starts from before its immediate: the base register itself
+     for an access with an immediate offset or none, and the base plus the register offset (with its extend or
+     shift, computed into t) for an access with a register offset; the immediate is never added into `a`, only by
+     the access's own `[t, #imm]`. `u` is a second withheld scratch, `base` a withheld register holding the slot
+     base. The base-only forms pay one instruction more than the measured sequence (its harness never emitted them;
+     section 7 lists them among I's costs left out). The check ignores the top byte as Linux's Top Byte Ignore
+     does and touches no flags. Only `a` is checked, as the measured harness checks only the base register: what an
+     access reaches past `a` (its immediate, at most 64 KiB up and 1 KiB down, size included; a pair's or a
+     multi-register form's further bytes, at most about 1 KiB) lands, from an `a` inside the window, in the window,
+     in its unmapped top `GUARD` or in the unmapped 4 GiB beside it, so it faults there with no second check. `fault` is out of line and reports the guest address and access with exact registers (the check
      precedes the access, so nothing has changed). This is the measured X32 sequence (section 11; the harness
      tests `lsr #33` only because its region is [4 GiB, 8 GiB)).
    - **Speculation.** A mispredicted `cbnz` lets the access run speculatively with a bad address (a bounds-check
@@ -178,7 +187,9 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
      on, or 4 bytes above, a mapped page of its own window, so inside [0, 2^32). A probe that faults (an unmapped or
      protected page, a watch, sp not 16-aligned) is never the guest's fault: the floor takes
      the new sp less the base; inside [0, 2^32) it resumes at the next guest instruction (the probe ends the `add`'s
-     or `sub`'s code, so that is a boundary), otherwise the thread goes displaced (e).
+     or `sub`'s code, so that is a boundary), otherwise the thread goes displaced (e). A swallowed probe fault is a
+     slow path of about 1.3 µs (a fault handled in process, 3.5), counted "stack probe faulted", warned; a stack
+     growing into a page not yet grown pays it and then the guest's own fault there, which the kernel answers.
      (d) Every other write of sp (`mov sp, xN`, `add sp, xN, ...`, a larger immediate, a writeback by a register)
      computes the new guest value into u, checks it as an access address is checked, and then writes `add sp, base,
      wU, uxtw` (cut to the window, as an access is); a value outside the window makes the thread displaced (e).
@@ -253,9 +264,14 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   writes there) and read-execute in the guest's view (P: in the stub; I: a second mapping in the same process).
   Measured (W0 probe): a memfd written in one process and run from a read-execute mapping in another runs, on both
   machines; a memfd made with `MFD_NOEXEC_SEAL` still maps executable. After writing, the writer does the
-  architecture's cache maintenance on its own mapping (ARM64 `dc cvau`/`ic ivau`, which act on the physical
-  line); the guest thread runs the new code only after leaving the host kernel (a futex wait or a signal), which
-  is context synchronizing on ARM64. x86-64: 3.10.
+  architecture's cache maintenance on its own mapping (ARM64 `dc cvau`/`ic ivau`); the guest thread runs the new
+  code only after leaving the host kernel (a futex wait or a signal), which is context synchronizing on ARM64.
+  Invalidation by the writer's address covers the runner's mapping of the same line only where the instruction
+  cache is physically indexed, so the start-up probe reads `CTR_EL0` (Linux lets user space read it): with DIC set
+  no invalidation is needed, with L1Ip PIPT (Neoverse V2's) the writer's `ic ivau` covers every mapping, and with a
+  VIPT instruction cache, which can alias (where Linux invalidates the whole cache, which user space cannot), both
+  forms are unavailable on that host, named "aliasing instruction cache". W1 records both rented machines' value.
+  x86-64: 3.10.
 - Where `memfd_create` is refused: guest data in unlinked `O_TMPFILE` files in whichever of one the embedder
   names, `$TMPDIR`, /dev/shm and /tmp has the most free space at start among those that are tmpfs (`fstatfs`,
   `TMPFS_MAGIC`; data is never mapped executable, so `noexec` does not matter), or among all four if none is
@@ -373,8 +389,11 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
     commands done exactly once. Only a resume that carries commands pays the two calls (2 × 125 ns on Graviton4),
     after anything that changes the guest's view or makes a thread, whose own host call (`mprotect` 391 ns,
     `mmap` 1.15 µs, section 3.5) costs more;
-  - the wait (P: the futex wait for the answer, and a new thread's start from its unblock on, 4.1): it goes to the
-    wait, which reads the answer word again;
+  - the wait (P: from the store of the request word that publishes the exit, through the wake of the runner and
+    the futex wait for the answer to its return; and a new thread's start from its unblock on, 4.1): it goes to the
+    wait, which reads the answer word again and never publishes again, so a turn's exit is published once. The
+    entry's window ends at its last register store, before the request word, so the two windows meet and no
+    instruction belongs to neither;
   - the handler's own tail, after its unblock: it takes the same exit the interrupted handler had already written.
   So no signal mask is changed on a kernel entry path but a resume that carries commands (a mask change is a host
   system call: 125 ns on Graviton4 and 87 to 89 ns on the Xeon, W0 probe run 3).
@@ -479,9 +498,11 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   wait), and the host kernel drops SVE state at every system call, keeping only the V registers' 128 bits:
   measured on Graviton4 (W0 probe run 4: p0 and FFR set all true and z0 to a pattern, then `getppid`; after it p0
   and FFR are zero and z0's low 16 bytes kept, without the call all kept; its vector is 16 bytes, so Z has no upper
-  bits there). It is the host kernel's policy rather than a promise of its documented ABI (the third check's
-  reading), so it is checked, not assumed: the start-up probe repeats this test on its short-lived thread and, if
-  the state survives, the runner does what x86-64 does below for its groups, here a `smstart sm; smstop sm`
+  bits there). The kernel's documented arm64 ABI promises it (Documentation/arch/arm64/sve.rst, [system call
+  behaviour](https://docs.kernel.org/arch/arm64/sve.html#:~:text=become%20zero%20on%20return%20from%20a%20syscall):
+  "All other bits of Z0..Z31, and all of P0..P15 and FFR become zero on return from a syscall"). The start-up
+  probe still repeats the test on its short-lived thread, as a check of the host against that ABI, and if the state
+  survives (a host kernel that breaks it), the runner does what x86-64 does below for its groups, here a `smstart sm; smstop sm`
   pair that zeroes them by the architecture, where the host has SME, and otherwise counts "SVE state kept across
   the block" and warns). ZA, where the host has SME, survives a system call by the kernel's ABI, so a runner on
   such a host runs `smstop za` before it blocks (one instruction; neither rented machine has SME, so untested,
@@ -549,11 +570,31 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 - The **zygote**: forked from the embedder's process when the host-process host is made (8.5). In the
   child only direct host calls run (no allocation, no lock: the embedder may have other threads). It maps the stub's
   code (copied by the executor before the fork into a memfd) read-execute at a fixed address in our area and a stack
-  beside it, jumps there, closes every fd but its socket (`close_range`), unmaps every range outside its own (a few
-  `munmap` calls over [0, 2^44), [2^46, 2^48) and the rest of our area, so an in-process host's reservation and
-  table and the window cache go too: no /proc needed), blocks every signal and
-  waits for requests on its socket. So no stub holds any of the embedder's memory. The embedder's death closes the
-  socket and the zygote exits.
+  beside it (`mmap`, then the memfd is closed), jumps there, blocks every signal, and drops what the fork carried of
+  the forking thread's registrations that point into the embedder's memory. The one that kills: the forking
+  thread's restartable-sequences area (glibc registers one per thread), which the host kernel writes at every
+  migration, preemption or signal; once its page is unmapped that write fails and the host kernel kills the
+  process with SIGSEGV (measured by the fourth check on both rented machines: unmapping kills the child, unregistering
+  first or keeping the page does not). So the zygote calls `rseq` with `RSEQ_FLAG_UNREGISTER` and the area, length
+  and signature the embedder's C library registered (glibc's `__rseq_offset` from the thread pointer and
+  `__rseq_size`, read before the fork; none where the C library registers none), then proves that none is left
+  by registering an area of its own stack (a registration left over refuses it with EBUSY: the zygote then exits,
+  and the form is unavailable, named "restartable sequences left registered") and unregistering that again. The
+  robust-futex list and the exit-clear word are read and written by the host kernel only at a thread's end, with
+  failures ignored; they are cleared all the same (`set_robust_list` with none, `set_tid_address` with none). The
+  alternate signal stack goes with the memory, harmless while every signal is blocked; each stub sets its own.
+  Then the zygote closes every fd but its socket (`close_range`), unmaps every range outside its own (two `munmap`
+  calls, below and above its own pages up to the user-space top the start-up probe found, so an in-process host's
+  reservation and table and the window cache go too: no /proc needed), and waits for requests on its socket. So no
+  stub holds any of the embedder's memory, and every stub, forked from the zygote, inherits no registration. The
+  embedder's death closes the socket and the zygote exits.
+- The zygote's own end (the host's out-of-memory killer, or any fault of its own) takes every stub with it
+  (`PR_SET_PDEATHSIG`), so every guest process of every P container of that embedder process ends as killed by
+  SIGKILL, as the host's out-of-memory killer would end them, counted "zygote ended", warned. The embedder learns it
+  from the zygote's socket hanging up, reaps it, and forks a new zygote on the next `memory_new` by the same path as
+  at start, which is safe from the by-then many-threaded embedder because only direct host calls run in the child;
+  its cost is a fork of the then-larger embedder's page tables, measured in W1. If that fork fails, P is
+  unavailable from then on, named.
 - `memory_new` and `memory_duplicate` ask the zygote for a child (measured, W0 probe: a request until the new child
   runs, 80 µs Graviton4, 95 µs Xeon; a plain fork of a small static process 111 / 121 µs). Each request carries
   (`SCM_RIGHTS`) the fds the child needs, its own socket's end among them, which the zygote closes after the fork.
@@ -828,9 +869,10 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
 - P adds: in the embedder, `fork` (or `clone` without namespace flags) for the zygote, `socketpair`, `sendmsg`,
   `ppoll` (a stub's socket, 4.1), for placement (4.3) `sched_getaffinity`, `sched_setaffinity` on its own runner
   threads and `clock_gettime` of its own thread's CPU clock and of a stub's process CPU clock, `read` of a stub's socket
-  (parallel threads only, 4.2); in the zygote, `close_range`, `munmap`, `recvmsg`,
-  `sendmsg`, `fork`, `wait4` (on a process id the embedder names), `kill` (SIGKILL to its own unreaped child, 4.1),
-  `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
+  (parallel threads only, 4.2), `wait4` of the zygote after its end; in the zygote, `mmap` (its code and stack),
+  `close`, `rt_sigprocmask`, `rseq` (unregister the inherited area, then register and unregister its own, 4.1),
+  `set_robust_list`, `set_tid_address`, `close_range`, `munmap`, `recvmsg`, `sendmsg`, `fork`, `wait4` (on a process
+  id the embedder names), `kill` (SIGKILL to its own unreaped child, 4.1), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
   `getppid`, `set_tid_address`, `seccomp(SECCOMP_SET_MODE_FILTER)`, `dup3` (fds to their fixed numbers, before the
   filter), with the mappings of 4.1 and 4.3. The stub's
   own filter then allows: `futex`; `mmap`, `munmap`, `mprotect` bounded as 3.7; `clone` with 4.1's thread flags;
@@ -899,7 +941,7 @@ The crossover. Per second of guest CPU time, P adds k·c (k kernel entries per s
 call) and I adds f (its checks' share of the time). I beats P when k > f / c. f is the sound form's (section 11:
 X32-e plus the stack pointer's guard; its access is already the speculation-safe one, 3.2), and it still leaves out
 I's other costs: the extra instruction per jump through a register, the eager register switch at guest thread
-switches, the second check of pairs, the one more instruction of the base-only access forms (exclusives,
+switches, the one more instruction of the base-only access forms (exclusives,
 acquire and release, atomics, structures: 3.2 item 1), and 3.2's rule (f) for sp-based register offsets, which the
 harness left unchecked (5 such instructions in 737,566 of python3.12, counted by the second check); W2 measures
 them.
@@ -926,7 +968,8 @@ and an exec (W0 probe), against a slot and a memfd in I; and per unit of pages a
 them, a round trip plus a copy and a mapping (about 3.5 µs expected, 3.5) against I's in-process fault (1.31 µs
 plus the copy). Both go into the comparison with the recorded rates: P's extra time per second is k·c + n·(process
 creation) + m·(c + 1.15 µs), I's is f + m·1.31 µs, for n processes and m copied units per second, the copies
-themselves being the same in both.
+themselves being the same in both. P also shares one zygote per embedder process, whose end ends every P guest
+process of that embedder (4.1); I has no such process.
 The workload split measured on the laptop (confinement-costs.json, "measure workload-mix"): a shell loop starting
 2,000 programs makes about 256,200 system calls and 2,000 processes in 1.53 s of wall time (about 167,000 calls
 per second of wall time). Its user time of 0.73 s is not used here: that file's own re-run found that rusage
@@ -1221,16 +1264,23 @@ them.
 ## 13. Milestones
 
 **W1: form P on ARM64 Linux.** Needs the translator's `HostProcess` form and the `stop` crate with a parameter for
-the slot table's base (10). Does not need the owner's interface items (section 8): the kernel is driven by 4.6's
+the slot table's base (10), and, for the comparisons of addresses, memory size and the count with the WebAssembly
+output, the kernel's K2 (3.1). Until K2 lands the bar against the WebAssembly output is equal verdicts (output and
+status) on every suite below, and these tests are built and kept as known failures waiting on K2, by name:
+`differential` (exits, registers and memory at every look-ahead) and `count_at_every_stop`. Does not need the owner's interface items (section 8): the kernel is driven by 4.6's
 `with_parts` loop, the executors are made by their crates' own constructors, and the kernel is not yet given the
 stopper. Builds: the shared layout, floor, code area, memory with copy-on-write, stops (section 3), the zygote and
 stubs, the control and register pages, placement and the runners (section 4), the start-up probe and the seccomp
 filter. Pass bar, every item on the rented ARM64 machine:
 - the executor conformance suite and the abi `Cpu` behaviour the kernel relies on (the kernel test crate's
   programs: hello, the fork, exec and signal program, and busybox's `text` and `files` commands, as N3's bar) give
-  the reference's output and status; exits, registers and memory equal the WebAssembly output's at every look-ahead,
-  with and without the count (the VM form's differential test, seeded, with its case knob; cases run recorded);
-- the count at every stop is identical to the WebAssembly output's (forced interrupts at every counted event);
+  the reference's output and status, and the same verdicts as the WebAssembly output; once K2 lands, exits,
+  registers and memory equal the WebAssembly output's at every look-ahead, with and without the count
+  (`differential`, the VM form's differential test, seeded, with its case knob; cases run recorded);
+- once K2 lands, the count at every stop is identical to the WebAssembly output's (`count_at_every_stop`, forced
+  interrupts at every counted event);
+- the zygote survives its own migration between CPUs (the fourth check's case: moved 200 times, answering after
+  each), and no registration of restartable sequences is left in it or in a stub;
 - the adversarial cases, each a kept test: a fork while a sibling thread is in a system call and another writes a
   page in a loop, words rising by one per pass (seeded, case knob): in every child's copy the words fall at most once,
   as a copy taken at one instant gives; a parent that forks twice before the page is copied and a child that forks
