@@ -65,6 +65,9 @@ struct Memory {
     spare: Option<usize>,
     /// Dropped by the kernel, its stub ended, kept only for the pages others still borrow from it.
     retired: bool,
+    /// Pages translated code was made from: never writable in the view, so the first write drops it (plan 3.4).
+    #[cfg(target_arch = "aarch64")]
+    code_pages: rangemap::RangeSet<u64>,
 }
 
 impl Memory {
@@ -392,6 +395,10 @@ impl HostProcessExecutor {
             return Ok(FaultOwner::Guest);
         }
         self.room(id, 1)?;
+        #[cfg(target_arch = "aarch64")]
+        if access == Access::Write && self.memory(id).code_pages.contains(&page) {
+            self.code_page_written(id, page);
+        }
         let unit = page & !(COPY_UNIT - 1);
         let unit = unit.max(granted_range.start)..(unit + COPY_UNIT).min(granted_range.end);
         self.unborrow(id, unit.clone(), true)?;
@@ -425,6 +432,20 @@ impl HostProcessExecutor {
                 };
                 (start..end, host_protection(granted))
             }
+        };
+        // Pages translated code was made from keep their write protection.
+        #[cfg(target_arch = "aarch64")]
+        let run = {
+            let code = &self.memory(id).code_pages;
+            let start = code
+                .overlapping(run.start..page)
+                .next_back()
+                .map_or(run.start, |held| held.end.max(run.start));
+            let end = code
+                .overlapping(page + PAGE_SIZE..run.end)
+                .next()
+                .map_or(run.end, |held| held.start.min(run.end));
+            start..end
         };
         self.memory_mut(id).push(protect(run, view), None);
         self.counters.faults_resolved += 1;
@@ -571,6 +592,10 @@ impl HostProcessExecutor {
     /// one is borrowed.
     fn view_bound(&self, id: MemoryId, range: Range<u64>, granted: Permissions) -> ProtFlags {
         let mut view = host_protection(granted);
+        #[cfg(target_arch = "aarch64")]
+        if self.memory(id).code_pages.overlaps(&range) {
+            view.remove(ProtFlags::WRITE);
+        }
         for (_, state) in self.memory(id).pages.overlapping(range) {
             match state {
                 PageState::Borrowed(_) => return ProtFlags::empty(),
@@ -925,6 +950,8 @@ impl Cpu for HostProcessExecutor {
             indices: vec![0],
             spare: Some(0),
             retired: false,
+            #[cfg(target_arch = "aarch64")]
+            code_pages: rangemap::RangeSet::new(),
         };
         let id = MemoryId(place(&mut self.memories, memory) as u32);
         self.memory_mut(id).push(
@@ -1086,6 +1113,8 @@ impl Cpu for HostProcessExecutor {
     /// Private pages are first made the memory's own and lent to none; shared ones are written in their block.
     fn write(&mut self, id: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
         let range = checked(address, from.len() as u64)?;
+        #[cfg(target_arch = "aarch64")]
+        self.drop_code_of(id, range.clone());
         for (piece, shared) in pieces(&self.memory(id).shared, range) {
             let bytes = &from[(piece.start - address) as usize..(piece.end - address) as usize];
             let (file, key, offset) = match shared {
@@ -1120,6 +1149,8 @@ impl Cpu for HostProcessExecutor {
     /// Ends any sharing in the range, then punches it out of the memfd, its lent pages first given to a borrower.
     fn zero(&mut self, id: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
         let range = checked(address, length)?;
+        #[cfg(target_arch = "aarch64")]
+        self.drop_code_of(id, range.clone());
         self.room(id, self.view_commands(id, range.clone()))?;
         if !self.unshare(id, range.clone()).is_empty() {
             self.queue_view(id, range.clone());
@@ -1139,6 +1170,10 @@ impl Cpu for HostProcessExecutor {
     ) -> Result<(), CpuError> {
         let range = checked(address, length)?;
         self.room(id, 1)?;
+        #[cfg(target_arch = "aarch64")]
+        if !permissions.contains(Permissions::EXECUTE) {
+            self.drop_code_of(id, range.clone());
+        }
         let view = self.view_bound(id, range.clone(), permissions);
         let memory = self.memory_mut(id);
         if permissions.is_empty() {
@@ -1182,6 +1217,8 @@ impl Cpu for HostProcessExecutor {
         length: u64,
     ) -> Result<(), CpuError> {
         let range = checked(address, length)?;
+        #[cfg(target_arch = "aarch64")]
+        self.drop_code_of(memory, range.clone());
         let block = self.block(shared);
         if offset
             .checked_add(length)
@@ -1220,6 +1257,8 @@ impl Cpu for HostProcessExecutor {
         length: u64,
     ) -> Result<(), CpuError> {
         let range = checked(address, length)?;
+        #[cfg(target_arch = "aarch64")]
+        self.drop_code_of(memory, range.clone());
         self.room(memory, self.view_commands(memory, range.clone()))?;
         for (piece, (block, delta)) in self.unshare(memory, range.clone()) {
             let mut bytes = vec![0; (piece.end - piece.start) as usize];

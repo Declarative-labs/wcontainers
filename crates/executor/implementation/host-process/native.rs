@@ -41,6 +41,9 @@ const WAY: Way = Way::Process;
 /// The bytes of one instruction.
 const INSTRUCTION: u64 = size_of::<u32>() as u64;
 
+/// The link register, which a call into the floor keeps in the register page.
+const LINK: u8 = 30;
+
 /// The slow paths of running translated code, as counted and warned.
 pub mod reason {
     /// Guest code was translated, at its first run in a memory.
@@ -378,6 +381,7 @@ impl HostProcessExecutor {
                 }
             }
         }
+        self.protect_code_page(memory, page);
         let code = self.code(memory).expect("made above");
         code.pieces.insert(
             pc,
@@ -607,6 +611,44 @@ impl HostProcessExecutor {
             self.drop_piece(memory, *at, empty);
         }
         (!overlapping.is_empty(), changed)
+    }
+
+    /// Makes the guest page `page` one translated code was made from: its view loses write at the next turn.
+    fn protect_code_page(&mut self, memory: MemoryId, page: u64) {
+        if self.memory(memory).code_pages.contains(&page) {
+            return;
+        }
+        let pages = page..page + PAGE_SIZE;
+        self.memory_mut(memory).code_pages.insert(pages.clone());
+        if let Some(&granted) = self.memory(memory).permissions.get(&page)
+            && granted.contains(Permissions::WRITE)
+        {
+            let view = self.view_bound(memory, pages.clone(), granted);
+            self.memory_mut(memory)
+                .push(super::protect(pages, view), None);
+        }
+    }
+
+    /// The guest writes a page translated code was made from: its pieces are dropped and the page is an ordinary one
+    /// again, which the fault's settling then gives what the kernel allows.
+    pub(super) fn code_page_written(&mut self, memory: MemoryId, page: u64) {
+        self.forget_code(memory, page..page + PAGE_SIZE);
+        self.memory_mut(memory)
+            .code_pages
+            .remove(page..page + PAGE_SIZE);
+    }
+
+    /// Drops the pieces made from `range`, which the kernel is about to change or stop letting run; the range's pages
+    /// are ordinary ones again.
+    pub(super) fn drop_code_of(&mut self, memory: MemoryId, range: std::ops::Range<u64>) {
+        if !self.memory(memory).code_pages.overlaps(&range) {
+            return;
+        }
+        let pages = range.start & !(PAGE_SIZE - 1)..range.end.next_multiple_of(PAGE_SIZE);
+        if self.forget_code(memory, pages.clone()).1 {
+            self.slow(CODE_CHANGED_AFTER_IT_RAN, 1, range.start);
+        }
+        self.memory_mut(memory).code_pages.remove(pages);
     }
 
     /// Drops the pieces of a range the kernel changed, counting "code changed after it ran" where one's code changed.
@@ -876,6 +918,14 @@ impl HostProcessExecutor {
                                 write: false,
                             });
                         }
+                        // The guest goes on after the announcing instruction in line, where the call's own last two
+                        // words would take it: x30 back from the page, then the branch back.
+                        let Some(in_line) = self.call_in_line(memory, h.pc) else {
+                            break self.not_understood(memory, h.pc);
+                        };
+                        let mut then = then;
+                        then.x[usize::from(LINK)] = then_page.link;
+                        then.pc = in_line + INSTRUCTION;
                         match self.resolve_interrupt(memory, &then, &then_page, &mut t.float) {
                             Some(state) => {
                                 t.state = state;

@@ -335,9 +335,17 @@ fn forks_execs_and_signals_give_the_web_assembly_output_s_status_and_output() {
 }
 
 #[test]
-#[ignore = "known failure: does not end under form P within 9 minutes (docs/status-native-without-virtual-machine.md)"]
 fn code_written_and_announced_gives_the_web_assembly_output_s_status_and_output() {
-    both(VM_GUEST, "code", true, &[]);
+    both_known(
+        VM_GUEST,
+        "code",
+        true,
+        &[],
+        Some(
+            "the WebAssembly side runs a function's old code after only its second cache line is rewritten and \
+             announced",
+        ),
+    );
 }
 
 #[test]
@@ -357,7 +365,6 @@ fn blocks_zeroed_and_cleaned_give_the_web_assembly_output_s_status_and_output() 
 }
 
 #[test]
-#[ignore = "known failure: does not end under form P within 9 minutes (docs/status-native-without-virtual-machine.md)"]
 fn jumps_through_tables_give_the_web_assembly_output_s_status_and_output() {
     both(VM_GUEST, "jumptables", true, &[]);
 }
