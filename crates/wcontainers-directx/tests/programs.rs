@@ -7,6 +7,7 @@
 
 mod common;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1365,7 +1366,9 @@ fn object_lifetimes_count_as_direct3d_counts_them() {
         }
         assert_eq!(want.lines().count(), got.lines().count(), "seed {seed}");
     }
-    eprintln!(
+    // Written past the test harness's capture, so that a passing run's log records the cases run.
+    let _ = writeln!(
+        std::io::stderr(),
         "lifetimes: seeds {first}..{} of {steps} steps each",
         first + seeds
     );
