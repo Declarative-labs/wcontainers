@@ -6,8 +6,31 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 ## Where things stand
 
 - W0 (the plan for both forms): written in run 1, revised in run 2 for the first independent check, in run 3 for
-  the second check's eleven findings, and in run 4 (2026-11-23) for the third check's twelve; it waits for its next
-  check. How run 4 answered them:
+  the second check's eleven findings, in run 4 for the third check's twelve, and in run 5 (2026-11-23) for what this
+  track's own fresh reading found when it tried to break the plan (no check report was waiting). Run 5:
+  - Per-thread pages in P (blocking): the filter refuses any mapping in our area after start, so a new thread's
+    control and register pages could not have been mapped, and the window cache could evict a page a runner waits
+    on. Now each stub has a thread-pages memfd mapped whole at start (control read-only, register read-write, for
+    `THREADS_PER_PROCESS` = 2^15 threads) with anonymous signal stacks, fd closed; the embedder maps it whole,
+    outside the cache. A thread past the limit is refused, counted (plan 4.3, 9).
+  - Thread lifecycle in P: `clone`'s exact flags with `CLONE_CHILD_CLEARTID` on a register-page word; a new thread's
+    inherited blocked stop and cleared alternate stack; its start counts as the wait window; an index is reused
+    only after the host kernel zeroes that word; a drop is a control-page command (plan 4.1, 3.6).
+  - Process ids: the zygote reaped on its own, so `tgkill` or the CPU clock could reach a process that got the id
+    later. Now it reaps only on the embedder's word and kills (SIGKILL, `kill` added to section 6) only its own
+    unreaped child (plan 4.1, 6).
+  - The filter lacked `close` (received shared-block fds accumulated); added, each such fd closed once mapped.
+  - Written marks and watches: the plan had the executor keep marks of its own, duplicating the kernel, which
+    makes both through `Cpu::set_permissions` (memory.rs `take_dirty`, `reapply`); the executor now only honours
+    permissions (plan 3.5).
+  - Queued commands longer than a control page go in rounds, one round trip per page (plan 4.2).
+  - Smaller: I's kernel view laid out as the guest's (shared blocks included); the fallback prefers tmpfs and counts
+    guest memory on disk; an owner's end copies the pages its children borrow (a daemon's double fork), counted;
+    I's reservation refused next to a sanitizer's shadow, named; runtimes that reserve more than 4 GiB as an
+    evaluator input; I's kernel entry returns to the runner's own stack (plan 3.1, 3.4, 3.5, 5.3, 7).
+  - Re-measured (w0/run5): P's round trip with the stub's answer word on a read-only page, both machines, and the
+    filter's two-argument rule; I's check cost (plan 4.3, 3.7, 11).
+  How run 4 answered the third check:
   - Forged mapping commands in P (blocking): everything a stub obeys (the `Resume`, the answer word, queued
     commands, placement requests) is now in a per-thread control page mapped read-only in the stub, which its
     filter cannot make writable; the register page (request word, exit, registers) stays guest-writable and is
@@ -74,7 +97,7 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     - The 1.4 ms figure is gone.
     - Pages a fork child touches after a fork now count in the crossover (plan 3.5, 7).
     - Stub death is learned one way, from the socket hanging up (polled at the runner's 100 ms futex time-out),
-      and the zygote always reaps.
+      and the zygote always reaps (run 5: only on the embedder's word).
     - x86 stubs may now use `arch_prctl(ARCH_SET_GS)`.
 - No code yet. The two crates (crates/executor/implementation/host-process and in-process) are not created: W1
   creates host-process, W2 in-process. So the root Cargo.toml's unsafe list has no lines of ours yet.
@@ -85,10 +108,18 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   `stop` crate with the slot table's base as a parameter first (below, "Asked of other tracks"); until they exist,
   W1 can build everything of plan sections 3 and 4 that does not run translated code (layout and reservations,
   memfds and the window cache, the zygote and stubs, the control and register pages, placement and runners,
-  copy-on-write and written marks, stops, the seccomp filter) and test it with hand-written ARM64 pieces. It drives
+  copy-on-write, stops, the seccomp filter) and test it with hand-written ARM64 pieces. It drives
   the kernel through `with_parts` (plan 4.6) and needs none of the owner's interface items.
 
 ## How to run the measurements
+
+- Scratch w0/run5/: `run5.sh <tag>` in /work/nwvm-w0r5 (sent as a tar through `arm-run --ssh` / `x86-run --ssh`,
+  started detached); builds check5.c with gcc and writes <tag>-check5.out. `./check5 rt <ro|rw> <cpu> <work>
+  <per batch> <batches>`, `./check5 alone <cpu> <work> <per batch> <batches>`, `./check5 filter`. The filter lines
+  inside the round-trip section of arm5-check5.out and x865-check5.out come from a build with a wrong jump; the
+  section "filter (fixed build)" at their end is the valid one. `spcost5.sh` reruns I's check campaign in
+  /work/nwvm-w0r5/spcost (needs /work/nwvm-w0/bin/clang; send w0/spcost/src and ported; the fault program needs
+  round2-copy too and was not built in run 5).
 
 - Scratch w0/run4/: `run4.sh <tag>` in /work/nwvm-w0r4 (sent as a tar through `arm-run --ssh` / `x86-run --ssh`,
   started detached); builds place.c (and sve.c on ARM64) with gcc and writes <tag>-place.out. `./place fixed
