@@ -44,35 +44,45 @@ pub mod control {
 
 /// Byte offsets in a register page.
 pub mod register {
+    /// Where translated code's own words start, which it finds through x28: the native output's register page.
+    pub const TRANSLATED: usize = 0;
+    /// The bytes kept for them.
+    pub const TRANSLATED_SIZE: usize = 128;
     /// The turn the thread last ended, the futex word the embedder waits on.
-    pub const REQUEST: usize = 0;
+    pub const REQUEST: usize = TRANSLATED + TRANSLATED_SIZE;
     /// The thread's host id, as the stub reports it.
-    pub const THREAD_ID: usize = 4;
+    pub const THREAD_ID: usize = REQUEST + 4;
     /// The word the host kernel zeroes, and wakes, once the thread has ended.
-    pub const EXIT_CLEAR: usize = 8;
+    pub const EXIT_CLEAR: usize = REQUEST + 8;
     /// Why the turn ended: an [`super::ExitKind`].
-    pub const EXIT: usize = 16;
+    pub const EXIT: usize = REQUEST + 16;
     /// What the exit reports.
-    pub const EXIT_VALUE: usize = 24;
+    pub const EXIT_VALUE: usize = REQUEST + 24;
     /// The stub's own count of the stops that landed in a turn after its commands (ending it), as four words: then
     /// those that landed while it published an exit, waited for a turn, or ended.
-    pub const STOPS_IN_TURN: usize = 32;
-    pub const STOPS_IN_PUBLISH: usize = 40;
-    pub const STOPS_IN_WAIT: usize = 48;
-    pub const STOPS_IN_END: usize = 56;
+    pub const STOPS_IN_TURN: usize = REQUEST + 32;
+    pub const STOPS_IN_PUBLISH: usize = REQUEST + 40;
+    pub const STOPS_IN_WAIT: usize = REQUEST + 48;
+    pub const STOPS_IN_END: usize = REQUEST + 56;
     /// More of what the exit reports, where its kind says so.
-    pub const EXIT_DETAIL: usize = 64;
+    pub const EXIT_DETAIL: usize = REQUEST + 64;
     /// The turn the thread last took, written as it takes it (untrusted).
-    pub const TAKEN: usize = 72;
+    pub const TAKEN: usize = REQUEST + 72;
     /// The stub's own count of the stops that landed in a floor entry or its save, which then finished from the frame.
-    pub const STOPS_IN_CALL: usize = 80;
+    pub const STOPS_IN_CALL: usize = REQUEST + 80;
     /// The stub's own count of the exits from translated code whose FP/SIMD registers it saved after returning through
     /// a signal frame that held none (gVisor), cleared by the embedder as it reads it.
-    pub const VECTORS_BY_RETURN: usize = 88;
+    pub const VECTORS_BY_RETURN: usize = REQUEST + 88;
+    /// x23 as a floor entry found it, kept there before the entry names itself in x23.
+    pub const CALL_SCRATCH: usize = REQUEST + 96;
     /// The thread's registers in the hardware, as a [`wcontainers_abi::RegisterBlock`], little endian: what a
     /// [`super::Resume::Enter`] loads and what an exit from translated code saves.
-    pub const REGISTERS: usize = 128;
+    pub const REGISTERS: usize = 256;
 
+    const _: () = assert!(CALL_SCRATCH < REGISTERS);
+    #[cfg(target_arch = "aarch64")]
+    const _: () =
+        assert!(size_of::<wcontainers_arm64::thread_state::RegisterPage>() <= TRANSLATED_SIZE);
     const _: () = assert!(
         REGISTERS.is_multiple_of(size_of::<u64>())
             && size_of::<wcontainers_abi::RegisterBlock>().is_multiple_of(size_of::<u64>())

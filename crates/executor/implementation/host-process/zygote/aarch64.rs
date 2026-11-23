@@ -72,9 +72,8 @@ const _: () = assert!(
             <= offset_of!(libc::ucontext_t, uc_mcontext) + size_of::<libc::mcontext_t>()
 );
 
-// The stub's turn loop reads the answer word and publishes the request word with `ldar` and `stlr`, which take no
-// offset.
-const _: () = assert!(control::ANSWER == 0 && register::REQUEST == 0);
+// The stub's turn loop reads the answer word with `ldar`, which takes no offset.
+const _: () = assert!(control::ANSWER == 0);
 
 // Entered in the fork child with x0 the code's memfd, x1 the socket, x2 and x3 the inherited restartable-sequences
 // area's offset from the thread pointer and its size (0 for none), x4 the user-space top.
@@ -194,13 +193,16 @@ core::arch::global_asm!(
     "wcontainers_host_process_zygote_start:",
     ".Lwchp_start:",
     "b .Lwchp_body",
-    "// The floor's entries, one per call translated code makes (`bl` with the link in x30), each naming itself in x23.",
+    "// The floor's entries, one per call translated code makes (`blr` with the link in x30), each keeping x23 and",
+    "// naming itself there.",
     ".balign {floor_entries_align}",
     ".Lwchp_entries:",
     ".set .Lwchp_entry_number, 0",
     ".rept {floor_entry_count}",
+    "str x23, [x28, #{call_scratch}]",
     "movz x23, #.Lwchp_entry_number",
     "b .Lwchp_called",
+    ".balign {floor_entry_size}",
     ".set .Lwchp_entry_number, .Lwchp_entry_number + 1",
     ".endr",
     "// Saves every register into the block of x28's register page, then publishes the call: x23 is the entry's number",
@@ -647,8 +649,8 @@ core::arch::global_asm!(
     ".Lwchp_publish:",
     "str x9, [x27, #{exit_kind}]",
     "str x10, [x27, #{exit_value}]",
-    "stlr w28, [x27]",
-    "mov x0, x27",
+    "add x0, x27, #{request}",
+    "stlr w28, [x0]",
     "mov x1, #{futex_wake_shared}",
     "mov x2, #1",
     "mov x8, #{nr_futex}",
@@ -1113,6 +1115,12 @@ core::arch::global_asm!(
     "b.hs 5f",
     "adr x17, .Lwchp_entries",
     "sub x10, x16, x17",
+    // At an entry's first word x23 is not kept yet.
+    "tst x10, #{floor_entry_size} - 1",
+    "b.ne 7f",
+    "ldr x17, [x2, #{uc_x23}]",
+    "str x17, [x27, #{call_scratch}]",
+    "7:",
     "lsr x10, x10, #{entry_shift}",
     "b 6f",
     "5:",
@@ -1351,6 +1359,9 @@ core::arch::global_asm!(
     floor_entries_align = const FLOOR_ENTRIES_ALIGN,
     floor_entry_count = const FLOOR_ENTRY_COUNT,
     entry_shift = const FLOOR_ENTRY_SIZE.trailing_zeros(),
+    floor_entry_size = const FLOOR_ENTRY_SIZE,
+    call_scratch = const register::CALL_SCRATCH,
+    request = const register::REQUEST,
     enter_at = const control::ENTER_AT,
     resume_enter = const Resume::Enter as u64,
     exit_called = const ExitKind::Called as u64,

@@ -34,13 +34,13 @@ pub const CODE_AREA_SIZE: usize = ZYGOTE + BRANCH_REACH - CODE_AREA;
 #[cfg(target_arch = "aarch64")]
 pub const FLOOR_ENTRIES_ALIGN: usize = 16;
 
-/// The first of the floor's entries in a stub, which translated code calls with `bl`.
+/// The first of the floor's entries in a stub, which translated code calls with `blr`.
 #[cfg(target_arch = "aarch64")]
 pub const FLOOR_ENTRIES: usize = ZYGOTE + FLOOR_ENTRIES_ALIGN;
 
-/// One entry's bytes: two instructions, which name the entry and branch to the save.
+/// One entry's bytes: it keeps x23, names itself there and branches to the save, padded to a power of two.
 #[cfg(target_arch = "aarch64")]
-pub const FLOOR_ENTRY_SIZE: usize = 2 * size_of::<u32>();
+pub const FLOOR_ENTRY_SIZE: usize = 4 * size_of::<u32>();
 
 /// How many entries the floor has.
 #[cfg(target_arch = "aarch64")]
@@ -81,6 +81,14 @@ pub const SIGNAL_STACKS_SIZE: usize = THREADS_PER_PROCESS * SIGNAL_STACK_SIZE;
 pub const OWN_MAPPINGS: usize = 5;
 
 const _: () = assert!(ZYGOTE >= OUR_AREA);
+// Translated code calls the entries and jumps through the slot table where the native output's process way puts them.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    FLOOR_ENTRIES as u64 == wcontainers_arm64::way::PROCESS_ENTRIES
+        && FLOOR_ENTRY_SIZE as u64 == wcontainers_arm64::way::PROCESS_ENTRY_BYTES
+        && SIGNAL_STACKS + SIGNAL_STACKS_SIZE <= wcontainers_arm64::way::PROCESS_SLOTS as usize
+        && OUR_AREA == 1 << wcontainers_arm64::way::PROCESS_REACH_BITS
+);
 #[cfg(target_arch = "aarch64")]
 const _: () =
     assert!(FLOOR_ENTRIES + FLOOR_ENTRY_COUNT * FLOOR_ENTRY_SIZE <= ZYGOTE + ZYGOTE_CODE_SIZE);

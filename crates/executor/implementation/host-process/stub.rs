@@ -454,6 +454,50 @@ impl Stub {
         }
     }
 
+    /// A thread's words of the native output's register page, in their order there, as translated code left them
+    /// (untrusted).
+    #[cfg(target_arch = "aarch64")]
+    pub fn translated_page(&self, thread: usize) -> wcontainers_arm64::thread_state::RegisterPage {
+        let mut page = wcontainers_arm64::thread_state::RegisterPage::default();
+        let mut words = (0..).map(|index| {
+            self.pages
+                .register64(thread, register::TRANSLATED + index * size_of::<u64>())
+                .load(Ordering::Relaxed)
+        });
+        let mut next = || words.next().expect("words without end");
+        for slot in page
+            .withheld
+            .iter_mut()
+            .chain(&mut page.saved)
+            .chain([&mut page.link])
+        {
+            *slot = next();
+        }
+        page.set_exclusive(std::array::from_fn(|_| next()));
+        page
+    }
+
+    /// Replaces a thread's words of the native output's register page.
+    #[cfg(target_arch = "aarch64")]
+    pub fn set_translated_page(
+        &self,
+        thread: usize,
+        page: &wcontainers_arm64::thread_state::RegisterPage,
+    ) {
+        let exclusive = page.exclusive();
+        let words = page
+            .withheld
+            .iter()
+            .chain(&page.saved)
+            .chain([&page.link])
+            .chain(&exclusive);
+        for (index, &value) in words.enumerate() {
+            self.pages
+                .register64(thread, register::TRANSLATED + index * size_of::<u64>())
+                .store(value, Ordering::Relaxed);
+        }
+    }
+
     /// Gives a thread a turn without waiting for it; the turn's number, for [`Self::wait`].
     pub fn begin(&self, thread: usize, commands: &[Command], resume: Resume) -> Result<u32, Errno> {
         self.give(thread, commands, resume)
@@ -589,10 +633,27 @@ impl Stub {
                 }
             }
             Some(ExitKind::Loaded) => TurnEnd::Loaded { value },
-            Some(ExitKind::Called) => TurnEnd::Called { entry: value },
+            Some(ExitKind::Called) => {
+                #[cfg(target_arch = "aarch64")]
+                self.put_back_call_scratch(thread);
+                TurnEnd::Called { entry: value }
+            }
             Some(ExitKind::Interrupted) => TurnEnd::Interrupted { at: value },
             None => TurnEnd::Forged,
         }
+    }
+
+    /// Puts x23 as the floor entry found it back into the block, where the entry's save put its own number.
+    #[cfg(target_arch = "aarch64")]
+    fn put_back_call_scratch(&self, thread: usize) {
+        let kept = self
+            .pages
+            .register64(thread, register::CALL_SCRATCH)
+            .load(Ordering::Relaxed);
+        let scratch = usize::from(wcontainers_arm64::thread_state::SCRATCH);
+        self.pages
+            .register64(thread, register::REGISTERS + scratch * size_of::<u64>())
+            .store(kept, Ordering::Relaxed);
     }
 
     /// Counts the exits the thread saved by a return through a frame without FP/SIMD registers, warning at the first.

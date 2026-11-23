@@ -25,8 +25,8 @@ use crate::layout::{
 use crate::pages::{CommandKind, ExitKind, Resume, control, register};
 use crate::stub::{MEMORY_FD, SOCKET_FD, STOP_SET, STOP_SIGNAL, THREAD_FLAGS};
 
-// The stub's turn loop reads the answer word and publishes the request word at their pages' starts.
-const _: () = assert!(control::ANSWER == 0 && register::REQUEST == 0);
+// The stub's turn loop reads the answer word at its page's start.
+const _: () = assert!(control::ANSWER == 0);
 
 // Entered in the fork child with rdi the code's memfd, rsi the socket, rdx and rcx the inherited restartable-sequences
 // area's offset from the thread pointer and its size (0 for none), r8 the user-space top. glibc's thread pointer is
@@ -467,8 +467,8 @@ core::arch::global_asm!(
     ".Lwchp_publish:",
     "mov qword ptr [r13 + {exit_kind}], r8",
     "mov qword ptr [r13 + {exit_value}], r9",
-    "mov dword ptr [r13], r14d",
-    "mov rdi, r13",
+    "mov dword ptr [r13 + {request}], r14d",
+    "lea rdi, [r13 + {request}]",
     "mov esi, {futex_wake_shared}",
     "mov edx, 1",
     "mov eax, {nr_futex}",
@@ -888,6 +888,7 @@ core::arch::global_asm!(
     exit_clear = const register::EXIT_CLEAR,
     thread_id = const register::THREAD_ID,
     exit_kind = const register::EXIT,
+    request = const register::REQUEST,
     exit_value = const register::EXIT_VALUE,
     no_new_privs = const linux_raw_sys::prctl::PR_SET_NO_NEW_PRIVS,
     set_mode_filter = const libc::SECCOMP_SET_MODE_FILTER,

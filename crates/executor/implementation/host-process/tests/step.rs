@@ -1000,7 +1000,8 @@ impl Scenario for Enter {
             TurnEnd::Interrupted { at } if at == call => enter::at(&self.loaded, call, call),
             TurnEnd::Called { entry } if entry == enter::ENTRY as u64 => {
                 let link = call + enter::INSTRUCTION as u64;
-                let mut expected = enter::at(&self.loaded, entry, link);
+                // The entry kept x23, the code's address, before naming itself there.
+                let mut expected = enter::at(&self.loaded, call, link);
                 expected.x[30] = link;
                 expected
             }

@@ -34,9 +34,17 @@ fastrand = "2.5.0"
 # Tracing one stub thread to step it and send its stop at every instruction of a turn.
 nix = { version = "0.31.3", default-features = false, features = ["process", "ptrace", "signal"] }
 
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+# Where translated code finds its slots, its floor entries and its register page.
+wcontainers-arm64 = { path = "../../../wcontainers-arm64", default-features = false }
+
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The floor test's pieces, standing in for translated code, in the native output's own encodings.
 wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
+# Translated code of the process way, its position map, and its stops resolved, in the translated test.
+wcontainers-translator = { path = "../../../wcontainers-translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
+wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 # Finding the host call a traced stub thread is about to make, in the step test.
@@ -80,6 +88,9 @@ name = "floor"
 
 [[test]]
 name = "step"
+
+[[test]]
+name = "translated"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]

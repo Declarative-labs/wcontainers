@@ -407,10 +407,11 @@ fn random_block(rng: &mut fastrand::Rng) -> RegisterBlock {
     block
 }
 
-/// The block a call from the instruction at `at` to entry `entry` saves for a thread that held `state`.
-fn after_call(state: &RegisterBlock, thread: usize, at: usize, entry: usize) -> RegisterBlock {
+/// The block a call from the instruction at `at` to a floor entry saves for a thread that held `state` there,
+/// entered at `entered`.
+fn after_call(state: &RegisterBlock, thread: usize, at: usize, entered: usize) -> RegisterBlock {
     let mut expected = *state;
-    expected.x[usize::from(SCRATCH)] = entry as u64;
+    expected.x[usize::from(SCRATCH)] = entered as u64;
     expected.x[usize::from(PAGE)] = page(thread);
     expected.x[30] = (at + INSTRUCTION) as u64;
     expected.pc = (at + INSTRUCTION) as u64;
@@ -458,7 +459,7 @@ fn a_call_saves_every_register_the_code_held() {
                 entry: ENTRY as u64
             }
         );
-        assert_block(&floor.stub, 0, &after_call(&loaded, 0, CALL, ENTRY), &what);
+        assert_block(&floor.stub, 0, &after_call(&loaded, 0, CALL, CALL), &what);
         // After the code changed every register.
         let vectors = floor.fill_data(0, &mut rng);
         let mut loaded = random_block(&mut rng);
@@ -474,7 +475,7 @@ fn a_call_saves_every_register_the_code_held() {
         assert_block(
             &floor.stub,
             0,
-            &after_call(&state, 0, ending(SCRAMBLE_CALL, 1), ENTRY),
+            &after_call(&state, 0, ending(SCRAMBLE_CALL, 1), SCRAMBLE_CALL),
             &what,
         );
     }
@@ -489,7 +490,7 @@ fn a_call_saves_every_register_the_code_held() {
     assert_block(
         &floor.stub,
         0,
-        &after_call(&loaded, 0, FAR_CALL, last),
+        &after_call(&loaded, 0, FAR_CALL, FAR_CALL),
         "far call",
     );
 }
@@ -642,7 +643,7 @@ fn threads_interleaved_read_back_only_their_own_registers_or_zeros() {
         assert_block(
             &floor.stub,
             thread,
-            &after_call(&zero, thread, CALL, ENTRY),
+            &after_call(&zero, thread, CALL, CALL),
             "a new thread",
         );
         vectors.push(floor.fill_data(thread, &mut rng));
@@ -664,7 +665,7 @@ fn threads_interleaved_read_back_only_their_own_registers_or_zeros() {
                     entry: ENTRY as u64
                 }
             );
-            after_call(&state, thread, ending(SCRAMBLE_CALL, 1), ENTRY)
+            after_call(&state, thread, ending(SCRAMBLE_CALL, 1), SCRAMBLE_CALL)
         } else {
             let spin = ending(SCRAMBLE_SPIN, 1);
             let (end, entered) = floor.stop_spin(thread, SCRAMBLE_SPIN, spin);
@@ -718,7 +719,7 @@ fn stops_landing_anywhere_in_the_code_the_enter_or_the_save_lose_nothing() {
                         assert_eq!(entry, ENTRY as u64, "{what}");
                         let full =
                             after_steps(&loaded, steps(LONG_REPEATS).len(), &vectors, LONG_REPEATS);
-                        let expected = after_call(&full, 0, ending(LONG_CALL, LONG_REPEATS), ENTRY);
+                        let expected = after_call(&full, 0, ending(LONG_CALL, LONG_REPEATS), at);
                         assert_block(&floor.stub, 0, &expected, &what);
                         called += 1;
                         break;
