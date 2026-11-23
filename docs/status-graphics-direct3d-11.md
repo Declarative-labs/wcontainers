@@ -45,6 +45,12 @@ G4h run 10 (2026-11-23, from about 05:45 Pacific), the ninth check's findings:
 - Tests: programs.rs `sample_masks_without_sample_0_as_direct3d_applies_them`, and
   `packed_blend_reads` within one draw (Tests); both pass on the RTX 3080 with
   `packed_targets_drawn_blended_and_resolved_as_direct3d_does` (logs/g4h10-r4-lib.log).
+- At f002c33e (in HEAD ec243063), on the desktop under the queue (q5-final.sh g4h10-suite lint lib
+  webgllib): lint of both builds clean; com 15 pass (1 ignored), programs 68 pass (8 ignored, the
+  known failures); the WebGL 2 build's 10_0 cases 7 pass (1 ignored). The front's unit, front.rs
+  (60) and cache tests pass on the rented x86 machine at the same code (logs/g4h10-x1-front.log);
+  the literal check finds nothing new in this track's files or in the lines of the WebGPU back end
+  this run wrote.
 - atg-simplecomputepc counted failing and the bar item without texture-formats-tier1 left to the
   orchestrator's ruling (For the owner), as the check asked; the level check's circularity for
   multisample bits of formats without multisampled textures recorded there.
