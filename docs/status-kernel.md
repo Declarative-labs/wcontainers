@@ -8,6 +8,80 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KF, fifth run: the check's findings, and the literal fix list's time and size units
+
+Started about 10:30 UTC on 2026-11-23 at 4f59ef13's code (nothing to merge: main's last merge,
+ccef11b8, brought only the webassembly engine interface). Everything built and ran on the ARM64
+machine; the Mac only edited, formatted single files and committed. Scratch kernel/kf5 (check*.sh,
+literals.sh, whole.sh). KF's items were all built in its first four runs (below); this run fixed
+the check's findings and went on with the literal fix list.
+
+The check's findings:
+- No `.` or `..` on the backend root: the test server's passthrough leaves them out on purpose.
+  The server now lists them first (backend/src/announcing.rs `dots`: `.` at position 1, `..` at
+  2, the passthrough's positions shifted past them, ext4's end mark kept; a dot's READDIRPLUS
+  entry has no node, as Linux ignores it). New tests dentries `listings_have_their_dots` and
+  `listings_have_their_dots_on_the_backend_root` (guest/dots.c: both dots, `.`'s inode, a
+  position after them gone back to, and for directories the program made the counts and `..`'s
+  inode; overlayfs gives an image directory's `..` the lower layer's inode, so that one is not
+  compared). Both failed before the fix on the backend root (the checker's run) and pass.
+- `/proc/<pid>/fd` of a file whose opened name was unlinked while another link stays: each inode
+  now keeps the names taken from it with the kernel's object number then (`Inode::removed_names`,
+  noted at an unlink and at a replacing rename, on tmpfs and the backend; an rmdir leaves no link,
+  which shows already); an open file shows " (deleted)" when its opened name was taken after it was opened
+  (`OpenFile::shown_deleted`), as Linux's unhashed dentry. New tests dentries
+  `opened_names_taken_away_match_reference` and `..._on_the_backend_root_match_reference`
+  (guest/namesgone.c, tmpfs and the root, ordinary and O_PATH: unlinked with a link left,
+  unlinked and linked again, replaced by a rename, the last name, another name): pass. The same
+  record now tells inotify on the backend that an opened name went (IN_EXCL_UNLINK): that part
+  of `inotify_matches_reference_on_backend_root` now matches; it stays ignored for the renamed
+  file's events, its reason narrowed (Known gaps, Known issues). maps, exe and core dumps still
+  go by the link count (Known gaps).
+- The waiting list's mlock05 (smaps is not built: ENOENT at its open) and IPV6_RTHDR (the option
+  is not built: ENOPROTOOPT at the setsockopt, which Linux takes on any IPv6 socket) are restated
+  exactly in "Waiting for the owner" and Known gaps.
+- The LTP hang watchdog counted Docker's start of a test's backend container: it now counts only
+  from the run's first step, and the backend's start is a step (ltp.rs `run_one`, driver.rs
+  `PROGRESS`). A run stuck before its first step is bounded by the limit (a timeout).
+- ADSP072 runs within about 10 s of the 900 s limit alone (889.8 s in the check's rerun, 886 s
+  in K6c): its verdict in a whole run depends on the load, and a timeout there is that, not a
+  regression. Recorded here; no limit is changed for one test.
+- clippy with warnings denied: the bar's command is `cargo clippy --no-deps --all-targets -p
+  wcontainers-abi -p wcontainers-kernel-linux -p wcontainers-kernel-conformance -p
+  wcontainers-executor-unicorn -p wcontainers-executor-hardware-virtualization-inside -- -D
+  warnings`. Without `--no-deps` clippy also lints the workspace crates these depend on, and
+  stops at the kernel interface's two type_complexity errors (the owner's file). With it: status
+  0 at each commit of this run. fmt over those packages: no diff; the single-kernel runtime's
+  net.rs diff is the runtime track's (176dac0c).
+- The ignored tests list under For the independent check is complete (8 without the runtime
+  feature).
+- The Mac's part: not run, by the ruling of 2026-11-22 (nothing builds or tests on the Mac).
+- The literal check now runs at the committed tip on the ARM64 machine from a git bundle
+  (kf5/literals.sh), which has the history the check needs.
+
+The literal fix list (steps 2 and 3, and the oom score): `NANOSECONDS_PER_MILLISECOND`,
+`NANOSECONDS_PER_MICROSECOND`, `MICROSECONDS_PER_SECOND`, `HZ` and `NANOSECONDS_PER_JIFFY`,
+`INITIAL_JIFFIES_BEFORE_ZERO`, `TCP_TIMEOUT_INIT`, `TCP_RTO_MIN`, `TCP_RTO_MAX`,
+`DECISECONDS_PER_SECOND`, `THREAD_SIZE`, `MIN_THREADS` (linux_extra.rs), the abi's `KIB` for
+meminfo and the thread limit, `FUTEX_TID_MASK` for its top, the fair slice's bounds, and the oom
+score's range as `OOM_SCORE_ADJ_MAX`. The units are crate-private: in the abi they would make
+other crates' test literals `restated` (rule 8), which is what held microseconds since KF's second
+run; `MILLISECONDS_PER_SECOND` is not named at all, as the check found the translator test's
+`IDLE_MILLISECONDS = 1000` restating it. The stand-in's waitcost no longer keeps its own copy of
+nanoseconds per microsecond. Baseline: kernel 2347 to 2305 lines, stand-in 2309 to 2308 (one
+stale line), 43 lines removed in all (a9f8631e); the check at a9f8631e has no finding in this
+track's files beyond the four For the orchestrator already names (`WRITE_NOT_READ`, `"/bin"`,
+`"warn"`, `TOLD_AFTER_RESET`); it exits 1 on other tracks' files and the interfaces' (kf5/lit3*).
+
+Measured on the ARM64 machine during the run (load 3 to 10): kernel unit tests 19 and its
+conformance 16 pass; dentries 4 pass; dpath, tmpfile, dirorder, epoll, pollmask, edges 7,
+unixsock 4, deadlines, cputime, options, memory 2, sysfs 4, processors pass; backend 19 of 21,
+rootbackend 1 of 3, inet 23 of 26, clocks 0 of 2, timers 4 of 5, terminal 9 of 10, priorities,
+schedattr, procstatus 4 of 5, procwrite 3 of 5, sysvshm 1 of 2: every failure on the ARM list.
+
+Verdicts changed on purpose: new are dentries' four; inotify's ignored test now differs only in
+its renamed part.
+
 ## KC, fourth run: the third check's findings
 
 - The kernel keeps a wait on `FuseServer::receive_notice` (fs/backend.rs `wait_for_notice`,
@@ -692,11 +766,13 @@ orchestrator's ruling of 2026-11-20 they do not hold K6c's check, which confirms
 this cause and no other. 13 tests:
 - mincore03: page residency is not known (the Cpu trait does not report touched pages).
 - mlock201: page residency (mlock2's on-fault counts).
-- mlock05: page residency (smaps has no Rss lines).
+- mlock05: page residency (`/proc/<pid>/smaps` is not built: the test's fopen gets ENOENT,
+  counted "proc entry not built"; its Rss lines need residency).
 - mmap12: page residency (pagemap is not built).
 - vma01: page residency (whether neighbouring anonymous mappings were written before a fork,
   which decides Linux's merge, cannot be seen).
-- setsockopt11: IPV6_RTHDR (the made-up network has no IPv6 route outside the container).
+- setsockopt11: IPV6_RTHDR is not built (the setsockopt itself fails with ENOPROTOOPT, counted
+  "socket option not built"; Linux takes it on any IPv6 socket, inside the container too).
 - cve-2026-53362: IPV6_RTHDR, as setsockopt11.
 - fork09: the test harness (the backend server holds a host descriptor per open file and stops
   near 524273 open files, before the guest's RLIMIT_NOFILE).
@@ -711,6 +787,12 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, fifth run: every finding of the check is fixed or recorded (see "KF, fifth run"): the test
+server lists `.` and `..`, an opened name taken away shows as deleted, the LTP watchdog waits
+for the backend's container, the gap list's two causes are exact, the bar's clippy command and the
+ignored list are complete. The literal fix list's time and size units are named (baseline 43
+lines smaller). KF's items are all built; WHOLE_RUN_RESULT
 
 KC, fourth run: every finding of KC's third check is fixed or answered (see "KC, fourth run"):
 the kernel waits on the file server's notices through `receive_notice` and the test host keeps
@@ -5059,6 +5141,19 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- KF: the bar's parts and where each is tested. The two bugs: backend
+  `arguments_taken_once_match_reference` (O_EXCL and O_TRUNC on CREATE, guest/backendrace.c) and
+  `cached_files_changed_outside_match_reference` (pages dropped on a change, guest/backendchanged.c).
+  Stable ids: `Kernel::next_object` and `ObjectId` (KF, first run); /proc/net's numbers (K6c).
+  Record and replay: replay.rs, run by every busybox and shell comparison and by layer 1's
+  `sequences_replay_from_their_record` (`LAYER1_REPLAY_CASES`, `LAYER1_SEED`); the stand-in and
+  the buffer CPU compare a digest of every guest memory. Placement: kernel unit test
+  `placement_fills_the_lowest_tier_first_whatever_the_ceiling_and_width` (widths 2^36, 2^40,
+  2^48, ceilings 4 GiB, 16 GiB and the width); `Start::address_space_bytes`, `memory_bytes` and
+  the ceiling. The start values: tests/startoptions.rs (14, against `docker run` options). The
+  whole suite and LTP comparison: scratch kernel/kf5/whole.sh; the literal check at the committed
+  tip: kernel/kf5/literals.sh. The lowest tier under the WebAssembly ceiling is For the
+  orchestrator (KF, first run), not built.
 - KC: the build is `cargo check --workspace --all-targets` on the ARM64 machine (passed at
   0ce16ef9 with no error or warning line). The kernel suite is `cargo test -p
   wcontainers-kernel-linux --test conformance` (16 checks; it builds guest/forked.c with zig and
@@ -5145,6 +5240,19 @@ Ignored tests (each attribute gives the reason):
   that exit is tested through a misaligned jump in tests/faults.rs, which QEMU does report.
 - cachestat `mapped_file_pages`: the page a private mapping's read fault brings into a tmpfs file is
   counted by the reference and not known here (counted "page residency not tracked").
+- align `unaligned_exclusive_matches_reference` under the runtime feature: the translator raises
+  an alignment fault for the same load (a translator difference).
+- away `a_threads_timer_firing_while_it_is_away_interrupts_its_read_though_the_byte_came`: a
+  read whose wait was met while its task was taken off the kernel answers the data, where Linux
+  gives EINTR (a real difference; status-streams.md has its detail).
+- inotify `inotify_matches_reference_on_backend_root`: on a backend root, events through a file
+  renamed since it was opened name its old name (Linux's dentry moved to the new one).
+- waitcost's measurement: run by name, not a check.
+- sharedviews `code_written_through_one_view_runs_through_the_other` without the runtime feature:
+  Unicorn runs stale code after it is written through another view or by another process (a
+  stand-in difference).
+Without the runtime feature the whole suite ignores these 8: busybox 1, align 2, cachestat 1,
+away 1, inotify 1, waitcost 1, sharedviews 1.
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
@@ -5634,8 +5742,8 @@ Missing (5, each counted "system call not implemented" and ENOSYS), with what ea
 The LTP tests these excuse, as decided in K6c's eleventh run without the owner's answers
 (Questions; each also under Departures):
 - Page residency is not known: the Cpu trait does not say which pages a program has touched, so
-  every mapped page counts as resident (mincore, counted "residency not tracked"), smaps has no
-  Rss lines, pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
+  every mapped page counts as resident (mincore, counted "residency not tracked"), smaps is not
+  built (its Rss lines need residency; mlock05 fails at its open, ENOENT), pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
   not kept. Excused: mincore03, mlock201, mlock05, mmap12, vma01. Built when the CPU side reports
   touched pages (the streams track's written-page record is a start: it reports writes only).
   vma01 has no warning: whether two neighbouring anonymous mappings' pages were written before
@@ -5656,14 +5764,18 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   turns after every reader; the same program with 6 to 512 readers (ADSP030 to 037) gives the
   reference's verdict ("K6c, sixteenth run" has the measurements). No warning beyond the
   backend's per-message counts: nothing in the kernel knows that a wait is long.
-- IPV6_RTHDR (setsockopt11, cve-2026-53362): routing headers reroute IPv6 packets, and the made-up
-  network has no IPv6 route outside the container; section 15's "the network is not Linux's
-  network stack".
+- IPV6_RTHDR (setsockopt11, cve-2026-53362): the option is not built, so the setsockopt fails
+  with ENOPROTOOPT, counted "socket option not built", where Linux takes it on any IPv6 socket
+  (inside the container too). Building it means keeping the routing header and applying it to what
+  the socket sends; section 15's "the network is not Linux's network stack".
 - The test harness, not the kernel: the test backend (fuse-backend-rs's passthrough) holds host
   descriptors for each open file and stops near 524273 (fork09, creat05, fcntl12, fcntl12_64,
   where the guest's opens fail before RLIMIT_NOFILE), and has no TMPFILE (openat03, answered as
   Linux's FUSE answers with such a server). (copy_file_range03 left this list in the
-  fourteenth run: LTP's waits on ours now take their time.)
+  fourteenth run: LTP's waits on ours now take their time.) Until KF's fifth run the server also
+  listed no `.` or `..` (the passthrough leaves them out on purpose), so every listing of the root
+  on the backend lacked them where the reference's overlayfs has both; the test server now lists
+  them first (backend/src/announcing.rs `dots`), as Linux's own file systems do.
 - The reference host's timer precision (section 15's "clock and timer precision are the
   host's", from the reference's side): Docker Desktop's reference oversleeps in clock_nanosleep02,
   select02 and prctl09 and fails them every time; ours and the ARM64 machine's native reference
@@ -5693,7 +5805,10 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   uid_map, smaps, entropy_avail and more; proclist prints them): ENOENT, counted "proc entry not
   built" with the entry in the detail. Those programs commonly read come before K6's bar.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen
-  (directories are followed live).
+  (directories are followed live). An opened name taken away while other links stay (unlinked,
+  or replaced by a rename) shows " (deleted)" as Linux's unhashed dentry does (from KF's fifth
+  run; tests/dentries.rs). `/proc/<pid>/maps`, `exe` and core dumps still decide by the inode's
+  link count alone, so they show the plain path in that case.
 - Inodes of `/proc` are made at each lookup. chown of a process's entries succeeds with no effect, as
   on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
   cached). Entries outside the process directories keep their changes (above).
@@ -7259,7 +7374,9 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
   `inotify_matches_reference_on_backend_root`, ignored with its reason): after the fixes, events
   through an open file whose name was unlinked while another link names it still reach watches
   with IN_EXCL_UNLINK (guest/inotify.c's "writes after unlink"). Backend directories hold no
-  entries here, so whether a name still names the inode is judged by its link count.
+  entries here, so whether a name still names the inode is judged by its link count. From KF's fifth run the inode keeps the names taken from it (`Inode::removed_names`), so that
+  part matches; what still differs is a file renamed since it was opened, whose events name its
+  old name on the backend (the new one in Linux, whose dentry moved).
 - K6b, first run: test_mmap's LargeMmapTests map sparse files past 4 GiB; the backend reads a
   mapped file whole (counted "backend file read whole when mapped"), which took the run past 30
   minutes on the stand-in, so only test_mmap.MmapTests runs. Reading only the pages a mapping
@@ -7388,6 +7505,15 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KF, after its fifth run:
+1. The independent check (For the independent check, entry KF).
+2. The literal fix list's step 4 on (widths of plain integers, the counters' detail word, ...),
+   in the audit's order, each unit kept crate-private where naming it in the abi would make other
+   crates' tests restate it.
+3. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
+4. A moved-name note beside `removed_names`, so that fd links and backend inotify events follow
+   a rename (inotify's ignored backend-root test, the fd link gap).
 
 KA, after its fourth run (the third run's list stands, with these notes):
 1. Read the whole suite at 02f8fb99 (third run's item 1) if nobody has.
@@ -7693,9 +7819,10 @@ K6c, in this order (after the seventh run):
    the memory ceiling; the runtime's start values) are not started.
 
 After K6b (fifth run), in this order (none of these holds K6b):
-1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
-   to know that the name an open file was opened by was unlinked while another link names the
-   inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
+1. inotify on a backend root (tests/inotify.rs, ignored with its reason): the unlinked part is
+   built (KF, fifth run); left is a file renamed since it was opened, whose events and fd link
+   should follow the new name (a moved-name note beside `removed_names` would do it, for tmpfs's
+   fd links too).
 2. A call that copies part of its bytes and then reaches backend pages not read yet keeps its
    short result (counted "copy short of backend pages"), where Linux's copy waits; a call
    with progress of its own (pipe writes) could wait there instead. Not seen in any run.
