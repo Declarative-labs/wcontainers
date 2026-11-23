@@ -1394,12 +1394,12 @@ fn image_views<B: Backend>(
 fn bound_image<B: Backend>(
     bound: &state::StageState<B>,
     unit: u32,
-) -> Result<&pipe_image_view, String> {
+) -> Result<&pipe_image_view, &'static str> {
     bound
         .images
         .get(unit as usize)
         .filter(|image| !image.resource.is_null())
-        .ok_or_else(|| "an image the program reads is not bound".to_string())
+        .ok_or("an image the program reads is not bound")
 }
 
 /// Whether a bound image views a buffer.
