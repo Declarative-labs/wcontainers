@@ -1,6 +1,6 @@
 //! Socket addresses between the standard library's and the uapi's forms.
 
-use core::mem::{MaybeUninit, align_of, size_of};
+use core::mem::{align_of, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::BorrowedFd;
 
@@ -135,11 +135,6 @@ pub fn local_address(socket: BorrowedFd<'_>) -> Result<SocketAddr, HostError> {
         .map_err(|error| io_host_error(&error))?
         .as_socket()
         .ok_or(HostError::Errno(libc::EAFNOSUPPORT))
-}
-
-pub fn zeroed<T: Copy>() -> T {
-    // SAFETY: only used for the uapi's plain data structures, for which all zero bytes are valid.
-    unsafe { MaybeUninit::<T>::zeroed().assume_init() }
 }
 
 /// An IPv4-mapped IPv6 socket address as the IPv4 one it carries.

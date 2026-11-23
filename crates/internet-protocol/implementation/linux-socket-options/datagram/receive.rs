@@ -4,15 +4,17 @@
 use core::mem::size_of;
 use core::num::NonZeroU32;
 use core::time::Duration;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::io::IoSliceMut;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::os::fd::BorrowedFd;
 
 use etherparse::checksum::Sum16BitWords;
 use etherparse::{
     IpDscp, IpEcn, IpNumber, Ipv4Header, Ipv6FlowLabel, Ipv6Header, Ipv6RawExtHeader,
 };
-use libc::{c_int, socklen_t};
+use libc::c_int;
 use linux_raw_sys::net as uapi;
+use nix::sys::socket::SockaddrStorage;
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     ByteCount, DropCount, FragmentSize, FrameLength, InterfaceIndex, PacketMark, PacketPriority,
@@ -20,12 +22,12 @@ use wcontainers_internet_protocol::{
     TransmitReportKey, TransmitStage,
 };
 
-use zerocopy::{FromBytes, FromZeros, IntoBytes};
+use zerocopy::FromBytes;
 
 use crate::datagram::addresses::{
-    Ipv4PacketInformation, Ipv6PacketInformation, StorageBytes, address_of_storage,
+    Ipv4PacketInformation, Ipv6PacketInformation, address_of_storage, unmapped,
 };
-use crate::{last_host_error, uapi_mirror};
+use crate::{ControlRoom, receive_vectored, uapi_mirror};
 
 uapi_mirror! {
     /// `struct scm_ts_pktinfo`.
@@ -75,18 +77,8 @@ pub const SO_EE_ORIGIN_TXTIME: u8 = 6;
 pub const SO_EE_CODE_TXTIME_INVALID_PARAM: u8 = 1;
 pub const SO_EE_CODE_TXTIME_MISSED: u8 = 2;
 
-/// The control messages of one receive, in words so that they are aligned as `cmsghdr` needs.
-pub struct ControlBuffer([usize; RECEIVE_CONTROL.div_ceil(size_of::<usize>())]);
-
-impl ControlBuffer {
-    pub fn new() -> Self {
-        Self([usize::MIN; RECEIVE_CONTROL.div_ceil(size_of::<usize>())])
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.0.as_bytes()[..RECEIVE_CONTROL]
-    }
-}
+/// The control messages of one receive.
+pub type ControlBuffer = ControlRoom<{ RECEIVE_CONTROL.div_ceil(size_of::<usize>()) }>;
 
 /// What one `recvmsg` gave: its byte count, flags, sender and control messages.
 pub struct Message<'a> {
@@ -129,46 +121,37 @@ pub fn receive_with_tail<'a>(
     control: &'a mut ControlBuffer,
     error_queue: bool,
 ) -> Result<Message<'a>, HostError> {
-    let mut name = StorageBytes::new_zeroed();
-    let mut vectors = [
-        libc::iovec {
-            iov_base: into.as_mut_ptr().cast(),
-            iov_len: into.len(),
-        },
-        libc::iovec {
-            iov_base: tail.as_mut_ptr().cast(),
-            iov_len: tail.len(),
-        },
-    ];
-    let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
-    header.msg_name = name.bytes.as_mut_ptr().cast();
-    header.msg_namelen = size_of::<StorageBytes>() as socklen_t;
-    header.msg_iov = vectors.as_mut_ptr();
-    header.msg_iovlen = vectors.len() as _;
-    header.msg_control = control.0.as_mut_ptr().cast();
-    header.msg_controllen = RECEIVE_CONTROL as _;
     let flags = libc::MSG_DONTWAIT
         | if error_queue {
             libc::MSG_ERRQUEUE
         } else {
             libc::MSG_TRUNC
         };
-    // SAFETY: every pointer in the header describes a buffer that outlives the call.
-    let length = unsafe { libc::recvmsg(fd.as_raw_fd(), &mut header, flags) };
-    if length < 0 {
-        return Err(last_host_error());
-    }
-    // A u32 on musl, a usize on glibc.
-    let control_length: usize = header.msg_controllen as _;
+    let message = receive_vectored(
+        fd,
+        &mut [IoSliceMut::new(into), IoSliceMut::new(tail)],
+        flags,
+        control,
+        socket_address,
+    )?;
     Ok(Message {
-        length: length as usize,
-        source: name
-            .bytes
-            .get(..header.msg_namelen as usize)
-            .and_then(address_of_storage),
-        control: &control.bytes()[..control_length],
-        control_truncated: header.msg_flags & libc::MSG_CTRUNC != 0,
+        length: message.length,
+        source: message.source,
+        control: message.control,
+        control_truncated: message.flags & libc::MSG_CTRUNC != 0,
     })
+}
+
+/// The IPv4 or IPv6 address of a sender, IPv4-mapped ones as IPv4, its flow information in host order as elsewhere here.
+fn socket_address(source: &SockaddrStorage) -> Option<SocketAddr> {
+    let address = if let Some(v4) = source.as_sockaddr_in() {
+        SocketAddr::V4(SocketAddrV4::from(*v4))
+    } else {
+        let mut address = SocketAddrV6::from(*source.as_sockaddr_in6()?);
+        address.set_flowinfo(u32::from_be(address.flowinfo()));
+        SocketAddr::V6(address)
+    };
+    Some(unmapped(address))
 }
 
 pub const CONTROL_TRUNCATED: &str =
@@ -519,12 +502,6 @@ fn mapped(address: IpAddr) -> Ipv6Addr {
     match address {
         IpAddr::V4(v4) => v4.to_ipv6_mapped(),
         IpAddr::V6(v6) => v6,
-    }
-}
-
-impl Default for ControlBuffer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

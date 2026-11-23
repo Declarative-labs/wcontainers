@@ -1,12 +1,14 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
 use std::ffi::{c_int, c_void};
+use std::io::IoSliceMut;
 use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
+use nix::sys::socket::{MsgFlags, SockaddrLike, recvmsg};
 use nix::unistd::{Uid, setfsuid};
 use rustix::io::Errno;
 use rustix::net::{Protocol, SocketType};
@@ -489,16 +491,93 @@ const HARDWARE_TIME: usize = 2;
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const CONTROL_ROOM: usize = 1024;
 
-/// The control messages of one `recvmsg`, in words so that they are aligned as `cmsghdr` needs.
-pub struct ControlBuffer([usize; CONTROL_ROOM / size_of::<usize>()]);
+/// Room for the control messages of a `recvmsg`, in words so that it is aligned as `cmsghdr` needs.
+///
+/// Before each receive it holds zeros, so that a walk of the control messages the receive writes ends where they end.
+pub struct ControlRoom<const WORDS: usize> {
+    words: [usize; WORDS],
+    written: bool,
+}
 
-impl Default for ControlBuffer {
-    fn default() -> Self {
-        Self([usize::MIN; CONTROL_ROOM / size_of::<usize>()])
+impl<const WORDS: usize> ControlRoom<WORDS> {
+    pub fn new() -> Self {
+        Self {
+            words: [usize::MIN; WORDS],
+            written: false,
+        }
     }
 }
 
-/// What one `recvmsg` gave: the bytes it wrote, its flags and its control messages.
+impl<const WORDS: usize> Default for ControlRoom<WORDS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The control messages of one stream receive.
+pub type ControlBuffer = ControlRoom<{ CONTROL_ROOM / size_of::<usize>() }>;
+
+/// What one `recvmsg` gave: the bytes it wrote, its flags (`MSG_*`), the sender, and the room with its control
+/// messages, zeros after them.
+pub struct Received<'a, T> {
+    pub length: usize,
+    pub flags: c_int,
+    pub source: Option<T>,
+    pub control: &'a [u8],
+}
+
+/// Makes one `recvmsg` into `vectors` and the room for control messages, the sender read as `S` and given as
+/// `source` makes of it; `flags` are `MSG_*` flags.
+///
+/// Made with nix rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`, or rustix, which hands out only the
+/// control messages it parses; the messages are read from the room's bytes, not through nix's parsing, which
+/// allocates for each kind it does not know.
+#[inline]
+pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
+    socket: BorrowedFd<'_>,
+    vectors: &mut [IoSliceMut<'_>],
+    flags: c_int,
+    control: &'a mut ControlRoom<WORDS>,
+    source: impl FnOnce(&S) -> Option<T>,
+) -> Result<Received<'a, T>, HostError> {
+    if control.written {
+        control.words.fill(usize::MIN);
+    }
+    control.written = true;
+    let received = recvmsg::<S>(
+        socket.as_raw_fd(),
+        vectors,
+        Some(control.words.as_mut_bytes()),
+        MsgFlags::from_bits_retain(flags),
+    )
+    .map_err(|errno| host_error(Errno::from_raw_os_error(errno as c_int)))?;
+    let (length, flags) = (received.bytes, received.flags.bits());
+    let source = received.address.as_ref().and_then(source);
+    Ok(Received {
+        length,
+        flags,
+        source,
+        control: control.words.as_bytes(),
+    })
+}
+
+/// How many bytes of the control messages of a receive, read up to the zeros after them, they take.
+pub fn written_length(control: &[u8]) -> usize {
+    let mut at = 0;
+    while let Some(length) = header_field(control.get(at..).unwrap_or_default(), CONTROL_LENGTH_AT)
+    {
+        let length = usize::from_ne_bytes(length);
+        if length < CONTROL_DATA_AT {
+            break;
+        }
+        at = at
+            .saturating_add(control_aligned(length))
+            .min(control.len());
+    }
+    at
+}
+
+/// What one stream `recvmsg` gave: the bytes it wrote, its flags and its control messages.
 pub struct ReceivedMessage<'a> {
     pub length: usize,
     pub flags: c_int,
@@ -512,35 +591,23 @@ impl<'a> ReceivedMessage<'a> {
 }
 
 /// Makes one `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
-///
-/// Made with libc rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`: a cut is the caller's to count.
 pub fn receive_message<'a>(
     socket: BorrowedFd<'_>,
     into: &mut [u8],
     flags: c_int,
     control: &'a mut ControlBuffer,
 ) -> Result<ReceivedMessage<'a>, HostError> {
-    let mut vectors = [libc::iovec {
-        iov_base: into.as_mut_ptr().cast(),
-        iov_len: into.len(),
-    }];
-    // SAFETY: msghdr is plain data; the fields set below are the only ones the call reads.
-    let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-    header.msg_iov = vectors.as_mut_ptr();
-    header.msg_iovlen = vectors.len() as _;
-    header.msg_control = control.0.as_mut_ptr().cast();
-    header.msg_controllen = CONTROL_ROOM as _;
-    // SAFETY: the vectors and the control buffer stay alive and writable for the call.
-    let length = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut header, flags) };
-    if length < 0 {
-        return Err(last_host_error());
-    }
-    let control: &'a ControlBuffer = control;
-    let control = &control.0.as_bytes()[..header.msg_controllen as usize];
-    Ok(ReceivedMessage {
-        length: length as usize,
-        flags: header.msg_flags,
+    let received = receive_vectored(
+        socket,
+        &mut [IoSliceMut::new(into)],
+        flags,
         control,
+        |_: &()| None::<()>,
+    )?;
+    Ok(ReceivedMessage {
+        length: received.length,
+        flags: received.flags,
+        control: received.control,
     })
 }
 
@@ -551,6 +618,9 @@ const fn control_aligned(length: usize) -> usize {
 
 /// Where a control message's data starts, after its header (`CMSG_DATA`).
 const CONTROL_DATA_AT: usize = control_aligned(size_of::<uapi::cmsghdr>());
+
+/// Where a control message's header holds its length, data included (`cmsg_len`).
+const CONTROL_LENGTH_AT: usize = std::mem::offset_of!(uapi::cmsghdr, cmsg_len);
 
 /// The room one control message of `length` bytes of data takes (`CMSG_SPACE`).
 pub const fn control_space(length: usize) -> usize {
@@ -578,10 +648,7 @@ impl<'a> Iterator for ControlMessages<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let rest = std::mem::take(&mut self.rest);
-        let length = usize::from_ne_bytes(header_field(
-            rest,
-            std::mem::offset_of!(uapi::cmsghdr, cmsg_len),
-        )?);
+        let length = usize::from_ne_bytes(header_field(rest, CONTROL_LENGTH_AT)?);
         let level = c_int::from_ne_bytes(header_field(
             rest,
             std::mem::offset_of!(uapi::cmsghdr, cmsg_level),

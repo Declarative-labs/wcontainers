@@ -67,7 +67,7 @@ impl ErrorEntry {
             Ok(Self {
                 data: data[..length].to_vec(),
                 source: message.source,
-                control: message.control.to_vec(),
+                control: message.control[..crate::written_length(message.control)].to_vec(),
             })
         })
     }

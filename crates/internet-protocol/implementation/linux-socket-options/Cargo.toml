@@ -29,13 +29,13 @@ mio = { version = "1.2.5", default-features = false, features = ["os-ext"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 # The Linux uapi constants and structures that rustix does not wrap.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "net", "no_std"] }
-# setsockopt and getsockopt for the options rustix does not wrap, and the control messages of sendmsg and recvmsg.
+# setsockopt and getsockopt for the options rustix does not wrap, and the control messages of sendmsg.
 libc = "0.2.191"
-# The filesystem user a socket is opened as, and the host's interfaces.
-nix = { version = "0.31.3", default-features = false, features = ["fs", "net", "user"] }
+# The filesystem user a socket is opened as, the host's interfaces, and recvmsg with its control messages as bytes.
+nix = { version = "0.31.3", default-features = false, features = ["fs", "net", "uio", "user"] }
 # The uapi structures read from and written as bytes.
 zerocopy.workspace = true
 
-# TODO: remove this crate's 6 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
