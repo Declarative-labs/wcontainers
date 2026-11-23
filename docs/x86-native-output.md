@@ -56,8 +56,10 @@ slow path). P: one area per guest thread, set once. Where an area serves many gu
 thread's own words (register area, stop word) are copied in and out at each guest thread switch with its other
 registers. It holds:
 - read-only to guest code: the lookup's first level (section 3.3), the inside's entry addresses and (I) stack, the
-  stop word (section 3.7), the flags table's address and its `pext` mask (section 3.6), the count stack's address,
-  the window limit, the window base and its negation (I);
+  stop word (section 3.7), the flags table's address and its `pext` mask (P, section 3.6), the count stack's
+  address, the window limit, the window base and its negation (I), and in P the resume word the embedder writes
+  (section 3.6), the place of the vector image below the alternate stack's top and the stop signal's set (section
+  3.7);
 - read and written by guest code (the register area): the guest values of the withheld registers and of the
   guest's GS base (and FS base in I), the guest's FIP (section 3.1) and rcx before a rep string (section 3.6).
   Nothing read from it is used as a host address or decides where host code goes.
@@ -120,12 +122,17 @@ Never copied, by route:
   and far transfers (`mov` from and to a segment register, `push` and `pop` of `fs` and `gs`, `lss`, `lfs`, `lgs`, far
   `call`/`jmp`/`retf`, `iretq`; a read gives the meaning's selector, never the host's or the floor's); `popf`; the
   user-mode descriptor reads (`sgdt`, `sidt`, `sldt`, `str`, `smsw`, `lar`, `lsl`, `verr`, `verw`; this host has
-  UMIP, which emulates three of them, so copying would give the host's answer); the x87 transcendentals; the
-  approximate reciprocals `rcpps`, `rcpss`, `rsqrtps`, `rsqrtss` and VEX forms until decision 14 is ruled; the
-  XSAVE family (`xsave`, `xsavec`, `xsaveopt`, `xrstor`), whose image depends on the host's XCR0 and XINUSE (here
-  XCR0 has AVX-512, AMX and PKRU: the host's XSAVE area is 11,008 bytes against the guest's 832 with the AVX setting
-  and 576 without (x86/cpuid.rs), so a copied `xsave` with edx:eax all ones would write about thirteen times past
-  the guest's buffer; x86-machine.md): the inside writes the image the meaning writes.
+  UMIP, under which its kernel emulates all five of `sgdt`, `sidt`, `sldt`, `str` and `smsw` for a 64-bit process,
+  measured by the check (check-xn0e/umip.c: each ran, none raised a signal), so copying would give the host's
+  answers); the x87 transcendentals; the
+  approximate reciprocals `rcpps`, `rcpss`, `rsqrtps`, `rsqrtss` and VEX forms until decision 14 is ruled; with the
+  AVX setting, `xsave` and `xrstor` (64-bit forms included), whose image depends on the host's XCR0 and XINUSE (here
+  XCR0 has AVX-512, AMX and PKRU: the host's XSAVE area is 11,008 bytes against the guest's 832 (x86/cpuid.rs), so a
+  copied `xsave` with edx:eax all ones would write about thirteen times past the guest's buffer; x86-machine.md):
+  the inside writes the image the meaning writes. XSAVE is in the AVX setting's group (AVX, AVX2, FMA, F16C, BMI2,
+  XSAVE; the x86 plan's section 7.2, beside `REFERENCE_HAS`), so without the setting `xsave` and `xrstor` are outside the offer
+  and take the Trap route; `xsavec` and `xsaveopt` are outside it in every container (that list), and `xsaves` and
+  `xrstors` are privileged: Trap.
 - Float status (docs/native.md 3.4, unchanged): `ldmxcsr`, `stmxcsr` and VEX forms, `fxsave`, `fxrstor`, the x87
   environment saves; the second call also writes MXCSR_MASK in an `fxsave` image as the meaning does.
 - The x87 pointers (FIP, FDP, FOP) that native.md 3.4 has the second call write "as the meaning writes them": the
@@ -133,7 +140,8 @@ Never copied, by route:
   and hosts differ: AMD saves them only with an exception pending, Intel parts with FDP_EXCPTN_ONLY change FDP only
   at an exception. The meaning's rule (x86 plan 5.8, x86/fpu.rs): FIP is the guest address of the last non-control
   x87 instruction; FDP and FOP change only with an unmasked exception. So:
-  - FIP lives in the register area. After the last non-control x87 instruction of a straight-line run, `mov qword
+  - FIP lives in the register area. After the last non-control x87 instruction of a straight-line run (and before
+    any call into the inside that follows such an instruction in the run), `mov qword
     seg:[x87 ip], imm32` (or `mov t, imm64` and the store for an address at or above 2^31; no flag); a position
     between the run's first such instruction and that store carries the fix-up `X87Pointer` with the guest address
     of the last one before it (section 9), so a stop, a fault or a call into the inside sees the meaning's FIP. The
@@ -141,9 +149,11 @@ Never copied, by route:
     store a run that holds x87 arithmetic (expected small; XN1 measures it on `long double` code).
   - FDP and FOP: copied x87 arithmetic raises an unmasked exception only when the guest's control word unmasks one.
     Every way the control word is loaded is watched: `fldenv`, `frstor`, `fxrstor` and `xrstor` are already the
-    inside's; a copied `fldcw` is followed, where the flags are dead, by `movzx t, word [operand]; not t; test t,
-    0x3f; jnz <call into the inside, kind X87Control>` and, where they may be live, by that call alone (counted "x87
-    control check with live flags"); `fninit` leaves every exception masked. A thread whose control word unmasks
+    inside's; a copied `fldcw` is followed, where the flags are dead, by `fnstcw seg:[x87 control]; movzx t, word
+    seg:[x87 control]; not t; test t, 0x3f; jnz <call into the inside, kind X87Control>`, which reads back the
+    control word the hardware loaded (a word of the register area), never the guest's operand again, which a
+    sibling could change between the load and the check; where the flags may be live, by that call alone (counted
+    "x87 control check with live flags"); `fninit` leaves every exception masked. A thread whose control word unmasks
     any exception runs pieces with every x87 and MMX instruction on the Kernel route (the request's
     `x87_unmasked`, section 9, a cache key bit as `step` is), answered on the block by the meaning's x87 unit
     (x86/x87.rs, plain Rust), which sets FDP, FOP and the pending exception as the meaning does; counted and warned
@@ -188,14 +198,29 @@ Never copied, by route:
   change of one branch is architecturally allowed (docs/native.md 3.2), but the Intel SDM's cross-modifying rule
   (volume 3, 9.1.3) asks every processor that runs modified code to serialize between the change and running it,
   and running bytes while another processor changes them has no defined result; Linux patches live x86 code only
-  through `int3` for this reason (arch/x86/kernel/alternative.c, `text_poke_bp_batch`). Links are made by that
+  through `int3` for this reason (arch/x86/kernel/alternative.c: `smp_text_poke_batch_add` and
+  `smp_text_poke_batch_finish`, with `smp_text_poke_int3_handler` taking the hits). Links are made by that
   protocol, in batches: (1) the batch's new pieces written, and an `int3` stored over the first byte of every exit
   the batch relinks; sync; (2) those exits' rel32 written; sync; (3) their first bytes written back; sync; then the
   batch's mirror entries stored (ordinary data). A thread reaching such an exit between (1) and (3) takes the
   `int3` (a host SIGTRAP in P and I, vector 3 in the machine); an `int3` in translated code is only ever this, since
-  a guest `int3` takes the Trap route, so the handler finds the exit in the position map and resumes at the exit's
-  unlinked path, a host address of ours, with nothing of the guest's changed. The handler takes a SIGTRAP as such a
-  hit only when its `si_code` is `SI_KERNEL` and rip less one is the first byte of an exit of the batch being made.
+  a guest `int3` takes the Trap route, so the handler finds the exit in the position map and does what the exit's
+  branch would have done, with nothing of the guest's changed: a `jmp` exit resumes at the exit's unlinked path; a
+  `jcc` exit evaluates its condition (the exit's record, `DirectExit::condition`, section 9) on the interrupted
+  rflags by the meaning's condition function, and resumes at the unlinked path when it holds and at the host byte
+  after the `jcc` (the next run's start) when it does not, as Linux's handler emulates a `jcc`
+  (`int3_emulate_jcc`). Both are host addresses of ours fixed by the map; the rflags only choose between them, so in
+  P, where they come from the frame's copy, a sibling's edit changes only which way that guest goes. Resuming every
+  hit at the unlinked path sent a thread whose condition was false along the branch: measured by the check
+  (check-xn0e/jcc.c, a `jnz` exit relinked 20,000 times, 4 and 16 workers alternating parity), 50,983 and 142,005
+  wrong arrivals. Measured with the condition evaluated (run6/jcc16.c, jcc16.out; load 0.13 before; every one of
+  the 16 condition codes in turn, each turn loading seeded arithmetic flags and checking its arrival against the
+  condition computed apart, 20,000 links each): 16 workers, about 321,000 traps a condition, and 4 workers, about
+  92,000, seeds 0x5eed and 0x2b17: 0 wrong arrivals for every condition. The handler takes a SIGTRAP as such a
+  hit only when its `si_code` is `SI_KERNEL` and rip less one is the first byte of an exit of the batch being
+  made (in P the batch's exits, each with its unlinked path, its condition and the host byte after it, are in a
+  page read-only to the stub that the embedder writes before step (1), so the handler's choice reads nothing a
+  sibling can write but the copy's rflags).
   In P nothing else can raise SIGTRAP or an alignment SIGBUS, since the hardware's TF and AC are never set there
   (every `popfq` reads the flags table, section 3.6): a `TRAP_TRACE` SIGTRAP or a `BUS_ADRALN` SIGBUS in P is a
   fault of ours, as the P/I plan's 3.6 treats a host signal in the stub it does not name: reported, the thread
@@ -348,17 +373,37 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
     the register area's slot while r11 is withheld (t in the first guess), with the guest rflags as the reference
     does; when it returns, t is a scratch again.
   - P and I: `lea t, [rip]` (the host address of the next instruction) and `jmp qword ptr seg:[entry + 8*kind]`.
-    Nothing is pushed: no host address goes to any stack. The routine at the entry keeps t in a register (P: the
-    stub's assembly, which waits in the host kernel with its state in registers, as the P/I plan's 3.7 requires;
-    t is r11 and c is r10 in the first guess, and a host `syscall` overwrites r11 and takes its fourth argument in
-    r10, so the stub moves both to registers the host kernel keeps before it waits) or
-    in the inside's own memory (I, out of every guest's reach), and resumes by jumping to it, or through the lookup
-    at a guest pc when the kernel changed where the guest goes (a signal, `rt_sigreturn`, `execve`); t is never read
-    back from memory a guest can write. In I the routine switches to the inside's stack (the area's read-only part
-    names it) before any Rust code runs.
+    Nothing is pushed: no host address goes to any stack. In I the routine keeps t in the inside's own memory, out
+    of every guest's reach, switches to the inside's stack (the area's read-only part names it) before any Rust code
+    runs, and resumes by jumping to t, or through the lookup at a guest pc when the kernel changed where the guest
+    goes (a signal, `rt_sigreturn`, `execve`).
+  - P never jumps to a t that a stop may have replaced. The stub's routine (assembly; t is r11 and c is r10 in the first guess, and a host `syscall`
+    overwrites r11 and takes its fourth argument in r10, so it moves both to registers the host kernel keeps) hands
+    t to the embedder in the request, and every way out of the stub is `jmp qword ptr gs:[resume]`, a word of the
+    thread area's read-only part that only the embedder writes (through its own mapping of the area's memfd),
+    after the request and before its answer. The embedder writes there the host address t names only once its
+    position map shows t is the return point of a call into the inside of the kind the request names, in a live
+    piece of this process's code, and else the lookup's entry with the guest pc in the register area (the kernel
+    changed where the guest goes) or nothing, the thread ended as corrupted ("call from an unknown host address").
+    The miss routine's t is the guest target, a guest value, and its way out is always the lookup's entry.
+    A stop in the stub lands while t is in a register, so the host kernel writes t into the frame, which a sibling
+    can edit, and the stub's state after a stop comes from the handler's copy (section 3.7): a t from there is
+    validated in the same way, so the only addresses a sibling can choose are other call return points of its own
+    process, and a resume at one of them is the guest going on at that call's guest instruction with its own
+    registers, since at every call position the guest's state is the registers and the register area alone (no
+    fix-up pending, nothing relocated: the FIP store of section 3.1 comes before a call, the replay check puts rcx
+    back first, and XN1's position-map unit test checks this for every call the emitter writes). Every other word
+    the stub uses after a stop (its pages, the answer word, the futex address) is read from the read-only part
+    again, never from the copy. A call the stub answers in its own process (a pure answer, section 3.5) may go back
+    by `jmp t` from the register it arrived in; one a stop has landed in goes to the embedder all the same, since
+    only the embedder can validate t. Cost: the jump reads a word where it
+    would read a register, and the embedder writes that word once a call (expected nothing measurable against a
+    call into the stub of about a microsecond; measured at XN1).
   - TF and AC across the call: `int n` clears TF itself and the floor restores rflags by `iretq` from its own
     stack. The `jmp` of P and I keeps the hardware's flags, so in I the routine, having saved rflags on the inside's
-    stack, clears TF and AC (`popfq` of the saved value with both cleared) before any Rust code; a step the
+    stack, clears TF and AC (`popfq` of the saved value with both cleared) before any Rust code, and its last `popfq`
+    before the jump back reads the guest's rflags from that stack as saved (or as the inside changed them), TF and
+    AC the guest's; a step the
     hardware takes in the routine's first instructions is resumed silently, as for the carrying code (below); the
     inside's stack is out of every guest's reach in I, so that saved word cannot change under it. In P the stub's
     state after a wait is read from pages sibling threads can write (the P/I plan's 3.7), and clearing TF and AC in
@@ -367,13 +412,18 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
     processor storing 0x40302 into the word in a loop, 20,000,000 rounds, 3 runs): `andq` then `popfq` of the word
     set the hardware's TF 6, 6 and 6 times and AC 6, 6 and 6 times (the check's runs: 31 to 1,254). So P puts the
     guest's rflags back only through the flags table (next item): P never runs with the hardware's TF or AC set.
-  - The flags table: every `popfq` the carrying code and P's stub run reads a word of a read-only page of 512 words,
+  - The flags table, P's alone: every `popfq` P's carrying code and P's stub run reads a word of a read-only page of 512 words,
     word k holding the flags that `pdep` of k over CF, PF, AF, ZF, SF, DF, OF, NT and ID gives, with IF and bit 1
     set and TF and AC clear. The value to put back is read once into a register (t in the carrying code), `pext`
     with that mask (a read-only word of the area, or an immediate in the stub) gives k, rsp is pointed at word k
     (the table's address a read-only word of the area; the stub's own read-only page, reached rip-relative), and
-    `popfq` loads it. Nothing `popfq` reads can be written by a guest, so no store can set TF or AC. The table
-    serves every way (one form, though only P needs it). Measured (run5/flags.c, flags.out): with the same sibling,
+    `popfq` loads it. Nothing `popfq` reads can be written by a guest, so no store can set TF or AC. The machine and
+    I never use it: there the hardware's TF and AC are the guest's (the TF item below), and a table word would clear
+    them, so the first rep string instruction a stepping thread ran would end its stepping (measured by the check,
+    check-xn0e/tf.c: with TF set, a `popfq` of the guest's word gave 10 steps over the ten `nop`s after it, of the
+    table's word 0). Their carrying code's `popfq` reads the word its `pushfq` wrote, in memory no other thread
+    reaches: the machine's per-processor area (section 2) and I's area outside every window. The carrying code is
+    emitted per way already (`carry` takes the way). Measured (run5/flags.c, flags.out): with the same sibling,
     the table form set TF 0 and AC 0 times in each of 3 runs of 20,000,000; without the sibling, 9.12 to 9.18 ns a
     round against 8.25 to 8.26 for `andq` and `popfq` (about 0.9 ns, 3 rounds in each of 3 runs, one pinned
     processor).
@@ -421,12 +471,16 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   read-only part, so the guest's stack and red zone stay untouched), `pushfq`, the passes computed from rcx before
   and after, DF, TF and the overlap of the rsi and rdi ranges by the one pass function of the x86 core that the
   meaning uses (its emitted form; the range's permissions need no test, since an instruction that ran to its end
-  natively had every page allowed, and a fault inside it is the inside's to count), added to c, the saved word
-  read once into t and rflags put back through the flags table (below), since in P sibling threads can write the
-  count stack, rsp put back. The
-  span over that code is after the instruction's commit point with a fix-up "the rep string's passes owed", so a
-  stop or fault there is resolved by the inside computing the same passes from rcx before and the
-  registers. Expected cost about twenty instructions per executed rep string, `popfq` the dearest (not measured:
+  natively had every page allowed, and a fault inside it is the inside's to count), added to c by one `lea c, [c +
+  t]`, rflags put back (in P the saved word read once into t and put back through the flags table, since sibling
+  threads can write the count stack; in the machine and I by `popfq` of the saved word itself, TF and AC the
+  guest's), rsp put back. The count stack's word is at a fixed offset of the register page (rsp is set to the same
+  address each time), so the position map can name both moved values with what exists: from the store of rsp to its
+  return, `Relocated { guest: rsp, held: Held::Page(saved rsp) }`, and from the `pushfq` to the `popfq`, also
+  `Relocated { guest: RFLAGS, held: Held::Page(count word) }` (RFLAGS is the x86 crate's number for rflags in the
+  map, after the sixteen general registers; section 9). The span from the instruction's commit point to that `lea`
+  carries the fix-up `RepPasses` ("the rep string's passes owed"), so a stop or fault there is resolved by the
+  inside computing the same passes from rcx before and the registers, and the span after the `lea` none. Expected cost about twenty instructions per executed rep string, `popfq` the dearest (not measured:
   XN1 measures it on the benchmark set and on glibc's `memcpy` above its `rep movsb` threshold, and the elements
   form beside it for the owner).
 - TF: in the machine and I as docs/native.md 3.4 (routed `popf`/`iretq`, hardware TF equal to the guest's, steps
@@ -447,24 +501,32 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   the frame once where it holds the guest's state): translated code is looked up in the position map; our own
   code (P's stub, I's routines) by the P/I plan's 3.6 cases (the entry, the resume sequence, the wait, and the handler's own tail after its unblock,
   which takes the same exit the interrupted handler had already written); any other value ends the thread as
-  corrupted, counted. The thread resumes at a guest instruction boundary through the lookup, never at a host
-  address read from the frame.
+  corrupted, counted. A stop in translated code resumes at a guest instruction boundary through the lookup, one in
+  our own code by restarting that code's step (in P every way out of the stub validated, section 3.6), never at a
+  host address read from the frame. In P the rip classified is itself in the copy a sibling can edit, so the
+  classification only ever chooses among our own resume paths, each of which is safe for any register values.
   - P never resumes through `rt_sigreturn`: the host kernel reads the frame's rip back from the alternate stack,
     which sibling threads can write. Measured (check-xn0b/psig.c, psig.out; load 0.17): with a sibling thread
     storing one address into the frame's rip slot in a loop, 198,432 of 200,000 signals returned by `rt_sigreturn`
     to that address. P's handlers are installed as the P/I plan's 3.6 has them (`SA_SIGINFO | SA_ONSTACK |
     SA_NODEFER`, `sa_mask` the stop signal), and a stub thread blocks every signal but the stop signal and the
-    synchronous faults. The handler leaves by its own jump instead: it copies the frame's general registers and its
-    vector image to its own memory (the image read where the frame's layout puts it from the context address the
-    host kernel passes in a register, never through the frame's `fpregs` pointer, and of the size the frame states,
-    bounded by the offered groups' size), and its tail then points rsp at the flags table's word for the copy's
+    synchronous faults. The handler is the stub's assembly and makes no call and no push, so nothing of ours is
+    written to the alternate stack, which siblings can write. It leaves by its own jump instead: it copies the
+    frame's general registers (from the context address the host kernel passes in rdx) and the offered groups' part
+    of its vector image (576 bytes, 832 with the AVX setting, the standard layout's x87, SSE and AVX components) to
+    its own memory, the image read at its fixed place below the alternate stack's top, never through the frame's
+    `fpregs` pointer: a frame always starts at the top (the tail moves rsp off the stack before a further stop can
+    land), so the place is one offset a thread, learnt from the stub's first frame before any guest code runs and
+    kept in the read-only part (2,880 bytes below the top on this host, for a process that never asked for AMX's
+    state, which the stub never does; measured, run6/presume.out). Its tail then points rsp at the flags table's word for the copy's
     rflags (off the alternate stack), unblocks the stop signal alone with one `rt_sigprocmask(SIG_UNBLOCK)` whose
     set is a word of the stub's read-only page (never the frame's mask, which a sibling can edit to block the stop;
     a stub that blocks it all the same is killed after 10 s by the P/I plan's 3.6), restores the vector state by
     `XRSTOR` from its copy (the host kernel starts a handler with the vector state reset: ymm7 read zero at entry,
     set before the signal) with the offered groups as the mask, never the frame's `xfeatures` (a sibling can write
-    those, and the host's 0x207 includes PKRU), `popfq`s the table word, loads the general registers and jumps on
-    (to the exit for a stop or a fault, whose resume sequence ends the same way at the lookup entry). A stop that
+    those, and the host's 0x207 includes PKRU), `popfq`s the table word, loads the general registers and jumps
+    through a read-only word (the resume word of section 3.6, or the lookup's entry with the guest pc from the copy,
+    a guest value; never a register value from the copy). A stop that
     lands in the tail, once unblocked, finds rsp off the alternate stack, so the host kernel puts its frame at the
     stack's top again over the old one, already copied, and the new handler takes the same exit from the same copy:
     the stack holds one frame however many stops arrive. Measured (run5/flags.c, flags.out; load 0.3 to 0.5; 128
@@ -473,17 +535,24 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
     handler frame 3 KiB below the stack's top, and the guest loop (which checks its arithmetic flags, DF, NT, ID and
     that TF and AC are clear after every round) kept its flags, r12..r14 and ymm7. Run 4's handler, which unblocked
     by the frame's mask with rsp on the alternate stack, piled a frame per nested stop (the check's popf.c: 58,309
-    KiB deep at 200,000; with 128 KiB the process died of SIGSEGV). A round trip, `tgkill` to itself, 3 rounds of
-    200,000 in each of 3 runs, one pinned processor, with this whole handler (copies, offered mask 7, the table,
-    every general register and rsp from the copy, a jump through a word as the lookup's): ymm7 and r12..r14 kept,
-    948 to 953 ns against 1,073 to 1,080 ns with `rt_sigreturn` (run 4's handler 943 to 950). With PKRU edited to
+    KiB deep at 200,000; with 128 KiB the process died of SIGSEGV). Run 5's figures came from a handler in C that
+    read the image through `fpregs`, ran calls on the alternate stack and jumped through a writable word, so the
+    handler as specified here was measured again (run6/presume.c, presume.out; load 0.03 before, 0.11 after; all in
+    assembly, no call or push, the image at its fixed place, 832 bytes, every word the tail decides by in a
+    read-only page, the resume through a read-only table indexed by the copy's pc, standing for the lookup): the same
+    flood of 200,000 stops while a sibling ORs TF and AC into the copy's rflags and stores host addresses of the
+    handler into the copy's r10 and r11, 3 runs: 3 to 7 stops taken in guest code, 55,133 to 63,419 in the tail,
+    the deepest frame 3 KiB below the top, the guest loop's flags, r12..r14 and ymm7 kept, exit 0; a round trip,
+    `tgkill` to itself, 3 rounds of 200,000 in each of 3 runs, one pinned processor: 930 to 942 ns against 1,078 to
+    1,097 ns with an empty handler returning by `rt_sigreturn`. With PKRU edited to
     deny key 0 and bit 9 set in the frame's `xfeatures` and header (run4/resume.c, a sibling's edit made by the
     handler itself): the offered mask left PKRU at
     0x55555554; the frame's own mask restored the edit and the process died of SIGSEGV. A frame whose vector
     image a sibling made invalid faults that `XRSTOR`, which ends the thread as corrupted, counted. Guest values
     in the copy may have been edited by a sibling, which changes only that guest's registers. So t may be read
     from the copy as a guest value (the target a first-level fault reports, the guest's rcx over the replay
-    check), never as a host address and never to decide where host code goes; u is never read.
+    check), or, after a stop in the stub, as the host address the embedder validates before it writes the resume
+    word (section 3.6); never as an address host code jumps to unvalidated; u is never read.
   - Resuming by jump never pops the token the host kernel pushes on a user shadow stack at delivery, so P's
     stub threads must have none: the stub carries no shadow-stack marking and never asks for one, and the probe
     refuses P by name ("user shadow stack on a guest thread") if `arch_prctl(ARCH_SHSTK_STATUS)` reports one on a
@@ -685,7 +754,9 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
   `call` and `ret`; `xsave` with edx:eax all ones beside a guest buffer of the offered size; `wrfsbase`,
   `wrgsbase`, `rdgsbase` and `mov r, gs` (each way); `enter 0, 3` and `fstp m80` across a page that refuses writes;
   `rdsspq` and `incsspq` (the reserved-NOP results); `rep movsb` and `xlat` with a `gs:` override; `popf` setting
-  TF followed by a `ret` and a `jmp r` (each way, P on stepping pieces).
+  TF followed by a `ret` and a `jmp r` (each way, P on stepping pieces); a thread with TF set running `rep movsb`
+  and then ten one-byte instructions, each step reported (each way: in the machine and I the hardware TF must
+  survive the rep string count's `popfq`, as check-xn0e/tf.c showed a table word would not).
 - Hostile guest, per way: in P a sibling thread storing into the running thread's alternate signal stack and
   register area in a loop while the thread takes stops, faults and calls into the inside (as check-xn0b/psig.c),
   no host instruction run but translated code, the stub and the lookup's targets; in the machine a thread of one
@@ -693,15 +764,20 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
   the other's registers unchanged; in I a stop taken in guest code with the handler's Rust code reading its
   thread-local storage. In P also a sibling setting TF, AC and bit 9 (PKRU) and AMX bits of `xfeatures` in the
   frame, the register area and the count stack, editing the frame's `fpregs` pointer and signal mask, and flooding
-  the thread with stops while it is in the handler's tail and the resume sequence (as run5/flags.c): the hardware's
+  the thread with stops while it is in the handler's tail and the resume sequence (as run6/presume.c): the hardware's
   TF and AC stay clear, PKRU and the groups outside the offer unchanged, the stop signal never blocked once a
-  handler has left, and the alternate stack never holds more than one frame.
+  handler has left, and the alternate stack never holds more than one frame. In P also a sibling storing into the
+  copy's t, while the thread is stopped in each step of the stub (its entry, its wait, its resume), a host address
+  of the stub, of the handler, of guest memory, of a piece's middle and of another call's return point: the thread
+  goes on only at a call return point the embedder validated, or is ended as corrupted, and never at the others.
 - x87 pointers, per way: `fnstenv`, `fnsave`, `fxsave` and `xsave` after x87 arithmetic in the same piece, in an
   earlier piece, after a stop between the two, and after the earlier piece was dropped; FIP, FDP and FOP compared
   with the WebAssembly output's; `fldcw` unmasking division by zero, then `fdiv` by zero, `fwait` and the save, with
   the signal and the saved pointers compared; and the same with the flags live after the `fldcw`.
 - Links, per way: threads running an exit in a loop while it is linked and unlinked by the protocol (as
-  run4/patch.c), every turn reaching one of its targets; a new piece reached from another thread in the same batch.
+  run4/patch.c), every turn reaching one of its targets; a `jcc` exit of each of the 16 conditions so linked while
+  the threads run it with seeded flags, every arrival as the condition says (as run6/jcc16.c); a new piece reached
+  from another thread in the same batch.
 - Register groups, per way (the native brief's last section): guest threads each filling every offered group (x87,
   SSE, AVX with the setting, MXCSR, the x87 control and status) with values of their own, interleaved on one
   processor (machine), one runner (I) or a few host processors (P), and in a test build an assertion at every
@@ -780,7 +856,15 @@ each; and, for a thread whose x87 control word unmasks an exception (section 3.1
 the cache key: every x87 and MMX instruction on the Kernel route. `InsideCall` gains the kind `X87Control` (the check
 after a copied `fldcw`). In gcpu/position.rs: `Operand` gains `segment: Option<Segment>`
 (`Fs`, `Gs`) and `address_bits: u8` (32 or 64); `DirectExit::retarget` and `BranchTable::retarget` hold the branch's
-displacement as `{ at: u8, bits: u8 }` in bytes, not ARM64's instruction field; `Fixup` gains `Offset { register:
+displacement as `{ at: u8, bits: u8 }` in bytes, not ARM64's instruction field; `DirectExit` gains
+```rust
+    /// The condition under which the exit's branch is taken, as the architecture numbers it (x86: the low four bits
+    /// of a `jcc`); none for an unconditional one. A hit on a link's `int3` evaluates it (section 3.2).
+    pub condition: Option<u8>,
+```
+(ARM64 leaves it `None`: its links change a branch in one store and take no hit); the rflags in a moved slot are
+`Relocated { guest: RFLAGS, .. }` with the x86 crate's map number for rflags, 16, after the general registers
+(the rep string count, section 3.6); `Fixup` gains `Offset { register:
 u8, by: i32 }` (rsp after a split push), `RepPasses` (the rep string's passes owed, section 3.6, until the count
 is ruled) and `X87Pointer(u64)` (the guest's FIP not yet stored, section 3.1); `Held` gains `Rebased(u8)` (rdi
 holding the guest value plus B); rcx in t over the replay check is the existing `Relocated { guest: rcx, held: Held::Register(t) }`. `HostCode` gains `pool: Vec<u8>` (the piece's
