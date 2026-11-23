@@ -5071,6 +5071,7 @@ dependencies = [
 name = "wcontainers-executor-host-process"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "libc",
  "linux-raw-sys",
  "rustix",
