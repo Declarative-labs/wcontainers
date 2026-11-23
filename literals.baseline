@@ -2616,7 +2616,6 @@ code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"256\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"259200\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"2\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"300\n"
-code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"4096\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"4194304\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"65536\n"
 code	crates/kernel/implementation/linux/fs/proc.rs	str	contents	"700000\n"
@@ -3824,7 +3823,6 @@ code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	interface_ques
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	interface_question	40
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	kind_and_flags	0xf
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	kind_and_flags	0xf
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	listen	4096
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	make_file	0o777
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	named_interface	15
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	peer_pidfd	4
