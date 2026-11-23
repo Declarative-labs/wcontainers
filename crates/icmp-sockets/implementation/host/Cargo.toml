@@ -43,6 +43,8 @@ wcontainers-icmp-sockets-conformance = { path = "../../conformance" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2.191"
+# Counts the allocations of the waiting test (MIT).
+stats_alloc = "0.1.10"
 
 [lints]
 workspace = true

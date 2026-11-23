@@ -1,8 +1,10 @@
 //! What a waiting call on the host's raw sockets allocates.
 #![cfg(target_os = "linux")]
 
+use std::alloc::System;
 use std::net::{IpAddr, Ipv6Addr};
 
+use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 use wcontainers_internet_protocol::{IpVersion, Received};
 use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::RawSockets;
@@ -11,7 +13,15 @@ use wcontainers_raw_sockets_conformance::icmp_suite as tools;
 use wcontainers_raw_sockets_host::HostRawSockets;
 use wcontainers_readiness::{Readiness, ReadyFor};
 
-tools::counting_allocator!();
+/// The system's allocator, counting the allocations of the whole test process, of which this test is the only one.
+#[global_allocator]
+static COUNTING: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+/// The allocations and reallocations made so far.
+fn allocations() -> usize {
+    let stats = COUNTING.stats();
+    stats.allocations + stats.reallocations
+}
 
 /// Waits that have to wait allocate nothing on the waiting thread once the socket's waiter list has grown.
 #[test]

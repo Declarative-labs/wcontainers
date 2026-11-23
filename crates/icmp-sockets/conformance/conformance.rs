@@ -3208,7 +3208,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
 /// https://doc.rust-lang.org/std/alloc/trait.GlobalAlloc.html
 pub const COUNTED_WAITS: usize = 100;
 
-/// Returns the bytes allocated in [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
+/// Returns what `allocations` counts over [`COUNTED_WAITS`] waits, after as many that warm the socket, each made to wait and then finish.
 pub fn wait_allocations<F: Future<Output = Result<ReadinessReport, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
@@ -3245,52 +3245,6 @@ pub fn wait_allocations<F: Future<Output = Result<ReadinessReport, HostError>>>(
         }
     }
     counted
-}
-
-/// Makes the test binary's allocator the system's, counting the bytes each thread asks of it, which `allocations()` reads.
-#[macro_export]
-macro_rules! counting_allocator {
-    () => {
-        struct Counting;
-
-        std::thread_local! {
-            static ALLOCATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(usize::MIN) };
-        }
-
-        // SAFETY: every call is passed on to the system's allocator unchanged.
-        unsafe impl std::alloc::GlobalAlloc for Counting {
-            unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-                ALLOCATIONS.with(|count| count.set(count.get() + layout.size()));
-                // SAFETY: as the caller of alloc promised.
-                unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
-            }
-
-            unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
-                // SAFETY: as the caller of dealloc promised.
-                unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) }
-            }
-
-            unsafe fn realloc(
-                &self,
-                pointer: *mut u8,
-                layout: std::alloc::Layout,
-                size: usize,
-            ) -> *mut u8 {
-                ALLOCATIONS.with(|count| count.set(count.get() + size));
-                // SAFETY: as the caller of realloc promised.
-                unsafe {
-                    std::alloc::GlobalAlloc::realloc(&std::alloc::System, pointer, layout, size)
-                }
-            }
-        }
-
-        #[global_allocator]
-        static COUNTING: Counting = Counting;
-
-        fn allocations() -> usize {
-            ALLOCATIONS.with(core::cell::Cell::get)
-        }
-    };
 }
 
 /// The wakes a waiting call has given, counted, for a check that polls the call by hand.
