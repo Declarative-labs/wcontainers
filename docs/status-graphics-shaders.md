@@ -85,6 +85,8 @@ pass bar items 1 and 6 met. Run 19 (run 106, the section below): A7's cull dista
 domain shaders, drawn equal to real Direct3D 11. Run 20 (run 107, the section below): centroid
 positions moved to Direct3D's centroid on the DXIL route and refused by name in programs run per
 sample (the Direct3D 12 runner's `eval-attrib-3`), A7's indirect draws found served by the fronts.
+Run 21 (run 108, the section below): the NIR track's G9 run 18 ask, flat values from the last
+vertex of each primitive a geometry or tessellation stage makes (`Stages::provoking`).
 Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
@@ -168,6 +170,26 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
 
+## For the NIR track: flat values from the last vertex (`Stages::provoking`)
+
+Built in run 108 (its G9 run 18 ask, "Requests to other tracks"; the driver's refusal "flat values
+from the last vertex of a geometry or tessellation stage's primitives (not built)" can go).
+`stages.provoking(backend, api, drawn)` on a made `Stages`, before its draws (it may change between
+draws): `api` is the vertex OpenGL names (`raster.provoking`), `drawn` the one the final draw takes
+(`raster.host_provoking`, the RasterDesc the front draws `FinalDraw` with). Where they differ, each
+primitive of the final draw is listed turned: a triangle's API vertex moved to where the draw takes
+it with its winding kept, a line reversed. A strip's triangle `i` has vertices `i`, `i + 1`, `i + 2`
+in the strip's order (the last is `i + 2`, OpenGL's rule); the tessellator's primitives are as it
+lists them. A geometry stage's strips are then drawn as lists (`FinalDraw::topology` says which).
+Stream output keeps a geometry stage's order; after a tessellation stage alone it takes the turned
+order (it reads the same list). Slow path `ProvokingRewrite`. A `Stages` with neither a
+geometry nor a hull stage refuses a difference by name (`ProvokingWithoutStages`): the front lists
+those records itself, as it does today.
+- Tests: `flat_values_from_the_last_vertex_draw_as_its_place_names` (tests/geometry_draw.rs, RTX
+  3080 against real Direct3D 11, fxc's and dxc's builds of own `gs_provoking`) and the turned
+  tessellator check in `tessellator_matches_direct3d` (tests/tessellation_draw.rs); run 108's
+  section has the figures.
+
 ## For the NIR track: typed buffers of a module (`wcontainers_shaders::typed`)
 
 Built in run 104 (its G9 run 15 ask, "Requests to other tracks"). `typed::buffers(&mut module,
@@ -196,6 +218,44 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 21 (run 108): flat values from the last vertex through the stage helper (the NIR track)
+
+Logs and scripts in scratch `graphics-shaders/g6-r108` (the clone `tip` moved there from g6-r107;
+`compile.log`, `arm1.log` to `arm4.log`, `gpu1.log`, `gpu2.log`). Nothing built on the Mac (rustfmt
+of single files only).
+- Chosen: the NIR track's G9 run 18 ask (its status, "Requests to other tracks"): OpenGL takes flat
+  values from a primitive's last vertex, the WebGPU back end from its first, and the stage helper's
+  final draw is made inside the helper (122 dEQP-GLES31 refusals there). Both Direct3D fronts keep
+  the first, so nothing changes for them.
+- Built (6c50503b): `Stages::provoking(backend, api, drawn)` ("For the NIR track: flat values from
+  the last vertex" above). The geometry cull program (`geometry_cull.wgsl`), which already lists a
+  geometry stage's strips, takes a `rotate` word and runs, with no cull distances, whenever a
+  rotation is asked; the tessellator (`tessellator.wgsl`) writes each triangle and line turned when
+  no geometry stage follows it (with one, the geometry stage's output is what is turned).
+- Tests: own `gs_provoking` (tests/own/geometry.hlsl: a strip of five across each triangle and one
+  of four about its centre, each vertex's flat value its place in its strip) and
+  `gs_provoking_last` (the same built with `PROVOKING_SHIFT=2`, so Direct3D's first vertex of each
+  triangle carries its last's place), fxc gs_5_0 and dxc gs_6_0, all four `ok` in the corpus.
+  Drawn on the RTX 3080, `flat_values_from_the_last_vertex_draw_as_its_place_names`
+  (tests/geometry_draw.rs; WebGPU with `provoking(Last, First)` against real Direct3D 11 drawing
+  `gs_provoking_last`, gs_cut's four cases, both builds, 4 seeds): 32 comparisons, 0 texels apart
+  in each; the same draws without the rotation differ in every drawn texel (374 to 937 per case),
+  so the test catches its absence (gpu2.log). `tessellator_matches_direct3d` now also checks that
+  each turned run (both directions) is the unturned one with every primitive turned: every
+  topology, 4 seeds, passed. The rest of both binaries passed unchanged (geometry_draw 12 of 12,
+  tessellation_draw 10 of 10, `--test-threads 1`; gpu1.log is the same run in parallel threads,
+  ended by ANGLE's known assert, How to run).
+- Runs: ARM64 machine (load 23 to 28): rustfmt and clippy with warnings denied clean, `--lib`,
+  `--test geometry`, `--test corpus`, `--test staged` passed after a fix (the first listing program
+  used `from`, a WGSL keyword; arm1.log to arm3.log); every CPU test binary with every corpus
+  (`--include-ignored`, load 3 to 8): all passed, 146 tests (arm4.log). The literal check exits 1
+  on four findings in other crates' files (opengl, webassembly-engine), none in this crate's.
+  Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy
+  clean.
+- Not run: WebAssembly, glslang, Chrome (no new module of a corpus shader beyond the four own files,
+  which the corpus test writes), the GPU suite beyond the two binaries (nothing else calls the
+  changed programs).
 
 ## G6 run 20 (run 107): centroid positions on both routes; A7's indirect draws are the fronts'
 
@@ -2871,7 +2931,9 @@ G6a run 5's tip):
    Unsafe code: the owner's ruling on the converters' boundary and the drawn tests' Direct3D calls
    (New for the owner, run 104); the fuzz test's bounded allocator through a vetted crate if one
    refuses single large allocations as it does.
-3. Besides, as asked: the NIR track's items (the carried SPIR-V reader's three refusals, on its
+3. Besides, as asked: the NIR track's items (its flat values from the last vertex done in run 108,
+   `Stages::provoking`; `GeometryReplay`, the WebGL 2 route, has no such choice yet and was not
+   looked at; the carried SPIR-V reader's three refusals, on its
    candidate route only; pulled inputs at any byte and naga's HLSL texel offsets done in run 99;
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
    rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
@@ -4484,6 +4546,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 108's scripts in scratch `graphics-shaders/g6-r108` are run 107's with its folder. The CPU
+  runs go through `arm-run <worktree> --name graphics-shaders --jobs 12 -- "$(cat cpu-cmd.txt)"`
+  from the shared worktree (the clone `tip` has no converter submodules, so arm-run of it fails
+  in the build script). New own shaders: a temporary `provoking.cmd` in the clone as run 107's
+  `centroid.cmd`. The drawn binaries geometry_draw, stage_draw and tessellation_draw need
+  `--test-threads 1` (in parallel, ANGLE's `hasPixelExecutableForCachedOutputLayout` assert ends
+  the process, gpu1.log).
 - Run 107's scripts in scratch `graphics-shaders/g6-r107` are run 106's with its folder. New own
   shaders: a temporary `centroid.cmd` (compile.cmd's first five lines and the new lines) in the
   clone, run by `tools/graphics-rig/remote` in the background without a `timeout` wrapper (it may
