@@ -27,7 +27,8 @@ use wcontainers_x86::{USER_END, USER_TOP};
 use wcontainers_x86::{X86_64, X86Block};
 use zerocopy::{FromBytes, IntoBytes};
 
-const RSP: usize = 4;
+/// The field of rsp in the reference's state.
+pub const RSP: usize = 4;
 /// The field of rip in the reference's state.
 pub const RIP: usize = 16;
 /// The field of rflags in the reference's state.
@@ -39,8 +40,9 @@ const FCW: usize = 21;
 const FSW: usize = 22;
 const FTW: usize = 23;
 const R0: usize = 24;
-const XMM: usize = 32;
-const YMMH: usize = 48;
+/// The fields of xmm0 and of ymm0's upper half, each further register's after them.
+pub const XMM: usize = 32;
+pub const YMMH: usize = 48;
 use crate::layout::x86_64::SELECTORS;
 const FIELDS: usize = SELECTORS + wcontainers_x86::SEGMENT_REGISTERS;
 

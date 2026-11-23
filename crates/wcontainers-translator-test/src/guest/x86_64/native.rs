@@ -18,7 +18,7 @@ use iced_x86::code_asm::{
 use linux_raw_sys::general::{
     SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, kernel_sigset_t, sigaltstack,
 };
-use wcontainers_abi::WORD;
+use wcontainers_abi::{Permissions, WORD};
 use wcontainers_guest_cpu::position::{Fixup, Held, Resume, Side, Span};
 use wcontainers_guest_cpu::{Guest, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
@@ -254,20 +254,82 @@ fn five_level_only(stop: Stop) -> bool {
 /// The cases whose outcome by the inside's `answer` was compared with the meaning's.
 pub static ANSWERS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// A case's memory as layer 1 lays it out, for the inside's answers: the data area and the code area holding the
+/// guest's filler with the instruction at `CODE`, each with the permissions layer 1 gives it.
+struct CaseMemory {
+    data: Vec<u8>,
+    code: Vec<u8>,
+}
+
+impl CaseMemory {
+    fn new(case: &Case) -> Self {
+        let area = crate::layer1::code_area::<X86_64>();
+        let mut code = vec![X86_64::FILLER; (area.end - area.start) as usize];
+        let bytes = case.code.code();
+        code[(CODE - area.start) as usize..][..bytes.len()].copy_from_slice(bytes);
+        CaseMemory {
+            data: crate::layer1::start_data(case),
+            code,
+        }
+    }
+
+    /// The byte at `at`, where `access` is allowed there.
+    fn byte(&mut self, at: u64, access: Permissions) -> Option<&mut u8> {
+        let (range, permissions) = crate::layer1::regions::<X86_64>()
+            .into_iter()
+            .find(|(range, _)| range.contains(&at))?;
+        if !permissions.contains(access) {
+            return None;
+        }
+        let area = crate::layer1::code_area::<X86_64>();
+        if range.start >= area.start && range.end <= area.end {
+            self.code.get_mut((at - area.start) as usize)
+        } else {
+            self.data.get_mut((at - DATA) as usize)
+        }
+    }
+}
+
+impl wcontainers_x86::answer::Memory for CaseMemory {
+    fn read(&mut self, at: u64, into: &mut [u8]) -> Result<(), u64> {
+        for (k, to) in into.iter_mut().enumerate() {
+            let from = at.wrapping_add(k as u64);
+            *to = *self.byte(from, Permissions::READ).ok_or(from)?;
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), u64> {
+        let to = |k: usize| at.wrapping_add(k as u64);
+        if let Some(k) = (0..bytes.len()).find(|&k| self.byte(to(k), Permissions::WRITE).is_none())
+        {
+            return Err(to(k));
+        }
+        for (k, from) in bytes.iter().enumerate() {
+            *self.byte(to(k), Permissions::WRITE).expect("checked") = *from;
+        }
+        Ok(())
+    }
+}
+
 /// The case's outcome by the inside's `answer`, where it answers the case's instruction.
 pub fn answered(case: &Case) -> Option<Outcome> {
+    use wcontainers_guest_cpu::MemoryFault;
     use wcontainers_x86::answer::{Consts, Fault, answer};
-    let (i, length) = wcontainers_x86::decode(case.code.code())?;
+    let code = case.code.code();
+    let (i, length) = wcontainers_x86::decode(code)?;
     let question = wcontainers_x86::native::question(&i)?;
     let mut thread = vec![0; size_of::<X86Block>()];
     X86_64::from_state(&case.state, &mut thread);
     let mut block = X86Block::read_from_bytes(&thread).expect("a block");
     let mut constants = Consts::new().expect("the constants cache");
+    let mut memory = CaseMemory::new(case);
     let stop = match answer(
         question,
         &mut block,
         X86_64::case_offer(case),
         &mut constants,
+        &mut memory,
     ) {
         Ok(_) => {
             block.rip += u64::from(length);
@@ -275,12 +337,17 @@ pub fn answered(case: &Case) -> Option<Outcome> {
         }
         Err(Fault::GeneralProtection) => Stop::GeneralProtection,
         Err(Fault::FloatException(raised)) => Stop::FloatException(raised.into()),
+        Err(Fault::Memory(address)) => match X86_64::memory_fault(address, code, &block) {
+            MemoryFault::Page => Stop::MemoryFault(address),
+            MemoryFault::GeneralProtection => Stop::GeneralProtection,
+            MemoryFault::Stack => Stop::StackFault,
+        },
     };
     thread.copy_from_slice(block.as_bytes());
     Some(Outcome {
         stop,
         state: X86_64::to_state(&thread),
-        changed: Vec::new(),
+        changed: crate::layer1::changed(case, &memory.data),
     })
 }
 

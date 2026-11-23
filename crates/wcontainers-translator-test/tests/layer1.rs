@@ -480,6 +480,151 @@ fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
     eprintln!("the inside's cpuid and xgetbv equal to the meaning's in {checked} cases");
 }
 
+/// The inside's answers to the reciprocal estimates, `popf` and the descriptor-table instructions equal the
+/// meaning's on the operands layer 1's random cases rarely reach: every exponent of both signs with the fractions
+/// at the estimates' interval edges and not-a-numbers, every selector of Linux's table and its neighbours, every
+/// rflags bit popped, and accesses that fault in the read-only and unmapped data or off the canonical range.
+#[test]
+fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::{
+        RFLAGS, RSP, XMM, YMMH, native::answered, plain,
+    };
+    use wcontainers_translator_test::layer1::translated;
+    use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_x86::{DF, ID, NT, RCX, USER_DS, USER_END};
+    let mut checked = 0;
+    let mut check = |case: &Case| {
+        let answered = answered(case).expect("an instruction the inside answers");
+        let meaning = translated::<X86_64>(case);
+        assert!(
+            answered == meaning,
+            "{:02x?}: the answer {:?} {:x?} {:x?}, the meaning {:?} {:x?} {:x?}",
+            case.code.code(),
+            answered.stop,
+            answered.state.0,
+            answered.changed,
+            meaning.stop,
+            meaning.state.0,
+            meaning.changed
+        );
+        checked += 1;
+    };
+    // rcpps, rsqrtps, rcpss, rsqrtss xmm0, xmm1; vrcpps, vrsqrtps ymm0, ymm1; vrcpss, vrsqrtss xmm0, xmm2, xmm1.
+    let reciprocals: [&[u8]; 8] = [
+        &[0x0f, 0x53, 0xc1],
+        &[0x0f, 0x52, 0xc1],
+        &[0xf3, 0x0f, 0x53, 0xc1],
+        &[0xf3, 0x0f, 0x52, 0xc1],
+        &[0xc5, 0xfc, 0x53, 0xc1],
+        &[0xc5, 0xfc, 0x52, 0xc1],
+        &[0xc5, 0xea, 0x53, 0xc1],
+        &[0xc5, 0xea, 0x52, 0xc1],
+    ];
+    let fraction_bits = f32::MANTISSA_DIGITS - 1;
+    let quiet = 1u32 << (fraction_bits - 1);
+    let fractions = [
+        0,
+        1,
+        (1 << 12) - 1,
+        1 << 12,
+        (1 << 13) - 1,
+        quiet,
+        quiet - 1,
+        (1 << fraction_bits) - 1,
+    ];
+    let lanes: Vec<u32> = [0, 1u32 << (u32::BITS - 1)]
+        .into_iter()
+        .flat_map(|sign| {
+            (0..=u32::from(u8::MAX)).flat_map(move |exponent| {
+                fractions
+                    .into_iter()
+                    .map(move |f| sign | exponent << fraction_bits | f)
+            })
+        })
+        .collect();
+    let lane = |k: usize| u128::from(lanes[k % lanes.len()]);
+    let four = |k: usize| (0..4).map(|n| lane(k + n) << (32 * n)).sum::<u128>();
+    for code in reciprocals {
+        for k in (0..lanes.len()).step_by(4) {
+            let mut case = plain(code);
+            for (n, field) in [XMM, XMM + 1, XMM + 2, YMMH, YMMH + 1, YMMH + 2]
+                .into_iter()
+                .enumerate()
+            {
+                case.state.0[field] = four(k + lanes.len() / 2 * (n % 2) + 3 * n);
+            }
+            check(&case);
+        }
+    }
+    // popfq and popfw of every bit alone, none and all, from the writable stack, with DF, NT and ID clear and set
+    // before; then from the read-only data, across the data's end, and with rsp off the canonical range.
+    let stack = DATA + DATA_WRITABLE / 2;
+    for code in [&[0x9d][..], &[0x66, 0x9d]] {
+        let values = (0..u64::BITS).map(|b| 1u64 << b).chain([0, u64::MAX]);
+        for (value, before) in values.flat_map(|v| [(v, 0), (v, DF | NT | ID)]) {
+            let mut case = plain(code);
+            case.state.0[RSP] = stack.into();
+            case.state.0[RFLAGS] |= u128::from(before);
+            case.placed = ((stack - DATA) as u32, value.to_le_bytes().to_vec());
+            check(&case);
+        }
+        for rsp in [DATA + DATA_WRITABLE, DATA + DATA_BYTES - 1, USER_END, 0] {
+            let mut case = plain(code);
+            case.state.0[RSP] = rsp.into();
+            check(&case);
+        }
+    }
+    // lar, lsl (32, 64 and 16 bits), verr and verw of a selector in rcx, its upper bits set and clear.
+    let selector_reads: [&[u8]; 8] = [
+        &[0x0f, 0x02, 0xc1],
+        &[0x48, 0x0f, 0x02, 0xc1],
+        &[0x66, 0x0f, 0x02, 0xc1],
+        &[0x0f, 0x03, 0xc1],
+        &[0x48, 0x0f, 0x03, 0xc1],
+        &[0x66, 0x0f, 0x03, 0xc1],
+        &[0x0f, 0x00, 0xe1],
+        &[0x0f, 0x00, 0xe9],
+    ];
+    for code in selector_reads {
+        for selector in 0..=u64::from(u8::MAX) {
+            for upper in [0, u64::MAX << u16::BITS] {
+                let mut case = plain(code);
+                case.state.0[usize::from(RCX)] = (upper | selector).into();
+                case.state.0[0] = u128::from(u64::MAX);
+                check(&case);
+            }
+        }
+    }
+    // The memory forms: sgdt, sidt, smsw, sldt and str to [rsp], lar eax from [rsp], and smsw, sldt and str to
+    // eax, rax and ax.
+    let memory_forms: [&[u8]; 6] = [
+        &[0x0f, 0x01, 0x04, 0x24],
+        &[0x0f, 0x01, 0x0c, 0x24],
+        &[0x0f, 0x01, 0x24, 0x24],
+        &[0x0f, 0x00, 0x04, 0x24],
+        &[0x0f, 0x00, 0x0c, 0x24],
+        &[0x0f, 0x02, 0x04, 0x24],
+    ];
+    for code in memory_forms {
+        for rsp in [stack, DATA + DATA_WRITABLE, DATA + DATA_BYTES - 4, USER_END] {
+            let mut case = plain(code);
+            case.state.0[RSP] = rsp.into();
+            case.placed = ((stack - DATA) as u32, USER_DS.to_le_bytes().to_vec());
+            check(&case);
+        }
+    }
+    for code in [[0x0f, 0x01, 0xe0], [0x0f, 0x00, 0xc0], [0x0f, 0x00, 0xc8]] {
+        for prefix in [&[][..], &[0x48], &[0x66]] {
+            let mut case = plain(&[prefix, &code].concat());
+            case.state.0[0] = u128::from(u64::MAX);
+            check(&case);
+        }
+    }
+    eprintln!(
+        "the inside's reciprocals, popf and descriptor reads equal to the meaning's in {checked} cases"
+    );
+}
+
 /// `Condition::holds`, by which the inside takes a `jcc` exit's `int3` hit (docs/x86-native-output.md 3.2), is the
 /// meaning's: `setcc al` under WebAssembly for each of the sixteen conditions on every combination of the five
 /// flags conditions read.
