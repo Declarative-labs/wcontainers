@@ -5745,12 +5745,6 @@ code	crates/wcontainers-arm64/src/vector.rs	int	emit	8
 code	crates/wcontainers-arm64/src/vector.rs	int	low_bytes	16
 code	crates/wcontainers-arm64/src/vector.rs	int	low_bytes	8
 code	crates/wcontainers-arm64/src/vector.rs	int	narrow	8
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	128
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	14
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	14
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	16
-code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	8
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bias_step	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bias_step	24
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bound_as_target	22
@@ -5771,8 +5765,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::helper_block	0b1111
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::indexed_strip	0xff
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::indexed_strip	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::om_set_render_targets	8
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::om_set_render_targets	8
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
@@ -5807,8 +5799,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	5
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::set_constant_ranges	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::set_constant_ranges	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::set_constant_ranges	4096
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::so_set_targets	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::so_set_targets	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::stage_variant	128
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::stage_variant	128
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::stage_variant	16
