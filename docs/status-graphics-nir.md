@@ -5,6 +5,126 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 20 (2026-11-23, the eighth run of this batch): atomics on images of textures, one slice of
+a volume texture as a flat image and uniform blocks bound short are built (6aa1a492, 6d5e61df,
+94019b06), and the screen reports three more of ES 3.2's requirements (9901c6eb, dd1ca38f).
+KHR-GLES32 and KHR-GL46 still start no context: ES 3.2 still lacks `KHR_blend_equation_advanced`,
+`OES_sample_variables` and `OES_copy_image` (below). Unsafe code: wcontainers-opengl has three uses more (the image's
+resource and texture range in `texel_layout`, the resource in `image_texels`), wcontainers-nir
+none. No dependency or licence was added.
+
+Done this run:
+- What the driver reported (`dEQP-GLES31.info.extensions` at 84363abb, log `logs/g9r20-ext.log`):
+  of ES 3.2's requirements in Mesa's `compute_version_es2`, five were missing:
+  `KHR_blend_equation_advanced`, `KHR_robustness`, `OES_copy_image`, `OES_sample_variables`,
+  `OES_texture_cube_map_array`. `OES_shader_image_atomic` was reported while route B refused
+  atomics on images of textures: a capability reported and not built, now built (next item).
+- Atomics on images of textures (6aa1a492, 6d5e61df): the common form has no image atomic
+  giving the old value, so route B declares every image of a texture in a program with image
+  atomics as a storage buffer of words and reads, writes, measures and operates on it through the
+  stand-ins `wcontainers_shaders::typed` writes (`TexelBufferRoute::Storage`, as for images of
+  buffers). The texel's element comes from the coordinate and the image's
+  `HelperValue::TexelLayout` (row pitch, rows per layer, width, height, layers, in route B's helper
+  block, two rows): a coordinate outside the view names no element (reads zero, takes no write).
+  Every image of the program goes so, not only those under atomics, so that two images bound to
+  one texture (dEQP's alias cases) read and write one buffer: the driver binds images of the same
+  resource and layout to one buffer (`image_texels`), copies the texels in before the work
+  (outside a pass) and back after it where any of them is writable, and counts
+  `AtomicsThroughBuffer`. An array of images under atomics and a multisampled one are refused by
+  name. Test `images_of_textures_beside_atomics_are_storage_words_laid_out_by_helper_constants`
+  (tests/route.rs).
+- One slice of a volume texture as a flat image (94019b06): bound through a flat twin of the
+  slice (the reinterpreting twin's path, `ReinterpretCopy`), copied in before and back after.
+- A uniform block bound smaller than the program declares (94019b06): the bound bytes are copied
+  into a zeroed buffer of the declared size (`ConstantBufferGrown`), as OpenGL reads past the end.
+- The screen (9901c6eb): cube map arrays (the interface's views have them), robust buffer access
+  (every back end bounds a program's buffer accesses), and images in fragment programs where the
+  back end writes storage there (`FRAGMENT_STORAGE_WRITE`). Mesa then reports
+  `OES_texture_cube_map_array` and `KHR_robustness`.
+- Copies between compressed and plain formats were reported in 9901c6eb and taken back in
+  dd1ca38f: with `OES_copy_image` reported, dEQP-GLES31's `copy_image` group (about 21,000 cases)
+  runs, and Mesa copies between formats of one class by sampler views of the other format
+  (`rgb10_a2ui` viewed as `r32i`, ...), which the WebGPU back end makes only for formats the
+  texture was made to be viewed in: wgpu's "view format is not present in the texture's
+  viewFormat array", a device error, and every case after it in the process lost (11,765 device
+  losses in the first hour of 9901c6eb's whole run, which was stopped with `stop-cts.ps1` at
+  03:46 so as not to hold the GPU queue). Needed before it is reported again: such views through
+  a twin of the view's format (`ReinterpretCopy`, as images of another format already are), and
+  the driver refusing by name a view the back end cannot make instead of a device error.
+- The literal check (x86-64 machine, from a git bundle of agents at 9901c6eb, log
+  `logs/g9r20-literals.out`): two findings new this run (the two refusals of `image_buffer`, a
+  plain string each) and two older ones (the 8-bit patches refusal, the pass-through without a
+  position), all four fixed in 2524183b (not run again after).
+
+The check of 6aa1a492's tree, the image groups (`dEQP-GLES31.functional.image_load_store.*`,
+`compute.*`, `synchronization.*`, `KHR-GLES31.core.shader_image_load_store.*`, `texture_buffer.*`,
+`shader_atomic_counters.*`; desktop, RTX 3080, one GPU job, 8 glcts at once, 02:16 to 02:18
+Pacific), against the same cases of run 19's whole run: dEQP-GLES31 989 of 1,034 (run 19: 832
+passed), KHR-GLES31 62 of 64. 160 crashes now pass; the four image_atomic_alias cases of
+`synchronization` went from crash to fail (an image under atomics and one without bound to one
+texture, which then read different copies: the next commit routes both through one buffer); two
+`inter_invocation.ssbo_atomic_*` cases that passed failed and two qualifiers cases flaked, all of
+the intermittent coherence family below. Results `results/g9r20/img-1/`, log
+`logs/g9r20-img-1.log`.
+
+The table, EVERY LIST WHOLE AT ONE COMMIT, dd1ca38f (desktop, RTX 3080, one GPU job, 8 glcts at
+once), 03:50:03 to 04:24:08 (Pacific), against run 19's whole run at 31ede8c6:
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64% (the same results).
+- dEQP-GLES3: 44,768; Pass 44,027, Warn 5, Fail 174, Crash 69, Skip 493: 44,032 of 44,275, 99.45%
+  (the same; in 9901c6eb's stopped run `flush_finish.flush`, a timing case, flaked).
+- dEQP-GLES31: 37,802; Pass 19,726, Fail 122, Crash 374, Flake 3, Skip 17,577: 19,726 of 20,225,
+  97.53% (run 19: 18,937 of 19,429, 97.47%). 796 cases that were NotSupported run now (cube map
+  arrays, fragment images): 594 pass (`texture.filtering.cube_array` 200,
+  `state_query.texture.texture_cube_array` 81, `texture.format.sized` 58, `texture.specification`
+  3D and cube array 121, ...), 202 crash (`texture.format.sized` 50, `texture.specification`'s
+  four groups 100, `fbo.color.texcubearray` 19: integer cube arrays sampled, the refusal "sampling
+  an integer texture" grew from 126 to 498). 197 crashes now pass (image atomics, volume slices).
+  One case that passed fails, `synchronization.inter_invocation.ssbo_atomic_read_write`, and
+  `image_load_store.3d.qualifiers.coherent_r32f` flaked: the intermittent coherence family (both
+  passed in run 19, the first failed and passed once each in this run's group check).
+- KHR-GLES2: 473; Pass 438, Skip 35: 100.00%.
+- KHR-GLES3: 6,498; Pass 6,194, Fail 3, Crash 73, Skip 228: 6,194 of 6,270, 98.79% (3 more run and
+  pass).
+- KHR-GLES31: 4,101; Pass 2,996, Fail 17, Crash 75, Skip 1,013: 2,996 of 3,088, 97.02% (run 19:
+  97.07%). 54 cases now run (fragment images; 43 pass, 10 crash, 1 fails), 8 crashes pass;
+  `shader_image_load_store.advanced-copyImage-cs` passed and fails, and
+  `geometry_shader.layered_rendering_fbo_no_attachment` failed and crashes; not yet read.
+- KHR-GL33: 9,886; Pass 8,990, Fail 145, Crash 229, Skip 522: 8,990 of 9,364, 96.01% (the same).
+- KHR-GLES32 (1,405) and KHR-GL46 (19,714): still no context of their version.
+- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
+  run and failed: 99,345 of 102,095, 97.31%, above the 92.9% floor (without KHR-GLES32: 99,345 of
+  100,690, 98.66%). Still not the bar: not every failure has a reason, NotSupported is not checked
+  group by group, KHR-GLES32 does not start, and bgfx's and Godot's renderers, the RTX 3080's own
+  OpenGL and the independent check are not done; G9's second part (4.6) has not started.
+- The run's process refusals, most first: device lost 672, sampling an integer texture 498 (cube
+  arrays among them now), blits the blitter does not make 74, an evaluation program reading
+  `gl_in[].gl_PointSize` 72, layered geometry output 56, `BorderInShaderOnComparison` 48,
+  comparisons with a bias or gradients 34. Atomics on images of textures, volume slices and short
+  uniform blocks are gone from the list.
+- Results scratch `results/g9r20/full/<list>/results.csv`, log `logs/g9r20-full2.log` (refusal
+  counts `logs/g9r20-full2.refusals`; the stopped run's `logs/g9r20-full.log`).
+
+Next, in order:
+1. ES 3.2's three missing requirements, so that KHR-GLES32 starts: `OES_copy_image` (sampler and
+   blit views of another colour format of one block size through a twin, then the screen's
+   `copy_between_compressed_and_plain_formats`; and before that the driver refusing by name a view
+   the back end cannot make, so a device error does not end the process: mind formats the WebGPU
+   back end stores alike, such as `Bgrx8Unorm` and `Bgra8Unorm`), `OES_sample_variables`
+   (`ARB_sample_shading`: `set_min_samples`, the fragment program's inputs sampled per sample in
+   a variant; and ESSL 3.20 for `ARB_gpu_shader5`), and `KHR_blend_equation_advanced` (Mesa
+   lowers it to framebuffer fetch: the colour target copied to a texture the program reads at its
+   fragment, per draw, as the non-coherent extension allows).
+2. Integer textures sampled through cube arrays and the other targets the nearest-texel variant
+   lacks (498 process refusals), device losses (672: find each process's first case; one family
+   is wgpu's "Error matching ShaderStages(FRAGMENT) shader requirements" in
+   `shaders.linkage.es31.tessellation.varying.types.int`).
+3. Layered geometry output (56), point size read by an evaluation program (72), border colours
+   on comparison samplers (48), blits the blitter does not make (74).
+4. The NotSupported check, the comparison with the RTX 3080's own OpenGL, bgfx and Godot, the
+   independent check; then 4.0's requirements for KHR-GL46 and 4.6.
+
+
 G9 run 19 (2026-11-23, the seventh run of this batch): four of run 18's refusals are built
 (6311353b, c5ad7462, 31ede8c6): route B's invalid modules, flat values from a
 staged stage's last vertex, images of buffers (their atomics too) and `gl_HelperInvocation`.
@@ -787,7 +907,8 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
 ## For the owner
 
 - Unsafe code (the 2026-11-22 rule): wcontainers-opengl (326 uses on the root list; two more since
-  G9 run 19, the bound image of a buffer's resource and range) and wcontainers-nir (98) stay on
+  G9 run 19, the bound image of a buffer's resource and range; three more since G9 run 20, an
+  image's resource and texture range read as texels) and wcontainers-nir (98) stay on
   the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
   driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
   structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
@@ -831,6 +952,12 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 20's scripts are run 19's under `g9r20-` names (`g9r20-group.sh`, `g9r20-full.sh`), with
+  `g9r20-compare.py <lists>` (a whole run's results against run 19's); on the desktop
+  `refusals.ps1 -List <list>` counts a list's refusals and its cases' groups while it runs, and
+  `first-lost.ps1 -List <list> -Group <text>` prints the first device error of the processes
+  that ran a group (both copied to `C:\wc\graphics-nir`). The literal check's
+  `literal-check.sh` now clones branch agents from the bundle.
 - G9 run 19's one-command scripts (scratch `scripts/`, run 18's with the run's names; give the
   log as an absolute path): `g9r19-group.sh <log> <lists> [<regexes>]` builds Mesa with the driver
   on the desktop and runs those lists (those groups of them) as one GPU job; `g9r19-full.sh <log>`
@@ -1667,6 +1794,14 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 20: exit 1 at 9901c6eb (x86-64 machine, from a git bundle of agents; the clone, its
+build and the bundle deleted after; output in scratch `logs/g9r20-literals.out`). In
+wcontainers-nir and wcontainers-opengl, 13: this run's two (the refusals of `image_buffer`, plain
+strings) and the patches and pass-through refusals of earlier runs, all four made messages the
+check reads in 2524183b (not run again after); left: the 7 of run 12 (`unbuilt!`'s three, the
+two `OUT_DIR`-like ones, `CUBE_FACES` restating the interface's, which is not public) and
+`GEOMETRY_OUTPUT_VERTICES` restating another crate's 256.
 
 G9 run 19: exit 1 at 31ede8c6 (x86-64 machine, from a git bundle; 418 findings in the whole
 workspace, most of them other crates'; the clone, its build and the bundle deleted after; output
