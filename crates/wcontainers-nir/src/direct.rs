@@ -4961,6 +4961,7 @@ pub fn rewrite(
         texels_through_buffer: variant.texels_through_buffer,
         pulled: variant.pulled.clone(),
         border_in_shader: variant.border_in_shader,
+        texture_layers: variant.texture_layers.clone(),
         ..VariantKey::default()
     };
     if *variant != routed_rewrites {

@@ -508,7 +508,8 @@ pub fn surface_view<B: Backend>(
         return None;
     }
     // SAFETY: a surface holds a live texture.
-    let resource = unsafe { Resource::<B>::of(surface.texture) };
+    let (resource, layer) =
+        unsafe { Resource::<B>::of(surface.texture) }.layer(surface.first_layer());
     let (texture, desc) = resource.texture()?;
     let format = crate::format::format(surface.format())?;
     if through_twin(backend, format, desc) {
@@ -531,7 +532,7 @@ pub fn surface_view<B: Backend>(
                 },
                 base_mip: surface.level,
                 mip_count: 1,
-                base_layer: if three_d { 0 } else { surface.first_layer() },
+                base_layer: if three_d { 0 } else { layer },
                 layer_count: 1,
                 stencil: false,
             },
@@ -564,20 +565,14 @@ fn target<B: Backend>(
     twins: &mut Vec<view::Twin<B>>,
 ) -> Option<Target<B>> {
     // SAFETY: a surface holds a live texture.
-    let resource = unsafe { Resource::<B>::of(surface.texture) };
+    let (resource, layer) =
+        unsafe { Resource::<B>::of(surface.texture) }.layer(surface.first_layer());
     let (texture, desc) = resource.texture()?;
     let size = |n: u32| (n >> surface.level).max(1);
     let format = crate::format::format(surface.format())?;
     if through_twin(backend, format, desc) {
-        let twin = view::Twin::of_target(
-            backend,
-            texture,
-            desc,
-            format,
-            surface.level,
-            surface.first_layer(),
-        )
-        .unwrap_or_else(|why| state::refuse(format_args!("{why} (not built)")));
+        let twin = view::Twin::of_target(backend, texture, desc, format, surface.level, layer)
+            .unwrap_or_else(|why| state::refuse(format_args!("{why} (not built)")));
         let view = backend
             .create_view(
                 twin.texture(),
@@ -613,8 +608,8 @@ fn target<B: Backend>(
         texture: texture.clone(),
         format,
         mip: surface.level,
-        layer: if three_d { 0 } else { surface.first_layer() },
-        depth_slice: if three_d { surface.first_layer() } else { 0 },
+        layer: if three_d { 0 } else { layer },
+        depth_slice: if three_d { layer } else { 0 },
         width: size(desc.width),
         height: size(desc.height),
         samples: desc.samples,

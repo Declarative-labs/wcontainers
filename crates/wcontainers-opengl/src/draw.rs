@@ -124,6 +124,9 @@ pub(crate) struct Variant {
     /// The formats of the images bound where the program declares images without a format, by
     /// unit.
     image_formats: Vec<(u32, Format)>,
+    /// The layers of the multisampled arrays bound where the program samples, by unit, which it
+    /// reads a texture each.
+    texture_layers: Vec<(u32, u32)>,
 }
 
 impl Variant {
@@ -135,6 +138,7 @@ impl Variant {
             nearest: nearest_samplers(bound),
             border: border_in_program(bound),
             image_formats: image_formats(bound),
+            texture_layers: texture_layers(bound),
             ..Variant::default()
         };
         let swizzled = !variant.swizzles.is_empty();
@@ -604,7 +608,8 @@ fn convert<B: Backend>(
     let rewrites = VariantKey {
         pulled: variant.pulled.clone(),
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
-        storage_formats: storage_slots(&bindings, &variant.image_formats),
+        storage_formats: by_slot(&bindings, SlotKind::Storage, &variant.image_formats),
+        texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
     };
     let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
@@ -709,6 +714,7 @@ fn convert_geometry<B: Backend>(
     let rewrites = VariantKey {
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
         output_interpolation: output_interpolation(&variant.interpolation),
+        texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
     };
     let routed = wcontainers_nir::direct::route(nir).map_err(|e| e.to_string())?;
@@ -761,6 +767,7 @@ fn convert_control<B: Backend>(
         .ok_or("a control program without its evaluation program's tessellator")?;
     let rewrites = VariantKey {
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
     };
     let routed = wcontainers_nir::direct::route_patches(nir, variant.points_in)
@@ -804,6 +811,7 @@ fn convert_evaluation<B: Backend>(
     let rewrites = VariantKey {
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
         output_interpolation: output_interpolation(&variant.interpolation),
+        texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
     };
     let routed = wcontainers_nir::direct::route_patches(nir, variant.points_in)
@@ -1443,6 +1451,25 @@ pub(crate) fn binding_sets<B: Backend>(
                 resource: BindingResource::UniformBuffer(range),
             });
         }
+        // The layers after the first of the multisampled arrays the program reads.
+        for b in &built.bindings {
+            let Some(AddedBinding::TextureLayer(slot, layer)) = b.added else {
+                continue;
+            };
+            let view = unit_of(&built.bindings, SlotKind::Texture, slot)
+                .and_then(|unit| bound.views.get(unit as usize))
+                .filter(|v| !v.is_null())
+                .ok_or("a multisampled array the program reads is not bound")?;
+            // SAFETY: the slot holds a reference on a live view of this driver.
+            let view = unsafe { View::<B>::of(*view) }
+                .layer_view(layer)
+                .ok_or("a layer of a multisampled array past its view's")?;
+            entries.push(BindingEntry {
+                binding: b.binding,
+                stages: visible,
+                resource: BindingResource::Texture(view),
+            });
+        }
         for b in built.bindings.iter().filter(|b| b.added.is_none()) {
             let resource = match b.kind {
                 SlotKind::Uniform => continue,
@@ -1975,6 +2002,7 @@ fn draw<B: Backend>(
             0
         },
         image_formats: image_formats(context.stages.get(Stage::Fragment)),
+        texture_layers: texture_layers(context.stages.get(Stage::Fragment)),
         ..Variant::default()
     };
     if fragment.second_source.is_some() {
@@ -2014,6 +2042,7 @@ fn draw<B: Backend>(
         samples: 0,
         single_sampled: false,
         image_formats: Vec::new(),
+        texture_layers: texture_layers(context.stages.get(Stage::Vertex)),
     };
     // SAFETY: as above.
     let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
@@ -2024,6 +2053,7 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::Geometry)),
         nearest: nearest_samplers(context.stages.get(Stage::Geometry)),
         border: border_in_program(context.stages.get(Stage::Geometry)),
+        texture_layers: texture_layers(context.stages.get(Stage::Geometry)),
         interpolation: inputs,
         ..Variant::default()
     };
@@ -2039,6 +2069,7 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::TessEvaluation)),
         nearest: nearest_samplers(context.stages.get(Stage::TessEvaluation)),
         border: border_in_program(context.stages.get(Stage::TessEvaluation)),
+        texture_layers: texture_layers(context.stages.get(Stage::TessEvaluation)),
         interpolation: if gs.is_null() {
             geometry.interpolation.clone()
         } else {
@@ -2079,6 +2110,7 @@ fn draw<B: Backend>(
             swizzles: swizzles(context.stages.get(Stage::TessControl)),
             nearest: nearest_samplers(context.stages.get(Stage::TessControl)),
             border: border_in_program(context.stages.get(Stage::TessControl)),
+            texture_layers: texture_layers(context.stages.get(Stage::TessControl)),
             points_in: u32::from(context.bound.patch_vertices),
             ..Variant::default()
         };
@@ -3675,16 +3707,35 @@ fn split_arrays(converted: &mut Converted) {
     converted.reflection.bindings = elements(std::mem::take(&mut converted.reflection.bindings));
 }
 
-/// `formats`, by image unit, by the storage slots the route binds those units at.
-fn storage_slots(bindings: &[ReflectedBinding], formats: &[(u32, Format)]) -> Vec<(u32, Format)> {
+/// Values by unit of `kind`, by the slots the route binds those units at.
+fn by_slot<T: Copy>(
+    bindings: &[ReflectedBinding],
+    kind: SlotKind,
+    by_unit: &[(u32, T)],
+) -> Vec<(u32, T)> {
     bindings
         .iter()
-        .filter(|b| b.added.is_none() && b.kind == SlotKind::Storage)
+        .filter(|b| b.added.is_none() && b.kind == kind)
         .flat_map(|b| {
-            formats
+            by_unit
                 .iter()
                 .filter(|&&(unit, _)| (b.register..b.register + b.count).contains(&unit))
-                .map(|&(unit, format)| (b.slot() + unit - b.register, format))
+                .map(|&(unit, value)| (b.slot() + unit - b.register, value))
+        })
+        .collect()
+}
+
+/// The layers of the multisampled arrays a stage binds, by unit.
+fn texture_layers<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, u32)> {
+    stage
+        .views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !v.is_null())
+        .filter_map(|(unit, &v)| {
+            // SAFETY: the slot holds a reference on a live view of this driver.
+            let count = unsafe { View::<B>::of(v) }.layer_count()?;
+            Some((unit as u32, count))
         })
         .collect()
 }

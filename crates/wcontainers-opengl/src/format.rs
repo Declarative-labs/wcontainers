@@ -281,8 +281,9 @@ pub fn supported(
         _ => false,
     };
     let storage = bindings & PIPE_BIND_SHADER_IMAGE == 0 || sampled == 1;
-    // The host's multisampled textures are single 2D layers.
-    let layers = sampled == 1 || target == PIPE_TEXTURE_2D;
+    // The host's multisampled textures are single 2D layers; an array of them is held a layer a
+    // texture.
+    let layers = sampled == 1 || target == PIPE_TEXTURE_2D || target == PIPE_TEXTURE_2D_ARRAY;
     left == 0
         && storage
         && layers

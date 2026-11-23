@@ -22,6 +22,9 @@ pub enum Storage<B: Backend> {
         texture: B::Texture,
         desc: TextureDesc,
     },
+    /// A multisampled array texture, a 2D resource of this driver a layer, each holding one
+    /// reference: the host's multisampled textures are single layers.
+    Layers(Vec<*mut pipe_resource>),
 }
 
 /// One resource: Gallium's struct first, so that a `pipe_resource` pointer is one to it.
@@ -42,14 +45,33 @@ impl<B: Backend> Resource<B> {
     pub fn buffer(&self) -> Option<&B::Buffer> {
         match &self.storage {
             Storage::Buffer(buffer) => Some(buffer),
-            Storage::Texture { .. } => None,
+            Storage::Texture { .. } | Storage::Layers(_) => None,
         }
     }
 
+    /// The texture, none for a buffer or a texture held a layer a resource ([`Resource::layer`]).
     pub fn texture(&self) -> Option<(&B::Texture, &TextureDesc)> {
         match &self.storage {
             Storage::Texture { texture, desc } => Some((texture, desc)),
-            Storage::Buffer(_) => None,
+            Storage::Buffer(_) | Storage::Layers(_) => None,
+        }
+    }
+
+    /// The resources a layer of a texture held a layer a resource, empty for any other.
+    pub fn layers(&self) -> &[*mut pipe_resource] {
+        match &self.storage {
+            Storage::Layers(layers) => layers,
+            Storage::Buffer(_) | Storage::Texture { .. } => &[],
+        }
+    }
+
+    /// The resource holding `layer` of this one and the layer's place in it: the layer's own
+    /// resource at its layer 0 for a texture held a layer a resource, this one otherwise.
+    pub fn layer(&self, layer: u32) -> (&Resource<B>, u32) {
+        match self.layers().get(layer as usize) {
+            // SAFETY: the resource holds a reference on each of its layers.
+            Some(&held) => (unsafe { Resource::of(held) }, 0),
+            None => (self, layer),
         }
     }
 
@@ -191,6 +213,22 @@ pub unsafe extern "C" fn resource_create<B: Backend>(
                 return std::ptr::null_mut();
             }
         }
+    } else if template.target() == PIPE_TEXTURE_2D_ARRAY && template.nr_samples > 1 {
+        let mut layer = *template;
+        layer.set_target(PIPE_TEXTURE_2D);
+        layer.array_size = 1;
+        let mut layers = Vec::with_capacity(usize::from(template.array_size));
+        for _ in 0..template.array_size {
+            // SAFETY: Mesa's screen and a template of one of its layers.
+            let made = unsafe { resource_create::<B>(screen, &layer) };
+            if made.is_null() {
+                // SAFETY: each made layer holds its first reference.
+                layers.into_iter().for_each(|l| unsafe { release(l) });
+                return std::ptr::null_mut();
+            }
+            layers.push(made);
+        }
+        Storage::Layers(layers)
     } else {
         let Some(desc) = texture_desc(ours, template) else {
             return std::ptr::null_mut();
@@ -229,6 +267,11 @@ pub unsafe extern "C" fn resource_destroy<B: Backend>(
     screen.retire(match resource.storage {
         Storage::Buffer(buffer) => Object::Buffer(buffer),
         Storage::Texture { texture, .. } => Object::Texture(texture),
+        Storage::Layers(layers) => {
+            // SAFETY: the resource held one reference on each layer.
+            layers.into_iter().for_each(|l| unsafe { release(l) });
+            return;
+        }
     });
 }
 

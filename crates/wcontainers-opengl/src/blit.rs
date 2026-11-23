@@ -263,6 +263,10 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
             Resource::<B>::of((*info).dst.resource),
         )
     };
+    if !from.layers().is_empty() || !to.layers().is_empty() {
+        by_layers(pipe, info, from, to);
+        return;
+    }
     if whole_resolve(context, info, from, to) || bit_copy(context, info, from, to) {
         return;
     }
@@ -283,6 +287,38 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
     save(context, unsafe { &mut *blitter });
     // SAFETY: as above; every state the blitter changes is saved.
     unsafe { util_blitter_blit(blitter, &info, std::ptr::null_mut()) };
+}
+
+/// A blit from or into a texture held a layer a resource, as a blit a layer between the layers'
+/// own resources.
+fn by_layers<B: Backend>(
+    pipe: *mut pipe_context,
+    info: &pipe_blit_info,
+    from: &Resource<B>,
+    to: &Resource<B>,
+) {
+    let (src, dst) = (info.src.box_, info.dst.box_);
+    if src.depth != dst.depth {
+        refuse(format_args!(
+            "a blit scaling the layers of a multisampled array"
+        ));
+    }
+    for i in 0..src.depth {
+        let mut one = *info;
+        for (side, resource, z) in [
+            (&mut one.src, from, src.z + i),
+            (&mut one.dst, to, dst.z + i),
+        ] {
+            side.box_.depth = 1;
+            side.box_.z = z;
+            if let Some(&layer) = resource.layers().get(z as usize) {
+                side.resource = layer;
+                side.box_.z = 0;
+            }
+        }
+        // SAFETY: the context Mesa passed; the blit names two live resources of this driver.
+        unsafe { blit::<B>(pipe, &one) };
+    }
 }
 
 /// A blit's stencil, which no program writes on the host (no stencil export): the destination's

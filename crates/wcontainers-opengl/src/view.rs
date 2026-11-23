@@ -43,6 +43,9 @@ pub struct View<B: Backend> {
     /// Its dimension and samples, which a stand-in of another kind takes ([`Images::stand_in`]).
     dimension: ViewDimension,
     samples: u32,
+    /// For a view of a multisampled array, the views of its layers after the first, a texture each
+    /// ([`Storage::Layers`](crate::resource::Storage::Layers)), which `view` is the first of.
+    layers: Option<Vec<B::TextureView>>,
 }
 
 /// A texture in a sampler view's format, of its levels and layers, copied from the view's texture
@@ -168,6 +171,17 @@ impl<B: Backend> View<B> {
             );
         }
         Ok(())
+    }
+
+    /// The layers a view of a multisampled array sees, which programs read a texture each
+    /// (`VariantKey::texture_layers`); none for another view.
+    pub fn layer_count(&self) -> Option<u32> {
+        self.layers.as_ref().map(|rest| rest.len() as u32 + 1)
+    }
+
+    /// The view of layer `n` (from 1) of a view of a multisampled array.
+    pub fn layer_view(&self, n: u32) -> Option<&B::TextureView> {
+        self.layers.as_ref()?.get(n.checked_sub(1)? as usize)
     }
 
     /// The 2D array of an integer cube map's or cube map array's faces, or none for another view.
@@ -456,7 +470,8 @@ impl<B: Backend> Images<B> {
             ));
         }
         // SAFETY: a bound surface holds a live texture.
-        let resource = unsafe { Resource::<B>::of(surface.texture) };
+        let (resource, layer) =
+            unsafe { Resource::<B>::of(surface.texture) }.layer(surface.first_layer());
         let (source, desc) = resource.texture().ok_or("a target of a buffer")?;
         let format = desc.format;
         if crate::format::format(surface.format()) != Some(format) {
@@ -492,7 +507,7 @@ impl<B: Backend> Images<B> {
         let three_d = desc.dimension == TextureDimension::D3;
         backend.slow_paths().hit(SlowPath::BlendInShader);
         backend.copy_texture(
-            &corner::<B>(source, three_d, surface.level, 0, 0, surface.first_layer()),
+            &corner::<B>(source, three_d, surface.level, 0, 0, layer),
             &corner::<B>(&texture, false, 0, 0, 0, 0),
             extent,
         );
@@ -1072,6 +1087,58 @@ fn texture_view<B: Backend>(
         .map_err(|_| "a view the device does not make")
 }
 
+/// The interface's views of the layers a Gallium sampler view of a multisampled array sees, a
+/// texture each, first first, or why there are none.
+fn layer_views<B: Backend>(
+    backend: &mut B,
+    resource: &Resource<B>,
+    view: &pipe_sampler_view,
+) -> Result<Vec<B::TextureView>, &'static str> {
+    let (_, desc) = resource
+        .layer(0)
+        .0
+        .texture()
+        .ok_or("a multisampled array without layers")?;
+    let seen = Seen::of(view, desc, false)?;
+    if !seen.stencil && seen.format.linear() != desc.format.linear() {
+        return Err("a multisampled texture viewed in another format (not built)");
+    }
+    let mut views = Vec::new();
+    for layer in seen.first_layer..seen.first_layer + seen.layers {
+        let made = resource
+            .layer(layer)
+            .0
+            .texture()
+            .ok_or("a view of layers past its texture's")
+            .and_then(|(texture, _)| {
+                backend
+                    .create_view(
+                        texture,
+                        &TextureViewDesc {
+                            format: seen.format,
+                            dimension: ViewDimension::D2,
+                            base_mip: seen.first_level,
+                            mip_count: seen.levels,
+                            base_layer: 0,
+                            layer_count: 1,
+                            stencil: seen.stencil,
+                        },
+                    )
+                    .map_err(|_| "a view the device does not make")
+            });
+        match made {
+            Ok(made) => views.push(made),
+            Err(why) => {
+                for made in views {
+                    backend.destroy(Object::TextureView(made));
+                }
+                return Err(why);
+            }
+        }
+    }
+    Ok(views)
+}
+
 /// A texel buffer view's texture and the interface's view of it, or why there are none.
 fn texel_buffer<B: Backend>(
     backend: &mut B,
@@ -1147,7 +1214,22 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: as above; the view takes its own reference.
     unsafe { resource::reference(&mut base.texture, texture) };
     let mut backend = context.screen().backend();
-    let (view, texels, twin) = if resource.buffer().is_some() {
+    let mut layers = None;
+    let (view, texels, twin) = if !resource.layers().is_empty() {
+        match layer_views::<B>(&mut backend, resource, &base) {
+            Ok(mut views) if !views.is_empty() => {
+                let first = views.remove(0);
+                layers = Some(views);
+                (Ok(first), None, None)
+            }
+            Ok(_) => (Err("a view of no layers"), None, None),
+            // Programs are converted for one layer, and binding it says why there is none.
+            Err(why) => {
+                layers = Some(Vec::new());
+                (Err(why), None, None)
+            }
+        }
+    } else if resource.buffer().is_some() {
         match texel_buffer::<B>(&mut backend, &base) {
             Ok((texels, view)) => (Ok(view), Some(texels), None),
             Err(why) => (Err(why), None, None),
@@ -1189,7 +1271,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: a live view.
     let target = unsafe { wc_sampler_view_target(&base) };
     let cube = matches!(target, PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY);
-    let samples = resource.texture().map_or(1, |(_, desc)| desc.samples);
+    let samples = u32::from(resource.base.nr_samples).max(1);
     let faces = (integer && cube)
         .then(|| texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), true));
     Box::into_raw(Box::new(View::<B> {
@@ -1204,6 +1286,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         sampled,
         dimension: view_dimension(target, false),
         samples,
+        layers,
     }))
     .cast()
 }
@@ -1224,6 +1307,7 @@ pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
         .into_iter()
         .flatten()
         .flatten()
+        .chain(view.layers.into_iter().flatten())
     {
         context.screen().retire(Object::TextureView(made));
     }
@@ -1272,6 +1356,7 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
     src_level: c_uint,
     area: *const pipe_box,
 ) {
+    let (dst_resource, src_resource) = (dst, src);
     // SAFETY: Mesa passes this driver's context, two of its resources and a box of the source.
     let (context, dst, src, area) = unsafe {
         (
@@ -1281,6 +1366,33 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
             *area,
         )
     };
+    // A texture held a layer a resource is copied a layer at a time between the layers' own.
+    if !src.layers().is_empty() || !dst.layers().is_empty() {
+        for i in 0..area.depth {
+            let (from, from_z) = layer_of(src_resource, src, area.z + i);
+            let (to, to_z) = layer_of(dst_resource, dst, dst_z as i16 + i);
+            let one = pipe_box {
+                z: from_z,
+                depth: 1,
+                ..area
+            };
+            // SAFETY: the context Mesa passed and two live resources of this driver.
+            unsafe {
+                resource_copy_region::<B>(
+                    pipe,
+                    to,
+                    dst_level,
+                    dst_x,
+                    dst_y,
+                    to_z as c_uint,
+                    from,
+                    src_level,
+                    &one,
+                )
+            };
+        }
+        return;
+    }
     let mut backend = context.screen().backend();
     if let Err(error) = context.tracker.close(&mut backend) {
         eprintln!(
@@ -1316,6 +1428,18 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
             },
         ),
         _ => crate::state::refuse(format_args!("a copy between a buffer and a texture")),
+    }
+}
+
+/// The resource holding layer `z` of `resource`, whose own is `ours`, and the layer's place in it.
+fn layer_of<B: Backend>(
+    resource: *mut pipe_resource,
+    ours: &Resource<B>,
+    z: i16,
+) -> (*mut pipe_resource, i16) {
+    match ours.layers().get(z as usize) {
+        Some(&layer) => (layer, 0),
+        None => (resource, z),
     }
 }
 
