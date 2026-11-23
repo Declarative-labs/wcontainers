@@ -35,6 +35,9 @@ path = "conformance.rs"
 [dev-dependencies]
 wcontainers-route-resolver-conformance = { path = "../../conformance" }
 
-# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The network namespace of the counter test and the index of its link.
+nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
+
+[lints]
+workspace = true

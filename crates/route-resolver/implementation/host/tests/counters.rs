@@ -92,12 +92,8 @@ fn resolve(
 /// Checks that each refused lookup is counted once under a reason of its own.
 #[test]
 fn refusals_are_counted_under_their_reasons() {
-    // SAFETY: a new network namespace shares no memory or file with the rest of the process.
-    assert_eq!(
-        unsafe { libc::unshare(libc::CLONE_NEWNET) },
-        0,
-        "a new network namespace needs root"
-    );
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
+        .expect("a new network namespace needs root");
     ip(IPV4, FORWARDING_LINK);
     ip(IPV6, RULES);
     for path in FORWARDING {
@@ -135,8 +131,7 @@ fn refusals_are_counted_under_their_reasons() {
         },
         ..v6(Ipv6Addr::new(0xfd09, 0, 0, 0, 0, 0, 0, 1))
     };
-    // SAFETY: the name ends in a zero byte, and the call only reads it.
-    let da = NonZeroU32::new(unsafe { libc::if_nametoindex(c"da".as_ptr()) }).expect("da");
+    let da = NonZeroU32::new(nix::net::if_::if_nametoindex("da").expect("da")).expect("da");
     // The routing socket's lookup leaves by db, which a socket bound to da would not take.
     let bound_elsewhere = Ipv6RouteSelectors {
         source: Some(Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 1)),
