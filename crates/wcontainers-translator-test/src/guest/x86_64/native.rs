@@ -251,6 +251,39 @@ fn five_level_only(stop: Stop) -> bool {
     }
 }
 
+/// The cases whose outcome by the inside's `answer` was compared with the meaning's.
+pub static ANSWERS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The case's outcome by the inside's `answer`, where it answers the case's instruction.
+pub fn answered(case: &Case) -> Option<Outcome> {
+    use wcontainers_x86::answer::{Consts, Fault, answer};
+    let (i, length) = wcontainers_x86::decode(case.code.code())?;
+    let question = wcontainers_x86::native::question(&i)?;
+    let mut thread = vec![0; size_of::<X86Block>()];
+    X86_64::from_state(&case.state, &mut thread);
+    let mut block = X86Block::read_from_bytes(&thread).expect("a block");
+    let mut constants = Consts::new().expect("the constants cache");
+    let stop = match answer(
+        question,
+        &mut block,
+        X86_64::case_offer(case),
+        &mut constants,
+    ) {
+        Ok(_) => {
+            block.rip += u64::from(length);
+            Stop::Landed(block.rip)
+        }
+        Err(Fault::GeneralProtection) => Stop::GeneralProtection,
+        Err(Fault::FloatException(raised)) => Stop::FloatException(raised.into()),
+    };
+    thread.copy_from_slice(block.as_bytes());
+    Some(Outcome {
+        stop,
+        state: X86_64::to_state(&thread),
+        changed: Vec::new(),
+    })
+}
+
 /// Runs a case natively: its outcome and how it ended. When `checked`, the piece has the count's adds and the
 /// trap flag stops it after every host instruction: at each stop in the piece the guest's state read through the
 /// position map must be the case's start before the commit point and the final one after it, and its count (the
@@ -433,7 +466,22 @@ pub fn run(
                     differences(&case.state, &state)
                 ));
             }
-            return Ok((translated::<X86_64>(case), ended));
+            let meaning = translated::<X86_64>(case);
+            let answered = answered(case);
+            if answered.is_some() {
+                ANSWERS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(answered) = answered
+                && answered != meaning
+            {
+                return Err(format!(
+                    "the inside's answer {:?} {} differs from the meaning's {:?}",
+                    answered.stop,
+                    differences(&meaning.state, &answered.state),
+                    meaning.stop
+                ));
+            }
+            return Ok((meaning, ended));
         }
         Ended::NotRun(_) => unreachable!("a run that was made"),
     };

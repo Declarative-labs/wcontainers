@@ -414,7 +414,9 @@ fn every_form_matches_the_cpu_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn every_form_matches_the_cpu_natively_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare};
+    use wcontainers_translator_test::guest::x86_64::native::{
+        ANSWERS_CHECKED, REFERENCE_HOST, compare,
+    };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
     let failures =
@@ -424,14 +426,58 @@ fn every_form_matches_the_cpu_natively_x86_64() {
             Ok(agreement)
         });
     eprintln!(
-        "layer 1 natively, the cases by how they ended: {:?}",
-        ended.into_inner().unwrap()
+        "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}",
+        ended.into_inner().unwrap(),
+        ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
     );
     assert!(
         failures.is_empty(),
         "{} forms differ from the CPU natively",
         failures.len()
     );
+}
+
+/// The inside's answer to `cpuid` and `xgetbv` (docs/x86-native-output.md 3.5) is the meaning's, for every leaf
+/// with each sub-leaf of its table and past it, for leaves above the highest, and for each register `xgetbv` names;
+/// the upper halves of the registers read are set, as the instructions read only the lower ones.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::{native::answered, plain};
+    use wcontainers_translator_test::layer1::translated;
+    use wcontainers_x86::cpuid::{EXTENDED, MAX_BASIC, MAX_EXTENDED, leaves, sub_leaves};
+    use wcontainers_x86::{RAX, RCX};
+    const CPUID: &[u8] = &[0x0f, 0xa2];
+    const XGETBV: &[u8] = &[0x0f, 0x01, 0xd0];
+    const UPPER: u64 = u64::MAX << u32::BITS;
+    let [rax, rcx] = [RAX, RCX].map(usize::from);
+    let past = [MAX_BASIC + 1, EXTENDED - 1, MAX_EXTENDED + 1, u32::MAX];
+    let mut checked = 0;
+    let mut check = |code: &[u8], eax: u32, ecx: u32| {
+        let mut case = plain(code);
+        case.state.0[rax] = (UPPER | u64::from(eax)).into();
+        case.state.0[rcx] = (UPPER | u64::from(ecx)).into();
+        let answered = answered(&case).expect("an instruction the inside answers");
+        let meaning = translated::<X86_64>(&case);
+        assert!(
+            answered == meaning,
+            "{code:02x?} eax {eax:#x} ecx {ecx:#x}: the answer {:?} {:x?}, the meaning {:?} {:x?}",
+            answered.stop,
+            answered.state.0,
+            meaning.stop,
+            meaning.state.0
+        );
+        checked += 1;
+    };
+    for leaf in leaves().chain(past) {
+        for sub_leaf in (0..=sub_leaves(leaf) + 1).chain([u32::from(u8::MAX) + 1, u32::MAX]) {
+            check(CPUID, leaf, sub_leaf);
+        }
+    }
+    for ecx in [0, 1, 2, u32::MAX] {
+        check(XGETBV, 0, ecx);
+    }
+    eprintln!("the inside's cpuid and xgetbv equal to the meaning's in {checked} cases");
 }
 
 #[test]
