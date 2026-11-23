@@ -71,15 +71,16 @@ the ARM list.
 
 The whole suite at 3dc17db7 (16:21 to 19:30 UTC, load 3 to 48, 8 test threads; kf6/whole.sh,
 log kf6/suite6.log, job kernel/20261123-162017-413346): clippy with warnings denied status 0, fmt
-no diff; 411 passed, 36 failed, 8 ignored over every result line (the fifth run's same count: 406,
-35, 8). The failures are the ARM list (kf6/fails6.txt) and one more, backend
+no diff; 399 passed, 36 failed, 8 ignored, the sum of the log's 133 result lines (the fifth
+run's: 394, 35, 8; an earlier version of this paragraph gave 411 and 406, which no log backs).
+The failures are the ARM list (kf6/fails6.txt) and one more, backend
 `mapped_pages_read_when_touched_match_reference`, whose reference run hung: on Linux, guest
 backendmaps.c sat 98 minutes in `anon_pipe_write` on a pipe of its own under the cached test
 server, and the container was killed by hand at 18:05 to let the suite go on. Alone it passes 3
 times of 3 (kf6/a8.log, 15 to 38 s). Recorded under Known issues. The five more passing are the
-new tests (two of startoptions, placement's one, machine's two); the kernel's unit tests one
-more. The later commits (89be397e to b49c49e5: somaxconn's name, the range-by-range alignment)
-ran with the tests they touch above, not with the whole suite.
+new tests (two of startoptions, placement's one, machine's two) less the hung one, plus the
+kernel's unit tests' one more. The later commits (89be397e to b49c49e5: somaxconn's name, the
+range-by-range alignment) ran with the tests they touch above, not with the whole suite.
 
 The whole LTP comparison at 3dc17db7 (same job, 19:30 to 20:59 UTC, load 6 to 22, LTP_JOBS 8,
 LTP_LIMIT 900; verdicts ltp/ours-20260930-3dc17db7.tsv): 4169 of 4226 match the reference and 57
