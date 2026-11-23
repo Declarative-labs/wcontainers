@@ -68,6 +68,9 @@ safe library does it, what removing it would cost.
   (present on the desktop under Windows Kits 10.0.26100.0, not on PATH); left too, for the same
   reason (the package stays on the list for examples/).
 - Added the third way for gpu-webgl to question 4.
+- No code changed. A clippy run of the five crates on the desktop (logs/clippy-run3.log) waited
+  30 minutes behind another track's GPU job that may reset the driver and was stopped before it
+  began, so this run has no new build result; the last is run 2's, at fc549b36.
 - Not split: examples/directx into its own package. Its header says it moves into
   wcontainers-directx (plan section 10), and the rig's build commands (tools/graphics-rig, not
   this track's) name it as an example of this package.
