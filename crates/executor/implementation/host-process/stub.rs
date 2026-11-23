@@ -2,7 +2,7 @@
 
 use std::io::IoSlice;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use linux_raw_sys::general as linux;
@@ -51,6 +51,9 @@ pub struct Stub {
     memory_key: FileKey,
     /// One bit per thread index the executor holds, from its `new_thread` to its `end_thread`.
     held: Vec<u64>,
+    /// Exits from translated code whose FP/SIMD registers came by a return through the frame ("signal frame without
+    /// FP/SIMD registers").
+    vectors_by_return: AtomicU64,
 }
 
 /// How a stub's threads are made: sharing everything a thread of one process shares, the new thread's exit-clear word
@@ -141,6 +144,7 @@ impl Stub {
             memory,
             memory_key: FileKey::new(),
             held,
+            vectors_by_return: AtomicU64::new(0),
         }
     }
 
@@ -267,6 +271,12 @@ impl Stub {
             in_end: count(register::STOPS_IN_END),
             in_call: count(register::STOPS_IN_CALL),
         }
+    }
+
+    /// How many exits from translated code saved their FP/SIMD registers after a return through a signal frame that
+    /// held none (as the stub counts them, untrusted).
+    pub fn vectors_by_return(&self) -> u64 {
+        self.vectors_by_return.load(Ordering::Relaxed)
     }
 
     /// Gives a thread a turn that applies `commands` in order and reports back, and waits for its end.
@@ -548,7 +558,14 @@ impl Stub {
             .pages
             .register64(thread, register::EXIT_VALUE)
             .load(Ordering::Relaxed);
-        match ExitKind::from_word(kind) {
+        let kind = ExitKind::from_word(kind);
+        if matches!(
+            kind,
+            Some(ExitKind::Fault | ExitKind::Called | ExitKind::Interrupted)
+        ) {
+            self.count_vectors_by_return(thread);
+        }
+        match kind {
             Some(ExitKind::Done) => TurnEnd::Done {
                 commands_applied: value,
             },
@@ -575,6 +592,19 @@ impl Stub {
             Some(ExitKind::Called) => TurnEnd::Called { entry: value },
             Some(ExitKind::Interrupted) => TurnEnd::Interrupted { at: value },
             None => TurnEnd::Forged,
+        }
+    }
+
+    /// Counts the exits the thread saved by a return through a frame without FP/SIMD registers, warning at the first.
+    fn count_vectors_by_return(&self, thread: usize) {
+        let seen = self
+            .pages
+            .register64(thread, register::VECTORS_BY_RETURN)
+            .swap(0, Ordering::Relaxed);
+        if seen > 0 && self.vectors_by_return.fetch_add(seen, Ordering::Relaxed) == 0 {
+            eprintln!(
+                "wcontainers warning: signal frame without FP/SIMD registers, restored by a return (counted, warned once per guest process)"
+            );
         }
     }
 

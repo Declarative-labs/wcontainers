@@ -207,7 +207,7 @@ impl Program {
 /// fixed, inside the guest area, never executable, of the memory's memfd at the offset equal to the address or of a
 /// shared block's received memfd, and of the code area's received memfd execute-only over exactly the code area; `mprotect` inside the guest area, never executable; `munmap` inside the guest area;
 /// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block;
-/// `sched_setaffinity` of the calling thread only. Anything else kills the stub.
+/// `sched_setaffinity` of the calling thread only; on ARM64 `rt_sigreturn`. Anything else kills the stub.
 pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mut program = Program {
         ops: Vec::new(),
@@ -246,6 +246,14 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     ] {
         program.jump(BPF_JEQ | BPF_K, number, Target::Label(to), Target::Next);
     }
+    // A handler whose frame holds no FP/SIMD registers returns through it to save them (gVisor on ARM64).
+    #[cfg(target_arch = "aarch64")]
+    program.jump(
+        BPF_JEQ | BPF_K,
+        linux::__NR_rt_sigreturn,
+        Target::Label(allow),
+        Target::Next,
+    );
     program.always(kill);
 
     program.place(mmap);

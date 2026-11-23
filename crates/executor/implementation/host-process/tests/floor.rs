@@ -94,6 +94,8 @@ struct Floor {
     zygote: Zygote,
     stub: Stub,
     _code: CodeArea,
+    /// The stops and faults that ended translated code, as this test saw them.
+    from_code: std::cell::Cell<u64>,
 }
 
 fn floor() -> Floor {
@@ -131,6 +133,7 @@ fn floor() -> Floor {
         zygote,
         stub,
         _code: code,
+        from_code: std::cell::Cell::new(0),
     };
     assert_eq!(
         floor.turn(0, &[Command::MapCode]),
@@ -165,6 +168,9 @@ impl Floor {
     }
 
     fn alive(&self, end: TurnEnd) -> TurnEnd {
+        if matches!(end, TurnEnd::Interrupted { .. } | TurnEnd::Fault { .. }) {
+            self.from_code.set(self.from_code.get() + 1);
+        }
         if end == TurnEnd::StubEnded {
             panic!(
                 "the stub ended: {:?}",
@@ -573,6 +579,14 @@ fn a_stop_or_a_fault_in_translated_code_saves_every_register() {
             assert_block(&floor.stub, 0, &stopped_at(&loaded, 0, piece, piece), &what);
         }
     }
+    // A host either puts the FP/SIMD registers in every frame or in none (gVisor), where each exit returns for them.
+    let exits = floor.from_code.get();
+    let by_return = floor.stub.vectors_by_return();
+    println!("{by_return} of {exits} exits saved their FP/SIMD registers by a return");
+    assert!(
+        by_return == 0 || by_return == exits,
+        "{by_return} of {exits}"
+    );
 }
 
 #[test]

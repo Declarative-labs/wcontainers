@@ -66,6 +66,9 @@ pub mod register {
     pub const TAKEN: usize = 72;
     /// The stub's own count of the stops that landed in a floor entry or its save, which then finished from the frame.
     pub const STOPS_IN_CALL: usize = 80;
+    /// The stub's own count of the exits from translated code whose FP/SIMD registers it saved after returning through
+    /// a signal frame that held none (gVisor), cleared by the embedder as it reads it.
+    pub const VECTORS_BY_RETURN: usize = 88;
     /// The thread's registers in the hardware, as a [`wcontainers_abi::RegisterBlock`], little endian: what a
     /// [`super::Resume::Enter`] loads and what an exit from translated code saves.
     pub const REGISTERS: usize = 128;
