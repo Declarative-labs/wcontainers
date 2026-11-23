@@ -229,6 +229,12 @@ fn the_probe_finds_a_user_space_top_above_our_layout() {
     #[cfg(target_arch = "aarch64")]
     {
         eprintln!("CTR_EL0 {:#x}", probe.cache_type());
+        eprintln!("SVE at a system call {:?}", probe.sve_at_system_call());
+        assert_ne!(
+            probe.sve_at_system_call(),
+            wcontainers_executor_host_process::probe::SveAtSystemCall::Kept,
+            "the host keeps SVE state across a system call, against its ABI"
+        );
         assert!(probe.code_maintenance_covers_every_mapping());
     }
 }

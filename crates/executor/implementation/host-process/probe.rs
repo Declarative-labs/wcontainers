@@ -28,6 +28,20 @@ pub struct HostProbe {
     user_space_top: usize,
     #[cfg(target_arch = "aarch64")]
     cache_type: u64,
+    #[cfg(target_arch = "aarch64")]
+    sve: SveAtSystemCall,
+}
+
+/// What a system call does to SVE state on this host.
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SveAtSystemCall {
+    /// The host has no SVE.
+    Absent,
+    /// The predicates and FFR read zero afterwards, as the kernel's arm64 ABI promises.
+    Dropped,
+    /// Some of it survived, which the ABI does not allow.
+    Kept,
 }
 
 impl HostProbe {
@@ -42,6 +56,8 @@ impl HostProbe {
             user_space_top: user_space_top(page_size),
             #[cfg(target_arch = "aarch64")]
             cache_type: cache_type(),
+            #[cfg(target_arch = "aarch64")]
+            sve: sve_at_system_call(),
         };
         #[cfg(target_arch = "aarch64")]
         if !probe.code_maintenance_covers_every_mapping() {
@@ -64,6 +80,12 @@ impl HostProbe {
     #[cfg(target_arch = "aarch64")]
     pub fn cache_type(&self) -> u64 {
         self.cache_type
+    }
+
+    /// What a system call does to SVE state, learned on a thread of its own that then ends.
+    #[cfg(target_arch = "aarch64")]
+    pub fn sve_at_system_call(&self) -> SveAtSystemCall {
+        self.sve
     }
 
     /// Whether `ic ivau` by the writer's address reaches the line in every other mapping of it.
@@ -98,6 +120,51 @@ fn cache_type() -> u64 {
         core::arch::asm!("mrs {}, ctr_el0", out(reg) value, options(nomem, nostack, preserves_flags));
     }
     value
+}
+
+/// The largest predicate register: an SVE vector of 2048 bits has predicates of 256 bits.
+#[cfg(target_arch = "aarch64")]
+const LARGEST_PREDICATE: usize = 2048 / 8 / 8;
+
+/// Sets every predicate bit of p0 and FFR, makes a system call, and reads both back, on a thread that then ends.
+#[cfg(target_arch = "aarch64")]
+fn sve_at_system_call() -> SveAtSystemCall {
+    if !std::arch::is_aarch64_feature_detected!("sve") {
+        return SveAtSystemCall::Absent;
+    }
+    let probe = std::thread::spawn(|| {
+        let mut predicate = [0_u8; LARGEST_PREDICATE];
+        let mut first_fault = [0_u8; LARGEST_PREDICATE];
+        #[expect(
+            unsafe_code,
+            reason = "SVE state across a system call can only be set and read by its own instructions"
+        )]
+        // SAFETY: writes at most one predicate register's bytes to each buffer, and touches only clobbered registers.
+        unsafe {
+            core::arch::asm!(
+                ".arch_extension sve",
+                "ptrue p0.b",
+                "setffr",
+                "svc #0",
+                "str p0, [{predicate}]",
+                "rdffr p1.b",
+                "str p1, [{first_fault}]",
+                predicate = in(reg) predicate.as_mut_ptr(),
+                first_fault = in(reg) first_fault.as_mut_ptr(),
+                inout("x8") u64::from(linux_raw_sys::general::__NR_getppid) => _,
+                out("x0") _,
+                out("p0") _,
+                out("p1") _,
+                out("ffr") _,
+                options(nostack),
+            );
+        }
+        predicate.iter().chain(&first_fault).all(|byte| *byte == 0)
+    });
+    match probe.join() {
+        Ok(true) => SveAtSystemCall::Dropped,
+        Ok(false) | Err(_) => SveAtSystemCall::Kept,
+    }
 }
 
 /// The lowest page the search starts from, always inside user space.

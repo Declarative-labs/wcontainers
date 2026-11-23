@@ -570,7 +570,8 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 - The **zygote**: forked from the embedder's process when the host-process host is made (8.5). In the
   child only direct host calls run (no allocation, no lock: the embedder may have other threads). It maps the stub's
   code (copied by the executor before the fork into a memfd) read-execute at a fixed address in our area and a stack
-  beside it (`mmap`, then the memfd is closed), jumps there, blocks every signal, and drops what the fork carried of
+  beside it (`mmap`, then the memfd is closed) and jumps there, every signal blocked since before the fork (the
+  forking thread blocks them around it, so no handler of the embedder ever runs in the child), and drops what the fork carried of
   the forking thread's registrations that point into the embedder's memory. The one that kills: the forking
   thread's restartable-sequences area (glibc registers one per thread), which the host kernel writes at every
   migration, preemption or signal; once its page is unmapped that write fails and the host kernel kills the
@@ -870,7 +871,7 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   `ppoll` (a stub's socket, 4.1), for placement (4.3) `sched_getaffinity`, `sched_setaffinity` on its own runner
   threads and `clock_gettime` of its own thread's CPU clock and of a stub's process CPU clock, `read` of a stub's socket
   (parallel threads only, 4.2), `wait4` of the zygote after its end; in the zygote, `mmap` (its code and stack),
-  `close`, `rt_sigprocmask`, `rseq` (unregister the inherited area, then register and unregister its own, 4.1),
+  `close`, `getpid`, `rseq` (unregister the inherited area, then register and unregister its own, 4.1),
   `set_robust_list`, `set_tid_address`, `close_range`, `munmap`, `recvmsg`, `sendmsg`, `fork`, `wait4` (on a process
   id the embedder names), `kill` (SIGKILL to its own unreaped child, 4.1), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
   `getppid`, `set_tid_address`, `seccomp(SECCOMP_SET_MODE_FILTER)`, `dup3` (fds to their fixed numbers, before the
