@@ -670,6 +670,28 @@ fn constants() -> Vec<u8> {
 /// to 1 and written by every fragment, whose texels the draw returns instead of the target's.
 type Clamped = Option<[f32; 2]>;
 
+/// `case` drawn by real Direct3D 11 on WARP, the second real implementation, where ours differs from
+/// the GPU: how far the two real ones lie apart beside how far ours lies from each.
+fn on_warp(case: &Case, vertices: &[f32], indices: &[u8], clamped: Clamped) -> Vec<u8> {
+    let warp = d3d11::create(
+        wcontainers_graphics_test::Driver::Warp,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    direct3d(&warp, case, vertices, indices, clamped)
+}
+
+/// The colour figures of [`on_warp`]'s picture `soft` beside the GPU's `reference` and our `picture`.
+fn warp_spread(case: &Case, reference: &[u8], soft: &[u8], picture: &[u8]) -> String {
+    let (between, _, between_largest, _) = compared_clipped(case, reference, soft);
+    let (from_warp, _, largest, _) = compared_clipped(case, soft, picture);
+    format!(
+        "warp from direct3d on the gpu {between} texels (largest {between_largest}); ours from warp \
+         {from_warp} (largest {largest})"
+    )
+}
+
 fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8], clamped: Clamped) -> Vec<u8> {
     let (vs, ps) = (
         bytecode(&format!("{}.dxbc", case.vs)),
@@ -3024,6 +3046,8 @@ fn geometry_shaders_draw_as_direct3d_does() {
                     let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
                     eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
                 }
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
@@ -3220,6 +3244,8 @@ fn geometry_shaders_writing_cull_distances_draw_as_direct3d_does() {
                     let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
                     eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
                 }
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
@@ -3313,6 +3339,22 @@ fn depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does() {
                  ({steps} steps; allowed {allowed:e})"
             );
             if at_ends == 0 || largest > allowed {
+                let soft = on_warp(case, &vertices, &indices, Some(range));
+                let apart = |a: &[u8], b: &[u8]| {
+                    let (count, _) = differ(a, b, Format::Depth32Float);
+                    let largest = depths(a)
+                        .iter()
+                        .zip(depths(b))
+                        .map(|(x, y)| (x - y).abs())
+                        .fold(0.0f32, f32::max);
+                    (count, largest)
+                };
+                let (between, between_largest) = apart(&reference, &soft);
+                let (from_warp, warp_largest) = apart(&soft, &picture);
+                eprintln!(
+                    "  warp from direct3d on the gpu {between} texels (largest \
+                     {between_largest:e}); ours from warp {from_warp} (largest {warp_largest:e})"
+                );
                 failures.push(name);
             }
         }
@@ -3443,6 +3485,8 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                     let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
                     eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
                 }
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
@@ -3911,6 +3955,8 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
                 drawn_texels(&reference)
             );
             if drawn_texels(&reference) == 0 || largest > allowed {
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
