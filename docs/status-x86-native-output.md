@@ -17,29 +17,95 @@ probes).
   blocking and seven minor (one of them no defect, a measurement to record); run 8 fixed all nine (list below),
   measured in scratch run8/. The run-8 fixes have not had a check of their own. Nothing is built; no code of this
   track exists yet.
-- XN1 (the output with no memory check): run 1 (run 9 of the track, 2026-11-23) started it. Not complete. Done:
-  the eighth check's five findings answered in the plan (below); the shared `Route::Area`; the core's
-  `string_passes`; the route of every decoded form per way with its static routing test; the carrying code of an
-  operand on the thread area's segment in the machine and P, the 0x67 finding's code, with its test. No x86
-  executor can run a translation yet (P's executor, crates/executor/implementation/host-process, appeared in the
-  tree during this run, uncommitted; no x86 floor), so the bar's layers, programs and speed wait on one (plan 8).
+- XN1 (the output with no memory check): runs 1 and 2 (2026-11-23). Not complete. Done: the eighth check's five
+  findings answered in the plan; the shared `Route::Area`; the core's `string_passes`; the route of every decoded
+  form per way with its static routing test; the 0x67 segment-operand finding's code with its test (run 1). Run 2:
+  the trait takes the way and the target (shared, ARM64 one of each); `Native for X86_64` for the machine and P,
+  every route carried (below); the guest's FIP stored after each copied x87 instruction; a rep string under the
+  count run by the inside; the pre-executor bar's encoding round trips. Not yet: the replay check (`stop_check`),
+  the `fldcw` check and the x87 unmasked mode, `answer` and the core moves, the pool, `retarget`/`Patch` and the
+  `int3` link protocol, `DirectExit::condition`, the position map's segment and address size, stepping pieces.
+  No x86 executor can run a translation yet (P's executor, crates/executor/implementation/host-process, was
+  committed by its track during this run without a translation runner; no x86 floor), so the bar's layers,
+  programs and speed wait on one (plan 8).
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
-  `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's.
+  `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
+  the in-process way by an assertion until then.
 
 ## Next, in order (XN1)
 
-1. The rest of `Native for X86_64` (plan 9's trait): `carry` per route (Copy with stand-ins for the withheld
-   r10, r11, r15; Rebase; Transfer through the two-level mirror; Kernel, FloatStatus, Trap and Nothing through
-   `call`), `count` (`lea r10, [r10 + k]`), `exit` and `retarget` (rel32), `stop_check`, `stopping`, `movable`.
-   `carry::area_operand` returns None today for an instruction naming a withheld register and for a RIP-relative
-   operand on the area's segment; both forms come with the stand-ins and the address places.
-2. The shared changes of plan 9 that the trait needs (Way, HostMatches, `Patch`, `InsideCall`'s three kinds,
-   `Operand`'s segment and address size, `Fixup`s, `HostCode::pool`), each its own commit with ARM64's suites run
-   on the ARM64 machine.
-3. The rep string after-code from `string_passes`, then its test against the WebAssembly output's count.
-4. `answer` and the core moves (Condition, the x87 unit, transcendental.rs), then x87_answer.rs.
-5. Encoding round trips through iced's decoder and the position map's unit tests (the bar's pre-executor part),
-   then the executor-dependent bar once P's executor runs a translation.
+1. The `fldcw` check (plan 3.1) and `InsideCall::X87Control`, `Step` and `Stop` (shared; the ARM64 inside's
+   stop.rs match and the hardware-virtualization test carry.rs match need an arm for them, which ARM64 never
+   reaches).
+2. The replay check: `stop_check` in the trait and `stop: Option<u64>` in `translate_native_for`; ARM64 has no
+   replay check yet, so the trait method needs ARM64's form or a ruling (coordinate with the ARM64 back end).
+3. `DirectExit::condition` and `retarget` returning a `Patch` (plan 3.2, 9), for the loader's `int3` protocol.
+4. `Operand` gaining segment and address size, so `stopping` gives `Access` for `fs:`/`gs:` and 0x67 operands too
+   (today Plain there).
+5. The pool for a call through a register (today the return address is built in rax, saved to the area: the
+   plan's measured 1.146 form, not the pool's 1.120), with `HostCode::pool`.
+6. `answer` and the core moves (Condition, the x87 unit, transcendental.rs), then x87_answer.rs; stepping pieces
+   for P.
+7. The executor-dependent bar once an x86 executor runs a translation (P's, or the floor).
+
+## What XN1 run 2 changed
+
+- Shared (commit 0b3267fc): `Native` gains `type Way` and `type Target`; `route`, `carry`, `call`, `exit` take
+  the way (and `route`, `carry` the target). `translate_native_for` takes both; `translate_native` stays for a
+  guest whose way and target are `Default` (ARM64's are `()`), so the hardware-virtualization executor's calls
+  are unchanged; its tests' `Arm64::route` calls were updated. ARM64's clippy, tests and the translator's native
+  tests passed on the ARM64 machine; hardware-virtualization's lib and tests build.
+- Shared (commit 179ca957): `Fixup::X87Pointer(u64)` (moved with the code like `Fixup::Address`; the ARM64
+  inside's stop.rs takes it as nothing, since ARM64 never writes it) and `NativeReason::RepeatedStringCounted`.
+- x86/native.rs: `Target { host, offer }` and `impl Native for X86_64`. x86/carry.rs: every route for the machine
+  and P. Copy as the guest's bytes; an instruction naming r10, r11 or r15 re-encoded on stand-ins chosen by iced's
+  register use (implicit ones included), saved to and loaded from the register area by `seg:` moves (counted
+  `WithheldRegisterNamed`); Rebase (`mov t, imm64` an address place, `lea` likewise, `mov t32, t32` under 0x67);
+  Area (the run-1 forms, a RIP-relative operand on the area through u, a `moffs` move through u, `rdgsbase` from
+  the area); an instruction naming ah, ch, dh or bh whose operand is rebuilt takes its address in a register of
+  the first eight (REX would forbid the byte register); Kernel, Trap, FloatStatus through `call` (machine `int
+  32 + code`, P `lea t, [rip]; jmp qword ptr gs:[entries + 8 * code]`); Transfer: direct `jmp`/`call` by rel32
+  exits (`call` pushes the guest return address from `mov t, imm64`), `jcc` rel32 linkable in place when the count
+  is not ahead, else through a settling exit, `loop`/`jrcxz` by their rel8 over a short jump to an exit,
+  returns and jumps and calls through a register or memory by the two-level mirror of plan 3.3; targets at or above
+  2^47 answered by the inside. The count is `lea r10, [r10 + k]` with a 32-bit displacement, so a link's `jmp
+  rel32` fits over a settling add (the rest filled with `nop`). area.rs: the register area (GS base, withheld
+  values, stand-in values, FIP), the fixed part (entries), the first level at two pages.
+- After a copied x87 instruction that is not a control one (fpu.rs's own `control`), `mov t, imm64; mov
+  gs:[fip], t` with `Fixup::X87Pointer` over it.
+- Tests (crates/wcontainers-x86/tests/native_output.rs): a seeded sweep of instruction mixes with branches, calls
+  and returns, translated in both ways with and without the count, decoded back by iced: every piece decodes
+  whole, every span, exit and address place is at an instruction start of its kind, no host `call`/`ret`, no
+  RIP-relative access but P's `lea t, [rip]`, every copied instruction's bytes unchanged, every stand-in form the
+  same code naming no withheld register; and twelve named shapes (return, call through a register, direct call,
+  a loop linked in place, stand-ins, `gs:` rebuilt and `fs:` copied, `moffs` on `gs:`, RIP-relative, `syscall`
+  per way, a trap's map, the count, FIP, a rep string). native_carry.rs now reads the translated piece.
+
+## XN1 run 2 results (rented ARM64 machine, Graviton4, load 16 to 36 from other tracks; the x86 machine did not
+answer SSH this run, and these tests run no host code, so the architecture does not matter)
+
+- clippy with warnings denied on wcontainers-x86, wcontainers-guest-cpu, wcontainers-arm64, wcontainers-translator
+  (native, all targets, `--no-deps`): clean. `cargo check -p wcontainers-x86 --no-default-features`: builds.
+  hardware-virtualization lib, tests and its inside: build.
+- `cargo test -p wcontainers-x86 -p wcontainers-guest-cpu -p wcontainers-arm64`: all pass (x86: 13 in
+  native_output, 2 native_carry, 2 native_routes, the rest as before).
+- native_output sweep: seed 0x5eed 20,000 cases (80,000 pieces, 227,568 spans) and seed 0x2b17 500,000 cases
+  (2,000,000 pieces, 5,705,008 spans): 0 broken. native_carry seed 11, 1,000,000 cases: 0 differences.
+
+## Departures from the plan (XN1 run 2)
+
+- The trait's second type is `Target` (the host's matches and the process's offer), not `HostMatches`, since the
+  route needs both.
+- A rep string under the count goes to the inside (counted `RepeatedStringCounted`) instead of the inline
+  after-code of plan 3.6: correct by construction, slow only with exact replay asked for, and no count stack. The
+  after-code remains the plan's form if the inside's cost matters.
+- FIP is stored after each copied x87 instruction, not once a run (the trait's `carry` sees no instructions
+  after the current one yet).
+- A call through a register builds its guest return address in rax saved to the area (the plan's measured
+  stand-in form), until the pool exists.
+- `DirectExit::retarget` holds, for x86, the byte offset of the branch's rel32 within it, until the shared field
+  changes as plan 9 says.
+- `stopping` gives `Access` only for an operand with no segment prefix and no 0x67, until `Operand` gains them.
 
 ## What XN1 run 1 changed
 
@@ -539,6 +605,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Licences
 
+XN1 run 2 turned on iced-x86's `instr_info` feature (for the stand-ins' register use) and, in tests only, `intel`
+(listings), both of iced-x86 1.22.0 (MIT, already a dependency), and made wcontainers-translator (this
+workspace's) a dev-dependency of the x86 crate. No new crate.
+
 XN1 run 1 turned on iced-x86's `encoder` feature (iced-x86 1.22.0, MIT, already a dependency) and added fastrand
 2.5.0 (MIT OR Apache-2.0, already in the lock for wcontainers-arm64's tests) as a dev-dependency of the x86 crate,
 for the seeded sweeps. Plan
@@ -548,7 +618,8 @@ brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
 
-- Unsafe code: none in this track (XN1 run 1's x86/native.rs, carry.rs, area.rs, strings.rs and two test files hold
+- Unsafe code: none in this track (XN1 run 2's carry.rs, native.rs, area.rs and native_output.rs hold none;
+  XN1 run 1's x86/native.rs, carry.rs, area.rs, strings.rs and two test files hold
   none; grep finds no `unsafe` in them); none planned (the translator and wcontainers-x86 keep the workspace ban;
   emitting code into a byte buffer needs none). No imports to vet beyond fastrand, a test-only dependency.
 - Hostile-guest points the plan answers: every host address translated code jumps to is a word of our tables for any
