@@ -1,13 +1,19 @@
 //! How the native output carries each x86-64 instruction over to x86-64 host code (docs/x86-native-output.md
 //! section 3.1): the route of every decoded form, per way of running.
 
-use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
-use wcontainers_guest_cpu::Route;
+use std::ops::Range;
 
-use crate::Offer;
+use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
+use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand};
+use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
+
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
+use crate::guest::{Control, Hook};
 use crate::meaning::{is_string, written};
+use crate::operand::general;
+use crate::x87::{Code, Operation};
+use crate::{Offer, USER_END, X86_64, carry};
 
 /// How translated code reaches guest memory, the thread area and the inside; part of the cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +54,159 @@ pub struct HostMatches {
     pub partial_writes: bool,
     /// The host gives the meaning's results where Intel leaves them undefined.
     pub undefined_results: bool,
+}
+
+/// What a translation is made for besides the way: the host's matches and the features the process was told of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Target {
+    pub host: HostMatches,
+    pub offer: Offer,
+}
+
+/// How far a rel32 branch of the guest reaches either way.
+const BRANCH_REACH: u64 = 1 << (u32::BITS - 1);
+
+impl Native for X86_64 {
+    type Way = Way;
+    type Target = Target;
+
+    fn route(way: &Way, i: &Instruction, target: &Target) -> Route {
+        route(*way, i, &target.host, &target.offer)
+    }
+
+    fn hook_class(hook: Hook, first: Option<i64>) -> NativeClass {
+        let answered = |code: i64| {
+            matches!(
+                Code::decode(code as i32).operation,
+                Operation::Sine
+                    | Operation::Cosine
+                    | Operation::SineCosine
+                    | Operation::Tangent
+                    | Operation::ExponentMinusOne
+                    | Operation::ArcTangent
+                    | Operation::Logarithm
+                    | Operation::LogarithmPlusOne
+            )
+        };
+        match hook {
+            Hook::Clock => NativeClass::Routed(Route::Kernel),
+            Hook::X87 if first.is_some_and(answered) => NativeClass::Routed(Route::Kernel),
+            Hook::Float | Hook::X87 => NativeClass::Hardware,
+        }
+    }
+
+    fn control_class(control: Control, write: bool) -> NativeClass {
+        match control {
+            Control::Rflags if !write => NativeClass::Hardware,
+            Control::Rflags | Control::Selectors | Control::StepHeld => {
+                NativeClass::Routed(Route::Kernel)
+            }
+            Control::Mxcsr | Control::MxcsrTracking if write => {
+                NativeClass::Routed(Route::FloatStatus)
+            }
+            Control::Mxcsr
+            | Control::MxcsrTracking
+            | Control::FloatException
+            | Control::X87Words
+            | Control::X87StatusTag
+            | Control::X87Header
+            | Control::X87High(_)
+            | Control::FloatOperand(_) => NativeClass::Hardware,
+            // Only the saves read the x87 pointers; the meaning's write at each x87 instruction is the run's
+            // store into the register area natively (section 3.1).
+            Control::X87InstructionPointer | Control::X87DataPointer if !write => {
+                NativeClass::Routed(Route::FloatStatus)
+            }
+            Control::X87InstructionPointer | Control::X87DataPointer => NativeClass::Bookkeeping,
+        }
+    }
+
+    type LoopInvariant = ();
+
+    fn loop_invariant(_: &[(u64, Instruction)]) {}
+
+    fn test_loop_invariant(_: &mut HostCode, _: &()) -> Option<usize> {
+        None
+    }
+
+    fn carry(
+        way: &Way,
+        target: &Target,
+        _: &[(u64, Instruction)],
+        i: &Instruction,
+        bytes: &[u8],
+        address: u64,
+        _: &(),
+        code: &mut HostCode,
+    ) {
+        let route = route(*way, i, &target.host, &target.offer);
+        carry::carry(*way, route, i, bytes, address, code);
+    }
+
+    fn count(code: &mut HostCode, events: u32) {
+        carry::count(code, events);
+    }
+
+    fn call(way: &Way, code: &mut HostCode, call: InsideCall) {
+        carry::call(*way, code, call);
+    }
+
+    fn exit(way: &Way, code: &mut HostCode, target: u64) {
+        carry::exit(*way, code, target, None);
+    }
+
+    fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {
+        carry::link(code, exit, to)
+    }
+
+    fn stopping(i: &Instruction, _: u64) -> Stopping {
+        let ins = &i.iced;
+        if i.too_long || ins.is_invalid() || !written(i) {
+            return Stopping::Illegal;
+        }
+        if ins.mnemonic() == Mnemonic::Syscall {
+            return Stopping::Syscall;
+        }
+        let register = |r: Register| match r {
+            Register::None => Some(Base::Zero),
+            Register::RIP => Some(Base::Pc),
+            Register::RSP => Some(Base::StackPointer),
+            r => general(r)
+                .filter(|g| g.width == u64::BITS as u8)
+                .map(|g| Base::Register(g.number)),
+        };
+        // The position map's operand has no segment or address size yet: those accesses are the inside's to
+        // decode.
+        let plain = ins.mnemonic() != Mnemonic::Lea
+            && (0..ins.op_count()).any(|n| ins.op_kind(n) == OpKind::Memory)
+            && ins.segment_prefix() == Register::None
+            && !i.address32;
+        let (Some(base), Some(index)) = (register(ins.memory_base()), register(ins.memory_index()))
+        else {
+            return Stopping::Plain;
+        };
+        if !plain {
+            return Stopping::Plain;
+        }
+        Stopping::Access(Operand {
+            base,
+            offset: ins.memory_displacement64() as i64,
+            index: (index != Base::Zero).then(|| Index {
+                register: index,
+                bits: u64::BITS as u8,
+                signed: false,
+                shift: ins.memory_index_scale().trailing_zeros() as u8,
+            }),
+        })
+    }
+
+    fn movable() -> Range<u64> {
+        BRANCH_REACH..USER_END - BRANCH_REACH
+    }
+
+    fn write_place(code: &mut [u8], place: &AddressPlace) {
+        carry::write_place(code, place);
+    }
 }
 
 /// The route of one decoded instruction under `way`, for a process told of `offer`'s features.

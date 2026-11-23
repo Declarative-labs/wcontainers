@@ -5,10 +5,10 @@
 use iced_x86::{
     Code, Decoder, DecoderOptions, Encoder, Instruction, MemoryOperand, Mnemonic, OpKind, Register,
 };
+use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::GUEST_GS_BASE;
-use wcontainers_x86::carry::area_operand;
-use wcontainers_x86::decode;
-use wcontainers_x86::native::Way;
+use wcontainers_x86::native::{HostMatches, Target, Way};
+use wcontainers_x86::{Offer, V3, X86_64};
 
 /// The host's GS base: the thread area.
 const AREA: u64 = 0x7f00_0000_0000;
@@ -147,11 +147,27 @@ fn guest_load(base: Register, index: Register, scale: u32, disp: i64, narrow: bo
     encoder.take_buffer()
 }
 
+/// The host code of the one guest instruction `code`, up to the exit after it.
 fn carried(code: &[u8]) -> Vec<u8> {
-    let mut padded = code.to_vec();
-    padded.resize(16, 0);
-    let (i, _) = decode(&padded).expect("decodes");
-    area_operand(Way::Machine, &i).expect("an operand on the area's segment, built")
+    let target = Target {
+        host: HostMatches {
+            five_level_paging: false,
+            partial_writes: true,
+            undefined_results: true,
+        },
+        offer: Offer::new(V3).expect("the v3 list has meanings"),
+    };
+    let piece = translate_native_for::<X86_64>(
+        code,
+        0x40_1000,
+        LookAhead::None,
+        false,
+        &Way::Machine,
+        &target,
+    )
+    .expect("a piece");
+    let end = piece.exits[0].start as usize;
+    piece.bytes[..end].to_vec()
 }
 
 /// The eighth check's gs67.c: GS base 0x300000000, rax 0x100000010.
