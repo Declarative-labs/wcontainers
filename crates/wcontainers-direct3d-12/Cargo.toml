@@ -56,6 +56,6 @@ crate-type = ["cdylib"]
 name = "dxgi"
 crate-type = ["cdylib"]
 
-# TODO: remove this crate's 504 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 496 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
