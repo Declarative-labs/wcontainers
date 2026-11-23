@@ -194,24 +194,59 @@ fn stand_in(i: &Iced) -> (Iced, Vec<(u8, u8)>) {
     (out, swaps)
 }
 
-/// The moves that load each stand-in with its withheld register's guest value, keeping its own in the area.
-fn stand_ins_in(way: Way, code: &mut HostCode, swaps: &[(u8, u8)]) {
+/// Whether guest instruction `i` reads general register `number` (a write of fewer than 32 bits keeps the rest, so
+/// it reads too), and whether it writes it.
+fn reads_writes(i: &Iced, number: u8) -> (bool, bool) {
+    use iced_x86::OpAccess::*;
+    let mut info = InstructionInfoFactory::new();
+    let mut found = (false, false);
+    for u in info.info(i).used_registers() {
+        let Some(g) = general(u.register()).filter(|g| g.number == number) else {
+            continue;
+        };
+        let partial = g.width < crate::operand::W32;
+        match u.access() {
+            Read | CondRead => found.0 = true,
+            Write => {
+                found.0 |= partial;
+                found.1 = true;
+            }
+            _ => found = (true, true),
+        }
+    }
+    found
+}
+
+/// The moves that load each stand-in with its withheld register's guest value where `guest` reads it, keeping the
+/// stand-in's own in the area.
+fn stand_ins_in(way: Way, code: &mut HostCode, guest: &Iced, swaps: &[(u8, u8)]) {
     for (k, &(w, s)) in swaps.iter().enumerate() {
         let own = STAND_IN_VALUES + k * WORD;
         put(code, &store_area(way, own, full(s)));
         code.relocate(s, page(own));
-        put(code, &load_area(way, full(s), withheld_slot(w)));
+        if reads_writes(guest, w).0 {
+            put(code, &load_area(way, full(s), withheld_slot(w)));
+        }
     }
 }
 
-/// After the instruction: each withheld register's value back to the area and each stand-in's own value back.
-fn stand_ins_out(way: Way, code: &mut HostCode, swaps: &[(u8, u8)]) {
-    for &(w, s) in swaps {
-        code.relocate(w, Held::Register(s));
+/// After the instruction: each withheld register's value back to the area where `guest` writes it, and each
+/// stand-in's own value back.
+fn stand_ins_out(way: Way, code: &mut HostCode, guest: &Iced, swaps: &[(u8, u8)]) {
+    let written: Vec<bool> = swaps
+        .iter()
+        .map(|&(w, _)| reads_writes(guest, w).1)
+        .collect();
+    for (&(w, s), &written) in swaps.iter().zip(&written) {
+        if written {
+            code.relocate(w, Held::Register(s));
+        }
     }
-    for (k, &(w, s)) in swaps.iter().enumerate() {
-        put(code, &store_area(way, withheld_slot(w), full(s)));
-        code.home(w);
+    for (k, (&(w, s), &written)) in swaps.iter().zip(&written).enumerate() {
+        if written {
+            put(code, &store_area(way, withheld_slot(w), full(s)));
+            code.home(w);
+        }
         put(code, &load_area(way, full(s), STAND_IN_VALUES + k * WORD));
         code.home(s);
     }
@@ -507,7 +542,7 @@ fn rewritten(
     if !swaps.is_empty() {
         code.slow(NativeReason::WithheldRegisterNamed);
     }
-    stand_ins_in(way, code, &swaps);
+    stand_ins_in(way, code, guest, &swaps);
     let target = rip_target(i, address);
     let ins = if reach == Reach::Rebase && ins.mnemonic() == Mnemonic::Lea {
         // `lea r, [rip+d]` is the guest address itself.
@@ -538,7 +573,7 @@ fn rewritten(
         put(code, &load_area(way, full(legacy), STAND_IN_VALUES));
         code.home(legacy);
     }
-    stand_ins_out(way, code, &swaps);
+    stand_ins_out(way, code, guest, &swaps);
 }
 
 fn names_high_byte(i: &Iced) -> bool {
@@ -1038,10 +1073,10 @@ fn into_t(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
     if !swaps.is_empty() {
         code.slow(NativeReason::WithheldRegisterNamed);
     }
-    stand_ins_in(way, code, &swaps);
+    stand_ins_in(way, code, &i.iced, &swaps);
     let read = reach_operand(way, code, &read, i.address32, reach, rip_target(i, address));
     put(code, &read);
-    stand_ins_out(way, code, &swaps);
+    stand_ins_out(way, code, &i.iced, &swaps);
 }
 
 /// The lookup's first level (section 3.3): u gets the second-level table of t's region.

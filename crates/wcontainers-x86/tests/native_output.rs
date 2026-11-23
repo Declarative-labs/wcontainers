@@ -406,8 +406,8 @@ fn a_withheld_register_takes_a_stand_in() {
         let piece = translate(&bytes("4d 01 da"), AT, way, true).expect("a piece");
         assert_eq!(
             area,
-            8,
-            "two stand-ins saved, loaded, stored back and restored:\n{}",
+            7,
+            "two stand-ins saved, loaded and restored, r10 stored back, r11 (only read) not:\n{}",
             listing(&piece.bytes)
         );
     }
@@ -453,21 +453,20 @@ fn a_withheld_operand_is_its_slot() {
         // Stand-ins: mov r10d, r8d zero-extends into the register only; bt r11, rax reaches past it in memory; rol
         // r15, 0xeb leaves OF as Intel leaves it undefined, unlike the register form on the reference (native
         // layer 1); pextrb r10d, xmm6, 0xea writes one byte of memory but the whole register.
-        for hex in [
-            "45 89 c2",
-            "49 0f a3 c3",
-            "49 c1 c7 eb",
-            "66 49 0f 3a 14 f2 ea",
+        // Each saves its stand-in and restores it, loads it only where the guest reads the register and stores
+        // it back only where the guest writes it.
+        for (hex, moves) in [
+            ("45 89 c2", 3),
+            ("49 0f a3 c3", 3),
+            ("49 c1 c7 eb", 4),
+            ("66 49 0f 3a 14 f2 ea", 3),
         ] {
             let code = decoded(hex, way);
             let on_area = code
                 .iter()
                 .filter(|i| i.mnemonic() == Mnemonic::Mov && i.memory_segment() == Register::GS)
                 .count();
-            assert_eq!(
-                on_area, 4,
-                "{hex}: one stand-in saved, loaded, stored back and restored"
-            );
+            assert_eq!(on_area, moves, "{hex}: the stand-in's moves");
         }
     }
 }
