@@ -21,10 +21,13 @@ probes).
   findings answered in the plan; the shared `Route::Area`; the core's `string_passes`; the route of every decoded
   form per way with its static routing test; the 0x67 segment-operand finding's code with its test (run 1). Run 2:
   the trait takes the way and the target (shared, ARM64 one of each); `Native for X86_64` for the machine and P,
-  every route carried (below); the guest's FIP stored after each copied x87 instruction; a rep string under the
-  count run by the inside; the pre-executor bar's encoding round trips. Not yet: the replay check (`stop_check`),
-  the `fldcw` check and the x87 unmasked mode, `answer` and the core moves, the pool, `retarget`/`Patch` and the
-  `int3` link protocol, `DirectExit::condition`, the position map's segment and address size, stepping pieces.
+  every route carried (below); the guest's FIP stored after each copied x87 instruction; the flag-free check
+  after a copied `fldcw` with the new call kind `X87Control`; a rep string under the count run by the inside;
+  `DirectExit::condition`; the position map's operand with segment and address width; `Condition` and its
+  plain `holds` in the core; the pre-executor bar's encoding round trips and call-position map checks. Not yet:
+  the replay check (`stop_check`), the x87 unmasked mode and the inside's side of `X87Control`, `answer` and the
+  x87 unit's move into the core, the pool, `retarget`/`Patch` and the `int3` link protocol, stepping pieces, the
+  differential test of `holds` against the meaning's WebAssembly.
   No x86 executor can run a translation yet (P's executor, crates/executor/implementation/host-process, was
   committed by its track during this run without a translation runner; no x86 floor), so the bar's layers,
   programs and speed wait on one (plan 8).
@@ -34,19 +37,17 @@ probes).
 
 ## Next, in order (XN1)
 
-1. The `fldcw` check (plan 3.1) and `InsideCall::X87Control`, `Step` and `Stop` (shared; the ARM64 inside's
-   stop.rs match and the hardware-virtualization test carry.rs match need an arm for them, which ARM64 never
-   reaches).
-2. The replay check: `stop_check` in the trait and `stop: Option<u64>` in `translate_native_for`; ARM64 has no
-   replay check yet, so the trait method needs ARM64's form or a ruling (coordinate with the ARM64 back end).
-3. `DirectExit::condition` and `retarget` returning a `Patch` (plan 3.2, 9), for the loader's `int3` protocol.
-4. `Operand` gaining segment and address size, so `stopping` gives `Access` for `fs:`/`gs:` and 0x67 operands too
-   (today Plain there).
-5. The pool for a call through a register (today the return address is built in rax, saved to the area: the
-   plan's measured 1.146 form, not the pool's 1.120), with `HostCode::pool`.
-6. `answer` and the core moves (Condition, the x87 unit, transcendental.rs), then x87_answer.rs; stepping pieces
-   for P.
-7. The executor-dependent bar once an x86 executor runs a translation (P's, or the floor).
+1. The replay check: `stop_check` in the trait, `InsideCall::Stop`, and `stop: Option<u64>` in
+   `translate_native_for`; ARM64 has no replay check yet, so the trait method needs ARM64's form or a ruling
+   (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it.
+2. `answer` and the core moves (the x87 unit, transcendental.rs, root.rs, the lazy_static line), then
+   x87_answer.rs and the unmasked mode; the differential test of `Condition::holds` against the meaning's
+   WebAssembly (through the translator test crate's runner) and P's table.
+3. `retarget` returning a `Patch` (plan 3.2, 9) in place of `link`, for the loader's `int3` protocol.
+4. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
+   to the area: the plan's measured 1.146 form, not the pool's 1.120).
+5. The executor-dependent bar once an x86 executor runs a translation (P's, or the floor), and the plan's
+   measurements (dynamic register count, mirror memory, links' batches) with it.
 
 ## What XN1 run 2 changed
 
@@ -73,6 +74,22 @@ probes).
   values, stand-in values, FIP), the fixed part (entries), the first level at two pages.
 - After a copied x87 instruction that is not a control one (fpu.rs's own `control`), `mov t, imm64; mov
   gs:[fip], t` with `Fixup::X87Pointer` over it.
+- After a copied `fldcw` (commits 6855550d, 161ece86): `fnstcw` into the register area, `movzx`, `not`, `pext`
+  of the six masks, rcx borrowed into u for `jrcxz`, and a call of the new kind `InsideCall::X87Control` when one
+  is clear; no arithmetic flag written, nothing relocated at the call. The ARM64 inside's stop.rs and the
+  hardware-virtualization test take the kind as unexpected. The SDM leaves C0 to C3 undefined after `fnstcw`:
+  a host that changed them would change the guest's condition codes after a `fldcw` (not measured; the meaning
+  leaves them).
+- `DirectExit::condition` (commit 97b3f852): set by x86's linkable `jcc` exits from iced's condition code,
+  `None` elsewhere and on ARM64; `branch_exit` takes it.
+- x86/condition.rs (core, commit 5053d6bf): `Condition` and `Test` moved from flags.rs, with `ALL`, `from_code`
+  and `holds`, unit-tested on all 16 conditions and 32 flag combinations against the SDM's table.
+- The position map's `Operand` gains `segment` (`Fs`, `Gs`) and `address_bits` (commit 47b3dfc2; ARM64 flat, 64);
+  x86's `stopping` gives `Access` for every memory operand but `lea`'s.
+- A gather whose vector index is on the area's segment under 0x67 goes to the inside (the 32-bit `lea` cannot
+  take a vector index); found by reading the carrying code, now a named test.
+- The sweep also checks that nothing is relocated at any call into the inside and nothing relocated or pending
+  at its return point.
 - Tests (crates/wcontainers-x86/tests/native_output.rs): a seeded sweep of instruction mixes with branches, calls
   and returns, translated in both ways with and without the count, decoded back by iced: every piece decodes
   whole, every span, exit and address place is at an instruction start of its kind, no host `call`/`ret`, no
@@ -81,16 +98,22 @@ probes).
   a loop linked in place, stand-ins, `gs:` rebuilt and `fs:` copied, `moffs` on `gs:`, RIP-relative, `syscall`
   per way, a trap's map, the count, FIP, a rep string). native_carry.rs now reads the translated piece.
 
-## XN1 run 2 results (rented ARM64 machine, Graviton4, load 16 to 36 from other tracks; the x86 machine did not
-answer SSH this run, and these tests run no host code, so the architecture does not matter)
+## XN1 run 2 results (these tests run no host code, so they hold on either machine)
 
-- clippy with warnings denied on wcontainers-x86, wcontainers-guest-cpu, wcontainers-arm64, wcontainers-translator
-  (native, all targets, `--no-deps`): clean. `cargo check -p wcontainers-x86 --no-default-features`: builds.
-  hardware-virtualization lib, tests and its inside: build.
-- `cargo test -p wcontainers-x86 -p wcontainers-guest-cpu -p wcontainers-arm64`: all pass (x86: 13 in
-  native_output, 2 native_carry, 2 native_routes, the rest as before).
-- native_output sweep: seed 0x5eed 20,000 cases (80,000 pieces, 227,568 spans) and seed 0x2b17 500,000 cases
-  (2,000,000 pieces, 5,705,008 spans): 0 broken. native_carry seed 11, 1,000,000 cases: 0 differences.
+- Rented x86 machine (Xeon 8488C, load 0.08 before, 1.36 after), at commit ab6fc245 plus other tracks' edits:
+  clippy with warnings denied on wcontainers-x86, wcontainers-guest-cpu, wcontainers-translator (native, all
+  targets, `--no-deps`): clean; `cargo test -p wcontainers-x86 -p wcontainers-guest-cpu`: all pass (x86 lib 9,
+  native_output 17, native_carry 2, native_routes 2, the others as before); the translator's native lib tests 7.
+  The x86 machine did not answer SSH for part of the run, so the work in between was built and tested on the
+  ARM64 machine.
+- Rented ARM64 machine (Graviton4, load 10 to 36 from other tracks): the same clippy plus wcontainers-arm64 clean;
+  `cargo check -p wcontainers-x86 --no-default-features`, hardware-virtualization's lib and tests and its inside:
+  build; `cargo test -p wcontainers-guest-cpu -p wcontainers-arm64` and the translator's native tests: pass, after
+  each shared change.
+- native_output sweep: seed 0x5eed 20,000 cases (80,000 pieces), seed 0x2b17 500,000 cases (2,000,000 pieces,
+  5,705,008 spans, before the fldcw and call-map checks), seed 0x51 4,000,000 cases (16,000,000 pieces, 45,570,238
+  spans, release, all checks): 0 broken. native_routes seed 0x51, 2,000,000 cases: 0 broken. native_carry seed 11,
+  1,000,000 cases: 0 differences.
 
 ## Departures from the plan (XN1 run 2)
 
@@ -105,7 +128,6 @@ answer SSH this run, and these tests run no host code, so the architecture does 
   stand-in form), until the pool exists.
 - `DirectExit::retarget` holds, for x86, the byte offset of the branch's rel32 within it, until the shared field
   changes as plan 9 says.
-- `stopping` gives `Access` only for an operand with no segment prefix and no 0x67, until `Operand` gains them.
 
 ## What XN1 run 1 changed
 
