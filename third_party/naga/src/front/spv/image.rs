@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::{
-    arena::{Handle, UniqueArena},
     Scalar,
+    arena::{Handle, UniqueArena},
 };
 
 use super::{Error, LookupExpression, LookupHelper as _};
@@ -809,7 +809,12 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
 
         match ctx.expressions[si_lexp.sampler] {
             crate::Expression::GlobalVariable(handle) => {
-                *self.handle_sampling.get_mut(&handle).unwrap() |= sampling_bit;
+                *self
+                    .handle_sampling
+                    .get_mut(&handle)
+                    .ok_or(Error::InvalidImageExpression(
+                        crate::Expression::GlobalVariable(handle),
+                    ))? |= sampling_bit;
             }
 
             crate::Expression::FunctionArgument(i) => {
@@ -818,7 +823,9 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
 
             crate::Expression::Access { base, .. } => match ctx.expressions[base] {
                 crate::Expression::GlobalVariable(handle) => {
-                    *self.handle_sampling.get_mut(&handle).unwrap() |= sampling_bit;
+                    *self.handle_sampling.get_mut(&handle).ok_or(
+                        Error::InvalidImageExpression(crate::Expression::GlobalVariable(handle)),
+                    )? |= sampling_bit;
                 }
 
                 ref other => return Err(Error::InvalidGlobalVar(other.clone())),
@@ -1316,7 +1323,7 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
             _ => {
                 return Err(Error::UnsupportedImageSampleOperand(
                     spirv::ImageOperands::MIN_LOD.bits(),
-                ))
+                ));
             }
         }
         types.extend(level.1);
