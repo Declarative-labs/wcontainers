@@ -455,14 +455,21 @@ which the translate half's `native::question` gives for a decoded instruction (t
 the position map's guest pc), so the core needs no decoder; a memory operand comes as the shared `Operand`, whose
 address the core forms from the block (`answer::address`), and the guest's memory as `answer::Memory` (a read or
 write of a range, all or nothing, or the first address it may not reach). On `Ok` the caller moves rip past the
-instruction; on a `Fault` nothing has changed, and `Fault::Memory(address)` goes to the guest's `memory_fault` as
-every other fault does (page, stack or general protection); `Notes` names what the meaning warns of (`cpuid`
-asking for AVX while told no, `popf` setting TF, which starts stepping, or AC, which is never held). Built: `cpuid`,
-`xgetbv`, the transcendentals, the reciprocals (by `answer::estimate`, the meaning's formula in plain Rust, with
-libm's correctly rounded square root and rounding as WebAssembly's), `popf`, the descriptor reads (from the
-table both share, x86/user_segments.rs), the segment register moves, pushes and pops, and `lfs`/`lgs`/`lss`.
-Native layer 1 requires every answered case's outcome by `answer` equal to the meaning's; forms layer 1 leaves out
-(`cpuid`, `xgetbv`, whose table is ours, not the CPU's) have a test of their own against the meaning.
+instruction unless `Notes::transferred` says a far transfer already set it; on a `Fault` nothing has changed but
+the slots a far `call` wrote before the one that faulted (as on the CPU), and `Fault::Memory(address)` goes to the
+guest's `memory_fault` as every other fault does (page, stack or general protection); `Fault::FarTransferTo32Bit`
+is general protection counted by its name. `Notes` names what the meaning warns of (`cpuid` asking for AVX while
+told no, `popf` or `iret` setting TF, which starts stepping, or AC, which is never held). The memory also checks a
+range without reaching it (`Memory::check`, for `xsave`'s order of faults), and the clock is `answer::Clock`, the
+inside's nanoseconds. Built: `cpuid`, `xgetbv`, the transcendentals, the reciprocals (by `answer::estimate`, the
+meaning's formula in plain Rust, with libm's correctly rounded square root and rounding as WebAssembly's), `popf`,
+the descriptor reads (from the table both share, x86/user_segments.rs), the segment register moves, pushes and
+pops, `lfs`/`lgs`/`lss` and far `jmp`/`call` through memory (the selector's address wrapping by itself under
+0x67, as the meaning's), `retf`, `iret`, `wrfsbase`/`wrgsbase`, `rdtsc`/`rdtscp`, and `xsave`/`xrstor` (the frame
+slots, the XSAVE constants and `xsave_bytes` shared with the meaning). Native layer 1 requires every answered
+case's outcome by `answer` equal to the meaning's; forms layer 1 leaves out (`cpuid`, `xgetbv`, whose table is
+ours; `rdtsc`, `rdtscp`, the clock; `xsave`, `xrstor`, XCR0 and XSTATE_BV by design) and the operands its random
+cases rarely reach have edge tests of their own against the meaning (tests/layer1.rs `the_inside_answers_*`).
 
 ### 3.6 System calls, faults, the count
 

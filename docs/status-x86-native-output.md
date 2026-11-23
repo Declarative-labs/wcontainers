@@ -66,8 +66,12 @@ probes).
   (`answer::address` over the shared `Operand`); it now also answers the reciprocal estimates (legacy and VEX),
   `popf`, the descriptor reads (`lar`, `lsl`, `verr`, `verw`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`), the segment
   register moves, `push`/`pop` of fs and gs, and `lfs`/`lgs`/`lss`, each equal to the meaning (native layer 1 now
-  compares 82,000 answered cases; a new test 19,427 edge cases). Still to answer: the clock, `iretq`, `retf` and far
-  `call`/`jmp`, `wrfsbase`/`wrgsbase`, the XSAVE family, the partial-write and undefined-result forms.
+  compares 82,000 answered cases; a new test 19,427 edge cases).
+  Run 8: `answer` also answers `rdtsc`/`rdtscp` (through `answer::Clock`), `wrfsbase`/`wrgsbase`, `retf`, `iret`, far
+  `jmp`/`call` through memory, and `xsave`/`xrstor` (with `Memory::check` for their order of faults), each equal to
+  the meaning in two new edge tests; `lfs`/`lgs`/`lss` now wrap the selector's address by itself under 0x67, as
+  the meaning does (an unchecked-form 0x67 defect of run 7's answer, found while building the far branches). Still
+  to answer: the partial-write and undefined-result forms (for hosts whose probe finds them different).
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -82,14 +86,12 @@ probes).
    `translate_native_for`; ARM64 has no replay check yet, so the trait method needs ARM64's form or a ruling
    (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it. Native layer 2's blob can carry the
    replay test once the check exists (a stop word in the area, the Stop entry recording the position).
-3. `answer` for the rest of the Kernel route (plan 3.5; runs 6 and 7 built `cpuid`, `xgetbv`, the
-   transcendentals, the reciprocals, `popf`, the descriptor reads, the segment moves, pushes and pops, and
-   `lfs`/`lgs`/`lss`): `rdtsc`/`rdtscp`/`rdpid` (the clock: the question needs the clock's reading, which the
-   inside gives), `iretq`, `retf` and far `call`/`jmp` (their frames' slots fault one by one, `segments::frame_slots`),
-   `wrfsbase`/`wrgsbase`, the XSAVE family, the partial-write and undefined-result forms, each a `Question` with
-   `native::question` giving it, native layer 1 comparing it with the meaning and an edge test in
-   tests/layer1.rs `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64`. Then x87_answer.rs
-   and the unmasked mode, and P's flags table. (`Condition::holds` against the meaning: done in run 6.)
+3. `answer` for the rest of the Kernel route (plan 3.5; runs 6 to 8 built every instruction the route names but
+   these): the partial-write forms (`enter` with a level, `fstp m80`, `fbstp`) and the undefined-result forms
+   (`native::undefined_result`), routed only where the start probe finds the host differs from the meaning (not on
+   the rented machine), each a `Question` with `native::question` giving it and an edge test against the meaning in
+   tests/layer1.rs. `rdpid` has no meaning (it is not offered, so it takes the Trap route) and so no answer. Then
+   x87_answer.rs and the unmasked mode, and P's flags table. (`Condition::holds` against the meaning: run 6.)
 4. The trait's `retarget` (plan 9) in place of `link`, with ARM64's; x86's is built (run 4) and used by the native
    blobs, and `link` writes its patch.
 5. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
@@ -100,6 +102,62 @@ probes).
 7. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
    before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
    area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+
+## What XN1 run 8 changed
+
+- `answer(question, block, offer, constants, memory)`: `memory` is `impl Memory + Clock`; `answer::Clock` gives the
+  inside's nanoseconds; `Memory::check(at, bytes, write)` says whether a range may be reached without reaching it;
+  `Notes::transferred` (a far transfer set rip; the caller leaves it); `Fault::FarTransferTo32Bit` (general
+  protection counted by name, the meaning's `FarTransferTo32Bit` warning).
+- New questions: `TimeStamp` (`rdtsc`, `rdtscp`: edx:eax the clock, ecx 0), `WriteBase` (`wrfsbase`, `wrgsbase`:
+  the register at its width, general protection where not canonical), `FarReturn` (`retf`, `retf imm16`: cs then
+  rip read, the selector tested at privilege level 3 exactly, the target's canonical test, rsp past both slots and
+  the release), `InterruptReturn` (`iret`: NT first, then rflags, cs, rip, cs tested, ss, rsp, ss tested, the
+  target's test, rflags as `popf` loads them), `FarBranch` (far `jmp`/`call` through memory: the pointer, the
+  selector with any privilege level, a call's cs then return address written each faulting by itself, then the
+  target's test, as the meaning orders them), `XState` (`xsave`, `xrstor`, plain and 64: the meaning's order of
+  faults, then each component RFBM names, XSTATE_BV from the components in use, `xrstor`'s header and MXCSR
+  refusals, TOP placing the registers, a component XSTATE_BV leaves out put in its initial configuration).
+- Fixed: `FarPointer` (`lfs`, `lgs`, `lss`) read the selector at the offset's address plus its bytes; under 0x67
+  the selector's own address wraps within 32 bits before the segment base, as the meaning's `far_pointer` makes it.
+  Run 7's edge test had no 0x67 case; the new test has one for each width (`64 67 0f b4 01`).
+- Shared once in the core: the frame's slots (`answer::FrameSlot`, segments.rs reads it), the XSAVE constants
+  (`XSTATE_BV`, `XSAVE_HEADER_ZERO`, `XSAVE_ALIGNMENT`, `XSTATE_BYTES`, `HEADER_KEPT`, `IMAGE_SLOT`; fpu.rs reads
+  them), `cpuid::xsave_bytes` is a `const fn`; popf's rflags load is `answer::load_rflags`, which `iret` uses too.
+  `segments::operand_bytes` is crate-wide for `native::question`.
+- Test crate: `CaseMemory` is the clock (`ANSWER_CLOCK`, 3 * 2^32 ns) and checks ranges; `answered` leaves rip
+  where a far transfer set it. tests/layer1.rs: `answered_as_the_meaning` (one case against the meaning),
+  `the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64` (`retf` and `retf 0x10` at three
+  widths, `iret` at three widths with five rflags, four ss and NT set, far `jmp`/`call [rcx]` at three widths, each
+  with seven selectors and six targets and five stacks that fault, the 0x67 fs wraps of the far branches and `lfs`,
+  `wrfsbase`/`wrgsbase` of ecx and rcx with eight values, `rdtsc`/`rdtscp` against the meaning with the clock
+  taken out: 3,145 cases) and `the_inside_answers_xsave_and_xrstor_as_the_meaning_x86_64` (the four forms, eight
+  RFBMs, five mixes of status word, registers, xmm and upper halves, seven areas with XSTATE_BV, header, MXCSR and
+  the reserved byte set, five places that fault and two 0x67 fs places: 1,148 cases). The guest module's `FSW` and
+  `R0` are public for it.
+
+## XN1 run 8 results (rented x86 machine, Xeon 8488C, 5-level paging)
+
+- Clippy with warnings denied on wcontainers-x86 (all targets, and the core without `translate`) and
+  -translator-test, `--no-deps`: clean; the core builds for `x86_64-unknown-none`; the x86 crate's tests pass.
+- Native layer 1 with the far transfers and base writes answered (19:08 to 19:17 UTC, load 0.4 before, up to 25
+  during with this run's other jobs): 2008 forms, 1,000 a form, seed 5150, 32 at once: 0 failing, the same 2,594
+  known failures; 165,030 answers equal to the meaning's (127,030 in run 7); 531 s. Again with `xsave`/`xrstor`
+  answered and the XSAVE constants shared (19:18 to 19:28 UTC, load 2.6 before, up to 16 during): the same, 526 s.
+- Edge tests: far transfers, bases and clock 3,145 cases; xsave and xrstor 1,148; with run 7's 19,427 and
+  cpuid's 154, all equal (again on the committed code, 19:20 UTC: 4 tests, 59 s).
+- The literal check: no finding in a line this run wrote (three it found in answer.rs and fpu.rs during the run,
+  two names defined twice and one repeating the abi crate's `WORD`, were removed). The error-message strings that
+  earlier runs wrote in carry.rs and the test crate's native.rs remain.
+- Controls (each in the rented machine's copy only): caught by the far-transfer test: the selector's address not
+  wrapping under 0x67 ("[64, 67, ff, 29]"), `retf imm16` not releasing, a far call writing rip's slot before cs's,
+  `wrfsbase` of ecx taking rcx's upper half, a return taking any privilege level; by the xsave test: TOP not placing
+  the registers, the last-byte check left out, `xrstor` refusing a reserved MXCSR bit when no SSE or AVX is named,
+  the initial x87 header 0, and (once a case had registers with the status word initial) the registers left out
+  of the x87 component's in-use test. Not caught, and not seeable in a one-instruction case here: `iret` reading
+  the rsp slot after testing ss (the rsp slot lies below ss's, and the data has no hole that makes one readable
+  and the other not), and `xrstor` keeping the reserved byte after the abridged tag (the reference's state has no
+  field for it; a later save would show it).
 
 ## What XN1 run 7 changed
 
@@ -544,6 +602,11 @@ stepping run at 32 jobs): `x86-run <checkout> --name x86-native-output --jobs 32
 WC_LAYER1_SEED=5150 WC_LAYER1_JOBS=32 cargo test -q -p wcontainers-translator-test --test layer1
 every_form_matches_the_cpu_natively_x86_64 -- --nocapture'`; `WC_LAYER1_FORMS=<names>` for some forms. The
 summary lines start "layer 1 natively".
+
+The inside's answers against the meaning (rented x86 machine, about a minute): `cargo test -q -p
+wcontainers-translator-test --test layer1 the_inside_answers -- --nocapture` (four tests: cpuid and xgetbv; the
+reciprocals, flags, descriptors and segment registers; far transfers, bases and the clock; xsave and xrstor).
+Scratch run9/controls.sh and controls-xstate.sh are run 8's controls, sent inline with `--no-sync`.
 
 ## Departures from the plan (XN1)
 
