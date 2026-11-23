@@ -2,7 +2,8 @@
 // line writes the four corners of a rectangle around it, reaching past its axis and its ends by the
 // given reach, and the two triangles' indices. A corner record is the line's vertex record at the
 // point the corner stands beside (its interpolated slots taken along the line there, the others the
-// line's first vertex's), its position moved across the line, then the coverage slot: the distance
+// line's first vertex's), its position moved across the line (along the minor axis for the aliased
+// rule), then the coverage slot: the distance
 // from the line's axis, the distance along it from its first end, and its length, in pixels; or for
 // the aliased rule the line's two ends in window pixels (y down) on Direct3D's grid of 1/256 pixel.
 // The line is first cut where it crosses the near plane (clip z = 0); a line wholly behind it, or of
@@ -106,7 +107,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if !dropped {
         along = (b - a) / extent;
     }
-    let across = vec2<f32>(-along.y, along.x);
+    var across = vec2<f32>(-along.y, along.x);
+    if values.ends != 0u {
+        // Across the minor axis instead, so that values are taken along the major one, as Direct3D's
+        // devices take them on aliased lines.
+        across = select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), abs(along.x) >= abs(along.y));
+    }
 
     let base = unit * CORNERS;
     for (var k = 0u; k < CORNERS; k++) {

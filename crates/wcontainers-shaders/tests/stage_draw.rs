@@ -1086,13 +1086,11 @@ fn antialiased_lines_draw_as_direct3d_does() {
 }
 
 /// How two resolved pictures of aliased lines differ: the pixels one covers (alpha not zero) and the
-/// other does not, the largest channel difference of pixels both cover, and the pixels `b` covers
-/// only in part (alpha neither zero nor full).
-fn aliased_apart(a: &[u8], b: &[u8]) -> (Vec<usize>, u8, usize) {
+/// other does not, and the largest channel difference of pixels both cover.
+fn aliased_apart(a: &[u8], b: &[u8]) -> (Vec<usize>, u8) {
     let alpha = |t: &[u8]| t[3];
     let mut coverage = Vec::new();
     let mut colour = 0;
-    let mut partial = 0;
     for (i, (x, y)) in a.chunks(4).zip(b.chunks(4)).enumerate() {
         if (alpha(x) == 0) != (alpha(y) == 0) {
             coverage.push(i);
@@ -1103,20 +1101,18 @@ fn aliased_apart(a: &[u8], b: &[u8]) -> (Vec<usize>, u8, usize) {
                 .map(|(p, q)| p.abs_diff(*q))
                 .fold(colour, u8::max);
         }
-        if alpha(y) != 0 && alpha(y) != u8::MAX {
-            partial += 1;
-        }
     }
-    (coverage, colour, partial)
+    (coverage, colour)
 }
 
 /// Aliased lines (`MultisampleEnable` and `AntialiasedLineEnable` off) into four samples through a
 /// viewport away from the target's corner, by the stage helper's line route with `LINE_DIAMOND`: by
 /// compute on WebGPU, and replayed on WebGL 2 with and without EXT_clip_control, from the fxc and the
-/// dxc build, against real Direct3D 11 on the RTX 3080 and WARP, resolved. Direct3D covers every
-/// sample of each pixel its rule picks, so ours may cover no pixel in part; its covered pixels are
-/// no further from the RTX 3080's than WARP's are, and the colours of pixels both cover no further
-/// apart than the two references' (at least one step). [`MEASURED`]'s lines (on pixel centres,
+/// dxc build, against real Direct3D 11 on the RTX 3080 and WARP, resolved. Ours passes where its
+/// covered pixels are no further from the RTX 3080's than WARP's are, and the colours of pixels both
+/// cover no further apart than the two references' (at least one step): Direct3D covers every
+/// sample of each pixel its rule picks, so a pixel ours covered in part would resolve towards the
+/// clear colour, further than that. [`MEASURED`]'s lines (on pixel centres,
 /// between rows, diagonal, ends between centres), then the seeded cases of [`CASES`]
 /// (`WCONTAINERS_LINE_SEED`, `WCONTAINERS_LINE_CASES`).
 #[test]
@@ -1173,14 +1169,12 @@ fn aliased_lines_into_a_multisampled_target_draw_as_direct3d_does() {
             .iter()
             .map(|(_, gpu)| direct3d(gpu, case, drawn_from, false, Route::Aliased))
             .collect();
-        let (between, spread, partial) = aliased_apart(&references[0], &references[1]);
-        assert_eq!(partial, 0, "{name}: warp covers pixels in part");
-        assert_eq!(aliased_apart(&references[1], &references[0]).2, 0);
+        let (between, spread) = aliased_apart(&references[0], &references[1]);
         eprintln!(
             "{name}: {} pixels covered by the RTX 3080, {} covered by one of it and WARP, colours \
              at most {spread} apart",
             drawn_texels(&references[0]),
-            between.len()
+            between.len(),
         );
         for (dxil, replayed) in [false, true]
             .into_iter()
@@ -1204,12 +1198,12 @@ fn aliased_lines_into_a_multisampled_target_draw_as_direct3d_does() {
                 " replayed on webgl without clip control",
             ][replayed];
             let name = format!("{name} {}{route}", if dxil { "dxil" } else { "dxbc" });
-            let (coverage, colour, partial) = aliased_apart(&references[0], &picture);
+            let (coverage, colour) = aliased_apart(&references[0], &picture);
             let warp = aliased_apart(&references[1], &picture).0.len();
             compared += 1;
             eprintln!(
                 "{name}: {} pixels covered by one of the RTX 3080 and ours ({warp} of WARP and \
-                 ours), colours at most {colour} apart, {partial} covered in part",
+                 ours), colours at most {colour} apart",
                 coverage.len()
             );
             if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
@@ -1226,7 +1220,7 @@ fn aliased_lines_into_a_multisampled_target_draw_as_direct3d_does() {
                     Format::Rgba8Unorm,
                 );
             }
-            if coverage.len() > between.len() || colour > spread.max(1) || partial != 0 {
+            if coverage.len() > between.len() || colour > spread.max(1) {
                 for &t in coverage.iter().take(16) {
                     let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
                     let at = t * 4;

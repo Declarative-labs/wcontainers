@@ -86,7 +86,12 @@ fn line_corner(vertex: u32) -> array<vec4<u32>, SLOTS> {
     if !dropped {
         along = (b - a) / extent;
     }
-    let across = vec2<f32>(-along.y, along.x);
+    var across = vec2<f32>(-along.y, along.x);
+    if values.ends != 0u {
+        // Across the minor axis instead, so that values are taken along the major one, as Direct3D's
+        // devices take them on aliased lines.
+        across = select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), abs(along.x) >= abs(along.y));
+    }
 
     let end = k / 2u;
     let side = f32(k % 2u) * 2.0 - 1.0;

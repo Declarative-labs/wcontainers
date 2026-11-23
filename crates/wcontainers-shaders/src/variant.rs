@@ -1150,9 +1150,10 @@ fn primitive_from_stage(module: &mut Module, w: &mut Wrapped, location: u32) -> 
 /// A pixel program keyed for both line routes (`LINE_COVERAGE` and `LINE_DIAMOND`).
 const TWO_LINE_RULES: &str = "a pixel program keyed for both line routes";
 
-/// How far past a line's axis and past each of its ends the stage helper's rectangle reaches for
-/// the aliased line rule (`LINE_DIAMOND`), in pixels: every pixel the rule picks lies within half a
-/// pixel of the line, and its farthest sample within the half diagonal of a pixel more.
+/// How far past a line along its minor axis, and past each of its ends, the stage helper's
+/// parallelogram reaches for the aliased line rule (`LINE_DIAMOND`), in pixels: the centre of every
+/// pixel the rule picks lies within half a pixel of the line along the minor axis and of its ends
+/// along the major one, and its samples within one pixel more.
 pub(crate) const DIAMOND_REACH: f32 = 1.5;
 
 /// How far past a line's axis and past each of its ends the coverage filter reaches, in pixels: the
