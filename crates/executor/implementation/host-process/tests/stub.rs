@@ -13,7 +13,7 @@ use rustix::mm::ProtFlags;
 use rustix::process::{Pid, Signal};
 use rustix::thread::CpuSet;
 use wcontainers_executor_host_process::layout::{
-    GUEST_START, OUR_AREA, REGISTER_PAGES, SIGNAL_STACKS, THREAD_PAGES,
+    CODE_AREA, CODE_AREA_SIZE, GUEST_START, OUR_AREA, REGISTER_PAGES, SIGNAL_STACKS, THREAD_PAGES,
 };
 use wcontainers_executor_host_process::pages::Command;
 use wcontainers_executor_host_process::probe::HostProbe;
@@ -278,7 +278,17 @@ fn map_shared(address: usize, permissions: ProtFlags) -> Command {
     }
 }
 
-/// A block's memfd is received without waiting, mapped as guest memory only, and closed.
+fn code_map(address: usize, length: usize, permissions: ProtFlags, offset: usize) -> Command {
+    Command::MapShared {
+        address,
+        length,
+        permissions,
+        offset,
+    }
+}
+
+/// A block's memfd is received without waiting, mapped as guest memory only, and closed; only the code area's map is
+/// executable, over exactly the code area.
 #[test]
 fn a_shared_block_is_mapped_only_once_sent_and_only_as_guest_memory() {
     let zygote = zygote();
@@ -313,6 +323,35 @@ fn a_shared_block_is_mapped_only_once_sent_and_only_as_guest_memory() {
         (
             "a block below the guest's lowest address",
             map_shared(0, READ_WRITE),
+        ),
+        (
+            "the code area readable",
+            code_map(CODE_AREA, CODE_AREA_SIZE, executable, 0),
+        ),
+        (
+            "the code area writable",
+            code_map(
+                CODE_AREA,
+                CODE_AREA_SIZE,
+                ProtFlags::EXEC | ProtFlags::WRITE,
+                0,
+            ),
+        ),
+        (
+            "part of the code area",
+            code_map(CODE_AREA, CODE_AREA_SIZE - WINDOW, ProtFlags::EXEC, 0),
+        ),
+        (
+            "the code area from another offset",
+            code_map(CODE_AREA, CODE_AREA_SIZE, ProtFlags::EXEC, WINDOW),
+        ),
+        (
+            "a block execute-only in the guest area",
+            code_map(1 << 40, CODE_AREA_SIZE, ProtFlags::EXEC, 0),
+        ),
+        (
+            "a block execute-only past the code area",
+            code_map(CODE_AREA + WINDOW, CODE_AREA_SIZE, ProtFlags::EXEC, 0),
         ),
     ] {
         let stub = zygote.fork_stub().expect("fork");

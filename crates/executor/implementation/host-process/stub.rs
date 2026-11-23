@@ -11,6 +11,8 @@ use rustix::io::Errno;
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
 use rustix::process::Pid;
 use rustix::thread::futex;
+use wcontainers_abi::RegisterBlock;
+use zerocopy::IntoBytes;
 
 use crate::filter::stub_filter;
 use crate::layout::THREADS_PER_PROCESS;
@@ -104,6 +106,16 @@ pub enum TurnEnd {
     Loaded {
         /// The word loaded.
         value: u64,
+    },
+    /// Translated code called a floor entry; the register block holds what the code held, x30 and pc the call's link.
+    Called {
+        /// The entry's number.
+        entry: u64,
+    },
+    /// The stop signal ended translated code; the register block holds what the code held there.
+    Interrupted {
+        /// The host pc it stopped at.
+        at: u64,
     },
     /// The stub reported an exit it has no name for.
     Forged,
@@ -253,6 +265,7 @@ impl Stub {
             in_publish: count(register::STOPS_IN_PUBLISH),
             in_wait: count(register::STOPS_IN_WAIT),
             in_end: count(register::STOPS_IN_END),
+            in_call: count(register::STOPS_IN_CALL),
         }
     }
 
@@ -284,6 +297,38 @@ impl Stub {
     ) -> Result<TurnEnd, Errno> {
         let turn = self.begin_touch(thread, commands, address, value, resume)?;
         self.wait(thread, turn)
+    }
+
+    /// Gives a thread a turn that applies `commands`, then loads its register block and branches to `at` in the code
+    /// area, and waits for its end.
+    pub fn enter(&self, thread: usize, commands: &[Command], at: usize) -> Result<TurnEnd, Errno> {
+        let turn = self.begin_enter(thread, commands, at)?;
+        self.wait(thread, turn)
+    }
+
+    /// Gives a thread a turn as [`Self::enter`] does, without waiting for it; the turn's number.
+    pub fn begin_enter(
+        &self,
+        thread: usize,
+        commands: &[Command],
+        at: usize,
+    ) -> Result<u32, Errno> {
+        self.pages
+            .control64(thread, control::ENTER_AT)
+            .store(at as u64, Ordering::Relaxed);
+        self.give(thread, commands, Resume::Enter)
+    }
+
+    /// A thread's register block as the stub left it (untrusted).
+    pub fn registers(&self, thread: usize) -> RegisterBlock {
+        let mut block = RegisterBlock::ZERO;
+        self.read_registers(thread, block.as_mut_bytes());
+        block
+    }
+
+    /// Replaces a thread's register block.
+    pub fn set_registers(&self, thread: usize, block: &RegisterBlock) {
+        self.write_registers(thread, block.as_bytes());
     }
 
     /// Gives a thread a turn as [`Self::touch`] does, without waiting for it; the turn's number.
@@ -527,6 +572,8 @@ impl Stub {
                 }
             }
             Some(ExitKind::Loaded) => TurnEnd::Loaded { value },
+            Some(ExitKind::Called) => TurnEnd::Called { entry: value },
+            Some(ExitKind::Interrupted) => TurnEnd::Interrupted { at: value },
             None => TurnEnd::Forged,
         }
     }
@@ -561,6 +608,8 @@ pub struct StopsLanded {
     pub in_wait: u64,
     /// While it ended, which it went on with.
     pub in_end: u64,
+    /// In a floor entry or its save, which it finished from the signal frame.
+    pub in_call: u64,
 }
 
 /// One stub thread's stop, to send from any thread.

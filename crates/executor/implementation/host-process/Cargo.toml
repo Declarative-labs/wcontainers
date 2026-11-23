@@ -32,6 +32,10 @@ rustix = { version = "1.1.6", features = ["fs", "mm", "process", "thread"] }
 # Seeded order of the stop test's turns.
 fastrand = "2.5.0"
 
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
+# The floor test's pieces, standing in for translated code, in the native output's own encodings.
+wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
+
 [[test]]
 name = "zygote"
 
@@ -64,6 +68,9 @@ name = "placement"
 
 [[test]]
 name = "embedder"
+
+[[test]]
+name = "floor"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]

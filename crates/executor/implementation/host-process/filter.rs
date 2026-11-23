@@ -12,7 +12,7 @@ use libc::{
 };
 use linux_raw_sys::general as linux;
 
-use crate::layout::{GUEST_START, OUR_AREA};
+use crate::layout::{CODE_AREA, CODE_AREA_SIZE, GUEST_START, OUR_AREA};
 use crate::stub::{BLOCK_FD, MEMORY_FD, SOCKET_FD, THREAD_FLAGS};
 
 #[cfg(target_arch = "aarch64")]
@@ -205,7 +205,7 @@ impl Program {
 
 /// The stub's filter: `futex`, `exit`, `exit_group`, `rt_sigprocmask` and `sigaltstack` as they come; `mmap` shared and
 /// fixed, inside the guest area, never executable, of the memory's memfd at the offset equal to the address or of a
-/// shared block's received memfd; `mprotect` inside the guest area, never executable; `munmap` inside the guest area;
+/// shared block's received memfd, and of the code area's received memfd execute-only over exactly the code area; `mprotect` inside the guest area, never executable; `munmap` inside the guest area;
 /// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block;
 /// `sched_setaffinity` of the calling thread only. Anything else kills the stub.
 pub(crate) fn stub_filter() -> Vec<sock_filter> {
@@ -249,6 +249,20 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     program.always(kill);
 
     program.place(mmap);
+    // The code area's memfd, received as a block, execute-only over exactly the code area.
+    let guest_mmap = program.label();
+    for (argument, value) in [
+        (0, CODE_AREA as u64),
+        (1, CODE_AREA_SIZE as u64),
+        (2, u64::from(linux::PROT_EXEC)),
+        (3, u64::from(linux::MAP_SHARED | linux::MAP_FIXED)),
+        (4, u64::from(BLOCK_FD)),
+        (5, 0),
+    ] {
+        program.argument_is(argument, value, guest_mmap);
+    }
+    program.always(allow);
+    program.place(guest_mmap);
     program.guest_range(0, 1, kill);
     program.not_executable(2, kill);
     program.argument_is(3, u64::from(linux::MAP_SHARED | linux::MAP_FIXED), kill);

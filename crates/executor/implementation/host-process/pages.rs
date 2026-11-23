@@ -9,7 +9,8 @@ use rustix::io::Errno;
 use rustix::mm::{MapFlags, ProtFlags};
 
 use crate::layout::{
-    REGISTER_PAGES_OFFSET, THREAD_PAGE_SIZE, THREAD_PAGES_SIZE, THREADS_PER_PROCESS,
+    CODE_AREA, CODE_AREA_SIZE, REGISTER_PAGES_OFFSET, THREAD_PAGE_SIZE, THREAD_PAGES_SIZE,
+    THREADS_PER_PROCESS,
 };
 
 /// Byte offsets in a control page.
@@ -26,6 +27,8 @@ pub mod control {
     pub const TOUCH_ADDRESS: usize = 24;
     /// The word a [`super::Resume::Store`] writes.
     pub const TOUCH_VALUE: usize = 32;
+    /// The address in the code area a [`super::Resume::Enter`] branches to.
+    pub const ENTER_AT: usize = 40;
     /// The first command; each is [`COMMAND_SIZE`] bytes.
     pub const COMMANDS: usize = 64;
     /// A command's bytes: its kind with its permissions above bit 32, an address, a length and a file offset.
@@ -61,7 +64,10 @@ pub mod register {
     pub const EXIT_DETAIL: usize = 64;
     /// The turn the thread last took, written as it takes it (untrusted).
     pub const TAKEN: usize = 72;
-    /// The thread's registers: a [`wcontainers_abi::RegisterBlock`], little endian.
+    /// The stub's own count of the stops that landed in a floor entry or its save, which then finished from the frame.
+    pub const STOPS_IN_CALL: usize = 80;
+    /// The thread's registers in the hardware, as a [`wcontainers_abi::RegisterBlock`], little endian: what a
+    /// [`super::Resume::Enter`] loads and what an exit from translated code saves.
     pub const REGISTERS: usize = 128;
 
     const _: () = assert!(
@@ -86,6 +92,9 @@ pub enum Resume {
     Load = 4,
     /// Stores the control page's touch value at its touch address, standing in for a guest's write.
     Store = 5,
+    /// Loads every register from the register block, x28 the register page's address and x23 the control page's
+    /// address in the code area, and branches there.
+    Enter = 6,
 }
 
 /// A change to a stub's view of its memory, applied by the thread taking the turn before anything else.
@@ -130,6 +139,9 @@ pub enum Command {
         /// The block's offset.
         offset: usize,
     },
+    /// Maps the code area's memfd, which the stub receives first on its socket, execute-only over the whole code
+    /// area, then closes it.
+    MapCode,
     /// Moves the thread applying it to one CPU, as its runner's.
     Place {
         /// The CPU's number.
@@ -201,6 +213,12 @@ impl Command {
                 length as u64,
                 0,
             ],
+            Self::MapCode => [
+                with(CommandKind::MapShared, ProtFlags::EXEC),
+                CODE_AREA as u64,
+                CODE_AREA_SIZE as u64,
+                0,
+            ],
             Self::Place { cpu } => [
                 with(CommandKind::Place, ProtFlags::empty()),
                 cpu as u64,
@@ -229,10 +247,16 @@ pub enum ExitKind {
     BadTurn = 3,
     /// The stop signal ended the turn after its commands; the value is the count of commands applied.
     Stopped = 4,
-    /// A touch faulted; the value is the address the host reported, the detail its signal and, above bit 32, code.
+    /// A touch or translated code faulted; the value is the address the host reported, the detail its signal and,
+    /// above bit 32, code. For translated code the register block is what the code held, its pc the faulting one.
     Fault = 5,
     /// A load was done; the value is the word loaded.
     Loaded = 6,
+    /// Translated code called a floor entry; the value is the entry's number, the register block what the code held.
+    Called = 7,
+    /// The stop signal ended translated code; the value is the host pc it stopped at, the register block what the
+    /// code held there.
+    Interrupted = 8,
 }
 
 impl ExitKind {
@@ -244,6 +268,8 @@ impl ExitKind {
             Self::Stopped,
             Self::Fault,
             Self::Loaded,
+            Self::Called,
+            Self::Interrupted,
         ]
         .into_iter()
         .find(|kind| *kind as u64 == word)

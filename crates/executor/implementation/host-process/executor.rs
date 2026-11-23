@@ -287,6 +287,8 @@ impl HostProcessExecutor {
                 TurnEnd::Loaded { .. }
                 | TurnEnd::Done { .. }
                 | TurnEnd::BadTurn
+                | TurnEnd::Called { .. }
+                | TurnEnd::Interrupted { .. }
                 | TurnEnd::Forged => Touched::Forged,
             });
         }

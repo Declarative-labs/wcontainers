@@ -20,6 +20,32 @@ pub const ZYGOTE_STACK_SIZE: usize = 64 * KIB as usize;
 /// Everything the zygote keeps mapped.
 pub const ZYGOTE_SIZE: usize = ZYGOTE_CODE_SIZE + ZYGOTE_STACK_SIZE;
 
+/// How far a direct branch reaches either way on ARM64: `b` and `bl` take a signed 26-bit count of instructions.
+pub const BRANCH_REACH: usize = 1 << 27;
+
+/// Where a stub's code area starts: right after the zygote's pages, so that every piece in it reaches the floor's
+/// entries at the start of the zygote's code with one `bl`.
+pub const CODE_AREA: usize = ZYGOTE + ZYGOTE_SIZE;
+
+/// The code area's bytes.
+pub const CODE_AREA_SIZE: usize = ZYGOTE + BRANCH_REACH - CODE_AREA;
+
+/// The alignment of the floor's entries; the zygote's code starts with one branch to its start, padded up to it.
+#[cfg(target_arch = "aarch64")]
+pub const FLOOR_ENTRIES_ALIGN: usize = 16;
+
+/// The first of the floor's entries in a stub, which translated code calls with `bl`.
+#[cfg(target_arch = "aarch64")]
+pub const FLOOR_ENTRIES: usize = ZYGOTE + FLOOR_ENTRIES_ALIGN;
+
+/// One entry's bytes: two instructions, which name the entry and branch to the save.
+#[cfg(target_arch = "aarch64")]
+pub const FLOOR_ENTRY_SIZE: usize = 2 * size_of::<u32>();
+
+/// How many entries the floor has.
+#[cfg(target_arch = "aarch64")]
+pub const FLOOR_ENTRY_COUNT: usize = 64;
+
 /// The most guest threads a stub holds; one control page, one register page and one signal stack each.
 pub const THREADS_PER_PROCESS: usize = 1 << 15;
 
@@ -55,7 +81,10 @@ pub const SIGNAL_STACKS_SIZE: usize = THREADS_PER_PROCESS * SIGNAL_STACK_SIZE;
 pub const OWN_MAPPINGS: usize = 5;
 
 const _: () = assert!(ZYGOTE >= OUR_AREA);
-const _: () = assert!(THREAD_PAGES >= ZYGOTE + ZYGOTE_SIZE);
+#[cfg(target_arch = "aarch64")]
+const _: () =
+    assert!(FLOOR_ENTRIES + FLOOR_ENTRY_COUNT * FLOOR_ENTRY_SIZE <= ZYGOTE + ZYGOTE_CODE_SIZE);
+const _: () = assert!(THREAD_PAGES >= CODE_AREA + CODE_AREA_SIZE);
 const _: () = assert!(SIGNAL_STACKS + SIGNAL_STACKS_SIZE <= 1 << 46);
 // The stubs find a thread's pages and stack by shifts.
 const _: () = assert!(

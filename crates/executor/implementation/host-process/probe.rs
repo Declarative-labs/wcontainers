@@ -102,6 +102,18 @@ impl HostProbe {
         let policy = (self.cache_type >> CTR_EL0_L1IP_SHIFT) & CTR_EL0_L1IP_MASK;
         coherent || policy == CTR_EL0_L1IP_PIPT
     }
+
+    /// The bytes of the smallest data cache line that written code must be cleaned by, or `None` where the host
+    /// needs no clean (IDC); then the same for the instruction cache's invalidation (DIC).
+    #[cfg(target_arch = "aarch64")]
+    pub fn code_lines(&self) -> (Option<usize>, Option<usize>) {
+        let line =
+            |shift: u64| size_of::<u32>() << ((self.cache_type >> shift) & CTR_EL0_LINE_MASK);
+        let data = (self.cache_type & CTR_EL0_IDC == 0).then(|| line(CTR_EL0_DMINLINE_SHIFT));
+        let instruction =
+            (self.cache_type & CTR_EL0_DIC == 0).then(|| line(CTR_EL0_IMINLINE_SHIFT));
+        (data, instruction)
+    }
 }
 
 /// Linux's limit on a process's mappings where the host does not say (`DEFAULT_MAX_MAP_COUNT`, include/linux/mm.h).
@@ -127,6 +139,15 @@ fn mapping_limit() -> usize {
 // (https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register).
 #[cfg(target_arch = "aarch64")]
 const CTR_EL0_DIC: u64 = 1 << 29;
+#[cfg(target_arch = "aarch64")]
+const CTR_EL0_IDC: u64 = 1 << 28;
+/// DminLine and IminLine: the log2 of the words in the smallest line.
+#[cfg(target_arch = "aarch64")]
+const CTR_EL0_DMINLINE_SHIFT: u64 = 16;
+#[cfg(target_arch = "aarch64")]
+const CTR_EL0_IMINLINE_SHIFT: u64 = 0;
+#[cfg(target_arch = "aarch64")]
+const CTR_EL0_LINE_MASK: u64 = 0b1111;
 #[cfg(target_arch = "aarch64")]
 const CTR_EL0_L1IP_SHIFT: u64 = 14;
 #[cfg(target_arch = "aarch64")]

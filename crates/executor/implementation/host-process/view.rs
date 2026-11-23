@@ -15,15 +15,16 @@ struct Mapping {
     block: Option<(SharedId, u64)>,
 }
 
-/// A stub's guest-area mappings.
+/// A stub's guest-area mappings, and its code area's.
 #[derive(Debug, Default)]
 pub struct View {
     mappings: RangeMap<u64, Mapping>,
     count: usize,
+    code_mapped: bool,
 }
 
 impl View {
-    /// The host mappings of the guest area.
+    /// The host mappings of the guest area and the code area.
     pub fn count(&self) -> usize {
         self.count
     }
@@ -42,6 +43,11 @@ impl View {
                 address, length, ..
             } => (address as u64, length as u64),
             Command::Place { .. } | Command::NewThread { .. } => return,
+            Command::MapCode => {
+                self.count += usize::from(!self.code_mapped);
+                self.code_mapped = true;
+                return;
+            }
         };
         if length == 0 {
             return;
@@ -94,7 +100,7 @@ impl View {
                 }
             }
             Command::Unmap { .. } => self.mappings.remove(range),
-            Command::Place { .. } | Command::NewThread { .. } => {}
+            Command::Place { .. } | Command::NewThread { .. } | Command::MapCode => {}
         }
         self.count = self.count + self.mappings.overlapping(around).count() - before;
     }
