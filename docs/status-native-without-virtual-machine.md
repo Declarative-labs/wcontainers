@@ -267,8 +267,8 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     load speculatively at all here, so the test cannot show their cut. The harness had to defeat the branch
     predictor learning the original proof's fixed pattern, and the prefetchers (one line timed per round, a new
     secret each round).
-- W1, run 7 (2026-11-23), ARM64 only (the x86-64 machine did not answer SSH all run, "not set up", from 17:50 UTC;
-  the crate type-checks for x86-64 Linux on the Mac against musl, where only glibc's `tgkill` is missing):
+- W1, run 7 (2026-11-23), the floor on ARM64 (the x86-64 machine did not answer SSH from 17:50 to about 17:55 UTC,
+  then did):
   - Nothing the translator's form or the stop crate needed had landed (no commit to the translator, ARM64, the VM
     inside or its status since run 6), so this run built the stub's side of the floor and the code area, which
     need neither, with pieces the tests write in the native output's own encodings (wcontainers-arm64's encoder, a
@@ -311,15 +311,15 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     10,000): a call from code, with every register loaded and saved, 2,777 to 2,782 ns median against a turn without
     code 2,700 to 2,742 ns: 35 to 80 ns more per kernel entry.
   - Verdicts (17:53 UTC, scratch w1/run7/floor-arm.log): all 13 test binaries 3 times with /dev/kvm denied on
-    Graviton4, 156 of 156 passed (load 2.9 to 6.6), clippy with warnings denied clean. Not run on the Xeon (down).
+    Graviton4, 156 of 156 passed (load 2.9 to 6.6), clippy with warnings denied clean; on the Xeon (17:57 UTC,
+    scratch w1/run7/floor-x86.log) 138 of 138 (the floor test builds no tests there), load 17 to 23, clippy clean.
 - Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- The x86-64 machine: run scripts w1/run7/both.sh there once it answers (run 7's changes reach x86 only through the
-  shared files; its stub answers `Enter` as `BadTurn`, its floor is W3's).
+- x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
 - When the translator's `HostProcess` form lands: match the stand-ins to it (x28's page is the stub's register
   page and the block the hardware's state here; the translator's `RegisterPage` and its saved link must sit where
   x28 points, and its call codes must be the entries' numbers, 64 today), then resolution through `stop`, the slot
