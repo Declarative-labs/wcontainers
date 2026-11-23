@@ -124,7 +124,13 @@ Never copied, by route:
   without 0x67, the access on `[t + base + index*scale + disp]` (`lea t, [t + base]` first when it has both a base
   and an index); with 0x67, `lea u32, [base32 + index32*scale + disp]` (u zero-extended, no flag) and the access on
   `[t + u]`, so a base at or above 2^32 is kept as the meaning keeps it (the check's gs67.c: GS base 0x300000000,
-  rax 0x100000010, `65 67 8b 00` reads at 0x300000010, where `[t + rax]` faulted at 0x400000010). A RIP-relative
+  rax 0x100000010, `65 67 8b 00` reads at 0x300000010, where `[t + rax]` faulted at 0x400000010). t is always the
+  access's base, never rsp or rbp (`lea t, [rsp + t]` first for one based on rsp, rbp as the index): an access
+  based on either takes the stack segment, whose fault at a non-canonical address is #SS where the guest's takes
+  #GP; nor is a stand-in for a withheld base ever rbp. A `pop` based on rsp forms its address after the pop, so
+  its size is added there. A bit test with a register offset under 0x67 adds the offset's part modulo 2^32 too,
+  which the 64-bit `[t + u]` no longer wraps: it goes to the inside (Kernel, counted). Native layer 1 found all
+  three against the CPU (status, XN1 run 3). A RIP-relative
   operand on the area's segment takes the guest address in u (`mov u, imm64`, an address place) and the access on
   `[t + u]`. A string instruction, `xlat`, `maskmovq` (0F F7), `maskmovdqu` or `vmaskmovdqu` on the area's segment
   (in I, on any segment override) goes to the inside (Kernel, counted), since its address is implicit in rsi, rdi
@@ -154,7 +160,9 @@ Never copied, by route:
   XCR0); XSAVE not offered, they and `xgetbv` are outside the offer and take the Trap route. `xsavec` and `xsaveopt` are outside the offer in every container (never told),
   and `xsaves` and `xrstors` are privileged: Trap.
 - Float status (docs/native.md 3.4, unchanged): `ldmxcsr`, `stmxcsr` and VEX forms, `fxsave`, `fxrstor`, the x87
-  environment saves; the second call also writes MXCSR_MASK in an `fxsave` image as the meaning does.
+  environment saves; the second call also writes MXCSR_MASK in an `fxsave` image as the meaning does. An operand
+  on the area's segment is rebuilt between the two calls as the Area route rebuilds it (run 3 found it on the
+  hardware's GS, the area itself).
 - The x87 pointers (FIP, FDP, FOP) that native.md 3.4 has the second call write "as the meaning writes them": the
   hardware's are never read. They hold host addresses (FIP is in the code area, and in I FDP is B plus the guest's),
   and hosts differ: AMD saves them only with an exception pending, Intel parts with FDP_EXCPTN_ONLY change FDP only
