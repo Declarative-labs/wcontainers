@@ -39,30 +39,90 @@ probes).
   for layer 1's pieces). It found five defects of the output, fixed (below). 2008 forms, 1,000 cases a form, seed
   5150: 0 failing (results below). Layers 2 and 3, the X9 programs and speed still need an executor (they run
   many pieces, links, lookups and system calls).
+  Run 4: layers 2 and 3 and the benchmark set run natively too, without an executor: the test crate's new
+  src/guest/x86_64/native_programs.rs makes a program's pieces (way P) from its start, the targets of their exits
+  and the return points of their calls, lays them out linked to each other (`carry::retarget`, a shared `Patch`)
+  and fills the lookup's second level with them, and runs them in a reference blob that also answers the guest's
+  system calls (the real call, from the guest's registers) and its repeated strings under the count (the
+  instruction itself, the count taking the meaning's passes by `string_passes`); a lookup or exit that finds no
+  piece ends the run, which is made again with that piece. Output and status are compared with the CPU's, and with
+  the count, the count after each system call with the WebAssembly output's. Results below. The benchmark set's
+  times against the host showed the withheld registers named by hot loops (matrix 6.2 times the host's): a guest
+  instruction naming one now reads or writes its slot directly where the memory form acts the same (plan 3.4),
+  which native layer 1 checked (it found two classes where it does not, kept out and named in a test).
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
 
 ## Next, in order (XN1)
 
-1. The replay check: `stop_check` in the trait, `InsideCall::Stop`, and `stop: Option<u64>` in
+1. Speed (the bar is 1.25 geometric mean, none above 1.6; now 1.41 uncounted, matrix 3.8, search 2.0, run 4 results):
+   the withheld registers by measurement over the benchmark set and Csmith (run 4's experiment over five sets, in
+   "Withheld sets" below, is the start); then what is left: returns and jumps through a register go through the
+   mirror's indirect jump where the host's `ret` is predicted by its return stack (fib 1.25, sort 1.24, interpret
+   1.23), and the count's cost in interpret (1.65 counted).
+2. The replay check: `stop_check` in the trait, `InsideCall::Stop`, and `stop: Option<u64>` in
    `translate_native_for`; ARM64 has no replay check yet, so the trait method needs ARM64's form or a ruling
-   (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it.
-2. `answer` and the core moves (the x87 unit, transcendental.rs, root.rs, the lazy_static line), then
+   (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it. Native layer 2's blob can carry the
+   replay test once the check exists (a stop word in the area, the Stop entry recording the position).
+3. `answer` and the core moves (the x87 unit, transcendental.rs, root.rs, the lazy_static line), then
    x87_answer.rs and the unmasked mode; the differential test of `Condition::holds` against the meaning's
    WebAssembly (through the translator test crate's runner) and P's table.
-3. `retarget` returning a `Patch` (plan 3.2, 9) in place of `link`, for the loader's `int3` protocol.
-4. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
+4. The trait's `retarget` (plan 9) in place of `link`, with ARM64's; x86's is built (run 4) and used by the native
+   blobs, and `link` writes its patch.
+5. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
    to the area: the plan's measured 1.146 form, not the pool's 1.120).
-5. The executor-dependent bar once an x86 executor runs a translation (P's, or the floor), and the plan's
-   measurements (dynamic register count, mirror memory, links' batches) with it: layers 2 and 3, the X9 programs,
-   speed, the count across look-aheads, replay, links, register groups, hostile guests. Native layer 1 (run 3) is
-   done and stays the first check of any change to the output; the next step short of an executor would be layer
-   2's programs in the same blob (pieces translated as the run reaches them, exits linked, a `syscall` stub), which
-   is most of P's stub, the native-without-virtual-machine track's W1.
-6. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
+6. What still needs an x86 executor (P's at W3 of the native-without-virtual-machine track, or a floor): the X9
+   programs (real binaries: threads, signals, `execve`, the kernel), replay, register groups, hostile guests, the
+   mirror's memory on busybox and python, links' batches and traps. Layers 1 to 3 and speed run in blobs now.
+7. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
    before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
    area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+
+## What XN1 run 4 changed
+
+- Shared: `Patch` and `PATCH_BYTES` in gcpu/native.rs (plan 9); x86's `carry::retarget(code, exit, distance)` gives
+  the patch that points an exit at code `distance` bytes from its first byte (its branch's rel32, or a `jmp rel32`
+  over a settling add with `nop`s after), and `link` writes it.
+- crates/wcontainers-translator-test/src/guest/x86_64/native_programs.rs (new, Linux x86-64 only): `run`,
+  `run_timed` and `compare` (above). The blob's routines: the entries for Exit and Answer and one for every other
+  kind (which ends the run, named); a system call site found by its return point flag-free (`lea`, `jrcxz`), which
+  records the site and the count on standard error, loads the guest's r10 from the area where it is withheld, makes
+  the call, stores r11 (the flags) there and gives rcx the next pc; a repeated string site, which records rcx
+  before, runs the guest's own bytes, and records rcx, rflags, rsi and rdi after (pushing the flags with the word
+  below sp kept); a fault in the pieces or a string's copy is the guest's (the default action put back, the
+  instruction run again, so the blob ends by the same signal), at host pc 0 a lookup miss (an empty second-level
+  word, the target in t), anywhere else the blob's own (named). The blob starts the program with the registers
+  and flags the reference gives a blob, read at its start. Tests: tests/layer2.rs
+  `natively_matches_the_cpu_x86_64` (layer 2's programs, the same cases as layer 2's), tests/layer3.rs
+  `csmith_programs_match_linux_natively_x86_64`, each at none, a bound and full, uncounted and counted;
+  tests/benchmarks.rs `measure_benchmarks_natively_x86_64` (ignored, a measurement).
+- Controls (each made in the rented machine's copy, 100 layer 2 cases): the guest's r11 not stored after a system
+  call: 31 failing; a repeated string's passes counted whole (not less the one the add counted): 3 failing (those
+  with a rep string under the count); the site's lead not taken off the count: 61 failing.
+- The slot form (carry.rs `on_slot`, plan 3.4). Native layer 1 at 100 cases a form found 12 forms where it is wrong,
+  in two classes: `rol`/`ror r/m, imm8` (OF, which Intel leaves undefined, differs between the memory and register
+  forms on the reference) and `pextrb`/`pextrw`/`extractps` and their VEX forms (memory of one byte, the register
+  written whole). Both are kept out (undefined-result forms, and memory of another size than the register), and
+  named in tests/native_output.rs `a_withheld_operand_is_its_slot`; the sweep accepts the slot form.
+- The withheld registers are named once: the stand-ins and both native blobs follow `COUNT`, `T`, `U` and
+  `WITHHELD` (no hard-coded r10, r11 or r15 left in carry.rs).
+
+## XN1 run 4 results (rented x86 machine, Xeon 8488C, 5-level paging)
+
+- Native layer 2, seed 1, 500 cases, 32 at once (load 1.3 after): 0 failing, 5,676 blob runs, 129,298 pieces, 167
+  ending by SIGSEGV as on the CPU, 97 s. Before the string sites, 21 of 500 failed, all at a repeated string under
+  the count, and one on rcx clobbered by the site's search (fixed).
+- Native layer 3, 8 Csmith programs (seed 1), 8 at once (load 260 from other users at the start, 67 after): 0
+  failing, 366 blob runs, 79,082 pieces.
+- Native layer 1 with the slot form: 2008 forms, 200 cases a form, seed 5150, 32 at once (load 9 to 13): 0 failing.
+- The benchmark set at full, best of 5 (bench-run4a.out and bench-run4b.out in scratch; load 1.5 to 5), times the
+  host's plain run (uncounted, counted): before the slot form fib 1.24, 1.16; sieve 1.01, 0.98; hash 1.02, 1.01;
+  sort 1.28, 1.27; interpret 1.23, 1.66; matrix 6.20, 6.20; walk 1.04, 1.07; search 4.13, 4.08; geometric mean
+  1.643, 1.687. With it: fib 1.25, 1.38; sieve 1.01, 0.99; hash 1.00, 1.00; sort 1.24, 1.27; interpret 1.23, 1.65;
+  matrix 3.83, 3.81; walk 1.06, 1.04; search 1.98, 2.10; geometric mean 1.408, 1.489. The bar (1.25, none above
+  1.6) is not met. The blob times its run as the reference times a blob (from before the process is made to its
+  end), so the prologue's few system calls and each guest system call's record are inside the time.
 
 ## What XN1 run 3 changed
 
@@ -177,6 +237,17 @@ probes).
   spans, release, all checks): 0 broken. native_routes seed 0x51, 2,000,000 cases: 0 broken. native_carry seed 11,
   1,000,000 cases: 0 differences.
 
+## Departures from the plan (XN1 run 4)
+
+- Layers 2 and 3 and the speed measurement run in a blob of the test crate's, not under P's executor: the same
+  pieces, links and lookup, with the blob answering the guest's system calls directly and its repeated strings
+  under the count by running the instruction and counting the meaning's passes offline (`string_passes`), where the
+  inside would add them to c. A guest system call costs a record's `write` more than under P, inside the timed run.
+- `retarget` takes the code (the settling add's length) and a distance from the exit's first byte, not from the end
+  of its branch: the caller knows where an exit starts, not where its branch ends.
+- A withheld register named as a whole operand reads or writes its slot directly (plan 3.4 now says so), a form the
+  plan did not have; measured, and checked by native layer 1.
+
 ## Departures from the plan (XN1 run 3)
 
 - Layer 1 runs natively before any executor exists (plan 8 waits for one), through a reference blob the test crate
@@ -247,6 +318,14 @@ probes).
 native_routes --test native_carry -- --nocapture'`; the sweeps take `X86_ROUTE_SEED`, `X86_ROUTE_CASES`,
 `X86_CARRY_SEED` and `X86_CARRY_CASES` (decimal, or hex with 0x for the route seed); `cargo test -p
 wcontainers-x86 --lib strings` for the pass rule.
+
+Native layers 2 and 3 and the benchmark set (rented x86 machine): `WC_LAYER2_CASES=10000 WC_LAYER2_SEED=1
+WC_LAYER2_JOBS=32 cargo test -q -p wcontainers-translator-test --test layer2 natively_matches_the_cpu_x86_64 --
+--nocapture` (summary line "layer 2 natively"; `WC_LAYER2_FROM` replays a case); `WC_LAYER3_CASES=<n>
+WC_LAYER3_JOBS=<j> cargo test ... --test layer3 csmith_programs_match_linux_natively_x86_64 -- --nocapture`;
+`WC_BENCH_RUNS=5 cargo test ... --test benchmarks measure_benchmarks_natively_x86_64 -- --ignored --nocapture`.
+Scratch run9/ holds the piece dumper used to read the benchmark's code (dump.rs, sent into the copy as a test
+file) and the withheld-set experiment (withheld.sh, sets.sh, sets.out).
 
 Native layer 1 (one command, on the rented x86 machine, which is its own reference; about 9 minutes without the
 stepping run at 32 jobs): `x86-run <checkout> --name x86-native-output --jobs 32 -- 'WC_LAYER1_CASES=1000

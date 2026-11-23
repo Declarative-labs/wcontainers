@@ -414,6 +414,16 @@ r11 5.0, r10 5.3, libz r15 50.7, and the Go program r15 2.9, r11 24.9 (Go keeps 
 r10 (c), r11 (t, so `syscall`'s write of r11 only clobbers a scratch register), r15 (u). Stand-ins follow
 docs/native.md 3.3 unchanged: one load into t, or a guest register the instruction does not name saved to the
 register area, both through `seg:` moves, which touch no flag. Counted "withheld register named by the guest".
+Where an instruction names one withheld register, as a whole operand only, and has no memory operand, that
+operand becomes the register's slot of the register area (`seg:[slot]`, the form's r/m operand, or the same
+operation's form with the r/m and register operands' roles exchanged, `mov r/m32, r32` for `mov r32, r/m32`, from
+iced's opcode tables): one host instruction, no stand-in. Not where the memory form acts otherwise: a 32-bit write
+(which zero-extends only in a register), memory of another size than the register (`pextrb r32/m8`), `xchg`
+(which locks memory), a bit test with a register offset (which reaches past its operand in memory), or a form
+whose results Intel leaves undefined (the probe's match covers the register form only: native layer 1 found
+`rol r/m, imm8`'s OF differing between the two forms on the reference). Measured (XN1 run 4, the benchmark set at
+full on the Xeon): matrix from 6.2 to 3.8 times the host's, search from 4.1 to 2.0, the geometric mean from 1.64
+to 1.41.
 
 ### 3.5 The Kernel route: who answers
 
