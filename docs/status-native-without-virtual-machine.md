@@ -65,7 +65,12 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     seeded touches each (`WCHP_SEED=1`, knobs `WCHP_MEMORIES`, `WCHP_TOUCHES`, 32,768 touches run): 16,384
     windows mapped, 16,383 evicted, at most 16,490 host mappings against 105 before the cache, every word read back
     through the cache and every 61st through /proc. tests/zygote.rs (8) as run 1, the stub now started for real.
-  - Verdicts: Graviton4, all 16 tests passed 3 times with /dev/kvm denied (load 9.9 to 15.9), clippy with warnings
+  - The process-wide host's private stand-in (host.rs, `HostProcessHost`, in place of the owner's item 8.5): the
+    probe and one zygote; a `fork_stub` that finds the zygote gone reaps it, counts and warns "zygote ended", and
+    forks a new one (P unavailable for good if that fails); `kill` and `reap` of a stub whose zygote ended answer
+    killed by SIGKILL (it died with its zygote). tests/host.rs (1): four stubs end with their killed zygote, the
+    next fork comes from a new zygote and answers, the count is 1, a live zygote is not replaced.
+  - Verdicts: Graviton4, all 17 tests passed 3 times with /dev/kvm denied (load 9.9 to 22.7), clippy with warnings
     denied clean. Xeon: the stub and zygote tests (13) passed with KVM readable at 13:37 UTC (load 0.2); the machine
     stopped answering SSH at 13:39 UTC, so the KVM-denied runs and the window tests are not yet run there.
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
@@ -81,8 +86,7 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   after the word is zero, `THREADS_PER_PROCESS` + 1 refused), with `clone` and the thread's calls added to the
   filter; the stop signal, its handler and its windows (3.6: `sigaltstack`, `rt_sigaction` with `SA_RESTORER` on
   x86-64, the stop blocked around commands, a stop landing in the wait returns to the wait); copy-on-write and the
-  adversarial fork tests (3.5); placement (4.3); the zygote's end and re-fork (4.1), in the process-wide host's
-  private stand-in. Hand-written ARM64 pieces
+  adversarial fork tests (3.5); placement (4.3), its CPU table in `HostProcessHost`. Hand-written ARM64 pieces
   stand in for translated code until the translator's form exists. Then the `Cpu` and `Executor` traits with the
   `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
 - I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
