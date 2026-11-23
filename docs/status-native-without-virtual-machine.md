@@ -160,7 +160,26 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     in time sends none; a stub held stopped by the host for 350 ms is sent its stop at least 4 times, the turn ends
     once, and every stop sent lands (one in the turn); a stub held stopped is killed after 10 s, 95 to 102 stops
     sent.
-  - Verdicts (14:48 to 14:50 UTC, scratch w1/run4/slice-arm.log and slice-x86.log): all 41 tests of the 10 test
+  - Placement (4.3): `HostProcessHost` keeps the table of the process's allowed CPUs (`sched_getaffinity` at its
+    start, read again when a pin is refused), each with its runners held and its last contended time. A runner (the
+    thread calling the executor) takes the CPU held by the fewest not found contended in the last second and pins
+    itself; a turn of a thread last placed elsewhere carries a `Place` command (the stub's `sched_setaffinity` of
+    itself, the filter allowing only pid 0 and the 1,024-bit set's size). Every 10 ms of turn time the runner reads
+    its own thread's CPU clock and each stub's process CPU clock (nix's `clock_getcpuclockid`); a share under 3/4
+    marks its CPU contended and moves it to the CPU the table gives now. Counted: moves, "placement without samples"
+    (clocks refused, warned).
+  - A slice's stop waits until the thread has taken its turn (the stub writes the turn it took, `TAKEN`, to its
+    register page; the runner looks every 1 ms, at most 100 ms): the placement test first showed a 1 ms slice on a
+    contended CPU running 104 ms, the stop having landed in the wait before the turn began; after the change the
+    same test moved after 2 turns in 6.9 to 7.0 ms (3 runs, Graviton4, load 17 to 18).
+  - tests/placement.rs (2): two containers' runners in one embedder take different CPUs and each guest thread is
+    pinned to its runner's; with a thread spinning on the runner's CPU the runner moves (after 2 turns) and the guest
+    thread follows. The executor tests now share one host per test process, as an embedder does.
+  - Verdicts with placement (14:57 to 14:59 UTC, scratch w1/run4/placement-arm.log and placement-x86.log): all 43
+    tests of the 11 test binaries passed 3 times with /dev/kvm denied on Graviton4 (129 of 129, load 9 to 10) and on
+    the Xeon (129 of 129; load 0.2 at the start, 712 at the end from another track's 32-job run), clippy with
+    warnings denied clean on both.
+  - Verdicts before placement (14:48 to 14:50 UTC, scratch w1/run4/slice-arm.log and slice-x86.log): all 41 tests of the 10 test
     binaries passed 3 times with /dev/kvm denied on Graviton4 (123 of 123, load 8 to 10) and on the Xeon (123 of
     123, load 1.8 to 3.7), clippy with warnings denied clean on both.
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
@@ -169,9 +188,9 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 ## Next
 
-- W1, in this order, each tested on both rented machines with /dev/kvm denied: placement (4.3), its CPU table in
-  `HostProcessHost`, the stub moving itself (`sched_setaffinity` of the calling thread in the filter), the share
-  sampling; the host mappings each command creates counted up front so `OutOfMemory` comes before a host refusal
+- W1, in this order, each tested on both rented machines with /dev/kvm denied: placement's remaining bar items
+  (a guest's getppid loop with work between calls within 5% of a free CPU's after its move, and at most one move a
+  second with every CPU contended), which need translated code to be the guest; the host mappings each command creates counted up front so `OutOfMemory` comes before a host refusal
   (4.2; today a refused command makes the touch answer `OutOfMemory`); the copy unit's measurement (3.5, u = 0
   now). Hand-written pieces stand in for translated code until the translator's form exists. Then the `Executor`
   trait with the `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
@@ -320,6 +339,10 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Departures from the plan
 
+- W1 run 4: the runner is whichever thread calls the executor, pinned from its first turn for the executor's
+  life (the plan's runner threads come with 4.6's loop); a guest thread's move is a command of its own turn, so a
+  turn that moves pays the two mask calls of a turn with commands. A slice's stop waits for the thread to take its
+  turn (plan 3.6 says so now).
 - W1 run 4: an owner that ends while it lends pages keeps its memfd (its stub ended and reaped) until no page is
   borrowed from it, instead of copying each into a borrower: nothing is copied, as on Linux (plan 3.5 says so now).
   A `Cpu::read` of a borrowed page reads the owner's instead of copying it. Views may be stricter than the rules
@@ -382,7 +405,8 @@ Constants no crate defines, named with their source: glibc's rseq signatures (`R
 
 ## Dependencies and licences
 
-host-process, Linux only: rangemap 1.8.0 (MIT OR Apache-2.0) for permissions, page states and shared ranges by
+host-process, Linux only: nix 0.31.4 (MIT; `process` and `time` only) for a stub's process CPU clock, which rustix
+lacks for another process; rangemap 1.8.0 (MIT OR Apache-2.0) for permissions, page states and shared ranges by
 range, zerocopy 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT) for a register block as bytes (both already in the
 lock file), rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
 Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH

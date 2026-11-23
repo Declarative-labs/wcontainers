@@ -414,7 +414,11 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   sends the stop on expiry (nothing is paid when the thread comes back first). I: a per-runner POSIX timer
   (`timer_create` with SIGEV_THREAD_ID) re-armed only when a new deadline is earlier than the armed one. P: a thread
   that has not come back 100 ms after its stop is sent it again every 100 ms, and after 10 s its process is killed
-  by the zygote (4.1), counted ("thread ignored its stop"; only a compromised stub can block the signal).
+  by the zygote (4.1), counted ("thread ignored its stop"; only a compromised stub can block the signal). A stop
+  that lands before the thread has taken its turn lands in the wait and changes nothing, so the runner sends a
+  slice's stop only once the thread has written the turn it took to its register page (`TAKEN`, looked at every
+  1 ms), or 100 ms after the slice at the latest (the word is the guest's to forge, which delays only its own stop).
+  Measured (W1 run 4, Graviton4): without that, a 1 ms slice on a CPU shared with a spinning program ran 104 ms.
 - A turn that must end at an exact count is the VM form's open decision 10; until the owner rules it runs one host
   instruction at a time, which in a host process is not available (no single-step without ptrace): such a turn is
   refused as the VM form refuses it without the count (`Failure`, "turn limit without stepping"), counted.
@@ -754,6 +758,10 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
      any privilege), a few calls per 10 ms. Their sum over the busy time is the CPU's share: 1.000 measured on a
      free CPU, 0.50 to 0.56 on a CPU that one spinning program also uses (W0 probe run 4). Under 0.75 the runner
      marks its CPU contended and moves to the CPU that step 1 would give now; if that is its own, it stays.
+  As built (W1 run 4): the runner is the thread that calls the executor, pinned from its first turn until the
+  executor ends; a guest thread's move is a `Place` command of its own turn (`sched_setaffinity` of the calling
+  thread with a 1,024-bit set, the only form the filter allows), applied with the other commands; a window whose
+  stub has ended (no clock) decides nothing.
   That is the whole rule. With several guest threads of one stub running on different runners at once (not before
   the kernel allows it, 3.9), a stub's process clock mixes them and overstates a share, so a contended CPU can go
   unnoticed (never a needless move); that case is measured again when parallel threads are built. If the CPU
