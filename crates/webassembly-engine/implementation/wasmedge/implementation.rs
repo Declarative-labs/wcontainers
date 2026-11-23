@@ -1210,8 +1210,9 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             else {
                 return None;
             };
-            let bytes = retyper_module(&description, type_index);
-            let instance = self.linked_helper(&origin, |config| declare(&config.0, &bytes).ok())?;
+            let instance = self.linked_helper(&origin, |config| {
+                declare(&config.0, &retyper_module(&description, type_index)).ok()
+            })?;
             let Owner::Instance(retyper, _) = &self.owners[instance] else {
                 return None;
             };

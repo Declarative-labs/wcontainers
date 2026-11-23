@@ -11,6 +11,7 @@ use wasm_encoder::{
     Module, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::function::{BoundFunction, FunctionTypeBinder};
+use wcontainers_webassembly_engine::global::Value;
 use wcontainers_webassembly_engine::memory::{MemoryType, Sharing};
 use wcontainers_webassembly_engine::table::TableType;
 use wcontainers_webassembly_engine::{
@@ -206,6 +207,71 @@ where
     });
 }
 
+/// Times the operations that reach an item through a helper module when the engine's own API cannot: a global and
+/// an unshared memory of an instance that exports a shared memory, and a table of typed function references.
+pub fn measure_helpers<T>(config: T::Config)
+where
+    T: WebAssemblyEngine<HostContext = u64>,
+{
+    let mut engine = T::new(config, 0).ok().expect("the engine is made");
+    let bytes = wat::parse_str(
+        r#"(module
+            (type $answers (func (result i32)))
+            (memory (export "shared") 1 1 shared)
+            (memory (export "unshared") 1)
+            (global (export "global") (mut i32) (i32.const 0))
+            (table (export "typed") 1 (ref null $answers))
+            (func (export "answer") (type $answers) (i32.const 3)))"#,
+    )
+    .expect("the text is a module");
+    let module = engine.compile(&bytes).ok().expect("compiles");
+    let instance = engine.instantiate(&module, &[]).ok().expect("instantiates");
+    let Some(ExternalAddress::Global(global)) = engine.find_export(&instance, "global") else {
+        panic!("global is exported");
+    };
+    report("write a global beside a shared memory", 1_000_000, || {
+        engine
+            .write_global(&global, black_box(Value::I32(1)))
+            .expect("writes");
+    });
+    let Some(ExternalAddress::Memory(memory)) = engine.find_export(&instance, "unshared") else {
+        panic!("unshared is exported");
+    };
+    let mut bytes = vec![0x5a_u8; 64];
+    report(
+        "write 64 bytes of an unshared memory beside a shared one",
+        1_000_000,
+        || {
+            engine
+                .write_memory(&memory, black_box(64), black_box(&bytes))
+                .expect("writes");
+        },
+    );
+    report(
+        "read 64 bytes of an unshared memory beside a shared one",
+        1_000_000,
+        || {
+            engine
+                .read_memory(&memory, black_box(64), black_box(&mut bytes))
+                .expect("reads");
+        },
+    );
+    let Some(ExternalAddress::Table(table)) = engine.find_export(&instance, "typed") else {
+        panic!("typed is exported");
+    };
+    let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, "answer") else {
+        panic!("answer is exported");
+    };
+    report("write a function into a typed table", 1_000_000, || {
+        engine
+            .write_table(&table, black_box(0), Some(&function))
+            .expect("writes");
+    });
+}
+
 fn main() {
     measure::<wcontainers_webassembly_engine_wasmedge::WasmEdgeEngine<u64>>(Default::default());
+    measure_helpers::<wcontainers_webassembly_engine_wasmedge::WasmEdgeEngine<u64>>(
+        Default::default(),
+    );
 }
