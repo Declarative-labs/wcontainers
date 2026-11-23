@@ -8,6 +8,8 @@ use wcontainers_guest_cpu::Personality;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[cfg(feature = "translate")]
+pub mod carry;
+#[cfg(feature = "translate")]
 mod decode;
 #[cfg(feature = "translate")]
 mod descriptors;
@@ -50,6 +52,7 @@ mod transcendental;
 #[cfg(feature = "translate")]
 pub mod x87;
 
+pub mod area;
 pub mod claims;
 pub mod cpuid;
 pub mod encoding;

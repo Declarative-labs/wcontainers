@@ -12,7 +12,7 @@ wcontainers-abi.workspace = true
 # The processor features a program is told of: the kernel interface's list.
 wcontainers-kernel = { path = "../kernel" }
 zerocopy.workspace = true
-iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder"], optional = true }
+iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder", "encoder"], optional = true }
 wasm-encoder = { version = "0.263.0", optional = true }
 rustc_apfloat = { version = "0.2.3", optional = true }
 # x87's square root and transcendental instructions (MIT).
