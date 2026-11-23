@@ -853,25 +853,37 @@ wc_nir_fetch_from_texture(struct nir_shader *nir, unsigned unit, bool multisampl
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 }
 
-/* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
+/* The texture units a texture instruction may sample, from `*first`: its variable's binding plus a
+ * constant index, or every element of an array it indexes at run time. */
 static bool
-texture_unit(nir_tex_instr *tex, uint32_t *unit)
+texture_units(nir_tex_instr *tex, uint32_t *first, uint32_t *count)
 {
    int at = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
    if (at < 0)
       return false;
    nir_deref_instr *deref = nir_src_as_deref(tex->src[at].src);
    uint32_t index = 0;
+   *count = 1;
    if (deref->deref_type == nir_deref_type_array) {
-      if (!nir_src_is_const(deref->arr.index))
-         return false;
-      index = nir_src_as_uint(deref->arr.index);
-      deref = nir_deref_instr_parent(deref);
+      nir_deref_instr *array = nir_deref_instr_parent(deref);
+      if (nir_src_is_const(deref->arr.index))
+         index = nir_src_as_uint(deref->arr.index);
+      else
+         *count = glsl_get_length(array->type);
+      deref = array;
    }
    if (deref->deref_type != nir_deref_type_var)
       return false;
-   *unit = deref->var->data.binding + index;
+   *first = deref->var->data.binding + index;
    return true;
+}
+
+/* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
+static bool
+texture_unit(nir_tex_instr *tex, uint32_t *unit)
+{
+   uint32_t count;
+   return texture_units(tex, unit, &count) && count == 1;
 }
 
 static nir_def *
@@ -1051,6 +1063,23 @@ listed_sampler(const struct nearest_samplers *s, uint32_t unit)
    return sampler;
 }
 
+/* The sampler listed at each of `count` units from `first`, where they are alike (an array of
+ * textures indexed at run time takes one nearest load for every element); none otherwise. */
+static const struct wc_nearest_sampler *
+alike_samplers(const struct nearest_samplers *s, uint32_t first, uint32_t count)
+{
+   const struct wc_nearest_sampler *sampler = listed_sampler(s, first);
+   for (uint32_t unit = first + 1; sampler && unit < first + count; unit++) {
+      const struct wc_nearest_sampler *other = listed_sampler(s, unit);
+      if (!other || memcmp(other->wrap, sampler->wrap, sizeof(sampler->wrap)) ||
+          other->mipmapped != sampler->mipmapped || other->min_lod != sampler->min_lod ||
+          other->max_lod != sampler->max_lod ||
+          memcmp(other->border, sampler->border, sizeof(sampler->border)))
+         return NULL;
+   }
+   return sampler;
+}
+
 /* Whether a texture instruction samples (filters, as OpenGL's texture functions do) rather than
  * fetches, gathers or queries. */
 static bool
@@ -1173,11 +1202,11 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
       return cube_layers_gather(b, tex, texture);
    if (cube && !sampled)
       return cube_layers_query(b, tex);
-   uint32_t unit;
+   uint32_t unit, units;
    if (!sampled || tex->is_shadow || (base != nir_type_int && base != nir_type_uint) ||
-       !texture_unit(tex, &unit))
+       !texture_units(tex, &unit, &units))
       return false;
-   const struct wc_nearest_sampler *sampler = listed_sampler(data, unit);
+   const struct wc_nearest_sampler *sampler = alike_samplers(data, unit, units);
    if (!sampler || (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE && !cube))
       return false;
    b->cursor = nir_before_instr(&tex->instr);

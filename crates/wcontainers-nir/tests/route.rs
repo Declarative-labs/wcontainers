@@ -641,3 +641,50 @@ fn an_image_without_a_format_is_declared_in_the_format_the_variant_names() {
         ]
     );
 }
+
+const INTEGER_ARRAY: &str = "#version 450
+layout(binding = 0) uniform isampler2D textures[2];
+layout(location = 0) in vec2 at;
+layout(location = 1) flat in int which;
+layout(location = 0) out ivec4 colour;
+void main() {
+    colour = texture(textures[which], at);
+}
+";
+
+#[test]
+fn an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_every_element() {
+    use wcontainers_nir::mesa::{NearestSampler, Wrap};
+    let stage = || {
+        Nir::from_glsl(&[(Stage::Fragment, INTEGER_ARRAY)])
+            .unwrap()
+            .pop()
+            .unwrap()
+    };
+    let sampler = |unit| NearestSampler {
+        unit,
+        wrap: [Wrap::Repeat; naga::VectorSize::Tri as usize],
+        mipmapped: false,
+        min_lod: 0f32.to_bits(),
+        max_lod: f32::MAX.to_bits(),
+        border: [0; naga::VectorSize::MAX],
+    };
+    let mut alike = stage().nir;
+    alike.nearest_integer_textures(&[sampler(0), sampler(1)]);
+    let key = alike.key().unwrap();
+    let bindings = alike.to_common_form(Stage::Fragment).unwrap();
+    let routed = wcontainers_nir::direct::route(&mut alike).unwrap();
+    // The array split into its elements, each loaded where the index names it.
+    let unnamed = wcontainers_gpu::VariantKey::default();
+    let (module, _) = wcontainers_nir::direct::rewrite(routed, bindings, &unnamed, &key).unwrap();
+    wcontainers_nir::spirv::validate(&module.module).unwrap();
+    // Elements sampled two ways are left sampled, which the route refuses by name.
+    let mut unlike = stage().nir;
+    let clamped = NearestSampler {
+        wrap: [Wrap::ClampToEdge; naga::VectorSize::Tri as usize],
+        ..sampler(1)
+    };
+    unlike.nearest_integer_textures(&[sampler(0), clamped]);
+    unlike.to_common_form(Stage::Fragment).unwrap();
+    assert!(wcontainers_nir::direct::route(&mut unlike).is_err());
+}
