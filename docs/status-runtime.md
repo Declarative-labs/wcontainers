@@ -39,6 +39,8 @@ and crates/executor/implementation/unicorn.
   same again. No commit since 08900894 touches crates/kernel, crates/system, crates/runtime/interface.rs, the
   wasmtime executor's implementation.rs or the root Cargo.toml; executing.rs lines 195, 225 and 471 and the
   executor's line 2410 are as above; the briefs and interface-changes.md are unchanged. Nothing built or run.
+- Eighth run (2026-11-23 13:08 UTC, at ec9ffcb2, a minute after the seventh; nothing newer on origin/agents,
+  origin/main at 2b546ee0): the same again, checked the same way. Nothing built or run.
 
 ## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
 
