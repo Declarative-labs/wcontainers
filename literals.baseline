@@ -6030,7 +6030,6 @@ code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	5
-code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	10
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	1024
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	1024
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	1024
@@ -6046,7 +6045,6 @@ code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	2048
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	2048
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	256
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	256
-code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	28
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	30
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	30
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	30
@@ -6056,7 +6054,6 @@ code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	48
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	64
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	64
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	65535
-code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	8
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	8
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::new	8
 code	crates/wcontainers-direct3d-11/src/record.rs	str	<Recorder as Backend>::begin_pass	" color {i} view {} {:?} {:?}"
