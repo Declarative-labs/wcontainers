@@ -65,7 +65,7 @@ pub use credentials::{
 };
 pub use ends::Standard;
 pub(crate) use errno::Errno;
-pub use executing::{KernelProcess, KernelWithExecutor};
+pub use executing::{KernelProcess, KernelRunner, KernelWithExecutor};
 pub use linux_extra::{
     ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, IPC_NOWAIT, MAX_RW_COUNT, sched_attr,
 };

@@ -7,6 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::marker::PhantomData;
+use core::num::NonZeroUsize;
 use core::ops::Range;
 use core::time::Duration;
 
@@ -294,15 +295,20 @@ where
     type Executor = C;
     type Fallback = wcontainers_abi::Warning<'static>;
     type Config = KernelConfig<C, State, S>;
+    type Runner = KernelRunner<C, State, S>;
     type SuspendedTask = Held<SuspendedTask, C>;
     type ProcessContext = Held<ProcessContext, C>;
 
-    /// Starts the container `config` describes.
+    /// Starts the container `config` describes. Its threads run one at a time, which is within
+    /// any `parallelism`.
     ///
     /// # Panics
     ///
     /// If the kernel cannot run the first process as its execution configuration asks.
-    fn new(config: Self::Config) -> Self {
+    fn new(
+        config: Self::Config,
+        parallelism: NonZeroUsize,
+    ) -> (Self, impl Iterator<Item = Self::Runner>) {
         let KernelConfig {
             kernel,
             executor,
@@ -313,15 +319,16 @@ where
         } = config;
         // SAFETY: the config was made by `KernelConfig::new`, whose caller promised what `start`
         // asks.
-        unsafe { Self::start(kernel, executor, &system, start, execution, state) }
-            .unwrap_or_else(|unsupported| panic!("the kernel cannot run as asked: {unsupported:?}"))
-    }
-
-    /// Not built: the executor interface has no call that runs a thread, so this kernel is driven
-    /// through [`crate::Kernel::next`] and [`crate::Kernel::exit`] on the executor it holds.
-    fn run(&self, executor: &mut C) -> interface::StopReason {
-        let _ = executor;
-        unimplemented!("running through the kernel interface is not built")
+        let kernel = unsafe { Self::start(kernel, executor, &system, start, execution, state) }
+            .unwrap_or_else(|unsupported| {
+                panic!("the kernel cannot run as asked: {unsupported:?}")
+            });
+        let shared = Arc::clone(&kernel.shared);
+        let runners = (0..parallelism.get()).map(move |_| KernelRunner {
+            shared: Arc::clone(&shared),
+            types: PhantomData,
+        });
+        (kernel, runners)
     }
 
     fn suspend_tasks(
@@ -422,6 +429,45 @@ where
         );
         drop(inner);
         handed_back.into_iter()
+    }
+}
+
+/// What runs a [`KernelWithExecutor`]'s threads on one host thread.
+pub struct KernelRunner<C, State, S> {
+    shared: Arc<Shared<C>>,
+    types: PhantomData<fn() -> (State, S)>,
+}
+
+// SAFETY: as for `KernelWithExecutor`'s `Sync`: a runner reaches the kernel's state only under its
+// lock, and the bounds are the same.
+unsafe impl<C, State, S> Send for KernelRunner<C, State, S>
+where
+    C: Executor<TranslatorConfig: Send> + Send,
+    State: Send,
+    S: crate::System + Send,
+    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
+    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
+    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
+    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
+{
+}
+
+impl<C, State, S> interface::Runner<C> for KernelRunner<C, State, S>
+where
+    C: Executor<TranslatorConfig: Send> + Send,
+    State: Send,
+    S: crate::System + Send,
+    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
+    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
+    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
+    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
+{
+    /// Not built: the executor interface has no call that runs a thread, so this kernel is driven
+    /// through [`crate::Kernel::next`] and [`crate::Kernel::exit`] on the executor it holds
+    /// ([`KernelWithExecutor::with_parts`]).
+    fn run(&mut self, executor: &mut C) -> interface::StopReason {
+        let _ = (executor, &self.shared);
+        unimplemented!("running through the kernel interface is not built")
     }
 }
 
