@@ -270,13 +270,6 @@ pub fn storage_viewed(dxgi: u32) -> bool {
         )
 }
 
-/// Whether storage views of textures stored as `format` are not served through a buffer of their
-/// texels (`StorageFormatThroughBuffer`): `A8_UNORM`, which the shaders crate stores into only
-/// through the `rgba8unorm` the back ends hold it in.
-pub fn not_through_buffer(format: Format) -> bool {
-    format == Format::A8Unorm
-}
-
 /// Whether programs load and store storage textures of `format` in one program: WebGPU's
 /// read-write storage textures are of its one-channel 32-bit formats.
 pub fn loaded_and_stored(format: Format) -> bool {

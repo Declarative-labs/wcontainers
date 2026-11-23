@@ -4,6 +4,8 @@
 //! views' rectangles and of whole views of buffers and of 1D, 2D and 3D textures), `cs_min_lod` (a compute shader sampling, loading and
 //! gathering under `SetResourceMinLOD` clamps), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
+//! `stage_registers` (32 input slots, 31 values passed between stages, and a draw with inputs but
+//! no input layout),
 //! `packed_targets` (16-bit packed targets drawn, blended, multisampled, resolved and their mips
 //! generated), `small_formats` (the 8-bit alpha, two-pixel and 16-bit packed formats' textures of
 //! each dimension read, and the targets among them drawn, at any level),
@@ -1705,6 +1707,21 @@ fn main() -> windows::core::Result<()> {
             }
             print("A8_UNORM", &a, 1);
             print("read", &o, 4);
+            // Typed loads of the view: each texel loaded whole, changed and stored.
+            let loaded = cs("RWTexture2D<unorm float4> a : register(u0);
+                [numthreads(4, 4, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float4 v = a[id.xy];
+                    a[id.xy] = float4(0.5, 0.5, 0.5, v.a * 0.5 + v.r + v.g * 0.25 + 0.125);
+                }");
+            unsafe {
+                context.CSSetShaderResources(0, Some(&[None]));
+                context.CSSetShader(loaded.as_ref(), None);
+                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
+                context.Dispatch(1, 1, 1);
+                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+            }
+            print("A8_UNORM loaded and stored", &a, 1);
         }
         // A colour map of eight texels sampled bilinearly and clamped at a coordinate a program
         // works out as the fraction of a count over the count it was made from (just below 1 on
@@ -2584,6 +2601,169 @@ fn main() -> windows::core::Result<()> {
                 print_rows(&format!("rounded {name} added ten times"), &t, 2, &|r| {
                     packed_codes(five_alpha, r)
                 });
+            }
+        }
+        "stage_registers" => {
+            // Direct3D 11's 32 input slots, each element in its own (a position in slot 0 and 31
+            // values the vertex shader sums); 15, 30 and 31 values passed to the pixel shader
+            // beside the position (its 32 input registers); and a draw whose vertex shader reads
+            // inputs with no input layout bound, which Direct3D drops.
+            let (w, h) = (4, 4);
+            let target = || {
+                make(
+                    &Tex {
+                        w,
+                        h,
+                        format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        samples: 1,
+                        bind: D3D11_BIND_RENDER_TARGET,
+                    },
+                    None,
+                )
+            };
+            let vertex_buffer = |values: &[f32]| -> windows::core::Result<Option<ID3D11Buffer>> {
+                let desc = D3D11_BUFFER_DESC {
+                    ByteWidth: size_of_val(values) as u32,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32,
+                    ..Default::default()
+                };
+                let data = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: values.as_ptr().cast(),
+                    ..Default::default()
+                };
+                let mut buffer = None;
+                unsafe { device.CreateBuffer(&desc, Some(&data), Some(&mut buffer))? };
+                Ok(buffer)
+            };
+            const SLOTS: u32 = 32;
+            let decl: String = (1..SLOTS).map(|i| format!("float a{i} : A{i}; ")).collect();
+            let sum: String = (1..SLOTS)
+                .map(|i| format!("i.a{i} * {}.0 + ", 1u32 << (i % 8)))
+                .collect();
+            let source = format!(
+                "struct I {{ float2 a0 : A0; {decl} }};
+                struct O {{ float4 p : SV_Position; float4 c : C; }};
+                O main(I i) {{
+                    O o;
+                    o.p = float4(i.a0, 0, 1);
+                    o.c = float4({sum} 0.0, i.a31, i.a16, i.a1);
+                    return o;
+                }}"
+            );
+            let bytecode = compile(&source, s!("vs_5_0"));
+            let name = "A\0";
+            let elements: Vec<D3D11_INPUT_ELEMENT_DESC> = (0..SLOTS)
+                .map(|i| D3D11_INPUT_ELEMENT_DESC {
+                    SemanticName: PCSTR(name.as_ptr()),
+                    SemanticIndex: i,
+                    Format: match i {
+                        0 => DXGI_FORMAT_R32G32_FLOAT,
+                        _ => DXGI_FORMAT_R32_FLOAT,
+                    },
+                    InputSlot: i,
+                    InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                    ..Default::default()
+                })
+                .collect();
+            let mut layout = None;
+            let r = unsafe { device.CreateInputLayout(&elements, &bytecode, Some(&mut layout)) };
+            println!("CreateInputLayout of 32 slots {:#010x}", code(r));
+            let mut buffers = Vec::new();
+            for i in 0..SLOTS {
+                buffers.push(match i {
+                    0 => vertex_buffer(&[-1.0, 1.0, 3.0, 1.0, -1.0, -3.0])?,
+                    _ => vertex_buffer(&[(i + 1) as f32 / 64.0; 3])?,
+                });
+            }
+            let mut strides = [size_of::<f32>() as u32; SLOTS as usize];
+            strides[0] = 2 * size_of::<f32>() as u32;
+            let offsets = [0; SLOTS as usize];
+            let mut shader = None;
+            unsafe { device.CreateVertexShader(&bytecode, None, Some(&mut shader))? };
+            let passed = ps(
+                "float4 main(float4 p : SV_Position, float4 c : C) : SV_Target {
+                    return c;
+                }",
+            );
+            let t = target()?;
+            let rt = rtv(&t);
+            unsafe {
+                viewport(w, h);
+                context.IASetInputLayout(layout.as_ref());
+                context.IASetVertexBuffers(
+                    0,
+                    SLOTS,
+                    Some(buffers.as_ptr()),
+                    Some(strides.as_ptr()),
+                    Some(offsets.as_ptr()),
+                );
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.VSSetShader(shader.as_ref(), None);
+                context.PSSetShader(passed.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+            }
+            print("32 slots", &t, 16);
+            let t = target()?;
+            let rt = rtv(&t);
+            unsafe {
+                context.IASetInputLayout(None);
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+                let none: [Option<ID3D11Buffer>; SLOTS as usize] = Default::default();
+                context.IASetVertexBuffers(
+                    0,
+                    SLOTS,
+                    Some(none.as_ptr()),
+                    Some(strides.as_ptr()),
+                    Some(offsets.as_ptr()),
+                );
+            }
+            let r = unsafe { device.GetDeviceRemovedReason() };
+            println!("no input layout: GetDeviceRemovedReason {:#010x}", code(r));
+            print("no input layout", &t, 16);
+            for count in [15, 30, 31] {
+                let decl: String = (0..count)
+                    .map(|i| format!("float4 v{i} : V{i}; "))
+                    .collect();
+                let set: String = (0..count)
+                    .map(|i| format!("o.v{i} = float4({i}, {i} * 2, 1, 0.5); "))
+                    .collect();
+                let sum: String = (0..count)
+                    .map(|i| format!("i.v{i} * {} + ", (i % 5) + 1))
+                    .collect();
+                let vertex = vs(&format!(
+                    "struct O {{ float4 p : SV_Position; {decl} }};
+                    O main(uint id : SV_VertexID) {{
+                        O o;
+                        float2 uv = float2((id << 1) & 2, id & 2);
+                        o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+                        {set}
+                        return o;
+                    }}"
+                ));
+                let pixel = ps(&format!(
+                    "struct I {{ float4 p : SV_Position; {decl} }};
+                    float4 main(I i) : SV_Target {{
+                        return {sum} float4(0, 0, 0, i.v{}.x);
+                    }}",
+                    count - 1
+                ));
+                let t = target()?;
+                let rt = rtv(&t);
+                unsafe {
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.VSSetShader(vertex.as_ref(), None);
+                    context.PSSetShader(pixel.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.OMSetRenderTargets(None, None);
+                }
+                print(&format!("{count} values between stages"), &t, 16);
             }
         }
         "split" => {

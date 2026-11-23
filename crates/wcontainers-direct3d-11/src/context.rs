@@ -1998,11 +1998,22 @@ impl<B: Backend> Device<B> {
         pk: StageVariant,
     ) -> Result<(Option<B::Shader>, Rc<Helpers>)> {
         let id = ps.map_or(BUILT_IN_PIXEL, |p| p.gpu.id);
-        if pk != StageVariant::default() && !self.variants.contains_key(&(id, pk)) {
+        let slots = self.backend.caps().limits.inter_stage_slots;
+        let moves = match ps.map(|p| crate::shader::input_moves(&p.reflection.inputs, slots)) {
+            None => Vec::new(),
+            Some(Some(moves)) => moves,
+            Some(None) => return self.varyings_beyond_limit(),
+        };
+        if (pk != StageVariant::default() || !moves.is_empty())
+            && !self.variants.contains_key(&(id, pk))
+        {
             let v = match ps {
                 Some(p) => {
+                    if !moves.is_empty() && pk.linked != 0 {
+                        return self.varyings_beyond_limit();
+                    }
                     let key = self.variant_key(p, pk, SourceStage::Pixel);
-                    self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?
+                    self.convert_kept(&p.bytecode, SourceStage::Pixel, &key, &moves)?
                 }
                 None => {
                     let key = pk.key(SourceStage::Pixel, &[], 0, &[]);
@@ -2034,7 +2045,18 @@ impl<B: Backend> Device<B> {
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
         let interpolation = interpolation(ps.map(|p| &**p));
-        if interpolation.is_empty() && vk == StageVariant::default() {
+        // Values past the back end's inter-stage locations move to free ones, as the pixel
+        // program's move (`Context::pixel_stage`).
+        let slots = self.backend.caps().limits.inter_stage_slots;
+        let moves = crate::shader::output_moves(
+            &vs.reflection.outputs,
+            ps.map_or(&[][..], |p| p.reflection.inputs.as_slice()),
+            slots,
+        );
+        let Some(moves) = moves.filter(|m| m.is_empty() || vk.linked == 0) else {
+            return self.varyings_beyond_limit();
+        };
+        if interpolation.is_empty() && vk == StageVariant::default() && moves.is_empty() {
             return Ok(());
         }
         let pulled = match &self.ctx.layout {
@@ -2048,19 +2070,29 @@ impl<B: Backend> Device<B> {
             pulled,
             ..self.variant_key(vs, vk, SourceStage::Vertex)
         };
-        let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant)?;
+        let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant, &moves)?;
         self.interpolated.insert(key, v);
         Ok(())
     }
 
-    /// `bytecode` converted as `key` and handed to the back end.
+    /// Refused: a vertex and pixel program pair passing more values than the back end's
+    /// inter-stage locations hold after moving them (`VaryingsBeyondLimit`).
+    fn varyings_beyond_limit<T>(&mut self) -> Result<T> {
+        self.backend.slow_paths().hit(SlowPath::VaryingsBeyondLimit);
+        not_implemented("more values between stages than the back end passes")
+    }
+
+    /// `bytecode` converted as `key`, its stage values moved by `moves`
+    /// ([`crate::shader::relocate`]), and handed to the back end.
     fn convert_kept(
         &mut self,
         bytecode: &[u8],
         stage: SourceStage,
         key: &VariantKey,
+        moves: &[(u32, u32)],
     ) -> Result<Variant<B>> {
-        let c = crate::shader::convert_variant(bytecode, stage, key)?;
+        let mut c = crate::shader::convert_variant(bytecode, stage, key)?;
+        crate::shader::relocate(&mut c, moves)?;
         self.kept_variant(c)
     }
 
@@ -3049,7 +3081,7 @@ impl<B: Backend> Device<B> {
             None => {
                 if varied && !self.variants.contains_key(&(cs.gpu.id, cv)) {
                     let key = self.variant_key(&cs, cv, SourceStage::Compute);
-                    let v = self.convert_kept(&cs.bytecode, SourceStage::Compute, &key)?;
+                    let v = self.convert_kept(&cs.bytecode, SourceStage::Compute, &key, &[])?;
                     self.variants.insert((cs.gpu.id, cv), v);
                 }
                 let (shader, helpers) = match self.variants.get(&(cs.gpu.id, cv)) {
@@ -4636,6 +4668,29 @@ impl<B: Backend> Device<B> {
         let Some(vs) = self.ctx.vs.clone() else {
             return Ok(());
         };
+        // Nor when the vertex shader reads an input the bound input layout, or none, does not
+        // give.
+        let given = |at: u32| {
+            self.ctx
+                .layout
+                .as_ref()
+                .is_some_and(|l| l.all.iter().any(|e| e.location == at))
+        };
+        if vs
+            .reflection
+            .inputs
+            .iter()
+            .any(|i| i.system.is_none() && !given(i.location))
+        {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "{WARNING_PREFIX}: invalid: draws whose vertex shader reads an input the \
+                     input layout does not give are dropped"
+                );
+            });
+            return Ok(());
+        }
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
         }

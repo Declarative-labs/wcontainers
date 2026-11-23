@@ -250,6 +250,20 @@ fn level_targets(level: u32) -> u32 {
     }
 }
 
+/// Input slots, input elements and vertex shader output registers up to 10_0
+/// (`D3D10_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT`, `D3D10_VS_OUTPUT_REGISTER_COUNT`) and from 10_1
+/// (`D3D10_1_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT`, `D3D10_1_VS_OUTPUT_REGISTER_COUNT`).
+const L10_0_REGISTERS: u32 = 16;
+const L10_1_REGISTERS: u32 = 32;
+
+/// The input slots, input elements and vertex shader output registers of feature level `level`.
+fn level_registers(level: u32) -> u32 {
+    match level >= level::L10_1 {
+        true => L10_1_REGISTERS,
+        false => L10_0_REGISTERS,
+    }
+}
+
 /// A typed buffer view whose format the back end holds no texture of, where typed buffers are
 /// read through texture copies (`TexelBufferAsTexture`).
 const TYPED_BUFFER_FORMAT_UNHELD: &str =
@@ -279,11 +293,23 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
     let staged = caps.has(Features::COMPUTE)
         || (level < level::L11_0 && caps.has(Features::TRANSFORM_FEEDBACK));
     sized
+        && stage_values_served(limits, level)
         && (level < level::L10_0
             || (renders(Format::Depth32FloatStencil8, FormatUse::DEPTH_STENCIL)
                 && renders(Format::Rgba32Float, FormatUse::RENDER)
                 && staged))
         && (level < level::L10_1 || cube_arrays)
+}
+
+/// Whether `limits` serve feature level `level`'s input slots and elements, fetched as laid out up
+/// to the back end's streams and locations and in the vertex program past them, one storage buffer
+/// each; and its vertex shader output registers, one the position, the rest moved onto the back
+/// end's inter-stage locations (`shader::output_moves`).
+fn stage_values_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
+    let registers = level_registers(level);
+    let fetched =
+        limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;
+    fetched >= registers && limits.inter_stage_slots + 1 >= registers
 }
 
 /// The highest feature level `caps` serves, if any, with `cube_arrays` as [`serves`] takes it.
@@ -319,6 +345,15 @@ impl<B: Backend> Device<B> {
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
         let cube_arrays = makes_cube_arrays(&mut backend);
         let top = top_level(backend.caps(), cube_arrays).ok_or(Error::Unsupported)?;
+        for l in DEFAULT_LEVELS.into_iter().filter(|&l| l > top) {
+            if !stage_values_served(&backend.caps().limits, l) {
+                eprintln!(
+                    "{WARNING_PREFIX}: feature level {l:#x} not reported: the back end passes fewer \
+                     vertex inputs or values between stages than its {} registers",
+                    level_registers(l)
+                );
+            }
+        }
         let mut device = Self::at_level(backend, top)?;
         let top = DEFAULT_LEVELS
             .into_iter()
@@ -575,10 +610,7 @@ impl<B: Backend> Device<B> {
             }
             s.support2 = 0;
         }
-        if !format::storage_viewed(dxgi)
-            || format::texture_format(dxgi)
-                .is_some_and(|f| format::not_through_buffer(f) && self.stored_through(f))
-        {
+        if !format::storage_viewed(dxgi) {
             s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
         }
@@ -620,7 +652,6 @@ impl<B: Backend> Device<B> {
         // texels (`StorageFormatThroughBuffer`), which serves loads too.
         let through = texture.is_some_and(|f| {
             format::storage_viewed(dxgi)
-                && !format::not_through_buffer(f)
                 && (self.stored_through(f) || as_integer.is_some_and(|t| self.through_takes(t)))
         });
         if through {
@@ -1053,9 +1084,7 @@ impl<B: Backend> Device<B> {
     /// Whether a program loading from storage views of `format` reads and writes them through a
     /// buffer of its texels (`StorageReadWriteThroughBuffer`).
     pub(crate) fn read_written_through(&self, format: Format) -> bool {
-        !format::loaded_and_stored(format)
-            && !format::not_through_buffer(format)
-            && self.through_takes(format)
+        !format::loaded_and_stored(format) && self.through_takes(format)
     }
 
     /// Whether storage views of a texture stored as `format` can be read and written through a
@@ -2089,9 +2118,6 @@ impl<B: Backend> Device<B> {
         if format::is_srgb(v.desc.format) {
             return Err(Error::InvalidArg("an sRGB unordered access view"));
         }
-        if format::not_through_buffer(v.format) && self.stored_through(v.format) {
-            return not_implemented(STORAGE_UNCLAIMED);
-        }
         self.check_format(v.format, self.storage_use(v.format))?;
         Ok(Rc::new(ShaderView::Texture(v)))
     }
@@ -2697,6 +2723,10 @@ impl<B: Backend> Device<B> {
         let mut pulled = Vec::new();
         let mut pulled_paths = Vec::new();
         let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        // Direct3D's 32 slots and inputs where the back end fetches fewer: those past its streams
+        // or attribute locations are fetched in the vertex program.
+        let limits = &self.backend.caps().limits;
+        let (streams, attributes) = (limits.vertex_streams, limits.vertex_attributes);
         for e in elements {
             if e.slot as usize >= crate::context::VERTEX_SLOTS {
                 return Err(Error::InvalidArg("an input slot past the last"));
@@ -2754,6 +2784,8 @@ impl<B: Backend> Device<B> {
                     Some(SlowPath::InstanceRateInShader)
                 } else if resigned {
                     Some(SlowPath::VertexFormatConverted)
+                } else if e.slot >= streams || input.register >= attributes {
+                    Some(SlowPath::VertexPulledInShader)
                 } else {
                     None
                 };

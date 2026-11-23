@@ -254,6 +254,142 @@ pub fn clip_distances(outputs: &[StageValue]) -> u8 {
         .sum()
 }
 
+/// The locations of the user values among `values`, in order, each once.
+fn between_stages(values: &[StageValue]) -> Vec<u32> {
+    let mut at: Vec<u32> = values
+        .iter()
+        .filter(|v| v.system.is_none())
+        .map(|v| v.location)
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    at
+}
+
+/// Where a pixel program's `inputs` move (from, to) when one lies past the back end's `slots`
+/// inter-stage locations: the registers Direct3D numbers to 31, one of them the position, taken in
+/// order from location 0. Nothing moves otherwise; none when they are more than `slots`.
+pub fn input_moves(inputs: &[StageValue], slots: u32) -> Option<Vec<(u32, u32)>> {
+    let at = between_stages(inputs);
+    if at.last().is_none_or(|&l| l < slots) {
+        return Some(Vec::new());
+    }
+    if at.len() > slots as usize {
+        return None;
+    }
+    Some(at.into_iter().zip(0..).filter(|(f, t)| f != t).collect())
+}
+
+/// Where a vertex program's `outputs` move to meet the pixel program reading `inputs` (moved by
+/// [`input_moves`]): each value it reads where it reads it, each other at its own location when
+/// that is inside `slots` and free, or else at the first free one; none when they do not fit.
+pub fn output_moves(
+    outputs: &[StageValue],
+    inputs: &[StageValue],
+    slots: u32,
+) -> Option<Vec<(u32, u32)>> {
+    let read_moves = input_moves(inputs, slots)?;
+    let written = between_stages(outputs);
+    if read_moves.is_empty() && written.last().is_none_or(|&l| l < slots) {
+        return Some(Vec::new());
+    }
+    let read = between_stages(inputs);
+    let read_at = |l: u32| read_moves.iter().find(|m| m.0 == l).map_or(l, |m| m.1);
+    let mut taken: Vec<u32> = read.iter().map(|&l| read_at(l)).collect();
+    let mut moves = Vec::new();
+    for l in written {
+        let to = if read.contains(&l) {
+            read_at(l)
+        } else if l < slots && !taken.contains(&l) {
+            l
+        } else {
+            (0..slots).find(|t| !taken.contains(t))?
+        };
+        taken.push(to);
+        if to != l {
+            moves.push((l, to));
+        }
+    }
+    Some(moves)
+}
+
+/// Moves the values `c`'s program passes between stages (a vertex program's outputs, a pixel
+/// program's inputs) from and to the locations `moves` names, in its module and its reflection.
+/// The module's content key becomes one of its key and the moves.
+pub fn relocate(c: &mut Converted, moves: &[(u32, u32)]) -> Result<()> {
+    use naga::{Binding, TypeInner};
+    if moves.is_empty() {
+        return Ok(());
+    }
+    let to = |l: u32| moves.iter().find(|m| m.0 == l).map_or(l, |m| m.1);
+    let shift = |b: &mut Binding| {
+        if let Binding::Location { location, .. } = b {
+            *location = to(*location);
+        }
+    };
+    let unmovable = Error::NotImplemented("stage values moved in a program of no such values");
+    let m = c.modules.last_mut().ok_or(unmovable)?;
+    let module = &mut m.module;
+    let ep = module
+        .entry_points
+        .iter_mut()
+        .find(|e| e.name == m.entry_point)
+        .ok_or(unmovable)?;
+    let mut structs = Vec::new();
+    let mut each = |binding: &mut Option<Binding>, ty| match binding {
+        Some(b) => shift(b),
+        None => structs.push(ty),
+    };
+    match ep.stage {
+        naga::ShaderStage::Vertex => {
+            if let Some(r) = ep.function.result.as_mut() {
+                each(&mut r.binding, r.ty);
+            }
+        }
+        naga::ShaderStage::Fragment => {
+            for a in &mut ep.function.arguments {
+                each(&mut a.binding, a.ty);
+            }
+        }
+        _ => return Err(unmovable),
+    }
+    for ty in structs {
+        let mut t = module.types[ty].clone();
+        if let TypeInner::Struct { members, .. } = &mut t.inner {
+            members
+                .iter_mut()
+                .filter_map(|m| m.binding.as_mut())
+                .for_each(shift);
+        }
+        if t != module.types[ty] {
+            if module.types.get(&t).is_some() {
+                return not_implemented("stage values moved onto a type the program has");
+            }
+            module.types.replace(ty, t);
+        }
+    }
+    m.info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        wcontainers_shaders::capabilities(module),
+    )
+    .validate(module)
+    .or_else(|_| not_implemented("a program whose stage values moved does not validate"))?;
+    let mut key = blake3::Hasher::new();
+    key.update(&m.key);
+    for (from, to) in moves {
+        key.update(&from.to_le_bytes()).update(&to.to_le_bytes());
+    }
+    m.key = *key.finalize().as_bytes();
+    let values = match m.stage {
+        ShaderStage::Vertex => &mut c.reflection.outputs,
+        _ => &mut c.reflection.inputs,
+    };
+    for v in values.iter_mut().filter(|v| v.system.is_none()) {
+        v.location = to(v.location);
+    }
+    Ok(())
+}
+
 /// The constant buffer slots a DXBC container's program indexes at run time, a bit each.
 pub fn indexed_constants(bytecode: &[u8]) -> Result<u16> {
     Ok(declarations(bytecode)?
@@ -986,6 +1122,57 @@ fn refusal<T>(e: ConvertError) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Values at `locations`, with a position at register 0.
+    fn values(locations: impl IntoIterator<Item = u32>) -> Vec<StageValue> {
+        let value = |location, system| StageValue {
+            semantic: String::new(),
+            semantic_index: 0,
+            register: location,
+            mask: 0xf,
+            scalar: wcontainers_gpu::ScalarKind::Float,
+            interpolation: wcontainers_gpu::Interpolation::Perspective,
+            system,
+            location,
+            component: 0,
+            stream: 0,
+        };
+        let mut v = vec![value(0, Some(SystemValue::Position))];
+        v.extend(locations.into_iter().map(|l| value(l, None)));
+        v
+    }
+
+    #[test]
+    fn stage_values_past_the_locations_move_into_free_ones_both_stages_agree_on() {
+        // 31 values beside the position: registers 1 to 31 onto locations 0 to 30.
+        let all = values(1..32);
+        let read = input_moves(&all, 31);
+        assert_eq!(read, Some((1..32).map(|r| (r, r - 1)).collect()));
+        assert_eq!(output_moves(&all, &all, 31), read);
+        // Within the locations nothing moves.
+        assert_eq!(input_moves(&values(1..31), 31), Some(Vec::new()));
+        assert_eq!(
+            output_moves(&values(1..31), &values(1..31), 31),
+            Some(Vec::new())
+        );
+        // A pixel shader reading two of them: those keep their places, the vertex shader's value
+        // at 31 takes the first free location.
+        let written = values([1, 2, 31]);
+        let some = values([1, 2]);
+        assert_eq!(output_moves(&written, &some, 31), Some(vec![(31, 0)]));
+        // The pixel shader reading the one past: its inputs from 0, the vertex shader's others
+        // after them.
+        let last = values([5, 31]);
+        assert_eq!(input_moves(&last, 31), Some(vec![(5, 0), (31, 1)]));
+        assert_eq!(
+            output_moves(&values([3, 5, 31]), &last, 31),
+            Some(vec![(5, 0), (31, 1)])
+        );
+        // More than the locations hold, read or only written: refused.
+        assert_eq!(input_moves(&values(0..32), 31), None);
+        assert_eq!(output_moves(&values(0..32), &values(0..32), 31), None);
+        assert_eq!(output_moves(&values(0..32), &values([1]), 31), None);
+    }
 
     /// A container holding one program chunk of `tokens`.
     fn container(tokens: &[u32]) -> Vec<u8> {

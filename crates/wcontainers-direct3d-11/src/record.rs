@@ -58,8 +58,8 @@ impl Recorder {
     }
 
     /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
-    /// 4.11), with every format able to do everything at 1, 2, 4 and 8 samples; `echo` also receives
-    /// each line.
+    /// 4.11), with the vertex and inter-stage limits wgpu gives on Direct3D 12 there and every format
+    /// able to do everything at 1, 2, 4 and 8 samples; `echo` also receives each line.
     pub fn new(echo: Option<fn(&str)>) -> Self {
         let limits = Limits {
             max_texture_2d: 16384,
@@ -72,14 +72,14 @@ impl Recorder {
             uniform_buffers_per_stage: 12,
             textures_per_stage: 48,
             samplers_per_stage: 16,
-            storage_buffers_per_stage: 10,
+            storage_buffers_per_stage: 64,
             storage_textures_per_stage: 8,
-            vertex_streams: 8,
+            vertex_streams: 16,
             vertex_attributes: 30,
             max_vertex_stride: 2048,
             color_targets: 8,
             color_bytes_per_sample: 128,
-            inter_stage_slots: 28,
+            inter_stage_slots: 31,
             min_uniform_offset_alignment: 256,
             min_storage_offset_alignment: 256,
             buffer_copy_alignment: 4,

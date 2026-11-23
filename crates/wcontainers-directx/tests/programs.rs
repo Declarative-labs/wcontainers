@@ -315,8 +315,9 @@ fn typed_storage_stores_as_direct3d_does() {
     case("typed");
 }
 
-/// Stores into an `A8_UNORM` storage view keep the fourth component alone, and a texture of it
-/// sampled afterwards reads (0, 0, 0, a), as on the RTX 3080.
+/// Stores into an `A8_UNORM` storage view keep the fourth component alone, a texture of it
+/// sampled afterwards reads (0, 0, 0, a), and typed loads of the view read (0, 0, 0, a), as on the
+/// RTX 3080.
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn a8_storage_views_store_as_direct3d_does() {
@@ -361,6 +362,14 @@ fn packed_targets_drawn_blended_and_resolved_as_direct3d_does() {
 #[test]
 fn packed_targets_read_by_blends_as_direct3d_reads_them() {
     case("packed_blend_reads");
+}
+
+/// 32 input slots of one element each, 15, 30 and 31 values passed from the vertex to the pixel
+/// shader beside the position, and a draw reading inputs with no input layout (dropped), as the
+/// RTX 3080 draws them.
+#[test]
+fn every_input_slot_and_stage_register_as_direct3d_draws_them() {
+    case("stage_registers");
 }
 
 /// Format support bits of abilities this device reports absent through their own queries, which
@@ -417,21 +426,12 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
     } else {
         0
     };
-    let mut differences = vec![(
+    vec![(
         DXGI_FORMAT_R32G32B32_FLOAT,
         D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
         0,
         "sampling, optional: served, where the back end filters the format",
-    )];
-    if at_11_0 {
-        differences.push((
-            DXGI_FORMAT_A8_UNORM,
-            0,
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0,
-            "typed storage loads, optional: absent, the shaders crate stores it only natively",
-        ));
-    }
-    differences
+    )]
 }
 
 /// Every ability Microsoft's format tables require at 10_0, 10_1 and 11_0 that real Direct3D
