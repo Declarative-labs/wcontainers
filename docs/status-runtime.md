@@ -5,6 +5,22 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections sa
 -kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
 and crates/executor/implementation/unicorn.
 
+## JR, third run (2026-11-23): nothing it waits on has changed; nothing built or run
+
+- At 04f5e469 the kernel is as the second run found it: crates/kernel/implementation/linux/executing.rs
+  `KernelRunner::run` (line 469) is still `unimplemented!`, and `KernelConfig::new` (line 195) and
+  `KernelWithExecutor::start` (line 225) are still `unsafe fn`; executing.rs's last change is 60cb4fe1
+  (2026-11-22). The brief's premise that KC and K6c closed what JR waits on does not hold for these two items.
+- No interface changed since the second run (no commit to any interface.rs, crates/kernel, crates/system,
+  crates/runtime or the root Cargo.toml after a2b0ed42 but this track's 7b9b90a3), and no ruling about the
+  system's futures' `Send` bound or the stop flag is in interface-changes.md or the briefs.
+- The wasmtime executor still calls `unsafe { self.stop_flag.entered(flag) }` (its implementation.rs line
+  2410), so the stop flag's 2 uses stay (no safe form of `entered(&AtomicU32)` exists: the raiser on another
+  thread must keep the word past the call).
+- Not rerun: every commit since the second run's checks (7b9b90a3) is another track's doc, so the inputs of
+  this track's suite and comparisons are unchanged. Nothing of this track's was uncommitted at the start.
+- What comes next is unchanged: the "Not done" list of the second run below.
+
 ## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
 
 What I found at the start: the kernel the brief says is ready is not ready for this milestone yet. At 08900894,
