@@ -17,7 +17,7 @@ probes).
   blocking and seven minor (one of them no defect, a measurement to record); run 8 fixed all nine (list below),
   measured in scratch run8/. The run-8 fixes have not had a check of their own. Nothing is built; no code of this
   track exists yet.
-- XN1 (the output with no memory check): runs 1 and 2 (2026-11-23). Not complete. Done: the eighth check's five
+- XN1 (the output with no memory check): runs 1 to 3 (2026-11-23). Not complete. Done: the eighth check's five
   findings answered in the plan; the shared `Route::Area`; the core's `string_passes`; the route of every decoded
   form per way with its static routing test; the 0x67 segment-operand finding's code with its test (run 1). Run 2:
   the trait takes the way and the target (shared, ARM64 one of each); `Native for X86_64` for the machine and P,
@@ -31,6 +31,14 @@ probes).
   No x86 executor can run a translation yet (P's executor, crates/executor/implementation/host-process, was
   committed by its track during this run without a translation runner; no x86 floor), so the bar's layers,
   programs and speed wait on one (plan 8).
+  Run 3: layer 1 runs natively after all, without an executor: the test crate's new
+  src/guest/x86_64/native.rs puts each case's piece (way P) in a reference blob that sets up the case's memory,
+  the thread area and the first level, loads the case's state and enters the piece; the guest's state at the stop
+  is read through the position map and compared with the CPU. Each case runs uncounted, and counted with the trap
+  flag stopping it after every host instruction (state, data and count checked at each stop: the every-offset test
+  for layer 1's pieces). It found five defects of the output, fixed (below). 2008 forms, 1,000 cases a form, seed
+  5150: 0 failing (results below). Layers 2 and 3, the X9 programs and speed still need an executor (they run
+  many pieces, links, lookups and system calls).
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -47,7 +55,59 @@ probes).
 4. The pool for a call through a register, with `HostCode::pool` (today the return address is built in rax saved
    to the area: the plan's measured 1.146 form, not the pool's 1.120).
 5. The executor-dependent bar once an x86 executor runs a translation (P's, or the floor), and the plan's
-   measurements (dynamic register count, mirror memory, links' batches) with it.
+   measurements (dynamic register count, mirror memory, links' batches) with it: layers 2 and 3, the X9 programs,
+   speed, the count across look-aheads, replay, links, register groups, hostile guests. Native layer 1 (run 3) is
+   done and stays the first check of any change to the output; the next step short of an executor would be layer
+   2's programs in the same blob (pieces translated as the run reaches them, exits linked, a `syscall` stub), which
+   is most of P's stub, the native-without-virtual-machine track's W1.
+6. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
+   before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
+   area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+
+## What XN1 run 3 changed
+
+- crates/wcontainers-translator-test/src/guest/x86_64/native.rs (new, Linux x86-64 only) and the test
+  `every_form_matches_the_cpu_natively_x86_64` in tests/layer1.rs (`WC_LAYER1_CASES`, `WC_LAYER1_SEED`,
+  `WC_LAYER1_JOBS`, `WC_LAYER1_FORMS` as layer 1's). A case's instruction is translated at look-ahead none for P
+  (`translate_native_for`, `Way::Process`, the reference's `HostMatches`: 5-level, partial writes and undefined
+  results as the meaning's, since this CPU is the reference) and run as a reference blob at 2^43: its prologue maps
+  the data and code areas, the area (register area with the guest's r10, r11, r15 and GS base; the fixed part's
+  entries pointing at unmapped addresses, one a kind; the first level's 2^15 lower-region words pointing into an
+  unmapped second level at 2^44), installs a handler on its own stack, loads the state (`xrstor`, `popfq`, moves)
+  and jumps to the piece. The handler writes the frame, the data area and the register area. How a run ends: an
+  exit (the Exit call, also X87Control and FloatAfter; FloatBefore's entry is `jmp t`, a host process holding the
+  float status in hardware), a fault in the piece, a lookup miss at the second level (by its host instruction),
+  a call the inside answers or a first-level miss (the state must be the case's start, then the meaning's outcome
+  stands for the inside's). The native outcome is reconciled as the reference's is (both are a CPU seen through a
+  frame) and compared with the reference. Two classes are counted as known failures, not passes: the reference's
+  5-level paging (a page fault where the 4-level meaning gives #GP, x86-machine.md) and a meaning-answered case where
+  the meaning differs from the reference exactly as the WebAssembly layer 1 does (checked: `smsw [r15d]` fails
+  there the same way). Cases with TF or AC set are not run (P keeps both off the hardware; stepping pieces not
+  built), counted.
+- Each case runs twice: without the count, and with it and TF set after the prologue, the handler returning at
+  every trap in the piece: at each stop the state read through the map must be the start (before the commit point)
+  or the final one (after), the data likewise, the count (r10 less the lead) 0 or the events done. A control (the
+  expectation flipped in the machine's copy) fails 3 of 4 forms at host offset 0.
+- Defects found by it and fixed in carry.rs and native.rs, with a named test (`what_layer_1_found_on_the_cpu`):
+  a `gs:` operand based on rsp or rbp rebuilt as `[rsp/rbp + t]` took the stack segment's #SS where the guest
+  takes #GP (139 of the first failures): t is now the base; a stand-in for a withheld base could be rbp
+  (`cmpxchg8b [r15]`), and the high-byte form's address register too: never rbp; a `pop m` based on rsp on `gs:`
+  formed its address before the pop: the pop's size is added; float status instructions (`ldmxcsr`, `fxsave`,
+  `fnstenv`, ...) on `gs:` used the hardware's GS, our area: rebuilt as Area now; a bit test with a register offset
+  on `gs:` under 0x67 lost the 32-bit wrap of the offset's part (the carried 0x67 finding's other case in the
+  unchecked form): answered by the inside.
+
+## XN1 run 3 results (rented x86 machine, Xeon 8488C, 5-level paging)
+
+- Native layer 1, 2008 forms (every form layer 1 has), 1,000 cases a form, seed 5150, 32 at once, uncounted and
+  counted (before the stepping check), load 0.3 before: 0 failing, 511.5 s; 2,594 known failures (91 forms with
+  the 5-level class, 11 with the meaning class: sldt, smsw, str (the host kernel's UMIP emulation), wrfsbase and
+  wrgsbase; 11 transcendental forms as WebAssembly's). Ended (uncounted run): exit 1,416,015, fault 437,876,
+  answered 88,693, trap 62,329, first-level miss 2,495, second-level miss 592.
+- With the stepping check: 64 cases a form, seed 5150 (before it, all five defects fixed): 0 failing, 28 s; 8 cases,
+  0 failing. RESULT OF THE 1,000-CASE STEPPING RUN: see the line added below when it ended.
+- clippy with warnings denied on wcontainers-x86 and wcontainers-translator-test (all targets, `--no-deps`):
+  clean. x86 crate's native tests: routes 2, output 18, carry 2: pass.
 
 ## What XN1 run 2 changed
 
@@ -115,6 +175,15 @@ probes).
   spans, release, all checks): 0 broken. native_routes seed 0x51, 2,000,000 cases: 0 broken. native_carry seed 11,
   1,000,000 cases: 0 differences.
 
+## Departures from the plan (XN1 run 3)
+
+- Layer 1 runs natively before any executor exists (plan 8 waits for one), through a reference blob the test crate
+  builds: the same translation, way and map an executor would use, the inside's answers taken from the meaning
+  where the state at the call is the case's start. Its every-offset check uses the hardware's TF, which P itself
+  never sets; that is the test's stop, not a way of running.
+- Two classes of disagreement are counted as known failures by name (the reference's 5-level paging; the meaning's
+  own difference from the reference on inside-answered forms), and cases with TF or AC set are not run natively.
+
 ## Departures from the plan (XN1 run 2)
 
 - The trait's second type is `Target` (the host's matches and the process's offer), not `HostMatches`, since the
@@ -176,6 +245,12 @@ probes).
 native_routes --test native_carry -- --nocapture'`; the sweeps take `X86_ROUTE_SEED`, `X86_ROUTE_CASES`,
 `X86_CARRY_SEED` and `X86_CARRY_CASES` (decimal, or hex with 0x for the route seed); `cargo test -p
 wcontainers-x86 --lib strings` for the pass rule.
+
+Native layer 1 (one command, on the rented x86 machine, which is its own reference; about 9 minutes without the
+stepping run at 32 jobs): `x86-run <checkout> --name x86-native-output --jobs 32 -- 'WC_LAYER1_CASES=1000
+WC_LAYER1_SEED=5150 WC_LAYER1_JOBS=32 cargo test -q -p wcontainers-translator-test --test layer1
+every_form_matches_the_cpu_natively_x86_64 -- --nocapture'`; `WC_LAYER1_FORMS=<names>` for some forms. The
+summary lines start "layer 1 natively".
 
 ## Departures from the plan (XN1)
 
@@ -609,6 +684,11 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   its vDSO. Today vdso.rs builds only ARM64's one-function image and loader.rs hands it out through
   `AT_SYSINFO_EHDR`; an x86-64 guest needs either no vDSO (glibc's `clock_gettime` then a system call, as the P/I
   plan assumes) or an x86-64 one (plan 3.7).
+- x86 track (run 3): on the rented Xeon, the meaning differs from the reference for some cases of `sldt`, `smsw`,
+  `str` (which the host kernel emulates under UMIP; e.g. `66 67 41 0f 01 24 e7`: the reference faults at
+  0x43ffffff having changed the byte at DATA + 0x2fff, the meaning at 0x44000000 with nothing changed), `wrfsbase`
+  and `wrgsbase`; WebAssembly layer 1 fails the same cases (checked for
+  smsw), so they are its to answer; native layer 1 counts them by name.
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
   shared code changes (plan section 9) go in small commits that keep ARM64's suites passing. The x86 crate's core
   gains `Condition`, the x87 unit, the transcendental answers and their dependencies (plan 9), so the kernel,
@@ -627,6 +707,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Licences
 
+XN1 run 3 made libc 0.2.191 (MIT OR Apache-2.0, already in the lock) a dependency of wcontainers-translator-test on
+Linux x86-64 only (the signal frame's layout and system call numbers of native layer 1's blob), and turned on the
+translator's `native` feature there. No new crate.
+
 XN1 run 2 turned on iced-x86's `instr_info` feature (for the stand-ins' register use) and, in tests only, `intel`
 (listings), both of iced-x86 1.22.0 (MIT, already a dependency), and made wcontainers-translator (this
 workspace's) a dev-dependency of the x86 crate. No new crate.
@@ -640,7 +724,8 @@ brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
 
-- Unsafe code: none in this track (XN1 run 2's carry.rs, native.rs, area.rs and native_output.rs hold none;
+- Unsafe code: none in this track (XN1 run 3's native.rs in the test crate holds none: the blob is machine code in
+  a byte buffer the reference runs; XN1 run 2's carry.rs, native.rs, area.rs and native_output.rs hold none;
   XN1 run 1's x86/native.rs, carry.rs, area.rs, strings.rs and two test files hold
   none; grep finds no `unsafe` in them); none planned (the translator and wcontainers-x86 keep the workspace ban;
   emitting code into a byte buffer needs none). No imports to vet beyond fastrand, a test-only dependency.
