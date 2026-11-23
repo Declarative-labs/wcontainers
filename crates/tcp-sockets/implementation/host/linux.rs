@@ -871,11 +871,7 @@ fn change_authentication_options(
     socket: BorrowedFd<'_>,
     change: impl FnOnce(&mut uapi::tcp_ao_info_opt),
 ) -> Result<(), HostError> {
-    let mut options = match options::get_option::<uapi::tcp_ao_info_opt>(
-        socket,
-        uapi::SOL_TCP,
-        uapi::TCP_AO_INFO,
-    ) {
+    let mut options = match state::authentication_information(socket) {
         Ok(held) => held,
         Err(HostError::Errno(libc::ENOENT)) => uapi::tcp_ao_info_opt {
             _bitfield_align_1: [],
@@ -2351,9 +2347,7 @@ impl HostTcpSockets {
         }
         let before: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;
         set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)?;
-        let information: uapi::tcp_info =
-            options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?;
-        if u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS == u32::MIN {
+        if !state::microsecond_timestamps(socket)? {
             set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &before)?;
             return Err(self.shortfalls.refuse(NO_MICROSECOND_CLOCK));
         }

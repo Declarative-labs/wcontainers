@@ -265,6 +265,71 @@ options::uapi_mirror! {
     }
 }
 
+options::uapi_mirror! {
+    /// `struct tcp_ao_info_opt`, given as linux-raw-sys's by [`authentication_information`] for its bit field accessors.
+    #[derive(IntoBytes)]
+    struct AuthenticationInformation mirrors uapi::tcp_ao_info_opt {
+        _bitfield_1: [u8; 4],
+        reserved2: u16,
+        current_key: u8,
+        rnext: u8,
+        pkt_good: u64,
+        pkt_bad: u64,
+        pkt_key_not_found: u64,
+        pkt_ao_required: u64,
+        pkt_dropped_icmp: u64,
+    }
+}
+
+/// Reads the socket's `TCP_AO_INFO`.
+pub(super) fn authentication_information(
+    socket: BorrowedFd<'_>,
+) -> Result<uapi::tcp_ao_info_opt, HostError> {
+    let found: AuthenticationInformation =
+        options::get_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO)?;
+    Ok(uapi::tcp_ao_info_opt {
+        _bitfield_align_1: [],
+        _bitfield_1: uapi::__BindgenBitfieldUnit::new(found._bitfield_1),
+        reserved2: found.reserved2,
+        current_key: found.current_key,
+        rnext: found.rnext,
+        pkt_good: found.pkt_good,
+        pkt_bad: found.pkt_bad,
+        pkt_key_not_found: found.pkt_key_not_found,
+        pkt_ao_required: found.pkt_ao_required,
+        pkt_dropped_icmp: found.pkt_dropped_icmp,
+    })
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_ao_repair`, its initial sequence numbers in network order.
+    #[derive(IntoBytes)]
+    struct AuthenticationRepair mirrors uapi::tcp_ao_repair {
+        snt_isn: u32,
+        rcv_isn: u32,
+        snd_sne: u32,
+        rcv_sne: u32,
+    }
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_repair_window`.
+    #[derive(IntoBytes)]
+    struct RepairWindow mirrors uapi::tcp_repair_window {
+        snd_wl1: u32,
+        snd_wnd: u32,
+        max_window: u32,
+        rcv_wnd: u32,
+        rcv_wup: u32,
+    }
+}
+
+/// Tells whether the socket's TCP timestamps count microseconds, from its `TCP_INFO`.
+pub(super) fn microsecond_timestamps(socket: BorrowedFd<'_>) -> Result<bool, HostError> {
+    let information: TcpInfo = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?;
+    Ok(u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS != u32::MIN)
+}
+
 /// The bit fields of `tcp_info` by their first bit and width: `tcpi_snd_wscale:4`, `tcpi_rcv_wscale:4`,
 /// `tcpi_delivery_rate_app_limited:1` and `tcpi_fastopen_client_fail:2`.
 ///
@@ -856,8 +921,7 @@ pub(super) fn timestamp(
 ///
 /// The repair queue chosen is put back; out of repair mode Linux refuses the reads.
 pub(super) fn repair_state(socket: BorrowedFd<'_>) -> Result<TcpRepairState, HostError> {
-    let window: uapi::tcp_repair_window =
-        options::get_option(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_WINDOW)?;
+    let window: RepairWindow = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_WINDOW)?;
     let queue = get_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE)?;
     let sequence_of = |chosen: c_int| -> Result<TcpSequenceNumber, HostError> {
         set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, chosen)?;
@@ -867,7 +931,7 @@ pub(super) fn repair_state(socket: BorrowedFd<'_>) -> Result<TcpRepairState, Hos
         .and_then(|send| Ok((send, sequence_of(uapi::TCP_RECV_QUEUE as c_int)?)));
     set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, queue)?;
     let (send_sequence, receive_sequence) = sequences?;
-    let authentication = match options::get_option::<uapi::tcp_ao_repair>(
+    let authentication = match options::get_option::<AuthenticationRepair>(
         socket,
         uapi::SOL_TCP,
         uapi::TCP_AO_REPAIR,
@@ -968,8 +1032,7 @@ pub(super) fn set_authentication_repair(
 
 /// Reads the TCP Authentication Option's state from `TCP_AO_INFO`; a socket without it answers Linux's `ENOENT`.
 pub(super) fn authentication(socket: BorrowedFd<'_>) -> Result<TcpAuthenticationStatus, HostError> {
-    let found: uapi::tcp_ao_info_opt =
-        options::get_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO)?;
+    let found = authentication_information(socket)?;
     let identifier =
         |set: u32, key: u8| (set != u32::MIN).then_some(TcpAuthenticationKeyIdentifier(key));
     Ok(TcpAuthenticationStatus {
