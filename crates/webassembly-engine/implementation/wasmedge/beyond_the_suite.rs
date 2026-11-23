@@ -3,7 +3,7 @@
 use std::sync::Barrier;
 
 use wcontainers_webassembly_engine::function::{BoundFunction, FunctionTypeBinder, InvokeError};
-use wcontainers_webassembly_engine::global::{GlobalStore, Value, WriteGlobalError};
+use wcontainers_webassembly_engine::global::{GlobalStore, Mutability, Value, WriteGlobalError};
 use wcontainers_webassembly_engine::memory::{
     GrowMemoryError, MemoryStore, MemoryType, PAGE_SIZE, Sharing,
 };
@@ -15,7 +15,7 @@ use wcontainers_webassembly_engine::{
 };
 use wcontainers_webassembly_engine_wasmedge::{
     AllocateError, Config, FunctionAddress, GlobalAddress, Instance, InstantiateError,
-    MemoryAddress, Module, TableAddress, WasmEdgeEngine,
+    MemoryAddress, Module, SlowPath, TableAddress, WasmEdgeEngine,
 };
 
 type Engine = WasmEdgeEngine<i32>;
@@ -60,7 +60,7 @@ fn memory_type(address_type: AddressType, pages: u64, sharing: Sharing) -> Memor
 
 fn import(item_name: &'static str, address: ExternalAddress<Engine>) -> Import<'static, Engine> {
     Import {
-        module_name: "env",
+        module_name: "host",
         item_name,
         address,
     }
@@ -68,7 +68,7 @@ fn import(item_name: &'static str, address: ExternalAddress<Engine>) -> Import<'
 
 /// Imports a shared memory of one page and adds one to its first word, atomically, as many times as asked.
 const COUNTS_IN_A_SHARED_MEMORY: &str = r#"(module
-    (import "env" "memory" (memory 1 1 shared))
+    (import "host" "heap" (memory 1 1 shared))
     (func (export "count") (param i32)
         (loop $again
             (drop (i32.atomic.rmw.add (i32.const 0) (i32.const 1)))
@@ -94,10 +94,7 @@ fn two_threads_share_one_module_and_one_shared_memory() {
                 let mut counting = engine(config.clone());
                 let memory = counting.add_shared_memory(&shared);
                 let instance = counting
-                    .instantiate(
-                        &module,
-                        &[import("memory", ExternalAddress::Memory(memory))],
-                    )
+                    .instantiate(&module, &[import("heap", ExternalAddress::Memory(memory))])
                     .expect("the module instantiates");
                 let address = function(&mut counting, &instance, "count");
                 let count = bind::<(i32,), ()>(&mut counting, address);
@@ -136,9 +133,9 @@ fn reads_and_writes_more_than_a_page_of_every_kind_of_memory() {
 
 /// Defines a shared memory and exports it, with `load` and `store` of its words.
 const DEFINES_A_SHARED_MEMORY: &str = r#"(module
-    (memory (export "memory") 1 1 shared)
-    (func (export "load") (param i32) (result i32) (i32.atomic.load (local.get 0)))
-    (func (export "store") (param i32 i32) (i32.atomic.store (local.get 0) (local.get 1))))"#;
+    (memory (export "heap") 1 1 shared)
+    (func (export "fetch") (param i32) (result i32) (i32.atomic.load (local.get 0)))
+    (func (export "put") (param i32 i32) (i32.atomic.store (local.get 0) (local.get 1))))"#;
 
 #[test]
 fn a_shared_memory_a_module_exports_is_read_and_written() {
@@ -148,14 +145,14 @@ fn a_shared_memory_a_module_exports_is_read_and_written() {
     let instance = owner
         .instantiate(&module, &[])
         .expect("the module instantiates");
-    let Some(ExternalAddress::Memory(memory)) = owner.find_export(&instance, "memory") else {
+    let Some(ExternalAddress::Memory(memory)) = owner.find_export(&instance, "heap") else {
         panic!("the memory is exported");
     };
     assert_eq!(owner.write_memory(&memory, 8, &7_i32.to_le_bytes()), Ok(()));
-    let address = function(&mut owner, &instance, "load");
+    let address = function(&mut owner, &instance, "fetch");
     let load = bind::<(i32,), i32>(&mut owner, address);
     assert_eq!(load.invoke(&mut owner, (8,)).ok(), Some(7));
-    let address = function(&mut owner, &instance, "store");
+    let address = function(&mut owner, &instance, "put");
     let store = bind::<(i32, i32), ()>(&mut owner, address);
     assert!(store.invoke(&mut owner, (12, 9)).is_ok());
     let shared = owner
@@ -178,9 +175,9 @@ fn a_trap_after_a_host_function_returns_is_a_trap() {
     let module = compile(
         &engine,
         r#"(module
-            (import "env" "hook" (func $hook (param i32 i64) (result i64)))
-            (func (export "call") (result i64) (call $hook (i32.const 2) (i64.const 40)))
-            (func (export "trap") (drop (call $hook (i32.const 1) (i64.const 1))) (unreachable)))"#,
+            (import "host" "upcall" (func $hook (param i32 i64) (result i64)))
+            (func (export "caller") (result i64) (call $hook (i32.const 2) (i64.const 40)))
+            (func (export "fault") (drop (call $hook (i32.const 1) (i64.const 1))) (unreachable)))"#,
     );
     let hook = <Engine as FunctionTypeBinder<(i32, i64), i64>>::bind_host_function(
         &mut engine,
@@ -190,12 +187,15 @@ fn a_trap_after_a_host_function_returns_is_a_trap() {
         },
     );
     let instance = engine
-        .instantiate(&module, &[import("hook", ExternalAddress::Function(hook))])
+        .instantiate(
+            &module,
+            &[import("upcall", ExternalAddress::Function(hook))],
+        )
         .expect("the module instantiates");
-    let address = function(&mut engine, &instance, "call");
+    let address = function(&mut engine, &instance, "caller");
     let call = bind::<(), i64>(&mut engine, address);
     assert_eq!(call.invoke(&mut engine, ()).ok(), Some(42));
-    let address = function(&mut engine, &instance, "trap");
+    let address = function(&mut engine, &instance, "fault");
     let trap = bind::<(), ()>(&mut engine, address);
     assert!(matches!(
         trap.invoke(&mut engine, ()),
@@ -210,7 +210,7 @@ fn binds_every_value_type_and_several_results() {
     let module = compile(
         &engine,
         r#"(module
-            (import "env" "sum" (func $sum (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "host" "sum" (func $sum (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
             (func (export "reverse") (param i32 i64 f32 f64 v128) (result v128 f64 f32 i64 i32)
                 (local.get 4) (local.get 3) (local.get 2) (local.get 1) (local.get 0))
             (func (export "sum") (result i32)
@@ -267,15 +267,15 @@ fn binds_every_value_type_and_several_results() {
 
 /// Exports `answer`, which returns 42, and a table whose only element refers to a function it does not export.
 const EXPORTS_A_TABLE: &str = r#"(module
-    (table (export "table") 1 funcref)
+    (table (export "elements") 1 funcref)
     (func $hidden (result i32) (i32.const 7))
-    (func (export "answer") (result i32) (i32.const 42))
+    (func (export "forty_two") (result i32) (i32.const 42))
     (elem (i32.const 0) func $hidden))"#;
 
 /// Imports a function and exports a function that calls it.
 const CALLS_AN_IMPORT: &str = r#"(module
-    (import "env" "function" (func $function (result i32)))
-    (func (export "call") (result i32) (call $function)))"#;
+    (import "host" "routine" (func $function (result i32)))
+    (func (export "caller") (result i32) (call $function)))"#;
 
 #[test]
 fn a_function_read_from_a_table_is_imported_when_an_instance_exports_it() {
@@ -284,7 +284,7 @@ fn a_function_read_from_a_table_is_imported_when_an_instance_exports_it() {
     let exporter = engine
         .instantiate(&exporting, &[])
         .expect("the module instantiates");
-    let answer = function(&mut engine, &exporter, "answer");
+    let answer = function(&mut engine, &exporter, "forty_two");
     let table = engine
         .allocate_table(TableType {
             address_type: AddressType::I32,
@@ -303,14 +303,14 @@ fn a_function_read_from_a_table_is_imported_when_an_instance_exports_it() {
     let importer = engine
         .instantiate(
             &importing,
-            &[import("function", ExternalAddress::Function(read))],
+            &[import("routine", ExternalAddress::Function(read))],
         )
         .expect("the module instantiates");
-    let address = function(&mut engine, &importer, "call");
+    let address = function(&mut engine, &importer, "caller");
     let call = bind::<(), i32>(&mut engine, address);
     assert_eq!(call.invoke(&mut engine, ()).ok(), Some(42));
 
-    let Some(ExternalAddress::Table(exported_table)) = engine.find_export(&exporter, "table")
+    let Some(ExternalAddress::Table(exported_table)) = engine.find_export(&exporter, "elements")
     else {
         panic!("the table is exported");
     };
@@ -320,13 +320,150 @@ fn a_function_read_from_a_table_is_imported_when_an_instance_exports_it() {
         .expect("the element refers to a function");
     let bound = bind::<(), i32>(&mut engine, hidden.clone());
     assert_eq!(bound.invoke(&mut engine, ()).ok(), Some(7));
+    let passed_on = engine.slow_path_count(SlowPath::FunctionPassedOn);
+    let importer = engine
+        .instantiate(
+            &importing,
+            &[import("routine", ExternalAddress::Function(hidden.clone()))],
+        )
+        .expect("a function no instance exports is imported");
+    assert_eq!(
+        engine.slow_path_count(SlowPath::FunctionPassedOn),
+        passed_on + 1
+    );
+    let address = function(&mut engine, &importer, "caller");
+    let call = bind::<(), i32>(&mut engine, address);
+    assert_eq!(call.invoke(&mut engine, ()).ok(), Some(7));
+    let of_another_type = compile(
+        &engine,
+        r#"(module (import "host" "routine" (func (result i64))))"#,
+    );
     assert!(matches!(
         engine.instantiate(
-            &importing,
-            &[import("function", ExternalAddress::Function(hidden))]
+            &of_another_type,
+            &[import("routine", ExternalAddress::Function(hidden))]
         ),
-        Err(InstantiateError::FunctionNotExported)
+        Err(InstantiateError::FunctionTypeMismatch)
     ));
+}
+
+/// Tests a function reference against a function type and calls it as one, from a table a host writes into, which
+/// is either plain or typed, and from a plain global.
+const CASTS: &str = r#"(module
+    (type $t (func (result i32)))
+    (table (export "plain") 2 funcref)
+    (table (export "typed") 2 (ref null $t))
+    (global (export "cell") (mut funcref) (ref.null func))
+    (func (export "test_plain") (param i32) (result i32) (ref.test (ref $t) (table.get 0 (local.get 0))))
+    (func (export "cast_plain") (param i32) (result i32)
+        (call_ref $t (ref.cast (ref $t) (table.get 0 (local.get 0)))))
+    (func (export "call_typed") (param i32) (result i32)
+        (call_ref $t (ref.as_non_null (table.get 1 (local.get 0)))))
+    (func (export "cast_cell") (result i32) (call_ref $t (ref.cast (ref $t) (global.get 0)))))"#;
+
+#[test]
+fn every_function_the_host_writes_carries_its_own_type() {
+    let mut engine = engine(Config::default());
+    let exporting = compile(
+        &engine,
+        r#"(module (func (export "seven") (result i32) (i32.const 7)))"#,
+    );
+    let exporter = engine
+        .instantiate(&exporting, &[])
+        .expect("the module instantiates");
+    let seven = function(&mut engine, &exporter, "seven");
+    let nine = <Engine as FunctionTypeBinder<(), i32>>::bind_host_function(&mut engine, |_, ()| 9);
+    let module = compile(&engine, CASTS);
+    let instance = engine
+        .instantiate(&module, &[])
+        .expect("the module instantiates");
+    let plain = table(&mut engine, &instance, "plain");
+    let typed = table(&mut engine, &instance, "typed");
+    let retyped = engine.slow_path_count(SlowPath::FunctionRetyped);
+    for (index, written) in [(0, &seven), (1, &nine)] {
+        assert_eq!(engine.write_table(&plain, index, Some(written)), Ok(()));
+        assert_eq!(engine.write_table(&typed, index, Some(written)), Ok(()));
+    }
+    assert_eq!(
+        engine.slow_path_count(SlowPath::FunctionRetyped),
+        retyped + 4
+    );
+    assert_eq!(engine.slow_path_count(SlowPath::FunctionNotRetyped), 0);
+    for (index, expected) in [(0, 7), (1, 9)] {
+        for name in ["test_plain", "cast_plain", "call_typed"] {
+            let address = function(&mut engine, &instance, name);
+            let bound = bind::<(i32,), i32>(&mut engine, address);
+            let expected = if name == "test_plain" { 1 } else { expected };
+            assert_eq!(
+                bound.invoke(&mut engine, (index,)).ok(),
+                Some(expected),
+                "{name} {index}"
+            );
+        }
+    }
+    let Some(ExternalAddress::Global(cell)) = engine.find_export(&instance, "cell") else {
+        panic!("cell is an exported global");
+    };
+    let cast_cell = function(&mut engine, &instance, "cast_cell");
+    let cast_cell = bind::<(), i32>(&mut engine, cast_cell);
+    for (written, expected) in [(&seven, 7), (&nine, 9)] {
+        assert_eq!(
+            engine.write_global(&cell, Value::FunctionReference(Some(written.clone()))),
+            Ok(())
+        );
+        assert_eq!(cast_cell.invoke(&mut engine, ()).ok(), Some(expected));
+    }
+    // A reference read back from a global keeps its type when it is written on.
+    let Ok(Value::FunctionReference(Some(read))) = engine.read_global(&cell) else {
+        panic!("the global holds a function");
+    };
+    assert_eq!(engine.write_table(&plain, 0, Some(&read)), Ok(()));
+    let address = function(&mut engine, &instance, "cast_plain");
+    let cast_plain = bind::<(i32,), i32>(&mut engine, address);
+    assert_eq!(cast_plain.invoke(&mut engine, (0,)).ok(), Some(9));
+    let allocated = engine
+        .allocate_global(Mutability::Variable, Value::FunctionReference(Some(seven)))
+        .expect("the global is allocated");
+    let importing = compile(
+        &engine,
+        r#"(module
+            (type $t (func (result i32)))
+            (import "host" "cell" (global $cell (mut funcref)))
+            (func (export "cast_cell") (result i32) (call_ref $t (ref.cast (ref $t) (global.get $cell)))))"#,
+    );
+    let importer = engine
+        .instantiate(
+            &importing,
+            &[import("cell", ExternalAddress::Global(allocated))],
+        )
+        .expect("the module instantiates");
+    let address = function(&mut engine, &importer, "cast_cell");
+    let cast = bind::<(), i32>(&mut engine, address);
+    assert_eq!(cast.invoke(&mut engine, ()).ok(), Some(7));
+}
+
+#[test]
+fn slow_paths_are_counted() {
+    for (index, path) in SlowPath::ALL.iter().enumerate() {
+        assert_eq!(*path as usize, index);
+        assert!(!path.reason().is_empty());
+    }
+    let mut engine = engine(Config::default());
+    let shared = engine
+        .allocate_memory(memory_type(AddressType::I32, 1, Sharing::Shared))
+        .expect("the memory is allocated");
+    assert_eq!(engine.slow_path_count(SlowPath::SharedMemoryCopied), 0);
+    assert_eq!(engine.write_memory(&shared, 0, b"abc"), Ok(()));
+    let mut read = [0; 3];
+    assert_eq!(engine.read_memory(&shared, 0, &mut read), Ok(()));
+    assert_eq!(engine.slow_path_count(SlowPath::SharedMemoryCopied), 2);
+    let unshared = engine
+        .allocate_memory(memory_type(AddressType::I32, 1, Sharing::Unshared))
+        .expect("the memory is allocated");
+    assert_eq!(engine.write_memory(&unshared, 0, b"abc"), Ok(()));
+    assert_eq!(engine.read_memory(&unshared, 0, &mut read), Ok(()));
+    assert_eq!(engine.slow_path_count(SlowPath::SharedMemoryCopied), 2);
+    assert_eq!(engine.slow_path_count(SlowPath::BeyondBindingsReach), 0);
 }
 
 #[test]
@@ -335,13 +472,13 @@ fn a_64_bit_memory_a_module_exports_is_read_and_written() {
     let module = compile(
         &engine,
         r#"(module
-            (memory (export "memory") i64 2)
-            (func (export "load") (param i64) (result i64) (i64.load (local.get 0))))"#,
+            (memory (export "heap") i64 2)
+            (func (export "fetch") (param i64) (result i64) (i64.load (local.get 0))))"#,
     );
     let instance = engine
         .instantiate(&module, &[])
         .expect("the module instantiates");
-    let Some(ExternalAddress::Memory(memory)) = engine.find_export(&instance, "memory") else {
+    let Some(ExternalAddress::Memory(memory)) = engine.find_export(&instance, "heap") else {
         panic!("the memory is exported");
     };
     assert_eq!(engine.count_memory_pages(&memory), 2);
@@ -349,7 +486,7 @@ fn a_64_bit_memory_a_module_exports_is_read_and_written() {
         engine.write_memory(&memory, 70_000, &(-5_i64).to_le_bytes()),
         Ok(())
     );
-    let address = function(&mut engine, &instance, "load");
+    let address = function(&mut engine, &instance, "fetch");
     let load = bind::<(i64,), i64>(&mut engine, address);
     assert_eq!(load.invoke(&mut engine, (70_000,)).ok(), Some(-5));
     assert!(matches!(
@@ -390,16 +527,16 @@ fn instantiate(engine: &mut Engine, text: &str, imports: &[Import<'_, Engine>]) 
 const SHARES_A_MEMORY_BESIDE_OTHER_ITEMS: &str = r#"(module
     (memory (export "shared") 1 1 shared)
     (memory (export "unshared") 1 2)
-    (global (export "global") (mut i32) (i32.const 1))
+    (global (export "variable") (mut i32) (i32.const 1))
     (global (export "constant") i64 (i64.const 2))
     (func (export "read_global") (result i32) (global.get 0))
-    (func (export "load") (param i32) (result i32) (i32.load 1 (local.get 0))))"#;
+    (func (export "fetch") (param i32) (result i32) (i32.load 1 (local.get 0))))"#;
 
 #[test]
 fn the_items_beside_an_exported_shared_memory_are_written() {
     let mut engine = engine(Config::default());
     let instance = instantiate(&mut engine, SHARES_A_MEMORY_BESIDE_OTHER_ITEMS, &[]);
-    let written = global(&mut engine, &instance, "global");
+    let written = global(&mut engine, &instance, "variable");
     assert_eq!(engine.write_global(&written, Value::I32(5)), Ok(()));
     assert!(matches!(engine.read_global(&written), Ok(Value::I32(5))));
     let address = function(&mut engine, &instance, "read_global");
@@ -419,7 +556,7 @@ fn the_items_beside_an_exported_shared_memory_are_written() {
     let mut read = [0; 4];
     assert_eq!(engine.read_memory(&unshared, 3, &mut read), Ok(()));
     assert_eq!(&read, b"abcd");
-    let address = function(&mut engine, &instance, "load");
+    let address = function(&mut engine, &instance, "fetch");
     let load = bind::<(i32,), i32>(&mut engine, address);
     assert_eq!(
         load.invoke(&mut engine, (3,)).ok(),
@@ -444,10 +581,10 @@ fn a_shared_64_bit_memory_is_found_shared_and_imported() {
     let mut owner = engine(config.clone());
     let instance = instantiate(
         &mut owner,
-        r#"(module (memory (export "memory") i64 1 2 shared) (data (i64.const 5) "xyz"))"#,
+        r#"(module (memory (export "heap") i64 1 2 shared) (data (i64.const 5) "xyz"))"#,
         &[],
     );
-    let exported = memory(&mut owner, &instance, "memory");
+    let exported = memory(&mut owner, &instance, "heap");
     let mut read = [0; 3];
     assert_eq!(owner.read_memory(&exported, 5, &mut read), Ok(()));
     assert_eq!(&read, b"xyz");
@@ -457,8 +594,8 @@ fn a_shared_64_bit_memory_is_found_shared_and_imported() {
         .expect("the memory is shared");
     let module = compile(
         &owner,
-        r#"(module (import "env" "memory" (memory i64 1 2 shared))
-            (func (export "load") (param i64) (result i32) (i32.atomic.load (local.get 0))))"#,
+        r#"(module (import "host" "heap" (memory i64 1 2 shared))
+            (func (export "fetch") (param i64) (result i32) (i32.atomic.load (local.get 0))))"#,
     );
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -467,9 +604,9 @@ fn a_shared_64_bit_memory_is_found_shared_and_imported() {
             assert_eq!(other.grow_memory(&added, 1), Ok(()));
             assert_eq!(other.count_memory_pages(&added), 2);
             let instance = other
-                .instantiate(&module, &[import("memory", ExternalAddress::Memory(added))])
+                .instantiate(&module, &[import("heap", ExternalAddress::Memory(added))])
                 .expect("the module instantiates");
-            let address = function(&mut other, &instance, "load");
+            let address = function(&mut other, &instance, "fetch");
             let load = bind::<(i64,), i32>(&mut other, address);
             assert_eq!(
                 load.invoke(&mut other, (8,)).ok(),
@@ -485,17 +622,17 @@ fn a_64_bit_memory_is_imported_and_allocated() {
     let mut engine = engine(Config::default());
     let exporter = instantiate(
         &mut engine,
-        r#"(module (memory (export "memory") i64 1))"#,
+        r#"(module (memory (export "heap") i64 1))"#,
         &[],
     );
-    let exported = memory(&mut engine, &exporter, "memory");
-    let sizes = r#"(module (import "env" "memory" (memory i64 1))
+    let exported = memory(&mut engine, &exporter, "heap");
+    let sizes = r#"(module (import "host" "heap" (memory i64 1))
         (func (export "size") (result i64) (memory.size))
-        (func (export "load") (param i64) (result i64) (i64.load (local.get 0))))"#;
+        (func (export "fetch") (param i64) (result i64) (i64.load (local.get 0))))"#;
     let importer = instantiate(
         &mut engine,
         sizes,
-        &[import("memory", ExternalAddress::Memory(exported))],
+        &[import("heap", ExternalAddress::Memory(exported))],
     );
     let address = function(&mut engine, &importer, "size");
     let size = bind::<(), i64>(&mut engine, address);
@@ -522,9 +659,9 @@ fn a_64_bit_memory_is_imported_and_allocated() {
             let importer = instantiate(
                 &mut engine,
                 sizes,
-                &[import("memory", ExternalAddress::Memory(allocated))],
+                &[import("heap", ExternalAddress::Memory(allocated))],
             );
-            let address = function(&mut engine, &importer, "load");
+            let address = function(&mut engine, &importer, "fetch");
             let load = bind::<(i64,), i64>(&mut engine, address);
             assert_eq!(load.invoke(&mut engine, (16,)).ok(), Some(7));
         } else {
@@ -540,12 +677,12 @@ fn bytes_beyond_4_gib_of_a_64_bit_memory_are_read_and_written() {
     let instance = instantiate(
         &mut engine,
         &format!(
-            r#"(module (memory (export "memory") i64 {pages})
-                (func (export "load") (param i64) (result i64) (i64.load (local.get 0))))"#
+            r#"(module (memory (export "heap") i64 {pages})
+                (func (export "fetch") (param i64) (result i64) (i64.load (local.get 0))))"#
         ),
         &[],
     );
-    let exported = memory(&mut engine, &instance, "memory");
+    let exported = memory(&mut engine, &instance, "heap");
     let far = 1 << u32::BITS;
     let bytes = 0x0123_4567_89ab_cdef_i64.to_le_bytes();
     // Across the first 4 GiB and beyond them.
@@ -554,7 +691,7 @@ fn bytes_beyond_4_gib_of_a_64_bit_memory_are_read_and_written() {
         let mut read = [0; 8];
         assert_eq!(engine.read_memory(&exported, offset, &mut read), Ok(()));
         assert_eq!(read, bytes);
-        let address = function(&mut engine, &instance, "load");
+        let address = function(&mut engine, &instance, "fetch");
         let load = bind::<(i64,), i64>(&mut engine, address);
         assert_eq!(
             load.invoke(&mut engine, (offset.cast_signed(),)).ok(),
@@ -570,20 +707,20 @@ fn bytes_beyond_4_gib_of_a_64_bit_memory_are_read_and_written() {
 /// and one of another.
 const HOLDS_TYPED_REFERENCES: &str = r#"(module
     (type $answers (func (result i32)))
-    (table (export "table") 1 3 (ref null $answers))
+    (table (export "elements") 1 3 (ref null $answers))
     (table (export "everywhere") i64 1 (ref null $answers))
-    (global (export "global") (mut (ref null $answers)) (ref.null $answers))
-    (func (export "answer") (type $answers) (i32.const 3))
-    (func (export "other") (result i64) (i64.const 4))
+    (global (export "variable") (mut (ref null $answers)) (ref.null $answers))
+    (func (export "forty_two") (type $answers) (i32.const 3))
+    (func (export "elsewhere") (result i64) (i64.const 4))
     (func (export "call_global") (result i32) (call_ref $answers (global.get 0))))"#;
 
 #[test]
 fn typed_function_references_are_written_into_tables_and_globals() {
     let mut engine = engine(Config::default());
     let instance = instantiate(&mut engine, HOLDS_TYPED_REFERENCES, &[]);
-    let answer = function(&mut engine, &instance, "answer");
-    let other = function(&mut engine, &instance, "other");
-    for name in ["table", "everywhere"] {
+    let answer = function(&mut engine, &instance, "forty_two");
+    let other = function(&mut engine, &instance, "elsewhere");
+    for name in ["elements", "everywhere"] {
         let typed = table(&mut engine, &instance, name);
         assert_eq!(engine.write_table(&typed, 0, Some(&answer)), Ok(()));
         let read = engine
@@ -605,19 +742,19 @@ fn typed_function_references_are_written_into_tables_and_globals() {
         assert_eq!(engine.write_table(&typed, 1, None), Ok(()));
         assert!(matches!(engine.read_table(&typed, 1), Ok(None)));
     }
-    let typed = table(&mut engine, &instance, "table");
+    let typed = table(&mut engine, &instance, "elements");
     let importer = instantiate(
         &mut engine,
         r#"(module (type $answers (func (result i32)))
-            (import "env" "table" (table 1 3 (ref null $answers)))
-            (func (export "call") (result i32) (call_indirect (type $answers) (i32.const 0))))"#,
-        &[import("table", ExternalAddress::Table(typed))],
+            (import "host" "elements" (table 1 3 (ref null $answers)))
+            (func (export "caller") (result i32) (call_indirect (type $answers) (i32.const 0))))"#,
+        &[import("elements", ExternalAddress::Table(typed))],
     );
-    let address = function(&mut engine, &importer, "call");
+    let address = function(&mut engine, &importer, "caller");
     let call = bind::<(), i32>(&mut engine, address);
     assert_eq!(call.invoke(&mut engine, ()).ok(), Some(3));
 
-    let typed = global(&mut engine, &instance, "global");
+    let typed = global(&mut engine, &instance, "variable");
     assert_eq!(
         engine.write_global(&typed, Value::FunctionReference(Some(other))),
         Err(WriteGlobalError::ValueTypeMismatch)
@@ -639,7 +776,7 @@ fn typed_function_references_are_written_into_tables_and_globals() {
 fn a_64_bit_table_is_allocated_written_and_grown() {
     let mut engine = engine(Config::default());
     let instance = instantiate(&mut engine, EXPORTS_A_TABLE, &[]);
-    let answer = function(&mut engine, &instance, "answer");
+    let answer = function(&mut engine, &instance, "forty_two");
     let allocated = engine
         .allocate_table(TableType {
             address_type: AddressType::I64,

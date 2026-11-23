@@ -25,7 +25,7 @@ fn bench_module() -> Vec<u8> {
     types.ty().function([], []);
     types.ty().function([ValType::I32], []);
     let mut imports = ImportSection::new();
-    imports.import("env", "hook", EntityType::Function(0));
+    imports.import("host", "upcall", EntityType::Function(0));
     let mut functions = FunctionSection::new();
     functions.function(0).function(1);
     let mut exports = ExportSection::new();
@@ -109,8 +109,8 @@ where
         |count: &mut u64, ()| *count += 1,
     );
     let imports = [Import {
-        module_name: "env",
-        item_name: "hook",
+        module_name: "host",
+        item_name: "upcall",
         address: ExternalAddress::Function(hook),
     }];
     // Not scaled: instances live as long as the engine value, and an engine may cap how many one holds
@@ -219,14 +219,14 @@ where
             (type $answers (func (result i32)))
             (memory (export "shared") 1 1 shared)
             (memory (export "unshared") 1)
-            (global (export "global") (mut i32) (i32.const 0))
+            (global (export "variable") (mut i32) (i32.const 0))
             (table (export "typed") 1 (ref null $answers))
-            (func (export "answer") (type $answers) (i32.const 3)))"#,
+            (func (export "forty_two") (type $answers) (i32.const 3)))"#,
     )
     .expect("the text is a module");
     let module = engine.compile(&bytes).ok().expect("compiles");
     let instance = engine.instantiate(&module, &[]).ok().expect("instantiates");
-    let Some(ExternalAddress::Global(global)) = engine.find_export(&instance, "global") else {
+    let Some(ExternalAddress::Global(global)) = engine.find_export(&instance, "variable") else {
         panic!("global is exported");
     };
     report("write a global beside a shared memory", 1_000_000, || {
@@ -259,7 +259,8 @@ where
     let Some(ExternalAddress::Table(table)) = engine.find_export(&instance, "typed") else {
         panic!("typed is exported");
     };
-    let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, "answer") else {
+    let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, "forty_two")
+    else {
         panic!("answer is exported");
     };
     report("write a function into a typed table", 1_000_000, || {

@@ -4,6 +4,7 @@
 //! either runs it as native code or refuses to load it, so a passing check ran compiled code.
 
 use wcontainers_webassembly_engine::function::{BoundFunction, FunctionTypeBinder, InvokeError};
+use wcontainers_webassembly_engine::memory::PAGE_SIZE;
 use wcontainers_webassembly_engine::{ExternalAddress, WebAssemblyEngine};
 use wcontainers_webassembly_engine_wasmedge::{Error, WasmEdgeEngine};
 
@@ -102,7 +103,7 @@ fn exception_handling() {
 #[test]
 fn threads_and_shared_memory() {
     let text = r#"(module
-        (memory (export "memory") 1 1 shared)
+        (memory (export "heap") 1 1 shared)
         (func (export "add_twice") (param i32) (result i32)
             (drop (i32.atomic.rmw.add (i32.const 0) (local.get 0)))
             (i32.atomic.rmw.add (i32.const 0) (local.get 0)))
@@ -120,20 +121,20 @@ fn threads_and_shared_memory() {
 #[test]
 fn memory64() {
     let text = r#"(module
-        (memory (export "memory") i64 1)
+        (memory (export "heap") i64 1)
         (func (export "store_load") (param i64 i64) (result i64)
             (i64.store (local.get 0) (local.get 1))
             (i64.load (local.get 0)))
-        (func (export "grow") (param i64) (result i64)
+        (func (export "enlarge") (param i64) (result i64)
             (drop (memory.grow (local.get 0)))
             (memory.size)))"#;
     assert_eq!(
         run::<(i64, i64), i64>(text, "store_load", (65_528, 42)).ok(),
         Some(42)
     );
-    assert_eq!(run::<(i64,), i64>(text, "grow", (2,)).ok(), Some(3));
+    assert_eq!(run::<(i64,), i64>(text, "enlarge", (2,)).ok(), Some(3));
     assert!(matches!(
-        run::<(i64, i64), i64>(text, "store_load", (65_536, 42)),
+        run::<(i64, i64), i64>(text, "store_load", (PAGE_SIZE.cast_signed(), 42)),
         Err(InvokeError::Trap(_))
     ));
 }

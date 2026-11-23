@@ -3,7 +3,7 @@
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
@@ -104,19 +104,32 @@ impl Config {
 /// A new folder only this user can write in, so nobody else can put a library in the place of a compiled one.
 fn private_folder() -> std::io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
-    builder.prefix("wcontainers-wasmedge-");
+    builder.prefix(env!("CARGO_PKG_NAME"));
     #[cfg(unix)]
-    builder
-        .permissions(<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700));
+    builder.permissions(
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(mode_bits(
+            rustix::fs::Mode::RWXU.bits(),
+        )),
+    );
     builder.tempdir()
 }
+
+/// The mode bits as the standard library takes them, from the width the system gives them.
+#[cfg(unix)]
+fn mode_bits(mode: impl Into<u32>) -> u32 {
+    mode.into()
+}
+
+/// The name of the file a module is compiled into, before its extension.
+const COMPILED_LIBRARY: &str = "compiled";
 
 /// Compiles the module into a native shared library in a private folder, loads it, and removes the folder.
 fn compile(shared: &Shared, bytes: &[u8]) -> Result<Module, CompileError> {
     let folder = private_folder().map_err(CompileError::Folder)?;
     let path = folder
         .path()
-        .join(format!("module.{}", std::env::consts::DLL_EXTENSION));
+        .join(COMPILED_LIBRARY)
+        .with_extension(std::env::consts::DLL_EXTENSION);
     // A loaded library stays mapped once its file is gone.
     let loaded = Compiler::create(Some(&shared.compiled))
         .and_then(|compiler| compiler.compile_from_bytes(bytes, &path))
@@ -142,23 +155,27 @@ fn declare(shared: &Shared, bytes: &[u8]) -> Result<Module, Error> {
 /// A name no other module instance of the process has.
 fn unique_name() -> String {
     static NAMED: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "wcontainers-wasmedge-{}",
-        NAMED.fetch_add(1, Ordering::Relaxed)
-    )
+    [
+        env!("CARGO_PKG_NAME"),
+        &NAMED.fetch_add(1, Ordering::Relaxed).to_string(),
+    ]
+    .concat()
 }
 
 /// The module and item name under which a helper imports what it reaches.
 const HELPED: &str = "helped";
-const SCRATCH: &str = "scratch";
-const TABLE: &str = "table";
-const MEMORY: &str = "memory";
-const GLOBAL: &str = "global";
-const FUNCTION: &str = "function";
-const LOAD: &str = "load";
-const STORE: &str = "store";
-const GROW: &str = "grow";
-const SET: &str = "set";
+/// The names of the items the modules of this crate export.
+const COPIED_BYTES: &str = "copied_bytes";
+const RETYPED_FUNCTION: &str = "retyped_function";
+const DEFINED_TABLE: &str = "defined_table";
+const DEFINED_MEMORY: &str = "defined_memory";
+const DEFINED_GLOBAL: &str = "defined_global";
+const HOST_FUNCTION: &str = "host_function";
+const COPY_OUT: &str = "copy_out";
+const COPY_IN: &str = "copy_in";
+const GROW_ITEM: &str = "grow_item";
+const SET_ITEM: &str = "set_item";
+const PASS_ON: &str = "pass_on";
 
 /// The pages a 32-bit memory holds at most.
 const MOST_PAGES: u64 = (1 << u32::BITS) / PAGE_SIZE;
@@ -167,12 +184,103 @@ const MOST_PAGES_64: u64 = 1 << (u64::BITS - PAGE_SIZE.trailing_zeros());
 /// The first byte the bindings' 32-bit offsets cannot reach.
 const BINDINGS_REACH: u64 = 1 << u32::BITS;
 
+/// The reason [`SlowPath::SharedMemoryCopied`] shows.
+const SHARED_MEMORY_COPIED: &str =
+    "bytes of a shared memory copied through a module, as the bindings lend no shared memory";
+/// The reason [`SlowPath::SharedOwnerMemoryCopied`] shows.
+const SHARED_OWNER_MEMORY_COPIED: &str = "unshared memory of an instance that exports a shared memory \
+    written or grown through a module, as the bindings write no shared instance";
+/// The reason [`SlowPath::BeyondBindingsReach`] shows.
+const BEYOND_BINDINGS_REACH: &str =
+    "bytes beyond the 32-bit offsets of the bindings copied through a module";
+/// The reason [`SlowPath::TableWrittenByModule`] shows.
+const TABLE_WRITTEN_BY_MODULE: &str =
+    "table written or grown through a module, as the bindings write no table of an instance";
+/// The reason [`SlowPath::GlobalSetByModule`] shows.
+const GLOBAL_SET_BY_MODULE: &str = "global set through a module, as the bindings write no shared \
+    instance and no typed reference";
+/// The reason [`SlowPath::FunctionRetyped`] shows.
+const FUNCTION_RETYPED: &str = "function reference read from a module's table to carry its own \
+    type, as the bindings make references that carry only funcref";
+/// The reason [`SlowPath::FunctionNotRetyped`] shows.
+const FUNCTION_NOT_RETYPED: &str = "function reference written carrying only funcref, as no module \
+    describes its type, so a guest's cast to its type fails";
+/// The reason [`SlowPath::ImportsForwarded`] shows.
+const IMPORTS_FORWARDED: &str =
+    "imports linked through a module that imports and exports them, as WasmEdge links by name only";
+/// The reason [`SlowPath::FunctionPassedOn`] shows.
+const FUNCTION_PASSED_ON: &str = "function no instance exports imported through a module that \
+    calls it indirectly, as WasmEdge links by name only";
+
+/// A place where this crate does something slower than the engine's direct route, because the bindings' safe layer
+/// offers none, or does it less well than the standard asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlowPath {
+    SharedMemoryCopied,
+    SharedOwnerMemoryCopied,
+    BeyondBindingsReach,
+    TableWrittenByModule,
+    GlobalSetByModule,
+    FunctionRetyped,
+    FunctionNotRetyped,
+    ImportsForwarded,
+    FunctionPassedOn,
+}
+
+impl SlowPath {
+    /// Every slow path, in the order of their counters.
+    pub const ALL: &[SlowPath] = &[
+        SlowPath::SharedMemoryCopied,
+        SlowPath::SharedOwnerMemoryCopied,
+        SlowPath::BeyondBindingsReach,
+        SlowPath::TableWrittenByModule,
+        SlowPath::GlobalSetByModule,
+        SlowPath::FunctionRetyped,
+        SlowPath::FunctionNotRetyped,
+        SlowPath::ImportsForwarded,
+        SlowPath::FunctionPassedOn,
+    ];
+
+    pub fn reason(self) -> &'static str {
+        match self {
+            SlowPath::SharedMemoryCopied => SHARED_MEMORY_COPIED,
+            SlowPath::SharedOwnerMemoryCopied => SHARED_OWNER_MEMORY_COPIED,
+            SlowPath::BeyondBindingsReach => BEYOND_BINDINGS_REACH,
+            SlowPath::TableWrittenByModule => TABLE_WRITTEN_BY_MODULE,
+            SlowPath::GlobalSetByModule => GLOBAL_SET_BY_MODULE,
+            SlowPath::FunctionRetyped => FUNCTION_RETYPED,
+            SlowPath::FunctionNotRetyped => FUNCTION_NOT_RETYPED,
+            SlowPath::ImportsForwarded => IMPORTS_FORWARDED,
+            SlowPath::FunctionPassedOn => FUNCTION_PASSED_ON,
+        }
+    }
+}
+
+/// Whether each slow path has been warned of in this process.
+static WARNED: [AtomicBool; SlowPath::ALL.len()] =
+    [const { AtomicBool::new(false) }; SlowPath::ALL.len()];
+
+/// How many times one engine value took each slow path.
+struct SlowPaths([Cell<u64>; SlowPath::ALL.len()]);
+
+impl SlowPaths {
+    /// Counts one use of the path, and warns the first time the process takes it.
+    fn took(&self, path: SlowPath) {
+        let index = path as usize;
+        let count = &self.0[index];
+        if count.get() == 0 && !WARNED[index].swap(true, Ordering::Relaxed) {
+            log::warn!("WasmEdge engine slow path: {}", path.reason());
+        }
+        count.set(count.get() + 1);
+    }
+}
+
 /// What a module declares, read from its bytes: its types, and the type of each import and export.
 #[derive(Default)]
 struct Description {
     types: TypeSection,
-    /// Whether the type at each index is a function type.
-    function_types: Vec<bool>,
+    /// For the type at each index, its number of parameters when it is a function type.
+    function_types: Vec<Option<u32>>,
     imports: Vec<(String, String, EntityType)>,
     exports: Vec<(String, EntityType)>,
 }
@@ -200,18 +308,28 @@ impl Description {
             HeapType::Concrete(index) | HeapType::Exact(index) => usize::try_from(index)
                 .ok()
                 .and_then(|index| self.function_types.get(index))
-                .is_some_and(|function| *function),
+                .is_some_and(Option::is_some),
         }
+    }
+
+    /// The number of parameters of the function type at the index.
+    fn parameters(&self, function_type: u32) -> Option<u32> {
+        *self
+            .function_types
+            .get(usize::try_from(function_type).ok()?)?
+    }
+
+    /// The index the types of a helper begin at, after the module's own.
+    fn type_count(&self) -> u32 {
+        u32::try_from(self.function_types.len()).expect("a module's type indices are u32")
     }
 
     /// The types a helper of an item of the reference type starts from, and the index its own types begin at.
     fn helper_types(&self, reference: Option<wasm_encoder::RefType>) -> (TypeSection, u32) {
         match reference.map(|reference| reference.heap_type) {
-            Some(HeapType::Concrete(_) | HeapType::Exact(_)) => (
-                self.types.clone(),
-                u32::try_from(self.function_types.len())
-                    .expect("a module has fewer types than 2^32"),
-            ),
+            Some(HeapType::Concrete(_) | HeapType::Exact(_)) => {
+                (self.types.clone(), self.type_count())
+            }
             _ => (TypeSection::new(), 0),
         }
     }
@@ -231,9 +349,14 @@ fn describe(bytes: &[u8]) -> Result<Description, ReencodeError> {
                     let group = group?;
                     description
                         .function_types
-                        .extend(group.types().map(|sub_type| {
-                            matches!(sub_type.composite_type.inner, CompositeInnerType::Func(_))
-                        }));
+                        .extend(group.types().map(
+                            |sub_type| match &sub_type.composite_type.inner {
+                                CompositeInnerType::Func(function) => {
+                                    u32::try_from(function.params().len()).ok()
+                                }
+                                _ => None,
+                            },
+                        ));
                     reencoder.parse_recursive_type_group(description.types.ty(), group)?;
                 }
             }
@@ -336,6 +459,18 @@ fn address_zero<'sink, 'bytes>(
     }
 }
 
+/// The numeric value type, or nothing for a reference, whose exact type the bindings do not tell.
+fn number_type(value_type: ValType) -> Option<wasm_encoder::ValType> {
+    match value_type {
+        ValType::I32 => Some(wasm_encoder::ValType::I32),
+        ValType::I64 => Some(wasm_encoder::ValType::I64),
+        ValType::F32 => Some(wasm_encoder::ValType::F32),
+        ValType::F64 => Some(wasm_encoder::ValType::F64),
+        ValType::V128 => Some(wasm_encoder::ValType::V128),
+        ValType::FuncRef | ValType::ExternRef | ValType::UnsupportedRef => None,
+    }
+}
+
 /// Pushes the function reference in the local as the reference type, trapping when the function is not of it. A
 /// null becomes the type's own null: WasmEdge casts a reference by the type it carries, and the null it gives the
 /// host carries `funcref`.
@@ -417,10 +552,10 @@ fn copier_module(memory: wasm_encoder::MemoryType) -> Vec<u8> {
     });
     let mut exports = ExportSection::new();
     exports
-        .export(LOAD, ExportKind::Func, 0)
-        .export(STORE, ExportKind::Func, 1)
-        .export(GROW, ExportKind::Func, 2)
-        .export(SCRATCH, ExportKind::Memory, scratch);
+        .export(COPY_OUT, ExportKind::Func, 0)
+        .export(COPY_IN, ExportKind::Func, 1)
+        .export(GROW_ITEM, ExportKind::Func, 2)
+        .export(COPIED_BYTES, ExportKind::Memory, scratch);
     let (offset, length) = (0, 1);
     let mut load = Function::new([]);
     address_zero(&mut load.instructions(), wide)
@@ -476,7 +611,7 @@ fn table_writer_module(
     function_as(&mut sink, 1, table.element_type);
     sink.table_set(helped).end();
     functions.function(set_type);
-    exports.export(SET, ExportKind::Func, 0);
+    exports.export(SET_ITEM, ExportKind::Func, 0);
     code.function(&set);
     if table.element_type.nullable {
         let mut grow = Function::new([]);
@@ -486,7 +621,7 @@ fn table_writer_module(
             .table_grow(helped)
             .end();
         functions.function(grow_type);
-        exports.export(GROW, ExportKind::Func, 1);
+        exports.export(GROW_ITEM, ExportKind::Func, 1);
         code.function(&grow);
     }
     let memories = wasm_encoder::MemorySection::new();
@@ -511,7 +646,7 @@ fn global_setter_module(
     let mut functions = FunctionSection::new();
     functions.function(first_type);
     let mut exports = ExportSection::new();
-    exports.export(SET, ExportKind::Func, 0);
+    exports.export(SET_ITEM, ExportKind::Func, 0);
     let mut set = Function::new([]);
     let mut sink = set.instructions();
     if let wasm_encoder::ValType::Ref(reference) = global.val_type {
@@ -529,34 +664,93 @@ fn global_setter_module(
 /// A module that imports a function of the type, given by its index among the module's types, and exports a table
 /// whose one element refers to it. The element carries the function's own type, which WasmEdge keeps for a reference
 /// read from a table and drops from one a call returns.
-fn retyper_module(description: &Description, function_type: u32) -> Vec<u8> {
+fn retyper_module(types: &TypeSection, function_type: u32) -> Vec<u8> {
     use wasm_encoder::{ConstExpr, ElementSection, Elements, TableSection};
     let mut imports = ImportSection::new();
     imports.import(HELPED, HELPED, EntityType::Function(function_type));
     let mut tables = TableSection::new();
-    tables.table(wasm_encoder::TableType {
-        element_type: wasm_encoder::RefType::FUNCREF,
-        table64: false,
-        minimum: 1,
-        maximum: Some(1),
-        shared: false,
-    });
+    tables.table(one_element(wasm_encoder::RefType::FUNCREF));
     let mut exports = ExportSection::new();
-    exports.export(SCRATCH, ExportKind::Table, 0);
-    let (helped, scratch) = (0, 0);
+    exports.export(RETYPED_FUNCTION, ExportKind::Table, 0);
+    let (helped, retyped) = (0, 0);
     let mut elements = ElementSection::new();
     elements.active(
-        Some(scratch),
+        Some(retyped),
         &ConstExpr::i32_const(0),
         Elements::Functions(std::borrow::Cow::Borrowed(&[helped])),
     );
     let mut module = wasm_encoder::Module::new();
     module
-        .section(&description.types)
+        .section(types)
         .section(&imports)
         .section(&tables)
         .section(&exports)
         .section(&elements);
+    module.finish()
+}
+
+/// The type of a 32-bit table of one element.
+fn one_element(element_type: wasm_encoder::RefType) -> wasm_encoder::TableType {
+    wasm_encoder::TableType {
+        element_type,
+        table64: false,
+        minimum: 1,
+        maximum: Some(1),
+        shared: false,
+    }
+}
+
+/// A module whose one table element holds a function of the type, given by its index among the types, and which
+/// exports `set_item`, which stores a function reference there and traps when the function is of another type, and
+/// `pass_on`, of that type, which calls the stored function with its parameters.
+fn passing_module(
+    mut types: TypeSection,
+    first_type: u32,
+    function_type: u32,
+    parameters: u32,
+) -> Vec<u8> {
+    use wasm_encoder::{Function, TableSection};
+    let typed = wasm_encoder::RefType {
+        nullable: true,
+        heap_type: HeapType::Concrete(function_type),
+    };
+    types.ty().function([wasm_encoder::ValType::FUNCREF], []);
+    let mut functions = FunctionSection::new();
+    functions.function(first_type).function(function_type);
+    let mut tables = TableSection::new();
+    tables.table(one_element(typed));
+    let mut exports = ExportSection::new();
+    exports
+        .export(SET_ITEM, ExportKind::Func, 0)
+        .export(PASS_ON, ExportKind::Func, 1);
+    let stored = 0;
+    let mut set = Function::new([]);
+    let mut sink = set.instructions();
+    sink.i32_const(0);
+    function_as(
+        &mut sink,
+        0,
+        wasm_encoder::RefType {
+            nullable: false,
+            ..typed
+        },
+    );
+    sink.table_set(stored).end();
+    let mut pass_on = Function::new([]);
+    let mut sink = pass_on.instructions();
+    for parameter in 0..parameters {
+        sink.local_get(parameter);
+    }
+    sink.i32_const(0).call_indirect(stored, function_type).end();
+    let mut code = CodeSection::new();
+    code.function(&set).function(&pass_on);
+    let mut module = wasm_encoder::Module::new();
+    module
+        .section(&types)
+        .section(&functions)
+        .section(&tables)
+        .section(&exports)
+        .section(&code);
     module.finish()
 }
 
@@ -568,13 +762,13 @@ fn defining_module(entity: EntityType) -> Vec<u8> {
         EntityType::Memory(memory) => {
             let mut memories = wasm_encoder::MemorySection::new();
             memories.memory(memory);
-            exports.export(MEMORY, ExportKind::Memory, 0);
+            exports.export(DEFINED_MEMORY, ExportKind::Memory, 0);
             module.section(&memories);
         }
         EntityType::Table(table) => {
             let mut tables = wasm_encoder::TableSection::new();
             tables.table(table);
-            exports.export(TABLE, ExportKind::Table, 0);
+            exports.export(DEFINED_TABLE, ExportKind::Table, 0);
             module.section(&tables);
         }
         EntityType::Function(_)
@@ -693,11 +887,19 @@ pub struct WasmEdgeEngine<HostContext: 'static> {
     /// A null reference to a function, which the bindings make only by reading an empty table.
     null_function: WasmValue,
     graveyard: Rc<Graveyard>,
+    slow_paths: SlowPaths,
 }
 
 impl<HostContext: 'static> Drop for WasmEdgeEngine<HostContext> {
     fn drop(&mut self) {
         self.graveyard.0.borrow_mut().append(&mut self.owners);
+    }
+}
+
+impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
+    /// How many times this engine value took the slow path.
+    pub fn slow_path_count(&self, path: SlowPath) -> u64 {
+        self.slow_paths.0[path as usize].get()
     }
 }
 
@@ -712,6 +914,8 @@ struct Export {
 #[derive(Clone)]
 pub struct FunctionAddress {
     reference: WasmValue,
+    /// Where the function is exported, for a reference the bindings made, which carries only `funcref`. Missing for
+    /// a reference read from a table or a global, which carries the function's own type.
     origin: Option<Export>,
     _graveyard: Rc<Graveyard>,
 }
@@ -739,6 +943,19 @@ struct Copier {
     grow: WasmValue,
 }
 
+impl MemoryAddress {
+    /// Why a write or a growth of the memory goes through its copier.
+    fn copied_writes(&self) -> SlowPath {
+        if !self.direct_reads {
+            SlowPath::SharedMemoryCopied
+        } else if !self.direct_writes {
+            SlowPath::SharedOwnerMemoryCopied
+        } else {
+            SlowPath::BeyondBindingsReach
+        }
+    }
+}
+
 impl Copier {
     fn address(&self, value: u64) -> Option<WasmValue> {
         if self.wide {
@@ -762,8 +979,6 @@ pub struct TableAddress {
 struct TableWriter {
     /// It takes 64-bit indices.
     wide: bool,
-    /// The elements are typed function references, which a function's reference is cast to.
-    typed: bool,
     set: WasmValue,
     /// Missing when the elements may not be null.
     grow: Option<WasmValue>,
@@ -775,8 +990,6 @@ pub struct GlobalAddress {
     export: Export,
     slot: Slot,
     mutable: bool,
-    /// It holds typed function references, which a function's reference is cast to.
-    typed: bool,
     setter: Option<WasmValue>,
 }
 
@@ -868,8 +1081,12 @@ pub enum InstantiateError {
         module_name: String,
         item_name: String,
     },
-    #[error("the imported function is exported by no instance, so WasmEdge cannot link it by name")]
-    FunctionNotExported,
+    #[error("the imported function, which no instance exports, is of another type than the import")]
+    FunctionTypeMismatch,
+    #[error(
+        "WasmEdge refused the helper module that passes on an imported function no instance exports"
+    )]
+    HelperRefused,
     #[error("WasmEdge refused the instantiation: {0}")]
     Engine(#[from] Error),
 }
@@ -1122,9 +1339,9 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             Some(Copier {
                 instance,
                 wide: memory_type.memory64,
-                load: self.exported_function(instance, LOAD)?,
-                store: self.exported_function(instance, STORE)?,
-                grow: self.exported_function(instance, GROW)?,
+                load: self.exported_function(instance, COPY_OUT)?,
+                store: self.exported_function(instance, COPY_IN)?,
+                grow: self.exported_function(instance, GROW_ITEM)?,
             })
         };
         Some(MemoryAddress {
@@ -1153,9 +1370,8 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             self.helper_instance(&export, table_writer_module(types, first_type, table_type))?;
         let writer = TableWriter {
             wide: table_type.table64,
-            typed: table_type.element_type != wasm_encoder::RefType::FUNCREF,
-            set: self.exported_function(instance, SET)?,
-            grow: self.exported_function(instance, GROW),
+            set: self.exported_function(instance, SET_ITEM)?,
+            grow: self.exported_function(instance, GROW_ITEM),
         };
         Some(TableAddress {
             export,
@@ -1185,7 +1401,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
                 &export,
                 global_setter_module(types, first_type, global_type),
             )?;
-            Some(self.exported_function(instance, SET)?)
+            Some(self.exported_function(instance, SET_ITEM)?)
         } else {
             None
         };
@@ -1193,32 +1409,98 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             export,
             slot,
             mutable: global_type.mutable,
-            typed,
             setter,
         })
     }
 
-    /// The reference to the function with the type its own module gives it. A reference the bindings make carries
-    /// only `funcref`, and WasmEdge casts a reference by the type it carries, so writing it into a typed slot
-    /// takes one read from a helper's table, which a helper that imports the function from where it is exported
-    /// fills.
+    /// The reference to the function that carries the function's own type, which every reference the host writes
+    /// into a table or a global must carry: WasmEdge casts a reference by the type it carries, and a reference the
+    /// bindings make carries only `funcref`. Such a reference is read from the table of a helper that imports the
+    /// function from where it is exported, with the type its module declares, or for a host function the type its
+    /// values have.
     fn typed_reference(&mut self, function: &FunctionAddress) -> WasmValue {
-        let retyped = self.origin(function).and_then(|origin| {
-            let description = self.description(origin.owner)?;
+        let Some(origin) = &function.origin else {
+            return function.reference;
+        };
+        let retyped = self.retyper_bytes(origin, function).and_then(|bytes| {
+            let instance = self.linked_helper(origin, |config| declare(&config.0, &bytes).ok())?;
+            let Owner::Instance(retyper, _) = &self.owners[instance] else {
+                return None;
+            };
+            retyper.get_table(RETYPED_FUNCTION).ok()?.get_data(0).ok()
+        });
+        if let Some(retyped) = retyped {
+            self.slow_paths.took(SlowPath::FunctionRetyped);
+            retyped
+        } else {
+            self.slow_paths.took(SlowPath::FunctionNotRetyped);
+            function.reference
+        }
+    }
+
+    /// An export that passes calls on to a function no instance exports, with the type the importing module declares
+    /// for it: WasmEdge links only by name, so a helper holds the function in its table and calls it indirectly.
+    fn pass_on(
+        &mut self,
+        function: &FunctionAddress,
+        entity: EntityType,
+        importing: &Description,
+    ) -> Result<Export, InstantiateError> {
+        let (EntityType::Function(function_type) | EntityType::FunctionExact(function_type)) =
+            entity
+        else {
+            return Err(InstantiateError::FunctionTypeMismatch);
+        };
+        let parameters = importing
+            .parameters(function_type)
+            .ok_or(InstantiateError::FunctionTypeMismatch)?;
+        let bytes = passing_module(
+            importing.types.clone(),
+            importing.type_count(),
+            function_type,
+            parameters,
+        );
+        let module = self
+            .config
+            .helper(bytes)
+            .ok_or(InstantiateError::HelperRefused)?;
+        let owner = self.link(&module, &[])?;
+        let set = self
+            .exported_function(owner, SET_ITEM)
+            .ok_or(InstantiateError::HelperRefused)?;
+        // A trap here is a function of another type than the import's.
+        Self::call_helper(self.executor.get_mut(), set, [function.reference])
+            .map_err(|_| InstantiateError::FunctionTypeMismatch)?;
+        self.slow_paths.took(SlowPath::FunctionPassedOn);
+        Ok(Export {
+            owner,
+            name: PASS_ON.into(),
+        })
+    }
+
+    /// The retyper module for the function exported there.
+    fn retyper_bytes(&self, origin: &Export, function: &FunctionAddress) -> Option<Vec<u8>> {
+        if let Some(description) = self.description(origin.owner) {
             let (EntityType::Function(type_index) | EntityType::FunctionExact(type_index)) =
                 description.export(&origin.name)?
             else {
                 return None;
             };
-            let instance = self.linked_helper(&origin, |config| {
-                declare(&config.0, &retyper_module(&description, type_index)).ok()
-            })?;
-            let Owner::Instance(retyper, _) = &self.owners[instance] else {
-                return None;
-            };
-            retyper.get_table(SCRATCH).ok()?.get_data(0).ok()
-        });
-        retyped.unwrap_or(function.reference)
+            return Some(retyper_module(&description.types, type_index));
+        }
+        let function_type = function.reference.func_ref()?.ty()?;
+        let numbers = |value_types: &[ValType]| -> Option<Vec<wasm_encoder::ValType>> {
+            value_types
+                .iter()
+                .map(|value_type| number_type(*value_type))
+                .collect()
+        };
+        let mut types = TypeSection::new();
+        types.ty().function(
+            numbers(function_type.args())?,
+            numbers(function_type.returns())?,
+        );
+        Some(retyper_module(&types, u32::MIN))
     }
 
     /// Makes an instance of the host that holds one item.
@@ -1237,12 +1519,12 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         let mut builder = ImportObjectBuilder::new(&unique_name(), data)
             .expect("WasmEdge makes a module for the host function");
         builder
-            .with_func_by_type(FUNCTION, function_type, function)
+            .with_func_by_type(HOST_FUNCTION, function_type, function)
             .expect("WasmEdge makes the host function");
         let module = builder.build();
         let reference = WasmValue::from_func_ref(
             &*module
-                .get_func(FUNCTION)
+                .get_func(HOST_FUNCTION)
                 .expect("the host function's module holds it"),
         );
         let owner = self.add_owner(Owner::Function(Box::new(module)));
@@ -1250,20 +1532,18 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             reference,
             Some(Export {
                 owner,
-                name: FUNCTION.into(),
+                name: HOST_FUNCTION.into(),
             }),
         )
     }
 
-    /// Calls a helper's function with the values and returns what it returns.
+    /// Calls a function with the values and returns what it returns.
     fn call_helper(
         executor: &mut Executor,
         function: WasmValue,
         values: impl IntoIterator<Item = WasmValue>,
     ) -> Result<Vec<WasmValue>, Error> {
-        let function = function
-            .func_ref()
-            .expect("a helper's function is not null");
+        let function = function.func_ref().expect("a function called is not null");
         executor.call_func_ref(&mut Callee(&function), values)
     }
 }
@@ -1302,6 +1582,7 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
             helped: Vec::new(),
             null_function,
             graveyard: Rc::new(Graveyard(RefCell::default())),
+            slow_paths: SlowPaths(Default::default()),
         })
     }
 
@@ -1316,34 +1597,34 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
         module: &Module,
         imports: &[Import<'_, Self>],
     ) -> Result<Instance, InstantiateError> {
-        let links = module
-            .description
-            .imports
-            .iter()
-            .map(|(module_name, item_name, _)| {
-                let given = imports
-                    .iter()
-                    .find(|given| given.module_name == module_name && given.item_name == item_name)
-                    .ok_or_else(|| InstantiateError::MissingImport {
-                        module_name: module_name.clone(),
-                        item_name: item_name.clone(),
-                    })?;
-                let export = match &given.address {
-                    ExternalAddress::Function(function) => self
-                        .origin(function)
-                        .ok_or(InstantiateError::FunctionNotExported)?,
-                    ExternalAddress::Memory(memory) => memory.export.clone(),
-                    ExternalAddress::Table(table) => table.export.clone(),
-                    ExternalAddress::Global(global) => global.export.clone(),
-                    ExternalAddress::Tag(tag) => match *tag {},
-                };
-                Ok(Link {
-                    module_name,
-                    item_name,
-                    export,
-                })
-            })
-            .collect::<Result<Vec<_>, InstantiateError>>()?;
+        let mut links = Vec::with_capacity(module.description.imports.len());
+        for (module_name, item_name, entity) in &module.description.imports {
+            let given = imports
+                .iter()
+                .find(|given| given.module_name == module_name && given.item_name == item_name)
+                .ok_or_else(|| InstantiateError::MissingImport {
+                    module_name: module_name.clone(),
+                    item_name: item_name.clone(),
+                })?;
+            let export = match &given.address {
+                ExternalAddress::Function(function) => match self.origin(function) {
+                    Some(export) => export,
+                    None => self.pass_on(function, *entity, &module.description)?,
+                },
+                ExternalAddress::Memory(memory) => memory.export.clone(),
+                ExternalAddress::Table(table) => table.export.clone(),
+                ExternalAddress::Global(global) => global.export.clone(),
+                ExternalAddress::Tag(tag) => match *tag {},
+            };
+            links.push(Link {
+                module_name,
+                item_name,
+                export,
+            });
+        }
+        if !links.is_empty() {
+            self.slow_paths.took(SlowPath::ImportsForwarded);
+        }
         self.link(module, &links).map(Instance)
     }
 
@@ -1559,16 +1840,13 @@ macro_rules! bind_function_type {
                 engine: &mut WasmEdgeEngine<HostContext>,
                 parameters: ($($parameter,)*),
             ) -> Result<result_type!($shape $($result)*), InvokeError<Error>> {
-                let callee = self
-                    .address
-                    .reference
-                    .func_ref()
-                    .expect("a bound function is not null");
+                let function = self.address.reference;
                 let ($($argument,)*) = parameters;
                 let returned = engine
                     .lend(|executor| {
-                        executor.call_func_ref(
-                            &mut Callee(&callee),
+                        WasmEdgeEngine::<HostContext>::call_helper(
+                            executor,
+                            function,
                             values([$($argument.to_wasm_value()),*]),
                         )
                     })
@@ -1642,7 +1920,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
         let owner = self.define(EntityType::Memory(declared))?;
         let export = Export {
             owner,
-            name: MEMORY.into(),
+            name: DEFINED_MEMORY.into(),
         };
         self.memory_address(export, declared)
             .ok_or(AllocateError::HelperRefused)
@@ -1666,6 +1944,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
             .map_err(|_| GrowMemoryError);
         }
         let copier = memory.copier.as_ref().ok_or(GrowMemoryError)?;
+        self.slow_paths.took(memory.copied_writes());
         let pages = copier.address(pages).ok_or(GrowMemoryError)?;
         let grown = Self::call_helper(self.executor.get_mut(), copier.grow, [pages])
             .map_err(|_| GrowMemoryError)?;
@@ -1695,6 +1974,11 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
             .unwrap_or(Err(ReadMemoryError));
         }
         let copier = memory.copier.as_ref().ok_or(ReadMemoryError)?;
+        self.slow_paths.took(if memory.direct_reads {
+            SlowPath::BeyondBindingsReach
+        } else {
+            SlowPath::SharedMemoryCopied
+        });
         let size = self.pages(export).ok_or(ReadMemoryError)? * PAGE_SIZE;
         if !inside(size, offset, into.len()) {
             return Err(ReadMemoryError);
@@ -1714,7 +1998,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
                 return Err(ReadMemoryError);
             };
             let scratch_memory = helper
-                .get_memory_ref(SCRATCH)
+                .get_memory_ref(COPIED_BYTES)
                 .map_err(|_| ReadMemoryError)?;
             read_unshared(&scratch_memory, u64::MIN, chunk)?;
             position += length;
@@ -1738,6 +2022,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
             .unwrap_or(Err(WriteMemoryError));
         }
         let copier = memory.copier.as_ref().ok_or(WriteMemoryError)?;
+        self.slow_paths.took(memory.copied_writes());
         let size = self.pages(export).ok_or(WriteMemoryError)? * PAGE_SIZE;
         if !inside(size, offset, bytes.len()) {
             return Err(WriteMemoryError);
@@ -1755,7 +2040,7 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
             };
             write_unshared(
                 &mut *helper
-                    .get_memory_mut(SCRATCH)
+                    .get_memory_mut(COPIED_BYTES)
                     .map_err(|_| WriteMemoryError)?,
                 u64::MIN,
                 chunk,
@@ -1816,7 +2101,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         let Owner::Instance(helper, _) = &self.owners[copier.instance] else {
             return None;
         };
-        let scratch = helper.get_memory_ref(SCRATCH).ok()?;
+        let scratch = helper.get_memory_ref(COPIED_BYTES).ok()?;
         usize::try_from(memory_size(&scratch)).ok()
     }
 }
@@ -1846,7 +2131,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
         let owner = self.define(EntityType::Table(declared))?;
         let export = Export {
             owner,
-            name: TABLE.into(),
+            name: DEFINED_TABLE.into(),
         };
         self.table_address(export, declared, &Description::default())
             .ok_or(AllocateError::HelperRefused)
@@ -1865,6 +2150,7 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
     fn grow_table(&mut self, table: &TableAddress, elements: u64) -> Result<(), GrowTableError> {
         let writer = table.writer.ok_or(GrowTableError)?;
         let grow = writer.grow.ok_or(GrowTableError)?;
+        self.slow_paths.took(SlowPath::TableWrittenByModule);
         let elements = if writer.wide {
             WasmValue::from_i64(elements.cast_signed())
         } else {
@@ -1934,9 +2220,9 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
         };
         let reference = match function {
             None => self.null_function,
-            Some(function) if writer.typed => self.typed_reference(function),
-            Some(function) => function.reference,
+            Some(function) => self.typed_reference(function),
         };
+        self.slow_paths.took(SlowPath::TableWrittenByModule);
         Self::call_helper(
             self.executor.get_mut(),
             writer.set,
@@ -1954,16 +2240,16 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
 }
 
 impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
-    fn to_wasm_value(&self, value: Value<FunctionAddress>) -> WasmValue {
+    /// The value as WasmEdge holds it, a function reference carrying the function's own type.
+    fn wasm_value(&mut self, value: Value<FunctionAddress>) -> WasmValue {
         match value {
             Value::I32(value) => WasmValue::from_i32(value),
             Value::I64(value) => WasmValue::from_i64(value),
             Value::F32(value) => WasmValue::from_f32(value),
             Value::F64(value) => WasmValue::from_f64(value),
             Value::V128(value) => WasmValue::from_v128(value.cast_signed()),
-            Value::FunctionReference(function) => {
-                function.map_or(self.null_function, |function| function.reference)
-            }
+            Value::FunctionReference(None) => self.null_function,
+            Value::FunctionReference(Some(function)) => self.typed_reference(&function),
         }
     }
 }
@@ -1996,17 +2282,16 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
             wasmedge_sdk::Mutability::Const
         };
         let global_type = wasmedge_sdk::GlobalType::new(value_type(&value), mutability);
-        let global = wasmedge_sys::Global::create(&global_type, self.to_wasm_value(value))?;
-        let module = Self::host_module(|module| module.add_global(GLOBAL, global))?;
+        let global = wasmedge_sys::Global::create(&global_type, self.wasm_value(value))?;
+        let module = Self::host_module(|module| module.add_global(DEFINED_GLOBAL, global))?;
         let owner = self.add_owner(Owner::Global(module));
         Ok(GlobalAddress {
             export: Export {
                 owner,
-                name: GLOBAL.into(),
+                name: DEFINED_GLOBAL.into(),
             },
             slot,
             mutable,
-            typed: false,
             setter: None,
         })
     }
@@ -2046,13 +2331,9 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
         if !global.slot.takes(&value) {
             return Err(WriteGlobalError::ValueTypeMismatch);
         }
-        let value = match value {
-            Value::FunctionReference(Some(function)) if global.typed => {
-                self.typed_reference(&function)
-            }
-            value => self.to_wasm_value(value),
-        };
+        let value = self.wasm_value(value);
         if let Some(setter) = global.setter {
+            self.slow_paths.took(SlowPath::GlobalSetByModule);
             // A trap here is a function of another type than the global's.
             return Self::call_helper(self.executor.get_mut(), setter, [value])
                 .map(drop)
