@@ -1,6 +1,6 @@
 # Native without a virtual machine: the plan for both forms
 
-Status: plan (W0), 2026-11-23, run 2 (every finding of the first check answered). Brief: the owner's ruling of
+Status: plan (W0), 2026-11-23, run 3 (every finding of the first and second checks answered). Brief: the owner's ruling of
 2026-11-23 and brief-native.md (including its section on register groups). It builds on docs/native.md (the
 virtual-machine form, "the VM form" below) and reuses its native output, count, position map and replay check; where
 this plan says "as native.md", that section holds. The x86-64 native output's own plan, docs/x86-native-output.md
@@ -31,11 +31,11 @@ named differences of section 9.
   (W0 probe, bare metal); 1.7 to 5.1 µs on the cloud rows (costs-round-3-and-cloud-partial.json).
 - **I** pays a range check on every guest access and a guard on every move of the stack pointer (3.2), and makes a
   kernel entry a plain call (Graviton4, cloud arm row: 2.1 ns bare, 12.0 ns switching the general registers, 16.0
-  to 16.4 ns with q0 to q31; SVE adds about 7 ns, 22 against 15 ns per save and restore in the feature-switch
-  research). Its check alone, with the stack exempt (X32-e / X32-nosp), measured +19.4% wall on
-  Graviton4, +11.0 to +15.2% on Granite Rapids and +10.0 to +25.4% on Zen 4, the ranges being code layouts (same
-  file); in one run on bare-metal Graviton4 the sound form with the stack pointer's guard measured +21.4% and the
-  exempt form +21.8% (section 11).
+  to 16.4 ns with q0 to q31). Each guest process gets a 4 GiB window, and the access after the check is cut to that
+  window by its own addressing mode, so no speculation past the check reaches outside it (3.2). This exact sequence,
+  with the stack exempt (X32-e / X32-nosp), measured +19.4% wall on Graviton4, +11.0 to +15.2% on Granite Rapids
+  and +10.0 to +25.4% on Zen 4, the ranges being code layouts (costs-cloud.json); in one run on bare-metal
+  Graviton4 the sound form with the stack pointer's guard measured +21.4% and the exempt form +21.8% (section 11).
 
 Shared by both, built once (section 3): the address layout, the floor's entry and exit, position resolution, the
 slot table, the code area, copy-on-write and written marks, the stop protocol, the register-group rules and the
@@ -80,42 +80,54 @@ sit just under 2^47 and a PIE binary near 2^46.4.
 
 One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived from the fact it describes:
 - **The guest area** [`LOWEST_ADDRESS`, 2^44). P: the guest's own addresses, unchanged (guest address = host
-  address). I: the container's guest processes, each in its own **slot** of 2^r bytes, rebased (host address =
-  slot base + guest address); slot k starts at 2^32 + k·2^r, so that nothing a non-PIE embedder or the host's low
-  mappings hold is inside. In every slot two bands are never mapped: the guest's own [0, `LOWEST_ADDRESS`) (64 KiB)
-  and a top guard [2^r - `GUARD`, 2^r) with `GUARD` = 64 KiB. Between the mapped parts of two neighbouring slots
-  there are therefore always 128 KiB that no one maps; 3.2 relies on it.
-  I's reservation reaches 64 KiB below the first slot and stays unmapped for 64 KiB above the last, so the edge
-  slots have the same bands.
-- **I's slot count**: (2^44 - 2^32 - 64 KiB) / 2^r whole slots: 255 for r = 36 (64 GiB per process), 511 for 35,
-  1023 for 34, 4094 for 32. r is chosen per container at start: the largest r, at most 36, that gives at least the
-  container's process limit (its pids limit) in slots; with no limit given, 36. A container that needs more live
-  processes than slots gets ENOMEM at fork from `memory_new`/`memory_duplicate` (`CpuError::OutOfMemory`, counted
-  "in-process slots exhausted", warned); the evaluator (section 7) sends such containers to P.
+  address). I: guest processes, each in its own **slot** of 2^33 bytes, rebased (host address = slot base + guest
+  address): slot k (k from 1 to 2047) starts at k·2^33. Its lower half, the **window** [0, 2^32), holds the guest
+  process; its upper half [2^32, 2^33) is never mapped. In the window the guest's own [0, `LOWEST_ADDRESS`)
+  (64 KiB) and its top [2^32 - `GUARD`, 2^32) with `GUARD` = 64 KiB are never mapped either (the process's ceiling
+  stops below it). So below and above every window lie 4 GiB that no one maps (below slot 1, the
+  reservation's own [2^32, 2^33)); 3.2 relies on it. Nothing a non-PIE embedder or the host's low mappings hold is
+  inside, since the reservation starts at 2^32.
+- **I's slot count**: 2047 per embedder process, shared by every I container it runs (one layout per process,
+  below). A fork that finds no free slot gets ENOMEM from `memory_new`/`memory_duplicate`
+  (`CpuError::OutOfMemory`, counted "in-process slots exhausted", warned); the evaluator (section 7) sends
+  workloads with many live processes to P. The pids limit plays no part: it counts threads as well.
+- **One layout per embedder process.** I's reservation, slot pool, slot table and signal handlers (which Linux
+  keeps per process anyway) are made once, by the **in-process host** the embedder makes at start (section 8.5);
+  every I executor, one per container, is made from it and takes its slots from the shared pool. Two I
+  containers in one process therefore never collide: they hold different slots of one layout. P needs no fixed
+  range in the embedder's process (its views are windows the host places, 4.2), so P and I containers mix in one
+  process; P's zygote removes I's reservation in its child like everything else of the embedder (4.1). A second
+  in-process host in the same process is refused ("in-process host exists"), as is a first one whose reservation
+  the host refuses.
 - **The slot table** (ARM64; the VM form's entry mirror): a 16-byte slot for every host address H of the guest
   area at `SLOTS | (H << 2)`, `SLOTS` = 2^46, so the table spans [2^46, 2^47). It is one memfd per guest memory
-  (P) or per container (I), written by the embedder through its own mapping, and mapped read-execute in the guest's
+  (P) or one per embedder process (I: the slots of different containers are different host addresses), written by
+  the embedder (P: through its windows, 4.2; I: through its own mapping), and mapped read-execute in the guest's
   view **page by page as pieces are loaded** (P: by a command the stub applies, which its filter allows in exactly
   this range, 3.7; I: by the executor itself). A jump to a slot in a page not mapped is a host SIGSEGV at a table
   address, which the floor treats exactly as a slot holding `udf` (no piece for that guest address). So a guest
   that jumps to many addresses costs no memory (a shared file mapping would allocate a page on every read fault of
   a hole). The jump through a register is the VM form's six instructions (native.md section 3.2) with the mask's
   `eor` replaced: P computes the slot from G itself (`ubfiz`, `bfxil`, `orr` of the single bit 2^46, a logical
-  immediate); I first adds the slot base (`add t, base, xN`), the one more instruction it pays per jump. The reach
-  test is against the process's ceiling (P: 2^44; I: 2^r).
-- **Our area** [2^44, 2^46): I: the kernel's read-write view of slot k at 2^44 + k·2^r (so a guest address is one
-  add away; 255 · 2^36 fits under 2^45), then code areas, floor, register blocks, signal stacks in [2^45, 2^46).
-  P, in the stub: code area, channel and register pages, signal stacks, the stub's code and stack. P's embedder
-  process maps its views of the stubs' memfds wherever the host places them (it runs no guest code).
+  immediate); I first adds the slot base to G cut to the window (`add t, base, wN, uxtw`), the one more
+  instruction it pays per jump, so that even a misspeculated jump reads only its own process's slots. The reach
+  test is against the process's ceiling (P: 2^44; I: 2^32).
+- **Our area** [2^44, 2^46): I: the kernel's read-write view of slot k's window at 2^44 + k·2^32 (so a guest
+  address is one add away; 2048 · 2^32 = 2^43), then code areas, floor, register blocks, signal stacks in [2^45,
+  2^46). P, in the stub: code area, channel and register pages, signal stacks, the stub's code and stack. P's
+  embedder process maps its views of the stubs' memfds as windows wherever the host places them (4.2; it runs no
+  guest code).
 - Each form reserves its areas at start (`mmap` PROT_NONE, MAP_NORESERVE, MAP_FIXED_NOREPLACE): the host never
   places anything inside a reservation, so our code and the guest cannot collide; an embedder mapping made later
   goes elsewhere, and `brk` stops below a reservation (malloc then maps). If a reservation is refused, the form is
   unavailable on that host (the evaluator's probe, section 7).
 - **The ceiling**: `Cpu::address_space()` is [LOWEST_ADDRESS, 2^44) in P (the VM form has 2^45: the slot table at
   2^47 would need the host's stack and vDSO moved; 16 TiB is the ruled "lower ceiling", brief 2026-11-18) and
-  [LOWEST_ADDRESS, 2^r - GUARD) in I. The kernel places mappings low first and never depends on the ceiling (K2),
+  [LOWEST_ADDRESS, 2^32 - GUARD) in I. The kernel places mappings low first and never depends on the ceiling (K2),
   so the guest sees the same addresses under every executor; a process that reaches its ceiling is the existing
-  `on_process_outgrown` case.
+  `on_process_outgrown` case. I's 4 GiB per process is the price of an access cut to its window for free; a larger
+  window needs one more instruction per access (an `and` with the window's mask), not measured, the owner's choice
+  (section 12).
 
 ### 3.2 The four places the native output changes
 
@@ -123,40 +135,63 @@ The native output stays one emitter (native.md section 3); a form is a value the
 part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `InProcess`). It changes exactly:
 1. **`access`** (crates/wcontainers-arm64/src/carry.rs, the single place a guest access is emitted) and the
    instructions that read or write sp. `Vm` and `HostProcess` emit them as today. `InProcess`:
-   - An access through any register but sp: `ubfx u, a, #r, #(56 - r); cbnz u, fault; <access> [base, a]`, where
-     `a` is the access's first byte in t (or the base register itself when the access has no offset), `u` a second
-     withheld scratch, `base` a withheld register holding the slot base. The check ignores the top byte as Linux's
-     Top Byte Ignore does, touches no flags, and the host's own Top Byte Ignore drops the tag from `base + a`. Pairs
-     and multi-register forms check their last byte too (the access's span, as the Aligned route computes it).
-     `fault` is out of line and reports the guest address and access with exact registers (the check precedes the
-     access, so nothing has changed).
+   - An access through any register but sp: `ubfx u, a, #32, #24; cbnz u, fault; <access> [base, wA, uxtw]`, or
+     with an immediate offset or a pair `add t, base, wA, uxtw; <access> [t, #imm]`, where `a` is the access's
+     first byte in t (or the base register itself when the access has no offset), `u` a second withheld scratch,
+     `base` a withheld register holding the slot base. The check ignores the top byte as Linux's Top Byte Ignore
+     does and touches no flags. Pairs and multi-register forms check their last byte too (the access's span, as the
+     Aligned route computes it), and an immediate reaches at most 64 KiB past the window, into the unmapped 4 GiB
+     above it. `fault` is out of line and reports the guest address and access with exact registers (the check
+     precedes the access, so nothing has changed). This is the measured X32 sequence (section 11; the harness
+     tests `lsr #33` only because its region is [4 GiB, 8 GiB)).
+   - **Speculation.** A mispredicted `cbnz` lets the access run speculatively with a bad address (a bounds-check
+     bypass, Spectre variant 1). Here the access's address is `base + (a mod 2^32)` by its addressing mode (`uxtw`),
+     so even then it reads or writes only this process's own window, which the guest can read anyway; no
+     speculation of a guest access reaches another slot, our area, the kernel or the embedder. The cut is data, not
+     a prediction, so it needs no barrier (Cranelift masks its bounds-checked heap accesses for the same reason). The
+     wrapping form (5.2) is safe by the same construction.
    - **The stack pointer.** sp holds the host address (slot base plus the guest's sp), since an ARM64 access
      through sp cannot be rebased. The rules keep one invariant: at every guest instruction boundary the guest's sp
-     is inside its slot, [0, 2^r).
+     is inside its window, [0, 2^32).
      (a) An access through sp with an immediate offset is emitted unchanged. Its reach is at most 1 KiB down and
-     64 KiB up, size included (`ldr q, [sp, #65520]` is the largest; an SVE `[sp, #imm, mul vl]` form is exempt only
-     where its reach at the host's vector length fits, else checked). From an sp inside the slot it lands in the
-     slot or in the 128 KiB band no one maps, so it faults there exactly where Linux faults.
-     (b) A pre- or post-indexed access through sp (a move of at most 1 KiB) is emitted unchanged: a pre-indexed one
-     succeeds only if its new sp is on a mapped page of its own slot, a post-indexed one moves from a mapped page by
-     at most 1 KiB, which stays inside [0, 2^r) because both unmapped bands are 64 KiB; a fault leaves sp unchanged.
+     64 KiB up, size included (`ldr q, [sp, #65520]` is the largest). From an sp inside the window it lands in the
+     window or in the unmapped 4 GiB beside it, so it faults there exactly where Linux faults.
+     (b) A pre- or post-indexed access through sp by an immediate (a move of at most 1 KiB) is emitted unchanged: a
+     pre-indexed one succeeds only if its new sp is on a mapped page of its own window, a post-indexed one moves
+     from a mapped page by at most 1 KiB, which stays inside [0, 2^32) because the window's own unmapped bands at
+     both ends are 64 KiB; a fault leaves sp unchanged.
      (c) `add`/`sub sp, sp, #imm` with imm at most 60 KiB is followed by a probe, one load whose value is unused:
      `ldr wzr, [sp]` after a `sub` (the new frame's lowest word) and `ldur wzr, [sp, #-4]` after an `add` (the last
      word of the frame just freed, mapped even when sp is now the very top of a stack mapping, where a probe at sp
      faulted at the outermost return in the measurement's first build). A probe that succeeds proves the new sp is
-     on, or 4 bytes above, a mapped page of its own slot, so inside [0, 2^r). A probe that faults (an unmapped or
+     on, or 4 bytes above, a mapped page of its own window, so inside [0, 2^32). A probe that faults (an unmapped or
      protected page, a watch, sp not 16-aligned) is never the guest's fault: the floor takes
-     the new sp less the base; inside [0, 2^r) it resumes at the next guest instruction (the probe ends the `add`'s
+     the new sp less the base; inside [0, 2^32) it resumes at the next guest instruction (the probe ends the `add`'s
      or `sub`'s code, so that is a boundary), otherwise the thread goes displaced (e).
-     (d) Every other write of sp (`mov sp, xN`, `add sp, xN, ...`, a larger immediate) computes the new guest value
-     into u, checks it as an access address is checked, and then writes `add sp, base, u`; a value outside the slot
-     makes the thread displaced (e).
-     (e) **Displaced**: the guest's sp is outside its slot, which Linux allows until an access through it. The floor
-     keeps the guest's sp in the thread's register block and runs the thread one guest instruction at a time, each
-     translated alone with sp read from and written to the block and every access through it checked like any other
-     register (so it faults at the guest address Linux faults at). When an instruction brings sp back inside the slot,
-     the thread re-enters ordinary translated code. A slow path: counted "stack pointer outside its slot", warned;
-     no compiler's code does this.
+     (d) Every other write of sp (`mov sp, xN`, `add sp, xN, ...`, a larger immediate, a writeback by a register)
+     computes the new guest value into u, checks it as an access address is checked, and then writes `add sp, base,
+     wU, uxtw` (cut to the window, as an access is); a value outside the window makes the thread displaced (e).
+     (e) **Displaced**: the guest's sp is outside its window, which Linux allows until an access through it. The
+     floor keeps the guest's sp in the thread's register block and runs the thread one guest instruction at a time,
+     each translated alone with sp read from and written to the block and every access through it checked like any
+     other register (so it faults at the guest address Linux faults at). When an instruction brings sp back inside
+     the window, the thread re-enters ordinary translated code. A slow path: counted "stack pointer outside its
+     window", warned; no compiler's code does this.
+     (f) Every other access through sp is emitted as an access through any other register, with `a` computed as
+     `sub t, sp, base` and then the access's own offset added as written (`add t, t, x1` for `ldr x0, [sp, x1]`,
+     `add t, t, w0, sxtw` for `strb w1, [sp, w0, sxtw]`), then checked and cut as above. A structure access
+     post-indexed by a register (`ld1 {v0.16b}, [sp], x2`) is the access at `[sp]` by (a) followed by the write
+     `add sp, sp, x2` by (d). With (a) to (f), every A64 and Advanced SIMD addressing form with sp as base is
+     covered: immediate (signed, unsigned, unscaled), pre- and post-index by an immediate, register offset with its
+     extend or shift, post-index by a register, and the no-offset forms of exclusives and atomics (a). SVE and SME
+     are not offered to the guest (the translator decodes neither, so a guest finds them absent as on a CPU without
+     them), so none of their forms reaches the emitter; if they are offered later, each of their sp forms whose reach
+     is not fixed and small is emitted by (f).
+     Speculation of sp: (d) cuts sp to the window; (a) to (c) leave the address unmasked, but a misspeculated run
+     past a probe's fault (taken only when the probe retires) can move sp by at most 60 KiB per `add` or `sub` it
+     executes, and a speculation window holds at most a reorder buffer's worth of instructions (a few hundred on
+     these cores, published figures), so a speculative sp stays within a few tens of MiB of the window: inside the
+     4 GiB that no one maps on either side.
      A read of sp as a value (`mov x29, sp`, `add x0, sp, #n`) is re-emitted with the base subtracted (`sub x29, sp,
      base`: the same length). The position map gives the guest sp as the host sp less the base. Every handler runs
      on its own signal stack (`SA_ONSTACK`).
@@ -177,15 +212,15 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
 
 - An inside call enters the floor's entry for its code with the guest's registers in the hardware. The entry
   first stores every general register, sp, pc (from the call site through the position map) and the condition
-  flags into the thread's register block, and then the FP/SIMD registers (and on an SVE host the Z, P and FFR
-  registers at the host's vector length): the whole file, at every exit, in both forms. It costs about 4 ns more
-  than the general registers alone (16 against 12 ns for a save and load, and about 7 ns more with SVE; section 1)
+  flags into the thread's register block, and then the FP/SIMD registers with FPCR and FPSR: the whole file the
+  guest has (no SVE or SME, 3.2), at every exit, in both forms. It costs about 4 ns more than the general registers
+  alone (16 against 12 ns for a save and load; section 1)
   and it means `Cpu::registers` never needs the thread: in P the kernel's side reads the block in the channel page;
   in I the kernel's own Rust code, which uses vector registers, may run at once. It forms the `Exit` exactly as the
   VM form's inside does.
 - A host signal in translated code (SIGSEGV, SIGBUS, SIGILL, SIGTRAP from a guest `brk`, and the stop signal)
-  gives the floor the host pc and every register in the signal frame (general, `fpsimd_context`, `sve_context`,
-  `esr_context` for the access kind on ARM64). The handler copies the frame once; the host pc it holds is only
+  gives the floor the host pc and every register in the signal frame (general, `fpsimd_context`, `esr_context`
+  for the access kind on ARM64). The handler copies the frame once; the host pc it holds is only
   looked up in the position map (a value the map does not know ends the thread as corrupted, counted). The guest
   state at a guest instruction boundary comes from the position map with the VM form's resolution
   (`hardware-virtualization-inside`'s `stop::resolve` and `stop::guest_state`). Those functions take the slot
@@ -210,10 +245,16 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   architecture's cache maintenance on its own mapping (ARM64 `dc cvau`/`ic ivau`, which act on the physical
   line); the guest thread runs the new code only after leaving the host kernel (a futex wait or a signal), which
   is context synchronizing on ARM64. x86-64: 3.10.
-- Where `memfd_create` is refused: guest data in an unlinked `O_TMPFILE` file in /dev/shm (data is never mapped
-  executable, so its usual `noexec` does not matter), and the code area and slot table in an `O_TMPFILE` file in the
-  first directory of: one the embedder names, `$TMPDIR`, /tmp, whose mapping read-execute succeeds at the start-up
-  probe. If none does (a read-only root with a `noexec` /tmp), the form is unavailable. Measured in Docker 29.9.3
+- Where `memfd_create` is refused: guest data in unlinked `O_TMPFILE` files in whichever of one the embedder
+  names, `$TMPDIR`, /dev/shm and /tmp has the most free space at start (`fstatfs`; data is never mapped executable,
+  so `noexec` does not matter), and the code area and slot table in `O_TMPFILE` files in the first of the
+  embedder's, `$TMPDIR` and /tmp whose mapping read-execute succeeds at the start-up probe. If none does (a
+  read-only root with a `noexec` /tmp), the form is unavailable. Such a file can fill up (Docker's /dev/shm is a
+  64 MiB tmpfs: a write past it is a SIGBUS, measured by the second check), so in this fallback the kernel's side
+  allocates a page range with `fallocate` (mode 0) before its first write there (no space: `CpuError::OutOfMemory`),
+  and a guest write that takes a SIGBUS on such a file ends the guest process as killed by SIGKILL, as the host's
+  out-of-memory killer would (counted "guest memory file full", warned; the fallback itself is counted "guest
+  memory in a file"). Measured in Docker 29.9.3
   (section 11): /dev/shm refuses read-execute, /tmp on the container's root allows it, and with `--read-only
   --tmpfs /tmp` neither does; memfd is allowed by Docker's default profile.
 - A read-execute mapping without read is execute-only on both machines (W0 probe: a load from it faults; on the
@@ -238,8 +279,8 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
 - A page's permission in the guest's view is one function of its marks: the guest's permission, less write while
   it is lent to a fork child or holds translated code or has no written mark yet (when marks are being taken), less
   everything while it is borrowed (below) or watched for all accesses. Every change of a mark recomputes it.
-- The kernel's view: I maps each memfd once, read-write, in our area (3.1); P maps, in the embedder's process, each
-  guest mapping's range of its memfd when the kernel first touches it, found through a range map per memory.
+- The kernel's view: I maps each memfd once, read-write, in our area (3.1); P maps, in the embedder's process,
+  2 MiB windows of its memfds when the kernel first touches them, a bounded cache (4.2).
   `Cpu::read`, `write` and `zero` (a hole punched with `fallocate`) go through it in both forms and are seen at once
   by every view.
 - **Fork** (`memory_duplicate`): one copy-on-write mechanism, the same in both forms. Every private page of every
@@ -254,7 +295,10 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
     in the child) or faults after it. The child cannot run, and the kernel cannot read or write it, before the call
     returns.
   - A borrowed page is inaccessible in the borrower's view. The borrower's touch (a fault, or a `Cpu` read or
-    write of it) copies the owner's page into the borrower's memfd, which then owns it.
+    write of it) copies the owner's page into the borrower's memfd, which then owns it. Reads included: a fork
+    child pays for every unit it touches, not only those it writes. In P that is a round trip (c, 4.3) plus the
+    copy and one mapping command (1.15 µs measured for an `mmap` of a page, 3.5's figures), so about 3.5 µs per
+    unit expected; in I the in-process fault (1.31 µs) plus the copy. Section 7 counts it.
   - Before an owner's page that is lent changes (the guest's first write faults; a `Cpu::write` or `zero`; an
     unmapping; the owner's end or exec), the page is copied into one borrower, which becomes the owner, and every
     other borrower now borrows from it: one copy per event, whatever the number of borrowers. Then the old owner's
@@ -298,7 +342,8 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
     guest's registers are all still in the block, so the handler leaves as `Exit::Stop` with them;
   - the wait (P: the futex wait for the answer): it restarts the wait, which reads the answer word again;
   - the handler's own tail, after its unblock: it takes the same exit the interrupted handler had already written.
-  So no signal mask is changed on any kernel entry path (a mask change is a host system call, 120 ns).
+  So no signal mask is changed on any kernel entry path (a mask change is a host system call: 125 ns on
+  Graviton4 and 87 to 89 ns on the Xeon, W0 probe run 3).
 - A slice (`Next::Run { slice_nanoseconds }`): P: the runner's futex wait carries the slice as its time-out and
   sends the stop on expiry (nothing is paid when the thread comes back first). I: a per-runner POSIX timer
   (`timer_create` with SIGEV_THREAD_ID) re-armed only when a new deadline is earlier than the armed one. P: a thread
@@ -312,9 +357,14 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
 
 - Control flow: the guest reaches host code only through pieces we translated and their slots; a slot without a
   piece holds `udf` or is unmapped. Nothing read from memory the guest can write is ever used as a host code address.
-- I: every guest access is checked against its slot or kept inside it by 3.2's stack rules, so no guest load or
-  store reaches our area, the kernel, the embedder, other guest processes or the frames of a signal. This is the
-  WebAssembly output's guarantee made natively.
+- I: every guest access is checked against its window or kept inside it by 3.2's stack rules, so no guest load or
+  store reaches our area, the kernel, the embedder, other guest processes (of its container or another) or the
+  frames of a signal, and every access is also cut to its window or bounded by the unmapped 4 GiB beside it, so no
+  speculative one does either (3.2). This is the WebAssembly output's guarantee made natively. What I does not
+  give: isolation from the other speculation attacks that cross any in-process boundary (branch target injection
+  into our code, and timing channels through shared caches between guests on one core); the host kernel's
+  mitigations for those apply between processes, so a workload that needs that line between its guests is P's
+  (an evaluator input, section 7; named in section 9).
 - I, signals that are not ours: guest code runs on the embedder's threads with the guest's sp and `TPIDR_EL0`.
   So for the length of each `Runner::run`, the runner thread blocks every asynchronous signal but the stop signal
   with the raw `rt_sigprocmask` (glibc's own SIGCANCEL and SIGSETXID included: an embedder's `set*id` or
@@ -359,9 +409,12 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   whose header marks those groups as initial (writing zeros does not clear their in-use bit; feature-switch
   research, REPORT.md).
 - I: we switch guest threads on a runner, so the floor saves eagerly at every guest thread switch, the incoming
-  thread's values or zeros loaded before its first instruction: ARM64 general, FP/SIMD and SVE in the host's vector
-  length (4 / 15 / 22 ns measured, feature-switch research), SME streaming mode and ZA left off and so discarded;
-  x86-64 `XSAVEC` and `XRSTOR` over the offered groups (52 to 78 ns), which skip and reset unused groups themselves.
+  thread's values or zeros loaded before its first instruction: ARM64 general and FP/SIMD (4 / 15 ns measured,
+  feature-switch research). The guest is offered neither SVE nor SME (3.2), so no guest instruction puts state in
+  Z's upper bits, P, FFR, ZA or streaming mode (a write of a V register clears Z's upper bits), and the floor saves
+  none of them; if they are offered later, the floor saves Z, P and FFR, and ZA and streaming mode where SVCR shows
+  them in use. x86-64: `XSAVEC` and `XRSTOR` over the offered groups (52 to 78 ns), which skip and reset unused
+  groups themselves.
   No learning of whether a thread used a group. The floor also swaps the thread register the host's runtime uses for
   its own thread-local storage (ARM64 `TPIDR_EL0`, x86-64 FS base) at every entry and exit, since the guest's value
   is its own (ARM64 `msr`/`mrs`; x86-64 `wrfsbase` where the host enables FSGSBASE, else `arch_prctl`, a counted
@@ -394,8 +447,9 @@ layout, and this plan takes it as it stands:
 - no slot table: calls, returns and jumps through a register go through its two-level mirror (its 3.3), whose first
   level is per thread area (per guest thread in P, per runner in I);
 - the thread area's segment: GS in P, FS in I, with the guest's memory window at the GS base in I (its 2 and 4);
-- I's slots are 2^36 bytes from 2^32 as here, each holding a 2^32 window (I's ceiling 2^32 in the first build) with
-  its guards; P's ceiling is 2^44 (its 6); our area lies between 2^44 and the host's own mappings near 2^47, placed
+- I's slots are 2^36 bytes from 2^32, each holding a 2^32 window (I's ceiling 2^32 in the first build) with its
+  guards, larger than ARM64's because an x86 displacement reaches 2 GiB, so 255 slots per embedder process, shared
+  as in 3.1; P's ceiling is 2^44 (its 6); our area lies between 2^44 and the host's own mappings near 2^47, placed
   by `MAP_FIXED_NOREPLACE` around a PIE embedder's binary, and above 2^47 by hint on a five-level host;
 - code another core wrote is made safe by `membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE)` in the process
   that runs it (in P a stub thread makes the call at the embedder's request, once per batch of links); a sandbox
@@ -410,11 +464,12 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 ### 4.1 Processes and threads
 
 - A guest memory (`MemoryId`) is one stub process. A guest thread (`ThreadId`) is one host thread of it.
-- The **zygote**: at the executor's start, a thread of the executor forks it from the embedder's process. In the
+- The **zygote**: forked from the embedder's process when the host-process host is made (8.5). In the
   child only direct host calls run (no allocation, no lock: the embedder may have other threads). It maps the stub's
   code (copied by the executor before the fork into a memfd) read-execute at a fixed address in our area and a stack
   beside it, jumps there, closes every fd but its socket (`close_range`), unmaps every range outside its own (a few
-  `munmap` calls over [0, 2^44), [2^47, 2^48) and the rest of our area: no /proc needed), blocks every signal and
+  `munmap` calls over [0, 2^44), [2^46, 2^48) and the rest of our area, so an in-process host's reservation and
+  table and the window cache go too: no /proc needed), blocks every signal and
   waits for requests on its socket. So no stub holds any of the embedder's memory. The embedder's death closes the
   socket and the zygote exits.
 - `memory_new` and `memory_duplicate` ask the zygote for a child (measured, W0 probe: a request until the new child
@@ -430,13 +485,27 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 - A stub has no thread of its own for commands: every change to a memory's guest view is a command the kernel's
   side queues and the next thread of that memory to resume applies before running guest code (4.2). New shared
   blocks' memfds reach the stub over its socket (`SCM_RIGHTS`), received by the thread that applies the command.
-- One embedder process serves every stub of every container it runs. The executor learns of a stub's death through
-  a pidfd (or, where `pidfd_open` is refused, from the zygote, which reaps its children and reports over its socket)
-  and ends the process as killed by SIGKILL, counted ("stub ended outside the kernel").
+- One embedder process serves every stub of every container it runs, through one **host-process host** (one
+  zygote, one window cache, 4.2) that the embedder makes once and makes each container's P executor from (8.5).
+- A stub's death is learned one way: its socket hangs up (the embedder holds the other end). A runner waits on a
+  thread's futex with a time-out of at most 100 ms and, on each time-out, polls that stub's socket (`ppoll`, zero
+  wait); any other use of the socket sees the hang-up too. The executor then ends the process as killed by SIGKILL,
+  counted ("stub ended outside the kernel"), and tells the zygote, which reaps every ended child (`wait4` with
+  `WNOHANG`, also after every request it serves), so ended stubs never stay as zombies longer than that.
 
 ### 4.2 Memory
 
 - Layout and frames as 3.1 and 3.5: the guest's own addresses, the memfd per memory.
+- **The embedder's views are windows.** Every view the embedder's process has of a stub's memfds (guest memory, the
+  slot table, the code area; shared blocks included) is a window of 2 MiB at a 2 MiB-aligned offset of one memfd,
+  mapped shared read-write at the kernel's side's first touch into one reservation of the host-process host, and
+  found through a table keyed by (memfd, window). The windows are a cache: beyond 16,384 mapped windows (32 GiB of
+  views, against vm.max_map_count's default of 65,530 host mappings) the least recently used one is unmapped
+  (counted "view window evicted"). Eviction happens only inside an executor call, which holds `&mut self`, so no
+  slice handed out earlier is still borrowed. Measured (W0 probe run 3): mapping a window, touching one page and
+  unmapping it, 8.5 µs on Graviton4 and 4.8 to 5.2 µs on the Xeon; mapping and unmapping alone 3.2 / 2.0 µs. So neither
+  the number of stubs nor the size of their reservations is bounded by the embedder's own address space, which
+  holds only three whole 2^46-byte slot-table views (measured by the second check).
 - Mapping commands (`set_permissions`, `shared_map`, `shared_unmap`, a slot-table page, a protection for code or
   marks) change only the guest view, which no one but the memory's own threads can observe. They are queued per
   memory and applied by the resuming thread in the order made, before it runs guest code, so a system call that
@@ -457,24 +526,32 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 
 - Each guest thread has a channel page (shared memfd, mapped in its stub and in the embedder's process): a request
   word, an answer word, the exit and the register block. The runner (`Runner::run` on an embedder thread) writes the
-  `Resume` and the queued commands, wakes the thread's futex word, and waits on its own with the slice as time-out;
-  the guest thread's exit writes the `Exit` and wakes it back. No spin: on one CPU spinning only adds its bound
+  `Resume` and the queued commands, wakes the thread's futex word, and waits on its own with a time-out of the
+  slice or 100 ms, whichever is sooner (4.1); the guest thread's exit writes the `Exit` and wakes it back. Every
+  wait passes the value it compared as the futex's expected value, so a wake between the compare and the wait is
+  never lost (run 2's probe re-read the word there and hung). No spin: on one CPU spinning only adds its bound
   (measured, cloud arm and intel rows), and across CPUs it burns a core per waiting side.
-- **Placement**: a runner and the guest thread it drives share one CPU. For the length of a `Runner::run` the runner
-  pins itself to one CPU of the process's allowed set, each runner its own, and pins a guest thread to that CPU when
-  a turn brings the thread to it from another CPU (`sched_setaffinity` from the embedder, unprivileged for the
-  user's own threads; one call, only on such a move); the runner sleeps while the thread runs, so they never
-  compete, and each transition is a direct switch on that CPU. When a round trip takes more than 20 times the
-  start-up probe's figure, the runner moves both to the next CPU of the set, counted ("runner moved to another
-  CPU"). The reason is measured (W0 probe, section 11): with the scheduler placing both sides, runs of 2,000 round
-  trips took over 2 ms per round trip on average in 2 of 3 runs on Graviton4 and in 1 of 4 on the idle Xeon, while
-  every run pinned to one idle CPU or to two idle CPUs held its median.
-- Measured round trips for this exact shape (futex slot, ppid-like request), bare metal (W0 probe): Graviton4 one
-  CPU 2.29 to 2.37 µs, two CPUs 4.58 to 4.83 µs, unpinned 4.59 to 4.74 µs when it finishes; Xeon 8488C one CPU 1.89
-  to 1.96 µs, two CPUs 4.02 to 4.16 µs, unpinned 4.39 to 4.56 µs when it finishes. Cloud rows: Graviton4 c8g 2.20 /
-  5.58 µs, Granite Rapids 1.72 / 4.18 µs, Zen 4 5.07 / 8.46 µs. When the CPU a side needs is busy with another task,
-  a round trip waits for the scheduler: 1.4 ms and more (W0 probe), 1.99 to 2.00 ms (cloud rows); placement's move
-  is the answer, and P is for hosts with idle cores (an evaluator input, section 7).
+- **Placement**: a runner and the guest thread it drives share one CPU. For the length of a `Runner::run`, runner i
+  pins itself to CPU i (wrapping) of the process's allowed set (`sched_getaffinity`, so a cpuset the embedder or
+  its container gives is honoured), and pins a guest thread to that CPU when a turn brings the thread to it from
+  another runner (`sched_setaffinity` from the embedder, unprivileged for the user's own threads; one call, only on
+  such a move). The runner sleeps while the thread runs, so they never compete, and each transition is a direct
+  switch on that CPU. There is no other placement rule. The reason is measured (W0 probe run 3, section 11), with
+  the lost-wakeup fault of run 2's probe fixed:
+  - idle CPUs: one CPU 2.41 to 2.46 µs on Graviton4 and 1.98 to 1.99 µs on the Xeon, against 4.6 to 4.8 µs and 4.2
+    to 4.5 µs on two CPUs and 4.5 to 4.9 µs and 4.4 to 4.9 µs unpinned (no stalls: 1 of 504,000 unpinned round trips
+    over 1 ms on Graviton4, none on the Xeon). One CPU halves the round trip;
+  - CPUs busy with another program (a spinning process of normal priority on each CPU used): one CPU still gives
+    a median of 3.6 to 3.9 µs and a mean of 6.0 to 7.0 µs on Graviton4 (2.2 to 3.1 / 4.7 to 5.7 µs on the Xeon),
+    about one round trip in a thousand waiting one time slice (3.3 to 4.0 ms); two CPUs wait for the other program's
+    time slice on almost every round trip, about 2 ms each on both machines, and so does the scheduler's own
+    placement on four busy CPUs of Graviton4 (1.0 to 2.0 ms median; 2.3 to 2.4 µs on the Xeon, where it put both
+    on one CPU).
+  So one CPU is the placement that holds whether the host is idle or busy; P needs no idle cores.
+- Measured round trips for this exact shape (futex slot, ppid-like request), bare metal (W0 probe run 2, no timing
+  per round trip): Graviton4 one CPU 2.29 to 2.37 µs, two CPUs 4.58 to 4.83 µs; Xeon 8488C one CPU 1.89 to 1.96 µs,
+  two CPUs 4.02 to 4.16 µs; run 3's figures above include two clock reads per round trip. Cloud rows (median, one
+  CPU / two CPUs): Graviton4 c8g 2.20 / 5.58 µs, Granite Rapids 1.72 / 4.18 µs, Zen 4 5.14 / 8.46 µs.
 - Rejected: seccomp user notification on an untranslated `svc` (as fast on one CPU and 0.4 µs cheaper across CPUs,
   but it gives only the number and six arguments, so exits that need the whole register file would need a second
   path; and it is not offered by every sandbox); pipes, sockets and ptrace (all dearer, measured).
@@ -503,8 +580,8 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 The host kernel, lazily, at every switch of host threads (3.8). At every exit the floor saves the whole register
 file to the channel's block (3.3); `Cpu::registers` and `set_registers` read and write the block, never the
 thread; a thread resumed `FromRegisters` loads everything from it, and one resumed with `Return` or `Continue`
-loads what the exit stored. The host's lazy SVE handling adds about 150 ns to each wake of a thread that has used
-SVE (feature-switch research, Graviton4); W1's getppid figure is taken both with and without SVE in use.
+loads what the exit stored. A stub thread never uses SVE (the guest has none, 3.2, and the stub's routines use
+none), so the host's lazy SVE handling never adds to its wakes.
 
 ### 4.6 How the kernel's runners drive it
 
@@ -517,29 +594,30 @@ again and gives the kernel the `Exit`, and repeats. With today's kernel one thre
 
 ### 5.1 Processes and threads
 
-- Every guest memory of a container is a slot in the embedder's process (3.1); every guest thread is a register
-  block. Runners are the embedder's threads, each running whichever guest thread the kernel gives it: the kernel's
+- Every guest memory is a slot of the embedder process's one pool (3.1), whichever I container holds it; every
+  guest thread is a register block. Runners are the embedder's threads, each running whichever guest thread the
+  kernel gives it: the kernel's
   own model (a call that cannot finish parks its thread and returns), with no host thread per guest thread.
 - Fork, exec and thread creation make no host process or thread: a slot and a memfd, or a block.
 
 ### 5.2 Memory
 
-- The guest's view is its memfd mapped into its slot with the guest's permissions; host page tables enforce the
-  guest's permissions inside the slot, the check of 3.2 keeps every access inside it. A fault inside the slot is a
-  host SIGSEGV whose address less the slot base is the guest address.
+- The guest's view is its memfd mapped into its slot's window with the guest's permissions; host page tables
+  enforce the guest's permissions inside the window, the check of 3.2 keeps every access inside it. A fault inside
+  the window is a host SIGSEGV whose address less the slot base is the guest address.
 - Mapping commands are made at once in the same process (no queue). Copy-on-write, written marks and code pages are
   3.5 and 3.4, with the faults handled in process (1.31 µs measured for the handler's round trip, plus the copy).
 - Exact against wrapping checks: built exact (3.2 item 1): every access Linux faults on faults here at the same
-  address with the same registers. The wrapping form (`and t, a, #(2^r - 1)` before the access, or 32-bit
-  addressing with a 4 GiB slot) measured cheaper (+9.2% against +19.4% on Graviton4, +1.8 to +4.3% against +11.0
-  to +15.2% on Granite Rapids, both with the stack exempt) but sends an access outside the slot to the process's own
-  memory at that address modulo 2^r, where Linux faults: a behaviour difference no counter can see. It is the
-  owner's to allow (section 12).
+  address with the same registers. The wrapping form (the same access cut to the window, `[base, wA, uxtw]`,
+  without the check before it: R32) measured cheaper (+9.2% against +19.4% on Graviton4, +1.8 to +4.3% against
+  +11.0 to +15.2% on Granite Rapids, both with the stack exempt) but sends an access outside the window to the
+  process's own memory at that address modulo 2^32, where Linux faults: a behaviour difference no counter can see.
+  Both are safe against speculation by the same cut. It is the owner's to allow (section 12).
 
 ### 5.3 The system call and its return
 
 A plain call: `bl entry` (3.2 item 3) saves the whole register file (16 ns measured for a save and load with q0 to
-q31 on Graviton4, about 7 ns more with SVE; section 1), switches to the runner's host stack in our area (the guest's
+q31 on Graviton4; section 1), switches to the runner's host stack in our area (the guest's
 stack is guest memory), swaps the thread register, and returns `Exit::Syscall` to the runner's loop as a function
 return; `Resume::Return` is a return into the call site with x0 set and the file loaded. No host system call is made
 on the path.
@@ -548,7 +626,7 @@ on the path.
 
 As 4.4 with every step in one process: the forking runner protects the parent's view itself before returning (3.5);
 a racing sibling on another runner writes before that instant or faults after it. A shared mapping is one memfd
-mapped into both slots. A host signal inside the transition: 3.6. A stop signal arriving while the runner is in the
+mapped into both windows. A host signal inside the transition: 3.6. A stop signal arriving while the runner is in the
 kernel or the embedder's code returns at once (3.6) after marking the runner's current turn to end at its next
 entry into guest code, which the resume sequence reads from the runner's own block (out of the guest's reach).
 
@@ -563,15 +641,16 @@ Both (embedder's process): `memfd_create` (or 3.4's `O_TMPFILE` files through `o
 with `FALLOC_FL_PUNCH_HOLE`, `mmap` (fixed addresses, `MAP_FIXED_NOREPLACE`, `MAP_NORESERVE`, shared file mappings,
 read-execute), `munmap`, `mprotect`, `futex` (wait with time-out, wake; shared futexes on memfd mappings),
 `tgkill`, `rt_sigaction`, `rt_sigprocmask` (at each `Runner::run` start and end, and once per handled signal that
-does not return), `sigaltstack`, `clone` for threads, `sched_getaffinity`, and a 4 KiB host page; on x86-64
-`membarrier` (optional, 3.10).
+does not return), `sigaltstack`, `clone` for threads, `sched_getaffinity`, `fstatfs` (3.4's fallback only), and a
+4 KiB host page; on x86-64 `membarrier` (optional, 3.10).
 - P adds: in the embedder, `fork` (or `clone` without namespace flags) for the zygote, `socketpair`, `sendmsg`,
-  `sched_setaffinity`, `pidfd_open` (optional); in the zygote, `close_range`, `munmap`, `recvmsg`, `fork`, `wait4`
-  (where pidfds are refused), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
+  `ppoll` (a stub's socket, 4.1), `sched_setaffinity`; in the zygote, `close_range`, `munmap`, `recvmsg`,
+  `sendmsg`, `fork`, `wait4` (with `WNOHANG`), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`,
+  `PR_SET_NO_NEW_PRIVS`),
   `getppid`, `seccomp(SECCOMP_SET_MODE_FILTER)`, `dup3` (fds to their fixed numbers, before the filter). The stub's
   own filter then allows: `futex`; `mmap`, `munmap`, `mprotect` bounded as 3.7; `clone` with thread flags; `recvmsg`
-  on its socket; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`;
-  `membarrier` on x86-64. No `rt_sigreturn` (3.6).
+  on its socket; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`; on x86-64 `membarrier`, and
+  `arch_prctl` (`ARCH_SET_GS` only) where the host lacks FSGSBASE (3.10). No `rt_sigreturn` (3.6).
 - I adds: `timer_create`, `timer_settime` and `timer_delete` for slices, `rt_sigreturn`; `arch_prctl` on x86-64
   hosts without FSGSBASE. No process is ever made, so I runs where `fork` is refused.
 - Neither needs: ptrace, user namespaces, mount, chroot, capabilities, `process_vm_readv/writev`, `userfaultfd`,
@@ -599,35 +678,45 @@ What the embedder can know before choosing, all without running the workload:
 - The host, probed once at start (about 50 ms): whether KVM is usable (then the VM form; nothing here replaces it);
   the user-space width and page size; whether each form's reservations and calls of section 6 succeed and where its
   code area can live (a refusal removes the form); P's round trip on this host with P's placement (2,000 round trips
-  on one CPU of the allowed set; the mean, which the busy-CPU waits dominate, not only the median); I's check cost,
-  from a fixed translated loop run in both forms (or the per-CPU figure of section 11); the number of idle CPUs now.
-- The container's configuration: its memory and process limits (pids), which bound I's slot size and count (3.1).
+  on one CPU of the allowed set; the mean, which waits behind other programs on that CPU raise, not only the
+  median); I's check cost, from a fixed translated loop run in both forms (or the per-CPU figure of section 11).
+- The container's configuration: its memory limit, and whether its guests need the line between processes that
+  only P gives against the speculation attacks of 3.7 (the embedder's policy, not something we can measure).
 - What earlier runs of the same workload recorded, as the embedder defines "the same" (image digest and command):
-  kernel entries per second of guest CPU time, processes started per second, peak live processes, peak memory per
-  process. Our kernel does not report kernel entries yet (section 8).
+  kernel entries per second of guest CPU time, processes started per second, pages copied after forks per second,
+  peak live processes (I holds 2047 per embedder process, 3.1), peak address space per process (I holds 4 GiB).
+  Our kernel does not report kernel entries yet (section 8).
 
 The crossover. Per second of guest CPU time, P adds k·c (k kernel entries per second, c the round trip less I's
 call) and I adds f (its checks' share of the time). I beats P when k > f / c. f is the sound form's (section 11:
-X32-e plus the stack pointer's guard), and it still leaves out I's other costs: the extra instruction per jump
-through a register, the eager register switch at guest thread switches and the second check of pairs; W2 measures
-them. With P's placement (c on one CPU) and the measured f:
-- Graviton4: f = 0.214 (X32-p, section 11), c = 2.29 to 2.37 µs -> 90,000 to 94,000 entries per second; at the
-  two-CPU c of 4.58 to 4.83 µs, 44,000 to 47,000.
+X32-e plus the stack pointer's guard; its access is already the speculation-safe one, 3.2), and it still leaves out
+I's other costs: the extra instruction per jump through a register, the eager register switch at guest thread
+switches, the second check of pairs, and 3.2's rule (f) for sp-based register offsets, which the harness left
+unchecked (5 such instructions in 737,566 of python3.12, counted by the second check); W2 measures them.
+With P's placement (c on one CPU) and the measured f:
+- Graviton4: f = 0.214 (X32-p, section 11), c = 2.29 to 2.37 µs on an idle CPU -> 90,000 to 94,000 entries per
+  second; at the mean of 6.0 to 7.0 µs on a CPU shared with a busy program (run 3), 31,000 to 36,000.
 - Xeon 8488C: f is not measured on this CPU; with Granite Rapids's f with the stack exempt, 0.110 to 0.152 by
   layout, plus the stack guard's share measured on Graviton4 (none within the pairs' spread), c = 1.89 to 1.96 µs ->
-  56,000 to 80,000.
-- Zen 4 (c7a, cloud rows): f = 0.100 to 0.254 by layout with the stack exempt, c = 5.1 µs -> 20,000 to 50,000.
-- On a host whose cores are all busy, c is about 2 ms: I wins above about 100 entries per second.
-Process creation adds to P only: 80 µs (Graviton4) or 95 µs (Xeon) per new guest process, twice for a fork and an
-exec (W0 probe), against a slot and a memfd in I.
+  56,000 to 80,000; at the busy mean of 4.7 to 5.7 µs, 19,000 to 32,000.
+- Zen 4 (c7a, cloud rows): f = 0.100 to 0.254 by layout with the stack exempt, c = 5.14 µs (median) -> 19,000 to
+  49,000.
+P alone also pays, per new guest process, a process creation: 80 µs (Graviton4) or 95 µs (Xeon), twice for a fork
+and an exec (W0 probe), against a slot and a memfd in I; and per unit of pages a fork child touches before it owns
+them, a round trip plus a copy and a mapping (about 3.5 µs expected, 3.5) against I's in-process fault (1.31 µs
+plus the copy). Both go into the comparison with the recorded rates: P's extra time per second is k·c + n·(process
+creation) + m·(c + 1.15 µs), I's is f + m·1.31 µs, for n processes and m copied units per second, the copies
+themselves being the same in both.
 The workload split measured on the laptop (confinement-costs.json, "measure workload-mix"): a shell loop starting
 2,000 programs makes about 256,200 system calls in 0.73 s of user time (about 350,000 per second) and 2,000
 processes: I by a factor; a Python start with 70 imports makes about 3,460 calls in 0.9 s (about 4,000 per second):
 P (under 1% against I's f); a compute benchmark makes 9: P. These are expected outcomes from the arithmetic;
 W2 measures them on both forms.
 Rule given to the embedder (it chooses, not us): with no history, P (the owner's default for agentic workloads);
-with history, the form whose arithmetic above is lower at the recorded rates on this host's measured c and f. The
-form is chosen per container at start and fixed for its run. Changing it at an exec of a guest process (the kernel is
+with history, the form whose arithmetic above is lower at the recorded rates on this host's measured c and f; P
+whatever the arithmetic when the container needs the line between processes (3.7) or its recorded peaks exceed
+I's limits (2047 live processes in the embedder process, 4 GiB per process). The form is chosen per container at
+start and fixed for its run. Changing it at an exec of a guest process (the kernel is
 in the embedder's process in both forms, so one executor could hold memories of both) is possible later and not
 built (section 12).
 
@@ -644,8 +733,8 @@ These executors implement, as they stand:
   give per-thread watches later by making each guest thread of a watched process its own host process over the same
   memfds (its own page tables, mapping commands applied in each), at a process creation (80 to 95 µs) per thread
   creation; I cannot (one process). Listed for the owner (section 12).
-- `Runtime`, `Container`, `Interrupter` are the runtime's and need nothing new: the embedder picks the form by which
-  runtime it makes.
+- `Runtime`, `Container`, `Interrupter` are the runtime's: the embedder picks the form by which runtime it makes,
+  and the runtime's `Interrupter` reaches a running thread through the kernel and item 3 below.
 
 Where an interface would have to change, the smallest change, for the owner (nothing here is edited by this track):
 1. Running a thread, and a handle per runner. `KernelRunner::run` is `unimplemented!` because "the executor
@@ -679,10 +768,52 @@ Where an interface would have to change, the smallest change, for the owner (not
        fn kernel_entries(&self) -> u64;
    }
    ```
-3. Stopping a running thread from outside the runner. The kernel's `suspend_tasks` and the runtime's `Interrupter`
-   already exist; the executor needs from the runner only the thread's host thread, which it keeps itself. No change.
-4. Nothing else: `Cpu::address_space` carries the ceiling, `ProcessInfo::address_ceiling_distance` and
+3. Stopping a running thread from outside its runner. Nothing in the reviewed interfaces can: `Cpu` has no stop
+   call, `Executor` has only `execute_single_instruction*`, item 1's `run_thread` stops only at its own slice, and
+   `Kernel::suspend_tasks`, `Process::suspend_threads`, a signal sent to a thread running on another runner, a group
+   stop and the runtime's `Interrupter::interrupt` (which has no implementation yet) all need a running thread to
+   leave guest code now, from a host thread that holds no `&mut` to the runner's executor. The executor knows the
+   host thread (P) or the runner (I) but has no call to be told. The smallest change, for every executor (the VM
+   form raises its interrupt, WebAssembly writes its flag word, Unicorn stops its emulation, as native.md R2 asked):
+   ```rust
+   pub trait Executor {
+       // ...as today...
+       /// A handle, usable from any host thread, that makes this executor's running threads leave guest code.
+       type Stopper: ThreadStopper;
+       fn stopper(&self) -> Self::Stopper;
+   }
+
+   pub trait ThreadStopper: Clone + Send + Sync + 'static {
+       /// Ends the thread's current turn, or its next one if none runs, with `Exit::Stop` at an instruction boundary.
+       fn stop(&self, thread: ThreadId);
+   }
+   ```
+   A stop applies to the turn running or the next one, so a stop sent while a runner is between taking the thread
+   from the kernel and starting it is not lost; it is cleared when a turn ends. Here: P records it in the
+   embedder's record of the thread (out of the guest's reach), which `run_thread` reads before it resumes, and
+   sends 3.6's signal to the host thread if a turn runs; I does the same with the runner's block and the runner's
+   host thread. The kernel takes the stopper from its executor at `Kernel::new` and calls it from the places above.
+4. Nothing else for running: `Cpu::address_space` carries the ceiling, `ProcessInfo::address_ceiling_distance` and
    `on_process_outgrown` cover growth, `CpuError::OutOfMemory` covers slots running out.
+5. Making an executor. The executor interface has no constructor, and these two have process-wide parts (3.1, 4.1):
+   one zygote and window cache (P), one reservation, slot pool, slot table and set of signal handlers (I). By the
+   owner's convention (`StandaloneClock`), the smallest addition is a host that is made once and makes executors:
+   ```rust
+   /// What an executor's process-wide part is made from and makes executors of.
+   pub trait StandaloneExecutorHost: Sized {
+       type Executor: Executor;
+       type Config;
+       type Error;
+
+       /// Makes the one host of its kind in this process, or says why it cannot.
+       fn new(config: Self::Config) -> Result<Self, Self::Error>;
+       /// Makes an executor for one container, sharing this host's process-wide part.
+       fn executor(&self) -> Self::Executor;
+   }
+   ```
+   `Error` names "a host of this kind exists in this process", a refused reservation and a refused call of
+   section 6. Until the owner rules, each crate has the smallest public constructor of its own host with the same
+   two calls, so that tests can run.
 Considered and not asked: a clock the system publishes for the floor to read without a kernel entry (as Linux's
 vDSO does) would remove P's round trip per time read, but it changes what the system decides (every read is the
 system's answer today); listed for the owner in section 12 instead.
@@ -702,7 +833,12 @@ system's answer today); listed for the owner in section 12 instead.
 - I: an embedder's `set*id` call or `pthread_cancel` of a runner thread waits until that runner's `Runner::run`
   returns (3.7).
 - I with the wrapping form, if the owner allows it (5.2).
-- P's ceiling is 2^44 against the VM form's 2^45; I's is 2^r - 64 KiB per process (2^32 on x86-64 at first).
+- P's ceiling is 2^44 against the VM form's 2^45; I's is 2^32 - 64 KiB per process on ARM64 (2^32 on x86-64 at
+  first), and I holds at most 2047 live guest processes per embedder process (255 on x86-64): a fork past that gets
+  ENOMEM where Linux would succeed (counted, 3.1).
+- I: guests of one embedder process are not separated from each other or from our code against branch target
+  injection and cache timing channels on a shared core (3.7); P's guests are, by the host kernel's mitigations
+  between processes.
 
 ## 10. Asked of other tracks (written up in the status file; not made here)
 
@@ -726,9 +862,14 @@ the least busy over 2 s), fallback.c (3.4), and spcost/ (the cloud ARM64 cost ha
 costs-cloud/arm-recheck/native with two stack modes added to its rewriter, below). Run script run2.sh; outputs in
 w0/run2/ (arm5-*.out, x865-*.out, spcost-*.txt). Machines: the rented ARM64 machine (Graviton4, Neoverse V2, 96
 cores, bare metal, Linux 7.0.0-1018-aws, 4 KiB pages) at load average 14 to 27 from other tracks; the rented
-x86-64 machine (Xeon Platinum 8488C, 96 processors, bare metal, Linux 7.0.0-1018-aws) at load 0.05 to 0.13. All
-figures here come from this one run (run 2 of W0); run 1's outputs (probe-*.out, probe2-*.out, probe3-*.out,
-probe4-arm.out) are kept beside it but no figure is taken from them.
+x86-64 machine (Xeon Platinum 8488C, 96 processors, bare metal, Linux 7.0.0-1018-aws) at load 0.05 to 0.13. The
+figures come from run 2 of W0, except the futex slot's placement, the signal mask and the windows, which come from
+run 3 (w0/run3: slot.c, run3.sh, arm3-slot.out and x863-slot.out; Graviton4 at load 3.8 to 7.4, Xeon at 0.7 to
+1.6). Run 2's probe.c has a lost-wakeup fault in the guest side's futex wait (and the same in its zygote test's
+wait): it passed the word re-read, not the value compared, so a wake landing between the two hangs the run. Its
+runs that finished are valid; its runs that "did not finish" were that hang, not slow round trips. Run 1's
+outputs (probe-*.out, probe2-*.out, probe3-*.out, probe4-arm.out) are kept beside it but no figure is taken from
+them.
 - Address space: user space 48 bits (ARM64) and 56 bits (x86-64). [2^45, 2^47) is free on ARM64; the binary, vDSO
   and stack sit in [2^47, 2^48) on ARM64 and the stack and vDSO just under 2^47 on x86-64. A non-PIE static binary
   sits at 0x400000 with its heap just above, below 2^32 (hence the slots from 2^32 in I).
@@ -742,15 +883,25 @@ probe4-arm.out) are kept beside it but no figure is taken from them.
   1.78 µs (p90 2.21) / 1.75 µs (p90 1.93); another process 1.68 / 1.90 µs.
 - Process creation: a fork of this small static process until the child runs and is reaped 111 / 121 µs; a request
   to a zygote until its new child runs 80 / 95 µs.
-- The futex slot between two processes, ppid-like, median of the batch means: Graviton4 one CPU 2.29 µs, two CPUs
-  4.58 µs (the full probe), unpinned: the run of 20,000 per batch did not finish in 14 minutes (over 2 ms per round
-  trip on average), and of three runs of 2,000 per batch one gave 4.63 µs and two did not finish in 120 s; repeated
-  one CPU 2.36 to 2.37 µs and two CPUs 4.66 to 4.83 µs (3 runs each, CPUs chosen anew each time); Xeon one CPU 1.89
-  to 1.96 µs (4 runs), two CPUs 4.02 to 4.16 µs (4 runs), unpinned 4.39 to 4.56 µs in 3 of 4 runs, and one run of
-  2,000 per batch did not finish in 120 s (over 2.8 ms per round trip on average) on the idle machine. The first
-  check's own re-run on Graviton4 at load 15 to 23 (w0-check/futex-arm.out) agrees: one CPU 2.32 to 2.38 µs, two
-  CPUs 3.52 to 4.77 µs, unpinned 4.59 to 4.74 µs, and 3 of 5 unpinned runs of 20,000 per batch killed at 100 s.
+- The futex slot between two processes, ppid-like, median of the batch means, run 2 (finished runs only, no
+  timing per round trip): Graviton4 one CPU 2.29 µs, two CPUs 4.58 µs (the full probe); repeated one CPU 2.36 to
+  2.37 µs and two CPUs 4.66 to 4.83 µs (3 runs each, CPUs chosen anew each time), unpinned 4.63 µs; Xeon one CPU
+  1.89 to 1.96 µs (4 runs), two CPUs 4.02 to 4.16 µs (4 runs), unpinned 4.39 to 4.56 µs. The second check
+  reproduced one CPU at 2.40 to 2.46 µs (Graviton4) and 1.98 to 2.02 µs (Xeon) with its own timing.
+- The futex slot, run 3 (slot.c, waits fixed, two clock reads per round trip included). Idle, 6 rounds of 42,000
+  round trips per placement, CPUs chosen anew each round: Graviton4 one CPU 2.41 to 2.46 µs (worst 24 µs), two CPUs
+  4.60 to 4.80 µs, unpinned 4.54 to 4.82 µs and within a set of 4 CPUs 4.57 to 4.89 µs (1 of 504,000 unpinned
+  round trips over 1 ms, worst 1.6 ms); Xeon one CPU 1.98 to 1.99 µs, two CPUs 4.22 to 4.54 µs, unpinned 4.43 to
+  4.86 µs (none over 1 ms, worst 169 µs). Every run finished. Busy, 3 rounds of 4,200 round trips, one spinning
+  process of normal priority on each CPU named: one CPU shared with a spinner, median 3.71 to 3.73 µs, mean 6.0 to
+  6.4 µs, 4 over 1 ms each (Graviton4), 2.72 to 2.96 / 4.9 to 5.7 µs, 3 to 4 over 1 ms (Xeon); the same inside a
+  set of 4 busy CPUs, 3.75 to 3.87 / 6.5 to 7.0 µs and 2.68 to 3.07 / 4.7 to 5.7 µs; two CPUs, both busy: 1.6 to
+  2.0 ms median of batch means (Graviton4) and 1.98 to 1.99 ms (Xeon); unpinned inside 4 busy CPUs: 1.4 to 2.0 ms
+  (Graviton4) and 2.6 to 3.0 µs (Xeon); unpinned inside 4 CPUs of which 2 busy: 4.7 to 4.8 µs and 5.3 to 6.0 µs.
   Hence P's placement (4.3).
+- Run 3, other: `rt_sigprocmask` unblocking one signal (raw call) 125 ns (Graviton4) / 87 to 89 ns (Xeon); a 2 MiB
+  memfd window mapped over a reservation, one byte touched, and replaced by `PROT_NONE` 8.5 to 8.6 / 4.8 to 5.2 µs,
+  without the touch 3.2 / 2.0 to 2.1 µs.
 - Code area homes (fallback.c; Docker 29.9.3, image alpine:3.22, on the Xeon machine, and the same results on the
   Graviton4 machine): natively, a memfd and `O_TMPFILE` files in /dev/shm and /tmp all map read-execute. In Docker
   with its default profile, memfd works, /dev/shm (`noexec`) refuses read-execute (Operation not permitted) and an
@@ -775,22 +926,27 @@ probe4-arm.out) are kept beside it but no figure is taken from them.
   3.2 probes 4 bytes below the new sp after an `add` (that verify output was overwritten by the second's). A
   campaign mixed with a leftover process of the first build was discarded too (w0/run2/spcost-discarded).
 - So by section 7's arithmetic, with f = 0.214 (X32-p, 8 programs): Graviton4 c = 2.29 to 2.37 µs on one CPU gives
-  90,000 to 94,000 kernel entries per second, 44,000 to 47,000 at the two-CPU c; the Xeon 8488C (Granite Rapids's f,
-  0.110 to 0.152) 56,000 to 80,000 at c = 1.89 to 1.96 µs.
+  90,000 to 94,000 kernel entries per second, and 31,000 to 36,000 at run 3's mean on a CPU shared with a busy
+  program; the Xeon 8488C (Granite Rapids's f, 0.110 to 0.152) 56,000 to 80,000 at c = 1.89 to 1.96 µs, 19,000 to
+  32,000 busy. The X32 variants' access is `[base, wA, uxtw]`, the speculation-safe one of 3.2, so f needs no
+  further instruction for it.
 
 ## 12. Decisions for the owner
 
 1. Names: the two crates (`host-process`, `in-process`) and the form value's variants.
-2. I's wrapping check (5.2): about 10 points faster on Graviton4, and a guest access outside its slot lands in its
-   own memory instead of faulting.
+2. I's wrapping check (5.2): about 10 points faster on Graviton4, and a guest access outside its window lands in
+   its own memory instead of faulting. Both it and the exact form are safe against speculation (3.2).
 3. P's reachable stub pages (9).
 4. PAuth and MTE under P and I (9).
 5. A clock the system publishes for reads without a kernel entry (8).
 6. Changing the form at a guest exec (7).
-7. The two interface additions of section 8, and for the first, a handle method on `Executor` or a handle type in
-   `Runner::run`.
+7. The interface changes of section 8: running a thread (item 1, a handle method on `Executor` or a handle type in
+   `Runner::run`), the count of kernel entries (2), the stopper (3) and the executor host (5).
 8. Per-thread watches, and so `(Parallel, Exact)`, under P by a host process per guest thread (8): wanted, and when.
 9. I's runner threads holding off the embedder's SIGCANCEL and SIGSETXID while they run (9).
+10. I's window of 4 GiB per guest process on ARM64, cut for free by the access's addressing mode, against a larger
+    one (up to 2^36 per process, fewer slots) that pays one more instruction per access, not measured.
+11. I's guests sharing one process without a line against branch target injection and cache timing (9).
 
 ## 13. Milestones
 
@@ -810,8 +966,11 @@ filter. Pass bar, every item on the rented ARM64 machine:
   processes, checked against the reference; a stop signal landing at every instruction of the floor's entry, resume,
   wait and handler-tail windows (forced by a seeded delay); a guest that writes its own channel and register pages
   with forged commands and registers (it changes only itself; no host code runs that we did not translate); a stub
-  that tries a host call outside its filter is killed; a stub killed from outside ends its process as SIGKILL; the
-  embedder killed leaves no stub or zygote behind; the register-group isolation tests of 3.8;
+  that tries a host call outside its filter is killed; a stub killed from outside ends its process as SIGKILL within
+  100 ms of its death, and the zygote holds no zombie after it; the embedder killed leaves no stub or zygote behind;
+  64 guest processes each mapping 2^43 bytes and touching pages across all of it, run by one embedder, whose own
+  mappings stay under the window cache's bound (counted evictions recorded); one P container and two I containers
+  (W2) running at once in one embedder; the register-group isolation tests of 3.8;
 - the suites pass inside a container started with Docker's default seccomp profile;
 - speed, measured with machine and load: the guest's getppid round trip with P's placement, its median under 1.25
   times the bare futex slot on one CPU measured in the same run, alternating, and no round trip over 1 ms in a run of
@@ -825,10 +984,15 @@ check and the stack pointer's rules, in-process entry and eager switch, the sign
 - the same suites as W1 (conformance, kernel test programs, busybox, differential, count, adversarial,
   register groups, Docker's default profile);
 - exactness of the check: a seeded random test (knob for cases; count recorded) of accesses at, just inside and
-  just outside the slot edges, tagged and untagged, every access form, each faulting exactly where the reference
-  does with the reference's registers; sp moved out of the slot by every form of 3.2 item 1 (immediates up to 16 MiB,
-  writebacks, register writes), then read, moved back and accessed, each matching the reference, the displaced
-  counter recorded; slot exhaustion gives ENOMEM at fork, counted;
+  just outside the window's edges, tagged and untagged, every access form, sp-based ones with register offsets and
+  register post-indexes included, each faulting exactly where the reference does with the reference's registers;
+  sp moved out of the window by every form of 3.2 item 1 (immediates up to 16 MiB, writebacks, register writes),
+  then read, moved back and accessed, each matching the reference, the displaced counter recorded; slot exhaustion
+  gives ENOMEM at fork, counted; two I containers and a P container in one embedder, each guest reading and writing
+  at every edge of its window, none seeing another's bytes;
+- speculation: a bounds-check-bypass test (a guest trains the check's branch, then gives an address in another
+  slot, and times its own cache lines to read the byte there), seeded with a case knob: it reads nothing under I,
+  and the same gadget built as a host program without the cut reads the byte, which shows the test can see a leak;
 - speed: the translator's benchmark set under I against the same programs run plainly, alternating pairs, within
   the sound form's figure (X32-p, section 11) plus 3 points on the same machine (re-measured at W2 start); the
   getppid entry under 100 ns median;
