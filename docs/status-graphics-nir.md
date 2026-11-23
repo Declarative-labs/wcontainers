@@ -271,8 +271,8 @@ glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none buil
 Next, in order (run 25):
 1. The groups that run 25's ES 3.2 contexts brought in, not yet read: dEQP-GLES31
    `state_query.texture_level` and `internal_format` of `texture_2d_multisample_array` (81),
-   `state_query.texture` 8, `texture.multisample.negative.*` 10 (compare llvmpipe, the same Mesa
-   frontend: `-Driver llvmpipe -Lists gles31-main -Include dEQP-GLES31.functional.texture.multisample.negative.*`).
+   `state_query.texture` 8, `texture.multisample.negative.*` 10 (llvmpipe passes them: this
+   driver's caps or behavior; start from what the screen reports for 2D multisample arrays).
 2. Still not read: KHR-GL33 `primitive_restart.restart_mode` (no refusal since run 25),
    gpu_shader5's `texture_gather_offset_color_*`, `texture_cube_map_array` sampling,
    shader_image_load_store `misc-fs` and `advanced-*`, dEQP synchronization 10.
@@ -318,7 +318,10 @@ Run 25's changes to the rows below, read from run B's case notes (`logs/g9r25/re
   follows "webgpu: part of a 16-bit depth level written from a buffer" (the WebGPU back end's
   depth written by a draw for `depth16unorm`; to be asked of it).
 - New with ES 3.2 contexts: dEQP-GLES31 `state_query` of `texture_2d_multisample_array` 81,
-  `state_query.texture` 8, `texture.multisample.negative` 10 Fail: not yet read (this track).
+  `state_query.texture` 8, `texture.multisample.negative` 10 Fail: not yet read (this track:
+  llvmpipe, the same Mesa frontend, passes all 61 cases of `texture.multisample.negative.*` and
+  `state_query.texture_level.texture_2d_multisample_array.*`; desktop, one GPU job, 15:19 desktop
+  time, log `logs/g9r25/llvmpipe-ms.log`, so the cause is in what this driver reports or does).
 - `copy_image.non_compressed.viewclass_96_bits` 32 crashes: still "a blit Gallium's blitter does
   not make" (the stencil blits are gone from that refusal); not yet traced past the blit.
 
