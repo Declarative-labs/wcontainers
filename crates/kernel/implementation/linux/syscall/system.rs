@@ -178,14 +178,21 @@ fn online_mask(kernel: &Kernel) -> Vec<u8> {
         .collect()
 }
 
-/// Every thread may run on every processor online.
+/// The processors `task` may run on, as a mask the length of one of every processor online.
+fn affinity(kernel: &Kernel, task: Task) -> Vec<u8> {
+    let set = match task {
+        Task::Thread(tid) => kernel.threads[&tid].affinity.as_deref(),
+        Task::Ended(pid) => kernel.processes[&pid].ended_leader.affinity.as_deref(),
+    };
+    set.map_or_else(|| online_mask(kernel), <[u8]>::to_vec)
+}
+
 pub(super) fn sched_getaffinity<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    let online = online_mask(kernel);
     let processors = kernel.machine.processors.get() as u64;
     if size.saturating_mul(u64::from(u8::BITS)) < processors
         || !size.is_multiple_of(size_of::<u64>() as u64)
@@ -193,9 +200,10 @@ pub(super) fn sched_getaffinity<S: crate::System>(
         return Err(Errno::EINVAL);
     }
     // `find_process_by_pid`: a negative number names no one.
-    scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
-    guest(kernel, cx, tid).write(mask, &online)?;
-    Ok(online.len() as u64)
+    let target = scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
+    let allowed = affinity(kernel, target);
+    guest(kernel, cx, tid).write(mask, &allowed)?;
+    Ok(allowed.len() as u64)
 }
 
 pub(super) fn sched_setaffinity<S: crate::System>(
@@ -205,22 +213,56 @@ pub(super) fn sched_setaffinity<S: crate::System>(
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
     // `get_user_cpu_mask` copies the mask in first, at most the bytes of a mask of every processor.
-    let online = online_mask(kernel);
-    let bytes = guest(kernel, cx, tid).read(mask, size.min(online.len() as u64))?;
+    let length = online_mask(kernel).len() as u64;
+    let asked = guest(kernel, cx, tid).read(mask, size.min(length))?;
     // `find_process_by_pid`: a negative number names no one.
     let target = scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
     if !same_owner(kernel, tid, &target) && !kernel.credentials(tid).has(CAP_SYS_NICE) {
         return Err(Errno::EPERM);
     }
-    // A mask that names no processor online.
-    if !bytes
+    set_affinity(kernel, target, &asked).map(|()| 0)
+}
+
+/// Lets the thread `tid` run only on the processors online that `asked` names (a mask as
+/// `sched_setaffinity` takes it), as at a container's start.
+pub(crate) fn set_own_affinity(kernel: &mut Kernel, tid: Tid, asked: &[u8]) -> Result<(), Errno> {
+    set_affinity(kernel, Task::Thread(tid), asked)
+}
+
+fn set_affinity(kernel: &mut Kernel, target: Task, asked: &[u8]) -> Result<(), Errno> {
+    let allowed: Vec<u8> = online_mask(kernel)
         .iter()
-        .zip(&online)
-        .any(|(asked, online)| asked & online != 0)
-    {
+        .zip(asked.iter().chain(core::iter::repeat(&0)))
+        .map(|(online, asked)| online & asked)
+        .collect();
+    // A mask that names no processor online.
+    if allowed.iter().all(|byte| *byte == 0) {
         return Err(Errno::EINVAL);
     }
-    Ok(0)
+    let allowed = Some(allowed.into());
+    match target {
+        Task::Thread(tid) => kernel.thread_mut(tid).affinity = allowed,
+        Task::Ended(pid) => {
+            kernel
+                .processes
+                .get_mut(&pid)
+                .expect("process exists")
+                .ended_leader
+                .affinity = allowed;
+        }
+    }
+    Ok(())
+}
+
+/// The processor a thread runs on: the lowest it may run on.
+fn processor(kernel: &Kernel, tid: Tid) -> u32 {
+    affinity(kernel, Task::Thread(tid))
+        .iter()
+        .enumerate()
+        .find(|(_, byte)| **byte != 0)
+        .map_or(0, |(index, byte)| {
+            index as u32 * u8::BITS + byte.trailing_zeros()
+        })
 }
 
 pub(super) fn getcpu<S: crate::System>(
@@ -230,7 +272,8 @@ pub(super) fn getcpu<S: crate::System>(
     [cpu, node, ..]: Args,
 ) -> Result<u64, Errno> {
     if cpu != 0 {
-        guest(kernel, cx, tid).put(cpu, &0u32.to_le_bytes())?;
+        let processor = processor(kernel, tid);
+        guest(kernel, cx, tid).put(cpu, &processor.to_le_bytes())?;
     }
     if node != 0 {
         guest(kernel, cx, tid).put(node, &0u32.to_le_bytes())?;

@@ -1488,7 +1488,14 @@ pub fn program_not_run(
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    program_started(name, link_flags, out, std::num::NonZeroUsize::MIN).0
+    program_started(
+        name,
+        link_flags,
+        out,
+        std::num::NonZeroUsize::MIN,
+        Default::default(),
+    )
+    .0
 }
 
 /// As [`program_not_run`], run until every thread waits with no deadline.
@@ -1497,7 +1504,13 @@ pub fn program_waiting(
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    let (mut started, host) = program_started(name, link_flags, out, std::num::NonZeroUsize::MIN);
+    let (mut started, host) = program_started(
+        name,
+        link_flags,
+        out,
+        std::num::NonZeroUsize::MIN,
+        Default::default(),
+    );
     let finished = run_started(&mut started, &host);
     assert_eq!(finished, None, "the program waits for ever");
     started
@@ -1511,7 +1524,18 @@ pub fn program_exit_code(
     out: &std::path::Path,
     parallelism: std::num::NonZeroUsize,
 ) -> i32 {
-    let (mut started, host) = program_started(name, link_flags, out, parallelism);
+    program_exit_code_with(name, link_flags, out, parallelism, Default::default())
+}
+
+/// As [`program_exit_code`], with what the container's configuration sets beyond its program.
+pub fn program_exit_code_with(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
+) -> i32 {
+    let (mut started, host) = program_started(name, link_flags, out, parallelism, options);
     let status = run_started(&mut started, &host).expect("the program ends");
     exit_code(status)
 }
@@ -1552,13 +1576,14 @@ fn run_started(
     })
 }
 
-/// A container started with the guest program `name`, built with `link_flags` into `out`, on a
-/// kernel with `parallelism` runners, and its system.
+/// A container started with the guest program `name`, built with `link_flags` into `out`, and
+/// `options`, on a kernel with `parallelism` runners, and its system.
 fn program_started(
     name: &str,
     link_flags: &[&str],
     out: &std::path::Path,
     parallelism: std::num::NonZeroUsize,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
 ) -> (
     wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost>,
     Arc<TestHost>,
@@ -1583,7 +1608,11 @@ fn program_started(
         root_image: None,
         address_space: crate::standin::SPACE_32_BIT,
     };
-    started_with_executor(prepare(&container), &container, u64::MIN, parallelism)
+    let prepared = Prepared {
+        options,
+        ..prepare(&container)
+    };
+    started_with_executor(prepared, &container, u64::MIN, parallelism)
 }
 
 fn run_hosted<H: BetweenSteps + Send>(

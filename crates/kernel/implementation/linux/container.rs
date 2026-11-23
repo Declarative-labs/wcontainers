@@ -111,6 +111,9 @@ pub struct StartOptions<'a> {
     pub scheduler: Option<sched_attr>,
     /// Its I/O priority, as `ioprio_set` takes it.
     pub io_priority: u32,
+    /// The processors it may run on (`execCPUAffinity`'s final set), as `sched_setaffinity` takes
+    /// them: a bit for each processor, lowest first; none for every one.
+    pub cpu_affinity: Option<&'a [u8]>,
     /// Its execution domain and flags, as `personality` takes them.
     pub personality: u32,
     /// The container's sysctls (`--sysctl`): each key, dotted, and the value written to its file.
@@ -189,6 +192,7 @@ impl Default for StartOptions<'_> {
             seccomp: Seccomp::DockerProfile,
             scheduler: None,
             io_priority: 0,
+            cpu_affinity: None,
             personality: 0,
             sysctls: &[],
             mounts: &DOCKER_MOUNTS,
@@ -1165,6 +1169,9 @@ impl Kernel {
             crate::syscall::set_own_schedule(self, pid, attributes)?;
         }
         crate::syscall::set_io_priority(self, cx, pid, options.io_priority)?;
+        if let Some(mask) = options.cpu_affinity {
+            crate::syscall::set_own_affinity(self, pid, mask)?;
+        }
         crate::syscall::set_personality(self, cx, pid, options.personality)?;
         if let Seccomp::Filter(program) = options.seccomp {
             let filter = crate::seccomp::Filter::new(program.into())?;

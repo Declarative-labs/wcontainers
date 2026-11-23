@@ -430,6 +430,9 @@ pub(crate) struct Thread {
     pub opening: Option<crate::file::FileRef>,
     /// The inode a thread other than its process's first gives its process descriptors.
     pub pidfd: Option<Node>,
+    /// The processors it may run on, as `sched_setaffinity` left them: a bit for each processor
+    /// online, lowest first; none for every one.
+    pub affinity: Option<Rc<[u8]>>,
 }
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
@@ -446,6 +449,7 @@ pub(crate) struct Leader {
     pub schedule: Schedule,
     pub signal_mask: u64,
     pub filters: usize,
+    pub affinity: Option<Rc<[u8]>>,
 }
 
 impl Leader {
@@ -459,6 +463,7 @@ impl Leader {
             },
             signal_mask: thread.signal_mask,
             filters: thread.filters.len(),
+            affinity: thread.affinity.clone(),
         }
     }
 }
@@ -721,6 +726,7 @@ impl Thread {
             default_timer_slack: TIMER_SLACK,
             opening: None,
             pidfd: None,
+            affinity: None,
         }
     }
 }
