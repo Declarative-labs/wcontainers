@@ -127,6 +127,11 @@ probes).
   s; native layer 3, 1,000 Csmith programs (seed 1): 852 compared the same way, 148 did not end in time on Linux, 0
   failing, 251 s; native layer 1, 2008 forms, 1,000 cases a form, seed 5150: 0 failing, the same 2,594 known
   failures as run 3, 601 s; the x86 and guest-cpu crates' tests: all pass.
+- Again at commit 34e663bf (the lighter stand-ins in), 16:17 to 16:32 UTC, load 0.6 before, up to 19 during: clippy
+  with warnings denied on wcontainers-x86, -guest-cpu, -translator-test and -arm64 clean; the x86 and guest-cpu
+  crates' tests pass; native layer 1 (2008 forms, 1,000 a form, seed 5150) 0 failing, 2,594 known failures, 551 s;
+  native layer 2 (seed 1, 10,000 cases) 0 failing, 118 s; native layer 3 (1,000 Csmith programs, seed 1) 852
+  compared, 0 failing, 252 s.
 - The first 10,000-case run found 2 failures, both the blob's own: a repeated string's record pushed the flags
   below an rsp at the stack's bottom (cases 1409, 9636); the record now reads DF from rdi's direction instead and
   touches no stack, and both pass. That run took over an hour at load 0.5 because every guest fault started the
