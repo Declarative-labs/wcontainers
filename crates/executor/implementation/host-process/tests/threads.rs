@@ -70,16 +70,28 @@ fn host_threads(stub: &Stub) -> Vec<u32> {
     ids
 }
 
-/// A waiting thread's stack pointer, the second field from the end of /proc's line for its system call.
+/// A waiting thread's stack pointer, the second field from the end of /proc's line for its system call; a thread
+/// just published its exit and not yet back in its wait shows "running" there, so the line is read until it is in
+/// a call.
 fn stack_pointer(stub: &Stub, host_thread: u32) -> usize {
-    let line = std::fs::read_to_string(format!(
-        "/proc/{}/task/{host_thread}/syscall",
-        stub.process().as_raw_nonzero()
-    ))
-    .expect("syscall");
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    let sp = fields[fields.len() - 2].trim_start_matches("0x");
-    usize::from_str_radix(sp, 16).expect("a stack pointer")
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let line = std::fs::read_to_string(format!(
+            "/proc/{}/task/{host_thread}/syscall",
+            stub.process().as_raw_nonzero()
+        ))
+        .expect("syscall");
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 3 {
+            let sp = fields[fields.len() - 2].trim_start_matches("0x");
+            return usize::from_str_radix(sp, 16).expect("a stack pointer");
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "thread {host_thread} never waited: {line}"
+        );
+        std::thread::yield_now();
+    }
 }
 
 fn kill_and_reap(zygote: &Zygote, stub: &Stub) -> Ended {

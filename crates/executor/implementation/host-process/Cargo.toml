@@ -62,6 +62,9 @@ name = "slice"
 [[test]]
 name = "placement"
 
+[[test]]
+name = "embedder"
+
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
 unsafe_code = "deny"
