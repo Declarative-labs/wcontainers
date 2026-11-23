@@ -566,6 +566,14 @@ extras")`. Test: `a_fragment_program_forcing_early_tests_carries_them_in_its_pix
   check's (its verdicts.txt); A18 carries the check's seed 6037; A12 and `gs_cut` carry the check's
   seed 6034 under the orchestrator's rule.
 - No unsafe code added; the count stays 94.
+- Whole suite, run 115. CPU, on the ARM64 machine (arm2.log, 96 cores, load 4.3 to 6.2 at the time):
+  rustfmt and clippy with warnings denied clean, every test binary with every corpus but the
+  mutation run passing (the corpus binary 13 tests in 200 s), the literal check with no finding in
+  this crate (its exit 1 is other crates' findings). Drawn, on the RTX 3080 through the GPU queue
+  (gpu-suite.log, the check's command at seed 6029; 19 minutes, task 78, the desktop shared with
+  other tracks' jobs): every binary passes but `filter_draw` (A18 at seed 6037, the check's
+  figures) and `geometry_draw` (A10's two tests, and A12 at seed 6034, the check's figures). Each
+  is on the gap list.
 
 ## G6 run 27 (run 114, round 7 run 3): the second check's findings
 
