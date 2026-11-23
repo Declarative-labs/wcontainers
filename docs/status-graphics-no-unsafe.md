@@ -62,6 +62,34 @@ safe library does it, what removing it would cost.
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
 
+## Run 5 (2026-11-23 morning)
+
+- Still no ruling (graphics brief and the orchestrator's open-with-owner notes read again); counts
+  unchanged, counted on the rented machine: direct3d-12 496 (examples/directx 326, examples/check
+  cases.rs 129 and check_d3d12.rs 40, tests/gpu.rs 1), gpu-webgl 167, gpu-webgpu 30, graphics-test
+  342, graphics-test-forward 197.
+- Build check after the merge a00ab267 and the interface's aliased-line pixel variant (3a86f258),
+  clippy `-D warnings`:
+  - x86-64 Linux, rented x86 machine (96 cores, load 0.0 at the start, 4.1 at the end): all five
+    crates, all targets, clean (logs/check-five-run5.log).
+  - wasm32: gpu-webgpu lib and examples clean; gpu-webgl lib with examples browser and draw-cost,
+    and with `trace` the replay example, clean; native gpu-webgl with `record`, all targets, clean
+    (logs/check-webgl-wasm-run5.log). webgl-scenes is a native example (it opens ANGLE) and is not
+    built for wasm32.
+  - Windows, the desktop (CPU load 39 %, no other cargo running), the Mac's tree at ccef11b8 with
+    the shaders track's uncommitted edits: all five crates, all targets, clean
+    (logs/clippy-windows-run5.log).
+  - Controls: `unsafe {}` added to the libraries of gpu-webgpu and direct3d-12 fails in both ("usage
+    of an `unsafe` block").
+- Looked again for uses that need no ruling: none. graphics-test's uses that are not Direct3D
+  (gt-launch's debugger loop, gt-desktop's desktop and job object, gt-chrome's raw command line,
+  lib.rs's loaded module path, debug.rs's info queue message) have no std equivalent. The lock
+  file has no winit or capture crate (only raw-window-handle), so question 5 needs new imports.
+- gpu-webgl: considered a safe seam module over its 151 distinct GL calls. Natively it would hold
+  one unsafe per call (about 151, plus platform.rs's 41, against 167 today), and it pays off only
+  once question 4 is ruled, so it was not started. All three answers share one part: the browser
+  half calls WebGL through web-sys.
+
 ## Run 4 (2026-11-23 early)
 
 - Still no ruling in the graphics brief or the orchestrator's notes; counts unchanged
@@ -248,3 +276,11 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
 
 - `cloud/arm-run <agents checkout> --name graphics-no-unsafe -- "$(cat <scratch>/bin/<script>)"`;
   the scripts edit only the machine's copy (probe crates, control `unsafe {}` lines).
+- All five crates on Linux and wasm32, counts and controls: `cloud/x86-run <agents checkout> --name
+  graphics-no-unsafe --jobs 32 -- "$(cat <scratch>/bin/check-five.sh)"`, then bin/check-webgl-wasm.sh
+  for gpu-webgl's browser builds (check-five's wasm32 step for gpu-webgl builds every example and so
+  fails on the native webgl-scenes; use check-webgl-wasm.sh for that crate).
+- Windows lint of all five: `tools/graphics-rig/remote "set CARGO_INCREMENTAL=0&& git submodule
+  update -q --init --recursive && cargo clippy -j 3 --all-targets -p wcontainers-direct3d-12 -p
+  wcontainers-gpu-webgpu -p wcontainers-gpu-webgl -p wcontainers-graphics-test -p
+  wcontainers-graphics-test-forward -- -D warnings"`.
