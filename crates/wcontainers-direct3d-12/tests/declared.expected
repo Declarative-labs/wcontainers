@@ -493,6 +493,12 @@
 ../wcontainers-shaders/tests/own/cs_escape.dxil dxbc None None
 ../wcontainers-shaders/tests/own/cs_escape.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/cs_escape.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/cs_frexp.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/cs_frexp.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/cs_frexp.dxbc dxil false None None
+../wcontainers-shaders/tests/own/cs_frexp.dxil dxbc None None
+../wcontainers-shaders/tests/own/cs_frexp.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/cs_frexp.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/cs_image_array.dxbc dxbc Some(["1 0 0 Uint", "1 0 1 Uint", "1 0 2 Uint", "1 0 3 Uint"]) Some([])
 ../wcontainers-shaders/tests/own/cs_image_array.dxbc ranged dxbc Some(["1 0 0 Uint", "1 0 1 Uint", "1 0 2 Uint", "1 0 3 Uint"]) Some([])
 ../wcontainers-shaders/tests/own/cs_image_array.dxbc dxil false None None
@@ -505,6 +511,12 @@
 ../wcontainers-shaders/tests/own/cs_images.dxil dxbc None None
 ../wcontainers-shaders/tests/own/cs_images.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/cs_images.dxil dxil false Some(["1 0 0 Float", "1 0 1 Float", "1 0 2 Uint", "1 0 3 Sint"]) Some([])
+../wcontainers-shaders/tests/own/cs_min16.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/cs_min16.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/cs_min16.dxbc dxil false None None
+../wcontainers-shaders/tests/own/cs_min16.dxil dxbc None None
+../wcontainers-shaders/tests/own/cs_min16.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/cs_min16.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/cs_one_d.dxbc dxbc Some(["1 0 0 Float", "1 0 1 Uint"]) Some([])
 ../wcontainers-shaders/tests/own/cs_one_d.dxbc ranged dxbc Some(["1 0 0 Float", "1 0 1 Uint"]) Some([])
 ../wcontainers-shaders/tests/own/cs_one_d.dxbc dxil false None None
@@ -1057,6 +1069,12 @@
 ../wcontainers-shaders/tests/own/ps_cull.dxil dxbc None None
 ../wcontainers-shaders/tests/own/ps_cull.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/ps_cull.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_cull_read.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_cull_read.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/ps_cull_read.dxbc dxil false None None
+../wcontainers-shaders/tests/own/ps_cull_read.dxil dxbc None None
+../wcontainers-shaders/tests/own/ps_cull_read.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/ps_cull_read.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/ps_depth.dxbc dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/ps_depth.dxbc ranged dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/ps_depth.dxbc dxil false None None
@@ -1429,6 +1447,12 @@
 ../wcontainers-shaders/tests/own/vs_cull.dxil dxbc None None
 ../wcontainers-shaders/tests/own/vs_cull.dxil ranged dxbc None None
 ../wcontainers-shaders/tests/own/vs_cull.dxil dxil false Some([]) Some([])
+../wcontainers-shaders/tests/own/vs_cull_read.dxbc dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/vs_cull_read.dxbc ranged dxbc Some([]) Some([])
+../wcontainers-shaders/tests/own/vs_cull_read.dxbc dxil false None None
+../wcontainers-shaders/tests/own/vs_cull_read.dxil dxbc None None
+../wcontainers-shaders/tests/own/vs_cull_read.dxil ranged dxbc None None
+../wcontainers-shaders/tests/own/vs_cull_read.dxil dxil false Some([]) Some([])
 ../wcontainers-shaders/tests/own/vs_deep.dxbc dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/vs_deep.dxbc ranged dxbc Some([]) Some([])
 ../wcontainers-shaders/tests/own/vs_deep.dxbc dxil false None None

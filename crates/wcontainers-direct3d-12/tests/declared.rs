@@ -1,7 +1,8 @@
 //! What the Direct3D 12 front reads from the declarations of every real shader container the
 //! crates hold (the shaders crate's own corpus and the graphics test's shaders): typed views and
 //! multisampled arrays, one line per container and element, against the answers recorded in
-//! declared.expected before views were kept as ranges. `WC_RECORD_DECLARED=1` writes the file.
+//! declared.expected: before views were kept as ranges, and for each container a corpus gained
+//! since, when it was added. `WC_RECORD_DECLARED=1` writes the file.
 
 use std::fmt::Write;
 use std::ops::Range;
@@ -94,19 +95,10 @@ fn real_containers_declare_what_they_did_before_ranges() {
             "no containers in {dir}"
         );
     }
-    // Every recorded container answers as recorded; containers the corpora gained since have no
-    // earlier answer to keep and are only listed (`WC_RECORD_DECLARED` records them).
-    let file = |line: &str| line.split(' ').next().unwrap_or_default().to_owned();
-    let recorded: std::collections::BTreeSet<String> = want.lines().map(file).collect();
-    let kept: Vec<&str> = got
-        .lines()
-        .filter(|l| recorded.contains(&file(l)))
-        .collect();
-    for (line, (g, w)) in kept.iter().zip(want.lines()).enumerate() {
-        assert_eq!(*g, w, "line {}", line + 1);
+    // Every container answers as recorded, and a container a corpus gains fails until its answers
+    // are recorded (`WC_RECORD_DECLARED`) and reviewed.
+    for (line, (g, w)) in got.lines().zip(want.lines()).enumerate() {
+        assert_eq!(g, w, "line {}", line + 1);
     }
-    assert_eq!(kept.len(), want.lines().count(), "recorded containers gone");
-    for new in got.lines().filter(|l| !recorded.contains(&file(l))) {
-        eprintln!("not recorded yet: {new}");
-    }
+    assert_eq!(got.lines().count(), want.lines().count(), "containers");
 }
