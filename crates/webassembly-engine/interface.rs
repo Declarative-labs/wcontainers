@@ -4,7 +4,9 @@
 extern crate alloc;
 
 pub mod function;
+pub mod global;
 pub mod memory;
+pub mod table;
 
 use alloc::vec::Vec;
 use core::future::poll_fn;
@@ -13,25 +15,23 @@ use core::pin::pin;
 use futures_core::Stream;
 use thiserror::Error;
 
+use crate::function::FunctionStore;
+use crate::global::GlobalStore;
 use crate::memory::MemoryStore;
+use crate::table::TableStore;
 
-pub trait WebAssemblyEngine: Sized + MemoryStore {
+pub trait WebAssemblyEngine:
+    Sized + FunctionStore + MemoryStore + TableStore + GlobalStore
+{
     type Config: Clone;
     /// A compiled [module](https://webassembly.github.io/spec/core/syntax/modules.html#modules).
     type Module: Send + Sync;
     /// A [module instance](https://webassembly.github.io/spec/core/exec/runtime.html#module-instances).
     type Instance;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [function instance](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
-    type FunctionAddress: Clone;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [table instance](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
-    type TableAddress: Clone;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [global instance](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
-    type GlobalAddress: Clone;
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [tag instance](https://webassembly.github.io/spec/core/exec/runtime.html#tag-instances).
     type TagAddress: Clone;
-    /// A value held by the engine and lent to each [host function](https://webassembly.github.io/spec/core/exec/runtime.html#syntax-hostfunc) when it is invoked.
+    /// A value held by the engine and lent to each [host function](https://webassembly.github.io/spec/core/exec/runtime.html#:~:text=A%20host%20function%20is%20a%20function%20expressed%20outside%20WebAssembly) when it is invoked.
     type HostContext;
-    type InvokeError;
 
     type NewError;
     fn new(config: Self::Config, host_context: Self::HostContext) -> Result<Self, Self::NewError>;
@@ -93,4 +93,18 @@ pub enum CompileStreamingError<StreamError, CompileError> {
     Stream(StreamError),
     #[error("the module could not compile: {0}")]
     Compile(CompileError),
+}
+
+/// An [address type](https://webassembly.github.io/spec/core/syntax/types.html#address-types).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddressType {
+    I32,
+    I64,
+}
+
+/// The [limits](https://webassembly.github.io/spec/core/syntax/types.html#limits) of the size of a memory, in pages, or of a table, in elements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub minimum: u64,
+    pub maximum: Option<u64>,
 }

@@ -7,13 +7,18 @@ use core::task::{Context, Poll, Waker};
 
 use futures_core::Stream;
 use wcontainers_webassembly_engine::function::{
-    BindFunctionError, BoundFunction, FunctionTypeBinder,
+    BindFunctionError, BoundFunction, FunctionTypeBinder, InvokeError,
 };
+use wcontainers_webassembly_engine::global::{Mutability, Value, WriteGlobalError};
 use wcontainers_webassembly_engine::memory::{
-    AddressType, GrowMemoryError, Limits, MemoryType, PAGE_SIZE, ReadMemoryError, Sharing,
-    WriteMemoryError,
+    GrowMemoryError, MemoryType, PAGE_SIZE, ReadMemoryError, Sharing, WriteMemoryError,
 };
-use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
+use wcontainers_webassembly_engine::table::{
+    GrowTableError, ReadTableError, TableType, WriteTableError,
+};
+use wcontainers_webassembly_engine::{
+    AddressType, ExternalAddress, Import, Limits, WebAssemblyEngine,
+};
 
 /// A [module](https://webassembly.github.io/spec/core/binary/modules.html#binary-module) with nothing in it.
 const EMPTY: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
@@ -57,6 +62,18 @@ const HOST_FUNCTION_NAME: &str = "hook";
 
 /// The name the function that calls the import is exported under.
 const CALLER_NAME: &str = "call";
+
+/// A module whose [code section](https://webassembly.github.io/spec/core/binary/modules.html#code-section) holds one exported function whose only instruction is [`unreachable`](https://webassembly.github.io/spec/core/binary/instructions.html#control-instructions).
+const EXPORTS_TRAPPING_FUNCTION: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section: no parameters, no results
+    0x03, 0x02, 0x01, 0x00, // function section: one function of that type
+    0x07, 0x08, 0x01, 0x04, b't', b'r', b'a', b'p', 0x00, 0x00, // export section
+    0x0a, 0x05, 0x01, 0x03, 0x00, 0x00, 0x0b, // code section: unreachable
+];
+
+/// The name the trapping function is exported under.
+const TRAPPING_FUNCTION_NAME: &str = "trap";
 
 /// The name the function is exported under.
 const FUNCTION_NAME: &str = "answer";
@@ -428,6 +445,212 @@ where
     assert_eq!(read, NOT_A_MODULE);
 }
 
+/// Checks that a trap inside an invoked function is returned as a trap.
+pub fn returns_a_trap_from_an_invocation<T: FunctionTypeBinder<(), ()>>(mut subject: T) {
+    let module = subject
+        .compile(EXPORTS_TRAPPING_FUNCTION)
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(address)) =
+        subject.find_export(&instance, TRAPPING_FUNCTION_NAME)
+    else {
+        panic!("the export is a function");
+    };
+    let function = subject
+        .bind_engine_function(address)
+        .ok()
+        .expect("the function has the function type");
+    assert!(matches!(
+        function.invoke(&mut subject, ()),
+        Err(InvokeError::Trap(_))
+    ));
+}
+
+/// Returns a table type of exactly as many elements as `IMPORTS_MEMORY` asks pages for at least.
+fn one_element() -> TableType {
+    TableType {
+        address_type: AddressType::I32,
+        limits: Limits {
+            minimum: IMPORTED_PAGES,
+            maximum: Some(IMPORTED_PAGES),
+        },
+    }
+}
+
+/// Checks that an allocated table has the size of its type and that its elements are null.
+pub fn allocates_a_table_of_null_elements<T: WebAssemblyEngine>(mut subject: T) {
+    let table = subject
+        .allocate_table(one_element())
+        .ok()
+        .expect("the table");
+    assert_eq!(subject.count_table_elements(&table), IMPORTED_PAGES);
+    assert!(matches!(subject.read_table(&table, u64::MIN), Ok(None)));
+}
+
+/// Checks that an element made to refer to a function is read as a function, and as null once it is cleared.
+pub fn reads_the_function_it_wrote_into_a_table<T: WebAssemblyEngine>(mut subject: T) {
+    let module = subject
+        .compile(EXPORTS_FUNCTION)
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(function)) = subject.find_export(&instance, FUNCTION_NAME)
+    else {
+        panic!("the export is a function");
+    };
+    let table = subject
+        .allocate_table(one_element())
+        .ok()
+        .expect("the table");
+    assert_eq!(
+        subject.write_table(&table, u64::MIN, Some(&function)),
+        Ok(())
+    );
+    assert!(matches!(subject.read_table(&table, u64::MIN), Ok(Some(_))));
+    assert_eq!(subject.write_table(&table, u64::MIN, None), Ok(()));
+    assert!(matches!(subject.read_table(&table, u64::MIN), Ok(None)));
+}
+
+/// Checks that an element at the end of a table is neither read nor written.
+pub fn refuses_an_element_outside_a_table<T: WebAssemblyEngine>(mut subject: T) {
+    let table = subject
+        .allocate_table(one_element())
+        .ok()
+        .expect("the table");
+    assert!(matches!(
+        subject.read_table(&table, IMPORTED_PAGES),
+        Err(ReadTableError::IndexOutsideTable)
+    ));
+    assert_eq!(
+        subject.write_table(&table, IMPORTED_PAGES, None),
+        Err(WriteTableError::IndexOutsideTable)
+    );
+}
+
+/// Checks that a table grows up to its maximum and no further.
+pub fn grows_a_table_to_its_maximum<T: WebAssemblyEngine>(mut subject: T) {
+    let limits = Limits {
+        minimum: u64::MIN,
+        maximum: Some(IMPORTED_PAGES),
+    };
+    let table = subject
+        .allocate_table(TableType {
+            limits,
+            ..one_element()
+        })
+        .ok()
+        .expect("the table");
+    assert_eq!(subject.grow_table(&table, IMPORTED_PAGES), Ok(()));
+    assert_eq!(subject.count_table_elements(&table), IMPORTED_PAGES);
+    assert_eq!(
+        subject.grow_table(&table, IMPORTED_PAGES),
+        Err(GrowTableError)
+    );
+}
+
+/// Checks that a variable global holds the value it was allocated with, and then the value written.
+pub fn reads_the_value_it_wrote_into_a_global<T: WebAssemblyEngine>(mut subject: T) {
+    let global = subject
+        .allocate_global(Mutability::Variable, Value::I64(i64::MIN))
+        .ok()
+        .expect("the global");
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::I64(i64::MIN))
+    ));
+    assert_eq!(subject.write_global(&global, Value::I64(i64::MAX)), Ok(()));
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::I64(i64::MAX))
+    ));
+}
+
+/// Checks that a constant global keeps its value when written.
+pub fn refuses_to_write_a_constant_global<T: WebAssemblyEngine>(mut subject: T) {
+    let global = subject
+        .allocate_global(Mutability::Constant, Value::I32(i32::MAX))
+        .ok()
+        .expect("the global");
+    assert_eq!(
+        subject.write_global(&global, Value::I32(i32::MIN)),
+        Err(WriteGlobalError::Constant)
+    );
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::I32(i32::MAX))
+    ));
+}
+
+/// Checks that a global keeps its value when written with a value of another number type.
+pub fn refuses_to_write_another_value_type<T: WebAssemblyEngine>(mut subject: T) {
+    let global = subject
+        .allocate_global(Mutability::Variable, Value::I32(i32::MAX))
+        .ok()
+        .expect("the global");
+    assert_eq!(
+        subject.write_global(&global, Value::I64(i64::MAX)),
+        Err(WriteGlobalError::ValueTypeMismatch)
+    );
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::I32(i32::MAX))
+    ));
+}
+
+/// Checks that a global holds a reference to a function, and null.
+pub fn holds_a_function_reference_in_a_global<T: WebAssemblyEngine>(mut subject: T) {
+    let module = subject
+        .compile(EXPORTS_FUNCTION)
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(function)) = subject.find_export(&instance, FUNCTION_NAME)
+    else {
+        panic!("the export is a function");
+    };
+    let global = subject
+        .allocate_global(
+            Mutability::Variable,
+            Value::FunctionReference(Some(function)),
+        )
+        .ok()
+        .expect("the global");
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::FunctionReference(Some(_)))
+    ));
+    assert!(matches!(
+        subject.write_global(&global, Value::FunctionReference(None)),
+        Ok(())
+    ));
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::FunctionReference(None))
+    ));
+}
+
+/// Checks that `read_global` returns all 128 bits a global was allocated with.
+pub fn holds_a_vector_in_a_global<T: WebAssemblyEngine>(mut subject: T) {
+    let global = subject
+        .allocate_global(Mutability::Constant, Value::V128(u128::MAX))
+        .ok()
+        .expect("the global");
+    assert!(matches!(
+        subject.read_global(&global),
+        Ok(Value::V128(u128::MAX))
+    ));
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 ///
 /// List every suite function here, in the order above, and nothing else.
@@ -527,6 +750,56 @@ macro_rules! tests {
         #[test]
         fn shares_a_memory_with_another_engine() {
             $crate::shares_a_memory_with_another_engine($value);
+        }
+
+        #[test]
+        fn returns_a_trap_from_an_invocation() {
+            $crate::returns_a_trap_from_an_invocation($value);
+        }
+
+        #[test]
+        fn allocates_a_table_of_null_elements() {
+            $crate::allocates_a_table_of_null_elements($value);
+        }
+
+        #[test]
+        fn reads_the_function_it_wrote_into_a_table() {
+            $crate::reads_the_function_it_wrote_into_a_table($value);
+        }
+
+        #[test]
+        fn refuses_an_element_outside_a_table() {
+            $crate::refuses_an_element_outside_a_table($value);
+        }
+
+        #[test]
+        fn grows_a_table_to_its_maximum() {
+            $crate::grows_a_table_to_its_maximum($value);
+        }
+
+        #[test]
+        fn reads_the_value_it_wrote_into_a_global() {
+            $crate::reads_the_value_it_wrote_into_a_global($value);
+        }
+
+        #[test]
+        fn refuses_to_write_a_constant_global() {
+            $crate::refuses_to_write_a_constant_global($value);
+        }
+
+        #[test]
+        fn refuses_to_write_another_value_type() {
+            $crate::refuses_to_write_another_value_type($value);
+        }
+
+        #[test]
+        fn holds_a_function_reference_in_a_global() {
+            $crate::holds_a_function_reference_in_a_global($value);
+        }
+
+        #[test]
+        fn holds_a_vector_in_a_global() {
+            $crate::holds_a_vector_in_a_global($value);
         }
     };
 }

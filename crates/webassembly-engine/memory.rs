@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::{AddressType, Limits};
+
 /// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [memory instances](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
 pub trait MemoryStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [memory instance](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
@@ -56,20 +58,6 @@ pub struct MemoryType {
     pub address_type: AddressType,
     pub limits: Limits,
     pub sharing: Sharing,
-}
-
-/// An [address type](https://webassembly.github.io/spec/core/syntax/types.html#address-types).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AddressType {
-    I32,
-    I64,
-}
-
-/// The [limits](https://webassembly.github.io/spec/core/syntax/types.html#limits) of a memory's size, in pages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Limits {
-    pub minimum: u64,
-    pub maximum: Option<u64>,
 }
 
 /// The [sharing](https://webassembly.github.io/threads/core/syntax/types.html#memory-types) of a memory between threads.
