@@ -3,7 +3,7 @@
 Plan: docs/x86-native-output.md. Brief: pyro-parked/wcontainers-scratch/orchestrator/relaunch-agents/
 x86-native-output.js. Scratch: pyro-parked/wcontainers-scratch/x86-native-output (probes/, results/, check-xn0/,
 check-xn0b/ to check-xn0e/, the five independent checks' probes and outputs, and run4/ to run6/, those runs'
-probes).
+probes, check-xn0f/ the sixth check's, run7/ run 7's).
 
 ## Where things stand
 
@@ -12,9 +12,48 @@ probes).
   check-xn0b/): three blocking and ten minor, fixed. The third check (scratch check-xn0c/) found three blocking and
   nine minor, fixed by run 4 (scratch run4/). The fourth (scratch check-xn0d/) found two blocking and six minor,
   fixed by run 5 (scratch run5/). The fifth (scratch check-xn0e/) found three blocking and six minor; run 6 fixed
-  all nine (list below), measured in scratch run6/. The run-6 fixes have not had a check of their own.
-  Nothing is built; no code of this track exists yet.
+  all nine (list below), measured in scratch run6/. The sixth (scratch check-xn0f/) found two blocking and nine
+  minor; run 7 fixed all eleven (list below), measured in scratch run7/. The run-7 fixes have not had a check of
+  their own. Nothing is built; no code of this track exists yet.
 - XN1 and XN2: not started. XN1 starts with the reconciliation points under Coordination.
+
+## What run 7 changed (sixth check), finding by finding
+
+- Bit tests in way I's exact form (blocking): `bt`, `bts`, `btr`, `btc` on memory with a register offset reach A = t
+  + (w/8) * (offset SAR log2 w); the check and the probe are now made on A, computed flag-free in u (`mov u32, 6;
+  sarx; lea` for 64-bit, with `movsxd` for 32-bit, `movsx` and a count register for 16-bit), the instruction
+  re-encoded on `gs:[t]`. The wrapping form needed nothing. The guards claim and the routing test now name every
+  form whose reach is not its operand's address. Measured (run7/btseq.c): 4,000,000 seeded cases, the sequence gave
+  the meaning's A every time with no flag changed, and `lock bts` on `gs:[t]` set exactly the bit at B + A. New way
+  I tests with offsets up to 2^60 (plan 4, 7).
+- Saved return points across a dropped piece (blocking): every drop converts, before the piece's map goes and with
+  the memory's other threads stopped, each saved t in the piece (the machine's `iretq` frame, P's request record,
+  I's thread record) into its guest pc and count, and the thread leaves through the lookup; space is reused only
+  after that. Per way how the stop covers a thread in the inside (floor lock, embedder's records, I's drop gate).
+  New shape tests: a thread in a `futex` wait while its page is rewritten, unmapped, unprotected, replaced and the
+  space reused (plan 3.2, 3.6, 3.7, 7).
+- The vector image's place (minor): rdx (the context the host kernel passes) plus a fixed delta, not a place below
+  the stack's top. Measured (run7/altdelta.c): 448 bytes for rsp on the program's stack and for 128 rsp values
+  inside the alternate stack, where the distance from the top ranged over -68,544 to -68,672. A guest rsp near the
+  alternate stack's bottom killed the process by SIGSEGV: named for P (plan 3.7, 5).
+- The run-6 handler probe (minor): it never loaded the copy's r10 and r11, so that part of its hostile test could not
+  fail. Measured again (run7/presume7.c) restoring all sixteen registers and leaving through a read-only word to a
+  lookup entry reading the pc from the register area: same results, 924 to 931 ns (plan 3.7).
+- The `fldcw` check in P (minor): the register-area word is sibling-writable in P, so the race is not closed there;
+  named as P's difference, inside the guest's own process (plan 3.1, 5).
+- The `jcc` condition (minor): `Condition::holds` in plain Rust for the floor and I, the flags table and a 16-entry
+  `jcc` table in P's assembly, a differential test of the three against the meaning (plan 3.2, 7, 9).
+- MMX in the unmasked x87 mode (minor): the register stack stays in the hardware (control word masked there), x87
+  instructions go to the x87 unit, MMX instructions stay copied after an X87Control call that raises a pending #MF
+  (plan 3.1, 9).
+- XSAVE routing (minor): keyed on the offer's XSAVE and AVX bits apart; XSAVE without AVX is offered with the
+  576-byte image (plan 3.1).
+- The inside-call kinds (minor): `X87Control`, `Step` and `Stop` given as code, `ALL` 11 (plan 9).
+- The handler's choice on an `int3` hit (minor): it also reads the copy's rip and `si_code`, which siblings can
+  write; why that is harmless is stated (plan 3.2).
+- The vDSO (minor): no x86-64 vDSO exists (the kernel's is ARM64's one-function image); asked of the kernel track,
+  with the P/I plan's "clock_gettime is a system call" as the case without one (plan 3.7).
+- The header (minor): run 7, six checks.
 
 ## What run 6 changed (fifth check), finding by finding
 
@@ -43,9 +82,10 @@ probes).
   offer (XSAVE is in the setting's group), and `xsavec`, `xsaveopt` are outside it always: Trap (plan 3.1).
 - The check after `fldcw` (minor): `fnstcw` into a register-area word, then the test on that word, so a sibling's
   store to the operand cannot hide an unmasked exception (plan 3.1).
-- The handler measured was not the one specified (minor): measured again with the handler as specified, all in
-  assembly with no call or push on the alternate stack, the image read at its fixed place (2,880 bytes below the
-  top on this host) for 832 bytes, every deciding word read-only, the resume through a read-only table (plan 3.7).
+- The handler measured was not the one specified (minor): measured again, all in assembly with no call or push on
+  the alternate stack, the image read at a fixed place below the top (replaced in run 7 by rdx plus a delta), every
+  deciding word read-only, the resume through a read-only table; it did not load the copy's r10 and r11 (run 7's
+  probe does) (plan 3.7).
 - rflags in the count stack word (minor): the word sits at a fixed offset of the register page, so the map names
   it with the existing `Held::Page`, and rflags gets the x86 crate's map number 16; the passes are added by one
   `lea` and `RepPasses` covers the span up to it (plan 3.6, 9).
@@ -234,10 +274,25 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   - presume.c, presume.out (load 0.03 before, 0.11 after): P's handler as the plan specifies it (assembly, no call
     or push, image at its fixed place, measured 2,880 bytes below the alternate stack's top, 832 bytes, XRSTOR
     mask 7, the flags table, deciding words read-only, resume through a read-only table): 200,000 stops flooded
-    while a sibling ORs TF and AC into the copy's rflags and stores handler addresses into its r10 and r11, 3 runs:
-    3 to 7 taken in guest code, 55,133 to 63,419 in the tail, deepest frame 3 KiB, flags, r12..r14 and ymm7 kept,
-    exit 0; round trip 930 to 942 ns against 1,078 to 1,097 with `rt_sigreturn` (3 rounds of 200,000 in each of 3
-    runs).
+    while a sibling ORs TF and AC into the copy's rflags and stores handler addresses into its r10 and r11 (which
+    this probe never loaded, so that edit could not matter), 3 runs: 3 to 7 taken in guest code, 55,133 to 63,419
+    in the tail, deepest frame 3 KiB, flags, r12..r14 and ymm7 kept, exit 0; round trip 930 to 942 ns against 1,078
+    to 1,097 with `rt_sigreturn` (3 rounds of 200,000 in each of 3 runs).
+- Run 7 (scratch run7/; load 2.0 to 3.2 from other users of the machine, Linux 7.0.0-1018-aws):
+  - btseq.c, btseq-altdelta.out (`gcc -O2 -mno-red-zone -mbmi2 -mfsgsbase`, processor 5): way I's exact bit-test
+    address, 2,000,000 cases with seed 0x5eed and 2,000,000 with 0x2b17 (half 64-bit, half 32-bit; offsets small,
+    negative, bit 62 set, any): 0 differences from the meaning's A, flags changed 0 times, `lock bts` on `gs:[t]`
+    landed at exactly B + A's bit in every case; exit 0.
+  - altdelta.c, same file: the vector image at the context (rdx) + 448 bytes for rsp on the program's stack and for
+    rsp at top - 64 KiB - k, k = 0..127 (the same delta each time; from the top -68,544 to -68,672); rsp 512 bytes
+    above the alternate stack's bottom: the process killed by signal 11.
+  - presume7.c, presume7.out (`gcc -O2 -pthread -fno-stack-protector -mfsgsbase`, main thread on processor 5):
+    the handler restoring all sixteen general registers (r10 and r11 included) and leaving by `jmp` through a
+    read-only word to a flag-free lookup entry that reads the copy's pc from the register area at `gs:8`; 200,000
+    stops flooded while a sibling ORs TF and AC into the copy's rflags and stores handler addresses into its r10 and
+    r11, 3 runs: 8 to 10 taken in guest code, 54,952 to 57,568 in the tail, deepest frame 3 KiB, the guest loop's
+    flags, r12..r14 and ymm7 kept, exit 0; round trip 924 to 931 ns against 1,069 to 1,079 with `rt_sigreturn` (3
+    rounds of 200,000 in each of 3 runs).
 - Measured by the fifth check (check-xn0e/run.out): UMIP emulation of all five of sgdt, sidt, sldt, str, smsw in a
   64-bit process (none raised a signal); a `popfq` of the guest's word with TF set gave 10 steps over ten `nop`s,
   of a flags-table word 0.
@@ -268,9 +323,11 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 - A rep string's pass count computed inline after the instruction until the count is ruled (native.md section 4
   does not count rounds).
 - x87 arithmetic is copied only while every x87 exception is masked; a copied `fldcw` is checked, and a thread
-  with one unmasked runs its x87 and MMX instructions in the inside (native.md 3.4 copies x87 arithmetic always,
-  which leaves FDP and FOP to the host). FIP is kept by a store a run in the register area, not taken from the
-  hardware.
+  with one unmasked runs its x87 instructions in the inside and its MMX instructions after a pending-exception
+  call (native.md 3.4 copies x87 arithmetic always, which leaves FDP and FOP to the host). FIP is kept by a store a
+  run in the register area, not taken from the hardware.
+- Saved return points converted when their piece is dropped (native.md does not say what a thread waiting in the
+  inside resumes at after its piece goes).
 
 ## Coordination with other tracks (read theirs at the start of every run)
 
@@ -310,11 +367,17 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
     alternate stack, unblock the stop signal from a read-only set, and move rsp off the alternate stack before the
     unblock. The stub has a read-only page holding the flags table and that set, and puts rflags back only by
     `popfq` of a table word (plan 3.6), restores vector state with the offered groups as the XRSTOR mask, reads the
-    offered groups' part of the vector image at its fixed place below the alternate stack's top (learnt from its
-    first frame; 2,880 bytes on the Xeon for a process without AMX permission, which the stub never asks for), never
-    through `fpregs`, loads a new thread's groups from our kernel's image before its first instruction, and its threads
+    offered groups' part of the vector image at rdx (the context address) plus a fixed delta (learnt from its first
+    frame; 448 bytes on the Xeon, run7/altdelta.c; a place below the stack's top is wrong once a guest rsp points
+    into the alternate stack), never through `fpregs`, loads a new thread's groups from our kernel's image before its first instruction, and its threads
     have no user shadow stack (refused by name otherwise). I's handler resumes by `rt_sigreturn` with the frame's
     rip set to the lookup's entry; I's routine clears TF and AC before Rust code.
+  - Saved return points (plan 3.7, added in run 7): a drop converts every saved t in a dropped piece into its guest
+    pc and count before the piece's map goes; in P the embedder validates each t at the request (recording that
+    pc and count) and answers a thread whose piece was dropped with the lookup's entry; in I a thread leaves the
+    inside only past the memory's drop gate, which the 4.2 stop waits on. Its 3.3 rule ("never at a host pc in the
+    middle of a piece") is kept for every resume after a drop or a stop; the jump back to t is only for a live
+    piece.
   - P on a 4-level host: about 3,000 guest threads per process (32 GiB of first level each).
   - What each way must give: plan section 2 (read-only part of the area, no host address in guest-writable memory).
 - KVM back end (the floor): the thread areas at one virtual address mapped per virtual processor through its own
@@ -325,7 +388,10 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   `popfq` reads its own saved word, not P's flags table, so the guest's TF holds (plan 3.6); on a copied `syscall` the floor writes rcx and the guest's r11 slot (plan
   3.6).
 - kernel: `rt_sigreturn` with cs 0x23 refused by name ("32-bit code segment in sigreturn, not provided", SIGSEGV);
-  the kernel's writes into translated pages drop them (plan 3.7).
+  the kernel's writes into translated pages drop them (plan 3.7). Asked in run 7: what an x86-64 program gets as
+  its vDSO. Today vdso.rs builds only ARM64's one-function image and loader.rs hands it out through
+  `AT_SYSINFO_EHDR`; an x86-64 guest needs either no vDSO (glibc's `clock_gettime` then a system call, as the P/I
+  plan assumes) or an x86-64 one (plan 3.7).
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
   shared code changes (plan section 9) go in small commits that keep ARM64's suites passing.
 - instruction design: the x86-64 `ProcessorArchitecture` and precise instruction sets do not exist yet; the route of
@@ -361,9 +427,14 @@ No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT
   mask, and keeps the alternate stack to one frame under a flood of stops (measured: 3 KiB deep at 200,000, with
   the handler as specified, run6/presume.c); P's stub never jumps to a host address a stop may have exposed to a
   sibling: it leaves through a read-only word the embedder writes only for a call return point its map knows;
-  P's handler writes nothing of ours on the alternate stack and reads the vector image at a fixed place, never
-  through `fpregs`; an `int3` hit on a `jcc` exit chooses only between two host addresses of the map (measured: 0
-  wrong arrivals over 16 conditions);
+  P's handler writes nothing of ours on the alternate stack and reads the vector image at rdx plus a fixed delta,
+  never through `fpregs` (measured constant for 129 interrupted rsp values); its exit restores all sixteen
+  registers and jumps only through read-only words (measured with a sibling storing handler addresses into the
+  copy's r10 and r11, run7/presume7.c); an `int3` hit on a `jcc` exit chooses only between two host addresses of
+  the map (measured: 0 wrong arrivals over 16 conditions); way I's exact form checks the address a bit test
+  reaches, not its operand's (checking the operand alone let the check's probe set a host byte 1 GiB away; the new
+  sequence measured over 4,000,000 seeded cases);
+  no thread resumes at a host address in a piece dropped since its call (plan 3.7, tests in plan 7);
   no code is changed while another processor may run it except by the `int3` protocol
   (measured over 20,000 links with 64 threads running the exit); the code area is never read as data, so it may be
   execute-only; the machine maps each processor's area only for that processor; I's handler restores the host's FS
@@ -385,4 +456,7 @@ resume.c && ./resume 200000`, `gcc -O2 -pthread -o patch patch.c && ./patch 2000
 trips), `gcc -O2 -pthread -o plink plink.c && ./plink 20000`, `gcc -O2 -pthread -o patch2 patch2.c && ./patch2
 20000`. Run 6's, in /work/probes/xn0r6: `gcc -O2 -pthread -o jcc16 jcc16.c && ./jcc16 20000 16 0x5eed` (links,
 workers, seed; exit 1 on any wrong arrival), `gcc -O2 -pthread -fno-stack-protector -o presume presume.c &&
-./presume 200000 200000` (stops, round trips).
+./presume 200000 200000` (stops, round trips). Run 7's, in /work/probes/xn0r7: `gcc -O2 -mno-red-zone -mbmi2
+-mfsgsbase -o btseq btseq.c && taskset -c 5 ./btseq 2000000 0x5eed` (cases, seed; exit 1 on any difference), `gcc
+-O2 -o altdelta altdelta.c && ./altdelta`, `gcc -O2 -pthread -fno-stack-protector -mfsgsbase -o presume7
+presume7.c && ./presume7 200000 200000`.
