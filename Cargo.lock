@@ -6151,6 +6151,7 @@ dependencies = [
  "fastrand",
  "iced-x86",
  "lazy_static",
+ "libm",
  "raw-cpuid",
  "rustc_apfloat",
  "wasm-encoder 0.263.0",
