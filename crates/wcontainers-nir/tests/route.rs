@@ -582,3 +582,62 @@ fn inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolat
         assert_eq!(fragment_inputs(&module), [(0, centre), (1, centre)]);
     }
 }
+
+const FORMATLESS: &str = "#version 450
+layout(local_size_x = 4) in;
+layout(rgba8, binding = 0) uniform writeonly image2D formatted;
+layout(binding = 1) uniform writeonly image2D unformatted;
+void main() {
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    imageStore(formatted, at, vec4(0.5));
+    imageStore(unformatted, at, vec4(0.25));
+}
+";
+
+#[test]
+fn an_image_without_a_format_is_declared_in_the_format_the_variant_names() {
+    let mut stage = Nir::from_glsl(&[(Stage::Compute, FORMATLESS)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let unit = 1;
+    assert_eq!(stage.nir.formatless_images(), 1 << unit);
+    let key = stage.nir.key().unwrap();
+    let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
+    let slot = bindings
+        .iter()
+        .find(|b| b.kind == SlotKind::Storage && b.register == unit)
+        .unwrap()
+        .slot();
+    let routed = || wcontainers_nir::direct::route(&mut stage.nir.try_clone().unwrap()).unwrap();
+    assert_eq!(routed().rewrites.formatless, [slot]);
+    let unnamed = wcontainers_gpu::VariantKey::default();
+    assert!(wcontainers_nir::direct::rewrite(routed(), bindings.clone(), &unnamed, &key).is_err());
+    let format = wcontainers_gpu::Format::Rgba16Float;
+    let named = wcontainers_gpu::VariantKey {
+        storage_formats: vec![(slot, format)],
+        ..wcontainers_gpu::VariantKey::default()
+    };
+    let (module, _) = wcontainers_nir::direct::rewrite(routed(), bindings, &named, &key).unwrap();
+    wcontainers_nir::spirv::validate(&module.module).unwrap();
+    let mut formats: Vec<_> = module
+        .module
+        .global_variables
+        .iter()
+        .filter_map(|(_, g)| match module.module.types[g.ty].inner {
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Storage { format, .. },
+                ..
+            } => Some(format),
+            _ => None,
+        })
+        .collect();
+    formats.sort_by_key(|f| format!("{f:?}"));
+    assert_eq!(
+        formats,
+        [
+            naga::StorageFormat::Rgba16Float,
+            naga::StorageFormat::Rgba8Unorm
+        ]
+    );
+}

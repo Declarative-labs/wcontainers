@@ -210,6 +210,7 @@ unsafe extern "C" {
     fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
     fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
     fn wc_nir_fetches_target(nir: *mut NirShader) -> bool;
+    fn wc_nir_formatless_images(nir: *mut NirShader) -> u64;
     fn wc_nir_fetch_from_texture(nir: *mut NirShader, unit: u32, multisampled: bool);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
     fn wc_nir_nearest_integer_textures(
@@ -475,6 +476,13 @@ impl Nir {
     pub fn fetches_target(&mut self) -> bool {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_fetches_target(self.0) }
+    }
+
+    /// The image units the program declares images at without a format, a bit each: their stores
+    /// take the bound image's format, which the variant converting it names.
+    pub fn formatless_images(&mut self) -> u64 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_formatless_images(self.0) }
     }
 
     /// A fragment program's reads of its first target's texels made loads of the texture at

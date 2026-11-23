@@ -797,6 +797,21 @@ fetches(nir_builder *b, nir_intrinsic_instr *intr, void *data)
           nir_intrinsic_io_semantics(intr).fb_fetch_output;
 }
 
+uint64_t
+wc_nir_formatless_images(struct nir_shader *nir)
+{
+   uint64_t units = 0;
+   nir_foreach_variable_with_modes(var, nir, nir_var_image) {
+      if (var->data.image.format != PIPE_FORMAT_NONE)
+         continue;
+      const unsigned count = MAX2(glsl_get_aoa_size(var->type), 1);
+      const unsigned end = MIN2(var->data.binding + count, sizeof(units) * CHAR_BIT);
+      for (unsigned unit = var->data.binding; unit < end; unit++)
+         units |= BITFIELD64_BIT(unit);
+   }
+   return units;
+}
+
 bool
 wc_nir_fetches_target(struct nir_shader *nir)
 {

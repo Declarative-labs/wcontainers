@@ -240,6 +240,10 @@ bool wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples);
  * lowering of KHR_blend_equation_advanced writes). */
 bool wc_nir_fetches_target(struct nir_shader *nir);
 
+/* The image units a program declares images at without a format (stores converted to the bound
+ * image's format), a bit each. */
+uint64_t wc_nir_formatless_images(struct nir_shader *nir);
+
 /* A fragment program's reads of its first target's texels made loads of the texture at `unit`,
  * a copy of the target the driver binds there (multisampled where the target is, each sample
  * reading its own). */
