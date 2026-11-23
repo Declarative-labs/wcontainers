@@ -3,14 +3,16 @@
 The WebAssembly engine interface (crates/webassembly-engine) implemented on wasmtime.
 Crate: crates/webassembly-engine/implementation/wasmtime, package wcontainers-webassembly-engine-wasmtime.
 
-## Where things stand (2026-11-23, run 2 of milestone E1)
+## Where things stand (2026-11-23, run 3 of milestone E1)
 
 - Done: the crate implements every trait of the interface; the suite's 29 tests and the crate's own 24
   pass on the rented ARM64 machine and on the rented x86-64 machine (run 2, after cleaning the three
   crates, and on x86 from an empty build folder); clippy with warnings denied is clean on the crate on
   both; the crate inherits the workspace lints (unsafe forbidden) and has no unsafe and no exemption;
-  adding `unsafe {}` fails to compile on both ("usage of an `unsafe` block"). The interface and suite
-  files are the same as on main (ea9d491e). The whole check is one script:
+  adding `unsafe {}` fails to compile on both ("usage of an `unsafe` block"). Run 3 repeated the whole
+  check on ARM at cbcd0f8d (after the merge of a00ab267), same results, load 3.1 to 3.2. The interface
+  and suite files are the same as on main (ea9d491e); the changes of a00ab267 touch none of them, and
+  the crate's comments hold no links. The whole check is one script:
   pyro-parked/wcontainers-scratch/engine-wasmtime/check.sh, run as `arm-run <checkout> --name
   engine-wasmtime -- "$(cat check.sh)"` (or x86-run).
 - Not done: the suite on this Mac. The notice of 2026-11-22 moves every build and test off the Mac, so it
