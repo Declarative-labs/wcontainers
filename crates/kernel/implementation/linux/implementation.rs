@@ -65,7 +65,7 @@ pub use credentials::{
 };
 pub use ends::Standard;
 pub(crate) use errno::Errno;
-pub use executing::{KernelProcess, KernelRunner, KernelWithExecutor};
+pub use executing::{KernelConfig, KernelProcess, KernelRunner, KernelWithExecutor};
 pub use linux_extra::{
     ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, IPC_NOWAIT, MAX_RW_COUNT, sched_attr,
 };
@@ -131,6 +131,9 @@ pub(crate) struct Machine {
     pub version: &'static str,
     /// The memory size reported.
     pub memory_bytes: u64,
+    /// How many processors programs are told are online, numbered from 0: the kernel's
+    /// parallelism.
+    pub processors: core::num::NonZeroUsize,
     /// The container's address-space size: one past the highest address a process may use.
     pub address_space_bytes: u64,
     /// The top of the lowest placement tier this executor gives, which layouts are made under.
@@ -344,6 +347,8 @@ pub struct Kernel {
     /// The system the backend's requests under way were handed to, by its address: a restore on
     /// another drops them and asks again.
     backend_system: usize,
+    /// The kernel's wait for the backend's notices.
+    backend_notices: fs::backend::NoticeWait,
 }
 
 impl Default for Kernel {
@@ -460,6 +465,7 @@ impl Kernel {
                 release: "7.0.0-wcontainers",
                 version: "#1 SMP PREEMPT",
                 memory_bytes: 0,
+                processors: core::num::NonZeroUsize::MIN,
                 address_space_bytes: 0,
                 lowest_tier_top: 0,
             },
@@ -474,6 +480,7 @@ impl Kernel {
             last_object: 0,
             waiting: waiting::Waiting::default(),
             backend_system: 0,
+            backend_notices: fs::backend::NoticeWait::NotYet,
         }
     }
 
@@ -544,7 +551,7 @@ impl Kernel {
         &mut self,
         cpu: &mut dyn Cpu,
         system: &alloc::sync::Arc<S>,
-        event: Event<'_>,
+        event: Event,
     ) {
         let mut cx = Context {
             cpu,
@@ -558,9 +565,6 @@ impl Kernel {
             Event::Timer => {
                 self.wake_due();
                 syscall::timer::fire_due(self, &mut cx);
-            }
-            Event::BackendNotice { notice } => {
-                self.backend_notice(&mut cx, notice);
             }
             Event::TerminalResized { columns, rows } => {
                 self.terminal_resized(&mut cx, columns, rows);

@@ -27,6 +27,8 @@ pub(crate) enum WaitFor {
     Ready(u32),
     /// A stream endpoint of an end becoming ready, by the end's number.
     Stream(crate::ends::EndNumber),
+    /// The file backend's next notice.
+    Notice,
 }
 
 /// What a finished waiting call gives the kernel.
@@ -39,6 +41,8 @@ pub(crate) enum Answer {
     Name(Result<(), wcontainers_abi::HostError>, Vec<u8>),
     /// What a connection, listener or stream endpoint is ready for.
     Ready(Result<wcontainers_readiness::ReadinessReport, wcontainers_abi::HostError>),
+    /// Whether the backend sent a notice, and the buffer the call was given, which then holds it.
+    Notice(Result<(), wcontainers_abi::HostError>, Vec<u8>),
 }
 
 /// Reads a finished wait on a handle's readiness, a failed wait as an error on the handle.
@@ -110,6 +114,9 @@ impl crate::Kernel {
             }
             (WaitFor::Stream(end), Answer::Ready(ready)) => {
                 self.end_ready(cx, end, ready);
+            }
+            (WaitFor::Notice, Answer::Notice(notice, bytes)) => {
+                self.notice_came(cx, notice, bytes);
             }
             (about, _) => {
                 debug_assert!(false, "{about:?} answered as another call");

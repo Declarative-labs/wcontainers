@@ -299,8 +299,8 @@ where
     type SuspendedTask = Held<SuspendedTask, C>;
     type ProcessContext = Held<ProcessContext, C>;
 
-    /// Starts the container `config` describes. Its threads run one at a time, which is within
-    /// any `parallelism`.
+    /// Starts the container `config` describes, its programs told that `parallelism` processors
+    /// are online. Its threads run one at a time, which is within any `parallelism`.
     ///
     /// # Panics
     ///
@@ -310,13 +310,14 @@ where
         parallelism: NonZeroUsize,
     ) -> (Self, impl Iterator<Item = Self::Runner>) {
         let KernelConfig {
-            kernel,
+            mut kernel,
             executor,
             system,
             start,
             execution,
             state,
         } = config;
+        kernel.machine.processors = parallelism;
         // SAFETY: the config was made by `KernelConfig::new`, whose caller promised what `start`
         // asks.
         let kernel = unsafe { Self::start(kernel, executor, &system, start, execution, state) }

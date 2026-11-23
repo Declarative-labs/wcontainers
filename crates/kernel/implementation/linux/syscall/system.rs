@@ -1,4 +1,4 @@
-//! Calls about the machine: its name, its memory, randomness and the one CPU.
+//! Calls about the machine: its name, its memory, randomness and its processors.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -161,20 +161,38 @@ pub(super) fn sched_yield<S: crate::System>(
     Ok(0)
 }
 
-/// The guest is told it has one CPU.
+/// The bytes of a mask of every processor online (`cpumask_size`): whole words, the processors'
+/// bits set.
+fn online_mask(kernel: &Kernel) -> Vec<u8> {
+    let processors = kernel.machine.processors.get();
+    let word = u64::BITS as usize;
+    (0..processors.div_ceil(word))
+        .flat_map(|index| {
+            let bits = (processors - index * word).min(word);
+            let mask = u64::MAX >> (word - bits);
+            mask.to_le_bytes()
+        })
+        .collect()
+}
+
+/// Every thread may run on every processor online.
 pub(super) fn sched_getaffinity<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    if size < 8 || size % 8 != 0 {
+    let online = online_mask(kernel);
+    let processors = kernel.machine.processors.get() as u64;
+    if size.saturating_mul(u64::from(u8::BITS)) < processors
+        || !size.is_multiple_of(size_of::<u64>() as u64)
+    {
         return Err(Errno::EINVAL);
     }
     // `find_process_by_pid`: a negative number names no one.
     scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
-    guest(kernel, cx, tid).write(mask, &1u64.to_le_bytes())?;
-    Ok(8)
+    guest(kernel, cx, tid).write(mask, &online)?;
+    Ok(online.len() as u64)
 }
 
 pub(super) fn sched_setaffinity<S: crate::System>(
@@ -183,14 +201,20 @@ pub(super) fn sched_setaffinity<S: crate::System>(
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    // `get_user_cpu_mask` copies the mask in first, at most a word for one CPU.
-    let bytes = guest(kernel, cx, tid).read(mask, size.min(8))?;
+    // `get_user_cpu_mask` copies the mask in first, at most the bytes of a mask of every processor.
+    let online = online_mask(kernel);
+    let bytes = guest(kernel, cx, tid).read(mask, size.min(online.len() as u64))?;
     // `find_process_by_pid`: a negative number names no one.
     let target = scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
     if !same_owner(kernel, tid, &target) && !kernel.credentials(tid).has(CAP_SYS_NICE) {
         return Err(Errno::EPERM);
     }
-    if bytes.first().is_none_or(|first| first & 1 == 0) {
+    // A mask that names no processor online.
+    if !bytes
+        .iter()
+        .zip(&online)
+        .any(|(asked, online)| asked & online != 0)
+    {
         return Err(Errno::EINVAL);
     }
     Ok(0)

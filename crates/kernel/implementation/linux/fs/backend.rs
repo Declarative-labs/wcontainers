@@ -2147,13 +2147,114 @@ async fn ask_backend<F: wcontainers_system::FuseServer>(
     Answer::Backend(error, buffer)
 }
 
+/// Where the kernel's wait for the backend's notices is: one is kept from the backend's first
+/// request on, until the system says it sends none or can send no more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoticeWait {
+    NotYet,
+    Kept,
+    Ended,
+}
+
+/// Waits for the system's file backend's next notice, telling it how the one before was applied:
+/// the notice comes back in `buffer`.
+async fn notice_of<F: wcontainers_system::FuseServer>(
+    system: alloc::sync::Arc<F>,
+    applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
+    mut buffer: Vec<u8>,
+) -> Answer {
+    let notice = system.receive_notice(applied).await;
+    buffer.clear();
+    let notice = notice.map(|notice| buffer.extend_from_slice(&notice));
+    Answer::Notice(notice, buffer)
+}
+
 impl crate::Kernel {
+    /// Asks the backend for its next notice, telling it how the one before was applied, and
+    /// applies each that comes at once.
+    fn wait_for_notice<S: crate::System>(
+        &mut self,
+        cx: &mut crate::Context<'_, S>,
+        mut applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
+    ) {
+        loop {
+            let buffer = self.waiting.buffer();
+            let call: crate::waiting::Call =
+                crate::waiting::waiting_call!(notice_of(cx.system.clone(), applied, buffer));
+            if crate::waiting::Waiting::on_heap(&call) {
+                self.counters
+                    .count(cx.host, crate::reason::WAITING_CALL_ON_HEAP, 0);
+            }
+            self.backend_notices = NoticeWait::Kept;
+            match self.waiting.start(WaitFor::Notice, call) {
+                Some(Answer::Notice(notice, bytes)) => match self.apply_notice(cx, notice, bytes) {
+                    Some(result) => applied = Some(result),
+                    None => return,
+                },
+                Some(_) => {
+                    debug_assert!(false, "a notice's wait answered as another call");
+                    return;
+                }
+                None => return,
+            }
+        }
+    }
+
+    /// The kernel's wait for a notice finished: the notice is applied and the next one asked for.
+    pub(crate) fn notice_came<S: crate::System>(
+        &mut self,
+        cx: &mut crate::Context<'_, S>,
+        notice: Result<(), wcontainers_abi::HostError>,
+        bytes: Vec<u8>,
+    ) {
+        if let Some(result) = self.apply_notice(cx, notice, bytes) {
+            self.wait_for_notice(cx, Some(result));
+        }
+    }
+
+    /// Applies a notice the backend sent and gives how it went, as Linux's device write answers
+    /// the server; none, with the wait ended, if the system sends no notice or can send no more.
+    fn apply_notice<S: crate::System>(
+        &mut self,
+        cx: &mut crate::Context<'_, S>,
+        notice: Result<(), wcontainers_abi::HostError>,
+        bytes: Vec<u8>,
+    ) -> Option<Result<(), wcontainers_kernel::errno::Errno>> {
+        let result = match notice {
+            Ok(()) => Some(self.backend_notice(cx, &bytes).map_err(|errno| {
+                errno
+                    .to_linux()
+                    .expect("a notice is refused with an error Linux names")
+            })),
+            // A system that sends no notices says so once.
+            Err(wcontainers_abi::HostError::NotSupported) => None,
+            Err(error) => {
+                let detail = match error {
+                    wcontainers_abi::HostError::Errno(errno) => errno.unsigned_abs().into(),
+                    _ => 0,
+                };
+                self.counters
+                    .count(cx.host, crate::reason::BACKEND_NOTICES_ENDED, detail);
+                None
+            }
+        };
+        self.waiting.reuse(bytes);
+        if result.is_none() {
+            self.backend_notices = NoticeWait::Ended;
+        }
+        result
+    }
+
     /// Hands the backend the messages made since the last time, counting each by its opcode, each
     /// a call the kernel waits on until the backend answers it.
     pub(crate) fn send_to_backend<S: crate::System>(&mut self, cx: &mut crate::Context<'_, S>) {
         let Some(client) = self.files.backend.clone() else {
             return;
         };
+        // The wait for notices is kept from the backend's first request on.
+        if self.backend_notices == NoticeWait::NotYet {
+            self.wait_for_notice(cx, None);
+        }
         for opcode in client.asked_again() {
             self.counters.count(
                 cx.host,
@@ -2203,8 +2304,13 @@ impl crate::Kernel {
                 sent.push(*request);
                 true
             }
+            WaitFor::Notice => true,
             _ => false,
         });
+        // The new system is asked for notices afresh, with its first request.
+        if self.backend_notices == NoticeWait::Kept {
+            self.backend_notices = NoticeWait::NotYet;
+        }
         let Some(client) = self.files.backend.clone() else {
             return;
         };
@@ -2298,20 +2404,21 @@ impl crate::Kernel {
         }
     }
 
-    /// A notice the backend sent unasked (`fuse_notify`). Nothing is cached, so most change only
-    /// what the kernel holds of an inode, or the pages of a mapped file.
-    pub(crate) fn backend_notice<S: crate::System>(
+    /// A notice the backend sent unasked (`fuse_notify`), and how it went. Nothing is cached, so
+    /// most change only what the kernel holds of an inode, or the pages of a mapped file.
+    fn backend_notice<S: crate::System>(
         &mut self,
         cx: &mut crate::Context<'_, S>,
         notice: &[u8],
-    ) {
+    ) -> Result<(), Errno> {
         let Some(client) = self.files.backend.clone() else {
-            return;
+            return Err(Errno::ENODEV);
         };
+        // A write shorter than its header (`fuse_dev_do_write`).
         let Ok((header, body)) = fuse_out_header::read_from_prefix(notice) else {
             self.counters
                 .count(cx.host, crate::reason::BACKEND_UNEXPECTED, 0);
-            return;
+            return Err(Errno::EINVAL);
         };
         let code = header.error;
         // The notice's own size, as `fuse_notify` reads it.
@@ -2454,17 +2561,25 @@ impl crate::Kernel {
             _ => None,
         };
         match handled {
-            Some(Ok(())) => self
-                .counters
-                .measure(crate::reason::BACKEND_NOTICE, code as u64, 0),
-            Some(Err(errno)) => self.counters.count(
-                cx.host,
-                crate::reason::BACKEND_NOTICE_REFUSED,
-                ((code as u64) << 32) | u64::from(errno.0),
-            ),
-            None => self
-                .counters
-                .count(cx.host, crate::reason::BACKEND_UNEXPECTED, code as u64),
+            Some(Ok(())) => {
+                self.counters
+                    .measure(crate::reason::BACKEND_NOTICE, code as u64, 0);
+                Ok(())
+            }
+            Some(Err(errno)) => {
+                self.counters.count(
+                    cx.host,
+                    crate::reason::BACKEND_NOTICE_REFUSED,
+                    ((code as u64) << 32) | u64::from(errno.0),
+                );
+                Err(errno)
+            }
+            // A code `fuse_notify` does not know.
+            None => {
+                self.counters
+                    .count(cx.host, crate::reason::BACKEND_UNEXPECTED, code as u64);
+                Err(Errno::EINVAL)
+            }
         }
     }
 }
@@ -2564,6 +2679,81 @@ mod tests {
         let before = allocations();
         for unique in 3..100 {
             round(unique);
+        }
+        assert_eq!(allocations(), before);
+    }
+
+    /// What a test backend was last told of the notice before.
+    type Told = Option<Result<(), wcontainers_kernel::errno::Errno>>;
+
+    /// A backend that sends `notice` once its door opens, keeping what it was told of the one
+    /// before.
+    struct Noticing {
+        door: Door,
+        notice: &'static [u8],
+        told: std::sync::Mutex<Option<Told>>,
+    }
+
+    impl wcontainers_system::FuseServer for Noticing {
+        type Reply = &'static [u8];
+        type Notice = &'static [u8];
+
+        async fn receive_notice(
+            &self,
+            applied: Told,
+        ) -> Result<&'static [u8], wcontainers_abi::HostError> {
+            *self.told.lock().expect("told") = Some(applied);
+            self.door.pass().await;
+            Ok(self.notice)
+        }
+
+        /// The backend answers no request.
+        async fn send_request(
+            &self,
+            _request: &[u8],
+        ) -> Result<&'static [u8], wcontainers_abi::HostError> {
+            core::future::pending().await
+        }
+    }
+
+    extern crate std;
+
+    #[test]
+    fn a_notice_waited_for_tells_how_the_one_before_went_and_allocates_nothing() {
+        const NOTICE: &[u8] = b"a notice's bytes";
+        let server = Arc::new(Noticing {
+            door: Door::default(),
+            notice: NOTICE,
+            told: std::sync::Mutex::default(),
+        });
+        let mut waiting = Waiting::default();
+        let mut round = |applied: Told| {
+            server.door.shut();
+            let buffer = waiting.buffer();
+            let call: crate::waiting::Call =
+                waiting_call!(notice_of(server.clone(), applied, buffer));
+            assert!(waiting.start(WaitFor::Notice, call).is_none());
+            assert_eq!(*server.told.lock().expect("told"), Some(applied));
+            server.door.open();
+            let (about, answer) = waiting.next_answer().expect("answered");
+            assert_eq!(about, WaitFor::Notice);
+            let Answer::Notice(Ok(()), bytes) = answer else {
+                panic!("not the notice");
+            };
+            assert_eq!(bytes, NOTICE);
+            waiting.reuse(bytes);
+        };
+        // The first round makes the cell and the buffer.
+        round(None);
+        let before = allocations();
+        let mut refused = false;
+        for _ in 1..100 {
+            round(Some(if refused {
+                Err(wcontainers_kernel::errno::Errno::EINVAL)
+            } else {
+                Ok(())
+            }));
+            refused = !refused;
         }
         assert_eq!(allocations(), before);
     }

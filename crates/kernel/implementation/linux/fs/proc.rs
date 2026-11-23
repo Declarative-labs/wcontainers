@@ -1795,12 +1795,14 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     }
                 }
                 "cpuinfo" => {
-                    let _ = write!(
-                        out,
-                        "processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
-                         CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\n\
-                         CPU part\t: 0x000\nCPU revision\t: 0\n\n"
-                    );
+                    for processor in 0..machine.processors.get() {
+                        let _ = write!(
+                            out,
+                            "processor\t: {processor}\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
+                             CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\n\
+                             CPU part\t: 0x000\nCPU revision\t: 0\n\n"
+                        );
+                    }
                 }
                 // The registered file systems that are built, in Linux's order of registration.
                 "filesystems" => out.push_str(
@@ -1832,9 +1834,13 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "stat" => {
+                    out.push_str("cpu  0 0 0 0 0 0 0 0 0 0\n");
+                    for processor in 0..machine.processors.get() {
+                        let _ = writeln!(out, "cpu{processor} 0 0 0 0 0 0 0 0 0 0");
+                    }
                     let _ = write!(
                         out,
-                        "cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime {}\n\
+                        "intr 0\nctxt 0\nbtime {}\n\
                          processes {}\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n",
                         source.view.boot.seconds, source.last_pid
                     );

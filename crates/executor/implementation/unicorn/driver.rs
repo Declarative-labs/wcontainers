@@ -25,7 +25,7 @@ use wcontainers_system_seeded_test_policy::{
 };
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
-use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
+use crate::replay::{Entry, MemoryDigests, Tape};
 use crate::standin::Unsupported;
 use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
@@ -264,6 +264,8 @@ pub struct TestHost<H = NoHooks> {
     pub(crate) backend: Mutex<Option<crate::backend::Backend>>,
     /// The backend's replies the kernel's calls wait for.
     replies: Mutex<Replies>,
+    /// The backend's notices, for the kernel's wait on them.
+    notices: Mutex<Notices>,
     /// The resolver's answers the kernel's calls wait for, by the number of each question.
     names: Mutex<Replies>,
     /// The number of the last name question.
@@ -290,11 +292,26 @@ pub struct TestHost<H = NoHooks> {
 }
 
 /// The backend's replies that arrived for the kernel's calls and are not taken yet, and the waker of
-/// each call that waits for its reply, by request number.
+/// each call that waits for its reply, by request number. A reply completes only once the kernel
+/// has applied every notice sent before it arrived, as the FUSE server interface's rule says.
 #[derive(Default)]
 struct Replies {
-    arrived: BTreeMap<u64, Vec<u8>>,
+    /// Each reply, with how many notices had been sent when it arrived.
+    arrived: BTreeMap<u64, (u64, Vec<u8>)>,
     waiting: BTreeMap<u64, Waker>,
+    /// How many of the backend's notices the kernel has applied.
+    applied: u64,
+}
+
+/// The backend's notices sent and not yet taken by the kernel's wait, and that wait's waker.
+#[derive(Default)]
+struct Notices {
+    queued: std::collections::VecDeque<Vec<u8>>,
+    waker: Option<Waker>,
+    /// How many were sent.
+    sent: u64,
+    /// Whether the kernel holds one it has not yet said it applied.
+    held: bool,
 }
 
 /// What a driven run has done to it at moments drawn from its seed, and where it is.
@@ -347,6 +364,7 @@ impl TestHost {
             kernel_work: AtomicU64::default(),
             backend: Mutex::default(),
             replies: Mutex::default(),
+            notices: Mutex::default(),
             names: Mutex::default(),
             last_name: AtomicU64::default(),
             ready: Mutex::default(),
@@ -389,6 +407,7 @@ impl TestHost {
             kernel_work: self.kernel_work,
             backend: self.backend,
             replies: self.replies,
+            notices: self.notices,
             names: self.names,
             last_name: self.last_name,
             ready: self.ready,
@@ -670,9 +689,10 @@ where
             loop {
                 let entry = lock(tape).take();
                 match entry {
-                    Entry::Event(event) => kernel.event(cpu, self, event.event()),
+                    Entry::Event(event) => kernel.event(cpu, self, event),
                     Entry::Kill(signal) => kernel.kill(cpu, self, signal),
                     Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
+                    Entry::NoticeSent(notice) => self.notice_sent(notice),
                     Entry::NameAnswered(number, answer) => self.name_arrived(number, answer),
                     Entry::SocketReady(number, ready) => self.socket_ready(number, ready),
                     Entry::StreamReady(end, ready) => self.stream_readied(end, ready),
@@ -695,11 +715,20 @@ where
 
     /// Hands the kernel an event from the outside, kept in the record; in a replay, one the
     /// driver's own work hands must be the one the record holds.
-    pub(crate) fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
-        self.kept_in_step(Entry::Event(OwnedEvent::of(&event)));
+    pub(crate) fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event) {
+        self.kept_in_step(Entry::Event(event));
         let was = self.set_outside(false);
         kernel.event(cpu, self, event);
         self.set_outside(was);
+    }
+
+    /// The backend sends a notice, kept in the record; the kernel then settles, as for a reply.
+    fn send_notice(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, notice: Vec<u8>) {
+        if self.taped_run() {
+            self.kept_in_step(Entry::NoticeSent(notice.clone()));
+        }
+        self.notice_sent(notice);
+        self.hand(kernel, cpu, Event::Timer);
     }
 
     /// Sends a signal from the outside to the first process, kept in the record.
@@ -886,14 +915,36 @@ impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
     type Reply = Vec<u8>;
     type Notice = Vec<u8>;
 
-    /// Not built: this system hands its notices to the kernel as the abi's
-    /// `Event::BackendNotice`, until the kernel keeps a wait for them.
+    /// The next notice sent, once the kernel has said how the one before was applied, which lets
+    /// through the replies that waited for it.
     async fn receive_notice(
         &self,
         applied: Option<Result<(), Errno>>,
     ) -> Result<Vec<u8>, HostError> {
-        let _ = applied;
-        Err(HostError::NotSupported)
+        let held = std::mem::take(&mut lock(&self.notices).held);
+        if held != applied.is_some() {
+            lock(&self.streams).broken.push(format!(
+                "a notice's wait told {applied:?} where it was given {}",
+                if held { "a notice" } else { "none" }
+            ));
+        }
+        if held {
+            Replies::notice_applied(&self.replies);
+        }
+        std::future::poll_fn(|context| {
+            let mut notices = lock(&self.notices);
+            match notices.queued.pop_front() {
+                Some(notice) => {
+                    notices.held = true;
+                    Poll::Ready(Ok(notice))
+                }
+                None => {
+                    notices.waker = Some(context.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await
     }
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
@@ -967,9 +1018,12 @@ impl Replies {
         let _forget = Forget(replies, key);
         std::future::poll_fn(|context| {
             let mut replies = lock(replies);
-            match replies.arrived.remove(&key) {
-                Some(reply) => Poll::Ready(reply),
-                None => {
+            let applied = replies.applied;
+            match replies.arrived.entry(key) {
+                std::collections::btree_map::Entry::Occupied(reply) if reply.get().0 <= applied => {
+                    Poll::Ready(reply.remove().1)
+                }
+                _ => {
                     replies.waiting.insert(key, context.waker().clone());
                     Poll::Pending
                 }
@@ -978,14 +1032,38 @@ impl Replies {
         .await
     }
 
-    /// The reply to `key` arrived: the call waiting for it is woken.
-    fn arrived(replies: &Mutex<Replies>, key: u64, reply: Vec<u8>) {
+    /// The reply to `key` arrived, after `notices` notices were sent: the call waiting for it is
+    /// woken once they are applied.
+    fn arrived(replies: &Mutex<Replies>, key: u64, notices: u64, reply: Vec<u8>) {
         let waiting = {
             let mut replies = lock(replies);
-            replies.arrived.insert(key, reply);
-            replies.waiting.remove(&key)
+            replies.arrived.insert(key, (notices, reply));
+            (notices <= replies.applied)
+                .then(|| replies.waiting.remove(&key))
+                .flatten()
         };
         if let Some(waker) = waiting {
+            waker.wake();
+        }
+    }
+
+    /// The kernel applied one more notice: the calls whose replies waited for it are woken.
+    fn notice_applied(replies: &Mutex<Replies>) {
+        let woken: Vec<Waker> = {
+            let mut replies = lock(replies);
+            replies.applied += 1;
+            let Replies {
+                arrived,
+                waiting,
+                applied,
+            } = &mut *replies;
+            arrived
+                .iter()
+                .filter(|(_, (notices, _))| notices == applied)
+                .filter_map(|(key, _)| waiting.remove(key))
+                .collect()
+        };
+        for waker in woken {
             waker.wake();
         }
     }
@@ -994,12 +1072,26 @@ impl Replies {
 impl<H> TestHost<H> {
     /// The backend's reply to request `unique` arrived: the call waiting for it is woken.
     fn reply_arrived(&self, unique: u64, reply: Vec<u8>) {
-        Replies::arrived(&self.replies, unique, reply);
+        let notices = lock(&self.notices).sent;
+        Replies::arrived(&self.replies, unique, notices, reply);
     }
 
     /// The resolver's answer to question `number` arrived: the call waiting for it is woken.
     fn name_arrived(&self, number: u64, answer: Vec<u8>) {
-        Replies::arrived(&self.names, number, answer);
+        Replies::arrived(&self.names, number, 0, answer);
+    }
+
+    /// The backend sent a notice: the kernel's wait for one is woken.
+    fn notice_sent(&self, notice: Vec<u8>) {
+        let waker = {
+            let mut notices = lock(&self.notices);
+            notices.sent += 1;
+            notices.queued.push_back(notice);
+            notices.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 
     /// Socket `number` became ready: the wait on it is woken.
@@ -1036,7 +1128,7 @@ where
             .change(path, bytes);
     }
 
-    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
+    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event) {
         TestHost::hand(self, kernel, cpu, event);
     }
 
@@ -1270,36 +1362,43 @@ pub fn run_prepared(
     }
 }
 
-/// A kernel with the container started on the stand-in, as the kernel interface sees it: its first
-/// process, with `state`, is loaded and has not run.
-pub fn started_with_executor<State: Clone + 'static>(
+/// A kernel with the container started on the stand-in, made through the kernel interface with
+/// `parallelism` runners: its first process, with `state`, is loaded and has not run.
+pub fn started_with_executor<State: Clone + Send + 'static>(
     prepared: Prepared,
     container: &Container<'_>,
     state: State,
+    parallelism: std::num::NonZeroUsize,
 ) -> (
     wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>,
     Arc<TestHost>,
 ) {
+    use wcontainers_kernel::Kernel as _;
+    /// The interface's configuration holds a start that lives as long as the kernel: what it
+    /// names lives as long as the test.
+    fn kept(bytes: &[u8]) -> &'static [u8] {
+        Box::leak(bytes.into())
+    }
     let host = TestHost::repeatable(0, None);
     *host.streams() = Streams::new(prepared.client);
     let arguments: Vec<&[u8]> = container
         .arguments
         .iter()
-        .map(|argument| argument.as_bytes())
+        .map(|argument| kept(argument.as_bytes()))
         .collect();
     let environment: Vec<&[u8]> = container
         .environment
         .iter()
-        .map(|variable| variable.as_bytes())
+        .map(|variable| kept(variable.as_bytes()))
         .collect();
     let cpu = crate::standin::StandIn::with_space(container.address_space);
     let start = Start {
-        path: container.path.as_bytes(),
-        arguments: &arguments,
-        environment: &environment,
-        working_directory: container.working_directory.as_bytes(),
+        path: kept(container.path.as_bytes()),
+        arguments: Box::leak(arguments.into_boxed_slice()),
+        environment: Box::leak(environment.into_boxed_slice()),
+        working_directory: kept(container.working_directory.as_bytes()),
         hostname: reference::HOSTNAME.as_bytes(),
-        groups: &prepared.groups,
+        groups: Box::leak(prepared.groups.into_boxed_slice()),
         backend: None,
         standard: host.standard(),
         address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
@@ -1315,17 +1414,21 @@ pub fn started_with_executor<State: Clone + 'static>(
     let host = Arc::new(host);
     // SAFETY: the test host's waiting calls hold only what may move between host threads (see
     // `waiting_calls_move_between_threads`).
-    let kernel = unsafe {
-        wcontainers_kernel_linux::KernelWithExecutor::start(
+    #[expect(
+        unsafe_code,
+        reason = "the kernel's configuration asks that the system's waiting calls may move between host threads, which the system interface's futures cannot say in their types"
+    )]
+    let config = unsafe {
+        wcontainers_kernel_linux::KernelConfig::new(
             prepared.kernel,
             cpu,
-            &host,
+            Arc::clone(&host),
             start,
             config,
             state,
         )
-    }
-    .expect("the kernel runs a process serially with exact replay");
+    };
+    let (kernel, _runners) = wcontainers_kernel_linux::KernelWithExecutor::new(config, parallelism);
     (kernel, host)
 }
 
@@ -1383,7 +1486,7 @@ pub fn program_not_run(
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    program_started(name, link_flags, out).0
+    program_started(name, link_flags, out, std::num::NonZeroUsize::MIN).0
 }
 
 /// As [`program_not_run`], run until every thread waits with no deadline.
@@ -1392,7 +1495,35 @@ pub fn program_waiting(
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    let (mut started, host) = program_started(name, link_flags, out);
+    let (mut started, host) = program_started(name, link_flags, out, std::num::NonZeroUsize::MIN);
+    let finished = run_started(&mut started, &host);
+    assert_eq!(finished, None, "the program waits for ever");
+    started
+}
+
+/// The exit code of the guest program `name`, built with `link_flags` into `out`, run to its end
+/// on a kernel made with `parallelism` runners.
+pub fn program_exit_code(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+) -> i32 {
+    let (mut started, host) = program_started(name, link_flags, out, parallelism);
+    let status = run_started(&mut started, &host).expect("the program ends");
+    exit_code(status)
+}
+
+/// Runs a started kernel's threads until its container ends, with its wait status, or every
+/// thread waits with no deadline.
+fn run_started(
+    started: &mut wcontainers_kernel_linux::KernelWithExecutor<
+        crate::standin::StandIn,
+        u64,
+        TestHost,
+    >,
+    host: &Arc<TestHost>,
+) -> Option<i32> {
     started.with_parts(|kernel, cpu| {
         loop {
             match kernel.next() {
@@ -1404,27 +1535,28 @@ pub fn program_waiting(
                     let exit = cpu
                         .run(thread, resume, slice_nanoseconds)
                         .expect("the stand-in runs the program");
-                    kernel.exit(cpu, &host, exit);
+                    kernel.exit(cpu, host, exit);
                 }
                 Next::Idle {
                     until_nanoseconds: Some(0),
-                } => kernel.event(cpu, &host, Event::Timer),
+                } => kernel.event(cpu, host, Event::Timer),
                 Next::Idle {
                     until_nanoseconds: None,
-                } => break,
-                other => panic!("the program waits for ever, not {other:?}"),
+                } => return None,
+                Next::Finished { status } => return Some(status),
+                other => panic!("the program waits for its deadline, not {other:?}"),
             }
         }
-    });
-    started
+    })
 }
 
-/// A container started with the guest program `name`, built with `link_flags` into `out`, and
-/// its system.
+/// A container started with the guest program `name`, built with `link_flags` into `out`, on a
+/// kernel with `parallelism` runners, and its system.
 fn program_started(
     name: &str,
     link_flags: &[&str],
     out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
 ) -> (
     wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost>,
     Arc<TestHost>,
@@ -1449,7 +1581,7 @@ fn program_started(
         root_image: None,
         address_space: crate::standin::SPACE_32_BIT,
     };
-    started_with_executor(prepare(&container), &container, u64::MIN)
+    started_with_executor(prepare(&container), &container, u64::MIN, parallelism)
 }
 
 fn run_hosted<H: BetweenSteps + Send>(
@@ -1692,7 +1824,7 @@ where
                 injecting.notice_at.remove(0);
                 notice(&mut injecting.notices)
             };
-            self.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
+            self.send_notice(kernel, cpu, notice);
         }
         while self.injecting().signal_at.first() == Some(&turns) {
             let signal = {
@@ -2161,9 +2293,7 @@ fn deliver_live<H: Send>(
             host.reply_arrived(unique, reply);
             host.hand(kernel, cpu, Event::Timer);
         }
-        crate::backend::Message::Notice(notice) => {
-            host.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
-        }
+        crate::backend::Message::Notice(notice) => host.send_notice(kernel, cpu, notice),
     }
 }
 

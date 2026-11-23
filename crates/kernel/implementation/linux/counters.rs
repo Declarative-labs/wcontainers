@@ -163,10 +163,13 @@ pub mod reason {
     /// queued. Detail: none.
     pub const OUTSIDE_ERROR_NOT_QUEUED: &str = "outside datagram error not queued";
     /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
-    /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
-    /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
-    /// error number.
+    /// or a DELETE whose parent and name are not the child's. The backend is told the error when
+    /// the next notice is asked for, as Linux answers its write. Detail: the notice's code times
+    /// 2^32 plus the error number.
     pub const BACKEND_NOTICE_REFUSED: &str = "backend notice refused";
+    /// The system's wait for the backend's notices failed, so no later notice is applied: a FUSE
+    /// connection's notices end with it. Detail: the Linux error number, or 0 for another failure.
+    pub const BACKEND_NOTICES_ENDED: &str = "backend notices ended";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.
     pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";

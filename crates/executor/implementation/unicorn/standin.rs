@@ -135,6 +135,10 @@ pub struct StandIn {
 // handle is cloned only inside its own hooks, which capture nothing, and which keeps no state of
 // the host thread between calls), the mappings its block pointers point into, and its records.
 // So all of it moves to another host thread together, and it is used by one at a time.
+#[expect(
+    unsafe_code,
+    reason = "unicorn's engine handle holds raw pointers, so the stand-in that owns it is not Send by itself"
+)]
 unsafe impl Send for StandIn {}
 
 fn prot(permissions: Permissions) -> Prot {
