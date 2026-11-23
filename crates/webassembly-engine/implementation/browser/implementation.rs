@@ -1,6 +1,7 @@
 //! The WebAssembly engine interface run by the browser's own engine, through the WebAssembly JavaScript API.
 
 mod adapter;
+mod declared;
 mod function;
 mod glue;
 mod store;
@@ -12,7 +13,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 
-use js_sys::WebAssembly::{Instance, Memory, Module};
+use js_sys::WebAssembly::{Instance, Memory};
 use wasm_bindgen::{JsCast, JsValue};
 use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
 
@@ -119,17 +120,19 @@ fn new_id(forget: fn(f64)) -> Registration {
     }
 }
 
-/// Returns the object to post to another worker, where `receive_module` makes the module known, or nothing when
+/// Returns the value to post to another worker, where `receive_module` makes the module known, or nothing when
 /// this worker does not know the module.
-pub fn module_to_post(module: &BrowserModule) -> Option<Module> {
-    glue::registered_module(module.registration.registered.id)
+pub fn module_to_post(module: &BrowserModule) -> Option<JsValue> {
+    Some(glue::module_to_post(module.registration.registered.id))
+        .filter(|posted| !posted.is_undefined())
 }
 
-/// Makes a module another worker posted known to this worker's engines.
-pub fn receive_module(posted: &Module) -> BrowserModule {
+/// Makes a module another worker posted known to this worker's engines, or answers nothing when what was posted is
+/// not what `module_to_post` returned.
+pub fn receive_module(posted: &JsValue) -> Option<BrowserModule> {
     let registration = new_id(glue::forget_module);
-    glue::register_module(registration.registered.id, posted);
-    BrowserModule { registration }
+    glue::receive_module(registration.registered.id, posted)
+        .then_some(BrowserModule { registration })
 }
 
 /// Returns the object to post to another worker, where `receive_shared_memory` makes the memory known, or nothing
@@ -197,8 +200,13 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
     type CompileError = JsValue;
     fn compile(&self, bytes: &[u8]) -> Result<BrowserModule, JsValue> {
         let module = glue::compile(bytes)?;
+        let export_types = declared::export_types(bytes).map_err(|error| {
+            js_sys::Error::new(&format!(
+                "the types of the module's exports cannot be read: {error}"
+            ))
+        })?;
         let registration = new_id(glue::forget_module);
-        glue::register_module(registration.registered.id, &module);
+        glue::register_module(registration.registered.id, &module, &export_types);
         Ok(BrowserModule { registration })
     }
 
@@ -208,12 +216,6 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
         module: &BrowserModule,
         imports: &[Import<'_, Self>],
     ) -> Result<Instance, JsValue> {
-        let module =
-            glue::registered_module(module.registration.registered.id).ok_or_else(|| {
-                js_sys::Error::new(
-                    "the module was compiled in another worker and not posted to this one",
-                )
-            })?;
         let object = glue::new_imports();
         for import in imports {
             let value: &JsValue = match &import.address {
@@ -225,7 +227,8 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
             };
             glue::add_import(&object, import.module_name, import.item_name, value);
         }
-        let instance = self.run(|| glue::instantiate(&module, &object));
+        let id = module.registration.registered.id;
+        let instance = self.run(|| glue::instantiate_registered(id, &object));
         if instance.is_err() {
             self.check_context_returned();
         }
@@ -239,11 +242,13 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
         } else if glue::is_function(&value) {
             ExternalAddress::Function(value.unchecked_into())
         } else if glue::is_table(&value) {
-            ExternalAddress::Table(store::table_of(value.unchecked_into()))
+            let functions = declared::table_refers_to_functions(&glue::export_type(instance, name));
+            ExternalAddress::Table(store::table_of(value.unchecked_into(), functions))
         } else if glue::is_memory(&value) {
             ExternalAddress::Memory(store::memory_of(value.unchecked_into(), None))
         } else if glue::is_global(&value) {
-            ExternalAddress::Global(store::global_of(value.unchecked_into()))
+            let kind = declared::exported_global_kind(&glue::export_type(instance, name));
+            ExternalAddress::Global(store::global_of(value.unchecked_into(), kind))
         } else {
             ExternalAddress::Tag(value)
         })

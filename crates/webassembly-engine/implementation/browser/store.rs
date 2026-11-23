@@ -19,9 +19,9 @@ use wcontainers_webassembly_engine::table::{
 };
 
 use crate::adapter::{
-    self, CopySlot, GLOBAL, GLOBAL_VALUE_TYPES, GUEST_MEMORY, NAMESPACE, READ, SCRATCH_MEMORY,
-    TABLE, WRITE, set_slot, slot,
+    self, CopySlot, GLOBAL, GUEST_MEMORY, NAMESPACE, READ, SCRATCH_MEMORY, WRITE, set_slot, slot,
 };
+use crate::declared::global_kinds;
 use crate::{BrowserEngine, BrowserSharedMemory, glue, new_id};
 
 /// A memory: the JavaScript API's object, and the exports of its access module, which copy out of it and into it.
@@ -189,7 +189,7 @@ impl<HostContext> MemoryStore for BrowserEngine<HostContext> {
     }
 }
 
-/// A table: the JavaScript API's object, its address type, and whether its elements are `funcref`.
+/// A table: the JavaScript API's object, its address type, and whether its elements refer to functions.
 #[derive(Clone)]
 pub struct BrowserTable {
     table: Table,
@@ -202,21 +202,9 @@ pub fn table_object(table: &BrowserTable) -> &Table {
     &table.table
 }
 
-thread_local! {
-    /// A module for each address type that instantiates only with a `funcref` table of it, by whether 64-bit.
-    static FUNCTION_TABLE: [OnceCell<Module>; 2] = const { [const { OnceCell::new() }; 2] };
-}
-
-/// Describes a table, finding whether its elements are `funcref` by whether it instantiates a module importing one.
-pub fn table_of(table: Table) -> BrowserTable {
+/// Describes a table, whose elements refer to functions or not as its module declares.
+pub fn table_of(table: Table, functions: bool) -> BrowserTable {
     let table64 = glue::is_table64(&table);
-    let functions = FUNCTION_TABLE.with(|modules| {
-        let module = modules[usize::from(table64)].get_or_init(|| {
-            glue::compile(&adapter::function_table(table64))
-                .expect("a table access module is valid")
-        });
-        glue::instantiate_with(module, NAMESPACE, TABLE, &table).is_some()
-    });
     BrowserTable {
         table,
         table64,
@@ -296,11 +284,11 @@ impl<HostContext> TableStore for BrowserEngine<HostContext> {
     }
 }
 
-/// A global: the JavaScript API's object, the value type found for it, and for a float or a vector its access module.
+/// A global: the JavaScript API's object, the value type it is read by, and for a float or a vector its access module.
 #[derive(Clone)]
 pub struct BrowserGlobal {
     global: Global,
-    /// Nothing for a type this engine does not tell apart.
+    /// Nothing for a type this engine does not read; `funcref` for any function reference type.
     value_type: Option<ValType>,
     /// Not known, and not used, when the type is not.
     mutability: Mutability,
@@ -320,13 +308,30 @@ pub fn global_object(global: &BrowserGlobal) -> &Global {
 }
 
 thread_local! {
-    /// A module for each value type and mutability, which instantiates only with a global of that type.
+    /// The access module of each value type and mutability read through the slot, made when first used.
     static GLOBAL_ACCESS: OnceCell<Vec<(ValType, Mutability, Module)>> = const { OnceCell::new() };
 }
 
-/// Instantiates the access module with the global, or answers nothing when the global has another type.
-fn access(module: &Module, value_type: ValType, global: &Global) -> Option<Instance> {
-    if adapter::global_through_slot(value_type) {
+/// Returns the exports of the access module of the global's type, which moves its value through the first slot.
+fn slot_access(global: &Global, value_type: ValType, mutability: Mutability) -> SlotAccess {
+    let instance = GLOBAL_ACCESS.with(|modules| {
+        let (_, _, module) = modules
+            .get_or_init(|| {
+                global_kinds()
+                    .filter(|(value_type, _)| adapter::global_through_slot(*value_type))
+                    .map(|(value_type, mutability)| {
+                        let bytes =
+                            adapter::global_access(value_type, mutability == Mutability::Variable);
+                        let module = glue::compile(&bytes).expect("an access module is valid");
+                        (value_type, mutability, module)
+                    })
+                    .collect()
+            })
+            .iter()
+            .find(|(known_type, known_mutability, _)| {
+                *known_type == value_type && *known_mutability == mutability
+            })
+            .expect("each value type read through the slot has an access module");
         glue::instantiate_with_two(
             module,
             NAMESPACE,
@@ -335,69 +340,25 @@ fn access(module: &Module, value_type: ValType, global: &Global) -> Option<Insta
             SCRATCH_MEMORY,
             &wasm_bindgen::memory(),
         )
-        .ok()
-    } else {
-        glue::instantiate_with(module, NAMESPACE, GLOBAL, global)
-    }
-}
-
-/// Runs the operation on the access modules, one for each value type and mutability, which instantiate only with a
-/// global of that type.
-fn with_global_access<Returned>(
-    operation: impl FnOnce(&[(ValType, Mutability, Module)]) -> Returned,
-) -> Returned {
-    GLOBAL_ACCESS.with(|modules| {
-        operation(modules.get_or_init(|| {
-            GLOBAL_VALUE_TYPES
-                .into_iter()
-                .flat_map(|value_type| {
-                    [Mutability::Constant, Mutability::Variable].map(|mutability| {
-                        let bytes =
-                            adapter::global_access(value_type, mutability == Mutability::Variable);
-                        (
-                            value_type,
-                            mutability,
-                            glue::compile(&bytes).expect("an access module is valid"),
-                        )
-                    })
-                })
-                .collect()
-        }))
-    })
-}
-
-/// Describes a global of the type, with the access module's instance for it.
-fn described(
-    global: Global,
-    value_type: ValType,
-    mutability: Mutability,
-    instance: &Instance,
-) -> BrowserGlobal {
-    let through_slot = adapter::global_through_slot(value_type).then(|| SlotAccess {
-        read: glue::instance_export(instance, READ).unchecked_into(),
+        .expect("a global instantiates the access module of its type")
+    });
+    SlotAccess {
+        read: glue::instance_export(&instance, READ).unchecked_into(),
         write: (mutability == Mutability::Variable)
-            .then(|| glue::instance_export(instance, WRITE).unchecked_into()),
-    });
-    BrowserGlobal {
-        global,
-        value_type: Some(value_type),
-        mutability,
-        through_slot,
+            .then(|| glue::instance_export(&instance, WRITE).unchecked_into()),
     }
 }
 
-/// Describes a global, finding its type by which access module it instantiates.
-pub fn global_of(global: Global) -> BrowserGlobal {
-    let found = with_global_access(|modules| {
-        modules.iter().find_map(|(value_type, mutability, module)| {
-            access(module, *value_type, &global)
-                .map(|instance| (*value_type, *mutability, instance))
-        })
-    });
-    match found {
-        Some((value_type, mutability, instance)) => {
-            described(global, value_type, mutability, &instance)
-        }
+/// Describes a global read by the value type and mutability, or one this engine does not read when given nothing.
+pub fn global_of(global: Global, kind: Option<(ValType, Mutability)>) -> BrowserGlobal {
+    match kind {
+        Some((value_type, mutability)) => BrowserGlobal {
+            through_slot: adapter::global_through_slot(value_type)
+                .then(|| slot_access(&global, value_type, mutability)),
+            global,
+            value_type: Some(value_type),
+            mutability,
+        },
         None => BrowserGlobal {
             global,
             value_type: None,
@@ -405,20 +366,6 @@ pub fn global_of(global: Global) -> BrowserGlobal {
             through_slot: None,
         },
     }
-}
-
-/// Describes a global of a type read through the slot that this engine made, whose type it knows.
-fn known_global(global: Global, value_type: ValType, mutability: Mutability) -> BrowserGlobal {
-    let instance = with_global_access(|modules| {
-        modules
-            .iter()
-            .find(|(known_type, known_mutability, _)| {
-                *known_type == value_type && *known_mutability == mutability
-            })
-            .and_then(|(_, _, module)| access(module, value_type, &global))
-    })
-    .expect("a global this engine made instantiates the access module of its type");
-    described(global, value_type, mutability, &instance)
 }
 
 /// Moves the global's value into the first slot.
@@ -480,16 +427,7 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
                 ValType::Ref(RefType::FUNCREF),
             ),
         };
-        Ok(if adapter::global_through_slot(value_type) {
-            known_global(global, value_type, mutability)
-        } else {
-            BrowserGlobal {
-                global,
-                value_type: Some(value_type),
-                mutability,
-                through_slot: None,
-            }
-        })
+        Ok(global_of(global, Some((value_type, mutability))))
     }
 
     fn read_global(&self, global: &BrowserGlobal) -> Result<Value<Function>, ReadGlobalError> {
@@ -533,10 +471,12 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
             }
             (Some(ValType::V128), Value::V128(value)) => write_through_slot(global, value)?,
             (Some(ValType::Ref(RefType::FUNCREF)), Value::FunctionReference(function)) => {
-                glue::set_reference_value(
+                if !glue::set_reference_value(
                     object,
                     function.as_ref().map_or(&JsValue::NULL, AsRef::as_ref),
-                );
+                ) {
+                    return Err(WriteGlobalError::ValueTypeMismatch);
+                }
             }
             _ => return Err(WriteGlobalError::ValueTypeMismatch),
         }

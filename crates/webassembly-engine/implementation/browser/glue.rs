@@ -9,10 +9,16 @@ use wasm_bindgen::prelude::wasm_bindgen;
 extern "C" {
     #[wasm_bindgen(catch)]
     pub fn compile(bytes: &[u8]) -> Result<Module, JsValue>;
+    #[wasm_bindgen(js_name = newExportTypes)]
+    pub fn new_export_types() -> JsValue;
+    #[wasm_bindgen(js_name = keepExportType)]
+    pub fn keep_export_type(types: &JsValue, name: &str, kept: &JsValue);
     #[wasm_bindgen(js_name = registerModule)]
-    pub fn register_module(id: f64, module: &Module);
-    #[wasm_bindgen(js_name = registeredModule)]
-    pub fn registered_module(id: f64) -> Option<Module>;
+    pub fn register_module(id: f64, module: &Module, types: &JsValue);
+    #[wasm_bindgen(js_name = moduleToPost)]
+    pub fn module_to_post(id: f64) -> JsValue;
+    #[wasm_bindgen(js_name = receiveModule)]
+    pub fn receive_module(id: f64, posted: &JsValue) -> bool;
     #[wasm_bindgen(js_name = forgetModule)]
     pub fn forget_module(id: f64);
     #[wasm_bindgen(js_name = registerSharedMemory)]
@@ -28,8 +34,12 @@ extern "C" {
     pub fn add_import(imports: &JsValue, module_name: &str, item_name: &str, value: &JsValue);
     #[wasm_bindgen(catch)]
     pub fn instantiate(module: &Module, imports: &JsValue) -> Result<Instance, JsValue>;
+    #[wasm_bindgen(js_name = instantiateRegistered, catch)]
+    pub fn instantiate_registered(id: f64, imports: &JsValue) -> Result<Instance, JsValue>;
     #[wasm_bindgen(js_name = instanceExports)]
     pub fn instance_export(instance: &Instance, name: &str) -> JsValue;
+    #[wasm_bindgen(js_name = exportType)]
+    pub fn export_type(instance: &Instance, name: &str) -> JsValue;
     #[wasm_bindgen(js_name = isFunction)]
     pub fn is_function(value: &JsValue) -> bool;
     #[wasm_bindgen(js_name = isTable)]
@@ -44,13 +54,6 @@ extern "C" {
     pub fn take_thrown() -> JsValue;
     #[wasm_bindgen(js_name = isException)]
     pub fn is_exception(error: &JsValue) -> bool;
-    #[wasm_bindgen(js_name = instantiateWith)]
-    pub fn instantiate_with(
-        module: &Module,
-        namespace: &str,
-        name: &str,
-        value: &JsValue,
-    ) -> Option<Instance>;
     #[wasm_bindgen(js_name = instantiateWithTwo, catch)]
     pub fn instantiate_with_two(
         module: &Module,
@@ -106,6 +109,6 @@ extern "C" {
     #[wasm_bindgen(js_name = setBigIntValue)]
     pub fn set_big_int_value(global: &Global, value: i64);
     #[wasm_bindgen(js_name = setReferenceValue)]
-    pub fn set_reference_value(global: &Global, value: &JsValue);
+    pub fn set_reference_value(global: &Global, value: &JsValue) -> bool;
 
 }

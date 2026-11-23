@@ -8,7 +8,7 @@ use core::mem::size_of;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function,
     FunctionSection, GlobalSection, GlobalType, Ieee32, Ieee64, ImportSection, InstructionSink,
-    MemArg, MemArgTarget, MemoryType, Module, RefType, TableType, TypeSection, ValType,
+    MemArg, MemArgTarget, MemoryType, Module, RefType, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::memory::PAGE_SIZE;
 
@@ -311,39 +311,16 @@ pub fn host(
     assemble(&types, &imports, &functions, &exports, &[body])
 }
 
-/// The value types a global may have that this engine tells apart, in the order a global's type is looked for: those
-/// `Value` can hold, and `externref`, which it cannot.
-pub const GLOBAL_VALUE_TYPES: [ValType; 7] = [
+/// The value types of the globals this engine reads, those `Value` can hold: a global of any function reference type
+/// is read as `funcref`.
+pub const GLOBAL_VALUE_TYPES: [ValType; 6] = [
     ValType::I32,
     ValType::I64,
     ValType::F32,
     ValType::F64,
     ValType::V128,
     ValType::Ref(RefType::FUNCREF),
-    ValType::Ref(RefType::EXTERNREF),
 ];
-
-/// The name of a table a table access module imports.
-pub const TABLE: &str = "t";
-
-/// A module that imports a `funcref` table of the address type, so that it instantiates only with such a table.
-pub fn function_table(table64: bool) -> Vec<u8> {
-    let mut imports = ImportSection::new();
-    imports.import(
-        NAMESPACE,
-        TABLE,
-        TableType {
-            element_type: RefType::FUNCREF,
-            table64,
-            minimum: u64::MIN,
-            maximum: None,
-            shared: false,
-        },
-    );
-    let mut module = Module::new();
-    module.section(&imports);
-    module.finish()
-}
 
 /// Answers whether a global of the value type is read and written through the first slot: a float, whose NaN's bits a
 /// JavaScript number does not keep, or a vector, which JavaScript cannot hold.

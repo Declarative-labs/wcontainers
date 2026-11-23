@@ -1,6 +1,9 @@
 // The thin JavaScript side of the browser engine: each function is one call of the WebAssembly JavaScript API.
 
+// Each module by its registration id, with the types it declares for its exports by their names: `{ module, types }`.
 const modules = new Map();
+// The types each instance's module declares for its exports, by the instance.
+const instanceTypes = new WeakMap();
 const sharedMemories = new Map();
 let thrown;
 
@@ -8,12 +11,35 @@ export function compile(bytes) {
   return new WebAssembly.Module(new Uint8Array(bytes));
 }
 
-export function registerModule(id, module) {
-  modules.set(id, module);
+export function newExportTypes() {
+  return new Map();
 }
 
-export function registeredModule(id) {
+export function keepExportType(types, name, type) {
+  types.set(name, type);
+}
+
+export function registerModule(id, module, types) {
+  modules.set(id, { module, types });
+}
+
+// Returns what `receiveModule` makes known in another worker, or undefined when this worker does not know the module.
+export function moduleToPost(id) {
   return modules.get(id);
+}
+
+// Registers what `moduleToPost` returned in another worker, answering whether it was such a value.
+export function receiveModule(id, posted) {
+  if (
+    posted === null ||
+    typeof posted !== "object" ||
+    !(posted.module instanceof WebAssembly.Module) ||
+    !(posted.types instanceof Map)
+  ) {
+    return false;
+  }
+  modules.set(id, { module: posted.module, types: posted.types });
+  return true;
 }
 
 export function forgetModule(id) {
@@ -32,20 +58,41 @@ export function forgetSharedMemory(id) {
   sharedMemories.delete(id);
 }
 
+// The import object and each namespace have no prototype, so that a name a module imports finds only what was given
+// under it, and giving it reaches no other object.
 export function newImports() {
-  return {};
+  return Object.create(null);
 }
 
 export function addImport(imports, moduleName, itemName, value) {
-  (imports[moduleName] ??= {})[itemName] = value;
+  const namespace = Object.hasOwn(imports, moduleName)
+    ? imports[moduleName]
+    : (imports[moduleName] = Object.create(null));
+  namespace[itemName] = value;
 }
 
 export function instantiate(module, imports) {
   return new WebAssembly.Instance(module, imports);
 }
 
+export function instantiateRegistered(id, imports) {
+  const registered = modules.get(id);
+  if (registered === undefined) {
+    throw new Error("the module was compiled in another worker and not posted to this one");
+  }
+  const instance = new WebAssembly.Instance(registered.module, imports);
+  instanceTypes.set(instance, registered.types);
+  return instance;
+}
+
+// Returns the instance's own export of the name, or undefined when it has none.
 export function instanceExports(instance, name) {
   return Object.hasOwn(instance.exports, name) ? instance.exports[name] : undefined;
+}
+
+// Returns what the instance's module declares for its export of the name, or undefined when nothing is kept for it.
+export function exportType(instance, name) {
+  return instanceTypes.get(instance)?.get(name);
 }
 
 export function isFunction(value) {
@@ -84,14 +131,6 @@ export function takeThrown() {
 
 export function isException(error) {
   return typeof WebAssembly.Exception === "function" && error instanceof WebAssembly.Exception;
-}
-
-export function instantiateWith(module, namespace, name, value) {
-  try {
-    return new WebAssembly.Instance(module, { [namespace]: { [name]: value } });
-  } catch {
-    return undefined;
-  }
 }
 
 export function instantiateWithTwo(module, namespace, name, value, otherName, otherValue) {
@@ -202,6 +241,12 @@ export function setBigIntValue(global, value) {
   global.value = value;
 }
 
+// Answers whether the global's type takes the reference.
 export function setReferenceValue(global, value) {
-  global.value = value;
+  try {
+    global.value = value;
+    return true;
+  } catch {
+    return false;
+  }
 }

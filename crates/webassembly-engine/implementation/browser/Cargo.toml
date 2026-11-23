@@ -20,6 +20,14 @@ name = "behaviour"
 path = "behaviour.rs"
 
 [[test]]
+name = "hostile_names"
+path = "hostile_names.rs"
+
+[[test]]
+name = "typed_references"
+path = "typed_references.rs"
+
+[[test]]
 name = "panic"
 path = "panic.rs"
 
@@ -38,11 +46,14 @@ js-sys = { version = "0.3.107", default-features = false }
 wasm-bindgen = "=0.2.130"
 # Writes the small modules that move a call's values through our own memory.
 wasm-encoder = "0.263.0"
+# Reads the types a module declares for its exported tables and globals, which the JavaScript API does not tell.
+wasmparser = { version = "0.263.0", default-features = false, features = ["features"] }
 
 [dev-dependencies]
 wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
+futures-core = "0.3"
 
 [lints]
 workspace = true

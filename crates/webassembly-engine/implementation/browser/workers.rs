@@ -4,8 +4,9 @@
 mod names;
 
 use js_sys::Promise;
-use js_sys::WebAssembly::{Memory, Module};
+use js_sys::WebAssembly::Memory;
 use names::{CALLBACK, IMPORTS};
+use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -58,7 +59,7 @@ extern "C" {
     /// Posts the module and the memory to a new worker that runs our code, which calls `storeInThisWorker` there and
     /// answers what it returned.
     #[wasm_bindgen(js_name = storeInAnotherWorker)]
-    fn store_in_another_worker(module: &Module, memory: &Memory) -> Promise;
+    fn store_in_another_worker(module: &JsValue, memory: &Memory) -> Promise;
 }
 
 const SHARED_MEMORY: &str = "shared_memory";
@@ -119,7 +120,7 @@ fn new_engine() -> BrowserEngine<i32> {
 
 /// Instantiates the storing module with the memory and a host function that gives `STORED`, runs `keep`, and returns
 /// the value at the start of the memory.
-fn store(engine: &mut BrowserEngine<i32>, module: &Module, memory: &BrowserMemory) -> i32 {
+fn store(engine: &mut BrowserEngine<i32>, module: &JsValue, memory: &BrowserMemory) -> i32 {
     let hook = FunctionTypeBinder::<(), i32>::bind_host_function(engine, |calls: &mut i32, ()| {
         *calls += 1;
         STORED
@@ -137,7 +138,10 @@ fn store(engine: &mut BrowserEngine<i32>, module: &Module, memory: &BrowserMemor
         },
     ];
     let instance = engine
-        .instantiate(&receive_module(module), &imports)
+        .instantiate(
+            &receive_module(module).expect("the module was posted as module_to_post gave it"),
+            &imports,
+        )
         .expect("the module instantiates");
     let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, KEEP) else {
         panic!("the module exports store");
@@ -156,7 +160,7 @@ fn store(engine: &mut BrowserEngine<i32>, module: &Module, memory: &BrowserMemor
 
 /// Runs in the other worker: makes the posted module and memory known to a new engine there and stores with them.
 #[wasm_bindgen(js_name = storeInThisWorker)]
-pub fn store_in_this_worker(module: Module, memory: Memory) -> i32 {
+pub fn store_in_this_worker(module: JsValue, memory: Memory) -> i32 {
     let mut engine = new_engine();
     let shared = receive_shared_memory(&memory).expect("the memory is shared");
     let added = engine.add_shared_memory(&shared);
