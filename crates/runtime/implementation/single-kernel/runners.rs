@@ -30,16 +30,15 @@ pub struct KernelContainer<K: Kernel, S> {
 #[derive(Clone)]
 pub struct RunInterrupter {
     signals: Arc<Signals>,
-    /// Ends the executors' runs in progress.
-    stop: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// What the runners of one container tell each other and the interrupter.
-#[derive(Default)]
 struct Signals {
     state: Mutex<Signalled>,
     changed: Condvar,
     idle_polls: AtomicU64,
+    /// Ends the executors' runs in progress.
+    stop: Box<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -63,7 +62,12 @@ where
         stop: impl Fn() + Send + Sync + 'static,
         system: Arc<S>,
     ) -> (Self, RunInterrupter) {
-        let signals = Arc::new(Signals::default());
+        let signals = Arc::new(Signals {
+            state: Mutex::default(),
+            changed: Condvar::new(),
+            idle_polls: AtomicU64::new(0),
+            stop: Box::new(stop),
+        });
         let container = Self {
             kernel,
             runners: runners.map(|runner| (runner, executor())).collect(),
@@ -71,11 +75,7 @@ where
             system,
             ended: None,
         };
-        let interrupter = RunInterrupter {
-            signals,
-            stop: Arc::new(stop),
-        };
-        (container, interrupter)
+        (container, RunInterrupter { signals })
     }
 
     pub fn kernel(&self) -> &K {
@@ -135,7 +135,7 @@ impl wcontainers_runtime::Interrupter for RunInterrupter {
     fn interrupt(&self) {
         self.signals.lock().interrupted = true;
         self.signals.changed.notify_all();
-        (self.stop)();
+        (self.signals.stop)();
     }
 }
 
@@ -174,7 +174,7 @@ impl Signals {
         state.interrupted || state.stopped.is_some()
     }
 
-    /// Ends the run for every runner; a panic outranks a finish, and a finish an interrupt.
+    /// Ends the run for every runner, those in the executor too; a panic outranks a finish, and a finish an interrupt.
     fn stop(&self, stopped: StopReason) {
         let mut state = self.lock();
         let outranks = match state.stopped {
@@ -187,6 +187,7 @@ impl Signals {
         }
         drop(state);
         self.changed.notify_all();
+        (self.stop)();
     }
 
     /// Waits until `until` on `clock`'s monotonic time, at most [`IDLE_POLL`], or until the run ends.
