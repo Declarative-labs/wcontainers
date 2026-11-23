@@ -1,11 +1,12 @@
-// Alpha-antialiased lines: one invocation per API line writes the four corners of a rectangle around
-// it, reaching past its axis and its ends by the coverage filter's reach, and the two triangles'
-// indices. A corner record is the line's vertex record at the point the corner stands beside (its
-// interpolated slots taken along the line there, the others the line's first vertex's), its position
-// moved across the line, then the coverage slot: the distance from the line's axis, the distance
-// along it from its first end, and its length, in pixels. The line is first cut where it crosses the
-// near plane (clip z = 0); a line wholly behind it, or of no length on the screen, gets four equal
-// corners.
+// Lines drawn as rectangles, alpha-antialiased or by Direct3D's aliased rule: one invocation per API
+// line writes the four corners of a rectangle around it, reaching past its axis and its ends by the
+// given reach, and the two triangles' indices. A corner record is the line's vertex record at the
+// point the corner stands beside (its interpolated slots taken along the line there, the others the
+// line's first vertex's), its position moved across the line, then the coverage slot: the distance
+// from the line's axis, the distance along it from its first end, and its length, in pixels; or for
+// the aliased rule the line's two ends in window pixels (y down) on Direct3D's grid of 1/256 pixel.
+// The line is first cut where it crosses the near plane (clip z = 0); a line wholly behind it, or of
+// no length on the screen, gets four equal corners.
 
 struct Values {
     // API lines times API instances.
@@ -25,15 +26,17 @@ struct Values {
     // without perspective.
     interpolated: u32,
     linear: u32,
-    pad: u32,
+    // Not 0 where the slot holds the line's ends.
+    ends: u32,
     // Half the viewport's width and height, in pixels.
     half_width: f32,
     half_height: f32,
     // How far the rectangle reaches past the line's axis and past each end, in pixels.
     reach_across: f32,
     reach_along: f32,
-    pad1: u32,
-    pad2: u32,
+    // The viewport's top left corner, in pixels.
+    origin_x: f32,
+    origin_y: f32,
 }
 
 @group(1) @binding(0) var<uniform> values: Values;
@@ -46,6 +49,16 @@ const VERTICES: u32 = 2u;
 // The corners' order in the two triangles.
 const TRIANGLES: array<u32, 6> = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
 const TRIANGLE_INDICES: u32 = 6u;
+
+// Direct3D's grid of window positions: steps a pixel.
+const SUBPIXEL_STEPS: f32 = 256.0;
+
+// The window position, on Direct3D's grid, of `p`: pixels from the viewport's centre, y up.
+fn window(p: vec2<f32>) -> vec2<f32> {
+    let half_size = vec2<f32>(values.half_width, values.half_height);
+    let w = vec2<f32>(values.origin_x, values.origin_y) + half_size + vec2<f32>(p.x, -p.y);
+    return round(w * SUBPIXEL_STEPS) / SUBPIXEL_STEPS;
+}
 
 fn position(record: u32) -> vec4<f32> {
     let at = record * values.in_words;
@@ -134,7 +147,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             }
             corners[at + w] = word;
         }
-        let coverage = vec4<f32>(side * values.reach_across, pixels, extent, 0.0);
+        var coverage = vec4<f32>(side * values.reach_across, pixels, extent, 0.0);
+        if values.ends != 0u {
+            coverage = vec4<f32>(window(a), window(b));
+        }
         let words = bitcast<vec4<u32>>(coverage);
         for (var c = 0u; c < SLOT_WORDS; c++) {
             corners[at + values.in_words + c] = words[c];

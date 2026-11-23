@@ -64,11 +64,14 @@ struct LineReplayValues {
     interpolated: u32,
     linear: u32,
     near_w: f32,
-    pad: u32,
+    ends: u32,
     half_width: f32,
     half_height: f32,
     reach_across: f32,
     reach_along: f32,
+    origin_x: f32,
+    origin_y: f32,
+    pad: [u32; 2],
 }
 
 /// The primitive replay program's values (`primitive_replay.wgsl`'s `Values`), read through its
@@ -117,7 +120,7 @@ pub struct GeometryReplay<B: Backend> {
     capture: B::Program,
     /// The geometry shader's replay; `None` for a vertex stage alone.
     geometry: Option<Replayed<B>>,
-    /// The line replay, for a vertex stage drawing alpha-antialiased lines.
+    /// The line replay, for a vertex stage drawing lines as rectangles.
     lines: Option<ReplayedLines<B>>,
     /// The primitive replay, for a vertex stage writing cull distances or a pixel stage reading its
     /// primitive's number.
@@ -158,6 +161,8 @@ struct ReplayedLines<B: Backend> {
     no_streams: B::VertexLayout,
     interpolated: u32,
     linear: u32,
+    /// The slot holds the line's ends, for Direct3D's aliased rule.
+    diamond: bool,
 }
 
 /// The primitive replay program and the shape of what it captures.
@@ -346,10 +351,11 @@ impl<B: Backend> GeometryReplay<B> {
     }
 
     /// Makes the capture program of `vertex` (converted, its inputs as drawn) and the line replay
-    /// program drawing its lines antialiased for a pixel program converted with `pixel` (its key, with
-    /// `VariantFlags::LINE_COVERAGE`): each draw through [`Self::run_antialiased_lines`] captures the
-    /// vertex stage, then a rectangle around each line, which the front draws through
-    /// [`Self::passthrough`] with culling off ([`SlowPath::AntialiasedLinesAsQuads`]).
+    /// program drawing its lines as rectangles for a pixel program converted with `pixel` (its key,
+    /// with `VariantFlags::LINE_COVERAGE` for antialiased lines, or `LINE_DIAMOND` for aliased lines
+    /// into a multisampled target): each draw through [`Self::run_lines`] captures the vertex stage,
+    /// then a rectangle around each line, which the front draws through [`Self::passthrough`] with
+    /// culling off ([`SlowPath::AntialiasedLinesAsQuads`], [`SlowPath::AliasedLinesAsQuads`]).
     pub fn antialiased_lines(
         backend: &mut B,
         vertex: &Converted,
@@ -383,6 +389,7 @@ impl<B: Backend> GeometryReplay<B> {
                 no_streams,
                 interpolated: programs.interpolated,
                 linear: programs.linear,
+                diamond: programs.diamond,
             }),
             primitives: None,
             passthrough: programs.passthrough,
@@ -503,21 +510,35 @@ impl<B: Backend> GeometryReplay<B> {
     }
 
     /// [`Self::run`] for a route made by [`Self::antialiased_lines`], whose draw's viewport is
-    /// `viewport` pixels wide and high.
+    /// `viewport` (its depth range is not read).
+    pub fn run_lines(
+        &mut self,
+        backend: &mut B,
+        draw: ReplayDraw<'_, B>,
+        viewport: &Viewport,
+    ) -> Result<Option<FinalDraw<B>>, StageError> {
+        self.run_with(backend, draw, Some(*viewport))
+    }
+
+    /// [`Self::run_lines`] for antialiased lines, whose draw's viewport is `viewport` pixels wide
+    /// and high (its place is not needed).
     pub fn run_antialiased_lines(
         &mut self,
         backend: &mut B,
         draw: ReplayDraw<'_, B>,
-        viewport: [f32; 2],
+        [width, height]: [f32; 2],
     ) -> Result<Option<FinalDraw<B>>, StageError> {
-        self.run_with(backend, draw, Some(viewport))
+        if self.lines.as_ref().is_some_and(|l| l.diamond) {
+            return Err(ConvertError::Malformed(super::helper::LINE_ORIGIN.into()).into());
+        }
+        self.run_with(backend, draw, Some(super::helper::sized(width, height)))
     }
 
     fn run_with(
         &mut self,
         backend: &mut B,
         draw: ReplayDraw<'_, B>,
-        viewport: Option<[f32; 2]>,
+        viewport: Option<Viewport>,
     ) -> Result<Option<FinalDraw<B>>, StageError> {
         if self.lines.is_some() != viewport.is_some() {
             return Err(ConvertError::Malformed(LINE_VIEWPORT.into()).into());
@@ -685,11 +706,23 @@ impl<B: Backend> GeometryReplay<B> {
             false,
         )?;
         let drawn = listed.checked_mul(instances).ok_or(GpuError::OutOfMemory)?;
-        if let (Some(lines), Some((width, rows)), Some([view_width, view_height])) =
-            (&self.lines, rows, viewport)
-        {
+        if let (Some(lines), Some((width, rows)), Some(viewport)) = (&self.lines, rows, viewport) {
+            let [x, y, view_width, view_height] =
+                [viewport.x, viewport.y, viewport.width, viewport.height].map(f32::from_bits);
             // Six corners a line, each its record then the coverage slot, drawn as triangles.
-            backend.slow_paths().hit(SlowPath::AntialiasedLinesAsQuads);
+            let (path, across, along) = match lines.diamond {
+                true => (
+                    SlowPath::AliasedLinesAsQuads,
+                    crate::variant::DIAMOND_REACH,
+                    crate::variant::DIAMOND_REACH,
+                ),
+                false => (
+                    SlowPath::AntialiasedLinesAsQuads,
+                    crate::variant::LINE_REACH_ACROSS,
+                    crate::variant::LINE_REACH_ALONG,
+                ),
+            };
+            backend.slow_paths().hit(path);
             // A back end without clip depth from zero draws vertex programs converted with
             // `CLIP_DEPTH_REWRITE`.
             let clip_zero_one = backend
@@ -715,12 +748,13 @@ impl<B: Backend> GeometryReplay<B> {
             values[at(offset_of!(LineReplayValues, linear))] = lines.linear;
             values[at(offset_of!(LineReplayValues, near_w))] =
                 f32::from(u8::from(!clip_zero_one)).to_bits();
+            values[at(offset_of!(LineReplayValues, ends))] = lines.diamond.into();
             values[at(offset_of!(LineReplayValues, half_width))] = (view_width / 2.0).to_bits();
             values[at(offset_of!(LineReplayValues, half_height))] = (view_height / 2.0).to_bits();
-            values[at(offset_of!(LineReplayValues, reach_across))] =
-                crate::variant::LINE_REACH_ACROSS.to_bits();
-            values[at(offset_of!(LineReplayValues, reach_along))] =
-                crate::variant::LINE_REACH_ALONG.to_bits();
+            values[at(offset_of!(LineReplayValues, reach_across))] = across.to_bits();
+            values[at(offset_of!(LineReplayValues, reach_along))] = along.to_bits();
+            values[at(offset_of!(LineReplayValues, origin_x))] = x.to_bits();
+            values[at(offset_of!(LineReplayValues, origin_y))] = y.to_bits();
             let out = &self.out.as_ref().unwrap().buffer;
             let program = (&lines.program, &lines.no_streams);
             let out = BufferRange {

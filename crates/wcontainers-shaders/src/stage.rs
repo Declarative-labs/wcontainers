@@ -659,6 +659,8 @@ const PRIMITIVE_ARGUMENT: &str = "primitive_id";
 enum ExtraSlot {
     /// Line coverage values, four f32 without perspective.
     LineCoverage(u32),
+    /// A line's window-space ends, four flat f32.
+    LineEnds(u32),
     /// The primitive's number in the first word of four flat u32: whole registers on both sides, as
     /// Direct3D 12 links stage values register by register.
     PrimitiveId(u32),
@@ -925,15 +927,16 @@ fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs>
     })
 }
 
-/// A vertex program's lines drawn antialiased through the stage helper
-/// ([`wcontainers_gpu::SlowPath::AntialiasedLinesAsQuads`]).
+/// A vertex program's lines drawn as rectangles through the stage helper: antialiased
+/// ([`wcontainers_gpu::SlowPath::AntialiasedLinesAsQuads`]), or by Direct3D's aliased rule into a
+/// multisampled target ([`wcontainers_gpu::SlowPath::AliasedLinesAsQuads`]).
 pub struct LinePrograms {
     /// The vertex stage writing records of its position, each output location (`locations`) and its
     /// clip distances' slots: its compute form ([`line_programs`]), or the vertex program whose
     /// output is captured ([`line_capture_programs`]).
     pub records: wcontainers_gpu::ShaderModule,
     /// The vertex program drawing the rectangles' corners: a record as `records` writes it, then the
-    /// coverage slot, passed on at the pixel program's [`line_coverage_location`].
+    /// coverage slot or the line's ends, passed on at the pixel program's [`line_coverage_location`].
     pub passthrough: wcontainers_gpu::ShaderModule,
     pub locations: Vec<u32>,
     pub clip_distances: u32,
@@ -941,6 +944,9 @@ pub struct LinePrograms {
     /// others the line's first vertex's; and those of them interpolated without perspective.
     pub interpolated: u32,
     pub linear: u32,
+    /// The pixel program keeps the pixels of Direct3D's aliased line rule (`LINE_DIAMOND`): the slot
+    /// after the record holds the line's ends.
+    pub diamond: bool,
 }
 
 /// The members of the line coverage values the stage helper's rectangle passes on: the distance from
@@ -959,14 +965,15 @@ const LINE_PASSTHROUGH: &[u8] = b"line pass-through";
 const LINE_CULL_DISTANCE: &str = "AntialiasedLinesCullDistance";
 const LINE_SLOTS: &str = "AntialiasedLinesSlots";
 
-/// Where a pixel program made with `VariantFlags::LINE_COVERAGE` reads the coverage values, and the
-/// pass-through of [`line_programs`] writes them: the location after the values `linked` holds.
+/// Where a pixel program made with `VariantFlags::LINE_COVERAGE` reads the coverage values (or with
+/// `LINE_DIAMOND` the line's ends), and the pass-through of [`line_programs`] writes them: the
+/// location after the values `linked` holds.
 pub fn line_coverage_location(pixel: &VariantKey) -> u32 {
     named_layer_location(pixel) + u32::from(pixel.flags.contains(VariantFlags::LAYER_FROM_STAGE))
 }
 
-/// The programs of `vertex` (converted with every input pulled) drawing its lines antialiased for a
-/// pixel program converted with `pixel`'s key. They take its outputs from its module, so every
+/// The programs of `vertex` (converted with every input pulled) drawing its lines as rectangles for a
+/// pixel program converted with `pixel`'s key (`LINE_COVERAGE` or `LINE_DIAMOND`). They take its outputs from its module, so every
 /// rewrite its key made reaches the pixel program as it would from the vertex program.
 pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<LinePrograms> {
     let source = &vertex.modules[0];
@@ -1029,18 +1036,23 @@ fn line_drawing(
         interpolated |= 1 << k;
     }
     let coverage = line_coverage_location(pixel);
+    let diamond = pixel.flags.contains(VariantFlags::LINE_DIAMOND);
     let passed = drawn.passthrough_values();
     let passthrough = passthrough_of(
         &passed,
         false,
         drawn.clip,
         None,
-        Some(ExtraSlot::LineCoverage(coverage)),
+        Some(match diamond {
+            true => ExtraSlot::LineEnds(coverage),
+            false => ExtraSlot::LineCoverage(coverage),
+        }),
     )?;
     let mut key = blake3::Hasher::new();
     key.update(&source.key)
         .update(LINE_PASSTHROUGH)
-        .update(&coverage.to_le_bytes());
+        .update(&coverage.to_le_bytes())
+        .update(&[u8::from(diamond)]);
     Ok(LinePrograms {
         records,
         passthrough: vertex_module(passthrough, key)?,
@@ -1048,13 +1060,16 @@ fn line_drawing(
         clip_distances: drawn.clip,
         interpolated,
         linear,
+        diamond,
     })
 }
 
 /// Where a pixel program made with `VariantFlags::PRIMITIVE_ID_FROM_STAGE` reads its primitive's
-/// number, and the pass-through of [`primitive_programs`] writes it: after the line coverage values.
+/// number, and the pass-through of [`primitive_programs`] writes it: after the line coverage values
+/// or ends.
 pub fn primitive_id_location(pixel: &VariantKey) -> u32 {
-    line_coverage_location(pixel) + u32::from(pixel.flags.contains(VariantFlags::LINE_COVERAGE))
+    let line = VariantFlags::LINE_COVERAGE | VariantFlags::LINE_DIAMOND;
+    line_coverage_location(pixel) + u32::from(pixel.flags.intersects(line))
 }
 
 /// A vertex program drawn through the stage helper so that its pixel program reads its primitive's
@@ -2039,7 +2054,7 @@ fn passthrough_of(
     if let Some(extra) = extra {
         let slot = 1 + passed.len() as u32 + u32::from(selects) + distance_slots(distances);
         let name = match extra {
-            ExtraSlot::LineCoverage(_) => COVERAGE_ARGUMENT,
+            ExtraSlot::LineCoverage(_) | ExtraSlot::LineEnds(_) => COVERAGE_ARGUMENT,
             ExtraSlot::PrimitiveId(_) => PRIMITIVE_ARGUMENT,
         };
         b.f.arguments.push(FunctionArgument {
@@ -2052,6 +2067,12 @@ fn passthrough_of(
             ExtraSlot::LineCoverage(at) => (
                 build::vec4(&mut module, Scalar::F32),
                 location(at, Some(Interpolation::Linear)),
+                b.bitcast(raw, ScalarKind::Float),
+                RECORD_SLOT_BYTES,
+            ),
+            ExtraSlot::LineEnds(at) => (
+                build::vec4(&mut module, Scalar::F32),
+                location(at, Some(Interpolation::Flat)),
                 b.bitcast(raw, ScalarKind::Float),
                 RECORD_SLOT_BYTES,
             ),

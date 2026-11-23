@@ -17,7 +17,7 @@ use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
     DispatchGroups, DrawRange, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
     RingKind, ShaderModule, SlowPath, StageExtras, StageSet, StageValue, StepMode, SystemValue,
-    Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream,
+    Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
 };
 
 /// The API's primitive topology, adjacency included (it reaches only the geometry stage).
@@ -283,6 +283,8 @@ struct Lines<B: Backend> {
     drawn_slots: u32,
     interpolated: u32,
     linear: u32,
+    /// The slot holds the line's ends, for Direct3D's aliased rule.
+    diamond: bool,
 }
 
 /// The line program's values (`lines.wgsl`'s `Values`), read through its layout.
@@ -298,12 +300,13 @@ struct LineValues {
     index_base: u32,
     interpolated: u32,
     linear: u32,
-    pad: u32,
+    ends: u32,
     half_width: f32,
     half_height: f32,
     reach_across: f32,
     reach_along: f32,
-    pad_end: [u32; 2],
+    origin_x: f32,
+    origin_y: f32,
 }
 
 /// The line program's bindings: its values, the vertex records, and the corners followed by the index
@@ -320,6 +323,20 @@ pub(super) const LINE_VERTICES: u32 = 2;
 pub(super) const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
 /// The line route run without the viewport's size, or another route with it.
 pub(super) const LINE_VIEWPORT: &str = "the viewport's size, given to the line route alone";
+/// A viewport at the target's corner, `width` and `height` pixels.
+pub(super) fn sized(width: f32, height: f32) -> Viewport {
+    Viewport {
+        x: 0,
+        y: 0,
+        width: width.to_bits(),
+        height: height.to_bits(),
+        min_depth: 0,
+        max_depth: 0,
+    }
+}
+
+/// The aliased line route run without the viewport's place.
+pub(super) const LINE_ORIGIN: &str = "the aliased line route run without the viewport's place";
 
 /// The primitive program and what its copies hold.
 struct Numbered<B: Backend> {
@@ -693,10 +710,11 @@ impl<B: Backend> Stages<B> {
     }
 
     /// Makes the compute programs of `vertex` (converted with every input pulled) drawing its lines
-    /// antialiased for a pixel program converted with `pixel` (its key, with
-    /// `VariantFlags::LINE_COVERAGE`): each draw through [`Self::run_antialiased_lines`] runs it and
-    /// writes a rectangle around each line, which the final draw draws through [`Self::passthrough`]
-    /// with culling off ([`SlowPath::AntialiasedLinesAsQuads`]).
+    /// as rectangles for a pixel program converted with `pixel` (its key, with
+    /// `VariantFlags::LINE_COVERAGE` for antialiased lines, or `LINE_DIAMOND` for aliased lines into
+    /// a multisampled target): each draw through [`Self::run_lines`] runs it and writes a rectangle
+    /// around each line, which the final draw draws through [`Self::passthrough`] with culling off
+    /// ([`SlowPath::AntialiasedLinesAsQuads`], [`SlowPath::AliasedLinesAsQuads`]).
     pub fn antialiased_lines(
         backend: &mut B,
         vertex: &Converted,
@@ -730,6 +748,7 @@ impl<B: Backend> Stages<B> {
                 drawn_slots: record_slots + 1,
                 interpolated: programs.interpolated,
                 linear: programs.linear,
+                diamond: programs.diamond,
             }),
             numbered: None,
             strips: None,
@@ -1016,14 +1035,30 @@ impl<B: Backend> Stages<B> {
     }
 
     /// [`Self::run`] for a helper made by [`Self::antialiased_lines`], whose draw's viewport is
-    /// `viewport` pixels wide and high.
+    /// `viewport` (its depth range is not read).
+    pub fn run_lines(
+        &mut self,
+        backend: &mut B,
+        draw: &StageDraw<'_, B>,
+        viewport: &Viewport,
+    ) -> Result<Option<FinalDraw<B>>, StageError> {
+        self.run_with(backend, draw, None, Some(*viewport))
+    }
+
+    /// [`Self::run_lines`] for antialiased lines, whose draw's viewport is `viewport` pixels wide
+    /// and high (its place is not needed).
     pub fn run_antialiased_lines(
         &mut self,
         backend: &mut B,
         draw: &StageDraw<'_, B>,
-        viewport: [f32; 2],
+        [width, height]: [f32; 2],
     ) -> Result<Option<FinalDraw<B>>, StageError> {
-        self.run_with(backend, draw, None, Some(viewport))
+        if self.lines.as_ref().is_some_and(|l| l.diamond) {
+            return Err(StageError::Convert(ConvertError::Malformed(
+                LINE_ORIGIN.into(),
+            )));
+        }
+        self.run_with(backend, draw, None, Some(sized(width, height)))
     }
 
     /// [`Self::run`] for a helper made by [`Self::tessellated_with`] with a geometry shader or stream
@@ -1042,7 +1077,7 @@ impl<B: Backend> Stages<B> {
         backend: &mut B,
         draw: &StageDraw<'_, B>,
         later: Option<&DomainSets<'_, B>>,
-        viewport: Option<[f32; 2]>,
+        viewport: Option<Viewport>,
     ) -> Result<Option<FinalDraw<B>>, StageError> {
         if self.domain.is_some() != later.is_some() {
             return Err(StageError::Convert(ConvertError::Malformed(
@@ -1359,8 +1394,22 @@ impl<B: Backend> Stages<B> {
                 tessellated: None,
             });
         }
-        if let (Some(l), Some([width, height])) = (&self.lines, viewport) {
-            backend.slow_paths().hit(SlowPath::AntialiasedLinesAsQuads);
+        if let (Some(l), Some(viewport)) = (&self.lines, viewport) {
+            let [x, y, width, height] =
+                [viewport.x, viewport.y, viewport.width, viewport.height].map(f32::from_bits);
+            let (path, across, along) = match l.diamond {
+                true => (
+                    SlowPath::AliasedLinesAsQuads,
+                    crate::variant::DIAMOND_REACH,
+                    crate::variant::DIAMOND_REACH,
+                ),
+                false => (
+                    SlowPath::AntialiasedLinesAsQuads,
+                    crate::variant::LINE_REACH_ACROSS,
+                    crate::variant::LINE_REACH_ALONG,
+                ),
+            };
+            backend.slow_paths().hit(path);
             let units = primitives * instances;
             let mut lv = [0u32; word_at(size_of::<LineValues>())];
             let at = |offset| word_at(offset);
@@ -1373,12 +1422,13 @@ impl<B: Backend> Stages<B> {
             lv[at(offset_of!(LineValues, index_base))] = index_base;
             lv[at(offset_of!(LineValues, interpolated))] = l.interpolated;
             lv[at(offset_of!(LineValues, linear))] = l.linear;
+            lv[at(offset_of!(LineValues, ends))] = l.diamond.into();
             lv[at(offset_of!(LineValues, half_width))] = (width / 2.0).to_bits();
             lv[at(offset_of!(LineValues, half_height))] = (height / 2.0).to_bits();
-            lv[at(offset_of!(LineValues, reach_across))] =
-                crate::variant::LINE_REACH_ACROSS.to_bits();
-            lv[at(offset_of!(LineValues, reach_along))] =
-                crate::variant::LINE_REACH_ALONG.to_bits();
+            lv[at(offset_of!(LineValues, reach_across))] = across.to_bits();
+            lv[at(offset_of!(LineValues, reach_along))] = along.to_bits();
+            lv[at(offset_of!(LineValues, origin_x))] = x.to_bits();
+            lv[at(offset_of!(LineValues, origin_y))] = y.to_bits();
             let bytes = words_as_bytes(&lv);
             let mut offsets = [0u64];
             let ring = backend.write_buffer_ring(

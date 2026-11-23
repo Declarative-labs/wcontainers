@@ -561,6 +561,68 @@ fn antialiased_lines_take_the_stage_helpers_route() {
     }
 }
 
+/// The same lines drawn by Direct3D's aliased rule into a multisampled target: the pass-through
+/// writes the line's ends flat at the coverage location, where the pixel program made with
+/// `LINE_DIAMOND` reads them and discards the pixels the rule leaves; a pixel program keyed for both
+/// line routes is refused. Drawn in `tests/stage_draw.rs`.
+#[test]
+fn aliased_lines_take_the_stage_helpers_route() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+        let read = |code| match dxil {
+            false => Source::Dxbc(code),
+            true => Source::Dxil(code),
+        };
+        let vs_code = own(&format!("vs_line.{route}"));
+        let ps_code = own(&format!("ps_line.{route}"));
+        let vs = convert(read(&vs_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let location = stage::locations(&vs.reflection.outputs)
+            .last()
+            .map_or(0, |l| l + 1);
+        let ps_key = VariantKey {
+            flags: VariantFlags::LINE_DIAMOND,
+            linked: LinkedValues {
+                location,
+                clip_distances: 0,
+            },
+            ..Default::default()
+        };
+        let programs =
+            stage::line_programs(&vs, &ps_key).unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert!(programs.diamond, "{route}");
+        let ends = stage::line_coverage_location(&ps_key);
+        let flat = format!("@location({ends}) @interpolate(flat");
+        let passthrough = wgsl(&programs.passthrough);
+        assert!(passthrough.contains(&flat), "{route}: {passthrough}");
+        let ps = convert(read(&ps_code), &ps_key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let fragment = wgsl(&ps.modules[0]);
+        assert!(fragment.contains(&flat), "{route}: {fragment}");
+        assert!(fragment.contains("fn diamond_exit"), "{route}");
+        assert!(fragment.contains("discard"), "{route}");
+        assert!(
+            matches!(
+                ps.reflection.extras,
+                StageExtras::Pixel { discards: true, .. }
+            ),
+            "{route}"
+        );
+        let both = VariantKey {
+            flags: VariantFlags::LINE_DIAMOND | VariantFlags::LINE_COVERAGE,
+            ..ps_key.clone()
+        };
+        assert!(
+            matches!(
+                convert(read(&ps_code), &both, None),
+                Err(ConvertError::Malformed(_))
+            ),
+            "{route}"
+        );
+    }
+}
+
 /// A pixel shader reading its primitive's number (`ps_primitive`) behind `vs_line` takes the stage
 /// helper's primitive route by both routes: the pass-through writes the number as a flat u32 where
 /// the pixel program made with `PRIMITIVE_ID_FROM_STAGE` reads it, which no longer reads the

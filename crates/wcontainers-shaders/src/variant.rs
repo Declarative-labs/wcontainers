@@ -21,6 +21,7 @@ use crate::ConvertError;
 mod alpha;
 mod constants;
 mod decoded;
+mod diamond;
 mod early;
 mod filter;
 mod layers;
@@ -144,10 +145,14 @@ pub(crate) fn apply(
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let early = flags.contains(VariantFlags::EARLY_TESTS);
             let line = flags.contains(VariantFlags::LINE_COVERAGE);
+            let diamond = flags.contains(VariantFlags::LINE_DIAMOND);
+            if line && diamond {
+                return Err(ConvertError::Malformed(TWO_LINE_RULES.into()));
+            }
             let primitive = flags.contains(VariantFlags::PRIMITIVE_ID_FROM_STAGE);
             let targets = targets::needed(module, &variant.targets_in_shader)?;
             let wraps = [
-                counting, mask, dual, bias, distances, clamp, early, line, primitive,
+                counting, mask, dual, bias, distances, clamp, early, line, diamond, primitive,
             ];
             if wraps.into_iter().any(|on| on) || targets {
                 let bias = bias.then(|| {
@@ -198,6 +203,16 @@ pub(crate) fn apply(
                         per_sample,
                         bias,
                     )?;
+                }
+                if diamond {
+                    diamond::line_diamond(
+                        module,
+                        &mut w,
+                        crate::stage::line_coverage_location(variant),
+                    )?;
+                    if let StageExtras::Pixel { discards, .. } = &mut reflection.extras {
+                        *discards = true;
+                    }
                 }
                 if primitive {
                     let at = crate::stage::primitive_id_location(variant);
@@ -1131,6 +1146,14 @@ fn primitive_from_stage(module: &mut Module, w: &mut Wrapped, location: u32) -> 
     w.changed = true;
     Ok(())
 }
+
+/// A pixel program keyed for both line routes (`LINE_COVERAGE` and `LINE_DIAMOND`).
+const TWO_LINE_RULES: &str = "a pixel program keyed for both line routes";
+
+/// How far past a line's axis and past each of its ends the stage helper's rectangle reaches for
+/// the aliased line rule (`LINE_DIAMOND`), in pixels: every pixel the rule picks lies within half a
+/// pixel of the line, and its farthest sample within the half diagonal of a pixel more.
+pub(crate) const DIAMOND_REACH: f32 = 1.5;
 
 /// How far past a line's axis and past each of its ends the coverage filter reaches, in pixels: the
 /// stage helper's rectangle around the line reaches as far.
