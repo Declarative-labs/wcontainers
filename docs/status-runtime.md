@@ -28,7 +28,10 @@ Built and pushed (97a83cc0, lock file bf2c11c0; plan: docs/runtime.md section 16
   implementation's choice of `Runtime::Config`: its test file calls `tests!` once per parallelism. No
   implementation calls `tests!` yet.
 - Measured on the ARM64 machine (load 13 to 17): clippy with warnings denied, all targets, `--no-deps`, on
-  wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean.
+  wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean. `cargo check --all-targets` of
+  the crates that depend on single-kernel (executor wasmtime with wcon, seeded test policy, hardware
+  virtualization inside): no error or warning. `cargo test` of single-kernel and the suite crate: 15 passed (the
+  old loop's unit tests; the suite has no test of its own until an implementation calls `tests!`), load 17 to 24.
 
 Not done, each with what it waits on (so JR is not closed):
 - The kernel's `Runner::run` is not built: crates/kernel/implementation/linux/executing.rs `KernelRunner::run`
