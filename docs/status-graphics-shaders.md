@@ -81,7 +81,8 @@ Run 18 (run 105, the section below): A1 closed (dxc's `ppc_fp128` refused by nam
 dxil-spirv patch), A13's DXIL part closed (dxc's geometry shaders taking patches convert and draw,
 a carried dxil-spirv patch) and A16 closed (naga's handle check made to catch what its validator
 indexed unchecked; the damage tests pass natively and in WebAssembly, no longer known failures):
-pass bar items 1 and 6 met. Not complete: the gap list below.
+pass bar items 1 and 6 met. Run 19 (run 106, the section below): A7's cull distances written by
+domain shaders, drawn equal to real Direct3D 11. Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -192,6 +193,52 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 19 (run 106): cull distances written by domain shaders (A7)
+
+Logs and scripts in scratch `graphics-shaders/g6-r106` (the clone `tip` moved there from g6-r105).
+Builds, clippy and CPU tests on the rented ARM64 machine from the shared worktree; GPU work through
+the rig's queue from the clone; nothing built on the Mac.
+- Built (ff44a9eb): a DXBC or DXIL domain shader writing `SV_CullDistance` converts (src/lower.rs;
+  the DXIL route's domain programs are vertex programs at the check in src/dxil.rs). Without a
+  geometry shader after it, `Stages::tessellated_with` (and `tessellated`) runs it as compute
+  (`stage::domain_cull_programs`: the cull route's records, read from the tessellator's points as
+  `domain_program_for` reads them), then the cull program, which now also takes the tessellator's
+  index list (`listed`; its places past the list's total hold the empty record), and the final
+  draw is the kept primitives through `passthrough()` and `vertex_layout()`, an indexed list
+  (`SlowPath::CullDistanceAsGeometry`). Stream output from such a domain shader without a geometry
+  shader is refused by name (`DomainCullDistanceStreamOutput`). With a geometry shader after it the
+  domain stage's cull distances are dropped, as they reach no rasteriser.
+- For the Direct3D fronts: such a domain shader needs `run_after_domain` (with its `DomainSets`)
+  in place of `run`; `stage::writes_cull_distances(&domain)` says when. Its `FinalDraw` is then
+  drawn as the vertex cull route's is, not as a `TessellatedDraw`.
+- Test: own `ds_tri_cull`, `ds_quad_cull`, `ds_line_cull` and `ps_cull` (tests/own/tessellation.hlsl,
+  fxc ds_5_0 and dxc ds_6_0; two cull distances whose thresholds are exact in binary, so each sign is
+  too). `domain_shaders_writing_cull_distances_draw_as_direct3d_does` (tests/tessellation_draw.rs) on
+  WebGPU against real Direct3D 11 on the RTX 3080: seven hull shaders (triangles cw and ccw, quads,
+  isolines as lines, points of each domain), seeded factors, seeds 1 to 4, both builds, 56
+  comparisons, 0 failed, every texel equal, blended to each channel's largest value (gpu1.log).
+  With the cull program given no distances (scratch `mutant.sh`) all 56 fail (gpu2-mutant.log).
+  The rig scene's two tessellation tests, whose Direct3D side now goes through the shared
+  `direct3d_patches`, still pass (gpu1.log). CPU test `domain_shaders_write_cull_distances`
+  (tests/geometry.rs).
+- Corpus: own records added for the eight new builds (the domain shaders' WebGL 2 part is the
+  back end's `VERTEX_STORAGE_READ|CULL_DISTANCE` write refusal, as for every domain shader; the
+  corpus test now writes a domain shader writing cull distances through `domain_cull_programs`).
+  `ps_cull`'s GLSL part is recorded as `compiles` without glslang having run (no laptop run this
+  run; the ARM64 runs check it as `written`). Chrome 157 on the desktop compiles all 8 new WGSL
+  files (chrome.log).
+- Runs: ARM64 machine (load 3 to 6): fmt and clippy of this crate with warnings denied clean; every
+  test binary of this crate with every corpus and `--include-ignored` (but `mutated`) passed
+  (arm3.log); the literal check prints no line of this crate after 1afcea75, which makes the
+  tessellation test's two accepted `1024` lines one (its constant buffer built in one function).
+  Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy clean; at the commit, the stage
+  helper's three drawn test binaries with `--test-threads 1` (geometry_draw, stage_draw and
+  tessellation_draw: 27 passed, 0 failed; gpu4.log), the vertex cull route's cull program, which
+  now binds the list slot too, among them. Run without `--test-threads 1` the geometry binary ends
+  with exit code 2173, the parallel-thread failure recorded since run 74 (gpu3.log).
+- Not run: WebAssembly, the rest of the GPU suite (no converted module of an existing shader
+  changed).
 
 ## G6 run 18 (run 105): A1, A13's DXIL part and A16 closed
 
@@ -2078,11 +2125,14 @@ The gap list (every item of the pass bar not met):
   `geometry_sets`). Cull distances written by a geometry shader convert and are culled since run
   90 (its section; the runner's `clip-cull-distance-1-18` to `-21-gs`, both builds, convert):
   the geometry stage's records end with their slots and the stage helper's geometry cull program
-  lists the kept primitives for the final draw. Still refused by name: cull distances written by a
-  domain shader (`CullDistance`; no file of any corpus or real program seen with one; takes the
-  same cull program over the tessellator's listed primitives and a drawn test), and a geometry
-  shader writing them in the replay form (`GeometryCullDistanceReplay`, WebGL 2; takes a replay
-  slot that sees every vertex of its primitive).
+  lists the kept primitives for the final draw. Cull distances written by a domain shader
+  without a geometry shader after it convert and are culled since run 106 (its section): the domain
+  stage runs as compute and the cull program walks the tessellator's index list. Still refused by
+  name: stream output from such a domain shader (`DomainCullDistanceStreamOutput`; no file of any
+  corpus or real program seen with one; takes the stream program reading the cull records' layout,
+  as the vertex cull route's `CullDistanceStreamLocations` check does, and a drawn test), and a
+  geometry shader writing them in the replay form (`GeometryCullDistanceReplay`, WebGL 2; takes a
+  replay slot that sees every vertex of its primitive).
 - A8. Closed in run 100 (its section): dxbc-spirv's operands are sequenced by carried patches
   (`converter-patches/dxbc-spirv/`), and the native (gcc) and WebAssembly (wasi-sdk's clang)
   builds give the same WGSL and the same cache record hashes for every shader of all nine corpora.
@@ -2756,9 +2806,9 @@ G6a run 5's tip):
    `clip-cull-distance-1-6-ps` and `-1-8-ps`), a geometry shader reading clip distances as input
    (`-1-16-gs`); A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
-   (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
-   cull distances from domain shaders; a geometry shader's written primitive number done in run
-   97), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87; the runner file waits on what real Direct3D 12 stores for it, run 100), A33 (rspirv), a logic operation
+   (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages;
+   a geometry shader's written primitive number done in run 97, cull distances from domain shaders
+   in run 106), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87; the runner file waits on what real Direct3D 12 stores for it, run 100), A33 (rspirv), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5). A1, A13 and
    A16 closed in run 105; A14 in runs 89 and 96, A7's cull distances from geometry shaders in run
@@ -4368,6 +4418,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 106's scripts in scratch `graphics-shaders/g6-r106` are run 105's with its folder, plus
+  `quick-cmd.txt` and `lit-cmd.txt` (clippy, a few test binaries and the literal check, through
+  `arm-run <worktree> --name graphics-shaders`; `lit-cmd.txt` first deletes, in the copy, other
+  tracks' crate folders that have no Cargo.toml yet, which otherwise stop every cargo command),
+  `gpu-noclippy.sh` and `mutant.sh`. New own shaders were compiled by a temporary `cull.cmd` in the
+  clone through `tools/graphics-rig/remote`, fetched with `rig_scp` (`source
+  tools/graphics-rig/common.sh` first) and deleted. Chrome: copy the corpus test's WGSL files into
+  one folder per corpus and run `crates/wcontainers-shaders/web/check <folder>` from the clone.
 - Run 105's scripts in scratch `graphics-shaders/g6-r105` are run 104's with its folder; the CPU
   checks ran on the ARM64 machine with the same `cpu-cmd.txt` (`arm-run <worktree> --name
   graphics-shaders -- "$(cat cpu-cmd.txt)"`), after copying the corpora there as below for the x86
