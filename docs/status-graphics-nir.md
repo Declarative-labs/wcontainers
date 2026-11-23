@@ -5,125 +5,61 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
-G9 run 22 (2026-11-23, the tenth run of this batch): the two ES 3.2 extensions run 21 named are
-built and reported, `OES_sample_variables` (f3b13e46, d8bb7a2e) and `KHR_blend_equation_advanced`
-(5497f92f), but KHR-GLES32 still starts no context ("Failed to create WGL context"): every ES 3.2
-extension is now reported (`dEQP-GLES31.info.extensions`, log `logs/g9r22-ext.log`), and what
-is left is a requirement with no extension string of its own: Mesa's ES 3.2 needs
-`ARB_shader_image_load_store`, which st/mesa turns on only with the screen's
-`image_store_formatted` (stores to images declared without a format, converted to the bound
-image's format), which the driver does not report. That is next (below). Unsafe code: wcontainers-nir four uses more (the
-four new bridge calls in mesa.rs, the C boundary), wcontainers-opengl none more (the bound
-fragment program is read once in `draw` where it was read before). No dependency or licence was
-added.
+G9 run 23 (2026-11-23, round 4's first run). Built this run, each linted with warnings denied on
+the x86-64 machine (route tests 17 of 17 there); every list's whole run at e742e0be is below:
+- Stores to images declared without a format (`image_store_formatted`, 51488cc0, cb5396d3). The
+  bridge names the image units a program declares without a format (`wc_nir_formatless_images`);
+  the driver converts a fragment or compute program for the formats of the images bound there
+  (`Variant::image_formats`, by unit, given to the shaders crate's rewrite by slot as
+  `VariantKey::storage_formats`), and the screen reports `image_store_formatted`, which turns on
+  `ARB_shader_image_load_store` and `ARB_shader_image_size` (and st/mesa's formatless PBO
+  download). Test `an_image_without_a_format_is_declared_in_the_format_the_variant_names`. ES
+  3.2 still does not start (KHR-GLES32: "Failed to create WGL context" at cb5396d3, desktop,
+  10:13 to 10:16 Pacific): one more of Mesa's ES 3.2 requirements is missing, not yet found; the
+  desktop extension list (`KHR-GL33.info.extensions`) is queued to name it.
+- `EXT_gpu_shader5`'s two refused features: a program with arrays of resources or gathers at
+  offsets known only at run time now goes through the shaders crate's rewrite (which splits the
+  arrays, sampling an element picked at run time inside a switch, and moves the offsets into the
+  coordinates), each element bound at its own unit (e717de15); an array of integer textures
+  indexed at run time takes the nearest loads where its elements' samplers are alike, and stays
+  refused by name where they differ (9f4c4e56, test
+  `an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_every_element`).
+- Device losses, read from run 22's logs (`lost-causes.ps1`, `first-error.ps1`); each cause:
+  - Copies recorded inside an open pass (the back end fails them and loses the device): a texture
+    read from a copy of its texels (texel buffers, view twins), images bound through twins or
+    texel buffers, written images copied back after the draw, the fetched target. Draws now close
+    the pass first where binding or finishing copies (5d2ba75c). dEQP-GLES31
+    `texture_buffer.render_modify` (90 lost processes), `image_load_store.early_fragment_tests`,
+    KHR-GLES31 `shader_image_load_store`.
+  - A multisampled copy of the fetched target made without the render use WebGPU requires of
+    multisampled textures (5d2ba75c): `blend_equation_advanced.msaa`.
+  - A program sampling a view of another kind of value than it declares (Mesa binds its float
+    incomplete texture at a unit an integer sampler reads; OpenGL leaves the result undefined,
+    WebGPU refuses the binding): it now reads a stand-in texture of its kind holding (0, 0, 0, 1)
+    (zeros where multisampled) (c1d5158c). KHR-GLES31 `sample_variables.mask` (180 lost).
+  - A vertex stream of another kind than the program's input (`vertex_array_objects.all_attributes`,
+    `texsubimage2d_pbo`): such an input is now fetched in the program, keeping its bits
+    (984ee961, `VertexPulledInShader`).
+  - A texture destroyed while a recorded pass still uses it ("Texture has been destroyed" at
+    submit): KHR-GLES3 `packed_depth_stencil`, KHR-GL33 `texture_swizzle` (20). Not yet traced to
+    the object; the interface's `destroy` keeps recorded work's objects alive, so this is the
+    WebGPU back end's unless a trace shows the driver using an object after destroying it.
+  - KHR-GL33 `packed_pixels`: BC textures whose level 0 is not whole blocks (the WebGPU back end's,
+    asked since run 17).
+  - dEQP-GLES3 `fbo.color.tex3d` rgb565 and rgb5_a1 (4): a 2D view of a 3D texture; not yet traced.
+- Targets in another format than their texture's of the same texel size (Mesa's
+  `glCopyImageSubData` and blits between such formats draw into one; 560 process refusals in run
+  22's dEQP-GLES31, `copy_image`): drawn into a twin of the target's format, copied in from the
+  texture before each draw and back after it and after each clear (e742e0be,
+  `ReinterpretCopy`). Multisampled ones and other texel sizes stay refused by name.
+- Unsafe code: wcontainers-nir 105 (one more: the bridge's formatless units), wcontainers-opengl
+  349 (five more: reading a bound view's and image's resource and range for the copies and
+  stand-ins above, and the vertex program for its inputs' kinds); the root list carries them
+  (2b0f6ad4, 64fa3b6a). No dependency or licence was added.
 
-Built this run:
-- Inputs read at an offset or a sample, and the sample position (`wc_nir_interpolate_elsewhere`,
-  bridge.c; `Nir::interpolate_elsewhere`). The common form has no `interpolateAtOffset` or
-  `interpolateAtSample`. An interpolated value is affine on the screen (over w where it is
-  perspective-correct), so the pass reads the input where the program's other reads take it
-  (the centre, or the sample where it is read per sample), takes its slopes with derivatives at
-  the program's start (where every lane of a quad runs; exact for an affine value), and moves it
-  to the target place. w is the position's w (one over the clip w; `fragcoord_w` passes on the
-  rig), moved from the place its x and y say it was taken. Sample positions are WebGPU's standard
-  ones for four samples and the centre for one; any other count is refused by name. The same
-  approach as the shaders track's `lower/evaluate.rs` for Direct3D's evaluations.
-- The driver converts a fragment program that reads where its samples are (or fetches its
-  target) for the targets' sample count (`Variant::samples`, zero otherwise, so other programs
-  make no new variants).
-- The screen: `sample_shading` where the back end has `SAMPLE_SHADING` (st/mesa then makes the
-  per-sample variant itself, `nir_lower_sample_shading`, whose `sample` inputs route B already
-  maps), and `essl_feature_level` 320, which turns on `EXT_gpu_shader5` and with sample shading
-  `OES_sample_variables`. `EXT_gpu_shader5`'s groups must be read in the results below.
-- Framebuffer fetch (`wc_nir_fetch_from_texture`): Mesa lowers advanced blending to a fragment
-  program reading its first target (`load_output` with `fb_fetch_output`); the bridge makes that a
-  texel load (`txf`, `txf_ms` by the sample index where multisampled) of a texture at unit
-  `FETCHED_UNIT` (127, which Mesa never binds), and the driver copies the first target into a
-  texture of its format and size before each draw of such a program and binds it there
-  (`Images::fetch_target`, counted as `BlendInShader`). One copy a draw is what the non-coherent
-  `KHR_blend_equation_advanced` allows (a texel drawn twice in one draw without
-  `glBlendBarrier` is undefined); the coherent form is not reported. A target viewed in another
-  format than its texture's is refused by name. The screen reports `fbfetch` 1 where the back end
-  reads multisampled textures, so Mesa reports `KHR_blend_equation_advanced` (and not
-  `EXT_shader_framebuffer_fetch`, which needs every target).
-- Test `inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolates_them`
-  (tests/route.rs): converts for one and four samples, every input stays at the centre, two
-  samples refused. Route tests 15 of 15 pass (x86-64 machine, Mesa build kept there).
-
-The checks of run 22:
-- Both ES 3.1 lists whole at 5497f92f's driver (desktop, RTX 3080, one GPU job, 8 glcts at once,
-  08:01 to 08:32 Pacific), against run 21's whole run: dEQP-GLES31 37,802 cases, Pass 32,550,
-  Fail 373, Crash 865, Flake 2, Skip 4,012: 32,550 of 33,790 run, 96.33% (run 21: 31,820 of
-  32,620, 97.55%); KHR-GLES31 4,101, Pass 3,255, Fail 40, Crash 215, Timeout 1, Skip 590: 3,255 of
-  3,511, 92.71% (run 21: 2,996 of 3,088). 1,594 cases that were NotSupported run: 963 pass
-  (`texture.gather` 198, `sample_variables` 136 and KHR's `sample_variables.mask` 72,
-  `multisample_interpolation` 102 and KHR's `render` 74, `builtin_functions` 84, KHR's
-  `blend_equation_advanced` groups 15 each, ...), 573 crash, 57 fail. Of cases that ran before,
-  26 `primitive_bounding_box` failures pass and 14 crash; one passing case fails
-  (`image_load_store.2d_array`, the intermittent coherence family). Results scratch
-  `results/g9r22/es31/<list>/results.csv`, compared by `scripts/g9r22-compare.py`.
-- The new process refusals: a gather offset known only at run time 410 (`texture.gather.offset_dynamic`,
-  `EXT_gpu_shader5`'s; the 15.4 rewrite), arrays of textures indexed at run time 110 (wgpu's
-  "Capability TEXTURE_AND_SAMPLER_BINDING_ARRAY is not supported": the WebGPU back end lacks
-  binding arrays; `opaque_type_indexing`'s dynamically uniform cases, `EXT_gpu_shader5`'s),
-  targets of two samples 136 (the back end makes them; now built in d8bb7a2e with the standard
-  patterns, not yet checked), the stage helper's "Gpu(Invalid(" 92 and maps of multisampled
-  textures 76 (not yet read).
-- So `EXT_gpu_shader5` is reported with two of its features refused by name: indexing arrays of
-  samplers at run time and gathers with offsets known only at run time. Both are next: a ladder
-  over the array's elements (the index is dynamically uniform, so each lane takes one branch),
-  and a gather at a run-time offset as one at the coordinate moved by the offset over the level's
-  size (the same four texels, wrapped by the same sampler).
-
-The table, EVERY LIST WHOLE AT ONE COMMIT, d8bb7a2e's driver (desktop, RTX 3080, one GPU job, 8
-glcts at once, about 09:33 to 09:40 Pacific after 30 minutes queued behind other tracks' jobs),
-against run 21's whole run at 9d7d1173:
-- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
-  99.64% (the same).
-- dEQP-GLES3: 44,768; Pass 44,039, Warn 5, Fail 174, Crash 69, Skip 481: 44,044 of 44,287, 99.45%
-  (12 more run and pass; `flush_finish.flush` passed).
-- dEQP-GLES31: 37,802; Pass 32,597, Fail 372, Crash 817, Flake 4, Skip 4,012: 32,597 of 33,790,
-  96.47% (run 21: 31,820 of 32,620, 97.55%). 1,170 cases that were NotSupported run; the new
-  crashes are `texture.gather` 198 and `opaque_type_indexing` 160 (`EXT_gpu_shader5`'s two
-  refused features), `blend_equation_advanced.msaa` 15, `multisample_interpolation` 11; 34 new
-  failures (`sample_variables` 27, `tessellation.common_edge` 6). No case that passed fails but
-  three of the intermittent coherence family that flaked.
-- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
-- KHR-GLES3: 6,498; Pass 6,194, Fail 3, Crash 73, Skip 228: 98.79% (the same).
-- KHR-GLES31: 4,101; Pass 3,288, Fail 45, Crash 177, Timeout 1, Skip 590: 3,288 of 3,511, 93.65%
-  (run 21: 2,996 of 3,088, 97.02%); new crashes `sample_variables.mask` 90 (not yet read), new
-  failures 27. One passing case fails, `texture_cube_map_array.image_op_compute_sh` (not yet
-  read); `tessellation_shader.vertex` went from fail to timeout.
-- KHR-GL33: 9,886; Pass 8,991, Fail 144, Crash 229, Skip 522: 8,991 of 9,364, 96.02%.
-- KHR-GLES32 (1,405) and KHR-GL46 (19,714): still no context of their version.
-- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
-  run and failed: 112,521 of 116,095, 96.92%, above the 92.9% floor (run 21: 111,438 of 114,490,
-  97.33%; 1,083 more passes, the share lower because the newly reported extensions' groups run
-  with failures). Without KHR-GLES32: 112,521 of 114,690, 98.11%. Still not the bar.
-- The run's process refusals, most first: device lost 782 (run 21: 572; not yet read), a gather
-  offset known only at run time 410, sampling an integer texture 288, blits the blitter does not
-  make 138, targets in another format 496, arrays of textures indexed at run time 110, the stage
-  helper's "Gpu(Invalid(" 92, maps of multisampled textures 76, an evaluation program reading the
-  point size 72. Two-sample targets are gone (d8bb7a2e).
-- Results scratch `results/g9r22/full/<list>/results.csv`, log `logs/g9r22-full.log`.
-
-Next, in order:
-1. `image_store_formatted`: stores to images declared without a format (the 15.4 formatless
-   storage), so that Mesa reports `ARB_shader_image_load_store` and ES 3.2, and KHR-GLES32
-   starts. The driver knows each bound image's format at the draw: a variant keyed by the bound
-   images' formats whose route B declares each such image in its bound format.
-2. `EXT_gpu_shader5`'s two refused features, now reported and refused by name: arrays of samplers
-   indexed at run time (a ladder over the array's elements; the index is dynamically uniform)
-   and gathers at a run-time offset (the coordinate moved by the offset over the level's size).
-3. Read `sample_variables.mask`'s crashes, `blend_equation_advanced.msaa`'s, the 76 maps of
-   multisampled textures, the stage helper's invalid calls and the device losses' growth.
-4. As run 21's list: targets in another format through a twin drawn into and copied back, the
-   96-bit and ASTC copy failures, device losses, layered geometry output, point size read by an
-   evaluation program, border colors on comparison samplers, blits the blitter does not make;
-   the NotSupported check, the comparison with the RTX 3080's own OpenGL, bgfx and Godot, the
-   independent check; 4.0 and 4.6.
-
-G9 runs 20 and 21 are told in full in `git show cf468387:docs/status-graphics-nir.md` (run 21's
+G9 run 22 is told in full in `git show d14e748a:docs/status-graphics-nir.md` (its whole run at
+d8bb7a2e: the bar's measure 112,521 of 116,095, 96.92%, with KHR-GLES32 counted as run and
+failed). G9 runs 20 and 21 are told in full in `git show cf468387:docs/status-graphics-nir.md` (run 21's
 whole run at 9d7d1173: the bar's measure 111,438 of 114,490, 97.33%, with KHR-GLES32 counted as
 run and failed; its process refusals; what `OES_copy_image` needed).
 
@@ -135,9 +71,8 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 
 ## For the owner
 
-- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (326 uses on the root list; two more since
-  G9 run 19, the bound image of a buffer's resource and range; three more since G9 run 20, an
-  image's resource and texture range read as texels) and wcontainers-nir (98) stay on
+- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (349 uses, counted on 2026-11-23 as the
+  root list counts them: every `unsafe` word outside comments) and wcontainers-nir (105) stay on
   the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
   driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
   structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
@@ -181,6 +116,13 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 23's one-command run (scratch `scripts/g9r23-run.sh <log> [<lists> [<regexes>]]`, no
+  lists for every list): the Mesa build and the CTS run are ONE GPU job (`gpu-job --build`), so
+  both use one snapshot of the working tree. A `remote` build followed by a separate `gpu-job`
+  fails ("holds tree ..., not the sent ...") when the working tree changed between them, which
+  in this shared worktree it does. `first-error.ps1 -List <list> -Case <text>` prints in full the
+  first device error of a process log that ran a matching case; `mine.ps1` lists this track's
+  processes on the desktop (copy both to `C:\wc\graphics-nir` first).
 - G9 run 21's scripts are run 20's under `g9r21-` names (`g9r21-group.sh <log> <lists> [<regexes>]`,
   `g9r21-full.sh <log>`); `lost-causes.ps1 -List <list>` (copy it to `C:\wc\graphics-nir` first)
   counts each lost process's first device error with the group it ran. For the rented machine,
@@ -880,6 +822,18 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 None.
 
 ## Requests to other tracks
+
+- WebGPU back end (G9 run 23, a finding, not yet traced to the object): wgpu refuses a submit
+  because a texture a recorded pass uses "has been destroyed" (KHR-GLES3 `packed_depth_stencil`
+  blit and renderbuffers, KHR-GL33 `texture_swizzle`: 20 lost processes in run 22). The
+  interface's `destroy` keeps objects recorded work uses alive until it is done; the back end
+  defers a texture's destruction only where `used_in` marks it, so some use is not marked (a
+  view without its texture, or a use recorded before the pass begins). Until it is found the
+  device is lost in those cases.
+- Shaders track (G9 run 23): `rewrite` validates a fragment program with `early_fragment_tests`
+  without `Capabilities::EARLY_DEPTH_TEST` ("Capability EARLY_DEPTH_TEST is not supported", 12
+  process refusals in dEQP-GLES31's `image_load_store.early_fragment_tests`); where the back end
+  lacks forced early tests (browsers' WebGPU), the refusal belongs to the back end's caps.
 
 - WebGPU back end (G9 run 17): a block-compressed texture whose first level is not a whole number
   of blocks. The interface's `TextureDesc` allows any size, and OpenGL makes such textures (a
