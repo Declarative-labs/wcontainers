@@ -42,6 +42,8 @@ pub enum Route {
     Trap,
     /// The exclusive monitor kept as the meaning keeps it.
     Exclusive,
+    /// An operand or base instruction of the segment that holds the thread area, rebuilt on the guest's base.
+    Area,
 }
 
 /// What the native output does with a hook or a control a meaning uses.

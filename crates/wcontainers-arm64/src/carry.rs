@@ -545,6 +545,7 @@ fn carry_route(out: &mut Out, route: Route, i: &I, word: u32) {
         Route::FloatStatus => float_status(out, i, word),
         Route::Trap => out.call(InsideCall::Trap),
         Route::Exclusive => exclusive(out, i),
+        Route::Area => unreachable!("ARM64 keeps no thread area on a segment"),
     }
 }
 
