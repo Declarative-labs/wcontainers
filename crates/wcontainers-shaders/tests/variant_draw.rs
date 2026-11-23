@@ -1103,6 +1103,38 @@ fn variants_draw_as_the_native_feature_does() {
                 ));
             }
 
+            // A pixel shader reading the distances, which Direct3D interpolates as any input: the
+            // pixel program takes them from the linked values.
+            if vs == "vs_clip_six" {
+                let code = [
+                    bytecode(&format!("{vs}.{route}")),
+                    bytecode(&format!("ps_clip_read.{route}")),
+                ];
+                let (reference, _) = direct3d_11(
+                    &d3d,
+                    vs,
+                    "ps_clip_read",
+                    Format::Rgba8Unorm,
+                    tint,
+                    true,
+                    &Reference::default(),
+                );
+                let mut read = grid_draw(&code, dxil, &grid);
+                read.setup = variant.setup.clone();
+                for (back_end, texels) in [
+                    ("webgpu", ours(&mut gpu, &read, ProvokingVertex::First)),
+                    ("webgl", ours(&mut gl, &read, ProvokingVertex::Last)),
+                ] {
+                    results.push(compare(
+                        format!("clip_distance read by ps_clip_read {route} {back_end} against direct3d 11"),
+                        &reference,
+                        &texels,
+                        Format::Rgba8Unorm,
+                        (SIZE as usize * SIZE as usize, 2),
+                    ));
+                }
+            }
+
             // The same without a pixel shader, through the built-in pixel program for the variant:
             // the depth buffer shows which texels were drawn. They must be Direct3D's texels, and
             // their depth the unclipped triangle's: Direct3D's clipped polygon has new vertices,

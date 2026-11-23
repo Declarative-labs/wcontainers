@@ -88,6 +88,7 @@ ps_array.dxbc	ok ; glsl compiles
 ps_cases.dxbc	ok ; glsl compiles
 ps_clamp.dxbc	ok ; glsl compiles
 ps_clip.dxbc	ok ; glsl compiles
+ps_clip_read.dxbc	unsupported ClipDistance
 ps_coarse.dxbc	ok ; glsl compiles
 ps_compare.dxbc	ok ; glsl compiles
 ps_component.dxbc	ok ; glsl compiles

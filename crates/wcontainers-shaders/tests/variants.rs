@@ -910,6 +910,59 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
     );
 }
 
+/// A pixel program reading its clip distances, on both routes: refused by name without the
+/// distances in the linked values (no back end reads the built-in in a pixel program), read from
+/// them with, and refused where it reads more than they hold.
+#[test]
+fn clip_distances_a_pixel_program_reads_come_from_the_linked_values() {
+    let ps = own_pair("ps_clip_read");
+    let location = 3;
+    let key = |clip_distances| VariantKey {
+        flags: VariantFlags::CLIP_DISTANCE,
+        linked: LinkedValues {
+            location,
+            clip_distances,
+        },
+        samples: 1,
+        ..Default::default()
+    };
+    for source in [Source::Dxbc(&ps[0]), Source::Dxil(&ps[1])] {
+        let plain = VariantKey {
+            samples: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            convert(source, &plain, None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::CLIP_DISTANCE
+            ))
+        );
+        let c = convert(source, &key(6), None).unwrap();
+        let text = wgsl(&c);
+        assert!(!text.contains("clip_distances"), "{text}");
+        assert!(text.contains(&format!("@location({location})")), "{text}");
+        assert!(
+            text.contains(&format!("@location({})", location + 1)),
+            "{text}"
+        );
+        assert!(text.contains("discard"), "{text}");
+        let reads: Vec<_> = c
+            .reflection
+            .inputs
+            .iter()
+            .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+            .map(|v| v.mask)
+            .collect();
+        assert_eq!(reads.iter().map(|m| m.count_ones()).sum::<u32>(), 6);
+        assert_eq!(
+            convert(source, &key(5), None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::LINKED_CLIP_DISTANCE_COUNT
+            ))
+        );
+    }
+}
+
 /// Mirror-once addressing in the program: the sampler's state from the helper block picks the axes to
 /// fold, and the implicit level becomes the unfolded coordinate's gradients; gathers, comparisons and
 /// texel offsets are refused by name.

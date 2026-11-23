@@ -5,9 +5,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use naga::{
-    AddressSpace, Binding, Block, BuiltIn, Expression, Function, FunctionArgument, FunctionResult,
-    GlobalVariable, Handle, ImageClass, ImageQuery, Literal, MathFunction, Module, Range,
-    SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner, VectorSize,
+    AddressSpace, ArraySize, Binding, Block, BuiltIn, Expression, Function, FunctionArgument,
+    FunctionResult, GlobalVariable, Handle, ImageClass, ImageQuery, Literal, MathFunction, Module,
+    Range, SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner,
+    VectorSize,
 };
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, Format,
@@ -176,6 +177,7 @@ pub(crate) fn apply(
                 };
                 let count = variant.linked.clip_distances as usize;
                 if distances {
+                    clip_distance_reads(module, &mut w, &linked[..count])?;
                     clipped(
                         module,
                         &mut w,
@@ -913,6 +915,40 @@ fn linked_in(
         }
     }
     values
+}
+
+/// A pixel program reading its clip distances takes them from the linked values `d` (the first as
+/// many as it reads), as Direct3D interpolates them.
+fn clip_distance_reads(module: &Module, w: &mut Wrapped, d: &[Handle<Expression>]) -> Result<()> {
+    let read = w.f.arguments.iter().enumerate().find_map(|(i, a)| {
+        (a.binding == Some(Binding::BuiltIn(BuiltIn::ClipDistances))).then_some((i as u32, a.ty))
+    });
+    let Some((argument, ty)) = read else {
+        return Ok(());
+    };
+    let TypeInner::Array {
+        size: ArraySize::Constant(n),
+        ..
+    } = module.types[ty].inner
+    else {
+        return Err(ConvertError::Malformed(
+            "clip distances that are no sized array".into(),
+        ));
+    };
+    let n = n.get() as usize;
+    if n > d.len() {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::LINKED_CLIP_DISTANCE_COUNT,
+        ));
+    }
+    let components = d[..n].to_vec();
+    let value = push(
+        &mut w.f,
+        &mut w.prologue,
+        Expression::Compose { ty, components },
+    );
+    w.replace(argument, value);
+    Ok(())
 }
 
 /// Direct3D's standard positions of four samples, in steps of [`SAMPLE_POSITION_STEPS`] from the

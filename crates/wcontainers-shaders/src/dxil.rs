@@ -324,7 +324,7 @@ pub(crate) fn lower(
     }
     sample_mask_input(&mut module);
     sample_mask_output(&mut module);
-    unconverted(&module)?;
+    unconverted(&module, variant)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
         return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT));
@@ -576,7 +576,7 @@ fn sample_mask_input(module: &mut Module) {
 }
 
 /// Refuses by name what the reader's module has that the common form cannot take as it stands.
-fn unconverted(module: &Module) -> Result<(), ConvertError> {
+fn unconverted(module: &Module, variant: &VariantKey) -> Result<(), ConvertError> {
     let ep = module
         .entry_points
         .first()
@@ -609,14 +609,19 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     {
         return Err(ConvertError::Unsupported(crate::refusal::PRIMITIVE_ID));
     }
-    // Cull distances are drawn through the stage helper from a vertex program only, and no stage
-    // reads clip distances.
+    // Cull distances are drawn through the stage helper from a vertex program only, and a pixel
+    // program reads clip distances from the linked values alone.
     if ep.stage != naga::ShaderStage::Vertex
         && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
     {
         return Err(ConvertError::Unsupported(crate::refusal::CULL_DISTANCE));
     }
+    let linked = variant
+        .flags
+        .contains(wcontainers_gpu::VariantFlags::CLIP_DISTANCE)
+        && variant.linked.clip_distances > 0;
     if ep.stage == naga::ShaderStage::Fragment
+        && !linked
         && builtins.iter().any(|(b, _)| *b == BuiltIn::ClipDistances)
     {
         return Err(ConvertError::Unsupported(crate::refusal::CLIP_DISTANCE));

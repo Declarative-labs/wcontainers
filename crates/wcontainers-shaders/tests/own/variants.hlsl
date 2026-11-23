@@ -109,6 +109,13 @@ ClipSixOut vs_clip_six(float3 position : POSITION, float2 uv : TEXCOORD0, uint i
     return o;
 }
 
+// The six clip distances of vs_clip_six read as interpolated inputs, each its own share of the
+// colour.
+float4 ps_clip_read(ClipSixOut i) : SV_Target0 {
+    return float4(i.near.x * 0.5, i.near.y * 0.5 + i.far.x * 0.2, i.near.z * 0.5,
+                  i.near.w * 0.4 + i.far.y * 0.3);
+}
+
 // vs_transform with depth stretched past the clip volume on both sides: z/w runs from -0.2 to 1.15
 // across the grid, where vs_transform's runs from 0.4 to 0.67.
 VsOut vs_deep(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_VertexID) {
