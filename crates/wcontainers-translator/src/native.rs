@@ -264,6 +264,7 @@ pub fn translate_native_for<G: Native>(
             start: u32::try_from(branch).expect("host code fits in u32 offsets"),
             target: head,
             retarget: Some(0),
+            condition: None,
         };
         assert!(
             G::link(&mut out, &test, start),

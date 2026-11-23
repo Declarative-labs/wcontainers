@@ -148,8 +148,11 @@ pub struct DirectExit {
     /// The guest address it goes to.
     pub target: u64,
     /// Where the word is a branch the loader points at the target's piece itself, the bits holding its offset in
-    /// instructions; otherwise a direct branch replaces the word.
+    /// instructions (x86: the byte offset of its rel32); otherwise a direct branch replaces the word.
     pub retarget: Option<u32>,
+    /// The condition under which the exit's branch is taken, as the architecture numbers it (x86: the low four
+    /// bits of a `jcc`); none for an unconditional one. A hit on a link's `int3` evaluates it (x86).
+    pub condition: Option<u8>,
 }
 
 /// The branch table of a jump through a register whose targets are known (docs/native.md section 3.2): one branch

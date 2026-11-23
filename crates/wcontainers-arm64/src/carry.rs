@@ -1086,7 +1086,7 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             // The test's own branch goes straight to the target's piece once it is linked.
             if target >> REACH_BITS == 0 {
                 let back = encode::retarget(word, -(INSTRUCTION as i64)).expect("a branch");
-                out.code.branch_exit(taken, target, unlinked ^ back);
+                out.code.branch_exit(taken, target, unlinked ^ back, None);
             }
             // The taken side's exit goes out of line; the run goes on at the next instruction.
             let state = out.code.snapshot();

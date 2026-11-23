@@ -234,6 +234,7 @@ impl HostCode {
             start,
             target,
             retarget: None,
+            condition: None,
         });
         self.push(bytes);
         if let Some(resume) = commit {
@@ -258,14 +259,16 @@ impl HostCode {
         self.tables.push(BranchTable { start, ..table });
     }
 
-    /// Records the branch written at `at` as one more exit to the direct guest `target`, which a loader may point
-    /// at the target's piece through the offset bits `field`, unless the count is ahead here.
-    pub fn branch_exit(&mut self, at: usize, target: u64, field: u32) {
+    /// Records the branch written at `at` as one more exit to the direct guest `target`, taken under `condition`
+    /// where it has one, which a loader may point at the target's piece through the offset bits `field`, unless
+    /// the count is ahead here.
+    pub fn branch_exit(&mut self, at: usize, target: u64, field: u32, condition: Option<u8>) {
         let start = u32::try_from(at).expect("host code fits in u32 offsets");
         self.exits.push(DirectExit {
             start,
             target,
             retarget: Some(field),
+            condition,
         });
         if self.lead() > 0 {
             self.settling.insert(start, None);
