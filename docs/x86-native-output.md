@@ -73,7 +73,8 @@ P, `pushf` (the hardware's TF, AC, DF, NT, ID are kept equal to the guest's, sec
 them. The offer is the translator's: a form outside it is not decoded and takes the Trap route (illegal
 instruction), whatever the host has (this host runs AVX-512, AMX, `umwait`, `serialize`, `enqcmd`, `wrpkru`;
 none is decoded, x86-machine.md). A host lacking an offered feature refuses the native way at the probe
-("back end refused by the probe"); nothing is emulated.
+("back end refused by the probe"); nothing is emulated. Protection keys are relied on nowhere: nothing in this
+plan needs them, and `rdpkru`/`wrpkru` are outside the offer.
 
 Never copied, by route:
 - Rebase: every RIP-relative operand (24.5 `lea` and 22.0 other uses per 1000 here, against the laptop's 23.6
