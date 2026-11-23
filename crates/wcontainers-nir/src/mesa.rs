@@ -412,7 +412,8 @@ impl Nir {
     }
 
     /// Every sampling of an integer texture at the units of `samplers` made a load of its
-    /// nearest texel, as OpenGL samples them; cube maps are left as they are.
+    /// nearest texel, as OpenGL samples them; a sampled cube map or cube map array becomes a 2D
+    /// array of its faces, six a cube, which the driver binds such a view of.
     pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }

@@ -4,8 +4,8 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Format, FormatKind, MapIntent,
-    Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH, TextureDesc,
+    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Features, Format, FormatKind,
+    MapIntent, Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH, TextureDesc,
     TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
 };
 
@@ -30,10 +30,26 @@ pub struct View<B: Backend> {
     /// The components its format has (`Format::components`), as a border colour applied in the
     /// program reads them.
     pub components: u32,
-    /// For an integer cube map, a 2D array of its faces, which programs load from.
+    /// For an integer cube map or cube map array, a 2D array of its faces, which programs load from.
     faces: Option<Result<B::TextureView, &'static str>>,
     /// For a texel buffer, the 2D texture its range is copied into, which `view` views.
     pub texels: Option<TexelCopy<B>>,
+    /// For a view in another format than its texture's that the back end cannot view it in, the
+    /// texture of the view's format its levels and layers are copied into, which `view` views.
+    twin: Option<ViewTwin<B>>,
+}
+
+/// A texture in a sampler view's format, of its levels and layers, copied from the view's texture
+/// before each work that reads it (`ReinterpretCopy`): the interface views a texture only in its
+/// own format or its sRGB twin unless the back end reinterprets.
+struct ViewTwin<B: Backend> {
+    texture: B::Texture,
+    first_level: u32,
+    first_layer: u32,
+    levels: u32,
+    /// The layers of a 2D texture's, or the depth of a volume texture's first level.
+    layers: u32,
+    three_d: bool,
 }
 
 /// A texel buffer view's 2D texture, rows of [`TEXEL_BUFFER_TEXTURE_WIDTH`] texels, which the
@@ -75,14 +91,40 @@ impl<B: Backend> View<B> {
         self.view.as_ref().map_err(|why| (*why).to_owned())
     }
 
-    /// Copies a texel buffer view's range into its texture, as it is now; nothing for another
-    /// view.
+    /// Copies what the view reads into the texture it views, where that is a copy: a texel buffer
+    /// view's range, or a twin's levels and layers, as they are now; nothing for another view.
     pub fn copy_texels(&self, backend: &mut B) -> Result<(), String> {
+        if self.twin.is_none() && self.texels.is_none() {
+            return Ok(());
+        }
+        // SAFETY: the view holds a reference on its texture or buffer.
+        let resource = unsafe { Resource::<B>::of(self.base.texture) };
+        if let Some(twin) = &self.twin {
+            let (source, desc) = resource.texture().ok_or("a twin of a buffer's view")?;
+            backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+            for level in 0..twin.levels {
+                let mip = twin.first_level + level;
+                let side = |n: u32| (n >> mip).max(1);
+                let depth_or_layers = if twin.three_d {
+                    side(desc.depth_or_layers)
+                } else {
+                    twin.layers
+                };
+                backend.copy_texture(
+                    &corner::<B>(source, twin.three_d, mip, 0, 0, twin.first_layer),
+                    &corner::<B>(&twin.texture, twin.three_d, level, 0, 0, 0),
+                    Extent {
+                        width: side(desc.width),
+                        height: side(desc.height),
+                        depth_or_layers,
+                    },
+                );
+            }
+            return Ok(());
+        }
         let Some(copy) = &self.texels else {
             return Ok(());
         };
-        // SAFETY: the view holds a reference on its buffer.
-        let resource = unsafe { Resource::<B>::of(self.base.texture) };
         let buffer = resource
             .buffer()
             .ok_or("a texel buffer view of a texture")?;
@@ -117,7 +159,7 @@ impl<B: Backend> View<B> {
         Ok(())
     }
 
-    /// The 2D array of an integer cube map's faces, or none for another view.
+    /// The 2D array of an integer cube map's or cube map array's faces, or none for another view.
     pub fn faces(&self) -> Option<Result<&B::TextureView, String>> {
         self.faces
             .as_ref()
@@ -562,52 +604,148 @@ pub fn image_view<B: Backend>(
     Ok(images.views.len() - 1)
 }
 
+/// What a Gallium sampler view of a texture sees: its format (a stencil view's, read as
+/// unsigned integers), its dimension (with `cube_faces`, a cube map's or cube map array's as a 2D array of its
+/// faces), its levels and its layers.
+struct Seen {
+    format: Format,
+    stencil: bool,
+    dimension: ViewDimension,
+    first_level: u32,
+    levels: u32,
+    first_layer: u32,
+    layers: u32,
+}
+
+impl Seen {
+    fn of(
+        view: &pipe_sampler_view,
+        desc: &TextureDesc,
+        cube_faces: bool,
+    ) -> Result<Self, &'static str> {
+        let stencil = crate::format::stencil_view(view.format());
+        let format = stencil
+            .or_else(|| crate::format::format(view.format()))
+            .ok_or("a view format the device lacks")?;
+        // SAFETY: the view of a texture holds its texture range.
+        let range = unsafe { view.u.tex };
+        // SAFETY: a live view.
+        let dimension = match unsafe { wc_sampler_view_target(view) } {
+            PIPE_TEXTURE_3D => ViewDimension::D3,
+            PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY if cube_faces => ViewDimension::D2Array,
+            PIPE_TEXTURE_CUBE => ViewDimension::Cube,
+            PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
+            PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
+            _ => ViewDimension::D2,
+        };
+        let three_d = desc.dimension == TextureDimension::D3;
+        Ok(Self {
+            format,
+            stencil: stencil.is_some(),
+            dimension,
+            first_level: range.first_level(),
+            levels: range.last_level() - range.first_level() + 1,
+            first_layer: if three_d { 0 } else { range.first_layer() },
+            // A view of one layer reads only its first layer, whatever range Gallium gives it
+            // (st/mesa and the blitter give a cube's or an array's whole range).
+            layers: if three_d || dimension == ViewDimension::D2 {
+                1
+            } else {
+                range.last_layer() - range.first_layer() + 1
+            },
+        })
+    }
+}
+
+/// The twin a sampler view of a texture is read through, where the back end cannot view the
+/// texture in the view's format; none where it can.
+fn view_twin<B: Backend>(
+    backend: &mut B,
+    resource: &Resource<B>,
+    view: &pipe_sampler_view,
+) -> Result<Option<ViewTwin<B>>, &'static str> {
+    let Some((_, desc)) = resource.texture() else {
+        return Ok(None);
+    };
+    let seen = Seen::of(view, desc, false)?;
+    let reinterprets = desc.reinterpret
+        && backend
+            .caps()
+            .features
+            .contains(Features::FORMAT_REINTERPRET);
+    if seen.stencil || seen.format.linear() == desc.format.linear() || reinterprets {
+        return Ok(None);
+    }
+    if seen.format.block() != desc.format.block()
+        || seen.format.is_depth_stencil()
+        || desc.format.is_depth_stencil()
+    {
+        return Err("a view in a format of another block than its texture's");
+    }
+    if desc.samples > 1 {
+        return Err("a multisampled texture viewed in another format (not built)");
+    }
+    let three_d = desc.dimension == TextureDimension::D3;
+    let side = |n: u32| (n >> seen.first_level).max(1);
+    let texture = backend
+        .create_texture(&TextureDesc {
+            dimension: desc.dimension,
+            format: seen.format,
+            width: side(desc.width),
+            height: side(desc.height),
+            depth_or_layers: if three_d {
+                side(desc.depth_or_layers)
+            } else {
+                seen.layers
+            },
+            mip_levels: seen.levels,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: matches!(
+                seen.dimension,
+                ViewDimension::Cube | ViewDimension::CubeArray
+            ),
+            reinterpret: false,
+        })
+        .map_err(|_| "a view's twin the device does not make")?;
+    Ok(Some(ViewTwin {
+        texture,
+        first_level: seen.first_level,
+        first_layer: seen.first_layer,
+        levels: seen.levels,
+        layers: seen.layers,
+        three_d,
+    }))
+}
+
 /// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a
-/// cube map's as a 2D array of its faces.
+/// cube map's or cube map array's as a 2D array of its faces. A view with a twin views the twin.
 fn texture_view<B: Backend>(
     backend: &mut B,
     resource: &Resource<B>,
     view: &pipe_sampler_view,
+    twin: Option<&ViewTwin<B>>,
     cube_faces: bool,
 ) -> Result<B::TextureView, &'static str> {
     let (texture, desc) = resource
         .texture()
         .ok_or("a texel buffer (the screen reports none)")?;
-    let stencil = crate::format::stencil_view(view.format());
-    let format = stencil
-        .or_else(|| crate::format::format(view.format()))
-        .ok_or("a view format the device lacks")?;
-    // SAFETY: the view of a texture holds its texture range.
-    let range = unsafe { view.u.tex };
-    let (first_layer, last_layer) = (range.first_layer(), range.last_layer());
-    let (first_level, last_level) = (range.first_level(), range.last_level());
-    // SAFETY: a live view.
-    let dimension = match unsafe { wc_sampler_view_target(view) } {
-        PIPE_TEXTURE_3D => ViewDimension::D3,
-        PIPE_TEXTURE_CUBE if cube_faces => ViewDimension::D2Array,
-        PIPE_TEXTURE_CUBE => ViewDimension::Cube,
-        PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
-        PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
-        _ => ViewDimension::D2,
+    let seen = Seen::of(view, desc, cube_faces)?;
+    let (viewed, base_mip, base_layer) = match twin {
+        Some(twin) => (&twin.texture, 0, 0),
+        None => (texture, seen.first_level, seen.first_layer),
     };
-    let three_d = desc.dimension == TextureDimension::D3;
     backend
         .create_view(
-            texture,
+            viewed,
             &TextureViewDesc {
-                format,
-                dimension,
-                base_mip: first_level,
-                mip_count: last_level - first_level + 1,
-                base_layer: if three_d { 0 } else { first_layer },
-                // A view of one layer reads only its first layer, whatever range Gallium gives
-                // it (st/mesa and the blitter give a cube's or an array's whole range).
-                layer_count: if three_d || dimension == ViewDimension::D2 {
-                    1
-                } else {
-                    last_layer - first_layer + 1
-                },
-                stencil: stencil.is_some(),
+                format: seen.format,
+                dimension: seen.dimension,
+                base_mip,
+                mip_count: seen.levels,
+                base_layer,
+                layer_count: seen.layers,
+                stencil: seen.stencil,
             },
         )
         .map_err(|_| "a view the device does not make")
@@ -688,16 +826,20 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: as above; the view takes its own reference.
     unsafe { resource::reference(&mut base.texture, texture) };
     let mut backend = context.screen().backend();
-    let (view, texels) = if resource.buffer().is_some() {
+    let (view, texels, twin) = if resource.buffer().is_some() {
         match texel_buffer::<B>(&mut backend, &base) {
-            Ok((texels, view)) => (Ok(view), Some(texels)),
-            Err(why) => (Err(why), None),
+            Ok((texels, view)) => (Ok(view), Some(texels), None),
+            Err(why) => (Err(why), None, None),
         }
     } else {
-        (
-            texture_view::<B>(&mut backend, resource, &base, false),
-            None,
-        )
+        match view_twin::<B>(&mut backend, resource, &base) {
+            Ok(twin) => (
+                texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), false),
+                None,
+                twin,
+            ),
+            Err(why) => (Err(why), None, None),
+        }
     };
     let mut swizzles = [0; naga::VectorSize::MAX];
     // SAFETY: a live view, and a place for one swizzle a component.
@@ -715,8 +857,12 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         });
     let components = format.map_or(0, Format::components);
     // SAFETY: a live view.
-    let cube = unsafe { wc_sampler_view_target(&base) } == PIPE_TEXTURE_CUBE;
-    let faces = (integer && cube).then(|| texture_view::<B>(&mut backend, resource, &base, true));
+    let cube = matches!(
+        unsafe { wc_sampler_view_target(&base) },
+        PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY
+    );
+    let faces = (integer && cube)
+        .then(|| texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), true));
     Box::into_raw(Box::new(View::<B> {
         base,
         view,
@@ -725,6 +871,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         components,
         faces,
         texels,
+        twin,
     }))
     .cast()
 }
@@ -748,15 +895,18 @@ pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
     {
         context.screen().retire(Object::TextureView(made));
     }
-    if let Some(texels) = view.texels {
-        context.screen().retire(Object::Texture(texels.texture));
+    for texture in [view.texels.map(|t| t.texture), view.twin.map(|t| t.texture)]
+        .into_iter()
+        .flatten()
+    {
+        context.screen().retire(Object::Texture(texture));
     }
     // SAFETY: the view held one reference on its texture.
     unsafe { resource::release(view.base.texture) };
 }
 
 /// One level's region of a texture at a box's corner.
-fn corner<'a, B: Backend>(
+pub fn corner<'a, B: Backend>(
     texture: &'a B::Texture,
     three_d: bool,
     level: c_uint,

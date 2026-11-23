@@ -679,8 +679,28 @@ nearest_level(nir_builder *b, nir_def *lod, nir_def *levels)
    return nir_imin(b, level, nir_iadd_imm(b, levels, -1));
 }
 
-/* The components of a cube map's direction. */
+/* The components of a cube map's direction; a cube map array's coordinate has its cube after them. */
 #define WC_CUBE_AXES 3
+/* The layers of one cube in a 2D array of a cube map array's faces. */
+#define WC_CUBE_FACES 6
+
+/* The layer nearest an array coordinate, among `layers`. */
+static nir_def *
+nearest_layer(nir_builder *b, nir_def *coordinate, nir_def *layers)
+{
+   nir_def *nearest = nir_f2i32(b, nir_ffloor(b, nir_fadd_imm(b, coordinate, WC_HALF)));
+   return nir_imin(b, nir_imax(b, nearest, nir_imm_int(b, 0)), nir_iadd_imm(b, layers, -1));
+}
+
+/* A cube map array's face `layer` of its cube nearest the coordinate's, as a layer of the 2D array
+ * of its faces holding `layers`. */
+static nir_def *
+cube_array_layer(nir_builder *b, nir_def *coord, nir_def *layer, nir_def *layers)
+{
+   nir_def *cube = nearest_layer(b, nir_channel(b, coord, WC_CUBE_AXES),
+                                 nir_udiv_imm(b, layers, WC_CUBE_FACES));
+   return nir_iadd(b, layer, nir_imul_imm(b, cube, WC_CUBE_FACES));
+}
 
 /* OpenGL's face of a cube map for direction `coord` (its table of cube map faces): the face's
  * coordinates, 0 to 1, and in `layer` its layer, +x, -x, +y, -y, +z and -z in order. */
@@ -754,9 +774,9 @@ sampled_through(nir_shader *nir, const nir_variable *var)
    return false;
 }
 
-/* An integer cube map at a listed unit that the program samples made a 2D array of its six faces,
- * which the host loads (it loads no cube texel, and gathers its cubes as they are); the driver
- * binds such a view of it. */
+/* An integer cube map or cube map array at a listed unit that the program samples made a 2D array
+ * of its faces, six a cube, which the host loads (it loads no cube texel, and gathers its cubes as
+ * they are); the driver binds such a view of it. */
 static void
 integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
 {
@@ -764,8 +784,7 @@ integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
    nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
       const struct glsl_type *t = glsl_without_array(var->type);
       if ((!glsl_type_is_sampler(t) && !glsl_type_is_texture(t)) ||
-          glsl_get_sampler_dim(t) != GLSL_SAMPLER_DIM_CUBE || glsl_sampler_type_is_array(t) ||
-          glsl_sampler_type_is_shadow(t))
+          glsl_get_sampler_dim(t) != GLSL_SAMPLER_DIM_CUBE || glsl_sampler_type_is_shadow(t))
          continue;
       enum glsl_base_type base = glsl_get_sampler_result_type(t);
       if ((base != GLSL_TYPE_INT && base != GLSL_TYPE_UINT) ||
@@ -781,19 +800,29 @@ integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
       nir_fixup_deref_types(nir);
 }
 
-/* A query of a cube map made a 2D array of its faces, answered as of the cube. */
+/* A query of a cube map or cube map array made a 2D array of its faces, answered as of the cube or
+ * the cubes. */
 static bool
 cube_layers_query(nir_builder *b, nir_tex_instr *tex)
 {
+   bool array = tex->is_array;
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
    tex->is_array = true;
    if (tex->op != nir_texop_txs)
       return true;
-   /* Its size without the layers. */
-   unsigned components = tex->def.num_components;
-   tex->def.num_components = components + 1;
    b->cursor = nir_after_instr(&tex->instr);
-   nir_def *size = nir_trim_vector(b, &tex->def, components);
+   nir_def *size;
+   if (array) {
+      /* Its cubes, of the faces. */
+      unsigned at = tex->def.num_components - 1;
+      size = nir_vector_insert_imm(
+         b, &tex->def, nir_udiv_imm(b, nir_channel(b, &tex->def, at), WC_CUBE_FACES), at);
+   } else {
+      /* Its size without the layers. */
+      unsigned components = tex->def.num_components;
+      tex->def.num_components = components + 1;
+      size = nir_trim_vector(b, &tex->def, components);
+   }
    nir_def_rewrite_uses_after(&tex->def, size);
    return true;
 }
@@ -801,12 +830,17 @@ cube_layers_query(nir_builder *b, nir_tex_instr *tex)
 /* A gather of a cube map made a 2D array of its faces, from its face's coordinates; texels past
  * the face's edges are its edge's, not the next face's. */
 static bool
-cube_layers_gather(nir_builder *b, nir_tex_instr *tex)
+cube_layers_gather(nir_builder *b, nir_tex_instr *tex, nir_deref_instr *texture)
 {
    b->cursor = nir_before_instr(&tex->instr);
    int at = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    nir_def *layer;
    nir_def *face = cube_face(b, tex->src[at].src.ssa, &layer);
+   if (tex->is_array) {
+      nir_def *size = nir_txs(b, .texture_deref = texture, .lod = nir_imm_int(b, 0));
+      layer = cube_array_layer(b, tex->src[at].src.ssa, layer,
+                               nir_channel(b, size, size->num_components - 1));
+   }
    nir_def *coord = nir_vec3(b, nir_channel(b, face, 0), nir_channel(b, face, 1), nir_i2f32(b, layer));
    nir_src_rewrite(&tex->src[at].src, coord);
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
@@ -830,7 +864,7 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
    bool sampled = sampling(tex);
    if (cube && tex->op == nir_texop_tg4)
-      return cube_layers_gather(b, tex);
+      return cube_layers_gather(b, tex, texture);
    if (cube && !sampled)
       return cube_layers_query(b, tex);
    uint32_t unit;
@@ -908,12 +942,12 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    }
    unsigned components = axes;
    if (cube) {
+      if (tex->is_array)
+         layer = cube_array_layer(b, coord, layer, nir_channel(b, size, axes));
       parts[components++] = nir_get_scalar(layer, 0);
    } else if (tex->is_array) {
       /* The layer nearest the coordinate's, within the array. */
-      nir_def *nearest = nir_f2i32(b, nir_ffloor(b, nir_fadd_imm(b, nir_channel(b, coord, axes), WC_HALF)));
-      nearest = nir_imin(b, nir_imax(b, nearest, nir_imm_int(b, 0)),
-                         nir_iadd_imm(b, nir_channel(b, size, axes), -1));
+      nir_def *nearest = nearest_layer(b, nir_channel(b, coord, axes), nir_channel(b, size, axes));
       parts[components++] = nir_get_scalar(nearest, 0);
    }
    nir_def *loaded = nir_txf(b, nir_vec_scalars(b, parts, components), .texture_deref = texture,

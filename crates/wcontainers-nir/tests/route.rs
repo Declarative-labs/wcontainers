@@ -482,3 +482,41 @@ fn images_of_textures_beside_atomics_are_storage_words_laid_out_by_helper_consta
     assert_eq!(globals(true), images);
     assert_eq!(globals(false), 0);
 }
+
+const INTEGER_CUBE_ARRAY: &str = "#version 450
+layout(binding = 0) uniform isamplerCubeArray cubes;
+layout(location = 0) in vec4 at;
+layout(location = 0) out ivec4 colour;
+void main() {
+    colour = texture(cubes, at) + textureGather(cubes, at) + ivec4(textureSize(cubes, 0), 0);
+}
+";
+
+#[test]
+fn an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces() {
+    use wcontainers_nir::mesa::{NearestSampler, Wrap};
+    let mut stage = Nir::from_glsl(&[(Stage::Fragment, INTEGER_CUBE_ARRAY)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    stage.nir.nearest_integer_textures(&[NearestSampler {
+        unit: 0,
+        wrap: [Wrap::Repeat; naga::VectorSize::Tri as usize],
+        mipmapped: true,
+        min_lod: 0f32.to_bits(),
+        max_lod: f32::MAX.to_bits(),
+        border: [0; naga::VectorSize::MAX],
+    }]);
+    stage.nir.to_common_form(Stage::Fragment).unwrap();
+    let module = wcontainers_nir::direct::module(&mut stage.nir).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
+    let textures: Vec<_> = module
+        .global_variables
+        .iter()
+        .filter_map(|(_, g)| match module.types[g.ty].inner {
+            naga::TypeInner::Image { dim, arrayed, .. } => Some((dim, arrayed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(textures, [(naga::ImageDimension::D2, true)]);
+}
