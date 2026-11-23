@@ -228,7 +228,7 @@ fn thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12() {
     assert!(device.removed().is_none(), "{:?}", device.removed());
     let pitch = footprints[0].footprint.row_pitch as usize;
     let texel = 4 * float as usize;
-    let read: Vec<u8> = device.map(readback).unwrap()[..pitch * TARGET_SIDE as usize]
+    let read: Vec<u8> = device.map(readback).unwrap()[..total as usize]
         .iter()
         .map(std::cell::Cell::get)
         .collect();

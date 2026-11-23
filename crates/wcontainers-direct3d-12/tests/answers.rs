@@ -5,7 +5,8 @@
 //! need a program, from programs fxc compiled (tests/answers/compile.cmd): loads, sampling,
 //! comparison, gathering, multisampled loads, typed buffer views, typed storage stores, loads and
 //! atomics, vertex and index input, and drawing into targets (blended where answered) and depth
-//! targets. Needs a GPU: run it through `tools/graphics-rig/gpu-job`. `WEBGPU_API` picks wgpu's
+//! targets; loads of a texel of varied components, of the formats of whole-byte components alike,
+//! checked against Direct3D's conversions. Needs a GPU: run it through `tools/graphics-rig/gpu-job`. `WEBGPU_API` picks wgpu's
 //! API (dx12, vulkan, metal).
 
 use std::sync::Arc;
@@ -768,6 +769,119 @@ fn read_words(device: &mut Device<WebGpu>, readback: ResourceId) -> [u32; 4] {
     std::array::from_fn(|i| u32::from_le_bytes(bytes[i * 4..][..4].try_into().unwrap()))
 }
 
+/// How a plain format's stored components read.
+#[derive(Clone, Copy)]
+enum Read {
+    Unorm,
+    Snorm,
+    Uint,
+    Sint,
+    Float,
+}
+
+/// A first texel of varied components for DXGI format `format`, the four words a load of it
+/// gives by Direct3D's conversions (components the format lacks read 0, alpha 1), and how many
+/// bits each word may be off (normalised conversions round); for the formats of whole-byte
+/// components alike, none otherwise.
+fn varied_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], u32)> {
+    use Read::*;
+    use dxgi::*;
+    // Each stored component's read component, in the order they are stored; none: not read.
+    const RGBA: &[Option<usize>] = &[Some(0), Some(1), Some(2), Some(3)];
+    const RGB: &[Option<usize>] = &[Some(0), Some(1), Some(2)];
+    const RG: &[Option<usize>] = &[Some(0), Some(1)];
+    const R: &[Option<usize>] = &[Some(0)];
+    const A: &[Option<usize>] = &[Some(3)];
+    const BGRA: &[Option<usize>] = &[Some(2), Some(1), Some(0), Some(3)];
+    const BGRX: &[Option<usize>] = &[Some(2), Some(1), Some(0), None];
+    let (bytes, read, order) = match format {
+        R32G32B32A32_FLOAT => (4, Float, RGBA),
+        R32G32B32A32_UINT => (4, Uint, RGBA),
+        R32G32B32A32_SINT => (4, Sint, RGBA),
+        R32G32B32_FLOAT => (4, Float, RGB),
+        R32G32B32_UINT => (4, Uint, RGB),
+        R32G32B32_SINT => (4, Sint, RGB),
+        R16G16B16A16_FLOAT => (2, Float, RGBA),
+        R16G16B16A16_UNORM => (2, Unorm, RGBA),
+        R16G16B16A16_UINT => (2, Uint, RGBA),
+        R16G16B16A16_SNORM => (2, Snorm, RGBA),
+        R16G16B16A16_SINT => (2, Sint, RGBA),
+        R32G32_FLOAT => (4, Float, RG),
+        R32G32_UINT => (4, Uint, RG),
+        R32G32_SINT => (4, Sint, RG),
+        R8G8B8A8_UNORM => (1, Unorm, RGBA),
+        R8G8B8A8_UINT => (1, Uint, RGBA),
+        R8G8B8A8_SNORM => (1, Snorm, RGBA),
+        R8G8B8A8_SINT => (1, Sint, RGBA),
+        R16G16_FLOAT => (2, Float, RG),
+        R16G16_UNORM => (2, Unorm, RG),
+        R16G16_UINT => (2, Uint, RG),
+        R16G16_SNORM => (2, Snorm, RG),
+        R16G16_SINT => (2, Sint, RG),
+        R32_FLOAT => (4, Float, R),
+        R32_UINT => (4, Uint, R),
+        R32_SINT => (4, Sint, R),
+        R8G8_UNORM => (1, Unorm, RG),
+        R8G8_UINT => (1, Uint, RG),
+        R8G8_SNORM => (1, Snorm, RG),
+        R8G8_SINT => (1, Sint, RG),
+        R16_FLOAT => (2, Float, R),
+        R16_UNORM => (2, Unorm, R),
+        R16_UINT => (2, Uint, R),
+        R16_SNORM => (2, Snorm, R),
+        R16_SINT => (2, Sint, R),
+        R8_UNORM => (1, Unorm, R),
+        R8_UINT => (1, Uint, R),
+        R8_SNORM => (1, Snorm, R),
+        R8_SINT => (1, Sint, R),
+        A8_UNORM => (1, Unorm, A),
+        B8G8R8A8_UNORM => (1, Unorm, BGRA),
+        B8G8R8X8_UNORM => (1, Unorm, BGRX),
+        _ => return None,
+    };
+    // Stored values of either sign, the floats' as their bits.
+    let raw = |i: usize| -> u32 {
+        match (bytes, read) {
+            (1, _) => [0x40, 0xc1, 0x62, 0x93][i],
+            (2, _) => [0x3c00, 0xc123, 0x4246, 0x3369][i],
+            (_, Float) => [1.5f32, -2.25, 3.0, 0.125][i].to_bits(),
+            _ => [0x1234_5678, 0xf000_0001, 7, 0x7fff_ffff][i],
+        }
+    };
+    let bits = 8 * bytes;
+    let word = |v: u32| -> u32 {
+        let high = (1u64 << bits) - 1;
+        let signed = || (i64::from(v) << (64 - bits)) >> (64 - bits);
+        match read {
+            Unorm => (f64::from(v) / high as f64) as f32,
+            Snorm => (signed() as f64 / (high >> 1) as f64).max(-1.0) as f32,
+            Uint => return v,
+            Sint => return signed() as i32 as u32,
+            Float if bytes == 2 => half::f16::from_bits(v as u16).to_f32(),
+            Float => return v,
+        }
+        .to_bits()
+    };
+    let one = match read {
+        Uint | Sint => 1,
+        _ => 1.0f32.to_bits(),
+    };
+    let mut expected = [0, 0, 0, one];
+    let mut stored = Vec::new();
+    for (i, to) in order.iter().enumerate() {
+        let v = raw(i);
+        stored.extend_from_slice(&v.to_le_bytes()[..bytes as usize]);
+        if let Some(to) = to {
+            expected[*to] = word(v);
+        }
+    }
+    let tolerance = match read {
+        Unorm | Snorm => 1,
+        _ => 0,
+    };
+    Some((stored, expected, tolerance))
+}
+
 /// Whether the first three components a program read of `kind` are zero.
 fn reads_zero(kind: Kind, words: [u32; 4]) -> bool {
     words[..3].iter().all(|&w| match kind {
@@ -931,6 +1045,31 @@ fn program_uses_of(format: u32) -> usize {
             used += 1;
         }
         device.destroy_resource(t);
+    }
+
+    // A load of a texel of varied components, of the formats `varied_texel` decodes.
+    if has(support1::SHADER_LOAD)
+        && format == view
+        && let Some((bytes, expected, tolerance)) = varied_texel(format)
+    {
+        let what = format!("format {format}: a load of a varied texel");
+        let mut fill = vec![0; zero_bytes as usize];
+        fill[..bytes.len()].copy_from_slice(&bytes);
+        let varied = uploaded(&mut device, &fill);
+        let (t, copy, _) = zeroed(&mut device, format, 0, varied, &what);
+        let views = [srv(t, SRV_DIMENSION_TEXTURE2D), Descriptor::Empty];
+        let words = programs.dispatch(&mut device, programs::LOAD[k], views, vec![copy], &what);
+        let near = words
+            .iter()
+            .zip(expected)
+            .all(|(&w, e)| w.abs_diff(e) <= tolerance);
+        assert!(
+            near,
+            "{what}: read {words:x?}, Direct3D gives {expected:x?}"
+        );
+        device.destroy_resource(t);
+        device.destroy_resource(varied);
+        used += 1;
     }
 
     // A load of each sample of a multisampled texture cleared to zeros.
