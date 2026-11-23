@@ -1950,9 +1950,10 @@ fn textures_of_another_kind_are_read_by_their_bits() {
         let text = wgsl(&viewed);
         // The float declaration now holds unsigned texels and the unsigned one floats; the signed
         // one, bound in its own kind, is unchanged.
-        assert_eq!(text.matches("texture_2d<u32>").count(), 1, "{text}");
-        assert_eq!(text.matches("texture_2d<f32>").count(), 1, "{text}");
-        assert_eq!(text.matches("texture_2d<i32>").count(), 1, "{text}");
+        for kind in ["u32", "f32", "i32"] {
+            let declared = format!("texture_2d<{kind}>");
+            assert_eq!(text.matches(&declared).count(), 1, "{kind}: {text}");
+        }
         assert!(text.contains("bitcast<vec4<f32>>"), "{text}");
         assert!(text.contains("bitcast<vec4<u32>>"), "{text}");
     }
