@@ -77,7 +77,11 @@ diamond-exit rule, the Direct3D 11 front's last ask of this track (an interface 
 the stage helper's line route, a drawn test). Run 17 (run 104, the section below): the NIR track's
 typed buffers of a module (`typed::buffers`), and four uses of unsafe code gone (the owner's rule of
 2026-11-22 evening; the converters' C++ boundary reported, not removable by a binding generator).
-Not complete: the gap list below.
+Run 18 (run 105, the section below): A1 closed (dxc's `ppc_fp128` refused by name, a carried
+dxil-spirv patch), A13's DXIL part closed (dxc's geometry shaders taking patches convert and draw,
+a carried dxil-spirv patch) and A16 closed (naga's handle check made to catch what its validator
+indexed unchecked; the damage tests pass natively and in WebAssembly, no longer known failures):
+pass bar items 1 and 6 met. Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -188,6 +192,46 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 18 (run 105): A1, A13's DXIL part and A16 closed
+
+Logs and scripts in scratch `graphics-shaders/g6-r105` (the clone `tip` moved there from g6-r104).
+Nothing built on the Mac (rustfmt of single files only). The rented x86-64 machine did not answer
+(SSH timed out at the banner); the CPU checks ran on the rented ARM64 machine
+(`arm-run <worktree> --name graphics-shaders -- "$(cat cpu-cmd.txt)"`, 12 jobs; the corpora copied
+there from the laptop as "How to run" says for the x86 machine, to /work/probes/shaders-corpus).
+- A1: dxc's `distance-4-ps.dxil` holds a `ppc_fp128` type and a `sitofp` of a constant of it
+  (llvm-bcanalyzer 21 from nixpkgs on the ARM64 machine, the bitcode cut from the container by
+  scratch `extract_bc.py`). A carried patch of dxil-spirv's type reader
+  (`converter-patches/dxil-spirv/bc/module.cpp.patch`) names LLVM's types DXIL lacks; the boundary
+  (`dxil::rejected`) refuses them by name, `refusal::TYPE_OUTSIDE_DXIL`. The corpus test's list of
+  known unnamed verdicts is gone (it held only this file).
+- A13's DXIL part: a carried patch of dxil-spirv (`converter-patches/dxil-spirv/
+  dxil_converter.cpp.patch`) takes a geometry shader's input of 1 to 32 control points, its input
+  arrays sized by them, with no execution mode; `dxil::geometry::prepare` takes such a primitive
+  from the container's `PSV0` chunk. `GeometryPatchInput` and `container::program_type` are gone.
+  Own `gs_patch.dxil` and the runner's `patch-syntax-12-gs.dxil` convert ("ok ; glsl absent
+  compute", as their DXBC builds); `geometry_shaders_take_patches_as_primitives` checks both
+  builds' extras in the compute and replay forms.
+- A16: naga's handle check (carried, `valid/handles.rs`, "naga as carried") now catches every
+  place the damage tests found the validator panicking; the strict test lists every panicking
+  case and place instead of stopping at the first, and both damage tests are ordinary tests.
+  Figures in A16. WebAssembly (laptop, wasi-sdk 25, wasmtime 38.0.4, `wasm-r105.sh`, load 0 to
+  2.3): the whole cache test binary, 8 tests, passes at seeds 1 to 5 and 4242 with 1,000 damaged
+  copies of each of 297 records (1,782,000 decodes, none panicking; wasm1.log).
+- Checks (ARM64 machine, load 4 to 13): `cargo fmt --check` and clippy with warnings denied clean,
+  every CPU test binary passes with every corpus (arm6.log, after the two records were updated to
+  the verdicts it printed), the literal check prints no line of this crate or of the carried naga
+  (its one finding on the first try, a string naming the function argument kind, became the
+  type's name as naga's own `BadHandle::new` gives it).
+- Drawn on the RTX 3080 (gpu1.log; one GPU job, one test thread; queued about 45 minutes behind
+  another track's conformance runs): Windows clippy with warnings denied clean, and the whole suite
+  at the committed naga change and this crate's working files: 27 binaries, 208 passed, 0 failed,
+  5 ignored (the known failures; the A16 one is gone). Among them
+  `geometry_shaders_taking_patches_draw_as_direct3d_does` now draws dxc's `gs_patch` beside fxc's
+  against real Direct3D 11, the default 4 seeds of 4 cases each, every texel equal. Chrome 157 on
+  the desktop compiles both new WGSL files, `gs_patch.wgsl` and `hlsl+patch-syntax-12-gs.wgsl`
+  (chrome.log).
 
 ## G6 run 17 (run 104): typed buffers of a module for the NIR track; unsafe code
 
@@ -1720,7 +1764,8 @@ The pass bar, item by item:
 1. The 191 corpus shaders and real game shaders (DXBC and DXIL) convert or fail with a named reason
    (`tests/corpus.rs`, records in `tests/expected/`; each record is the whole verdict, refusal
    reason and GLSL ES outcome included, and the test fails on any verdict that differs from its
-   record or is not a conversion or a named refusal). Met but for gap A1.
+   record or is not a conversion or a named refusal). Met (A1 closed in run 105: no verdict is
+   unnamed, and the test's list of known unnamed verdicts is gone).
    - Corpus (Wine's tests, DXBC): 185 of 191 convert; 6 named: `SampleCount` 4 (a pixel shader
      asking the target's sample count, given by the front's `samples`; the corpus has no key),
      `RenderTargetArrayIndex` 1 (a vertex shader writing the layer: absent, plan 4.12),
@@ -1869,11 +1914,12 @@ The pass bar, item by item:
    Cull distances and primitive numbers on WebGL 2 since run 85 (`geometry_draw`, `stage_draw`,
    replayed on ANGLE); tessellation is not offered on WebGL 2 (plan section 7).
    Since run 86, vertex shaders writing storage through `Stages::stored` (`stage_draw`, A9).
+   Since run 105 dxc's geometry shaders taking patches too (A13's DXIL part,
+   `geometry_shaders_taking_patches_draw_as_direct3d_does` draws both builds).
    Not met: some topologies and streams (A7), single texels on
    the edges of clipped triangles and a few of culled lines (A10), clamped depth behind a
-   geometry stage at some seeds (A12), geometry shaders taking patches and hull shaders giving no
-   control points on the DXIL route (A13, A14: dxil-spirv's) and the written count of a stream
-   with no buffer bound (A15).
+   geometry stage at some seeds (A12) and the written count of a stream with no buffer bound
+   (A15).
 5. The built-in programs: the storage clear (`clear_draw`, every storage format and dimension
    against WARP and the GPU's Direct3D 11; `A8Unorm` since run 102), and since run 56 the pixel program of a pipeline
    without a pixel shader (`builtin::pixel_program_for_variant`, `tests/builtin.rs` and the
@@ -1890,27 +1936,21 @@ The pass bar, item by item:
    Conversion gives the same bytes under each back end's keys: the corpus test converts every
    shader under the WebGPU key, the WebGL 2 key (`TEXTURE_INFO`, since run 46), the bases from the
    helpers and the view keys, twice each, and decodes each record back to the same bytes;
-   `cache.txt` holds each record's hash so the native and WebAssembly builds can be compared. Met
-   but for gap A16 (the WebAssembly build links and is compared again since run 76; it was
-   broken from 260d36d8 to run 76; since run 100, A8 closed, every record's hash is the same in
-   both builds).
+   `cache.txt` holds each record's hash so the native and WebAssembly builds can be compared (the
+   WebAssembly build links and is compared again since run 76; it was broken from 260d36d8 to run
+   76; since run 100, A8 closed, every record's hash is the same in both builds). Met: since run
+   105 (A16 closed) a damaged record decodes without any panic, natively and in WebAssembly, and
+   both damage tests run as ordinary tests.
 
 The gap list (every item of the pass bar not met):
 
-- A1. `hlsl+distance-4-ps.dxil` (runner corpus) ends "convert rejected: Unknown type!", not a named
-  refusal. Since G6a run 2 the corpus test names it as a known unnamed verdict with this gap
-  (`KNOWN_UNNAMED` in tests/corpus.rs): its verdict must still equal its record, and the runner
-  test passes and catches any other change. Cause, read in run 100 with llvm-bcanalyzer 10 on the
-  file's bitcode (scratch g6-r100): dxc 10.0.26100 writes a `PPC_FP128` type, a constant of it
-  (the words of 1.0 and 0) and a constant `sitofp` of that constant to float, which is the value
-  the program stores in its first output (the other three are 320.0, 3.0 and 80.0); so the program
-  does use the type, which DXIL does not have (the earlier "never uses" was wrong). Tried in run
-  100 with a carried patch: the type read as opaque gives "Constant type is not FP."; its constant
-  read as undefined too gives an assertion in dxil-spirv's integer width; dropped. Waits: nobody
-  (a vkd3d runner file; no real program seen with it). Takes: knowing what real Direct3D 12 on the
-  RTX 3080 stores for it (the Direct3D 12 front's runner), then either reading the constant as the
-  double it holds (a carried patch, `converter-patches/dxil-spirv/`) or a refusal by name from the
-  boundary.
+- A1. Closed in run 105 (its section): `hlsl+distance-4-ps.dxil` (runner corpus) was "convert
+  rejected: Unknown type!", not a named refusal. dxc 10.0.26100 writes a `ppc_fp128` type (LLVM
+  type code 15) and a `sitofp` of a constant of it to float, a cast LLVM allows only from integers
+  (llvm-bcanalyzer 21 on the module's bitcode, scratch g6-r105). A carried patch of dxil-spirv's
+  type reader (`converter-patches/dxil-spirv/bc/module.cpp.patch`) names LLVM's types DXIL lacks
+  (`x86_fp80`, `fp128`, `ppc_fp128`, `x86_mmx`) and the boundary refuses them by name,
+  `TypeOutsideDxil`. What real Direct3D 12 does with that module is not measured.
 - A2. Closed in run 55: a typed buffer or storage texture bound as a view of another kind than
   the program declares is read and written by its bits, as Direct3D gives it (no refusal by kind
   is left), so every such shader converts under the corpus's one-kind view keys.
@@ -2254,17 +2294,17 @@ The gap list (every item of the pass bar not met):
   triangles (inferred, not measured). Waits: nobody (depths some millionths
   apart). Takes: the depths compared texel by texel at those seeds to find whether the
   interpolation or the clamp moves them, then the rewrite changed and every seed compared again.
-- A13. DXBC part closed in run 89 (its section): a geometry shader taking patches converts and the
-  stage helper draws a patch list into it without tessellation, drawn equal to real Direct3D 11 on
-  the RTX 3080 (`geometry_shaders_taking_patches_draw_as_direct3d_does`); the runner's five DXBC
-  files convert. Left: the DXIL route (`GeometryPatchInput`, runner `patch-syntax-12-gs.dxil`, 1
-  file): cause, dxil-spirv converts no geometry shader taking patches (its input primitive switch
-  ends "Unexpected input primitive"); and the replay route on WebGL 2 (`TopologyMismatch` for a
-  patch list, not built or drawn). Waits: the Direct3D 12 front's runner (that file); nobody for
-  WebGL 2 (no program seen). Takes: dxil-spirv taking patch input (upstream, or a patch carried
-  as naga's are, which needs the way to carry C++ patches A8 also waits on), then dxc's `gs_patch`
-  drawn; for WebGL 2, the replay capturing a patch list as points, as lists with adjacency are,
-  and a case of the replayed test.
+- A13. Closed: the DXBC part in run 89, the DXIL part in run 105 (their sections). A geometry
+  shader taking patches converts and the stage helper draws a patch list into it without
+  tessellation, drawn equal to real Direct3D 11 on the RTX 3080 for fxc's and dxc's builds
+  (`geometry_shaders_taking_patches_draw_as_direct3d_does`); the runner's five DXBC files and
+  `patch-syntax-12-gs.dxil` convert. dxil-spirv's input primitive switch had no case for patches
+  ("Unexpected input primitive"); a carried patch (`converter-patches/dxil-spirv/
+  dxil_converter.cpp.patch`) sizes the input arrays by the patch's control points and writes no
+  execution mode (SPIR-V has none for it), and the DXIL route takes the primitive from the
+  container's `PSV0` chunk. Left open on WebGL 2 only: the replay route (`TopologyMismatch` for a
+  patch list, not built or drawn; no program seen). Takes: the replay capturing a patch list as
+  points, as lists with adjacency are, and a case of the replayed test.
 - A14. Closed: the DXIL part in run 96 (its section; the runner's `patch-syntax-11-ds.dxil` and own
   `ds_tri_none.dxil` convert, the latter drawn equal to Direct3D 11 on WARP; the text below is the
   entry before it). DXBC part closed in run 89 (its section): a hull shader of no output control points and a
@@ -2288,27 +2328,20 @@ The gap list (every item of the pass bar not met):
   nothing written, as no buffer takes it. Waits: nobody (no program seen reading the written count
   of an unbound stream). Takes: the same draws on WARP as a second reference; then either the
   count matched or the difference recorded as the GPU's own.
-- A16. The cache survives a damaged entry natively, not in WebAssembly, where a panic aborts and
-  ends the instance (pass bar item 6). Each entry's CRC drops a damaged one before decoding, so
-  this needs a record whose checksum matches but whose contents are malformed (a crafted, merged
-  or foreign file). Decoding validates the modules with naga's validator, which indexes such a
-  module unchecked; natively `contained` (catch_unwind) turns the panic into a refusal. Our own
-  `capabilities` read the types unchecked too until G6a run 6 (now `get_handle`). Tests:
-  `damaged_records_decode_to_a_conversion_or_an_error` (no panic reaches the caller; passes
-  natively, ignored on wasm32) and `damaged_records_decode_without_a_panic` (no panic at all,
-  contained or not; ignored as a known failure, failing). Measured on the laptop at G6a run 6's
-  tip (load 4.5 before, the other track's work beside), seeds 4242 and 1 to 5, 1,000 damaged copies of
-  each of 189 records (g6a6/panic-sites.log, the strict test with its assertion removed for the
-  count): 1,049 panics among 1,134,000 decodes, all in naga (analyzer.rs:641, a function argument's
-  index past the arguments, 935; typifier.rs:122 57; compose.rs:22, a composed type's handle, 35;
-  function.rs:617 and :592, an atomic's result type, which naga's handle check skips, 9;
-  analyzer.rs:1116, a called function's information before it is made, 6; expression.rs:1326 3;
-  analyzer.rs:1247 3; constant_evaluator.rs:768 1), none in this crate. G6b's check reproduced
-  it on other files: x86 machine, seed 80777, 80 damages, `cs_divide.dxbc` case 18 (analyzer.rs:641,
-  index 76 past a length of 1); laptop, seed 80778, `ps_levels_past.dxil` case 6.
-  Waits: nobody (no host shares a cache file it did not write yet). Takes: either naga's validator
-  checking every index and handle before use (carried patches, then upstream), or a record
-  signed with a key the host holds so a foreign record is never decoded.
+- A16. Closed in run 105 (its section). Was: a damaged record whose checksum matches (a crafted,
+  merged or foreign file) made naga's validator panic, which WebAssembly cannot contain. The
+  panics were all in places naga's handle check (`valid/handles.rs`, run before every other part
+  of validation) did not cover: a function argument's index past the function's arguments, a
+  call of a function not before the caller, the types of atomic, subgroup and uniform-load
+  results, the handles inside global expressions other than constants, overrides, zero values and
+  compositions, the types of the global expressions after the last type, and global expressions
+  of kinds that are no constant expression. The carried naga now checks each (commit aa7d1b10,
+  third_party/naga only; "naga as carried"). Measured (ARM64 machine, load 4 to 12): 0 panics in
+  1,776,000 damaged decodes (seeds 4242 and 1 to 5, 1,000 damaged copies of each of 296 records)
+  and 0 in 29,600,000 (seeds 100 to 119, 5,000 copies); with only the argument, call and result
+  checks, 8 to 12 of each seed's 296,000 still panicked (arm2.log), and G6a run 6 counted 1,049
+  of 1,134,000 before any. `damaged_records_decode_without_a_panic` now lists every panicking case and place,
+  and both damage tests run as ordinary tests, in WebAssembly too (run 105's section).
 - A17 (CLOSED in run 103: `LINE_DIAMOND`, `AliasedLinesAsQuads`, drawn equal in coverage to the
   RTX 3080; the run's section). Was: aliased lines (`MultisampleEnable` off) into a multisampled target: Direct3D 10 and 11
   cover every sample of each pixel the diamond-exit rule picks; WebGPU draws lines into a
@@ -2681,8 +2714,8 @@ G6a run 5's tip):
 - On the gap list: none left of A6 (`DxilGeometryShader` 26 gone in run 65; `DxilHullShader` 28
   and `DxilDomainShader` 9 gone in run 66: 36 convert, 1 is `DomainWithoutControlPoints`, next to
   A14's `HullWithoutControlPoints`, gone in run 89);
-  `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` 2 (A13; DXIL
-  `patch-syntax-12-gs` and own `gs_patch.dxil`; the DXBC 5 convert since run 89);
+  `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` gone in run 105
+  (A13; DXIL `patch-syntax-12-gs` and own `gs_patch.dxil` convert; the DXBC 5 since run 89);
   `DomainWithoutControlPoints` 0 (A14; both files convert since run 96;
   `HullWithoutControlPoints` gone in run 89); `ComponentPastVector` 0
   (A23, own `ds_rows_gap.dxbc` converts since run 101); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
@@ -2691,7 +2724,8 @@ G6a run 5's tip):
   `GeometryPrimitiveIdAfterDomain` gone in run 95 (A20); `GeometryStreams` 1, `PrimitiveId` 0 (a geometry shader
   writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL, gone in run 97) (A7; `CullDistance` 8 of
   geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL,
-  gone in run 90: they convert); "convert rejected: Unknown type!" 1 (A1).
+  gone in run 90: they convert); "convert rejected: Unknown type!" 1 became `TypeOutsideDxil` 1
+  in run 105 (A1).
 - Absent on both back ends, reported as the guest expects (plan 4.12 and section 9's absent
   lists): `Float64` 42 and
   `Int64` 35 (no 64-bit types), `RasterizerOrderedView` 12 (no fragment interlock), `StencilRef` 7,
@@ -2726,9 +2760,9 @@ G6a run 5's tip):
    cull distances from domain shaders; a geometry shader's written primitive number done in run
    97), A26's WebGL 2 part for branches (selects done in run 99), A1 (the DXIL route's buffer arrays done in run 87; the runner file waits on what real Direct3D 12 stores for it, run 100), A33 (rspirv), a logic operation
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
-   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5); the next
-   Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
-   89, A14 in runs 89 and 96, A7's cull distances from geometry shaders in run 90, A20 in run 95).
+   (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5). A1, A13 and
+   A16 closed in run 105; A14 in runs 89 and 96, A7's cull distances from geometry shaders in run
+   90, A20 in run 95.
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
    Unsafe code: the owner's ruling on the converters' boundary and the drawn tests' Direct3D calls
    (New for the owner, run 104); the fuzz test's bounded allocator through a vetted crate if one
@@ -2741,6 +2775,12 @@ G6a run 5's tip):
    cause), A31 when the WebGL 2 track has rounded its gathers, A22 on WARP.
 
 ## Asked of other tracks
+
+- For the Direct3D 12 front (run 105, its runner): `patch-syntax-12-gs.dxil` converts now (a
+  geometry shader taking patches, drawn through `Stages::new` with `InputTopology::PatchList(n)`
+  and no hull stage, as fxc's build since run 89); `distance-4-ps.dxil` is refused by name,
+  `TypeOutsideDxil` (dxc writes a `ppc_fp128` constant there, a type DXIL does not have). Rerun
+  both.
 
 - For the Direct3D 11 front (run 103, its known failure
   `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does`, "Needs an
@@ -4318,8 +4358,25 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 - HLSL writer (run 99), a constant texel offset is wrapped in its own type (`write_value_type_of`)
   where naga always wrote `int2(`, which DXC refuses for a 3D texture's `int3`; `back::OPEN` (an
   opening parenthesis) is shared by the GLSL and HLSL writers. For upstream as it stands.
+- Validator's handle check (run 105, `valid/handles.rs`), so a malformed module is refused instead
+  of panicking later in validation: a function argument's index within the function's arguments,
+  a call's function before the caller (as a call's result already was), the types of
+  `AtomicResult`, `SubgroupOperationResult` and `WorkGroupUniformLoadResult`, every handle inside
+  a global expression (access, splat, swizzle, unary, binary, select, relational, math, as), the
+  types of global expressions after the last type, and a global expression of any other kind
+  refused as `ConstExpressionError::NonConstOrOverride`. For upstream as it stands.
 
 ## How to run
+
+- Run 105's scripts in scratch `graphics-shaders/g6-r105` are run 104's with its folder; the CPU
+  checks ran on the ARM64 machine with the same `cpu-cmd.txt` (`arm-run <worktree> --name
+  graphics-shaders -- "$(cat cpu-cmd.txt)"`), after copying the corpora there as below for the x86
+  machine but with `arm-run --ssh`. `strict-cmd.txt` and `campaign-cmd.txt` run the damage tests
+  at many seeds (`WCONTAINERS_CACHE_SEED`, `WCONTAINERS_CACHE_DAMAGES`); `wasm-r105.sh` (on the
+  laptop as `~/wcontainers-graphics/wasm-r105.sh`, from the copy `src/agents-r105`, refreshed by
+  rsync of the worktree without target and .git) builds the cache test for WebAssembly and runs it
+  at the seeds in `SEEDS`. `extract_bc.py <container> <out>` cuts a DXIL container's bitcode for
+  llvm-bcanalyzer (`nix shell nixpkgs#llvm -c llvm-bcanalyzer -dump`).
 
 - Run 104's scripts in scratch `graphics-shaders/g6-r104`: `cpu-cmd.txt` (run 103's
   `arm-cmd.txt`) runs on the x86-64 machine straight from the shared worktree, `x86-run
