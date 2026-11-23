@@ -5074,8 +5074,10 @@ dependencies = [
  "fastrand",
  "libc",
  "linux-raw-sys",
+ "rangemap",
  "rustix",
  "wcontainers-abi",
+ "zerocopy",
 ]
 
 [[package]]
