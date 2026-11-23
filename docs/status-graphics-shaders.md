@@ -2399,8 +2399,8 @@ Runs at a00ab267:
   the seeded vertices), so the question stands for both routes. Lines add a second loss of the same
   slow path: a clipped line's end is lit by Direct3D's diamond rule on the cut line, where the
   program keeps the pixels whose distance at their place along the line is not negative (one pixel
-  of difference at a clipped end). One line case at the check's seed also shifts an uncut end by
-  a pixel in a line's middle; measured in run 115, it is the same snap (the cut end turns the
+  of difference at a clipped end). One line case at the check's seed also shifts a line by one
+  pixel in its middle; measured in run 115, it is the same snap (the cut end turns the
   line by up to 1/512 of a pixel, enough where the line crosses a row 0.0002 pixels from a diamond
   corner). Clipping in the stage helper's compute would have to cut lines too.
 - Run 114, one question from G6's second check (gap A10; today's behaviour kept until you rule).
