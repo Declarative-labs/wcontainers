@@ -23,8 +23,8 @@ etherparse.workspace = true
 rustix = { version = "1.1.6", features = ["event", "net"] }
 # Creating, binding and connecting sockets, sendmsg, and the socket options it covers.
 socket2 = { version = "0.6.5", features = ["all"] }
-# The host's readiness of sockets (epoll on Linux, kqueue on the BSDs), which registers a socket of any kind on every system.
-polling = "3.11.0"
+# The host's readiness of sockets (epoll on Linux, kqueue on the BSDs), registering a socket of any kind by its descriptor.
+mio = { version = "1.2.5", default-features = false, features = ["os-ext"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The Linux uapi constants and structures that rustix does not wrap.
