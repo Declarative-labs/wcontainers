@@ -1,17 +1,24 @@
 //! The zygote: a process forked once from the embedder, holding none of its memory, that forks every stub.
 
 use core::ffi::c_void;
-use std::os::fd::{AsRawFd, OwnedFd};
+use core::mem::MaybeUninit;
+use std::io::IoSlice;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Mutex;
 
 use rustix::fs::MemfdFlags;
 use rustix::io::Errno;
 use rustix::mm::{MapFlags, ProtFlags};
-use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType};
+use rustix::net::{
+    AddressFamily, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketFlags,
+    SocketType,
+};
 use rustix::process::{Pid, WaitOptions};
 
-use crate::layout::{ZYGOTE, ZYGOTE_CODE_SIZE, ZYGOTE_SIZE};
+use crate::layout::{OUR_AREA, ZYGOTE, ZYGOTE_CODE_SIZE, ZYGOTE_SIZE};
+use crate::pages::ThreadPages;
 use crate::probe::{HostProbe, Unavailable};
+use crate::stub::Stub;
 
 #[cfg(target_arch = "aarch64")]
 #[expect(
@@ -41,17 +48,51 @@ mod frame {
     pub const MESSAGE_HEADER: usize = IOVEC + size_of::<libc::iovec>();
     pub const MESSAGE_IOVEC: usize = MESSAGE_HEADER + offset_of!(libc::msghdr, msg_iov);
     pub const MESSAGE_IOVEC_COUNT: usize = MESSAGE_HEADER + offset_of!(libc::msghdr, msg_iovlen);
-    /// A `wait4` status, and a stub's futex word.
+    pub const MESSAGE_CONTROL: usize = MESSAGE_HEADER + offset_of!(libc::msghdr, msg_control);
+    pub const MESSAGE_CONTROL_LENGTH: usize =
+        MESSAGE_HEADER + offset_of!(libc::msghdr, msg_controllen);
+    /// A `wait4` status.
     pub const STATUS: usize = MESSAGE_HEADER + size_of::<libc::msghdr>();
+    /// The descriptors a fork request carries: one control message.
+    pub const CONTROL: usize = STATUS + 8;
+    pub const CONTROL_LEVEL: usize = CONTROL + offset_of!(libc::cmsghdr, cmsg_level);
+    pub const CONTROL_TYPE: usize = CONTROL + offset_of!(libc::cmsghdr, cmsg_type);
+    /// The descriptors themselves, in the order of [`super::StubDescriptor`].
+    pub const CONTROL_DESCRIPTORS: usize = CONTROL + size_of::<libc::cmsghdr>();
+    /// The control message's length with every descriptor.
+    pub const CONTROL_FULL: usize =
+        size_of::<libc::cmsghdr>() + super::STUB_DESCRIPTORS * size_of::<i32>();
+    pub const CONTROL_SIZE: usize = CONTROL_FULL.next_multiple_of(size_of::<usize>());
+    /// The stub's `sock_fprog`, naming the filter in its control page.
+    pub const FILTER_PROGRAM: usize = CONTROL + CONTROL_SIZE;
+    pub const FILTER_PROGRAM_INSTRUCTIONS: usize =
+        FILTER_PROGRAM + offset_of!(libc::sock_fprog, filter);
     /// The area registered to prove no restartable-sequences registration is left.
-    pub const OWN_AREA: usize = STATUS.next_multiple_of(super::RSEQ_AREA);
+    pub const OWN_AREA: usize =
+        (FILTER_PROGRAM + size_of::<libc::sock_fprog>()).next_multiple_of(super::RSEQ_AREA);
     /// The whole frame, from the stack's top.
     pub const FRAME: usize = (OWN_AREA + super::RSEQ_AREA).next_multiple_of(super::RSEQ_AREA);
 
     // The assembly zeroes the header as seven words, and the stack's top is page-aligned.
     const _: () = assert!(size_of::<libc::msghdr>() == 7 * 8);
     const _: () = assert!(size_of::<libc::iovec>() == 2 * 8);
+    const _: () = assert!(offset_of!(libc::sock_fprog, len) == 0);
 }
+
+/// The descriptors a fork request carries, in order.
+#[repr(usize)]
+#[derive(Clone, Copy)]
+enum StubDescriptor {
+    /// The stub's end of its own socket.
+    Socket = 0,
+    /// Its thread-pages memfd, closed once mapped.
+    ThreadPages = 1,
+    /// Its memory's memfd.
+    Memory = 2,
+}
+
+/// How many descriptors a fork request carries.
+const STUB_DESCRIPTORS: usize = 3;
 
 /// What the embedder asks of the zygote; each answer echoes the kind and carries a result.
 #[repr(u64)]
@@ -59,7 +100,7 @@ mod frame {
 enum Request {
     /// Answers 0.
     Ping = 1,
-    /// Forks a stub and answers its process id.
+    /// Forks a stub with the descriptors the message carries, closes them, and answers its process id.
     Fork = 2,
     /// Sends SIGKILL to an unreaped child.
     Kill = 3,
@@ -92,10 +133,14 @@ pub enum ZygoteEnd {
     AnswerRefused = 7,
     /// A stub found that its parent was no longer the zygote.
     Orphaned = 8,
+    /// A stub could not put its descriptors at their fixed numbers.
+    DescriptorsNotPlaced = 9,
+    /// A stub's filter was refused.
+    FilterRefused = 10,
 }
 
 impl ZygoteEnd {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 11] = [
         Self::EmbedderGone,
         Self::PagesRefused,
         Self::RestartableSequencesNotUnregistered,
@@ -105,6 +150,8 @@ impl ZygoteEnd {
         Self::BadRequest,
         Self::AnswerRefused,
         Self::Orphaned,
+        Self::DescriptorsNotPlaced,
+        Self::FilterRefused,
     ];
 
     fn from_status(status: u32) -> Option<Self> {
@@ -241,7 +288,7 @@ impl Zygote {
             process: child,
             reaped: false,
         };
-        match zygote.ask(Request::Ping, 0) {
+        match zygote.ask(Request::Ping, 0, &[]) {
             Ok(_) => Ok(zygote),
             Err(_) => match zygote.end() {
                 Ok(Ended::Exited(status)) => Err(ZygoteEnd::from_status(status)
@@ -259,27 +306,62 @@ impl Zygote {
 
     /// Checks that the zygote still answers.
     pub fn ping(&self) -> Result<(), Errno> {
-        self.ask(Request::Ping, 0).map(drop)
+        self.ask(Request::Ping, 0, &[]).map(drop)
     }
 
-    /// Forks a stub; it has no body yet and waits until it is killed.
-    pub fn fork_stub(&self) -> Result<Pid, Errno> {
-        let pid = self.ask(Request::Fork, 0)?;
-        i32::try_from(pid)
+    /// Forks a stub with its own socket, thread pages and memory, and waits until it has installed its filter.
+    pub fn fork_stub(&self) -> Result<Stub, Unavailable> {
+        let pages = ThreadPages::new().map_err(Unavailable::Host)?;
+        Stub::write_start(&pages);
+        let memory = rustix::fs::memfd_create("wcontainers guest memory", MemfdFlags::CLOEXEC)
+            .map_err(Unavailable::Host)?;
+        rustix::fs::ftruncate(&memory, OUR_AREA as u64).map_err(Unavailable::Host)?;
+        let (ours, theirs) = rustix::net::socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .map_err(Unavailable::Host)?;
+        let mut descriptors = [theirs.as_fd(); STUB_DESCRIPTORS];
+        descriptors[StubDescriptor::Socket as usize] = theirs.as_fd();
+        descriptors[StubDescriptor::ThreadPages as usize] = pages.file();
+        descriptors[StubDescriptor::Memory as usize] = memory.as_fd();
+        let process = self
+            .ask(Request::Fork, 0, &descriptors)
+            .map_err(Unavailable::Host)?;
+        let process = i32::try_from(process)
             .ok()
             .and_then(Pid::from_raw)
-            .ok_or(Errno::PROTO)
+            .ok_or(Unavailable::Host(Errno::PROTO))?;
+        drop(theirs);
+        let stub = Stub::new(process, ours, pages, memory);
+        match stub.started() {
+            Ok(crate::stub::TurnEnd::Done { .. }) => Ok(stub),
+            Ok(crate::stub::TurnEnd::StubEnded) => match self.reap(process) {
+                Ok(Ended::Exited(status)) => Err(ZygoteEnd::from_status(status)
+                    .map_or(Unavailable::Host(Errno::CHILD), Unavailable::Zygote)),
+                Ok(Ended::Killed(_)) => Err(Unavailable::Host(Errno::CHILD)),
+                Err(errno) => Err(Unavailable::Host(errno)),
+            },
+            Ok(_) => {
+                let _ = self.kill(process);
+                let _ = self.reap(process);
+                Err(Unavailable::Host(Errno::PROTO))
+            }
+            Err(errno) => Err(Unavailable::Host(errno)),
+        }
     }
 
     /// Sends SIGKILL to a stub the zygote has not reaped.
     pub fn kill(&self, stub: Pid) -> Result<(), Errno> {
-        self.ask(Request::Kill, stub.as_raw_nonzero().get() as u64)
+        self.ask(Request::Kill, stub.as_raw_nonzero().get() as u64, &[])
             .map(drop)
     }
 
     /// Waits for a stub's end and reaps it.
     pub fn reap(&self, stub: Pid) -> Result<Ended, Errno> {
-        let status = self.ask(Request::Reap, stub.as_raw_nonzero().get() as u64)?;
+        let status = self.ask(Request::Reap, stub.as_raw_nonzero().get() as u64, &[])?;
         let status = i32::try_from(status).map_err(|_| Errno::PROTO)?;
         Ok(Ended::from_wait(status))
     }
@@ -301,7 +383,12 @@ impl Zygote {
         let _ = rustix::net::shutdown(&*socket, rustix::net::Shutdown::Both);
     }
 
-    fn ask(&self, request: Request, value: u64) -> Result<i64, Errno> {
+    fn ask(
+        &self,
+        request: Request,
+        value: u64,
+        descriptors: &[BorrowedFd<'_>],
+    ) -> Result<i64, Errno> {
         let socket = self
             .socket
             .lock()
@@ -309,7 +396,18 @@ impl Zygote {
         let mut message = [0; MESSAGE];
         message[..8].copy_from_slice(&(request as u64).to_ne_bytes());
         message[8..].copy_from_slice(&value.to_ne_bytes());
-        if rustix::net::send(&*socket, &message, SendFlags::NOSIGNAL)? != MESSAGE {
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(STUB_DESCRIPTORS))];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        if !descriptors.is_empty() && !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
+            return Err(Errno::NOBUFS);
+        }
+        let sent = rustix::net::sendmsg(
+            &*socket,
+            &[IoSlice::new(&message)],
+            &mut control,
+            SendFlags::NOSIGNAL,
+        )?;
+        if sent != MESSAGE {
             return Err(Errno::PROTO);
         }
         let mut answer = [0; MESSAGE];

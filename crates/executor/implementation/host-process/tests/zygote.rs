@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal};
 use rustix::thread::CpuSet;
-use wcontainers_executor_host_process::layout::{ZYGOTE, ZYGOTE_SIZE};
+use wcontainers_executor_host_process::layout::{
+    SIGNAL_STACKS, SIGNAL_STACKS_SIZE, THREAD_PAGES, ZYGOTE, ZYGOTE_SIZE,
+};
 use wcontainers_executor_host_process::probe::HostProbe;
 use wcontainers_executor_host_process::zygote::{Ended, Zygote, ZygoteEnd};
 
@@ -85,7 +87,7 @@ fn survives_its_own_migration() {
 #[test]
 fn a_stub_survives_migration_and_stops_then_dies_by_its_kill() {
     let zygote = zygote();
-    let stub = zygote.fork_stub().expect("fork");
+    let stub = zygote.fork_stub().expect("fork").process();
     let cpus = two_cpus();
     for move_number in 0..MOVES {
         rustix::thread::sched_setaffinity(Some(stub), &cpus[move_number % 2]).expect("move");
@@ -114,9 +116,11 @@ fn mappings(process: Pid) -> Vec<(usize, usize, String)> {
         .collect()
 }
 
-fn assert_holds_only_its_own(process: Pid) {
+/// Checks that a process maps only the zygote's pages and `also`, and holds at most `descriptors` descriptors.
+fn assert_holds_only_its_own(process: Pid, also: Option<(usize, usize)>, descriptors: usize) {
     for (start, end, line) in mappings(process) {
-        let own = start >= ZYGOTE && end <= ZYGOTE + ZYGOTE_SIZE;
+        let own = start >= ZYGOTE && end <= ZYGOTE + ZYGOTE_SIZE
+            || also.is_some_and(|(from, to)| start >= from && end <= to);
         // x86-64's legacy vsyscall page lies above user space and cannot be unmapped.
         let vsyscall = line.ends_with("[vsyscall]");
         assert!(
@@ -125,12 +129,12 @@ fn assert_holds_only_its_own(process: Pid) {
             process.as_raw_nonzero()
         );
     }
-    let descriptors = std::fs::read_dir(format!("/proc/{}/fd", process.as_raw_nonzero()))
+    let held = std::fs::read_dir(format!("/proc/{}/fd", process.as_raw_nonzero()))
         .expect("fds")
         .count();
     assert!(
-        descriptors <= 1,
-        "process {} holds {descriptors} descriptors",
+        held <= descriptors,
+        "process {} holds {held} descriptors",
         process.as_raw_nonzero()
     );
 }
@@ -138,9 +142,20 @@ fn assert_holds_only_its_own(process: Pid) {
 #[test]
 fn neither_zygote_nor_stub_holds_any_memory_or_descriptor_of_the_embedder() {
     let zygote = zygote();
-    assert_holds_only_its_own(zygote.process());
+    assert_holds_only_its_own(zygote.process(), None, 1);
     let stub = zygote.fork_stub().expect("fork");
-    assert_holds_only_its_own(stub);
+    // A turn is answered only once the stub has made its pages and installed its filter.
+    assert!(matches!(
+        stub.turn(0, &[]),
+        Ok(wcontainers_executor_host_process::stub::TurnEnd::Done { .. })
+    ));
+    let stub = stub.process();
+    // Its socket and its memory.
+    assert_holds_only_its_own(
+        stub,
+        Some((THREAD_PAGES, SIGNAL_STACKS + SIGNAL_STACKS_SIZE)),
+        2,
+    );
     zygote.kill(stub).expect("kill");
     assert_eq!(
         zygote.reap(stub),
@@ -151,7 +166,9 @@ fn neither_zygote_nor_stub_holds_any_memory_or_descriptor_of_the_embedder() {
 #[test]
 fn many_stubs_are_forked_killed_and_reaped() {
     let zygote = zygote();
-    let stubs: Vec<Pid> = (0..64).map(|_| zygote.fork_stub().expect("fork")).collect();
+    let stubs: Vec<Pid> = (0..64)
+        .map(|_| zygote.fork_stub().expect("fork").process())
+        .collect();
     for stub in &stubs {
         zygote.kill(*stub).expect("kill");
     }
@@ -171,7 +188,9 @@ fn many_stubs_are_forked_killed_and_reaped() {
 #[test]
 fn its_stubs_die_with_it() {
     let zygote = zygote();
-    let stubs: Vec<Pid> = (0..4).map(|_| zygote.fork_stub().expect("fork")).collect();
+    let stubs: Vec<Pid> = (0..4)
+        .map(|_| zygote.fork_stub().expect("fork").process())
+        .collect();
     rustix::process::kill_process(zygote.process(), Signal::KILL).expect("kill the zygote");
     assert_eq!(zygote.end(), Ok(Ended::Killed(signal_number(Signal::KILL))));
     let deadline = Instant::now() + Duration::from_secs(5);

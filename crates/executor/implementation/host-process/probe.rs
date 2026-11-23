@@ -15,7 +15,7 @@ pub enum Unavailable {
     AliasingInstructionCache,
     /// Something of the embedder already holds a range our layout needs.
     ReservationRefused,
-    /// The zygote ended before it answered, for this reason.
+    /// The zygote, or a stub before its first turn, ended for this reason.
     Zygote(crate::zygote::ZygoteEnd),
     /// A host call the form needs was refused.
     Host(Errno),

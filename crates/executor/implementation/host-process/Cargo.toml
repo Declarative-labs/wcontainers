@@ -13,18 +13,22 @@ path = "implementation.rs"
 [target.'cfg(target_os = "linux")'.dependencies]
 wcontainers-abi.workspace = true
 # Host calls: memfds, mappings, the zygote's socket, processes and CPU placement.
-rustix = { version = "1.1.6", features = ["fs", "mm", "net", "param", "process", "thread"] }
-# The signal mask around the zygote's fork, and the fork itself, where rustix has no call.
+rustix = { version = "1.1.6", features = ["event", "fs", "mm", "net", "param", "process", "thread"] }
+# The signal mask around the zygote's fork, the fork itself, and the layouts of a socket message and a seccomp filter,
+# where rustix has none.
 libc = "0.2.191"
-# Linux's numbers for the zygote's own host calls.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "prctl", "no_std"] }
+# Linux's numbers for the zygote's and the stubs' own host calls and filter.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "net", "prctl", "ptrace", "no_std"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# Moving, stopping and killing the zygote and its stubs from outside.
-rustix = { version = "1.1.6", features = ["process", "thread"] }
+# Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
+rustix = { version = "1.1.6", features = ["mm", "process", "thread"] }
 
 [[test]]
 name = "zygote"
+
+[[test]]
+name = "stub"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
