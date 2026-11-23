@@ -398,14 +398,46 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
       runs.
     - Both symptoms fit the signal frame's pc not pointing into the code area under gVisor's systrap. That is not
       yet checked. P under gVisor on ARM64 therefore cannot run translated code until this is settled (Next).
+- W1, run 10 (2026-11-23, 19:06 UTC on):
+  - Still nothing from the translator's form or the stop crate (no commit to the translator, ARM64 or the VM inside
+    since run 9).
+  - Found why stops and faults in the code area failed under gVisor on ARM64 (scratch w1/run10/gframe.c and its
+    outputs gframe*-arm.out): the frame's pc is right, but gVisor's frame has no FP/SIMD record (`fpsimd_context`;
+    the first record's magic reads 0) and the handler starts with v0 to v31, FPSR and FPCR zeroed; gVisor keeps
+    them itself until the handler returns. The save took the missing record for a broken frame and ended the stub.
+  - Fixed (plan 3.6): where the record is missing, the handler saves the general registers from the frame, then
+    returns through it (`rt_sigreturn`) into its own next routine (pc, sp, pstate, x9, x10 and x27 rewritten, the
+    stop added to the frame's mask), which stores the FP/SIMD registers the host restored and goes on to the exit.
+    The stub counts each in its register page (`VECTORS_BY_RETURN`); the embedder's `Stub` adds it up when it reads
+    an exit from code (`Stub::vectors_by_return`) and warns once per guest process ("signal frame without FP/SIMD
+    registers"). The ARM64 stub filter now allows `rt_sigreturn` (plan 6); it gives an escaped stub nothing new,
+    since `rt_sigprocmask` and `sigaltstack` are already allowed as they come.
+  - The test: `a_stop_or_a_fault_in_translated_code_saves_every_register` now also requires that every exit from
+    code took the route or none did. Graviton4 natively: 0 of 700. Under gVisor: 702 of 702, every register block
+    equal to the model (it failed before). With the route forced on every exit on Linux (the remote copy's `cbz w7`
+    made a `b`), every floor test but that count passes (701 of 700 before the count was fixed to count re-entries),
+    so the route also holds where the host restores from the frame.
+  - New gVisor limit, recorded in plan 6: an execute-only mapping can be read there (scratch w1/run10/xonly.c:
+    the read succeeds, the write faults `SEGV_ACCERR`). So under gVisor translated code can read its code area,
+    and `translated_code_can_neither_read_nor_write_the_code_area` fails there on its load (left failing).
+  - New decision for the owner (plan 12, item 14): the frame of the return route lies on a signal stack the guest's
+    other threads can write, so under gVisor on ARM64 a racing sibling could rewrite its pc and run at a pc of its
+    choosing in the stub, bounded by the filter and by gVisor. Linux never takes the route.
+  - The stop flood under gVisor (scratch w1/run10/gflood2000-arm.out, 2,000 rounds, 269 s): every call's block
+    equal to the model, but it fails its own coverage check, "no stop landed in the save, the enter or the code":
+    of 42,391,328 stops sent, 41,340,295 landed in the wait, 1,412 in the publish, 6 in the code and none in the
+    enter or the save. Under gVisor a stop takes far longer to arrive than the piece runs, so stops land where the
+    thread waits. Left failing there; a 12,000-round run is below if it finished.
+  - Final verdicts after the last code commit, each test binary 3 times with /dev/kvm denied, clippy with warnings
+    denied clean on both: Graviton4 (scratch w1/run10/final-arm.log, load 15) 180 of 180; Xeon (19:42 UTC,
+    final-x86.log, load 5.9 to 2.8) 156 of 156 (the x86 machine did not answer SSH at 19:40).
+  - No new unsafe code (the route is in the zygote's assembly).
 - Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- Under gVisor on ARM64, find out why a signal in the code area is not handled as on Linux (run 9, below), with
-  gtrace.sh and a frame dump, and fix it or record gVisor's limit in plan 6.
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
 - When the translator's `HostProcess` form lands: match the stand-ins to it (x28's page is the stub's register
   page and the block the hardware's state here; the translator's `RegisterPage` and its saved link must sit where
@@ -443,6 +475,11 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
   fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
   lines; the fetched log does not).
+- Since run 10: scratch w1/run10/vectors.sh (sent inline through `arm-run`) runs the floor test natively, under
+  gVisor and with the return route forced (remote copy patched), printing how many exits took it; gframe.c and
+  xonly.c (built with gcc there, sent as base64 through `arm-run --ssh`, see gframe*-arm.out) show a host's signal
+  frame and whether an execute-only mapping reads; gfloor.sh and gflood.sh run the floor test, or its stop flood
+  with fewer rounds (`set -- <rounds>`), under gVisor. both.sh and sandbox-both.sh are run 9's writing into run10.
 - Since run 9: tests/step.rs's `a_second_stop_*` tests and the end one's second-stop twin. Knob `WCHP_TAIL_EVERY=1`
   sends second stops in every first stop's handler, not one per way through it (a long run). Scratch
   w1/run9/both.sh and sandbox-both.sh are run 8's and run 6's, writing into run9.
@@ -584,7 +621,10 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
   - P's defence in depth behind translation: an escaped stub can write pages it lends to fork children before they
     copy them, and shared blocks; close it with a sealed file per fork, or accept;
   - hosts with pages larger than 4 KiB: the ruling of 2026-11-18 followed by split host pages, built at W4 after
-    both forms work on 4 KiB hosts.
+    both forms work on 4 KiB hosts;
+  - P under gVisor on ARM64 (run 10): stops and faults return through a signal frame that the guest's other
+    threads can write, so a racing sibling can escape translation into its stub (bounded by the filter and gVisor);
+    accept there, or make P unavailable on such a host.
 
 - Filled in by W1 run 1, where the plan was silent (the fourth check's minor point): when the zygote itself ends,
   every P guest process of that embedder ends as killed by SIGKILL (its stubs die with it), counted "zygote
@@ -677,6 +717,9 @@ build on ARM64, 25 on x86-64), 1 in its tests:
 - The stub's handlers live in the zygote's assembly (no new use): they read the interrupted pc, and for a fault the
   signal's code and address, from the frame on the thread's own signal stack, which a guest thread of the same stub
   could write; that reading only chooses among our own targets or is reported to the kernel as the guest's fault.
+- The return route for frames without FP/SIMD registers (run 10) is in the same assembly (no new use): it writes
+  six words and the mask of the frame at x2 on the thread's own signal stack and returns through it; plan 12 item
+  14 is the one way it is weaker than the rest.
 Constants no crate defines, named with their source: glibc's rseq signatures (`RSEQ_SIG`), Linux's
 `RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields, Linux's `struct fpsimd_context`
 and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs the `msr` encodings of NZCV,

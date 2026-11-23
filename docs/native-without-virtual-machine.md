@@ -405,7 +405,7 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   runs. On x86-64 also `SA_RESTORER` with `sa_restorer` set to our own `rt_sigreturn` routine: the host kernel
   refuses to deliver to a handler without one and kills the process (measured by the third check, through the raw
   `rt_sigaction`, which rustix uses and which adds no restorer as glibc's does); in P that routine is never reached
-  (no handler returns, and the stub's filter refuses `rt_sigreturn`), in I it is the one way back below. ARM64 needs
+  (no handler returns to it; x86-64's stub filter refuses `rt_sigreturn`), in I it is the one way back below. ARM64 needs
   none (the vDSO's).
   No handler returns through a frame the guest can write: in P none returns at all; in I one returns
   (`rt_sigreturn`, which restores the mask) only when the signal interrupted code that is neither guest code nor the
@@ -436,6 +436,17 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   registers), and leaves through an unblock whose next instruction lies in the window it leaves for, so a stop that
   lands just after the unblock takes the same way; a stop in the publishing of an exit publishes it again (the same
   words), and a stop in a thread's `exit` lets it end.
+  A frame without the FP/SIMD record (W1 run 10): Linux puts the interrupted FP/SIMD registers in the frame's first
+  record (`fpsimd_context`), but gVisor on ARM64 (release 20261109.0, systrap) puts no record there, keeps them
+  itself until the handler returns, and enters the handler with them zeroed (measured, scratch w1/run10/gframe.c).
+  Where the record is absent, a P handler of a stop or fault in translated code saves the general registers from the
+  frame as before, then returns through the frame (`rt_sigreturn`) into its own next routine, the frame's pc, sp,
+  pstate, x9, x10 and x27 rewritten and the stop added to its mask, so the host restores the interrupted FP/SIMD
+  registers and that routine stores them (counted per guest process, "signal frame without FP/SIMD registers",
+  warned once per guest process). It is the only handler of P that returns; the stub's filter allows `rt_sigreturn`
+  on ARM64 for it, which gives an escaped stub nothing it lacks (it already sets its own registers, and
+  `rt_sigprocmask` and `sigaltstack` are allowed as they come). Forced on every exit on Linux, the floor's tests
+  pass too.
   So no signal mask is changed on a kernel entry path but a resume that carries commands (a mask change is a host
   system call: 125 ns on Graviton4 and 87 to 89 ns on the Xeon, W0 probe run 3).
 - A slice (`Next::Run { slice_nanoseconds }`): P: the runner's futex wait carries the slice as its time-out and
@@ -454,7 +465,9 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
 ### 3.7 What protects us from the guest
 
 - Control flow: the guest reaches host code only through pieces we translated and their slots; a slot without a
-  piece holds `udf` or is unmapped. Nothing read from memory the guest can write is ever used as a host code address.
+  piece holds `udf` or is unmapped. Nothing read from memory the guest can write is ever used as a host code address,
+  but for P's return through a signal frame where the host's frames hold no FP/SIMD registers (gVisor on ARM64, 3.6,
+  decision 14).
 - I: every guest access is checked against its window or kept inside it by 3.2's stack rules, so no guest load or
   store reaches our area, the kernel, the embedder, other guest processes (of its container or another) or the
   frames of a signal, and every access is also cut to its window or bounded by the unmapped 4 GiB beside it, so no
@@ -947,8 +960,9 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   `clone` with 4.1's thread flags; `recvmsg` on its socket with `MSG_DONTWAIT` (a block's memfd, sent before the
   turn that maps it, so it never waits) (and `write` on it with parallel threads); `close` of descriptor 0 (the
   block's, once mapped); `sched_setaffinity` on the calling
-  thread; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`; on x86-64 `membarrier`, and
-  `arch_prctl` (`ARCH_SET_GS` only) where the host lacks FSGSBASE (3.10). No `rt_sigreturn` (3.6).
+  thread; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`; on ARM64 `rt_sigreturn`, used only where a signal
+  frame holds no FP/SIMD registers (gVisor, 3.6); on x86-64 `membarrier`, and
+  `arch_prctl` (`ARCH_SET_GS` only) where the host lacks FSGSBASE (3.10).
 - I adds: `timer_create`, `timer_settime` and `timer_delete` for slices, `rt_sigreturn`; `arch_prctl` on x86-64
   hosts without FSGSBASE. No process is ever made, so I runs where `fork` is refused.
 - Neither needs: ptrace, user namespaces, mount, chroot, capabilities, `process_vm_readv/writev`, `userfaultfd`,
@@ -964,6 +978,10 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   `--systrap-disable-syscall-patching` (which x86's use of the GS base needs too, 3.10); the systrap platform kills a
   process past about 4,096 threads (measured: SIGKILL at the 4,097th), so under gVisor a guest process holds at most
   that many threads; gVisor accepts `sched_setaffinity` but does not pin, so placement (4.3) has no effect there.
+  On ARM64 (W1 run 10, scratch w1/run10): a signal frame holds no FP/SIMD record and the handler starts with those
+  registers zeroed, so P returns through the frame for them (3.6, decision 14); an execute-only mapping can be read
+  (not written), so translated code can read its code area there, which Linux refuses
+  (`translated_code_can_neither_read_nor_write_the_code_area` fails under gVisor for that read).
 - P makes one host process per guest process, so a host limit on processes (a pids cgroup, `--pids-limit`) is also
   the guest's; I makes none.
 - Host pages larger than 4 KiB (16 KiB on Apple silicon, 64 KiB on ARM64 Linux kernels built so, such as RHEL's
@@ -1367,6 +1385,12 @@ them.
     fork (the parent's view remapped at every fork, overwritten pages kept until the file closes).
 13. The order of the work: hosts with pages larger than 4 KiB follow the 2026-11-18 ruling by split host pages
     (section 6), built at W4, after both forms work on 4 KiB hosts.
+14. P under gVisor on ARM64 (3.6, W1 run 10): a stop or fault there returns through its signal frame to get the
+    FP/SIMD registers back, and the frame lies on the thread's signal stack, which the guest's other threads can
+    write (item 3). A sibling thread that rewrites the frame's pc between the handler's store and the host's read
+    in `rt_sigreturn` (a few microseconds under systrap) runs at a pc of its choosing in its stub: an escape from
+    translation, bounded by the stub's filter and by gVisor itself. Accept it there, or make P unavailable under
+    such a host (the evaluator then chooses I). Linux hosts never take this route.
 
 ## 13. Milestones
 
