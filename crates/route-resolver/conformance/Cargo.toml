@@ -18,8 +18,10 @@ libc = "0.2.191"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1.1.6", features = ["net", "thread"] }
+rustix = { version = "1.1.6", features = ["net"] }
+# The network namespace of each check and the index of a link by its name.
+nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
 
-# TODO: remove this crate's 4 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

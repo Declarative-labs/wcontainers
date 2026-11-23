@@ -33,8 +33,7 @@ pub use wcontainers_icmp_sockets_conformance as icmp_suite;
 /// Moves the calling thread into a new, empty network namespace, which needs `CAP_SYS_ADMIN`.
 fn enter_network_namespace() {
     #[cfg(target_os = "linux")]
-    // SAFETY: a new network namespace shares no memory or file with the rest of the process.
-    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a new network namespace needs root");
     #[cfg(not(target_os = "linux"))]
     panic!("the checks build their routes in a Linux network namespace");
@@ -133,10 +132,9 @@ fn write_setting(path: &str, value: impl ToString) {
 }
 
 fn index(name: &str) -> InterfaceIndex {
-    let name = std::ffi::CString::new(name).expect("a link's name");
-    // SAFETY: the name is a string that ends in a zero byte, which the call only reads.
-    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-    InterfaceIndex(NonZeroU32::new(index).unwrap_or_else(|| panic!("no link {name:?}")))
+    let index = nix::net::if_::if_nametoindex(name)
+        .unwrap_or_else(|error| panic!("no link {name}: {error}"));
+    InterfaceIndex(NonZeroU32::new(index).unwrap_or_else(|| panic!("no link {name}")))
 }
 
 /// Builds the two links, their addresses and routes in a network namespace of the calling thread's own.
