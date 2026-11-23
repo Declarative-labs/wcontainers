@@ -86,6 +86,12 @@ denied status 0, fmt no diff; 394 passed, 35 failed, 8 ignored; the 35 are exact
 workspace's `cargo check --all-targets` in the same job stopped on wasmedge-sys's build script
 (the wasmedge engine track's crate), not on this track's.
 
+The whole LTP comparison at a9f8631e (same job, 12:30 to 13:59 UTC, load 6 to 21, LTP_JOBS 8,
+LTP_LIMIT 900; verdicts ltp/ours-20260930-a9f8631e.tsv, log kf5/attach2.log): 4169 of 4226
+match the reference and 57 differ, the K6c bar's count, and all 4226 match ba9f009e's verdicts
+(60cb4fe1 gave the same). ADSP072 passed in 868.1 s. So neither the dot entries nor the deleted
+names nor the named units changed any verdict.
+
 Verdicts changed on purpose: new are dentries' four; inotify's ignored test now differs only in
 its renamed part.
 
@@ -799,7 +805,10 @@ KF, fifth run: every finding of the check is fixed or recorded (see "KF, fifth r
 server lists `.` and `..`, an opened name taken away shows as deleted, the LTP watchdog waits
 for the backend's container, the gap list's two causes are exact, the bar's clippy command and the
 ignored list are complete. The literal fix list's time and size units are named (baseline 43
-lines smaller). KF's items are all built; WHOLE_RUN_RESULT
+lines smaller). KF's items are all built. The whole suite
+at a9f8631e fails only the ARM list (394 passed, 35 failed, 8 ignored), and the whole LTP
+comparison matches the K6c bar (4169 of 4226) with every verdict as before. KF goes to its
+independent check.
 
 KC, fourth run: every finding of KC's third check is fixed or answered (see "KC, fourth run"):
 the kernel waits on the file server's notices through `receive_notice` and the test host keeps
