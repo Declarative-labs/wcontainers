@@ -5795,9 +5795,6 @@ code	crates/wcontainers-arm64/src/vector.rs	int	emit	8
 code	crates/wcontainers-arm64/src/vector.rs	int	low_bytes	16
 code	crates/wcontainers-arm64/src/vector.rs	int	low_bytes	8
 code	crates/wcontainers-arm64/src/vector.rs	int	narrow	8
-code	crates/wcontainers-direct3d-11/src/ahead.rs	int	Ahead	5
-code	crates/wcontainers-direct3d-11/src/ahead.rs	int	Ahead<B>::new	5
-code	crates/wcontainers-direct3d-11/src/ahead.rs	int	TupleKey	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	128
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	14
