@@ -47,6 +47,12 @@ safe library does it, what removing it would cost.
    then draw on Chrome's own WebGL 2, the shipped target, instead of on our patched native ANGLE
    (angle/). Cost: every answer is a round trip to the browser, so native timings would not stand
    for browser timings (the browser pages measure those already). Asked: which of the three?
+   Measured in run 4: the browser half is safe as claimed. Under the workspace's forbid, a probe
+   crate with `#[wasm_bindgen]` imports (`suspending` too), exports (`jspi` too), a struct with a
+   constructor, and web-sys WebGL 2 calls (buffers, `get_buffer_sub_data`, fences, `read_pixels`,
+   extensions) compiles for wasm32 and natively; `unsafe {}` added to it fails. So the back end's
+   browser-only uses (the raw `unsafe extern "C"` import in platform.rs, `#[unsafe(no_mangle)]`
+   in examples/browser.rs) can become wasm-bindgen imports and exports with no unsafe code.
 5. Test windows and screen reading (gpu-webgpu tests/host 11): the present test makes a real
    window (Win32 or AppKit) and reads what the compositor shows (PrintWindow, DwmFlush;
    ScreenCaptureKit). winit (0.30.13, Apache-2.0, rust-windowing, about 68.6 million downloads)
@@ -55,6 +61,20 @@ safe library does it, what removing it would cost.
    not tried: whether it captures in exact sRGB on macOS and waits for the compositor (DwmFlush)
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
+
+## Run 4 (2026-11-23 early)
+
+- Still no ruling in the graphics brief or the orchestrator's notes; counts unchanged
+  (direct3d-12 496, graphics-test 342, graphics-test-forward 197, gpu-webgl 167, gpu-webgpu 30).
+- gpu-webgpu: its library and both examples (scenes, frames) now carry `#![forbid(unsafe_code)]`
+  at their roots, as direct3d-12's library does, so the shipped back end cannot regain unsafe code
+  while its tests (boundaries 1 and 5) keep the package on the list. Checked on the ARM machine
+  (load 9 to 20 on 96 cores): clippy `-D warnings` of lib and examples clean natively (aarch64
+  Linux) and for wasm32; `unsafe {}` added to the library fails ("usage of an `unsafe` block").
+  Not rebuilt on Windows: the attribute only adds an error where unsafe code is, and none is in
+  these files on any target (grep). Scripts: scratch bin/probe-wasm.sh, bin/check-webgpu.sh;
+  logs/probe-wasm-run4.log, logs/check-webgpu-run4.log.
+- Measured for question 4: wasm-bindgen and web-sys under forbid (see there).
 
 ## Run 3 (2026-11-22 night)
 
@@ -221,4 +241,10 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
 
 - `#![forbid(unsafe_code)]` at the root of wcontainers-direct3d-12's library while the package
   cannot yet inherit the workspace lints (its Windows library and one test), so the front cannot
-  regain unsafe code meanwhile.
+  regain unsafe code meanwhile. The same at the roots of wcontainers-gpu-webgpu's library and
+  examples, whose package waits on its tests.
+
+## How to run on the rented machines (no GPU)
+
+- `cloud/arm-run <agents checkout> --name graphics-no-unsafe -- "$(cat <scratch>/bin/<script>)"`;
+  the scripts edit only the machine's copy (probe crates, control `unsafe {}` lines).
