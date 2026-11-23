@@ -751,3 +751,48 @@ impl Drop for Finished<'_> {
         self.0.store(true, Ordering::Relaxed);
     }
 }
+
+/// A call's round trip from translated code against a turn with no code, alternating batches on one CPU, the stub's
+/// thread and the test's pinned together: the median over batches of the mean per turn of each. Knobs: WCHP_CPU,
+/// WCHP_PER_BATCH, WCHP_BATCHES. Run with `--ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, run on its own"]
+fn call_round_trip_on_one_cpu() {
+    let floor = floor();
+    let cpu = knob("WCHP_CPU", 1) as usize;
+    let per_batch = knob("WCHP_PER_BATCH", 10_000);
+    let batches = knob("WCHP_BATCHES", 21);
+    let mut set = rustix::thread::CpuSet::new();
+    set.set(cpu);
+    rustix::thread::sched_setaffinity(None, &set).expect("pin");
+    rustix::thread::sched_setaffinity(Some(floor.stub.process()), &set).expect("pin");
+    let mut rng = fastrand::Rng::with_seed(1);
+    floor.stub.set_registers(0, &random_block(&mut rng));
+    let batch = |call: bool| {
+        let start = std::time::Instant::now();
+        for _ in 0..per_batch {
+            if call {
+                floor.stub.enter(0, &[], CALL).expect("call");
+            } else {
+                floor.stub.turn(0, &[]).expect("turn");
+            }
+        }
+        start.elapsed().as_secs_f64() * 1e9 / per_batch as f64
+    };
+    batch(true);
+    batch(false);
+    let (mut calls, mut turns): (Vec<f64>, Vec<f64>) =
+        (0..batches).map(|_| (batch(true), batch(false))).unzip();
+    for means in [&mut calls, &mut turns] {
+        means.sort_by(f64::total_cmp);
+    }
+    println!(
+        "on cpu {cpu}: call median {:.0} ns (lowest {:.0}, highest {:.0}), turn median {:.0} ns (lowest {:.0}, highest {:.0}), {batches} batches of {per_batch} each",
+        calls[calls.len() / 2],
+        calls[0],
+        calls[calls.len() - 1],
+        turns[turns.len() / 2],
+        turns[0],
+        turns[turns.len() - 1],
+    );
+}
