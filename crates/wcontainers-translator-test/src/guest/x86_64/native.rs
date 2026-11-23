@@ -18,6 +18,7 @@ use iced_x86::code_asm::{
 use linux_raw_sys::general::{
     SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, kernel_sigset_t, sigaltstack,
 };
+use wcontainers_abi::WORD;
 use wcontainers_guest_cpu::position::{Fixup, Held, Resume, Side, Span};
 use wcontainers_guest_cpu::{Guest, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
@@ -37,7 +38,6 @@ pub const REFERENCE_HOST: HostMatches = HostMatches {
 };
 
 const PAGE: u64 = PAGE_SIZE;
-const WORD: u64 = size_of::<u64>() as u64;
 /// Where the blob is loaded, far from every address a case reaches; its parts follow at fixed offsets.
 const LOAD: u64 = 1 << 43;
 const PROLOGUE: u64 = LOAD;
@@ -74,7 +74,6 @@ const STACK_TOP: u64 = LOAD - (4 << 20);
 const STACK_BYTES: u64 = 16 * PAGE;
 /// The signals a stop raises, which the handler takes.
 const STOP_SIGNALS: [u32; 5] = [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV];
-const STANDARD_OUTPUT: u64 = 1;
 
 const GENERAL_REGISTERS: usize = 16;
 /// The block's words: the case's general registers in encoding order, rflags, the FS base, the selectors.
@@ -958,7 +957,11 @@ fn write_stop(a: &mut CodeAssembler) -> Result<(), IcedError> {
         (DATA, DATA_BYTES),
         (AREA, size_of::<RegisterArea>() as u64),
     ] {
-        system_call(a, libc::SYS_write, &[STANDARD_OUTPUT, from, bytes])?;
+        system_call(
+            a,
+            libc::SYS_write,
+            &[libc::STDOUT_FILENO as u64, from, bytes],
+        )?;
     }
     Ok(())
 }

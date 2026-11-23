@@ -27,7 +27,7 @@ const T_LOW: Register = Register::R11D;
 const U_LOW: Register = Register::R15D;
 
 /// Bytes of a word of the thread area, as its fields are laid out.
-const WORD: usize = size_of::<u64>();
+const WORD: usize = wcontainers_abi::WORD as usize;
 /// The registers a stand-in may be, in the order they are taken: every general register but rsp and the
 /// withheld ones.
 const STAND_INS: [u8; 12] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14];
