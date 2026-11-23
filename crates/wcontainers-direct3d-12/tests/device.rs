@@ -12,7 +12,7 @@ use triangle::{PS, RGBA8, VS};
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
 use wcontainers_direct3d_12::state::*;
-use wcontainers_direct3d_12::{Device, Error};
+use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_gpu::{Backend, Features};
 
@@ -332,6 +332,64 @@ fn wireframe_without_polygon_mode_is_refused_by_name() {
     assert!(
         matches!(refused, Err(Error::NotImplemented(_))),
         "{refused:?}"
+    );
+}
+
+/// tests/registers.rs's programs: 31 values from the vertex to the pixel stage beside the
+/// position, read from 32 input slots.
+const REGISTERS_VS: &[u8] = include_bytes!("registers/vs.dxbc");
+const REGISTERS_PS: &[u8] = include_bytes!("registers/ps.dxbc");
+
+/// The 32-slot pipeline of tests/registers.rs on a recorder with `locations` inter-stage
+/// locations.
+fn registers_pipeline(locations: u32) -> (Device<Recorder>, Result<PipelineId, Error>) {
+    let mut device = Device::new(Recorder::with_caps(|c| {
+        c.limits.inter_stage_slots = locations
+    }));
+    let element = |semantic: &str, index: u32, format: u32| InputElement {
+        semantic: semantic.into(),
+        semantic_index: index,
+        format,
+        slot: index,
+        offset: 0,
+        per_instance: false,
+        step_rate: 0,
+    };
+    let mut inputs = vec![element("P", 0, dxgi::R32G32_FLOAT)];
+    inputs.extend((1..32).map(|i| element("A", i, dxgi::R32_FLOAT)));
+    let (_, raster) = scene_raster(true, FILL_MODE_SOLID);
+    let made = triangle::pipeline_with(
+        &mut device,
+        REGISTERS_VS,
+        REGISTERS_PS,
+        inputs,
+        raster,
+        TOPOLOGY_TYPE_TRIANGLE,
+        dxgi::UNKNOWN,
+    );
+    (device, made)
+}
+
+#[test]
+fn values_past_the_back_ends_locations_move_or_are_refused_by_name() {
+    // 31 values and the position fit 31 locations once moved.
+    let (_, made) = registers_pipeline(31);
+    assert!(made.is_ok(), "{made:?}");
+    // They do not fit 30: refused by name and counted.
+    let (mut device, refused) = registers_pipeline(30);
+    assert!(
+        matches!(
+            refused,
+            Err(Error::NotImplemented(
+                "more values between the stages than the back end passes"
+            ))
+        ),
+        "{refused:?}"
+    );
+    let slow = device.backend().slow_paths();
+    assert_eq!(
+        slow.count(wcontainers_gpu::SlowPath::VaryingsBeyondLimit),
+        1
     );
 }
 
