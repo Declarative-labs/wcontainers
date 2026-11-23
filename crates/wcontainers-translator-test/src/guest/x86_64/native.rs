@@ -24,7 +24,7 @@ use wcontainers_guest_cpu::{Guest, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::Fxsave;
 use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, RegisterArea};
-use wcontainers_x86::carry::{COUNT, T, U, WITHHELD};
+use wcontainers_x86::carry::{COUNT, FS_BASE_NUMBER, T, U, WITHHELD};
 use wcontainers_x86::cpuid::{AVX_STATE_BYTES, AVX_STATE_OFFSET, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -253,6 +253,9 @@ fn five_level_only(stop: Stop) -> bool {
 
 /// The cases whose outcome by the inside's `answer` was compared with the meaning's.
 pub static ANSWERS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The counted runs that called the inside for a repeated string, which it runs on the hardware.
+pub static STRINGS_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The runs that reached the Float status route's second call, which the inside's `float_status_after` finished.
 pub static SECOND_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -635,8 +638,33 @@ pub fn run_with_pointers(
                     differences(&case.state, &state)
                 ));
             }
-            let meaning = translated::<X86_64>(case);
             let answered = answered(case);
+            if ended == Ended::Answered(InsideCall::Answer) && answered.is_none() {
+                let (i, _) = wcontainers_x86::decode(case.code.code()).ok_or("no instruction")?;
+                let repeated = i.iced.has_rep_prefix() || i.iced.has_repne_prefix();
+                let string = (0..i.iced.op_count()).any(|n| {
+                    matches!(
+                        i.iced.op_kind(n),
+                        iced_x86::OpKind::MemorySegRSI
+                            | iced_x86::OpKind::MemorySegESI
+                            | iced_x86::OpKind::MemoryESRDI
+                            | iced_x86::OpKind::MemoryESEDI
+                    )
+                });
+                if checked && repeated && string {
+                    // Under the count the inside runs a repeated string on the hardware and adds the meaning's
+                    // passes (`string_passes`, checked against the WebAssembly output's count elsewhere).
+                    STRINGS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok((on_reference::<X86_64>(reference, case), ended, None));
+                }
+                if i.iced.mnemonic() != Mnemonic::Syscall {
+                    return Err(format!(
+                        "routed to the inside, which has no answer for {:?}",
+                        i.iced.code()
+                    ));
+                }
+            }
+            let meaning = translated::<X86_64>(case);
             if answered.is_some() {
                 ANSWERS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
@@ -746,8 +774,13 @@ fn guest_state(
     for (k, &w) in WITHHELD.iter().enumerate() {
         general[usize::from(w)] = area.withheld[k];
     }
+    let mut fs_base = record.fs_base;
     for r in &span.relocated {
-        general[usize::from(r.guest)] = held(r.held)?;
+        if r.guest == FS_BASE_NUMBER {
+            fs_base = held(r.held)?;
+        } else {
+            general[usize::from(r.guest)] = held(r.held)?;
+        }
     }
     let rip = match (span.side, span.resume) {
         (Side::Before, _) => span.guest,
@@ -762,7 +795,7 @@ fn guest_state(
     s[RIP] = rip.into();
     // TF only ever stops the piece here: a host process never sets it for the guest.
     s[RFLAGS] = u128::from(host.rflags) & !RF & !u128::from(wcontainers_x86::TF);
-    s[FS] = record.fs_base.into();
+    s[FS] = fs_base.into();
     s[GS] = area.gs_base.into();
     let (legacy, _) = Fxsave::read_from_prefix(&record.xstate).expect("the legacy area");
     let bv = u64::from_le_bytes(

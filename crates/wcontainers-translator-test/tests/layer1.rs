@@ -415,7 +415,7 @@ fn every_form_matches_the_cpu_x86_64() {
 #[test]
 fn every_form_matches_the_cpu_natively_x86_64() {
     use wcontainers_translator_test::guest::x86_64::native::{
-        ANSWERS_CHECKED, REFERENCE_HOST, SECOND_CALLS, compare,
+        ANSWERS_CHECKED, REFERENCE_HOST, SECOND_CALLS, STRINGS_RUN, compare,
     };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
@@ -427,10 +427,12 @@ fn every_form_matches_the_cpu_natively_x86_64() {
         });
     eprintln!(
         "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}; \
-         the float status route's second call made in {}",
+         the float status route's second call made in {}; a repeated string under the count run by the inside on \
+         the hardware in {}",
         ended.into_inner().unwrap(),
         ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
-        SECOND_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+        SECOND_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+        STRINGS_RUN.load(std::sync::atomic::Ordering::Relaxed)
     );
     assert!(
         failures.is_empty(),
@@ -1447,4 +1449,168 @@ fn every_unoffered_code_is_drawn_x86_64() {
         "{} unoffered codes have no case: {undrawn:?}",
         undrawn.len()
     );
+}
+
+/// The single-instruction shapes of docs/x86-native-output.md section 7 natively against the CPU: `ret`, `jmp r`
+/// and `call r` (plain and 66-prefixed) to 2^47, 2^48, a valid target with each of bits 48 to 63 set alone,
+/// 0xfff0000000401000, 2^63 and -1; 66-prefixed direct `jmp` and `call`; `wrfsbase`, `wrgsbase`, `rdgsbase` and
+/// `mov r, gs`; `rdsspq` and `incsspq`; `movsb`, `rep movsb`, `xlat`, `maskmovq`, `maskmovdqu` and a bit test under
+/// 0x67, each with a `gs:` override; `gs:` operands with the guest's 0x67 and a base at or above 2^32, RIP-relative
+/// with and without it; and the independent check's cases (an `fxsave64` across offset 2^32 under 0x67, `setg`
+/// with three segment prefixes, a RIP-relative bit test under 0x67 with a bit offset past 2^32). Every case ends as
+/// the CPU's, or as a named known difference: the 5-level reference, or an answer that is the meaning's where the
+/// meaning differs.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare as natively};
+    use wcontainers_translator_test::guest::x86_64::{GS, RSP, XMM, plain};
+    use wcontainers_translator_test::layout::{CODE, DATA};
+    use wcontainers_x86::{R9, R10, RAX, RBX, RCX, RDI, RSI, USER_END};
+    // Where the stack, a string's destination and a bit offset are, and a GS base above 2^32 (the check's gs67.c).
+    const STACK_AT: u64 = PAGE_SIZE / 2;
+    const AWAY: u64 = 1 << u8::BITS;
+    const HIGH_BASE: u64 = 3 << u32::BITS;
+    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let (mut same, mut known, mut failures) = (0, BTreeMap::<&str, u64>::new(), Vec::new());
+    let mut check = |case: Case| match natively(&mut reference, &case, REFERENCE_HOST) {
+        Ok((Agreement::Same, _)) => same += 1,
+        Ok((Agreement::KnownFailure(why), _)) => *known.entry(why).or_default() += 1,
+        Err(report) => failures.push(format!("{:02x?}: {report}", case.code.code())),
+    };
+    let with = |code: &[u8], registers: &[(usize, u64)]| {
+        let mut case = plain(code);
+        for &(field, value) in registers {
+            case.state.0[field] = value.into();
+        }
+        case
+    };
+    let r = |n: u8| usize::from(n);
+    // The transfers' targets.
+    let mut targets = vec![
+        1 << 47,
+        1 << 48,
+        0xfff0_0000_0040_1000,
+        1 << 63,
+        u64::MAX,
+        CODE,
+    ];
+    targets.extend((48..64).map(|bit| CODE | 1 << bit));
+    let stack = DATA + STACK_AT;
+    for &target in &targets {
+        for prefix in [&[][..], &[0x66]] {
+            for code in [&[0xffu8, 0xe0][..], &[0xff, 0xd0]] {
+                check(with(&[prefix, code].concat(), &[(r(RAX), target)]));
+            }
+            let mut ret = with(&[prefix, &[0xc3]].concat(), &[(RSP, stack)]);
+            ret.placed = ((stack - DATA) as u32, target.to_le_bytes().to_vec());
+            check(ret);
+        }
+    }
+    for code in [
+        &[0x66, 0xe9, 0x10, 0x00, 0x00, 0x00][..],
+        &[0x66, 0xe8, 0x10, 0x00, 0x00, 0x00],
+        &[0x66, 0xeb, 0x10],
+    ] {
+        check(with(code, &[(RSP, stack)]));
+    }
+    // The bases and the gs selector, with canonical, 5-level-only and non-canonical values.
+    for value in [DATA, 1 << 47, 1 << 56, USER_END.wrapping_neg(), 1 << 63] {
+        for code in [
+            &[0xf3, 0x48, 0x0f, 0xae, 0xd0][..],
+            &[0xf3, 0x48, 0x0f, 0xae, 0xd8],
+            &[0xf3, 0x0f, 0xae, 0xd8],
+        ] {
+            check(with(code, &[(r(RAX), value)]));
+        }
+    }
+    for code in [
+        &[0xf3, 0x48, 0x0f, 0xae, 0xc8][..],
+        &[0xf3, 0x0f, 0xae, 0xc8],
+        &[0x48, 0x8c, 0xe8],
+        &[0x8c, 0xe8],
+        &[0xf3, 0x48, 0x0f, 0x1e, 0xc8],
+        &[0xf3, 0x48, 0x0f, 0xae, 0xe8],
+    ] {
+        check(with(code, &[(r(RAX), 0x1234), (GS, DATA + 0x40)]));
+    }
+    // Implicit addresses on gs.
+    let on_gs = [
+        (GS, DATA),
+        (r(RSI), 0x10),
+        (r(RDI), DATA + AWAY),
+        (r(RBX), 0x20),
+    ];
+    for code in [
+        &[0x65, 0xa4][..],
+        &[0x65, 0x49, 0xa4],
+        &[0xf3, 0x65, 0xa4],
+        &[0x65, 0xa6],
+        &[0x65, 0xac],
+        &[0x65, 0xaa],
+        &[0x65, 0xd7],
+        &[0x65, 0x4c, 0xd7],
+        &[0x65, 0x0f, 0xf7, 0xc1],
+        &[0x66, 0x65, 0x0f, 0xf7, 0xc1],
+    ] {
+        let mut case = with(code, &on_gs);
+        case.state.0[r(RCX)] = 5;
+        case.state.0[r(RAX)] = 3;
+        case.state.0[XMM + 1] = u128::MAX;
+        check(case);
+    }
+    // A bit test of gs:[eax] with ecx's offset under 0x67, where the sum carries past 2^32, plain and locked.
+    for code in [
+        &[0x65, 0x67, 0x0f, 0xa3, 0x08][..],
+        &[0xf0, 0x65, 0x67, 0x0f, 0xab, 0x08],
+    ] {
+        check(with(
+            code,
+            &[(GS, DATA), (r(RAX), 0xffff_fff0), (r(RCX), AWAY)],
+        ));
+    }
+    // gs: with the guest's 0x67: the check's gs67.c (a fault at 0x300000010), and one that lands in the data.
+    check(with(
+        &[0x65, 0x67, 0x8b, 0x00],
+        &[(GS, HIGH_BASE), (r(RAX), 0x1_0000_0010)],
+    ));
+    check(with(
+        &[0x65, 0x67, 0x8b, 0x00],
+        &[(GS, DATA - 0x10), (r(RAX), 0x1_0000_0020)],
+    ));
+    // RIP-relative on gs, the operand's offset a page below the data, with and without 0x67.
+    for prefix in [&[0x65][..], &[0x65, 0x67]] {
+        let end = CODE + prefix.len() as u64 + 6;
+        let displacement = (DATA - PAGE_SIZE).wrapping_sub(end) as u32;
+        let code = [prefix, &[0x8b, 0x05], &displacement.to_le_bytes()].concat();
+        check(with(&code, &[(GS, PAGE_SIZE)]));
+    }
+    // The check's fxsave64 across offset 2^32 under 0x67 (offset 0xffffffd6; the CPU faults at GS + 0x1d5).
+    check(with(
+        &[
+            0x65, 0x67, 0x4b, 0x0f, 0xae, 0x84, 0x8a, 0x36, 0xba, 0xa5, 0x06,
+        ],
+        &[
+            (GS, 0x5a2d_c784_37da),
+            (r(R10), 0xffff_ffd6 - 0x06a5_ba36),
+            (r(R9), 0),
+        ],
+    ));
+    // The check's setg with cs, gs and ss prefixes, the last one choosing the segment.
+    check(with(
+        &[
+            0x2e, 0x65, 0x36, 0x4f, 0x0f, 0x9f, 0x81, 0xdf, 0xbc, 0x7c, 0x48,
+        ],
+        &[(r(R9), 0xc7), (GS, DATA)],
+    ));
+    // The check's RIP-relative bit test under 0x67 (at DATA + 0x100), its bit offset past 2^32 and at 2^63.
+    for offset in [0x8_0000_0000, 1 << 63] {
+        check(with(
+            &[0x67, 0x48, 0x0f, 0xa3, 0x05, 0xf7, 0x00, 0x00, 0xf4],
+            &[(r(RAX), offset)],
+        ));
+    }
+    eprintln!("the plan's shapes natively: {same} as the CPU, known differences {known:?}");
+    assert!(failures.is_empty(), "{failures:#?}");
 }

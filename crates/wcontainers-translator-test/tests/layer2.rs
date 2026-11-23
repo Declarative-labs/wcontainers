@@ -242,3 +242,223 @@ fn natively_matches_the_cpu_x86_64() {
     );
     assert!(failures.is_empty());
 }
+
+/// A hand-made program of `code` at the layer's load address, linked there, with the layer's stack, its image
+/// `bytes` long with zeros after the code.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn hand_made(
+    name: &str,
+    code: Vec<u8>,
+    bytes: usize,
+) -> wcontainers_translator_test::programs::Blob {
+    use wcontainers_translator_test::programs::{Blob, LOAD, STACK_BYTES};
+    let code_bytes = code.len() as u64;
+    let mut image = code;
+    image.resize(bytes.max(image.len()), 0);
+    Blob {
+        name: name.into(),
+        code_bytes,
+        bytes: image,
+        load: LOAD,
+        link_address: Some(LOAD),
+        main: None,
+        program_headers: None,
+        stack_bytes: STACK_BYTES,
+        offer: None,
+    }
+}
+
+/// `blob` natively at the three look-aheads, with and without the count, against the CPU's run, the count after
+/// each system call against the WebAssembly output's.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn natively_as_the_cpu(blob: &wcontainers_translator_test::programs::Blob) -> Result<(), String> {
+    use wcontainers_translator_test::guest::x86_64::native_programs::compare;
+    use wcontainers_translator_test::progress::run_counting;
+    use wcontainers_translator_test::reference::with_reference;
+    type G = wcontainers_x86::X86_64;
+    let cpu = native::<G>(blob);
+    let counted = run_counting::<G>(blob, (LookAhead::None, Optimise::Speed));
+    if counted.ran != cpu {
+        return Err(format!(
+            "{}: the WebAssembly output {:?} against the CPU's {cpu:?}",
+            blob.name, counted.ran
+        ));
+    }
+    for look_ahead in [LookAhead::None, LookAhead::Bounded(3), LookAhead::Full] {
+        for counting in [false, true] {
+            with_reference(&G::REFERENCE, |reference| {
+                compare(reference, blob, look_ahead, counting, &cpu, &counted)
+            })
+            .map_err(|e| format!("{}: {e}", blob.name))?;
+        }
+    }
+    Ok(())
+}
+
+/// The shapes docs/x86-native-output.md section 3.2 was broken with, as programs: a direct branch into the
+/// middle of an instruction in the same piece (the immediate of a `mov`), and a jump through a register to the
+/// same.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn branches_into_an_instruction_match_the_cpu_natively_x86_64() {
+    const EXIT_GROUP: u8 = libc::SYS_exit_group as u8;
+    // Each exits with status 0 only from the code it reaches in the middle of the `mov`. 0: mov edi, 1; 5: jmp 9;
+    // 7: mov rax, imm64 whose bytes from 9 are `xor edi, edi; jmp 11; nop * 4`; 11: exit_group(edi).
+    let direct = vec![
+        0xbf, 0x01, 0x00, 0x00, 0x00, 0xeb, 0x02, 0x48, 0xb8, 0x31, 0xff, 0xeb, 0x04, 0x90, 0x90,
+        0x90, 0x90, 0xb8, EXIT_GROUP, 0x00, 0x00, 0x00, 0x0f, 0x05,
+    ];
+    // 0: mov edi, 1; 5: lea rax, [rip + 4] (10); c: jmp rax; e: mov rax, imm64 whose bytes from 10 are `xor edi,
+    // edi; jmp 18; nop * 4`; 18: exit_group(edi).
+    let through = vec![
+        0xbf, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8d, 0x05, 0x04, 0x00, 0x00, 0x00, 0xff, 0xe0, 0x48,
+        0xb8, 0x31, 0xff, 0xeb, 0x04, 0x90, 0x90, 0x90, 0x90, 0xb8, EXIT_GROUP, 0x00, 0x00, 0x00,
+        0x0f, 0x05,
+    ];
+    let failures: Vec<String> = [("into-a-mov", direct), ("jump-into-a-mov", through)]
+        .into_iter()
+        .filter_map(|(name, code)| natively_as_the_cpu(&hand_made(name, code, 0)).err())
+        .collect();
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Repeated strings against the WebAssembly output's count natively (plan section 7): seeded over every kind,
+/// element size, prefix (rep, repe, repne, the guest's 0x67), DF, rcx (0, 1, a few, the bulk pass's cap and either
+/// side of it) and rdi - rsi (0, 1, an element, ten, the length, minus ten, past the cap), with the check's case
+/// (`rep movsb`, rdi = rsi + 10, rcx 100: 91 passes); a system call after the string reads the count.
+/// `WC_STRINGS_SEED` and `WC_STRINGS_CASES` set the sweep, `WC_STRINGS_JOBS` how many run at once. TF is left
+/// out: a host process runs a guest with TF set on stepping pieces, which are not built.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
+    use iced_x86::code_asm::*;
+    use wcontainers_x86::strings::BULK_STRING_BYTES;
+    let seed = knob("WC_STRINGS_SEED", 1);
+    let cases = knob("WC_STRINGS_CASES", 64);
+    let jobs = knob("WC_STRINGS_JOBS", 1).max(1);
+    // The strings' memory is the program's own, from 64 KiB in (the code is shorter), 5 MiB of zeros; they start in
+    // its middle, so that either way the cap and the farthest distance stay inside.
+    const BUFFER: u64 = 1 << 16;
+    const BUFFER_BYTES: usize = 5 << 20;
+    const START: u64 =
+        wcontainers_translator_test::programs::LOAD + BUFFER + (BUFFER_BYTES as u64) / 2;
+    const IMAGE: usize = BUFFER as usize + BUFFER_BYTES;
+    // movs, stos, lods, cmps and scas of each size: the opcodes of their byte forms, the others one more.
+    const KINDS: [(&str, u8); 5] = [
+        ("movs", 0xa4),
+        ("stos", 0xaa),
+        ("lods", 0xac),
+        ("cmps", 0xa6),
+        ("scas", 0xae),
+    ];
+    let program = |kind: usize,
+                   bytes: u8,
+                   repeat: u8,
+                   narrow: bool,
+                   down: bool,
+                   count: u64,
+                   distance: i64,
+                   value: u8|
+     -> Vec<u8> {
+        let mut a = CodeAssembler::new(64).unwrap();
+        a.mov(rsi, START).unwrap();
+        a.mov(rdi, START.wrapping_add_signed(distance)).unwrap();
+        a.mov(rcx, count).unwrap();
+        a.mov(eax, u32::from(value)).unwrap();
+        if down {
+            a.std().unwrap();
+        }
+        let (_, opcode) = KINDS[kind];
+        let mut string = Vec::new();
+        if narrow {
+            string.push(wcontainers_x86::encoding::ADDRESS_SIZE);
+        }
+        string.push(repeat);
+        match bytes {
+            2 => string.push(wcontainers_x86::encoding::OPERAND_SIZE),
+            8 => string.push(wcontainers_x86::encoding::REX | wcontainers_x86::encoding::REX_W),
+            _ => {}
+        }
+        string.push(if bytes == 1 { opcode } else { opcode + 1 });
+        a.db(&string).unwrap();
+        a.cld().unwrap();
+        a.mov(eax, libc::SYS_getpid as u32).unwrap();
+        a.syscall().unwrap();
+        a.mov(eax, libc::SYS_exit_group as u32).unwrap();
+        a.xor(edi, edi).unwrap();
+        a.syscall().unwrap();
+        let code = a
+            .assemble(wcontainers_translator_test::programs::LOAD)
+            .unwrap();
+        assert!(
+            code.len() as u64 <= BUFFER,
+            "the code fits before the strings' memory"
+        );
+        code
+    };
+    let failures = Mutex::new(Vec::new());
+    // The check's case first.
+    let check = program(
+        0,
+        1,
+        wcontainers_x86::encoding::REP,
+        false,
+        false,
+        100,
+        10,
+        0,
+    );
+    if let Err(e) = natively_as_the_cpu(&hand_made("rep-movsb-10-above", check, IMAGE)) {
+        failures.lock().unwrap().push(e);
+    }
+    at_once(jobs, cases, |case| {
+        let mut rng = seeded::generator(seed, &case.to_le_bytes(), "repeated strings");
+        let mut pick = |n: usize| (rng.next_u64() % n as u64) as usize;
+        let kind = pick(KINDS.len());
+        let bytes = [1u8, 2, 4, 8][pick(4)];
+        let compares = matches!(KINDS[kind].0, "cmps" | "scas");
+        let repeat = if compares && pick(2) == 0 {
+            wcontainers_x86::encoding::REPNE
+        } else {
+            wcontainers_x86::encoding::REP
+        };
+        let narrow = pick(4) == 0;
+        let down = pick(2) == 0;
+        let cap = BULK_STRING_BYTES / u64::from(bytes);
+        let count = [0, 1, 7, cap - 1, cap, cap + 1][pick(6)];
+        let length = (count * u64::from(bytes)) as i64;
+        let distance = [
+            0,
+            1,
+            i64::from(bytes),
+            10,
+            length,
+            -10,
+            BULK_STRING_BYTES as i64 + 8,
+        ][pick(7)];
+        let value = pick(2) as u8;
+        let name = format!(
+            "{}{} {} {}{} rcx {count} rdi-rsi {distance} al {value}",
+            if narrow { "67 " } else { "" },
+            if repeat == wcontainers_x86::encoding::REP {
+                "rep"
+            } else {
+                "repne"
+            },
+            KINDS[kind].0,
+            bytes,
+            if down { " std" } else { "" }
+        );
+        let code = program(kind, bytes, repeat, narrow, down, count, distance, value);
+        if let Err(e) = natively_as_the_cpu(&hand_made(&name, code, IMAGE)) {
+            eprintln!("strings natively, seed {seed}, case {case}: {e}");
+            failures.lock().unwrap().push(e);
+        }
+    });
+    let failures = failures.into_inner().unwrap();
+    eprintln!(
+        "repeated strings natively: {cases} cases and the check's, seed {seed}, {jobs} at once; {} failing",
+        failures.len()
+    );
+    assert!(failures.is_empty(), "{failures:#?}");
+}

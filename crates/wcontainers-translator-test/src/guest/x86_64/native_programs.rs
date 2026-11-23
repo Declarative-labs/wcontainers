@@ -491,6 +491,23 @@ pub fn run_timed(
         if matches!(pieces.made.get(&missed), Some(Some(_))) {
             return Err(format!("a miss at {missed:#x}, whose piece is made"));
         }
+        let image = blob.load..blob.load + (blob.bytes.len() as u64).next_multiple_of(PAGE);
+        if !image.contains(&missed) {
+            // Nothing is mapped there: the inside gives the guest the fetch's page fault, which ends it as Linux
+            // ends a program that jumps there.
+            let syscalls = positions(&laid, &records[..records.len() - 1])?;
+            let run = NativeRun {
+                ran: Ran {
+                    stdout: ran.stdout,
+                    stderr: Vec::new(),
+                    status: crate::layout::SIGNALLED + libc::SIGSEGV,
+                },
+                syscalls,
+                runs,
+                pieces: pieces.made.values().flatten().count(),
+            };
+            return Ok((run, ran.seconds));
+        }
         if matches!(pieces.made.get(&missed), Some(None)) || pieces.code_from(missed).is_none() {
             return Err(format!("the guest goes to {missed:#x}, where no code is"));
         }
