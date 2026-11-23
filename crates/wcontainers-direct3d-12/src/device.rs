@@ -1050,6 +1050,12 @@ impl<B: Backend> Device<B> {
         (id, cpu, gpu)
     }
 
+    /// The slots of descriptor heap `id`, which a caller in Rust writes in place of the pointer
+    /// `create_descriptor_heap` returns.
+    pub fn descriptor_slots(&self, id: HeapId) -> Option<&[Cell<Descriptor>]> {
+        self.heaps.get(id.0 as usize).map(|h| &*h.slots)
+    }
+
     pub fn destroy_descriptor_heap(&mut self, id: HeapId) {
         if let Some(h) = self.heaps.try_remove(id.0 as usize) {
             self.handles.remove(h.gpu);
