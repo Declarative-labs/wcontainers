@@ -91,6 +91,41 @@ pub fn trimmed(mode: mesa_prim, count: u32) -> u32 {
 /// The vertices of the first primitive with adjacency for each of its own: one beside each.
 const WITH_ADJACENCY: u32 = 2;
 
+/// The places of a primitive's own vertices among those of its primitive with adjacency, which
+/// OpenGL draws without the adjacent ones where no geometry program runs.
+const LINE_IN_ADJACENCY: [usize; 2] = [1, 2];
+const TRIANGLE_IN_ADJACENCY: [usize; 3] = [0, 2, 4];
+
+/// A list with adjacency as the list of its primitives without their adjacent vertices
+/// (`AdjacencyDropped`); any other as it is.
+pub fn without_adjacency(rewritten: Rewritten) -> Rewritten {
+    let (primitive, own): (mesa_prim, &[usize]) = match rewritten.primitive {
+        MESA_PRIM_LINES_ADJACENCY => (MESA_PRIM_LINES, &LINE_IN_ADJACENCY),
+        MESA_PRIM_TRIANGLES_ADJACENCY => (MESA_PRIM_TRIANGLES, &TRIANGLE_IN_ADJACENCY),
+        _ => return rewritten,
+    };
+    let size = rewritten.format.size() as usize;
+    let each = own.len() * WITH_ADJACENCY as usize * size;
+    let mut kept = Vec::with_capacity(rewritten.bytes / WITH_ADJACENCY as usize);
+    for vertices in rewritten.indices().chunks_exact(each) {
+        for &at in own {
+            kept.extend_from_slice(&vertices[at * size..(at + 1) * size]);
+        }
+    }
+    let mut words = words_for(kept.len());
+    for (word, bytes) in words.iter_mut().zip(kept.chunks(size_of::<u32>())) {
+        let mut whole = [0; size_of::<u32>()];
+        whole[..bytes.len()].copy_from_slice(bytes);
+        *word = u32::from_ne_bytes(whole);
+    }
+    Rewritten {
+        primitive,
+        format: rewritten.format,
+        bytes: kept.len(),
+        words,
+    }
+}
+
 fn topology(primitive: mesa_prim) -> Result<Topology, String> {
     Ok(match primitive {
         MESA_PRIM_POINTS => Topology::PointList,

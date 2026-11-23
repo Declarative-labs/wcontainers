@@ -898,6 +898,18 @@ fn topology(mode: mesa_prim) -> Option<Topology> {
     })
 }
 
+/// The interface's topology of a primitive with adjacency drawn without a geometry program: its
+/// list without the adjacent vertices, as OpenGL draws it.
+fn without_adjacency(mode: mesa_prim) -> Option<Topology> {
+    Some(match mode {
+        MESA_PRIM_LINES_ADJACENCY | MESA_PRIM_LINE_STRIP_ADJACENCY => Topology::LineList,
+        MESA_PRIM_TRIANGLES_ADJACENCY | MESA_PRIM_TRIANGLE_STRIP_ADJACENCY => {
+            Topology::TriangleList
+        }
+        _ => return None,
+    })
+}
+
 fn index_format(size: u16) -> IndexFormat {
     match u32::from(size) {
         s if s == IndexFormat::U8.size() => IndexFormat::U8,
@@ -1913,7 +1925,10 @@ fn draw<B: Backend>(
     // SAFETY: bound states live until Mesa unbinds and deletes them.
     let (raster, depth_stencil, blend, elements) =
         unsafe { (&*raster, &*depth_stencil, &*blend, &*elements) };
-    let api_topology = topology(mesa_prim::from(info.mode));
+    let mode = mesa_prim::from(info.mode);
+    let drops_adjacency = gs.is_null() && !tessellated && topology(mode).is_none();
+    let api_topology =
+        topology(mode).or_else(|| without_adjacency(mode).filter(|_| drops_adjacency));
     if gs.is_null() && !tessellated && api_topology.is_none() {
         return refused(format_args!(
             "a primitive with adjacency without a geometry program, or one the screen does not \
@@ -2270,7 +2285,6 @@ fn draw<B: Backend>(
         }
     }
     let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
-    let mode = mesa_prim::from(info.mode);
     let restart = match &made {
         Some(m) => m.out.index_offset.is_some(),
         None => info.primitive_restart(),
@@ -2284,6 +2298,7 @@ fn draw<B: Backend>(
     // back now (`ReadBackWait`), then converted as the program's own.
     let rewritten_on_host = made.is_none()
         && (fan
+            || drops_adjacency
             || provoking.is_some()
             || indices::restarts_otherwise(mode, restart)
             || other_restart
@@ -2375,6 +2390,7 @@ fn draw<B: Backend>(
                 read.as_ref(),
                 raster.host_provoking,
                 provoking,
+                drops_adjacency,
             )?,
         }
     }
@@ -3400,7 +3416,12 @@ fn draw_rewritten<B: Backend>(
 
 /// Each range of one draw call made with `base`'s blocks; `read` holds indices read back from
 /// the index buffer, and the first one's position in it. Where `provoking` is given, every
-/// primitive's vertices are reordered for the host's provoking vertex.
+/// primitive's vertices are reordered for the host's provoking vertex; where `drops_adjacency`,
+/// primitives with adjacency are drawn without their adjacent vertices.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one draw call's ranges and how each is rewritten"
+)]
 fn draw_ranges<B: Backend>(
     backend: &mut B,
     base: &DrawCall<'_, B>,
@@ -3409,6 +3430,7 @@ fn draw_ranges<B: Backend>(
     read: Option<&(Vec<u8>, u32)>,
     host_provoking: ProvokingVertex,
     provoking: Option<Provoking>,
+    drops_adjacency: bool,
 ) -> Result<(), String> {
     let topology = base.topology;
     let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
@@ -3419,14 +3441,26 @@ fn draw_ranges<B: Backend>(
     let mode = mesa_prim::from(info.mode);
     let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
     let restart_switch = backend.caps().has(Features::RESTART_SWITCH);
+    let same = Provoking {
+        api: host_provoking,
+        host: host_provoking,
+    };
+    if drops_adjacency {
+        backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+    }
     for d in draws {
         if d.count == 0 {
             continue;
         }
-        if let (0, Some(p)) = (index_size, provoking) {
-            backend.slow_paths().hit(SlowPath::ProvokingRewrite);
-            if let Some(r) = indices::generated(mode, d.start, d.count, false, p.api, p.host)? {
-                draw_rewritten(backend, base, &r, 0, info)?;
+        if index_size == 0 && (provoking.is_some() || drops_adjacency) {
+            if provoking.is_some() {
+                backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+            }
+            let p = provoking.unwrap_or(same);
+            // Lists with adjacency, whose adjacent vertices are then dropped.
+            let lists = drops_adjacency;
+            if let Some(r) = indices::generated(mode, d.start, d.count, lists, p.api, p.host)? {
+                draw_rewritten(backend, base, &indices::without_adjacency(r), 0, info)?;
             }
             continue;
         }
@@ -3490,7 +3524,7 @@ fn draw_ranges<B: Backend>(
                 && strip
                 && !restart_switch
                 && holds_largest(indices, format);
-            if provoking.is_some() || cut || lists_only {
+            if provoking.is_some() || cut || lists_only || drops_adjacency {
                 let paths = [
                     (provoking.is_some(), SlowPath::ProvokingRewrite),
                     (cut || lists_only, SlowPath::RestartRewrite),
@@ -3499,12 +3533,11 @@ fn draw_ranges<B: Backend>(
                 for (_, path) in paths.into_iter().filter(|&(taken, _)| taken) {
                     backend.slow_paths().hit(path);
                 }
-                let Provoking { api, host } = provoking.unwrap_or(Provoking {
-                    api: host_provoking,
-                    host: host_provoking,
-                });
-                let rewritten = indices::translated(info, indices, restart, lists_only, api, host)?;
+                let Provoking { api, host } = provoking.unwrap_or(same);
+                let lists = lists_only || drops_adjacency;
+                let rewritten = indices::translated(info, indices, restart, lists, api, host)?;
                 if let Some(r) = rewritten {
+                    let r = indices::without_adjacency(r);
                     draw_rewritten(backend, base, &r, d.index_bias, info)?;
                 }
                 continue;
