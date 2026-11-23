@@ -1116,6 +1116,26 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
+G4h run 9 (2026-11-23, Pacific; desktop i9-9900K with the RTX 3080, through the queue, not alone,
+the OpenGL track's conformance runs holding the queue's hazard group for most of the run):
+- The whole bar at 968aef83 (main/q5-final.sh r9-bar, logs/r9-bar-*): lint of both builds clean;
+  library com 15 (1 ignored) and programs 67 (8 ignored) pass, the run-9 test among them. The
+  later steps (the WebGL 2 build's cases, Wine's files, scenes, programs, sizes, building ahead)
+  were still queued behind the OpenGL track's job at 03:45 when this run ended; the detached run
+  goes on writing logs/r9-bar-*. Run 8's whole bar (below) is the last complete one.
+- Front 60, unit 7, cache 1 and the infrastructure crate's 11 tests pass at 6572e2e9's tree (the
+  desktop, as the rented x86 machine was being replaced); lint of the front, the infrastructure
+  crate and the WebGPU back end clean at e295cb5a's tree (rented x86); the WebGPU back end's own
+  tests pass but `wireframe_fill_matches_direct3d`, the WebGPU track's known failure.
+- The literal check at e295cb5a (rented x86, logs/r9-lit-front.log): nothing in this track's
+  files but an "unparsed" line for the deleted src/required.rs, which no tree tracks (the remote
+  copy's stale file list); the `SUPPORT2_SHAREABLE`, `CPU_LOCKABLE`, `MIP_AUTOGEN` and level
+  redefinitions the infrastructure crate's new constants made are fixed (505618c1) and the old
+  resolve refusal's baseline line cut (e295cb5a).
+- atg-simplecomputepc's dispatch copied whole (g4h9/scp2): the RTX 3080 gives (255, 255, 0) inside
+  the set in all 8 combinations of colour map, sampler and device, in both sessions and through
+  the forwarder (logs/r9-scp2b.log, r9-scp2c.log, r9-scp2fwd.log).
+
 G4h run 8 (2026-11-22 and 23, Pacific). The whole bar at c1abc9c4 (this track's code at
 d0422d34; main/q5-final.sh r8-bar, logs/r8-bar-*). Machine: the desktop (i9-9900K, RTX 3080),
 through the queue, not alone, other tracks' jobs queued (an OpenGL conformance run and the shaders
