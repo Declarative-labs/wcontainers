@@ -204,6 +204,7 @@ unsafe extern "C" {
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
+    fn wc_nir_textures_1d_as_2d(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
     fn wc_nir_nearest_integer_textures(
@@ -380,6 +381,13 @@ impl Nir {
     pub fn split_resource_arrays(&mut self) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_split_resource_arrays(self.0) }
+    }
+
+    /// Every 1D texture the program samples as a 2D texture of one row, for a driver making its 1D
+    /// textures 2D.
+    pub fn textures_1d_as_2d(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_textures_1d_as_2d(self.0) }
     }
 
     /// Every uniform block access st/mesa hands over (`load_ubo`, the default uniforms as block

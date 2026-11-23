@@ -977,6 +977,8 @@ fn create_shader(
     let mut nir = unsafe { Nir::from_raw(raw) };
     nir.uniform_blocks_as_words();
     nir.split_resource_arrays();
+    // Every 1D texture is made 2D (`view.rs`).
+    nir.textures_1d_as_2d();
     let mut streamed = Ok(None);
     match stage {
         Stage::Vertex => {

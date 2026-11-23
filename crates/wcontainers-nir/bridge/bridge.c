@@ -1272,6 +1272,42 @@ wc_nir_split_resource_arrays(nir_shader *nir)
    _mesa_hash_table_destroy(r.elements, NULL);
 }
 
+/* A 1D sampler or texture type (or an array of them) as its 2D twin; any other type as it is. */
+static const struct glsl_type *
+one_row(const struct glsl_type *type)
+{
+   if (glsl_type_is_array(type)) {
+      const struct glsl_type *element = one_row(glsl_get_array_element(type));
+      return element == glsl_get_array_element(type)
+                ? type
+                : glsl_array_type(element, glsl_get_length(type), glsl_get_explicit_stride(type));
+   }
+   if (!(glsl_type_is_sampler(type) || glsl_type_is_texture(type)) ||
+       glsl_get_sampler_dim(type) != GLSL_SAMPLER_DIM_1D)
+      return type;
+   bool array = glsl_sampler_type_is_array(type);
+   enum glsl_base_type result = glsl_get_sampler_result_type(type);
+   return glsl_type_is_sampler(type)
+             ? glsl_sampler_type(GLSL_SAMPLER_DIM_2D, glsl_sampler_type_is_shadow(type), array, result)
+             : glsl_texture_type(GLSL_SAMPLER_DIM_2D, array, result);
+}
+
+void
+wc_nir_textures_1d_as_2d(nir_shader *nir)
+{
+   bool retyped = false;
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
+      const struct glsl_type *type = one_row(var->type);
+      retyped |= type != var->type;
+      var->type = type;
+   }
+   if (!retyped)
+      return;
+   const nir_lower_tex_options lowered = {.lower_1d = true};
+   NIR_PASS(_, nir, nir_lower_tex, &lowered);
+   NIR_PASS(_, nir, nir_fixup_deref_types);
+}
+
 /* The uniform blocks the loads reach, and the bytes each reaches at constant offsets. */
 struct uniform_use {
    uint32_t blocks;

@@ -197,6 +197,11 @@ void wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers);
  * of bindings. */
 void wc_nir_split_resource_arrays(struct nir_shader *nir);
 
+/* Every 1D texture the program samples as a 2D texture of one row (nir_lower_tex's lower_1d, its
+ * variables retyped): the driver makes 1D textures 2D, as the host's 1D textures have neither
+ * levels nor layers. */
+void wc_nir_textures_1d_as_2d(struct nir_shader *nir);
+
 /* Every uniform block access st/mesa hands over (load_ubo, the default uniforms as block 0) as
  * derefs of one array of words a block, sized by the block variables' explicit types; the default
  * uniforms' own variables, which nothing reads after it, removed. Storage block j is bound at
