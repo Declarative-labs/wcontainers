@@ -6124,6 +6124,7 @@ name = "wcontainers-x86"
 version = "0.1.0"
 dependencies = [
  "astro-float-num",
+ "fastrand",
  "iced-x86",
  "raw-cpuid",
  "rustc_apfloat",

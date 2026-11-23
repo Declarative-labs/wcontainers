@@ -24,6 +24,7 @@ iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "i
 
 [dev-dependencies]
 raw-cpuid = "11.6.0"
+fastrand = "2.5.0"
 iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "instr_info"] }
 
 [features]
