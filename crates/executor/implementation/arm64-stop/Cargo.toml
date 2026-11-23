@@ -1,0 +1,21 @@
+[package]
+name = "wcontainers-executor-arm64-stop"
+description = "What an exception taken from the wcontainers native output's ARM64 code comes to for the guest, in every way of running it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+# The register page, the withheld registers and where a way's slots are.
+wcontainers-arm64 = { path = "../../../wcontainers-arm64", default-features = false }
+# The position map, which stops are resolved with.
+wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu", default-features = false }
+
+[lints]
+workspace = true
