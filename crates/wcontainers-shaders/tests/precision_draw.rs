@@ -43,6 +43,10 @@ const SUBNORMAL: &str = "subnormal operand (plan 4.12)";
 /// fxc's `min16i as def32` conversion: the GPU and WARP keep the 16 bits below and sign-extend
 /// them, the DXBC route keeps 32 (gap A34).
 const MIN16_SIGNED_CONVERSION: &str = "min16i as def32 (A34)";
+/// fxc picks a vector's component at a run-time index by a dot product with a row of an identity
+/// matrix; on both devices a NaN or infinity elsewhere in the vector makes the result a NaN, which
+/// dxbc-spirv folds into the component alone (gap A35).
+const PICKED_BY_DOT: &str = "component picked by a dot product beside a NaN or infinity (A35)";
 
 fn words(bytes: &[u8]) -> Vec<u32> {
     bytes
@@ -207,7 +211,7 @@ fn alike(shader: &Shader) {
     ];
     let gpu = d3d12::create(Driver::Hardware, false).unwrap();
     let warp = d3d12::create(Driver::Warp, false).unwrap();
-    let mut known = std::collections::BTreeMap::<&str, usize>::new();
+    let mut known = std::collections::BTreeMap::<(&str, &str), usize>::new();
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {
@@ -230,7 +234,7 @@ fn alike(shader: &Shader) {
                 let mut differ = apart(shader, &reference, &words);
                 differ.retain(|&i| match (shader.known)(&constants, build, i) {
                     Some(name) => {
-                        *known.entry(name).or_default() += 1;
+                        *known.entry((build, name)).or_default() += 1;
                         false
                     }
                     None => true,
@@ -287,6 +291,8 @@ fn minimum_precision_constants_read_as_direct3d_12_reads_them() {
 
 /// `cs_frexp`'s invocations, an operand each.
 const FREXP_OPERANDS: usize = 64;
+/// The operands of one constant buffer row (`float4 operands[16]`).
+const ROW_OPERANDS: usize = size_of::<[f32; 4]>() / size_of::<f32>();
 
 /// The operands: every special value first, then seeded special values and floats of any bits.
 fn frexp_constants(seed: u64) -> Constants {
@@ -328,15 +334,25 @@ const FREXP: Shader = Shader {
     groups: 1,
     constants: frexp_constants,
     float: |_| true,
-    known: |constants, _, i| {
-        let at = i / 2 * size_of::<u32>();
-        let operand =
-            u32::from_le_bytes(constants[0][at..at + size_of::<u32>()].try_into().unwrap());
-        f32::from_bits(operand).is_subnormal().then_some(SUBNORMAL)
+    known: |constants, build, i| {
+        let operand = |n: usize| {
+            let at = n * size_of::<u32>();
+            f32::from_bits(u32::from_le_bytes(
+                constants[0][at..at + size_of::<u32>()].try_into().unwrap(),
+            ))
+        };
+        let n = i / 2;
+        let row = n / ROW_OPERANDS * ROW_OPERANDS..(n / ROW_OPERANDS + 1) * ROW_OPERANDS;
+        if build == "dxbc" && row.map(&operand).any(|f| !f.is_finite()) {
+            Some(PICKED_BY_DOT)
+        } else {
+            operand(n).is_subnormal().then_some(SUBNORMAL)
+        }
     },
 };
 
-/// `frexp` of NaNs, infinities, zeros and any bits: both builds give Direct3D 12's parts.
+/// `frexp` of NaNs, infinities, zeros and any bits: both builds give Direct3D 12's parts (the
+/// DXIL build's NaNs with a payload, the runner's frexp line 52, included).
 #[test]
 fn frexp_gives_direct3d_12s_parts() {
     alike(&FREXP);
