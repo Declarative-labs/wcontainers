@@ -66,8 +66,10 @@ saturate of a NaN on the DXIL route through WebGL 2. Run 12 (run 99, the section
 track's pulled inputs at any byte and 3D texel offsets through naga's HLSL writer, and A26's
 WebGL 2 part for selects. Run 13 (run 100, the section below): carried patches to the
 converters (`converter-patches/`), with which A8 closed: the native and WebAssembly builds give
-the same bytes for every shader; A1's cause read again (the program uses the type). Not complete:
-the gap list below.
+the same bytes for every shader; A1's cause read again (the program uses the type). Run 14 (run
+101, the section below): `A8Unorm` typed buffers and storage views read through a buffer (A28's
+first part, the Direct3D 11 front's typed loads of `A8_UNORM`), and A23 closed by a carried
+dxbc-spirv patch with a drawn test. Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -149,6 +151,54 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   offset's own type (`int3(...)` for a 3D texture, was always `int2(...)`), so wgpu's Direct3D 12
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
+
+## G6 run 14 (run 101): `A8Unorm` through a buffer (A28), A23 closed
+
+Logs and scripts in scratch `graphics-shaders/g6-r101` (run 100's with its folder; the clone `tip`
+is on branch `shaders-tip`, so the desktop copy is `C:\wc\src\shaders-tip`). Nothing built on the
+Mac (rustfmt of single files only).
+- `A8Unorm` typed buffers and storage views through a buffer (the Direct3D 11 front's typed loads
+  of `A8_UNORM`, A28's first part): the texel layout (`variant/texel.rs`) carries the channel of
+  its first component; `A8Unorm` is one byte at alpha, so loads give (0, 0, 0, a), stores write
+  the value's alpha, and an element past the view's length reads zero. Test
+  `a8_storage_textures_load_and_store_through_buffers_as_direct3d_does` (tests/compute_draw.rs):
+  new own `cs_alpha` (texels.hlsl, `RWTexture2D<unorm float4>` loaded whole and stored, the stored
+  alpha a function of all four loaded components, no code at a tie) on a 16 by 16 `A8_UNORM`
+  texture of seeded bytes, ours through a buffer laid out as the through test lays it out, against
+  Direct3D 11's typed loads on the RTX 3080: seeds 1 to 4, both builds, 0 of 256 texels apart in
+  all 8 (gpu4.log). `storage_textures_through_buffers_match_direct3d` shares the helpers (now
+  taking the shader's name) and still passes. Typed buffer views of `A8_UNORM` convert too, but
+  are not drawn: the RTX 3080's Direct3D 11 claims no `BUFFER` use of the format and refuses its
+  buffer storage view (gpu2.log, gpu3.log: a first test of them failed there and was removed).
+  The CPU test of `cs_images` through a buffer now converts on both routes (it asserted
+  `StorageFormatAbsent`).
+- A23: carried patch `converter-patches/dxbc-spirv/dxbc/dxbc_io_map.cpp.patch` (dxbc-spirv
+  addresses a component of a dynamically indexed input range by the mask's bits below it, as the
+  range's own packed vector holds them; it took the distance from the mask's first component).
+  Own `domain_rows.hlsl` gained `hs_rows_gap` (two control points of three `ARR` rows, every
+  component distinct) and `ds_rows_gap` streams its read value; fxc declares `vicp[2][0].xz` as a
+  range of 3. Drawn: the pair, streamed and through `gs_tess_tri`, is a case of
+  `stream_output_after_the_domain_stage_matches_direct3d` (tests/tessellation_draw.rs), both
+  builds: seeds 1 to 4, every patch's primitives equal to Direct3D 11's on the RTX 3080 in all 16
+  rows-gap comparisons (13,758 to 105,522 vertices each), and the whole test's 336 comparisons
+  pass (gpu4.log). `ComponentPastVector` stays as a guard (no file meets it now).
+- Corpus (laptop, `--test corpus`, every corpus and glslang, load 0 to 1.3): 13 passed
+  (`out-r101`). Against run 100's `out-r100c` no WGSL file differs but the own `ds_rows_gap` (both
+  builds, now converting on DXBC) and the new `hs_rows_gap`. WebAssembly (wasi-sdk 25, wasmtime) on
+  every corpus: 0 WGSL files and none of the 13,202 cache lines differ from native (`outw-r101`).
+- Checks at the tree committed (ARM64, arm4.log, load 1 to 7): `cargo fmt -p wcontainers-shaders
+  --check` clean, clippy with warnings denied clean, every CPU test binary passed (the corpus
+  verdicts with `cs_alpha`, `hs_rows_gap` and DXBC `ds_rows_gap` recorded); the literal check
+  prints no line of this crate. Windows clippy with warnings denied clean (gpu4.log). On the RTX
+  3080 (gpu3.log, one job, one thread): `compute` 5 passed, `tessellation_draw` 9 passed,
+  `compute_draw` 17 passed and the removed `A8_UNORM` typed buffer test failed (above). Not run:
+  the whole GPU suite (the change touches typed buffers and storage through buffers, whose drawn
+  tests all ran) and Chrome (no WGSL of any corpus changed but the own rows shaders).
+- A slip: the first GPU job was sent from the clone while its branch was still `agents` (the rig
+  names the desktop copy by the branch); its bundle reached `C:\wc\incoming`, and it was stopped
+  while waiting for the GPU slot, which `remote.ps1` takes before touching a branch's copy, so no
+  copy was changed. A second job was cut by this session's two-hour limit while queued behind two
+  long Direct3D 11 jobs; the third ran detached (`nohup`).
 
 ## G6 run 13 (run 100): carried converter patches, A8 closed, A1's cause
 
@@ -2143,19 +2193,12 @@ The gap list (every item of the pass bar not met):
   128, 0 failed, 64 known (probe1.log). Cause within Direct3D 12 or the driver: not found (WARP's
   Direct3D 12 not drawn). Waits: nobody (our reference only). Takes: the same draws on WARP; if WARP
   writes the positions, the difference recorded as the driver's.
-- A23. A DXBC program reading a dynamically indexed range of input registers whose component mask
-  has a gap (own `ds_rows_gap`: `c[1 - k].arr[k + 1].z + c[k].arr[2].x`, fxc declares the range
-  `.xz`) is refused by name (`ComponentPastVector`, src/lower.rs at `COMPOSITE_EXTRACT`); before run
-  68 `convert` returned an invalid module ("Index 2 is out of bounds"), since G6a at least. dxc's
-  build converts. Cause, read in dxbc-spirv's IR (scratch g6b4/probe-ir.txt): the range's load
-  function returns the mask's components packed (`makeVectorType`, two for `.xz`), but
-  `IoMap::computeRegisterAddress` (dxbc/dxbc_io_map.cpp) addresses a component by its distance from
-  the mask's first (`tzcnt`, 2 for `z`), where its own interpolation path counts the mask's bits below
-  it (`popcnt`, 1). Waits: nobody (no corpus or real program seen with it; the fourth check's
-  `ds_c4*`). Takes: that one line as a carried patch (`converter-patches/dxbc-spirv/`, since run
-  100: the index as the mask's bits below the component, `popcnt`, line 1460 of dxbc_io_map.cpp),
-  then a drawn test before the refusal goes (`ds_rows_gap` has no hull shader writing its `ARR`
-  rows yet; one, drawn against Direct3D 11 on the RTX 3080, both builds).
+- A23. Closed in run 101 (its section): a DXBC program reading a dynamically indexed range of
+  input registers whose component mask has a gap (own `ds_rows_gap`, fxc's range `.xz`) converts
+  through a carried dxbc-spirv patch (`IoMap::computeRegisterAddress` counts the mask's bits below
+  the component, as the range's packed vector holds them) and streams equal to Direct3D 11 behind
+  own `hs_rows_gap`, both builds. `ComponentPastVector` stays as a guard against an index past a
+  vector; no file of any corpus meets it.
 - A24. The stage helper's refusals by name not listed above (G6a's second check). No file of any
   corpus and no drawn test meets one; each is a form Direct3D allows or may give, and none is
   built. Waits: nobody yet (no real program seen with one). Each takes its route and a drawn test
@@ -2326,14 +2369,19 @@ The gap list (every item of the pass bar not met):
     storage clear (src/builtin.rs) and by `convert` on both routes, where a key's
     `storage_formats` or `texel_buffers` names such a format (src/lower.rs `storage_format` and the
     typed buffer layout, src/dxil/images.rs). Since run 81 `A8Unorm` storage views convert
-    natively (A28); through a buffer and by the clear they still meet this refusal.
+    natively (A28), since run 101 through a buffer and as typed buffers too; by the clear they
+    still meet this refusal.
 - A28. Two asks of the Direct3D 11 front (its status, "Asked", and its known failure
   `yuy2_view_sizes_read_as_direct3d_reads_them`), not on the pass bar's words, unlisted here until
   the fourth check of G6a found them. (1) A storage form of `A8Unorm`: the front holds A8 as
   `rgba8unorm` with its value in alpha, and `storage_format` has no `A8Unorm`, so a typed storage
   view of it was `StorageFormatAbsent` (A27). Built in run 81 (its section): declared
   `rgba8unorm`, stores writing `(0, 0, 0, a)`, drawn equal to Direct3D 11 for stores on both
-  routes; loads not drawn; through a buffer and by the built-in clear still absent. (2) A helper value giving a program a view's width
+  routes; loads not drawn; by the built-in clear still absent. Through a buffer since run 101
+  (its section): `A8Unorm` has a texel layout of one byte read as (0, 0, 0, a) and written from
+  the value's alpha, for storage views read through a buffer (the front's typed loads,
+  `StorageReadWriteThroughBuffer`) and typed buffers; drawn as a storage texture loaded and
+  stored through a buffer (`cs_alpha`). (2) A helper value giving a program a view's width
   other than its texture's (`GetDimensions` of a YUY2 view: Direct3D gives the texture's width in
   pixels, ours the view's pixel pairs). Waits: the Direct3D 11 front. Takes: an interface helper
   value (the interface track's) and `TEXTURE_INFO` reading it in place of the texture's width.
@@ -2442,8 +2490,8 @@ G6a run 5's tip):
   `VertexStorageWrite` 8 gone in run 86 (A9: they convert); `GeometryPatchInput` 2 (A13; DXIL
   `patch-syntax-12-gs` and own `gs_patch.dxil`; the DXBC 5 convert since run 89);
   `DomainWithoutControlPoints` 0 (A14; both files convert since run 96;
-  `HullWithoutControlPoints` gone in run 89); `ComponentPastVector` 1
-  (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
+  `HullWithoutControlPoints` gone in run 89); `ComponentPastVector` 0
+  (A23, own `ds_rows_gap.dxbc` converts since run 101); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
   `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
   `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
   `GeometryPrimitiveIdAfterDomain` gone in run 95 (A20); `GeometryStreams` 1, `PrimitiveId` 0 (a geometry shader
@@ -2489,10 +2537,20 @@ G6a run 5's tip):
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
    rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
    `saturate` of a NaN added to `ps_compare` and drawn on WebGL 2), A32 (the DXIL overflow's
-   cause), A31 when the WebGL 2 track has rounded its gathers, A23's line of dxbc-spirv (a carried
-   patch now can, `converter-patches/`, run 100; A8 closed that way), A22 on WARP.
+   cause), A31 when the WebGL 2 track has rounded its gathers, A22 on WARP.
 
 ## Asked of other tracks
+
+- For the Direct3D 11 front (run 101, its "`A8_UNORM` has no such buffer route (the shaders crate
+  decodes no 8-bit alpha in a buffer)"): `A8Unorm` now has a texel layout, one byte a texel, read
+  as (0, 0, 0, a) and written from the value's alpha. A storage view of it named in both
+  `texels_through_buffer` and `storage_formats` converts on both routes (the buffer holds one byte
+  a texel, as `Format::A8Unorm.block()` says), and so do typed buffer views of it. Your
+  `format::not_through_buffer` can go, and with it typed loads (`UAV_TYPED_LOAD`) can be claimed
+  for `A8_UNORM` where the back end copies it out. Drawn here: a storage texture of it loaded
+  whole and stored through a buffer, equal to Direct3D 11's typed loads
+  (`a8_storage_textures_load_and_store_through_buffers_as_direct3d_does`). The copies between the
+  texture the back end holds (`rgba8unorm`) and the one-byte buffer are the front's and back end's.
 
 - For the Direct3D 12 front (run 89, A13 and A14; its runner): the runner's DXBC
   `geometry-shader-syntax-6`, `-7`, `-8`, `-10`, `patch-syntax-12` and `hull-shader-attributes-10`
@@ -4026,6 +4084,12 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 101's scripts in scratch `graphics-shaders/g6-r101` are run 100's with its folder, plus
+  `make-patches.py` with dxbc_io_map.cpp's line. Make the clone with `git clone -b agents
+  <worktree> tip`, then `git -C tip branch -m agents shaders-tip` BEFORE any rig command: the rig
+  names the desktop copy by the branch, and `agents` is the shared worktree's own copy. A GPU job
+  can wait in the queue for over an hour behind other tracks' jobs: start it detached (`nohup
+  ./gpu.sh <log> "<command>" > <out> 2>&1 < /dev/null & disown`) and poll its log for `^exit`.
 - Run 100's scripts in scratch `graphics-shaders/g6-r100` are run 99's with its folder, plus
   `sync.sh` (copies this crate from the checkout into the clone `tip`, the submodules left out),
   `make-patches.py <crate dir>` (writes the dxbc-spirv patches from its replacement list),
