@@ -33,6 +33,11 @@ type WorkgroupSize = [u32; VectorSize::Tri as usize];
 const SOURCES: usize = 5;
 /// The source of an image store holding the value (after the image, coordinate and sample).
 const IMAGE_STORE_VALUE: usize = 3;
+/// A helper block's row, as a uniform block aligns a vector of four words.
+const HELPER_ROW_BYTES: u32 = size_of::<[u32; VectorSize::Quad as usize]>() as u32;
+/// The words of `HelperValue::TexelLayout`, and the helper block's rows holding them.
+pub const TEXEL_LAYOUT_WORDS: usize = 5;
+const TEXEL_LAYOUT_ROWS: u32 = TEXEL_LAYOUT_WORDS.div_ceil(VectorSize::Quad as usize) as u32;
 /// The source of a compare-and-swap holding the value compared (after the pointer); the value
 /// stored follows it, and is the only one of the other atomics.
 const ATOMIC_COMPARE: usize = 1;
@@ -686,6 +691,10 @@ struct Builder<'a> {
     /// atomics take the operation's signedness from the word's type.
     signed_atomic_fields: Vec<(u32, u32)>,
     signed_atomic_vars: Vec<u32>,
+    /// Images of textures atomics act on, read and written through a buffer of their texels
+    /// (`VariantKey::texels_through_buffer`'s layout): the common form has no image atomic giving
+    /// its old value.
+    atomic_images: Vec<u32>,
     /// The derefs into those signed words, whose loads, stores and atomics take signed values.
     signed_derefs: std::collections::HashSet<u32>,
     /// The samples `demote_samples` has left, ANDed into the sample mask output on return.
@@ -912,6 +921,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         atomic_vars: Vec::new(),
         signed_atomic_fields: Vec::new(),
         signed_atomic_vars: Vec::new(),
+        atomic_images: Vec::new(),
         signed_derefs: std::collections::HashSet::new(),
         kept_samples: None,
         rewrites: Rewrites::default(),
@@ -1409,6 +1419,26 @@ impl Builder<'_> {
                 }
             }
         }
+        let image_atomics = instrs.iter().filter(|i| {
+            i.kind == Kind::Intrinsic
+                && matches!(
+                    intrinsic_op(i.op),
+                    Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap
+                )
+        });
+        for atomic in image_atomics {
+            let mut at = derefs.get(&atomic.src[0].def).copied();
+            while let Some(d) = at {
+                match deref_kind(d.op) {
+                    Deref::Array => at = derefs.get(&d.src[0].def).copied(),
+                    Deref::Var => {
+                        self.atomic_images.push(d.value[0]);
+                        break;
+                    }
+                    Deref::Struct | Deref::Cast => break,
+                }
+            }
+        }
         if self.signed_atomic_vars.is_empty() && self.signed_atomic_fields.is_empty() {
             return;
         }
@@ -1465,17 +1495,21 @@ impl Builder<'_> {
         scalar_of(t.scalar).map_or(ScalarKind::Uint, |s| s.kind)
     }
 
-    /// An image of a buffer: a storage buffer of words at its binding, its type and access
-    /// `wcontainers_shaders::typed` makes (`TexelBufferRoute::Storage`), its format the declared
-    /// one.
+    /// An image of a buffer, or with `texels` an image of a texture atomics act on: a storage
+    /// buffer of words at its binding, its type and access `wcontainers_shaders::typed` makes
+    /// (`TexelBufferRoute::Storage`), its format the declared one. A texture's texels are laid
+    /// out in it as its `HelperValue::TexelLayout` says.
     fn image_buffer(
         &mut self,
         var: &FlatVar,
+        texels: bool,
     ) -> Result<(AddressSpace, Handle<Type>), ConvertError> {
         if self.staged.is_some() {
-            return Err(unsupported(format_args!(
+            return Err(unsupported(if texels {
+                "an atomic on an image in a geometry or tessellation program"
+            } else {
                 "an image of a buffer in a geometry or tessellation program"
-            )));
+            }));
         }
         let slot = var
             .binding
@@ -1515,6 +1549,19 @@ impl Builder<'_> {
             .position(|t| t.global == g)
             .ok_or_else(|| unsupported(format_args!("an image of a buffer not declared")))?;
         let kind = self.typed.buffers[at].kind;
+        let t = self.image(i)?.1;
+        // An image of a texture: its texel's element, and its size, from its layout.
+        let texture = t.dim != Dim::Buffer;
+        let layout = if texture {
+            Some(self.texel_layout(g)?)
+        } else {
+            None
+        };
+        if let (Intrinsic::ImageDerefSize, Some(layout)) = (op, layout) {
+            let e = self.texel_layout_size(t, layout, i.components)?;
+            self.set(i, Value::Expr(e, ScalarKind::Uint));
+            return Ok(());
+        }
         let index_ty = self.scalar_type(ScalarKind::Uint, 1)?;
         let element_ty = self.scalar_type(kind, VectorSize::Quad as u32)?;
         let value_ty = self.scalar_type(kind, 1)?;
@@ -1569,8 +1616,12 @@ impl Builder<'_> {
         }
         // A negative element's bits are past every length.
         let mut values = Vec::new();
-        if op != Intrinsic::ImageDerefSize {
-            values.push(self.src(i, 1, 1, ScalarKind::Uint)?);
+        match layout {
+            Some(layout) => values.push(self.texel_element(i, t, layout)?),
+            None if op != Intrinsic::ImageDerefSize => {
+                values.push(self.src(i, 1, 1, ScalarKind::Uint)?);
+            }
+            None => {}
         }
         match op {
             Intrinsic::ImageDerefStore => {
@@ -1881,9 +1932,18 @@ impl Builder<'_> {
                         }
                         t.kind == TypeKind::Image
                     };
-                    let buffer = is_image && self.types[var.ty as usize].dim == Dim::Buffer;
-                    let (space, ty) = if buffer {
-                        self.image_buffer(var)?
+                    let atomic_image = is_image
+                        && self
+                            .atomic_images
+                            .contains(&u32::try_from(index).expect("few"));
+                    let flat = self.types[var.ty as usize];
+                    if atomic_image && flat.kind == TypeKind::Array {
+                        return Err(unsupported(format_args!("an atomic on an array of images")));
+                    }
+                    let texels = atomic_image && flat.dim != Dim::Buffer;
+                    let buffer = is_image && flat.dim == Dim::Buffer;
+                    let (space, ty) = if buffer || texels {
+                        self.image_buffer(var, texels)?
                     } else if is_image {
                         (space, self.storage_image(var)?)
                     } else if self
@@ -1930,7 +1990,7 @@ impl Builder<'_> {
                         },
                         Span::UNDEFINED,
                     );
-                    if buffer {
+                    if buffer || texels {
                         self.typed.buffers.push(TypedBuffer {
                             global,
                             kind: scalar_of(self.types[var.ty as usize].sampled)?.kind,
@@ -3459,14 +3519,14 @@ impl Builder<'_> {
             | Intrinsic::ImageDerefSize
             | Intrinsic::ImageDerefAtomic
             | Intrinsic::ImageDerefAtomicSwap
-                if self.image(i)?.1.dim == Dim::Buffer =>
+                if self.image_in_words(i)? =>
             {
                 let image = self.image(i)?.0;
                 self.image_buffer_access(i, image, intrinsic_op(i.op))?;
             }
             Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap => {
                 return Err(unsupported(format_args!(
-                    "an atomic on an image of a texture (not built)"
+                    "an atomic on an element of an array of images"
                 )));
             }
             Intrinsic::ImageDerefLoad => {
@@ -3651,6 +3711,15 @@ impl Builder<'_> {
     fn image(&self, i: &FlatInstr) -> Result<(Handle<Expression>, FlatType), ConvertError> {
         let (image, ty) = self.pointer(i.src[0].def)?;
         Ok((image, self.types[ty as usize]))
+    }
+
+    /// Whether an image intrinsic acts on an image declared as a buffer of words: an image of a
+    /// buffer, or one atomics act on.
+    fn image_in_words(&self, i: &FlatInstr) -> Result<bool, ConvertError> {
+        let (image, t) = self.image(i)?;
+        Ok(t.dim == Dim::Buffer
+            || matches!(self.function.expressions[image],
+                Expression::GlobalVariable(g) if self.typed.buffers.iter().any(|b| b.global == g)))
     }
 
     /// An image intrinsic's coordinate (its second source, four components in NIR) as the
@@ -4156,11 +4225,173 @@ impl Builder<'_> {
         let at = self.module.global_variables[g]
             .binding
             .ok_or_else(|| unsupported(format_args!("a texel buffer without a binding")))?;
-        let value = HelperValue::TexelBufferView {
+        self.helper(HelperValue::TexelBufferView {
             set: at.group,
             binding: at.binding,
+        })
+    }
+
+    /// The texel layout of the image of a texture `image` read through a buffer of words, its
+    /// [`HelperValue::TexelLayout`] (two rows of four words) from the helper block.
+    fn texel_layout(
+        &mut self,
+        image: Handle<GlobalVariable>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let slot = self.module.global_variables[image]
+            .binding
+            .and_then(|b| b.binding.checked_sub(SlotKind::Storage.first_binding()))
+            .ok_or_else(|| unsupported(format_args!("an image out of its range")))?;
+        self.helper(HelperValue::TexelLayout { slot })
+    }
+
+    /// The words of a texel layout `layout`: row pitch in texels, rows per layer, the view's
+    /// width, height and layers.
+    fn layout_words(
+        &mut self,
+        layout: Handle<Expression>,
+    ) -> [Handle<Expression>; TEXEL_LAYOUT_WORDS] {
+        let row_words = VectorSize::Quad as u32;
+        std::array::from_fn(|word| {
+            let word = word as u32;
+            let row = self.add(Expression::AccessIndex {
+                base: layout,
+                index: word / row_words,
+            });
+            self.add(Expression::AccessIndex {
+                base: row,
+                index: word % row_words,
+            })
+        })
+    }
+
+    /// The element of a buffer of texels laid out as `layout` that an image intrinsic's
+    /// coordinate names: past every element where the coordinate is outside the view.
+    fn texel_element(
+        &mut self,
+        i: &FlatInstr,
+        t: FlatType,
+        layout: Handle<Expression>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        use ScalarKind::Uint;
+        if t.multisampled != 0 {
+            return Err(unsupported(format_args!(
+                "an atomic on a multisampled image"
+            )));
+        }
+        let (dim, arrayed) = storage_dimension(t)?;
+        let space = coordinate_size(dim);
+        let parts = space + u32::from(arrayed);
+        // A negative coordinate's bits are past every size.
+        let coordinate = self.src(i, 1, parts, Uint)?;
+        let component = |s: &mut Self, c: u32| {
+            if parts == 1 {
+                coordinate
+            } else {
+                s.add(Expression::AccessIndex {
+                    base: coordinate,
+                    index: c,
+                })
+            }
         };
-        let ty = self.scalar_type(ScalarKind::Uint, VectorSize::Bi as u32)?;
+        let x = component(self, 0);
+        let y = if space >= VectorSize::Bi as u32 {
+            component(self, 1)
+        } else {
+            self.scalar_constant(Uint, 0)
+        };
+        let z = if arrayed || space == VectorSize::Tri as u32 {
+            component(self, parts - 1)
+        } else {
+            self.scalar_constant(Uint, 0)
+        };
+        let [pitch, rows, width, height, layers] = self.layout_words(layout);
+        let mut inside = None;
+        for (value, bound) in [(x, width), (y, height), (z, layers)] {
+            let less = self.add(Expression::Binary {
+                op: BinaryOperator::Less,
+                left: value,
+                right: bound,
+            });
+            inside = Some(match inside {
+                None => less,
+                Some(left) => self.add(Expression::Binary {
+                    op: BinaryOperator::LogicalAnd,
+                    left,
+                    right: less,
+                }),
+            });
+        }
+        let layer_rows = self.add(Expression::Binary {
+            op: BinaryOperator::Multiply,
+            left: rows,
+            right: z,
+        });
+        let row = self.add(Expression::Binary {
+            op: BinaryOperator::Add,
+            left: y,
+            right: layer_rows,
+        });
+        let row_start = self.add(Expression::Binary {
+            op: BinaryOperator::Multiply,
+            left: pitch,
+            right: row,
+        });
+        let element = self.add(Expression::Binary {
+            op: BinaryOperator::Add,
+            left: x,
+            right: row_start,
+        });
+        let past = self.scalar_constant(Uint, u32::MAX);
+        Ok(self.add(Expression::Select {
+            condition: inside.expect("three bounds"),
+            accept: element,
+            reject: past,
+        }))
+    }
+
+    /// The size an image of a texture read through a buffer of words gives, from its layout: a
+    /// cube's faces' width and height, a cube array's cubes after them.
+    fn texel_layout_size(
+        &mut self,
+        t: FlatType,
+        layout: Handle<Expression>,
+        components: u32,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let dim = dimension(t.dim)?;
+        let [_, _, width, height, layers] = self.layout_words(layout);
+        let mut parts = vec![width, height];
+        parts.truncate(size_components(dim) as usize);
+        if t.arrayed != 0 || dim == ImageDimension::D3 {
+            parts.push(if dim == ImageDimension::Cube {
+                let faces = self.add(Expression::Literal(Literal::U32(crate::CUBE_FACES)));
+                self.add(Expression::Binary {
+                    op: BinaryOperator::Divide,
+                    left: layers,
+                    right: faces,
+                })
+            } else {
+                layers
+            });
+        }
+        if parts.len() != components as usize {
+            return Err(unsupported(format_args!(
+                "an image size of {components} components"
+            )));
+        }
+        Ok(if components == 1 {
+            parts[0]
+        } else {
+            let ty = self.scalar_type(ScalarKind::Uint, components)?;
+            self.add(Expression::Compose {
+                ty,
+                components: parts,
+            })
+        })
+    }
+
+    /// The helper constant `value`, loaded from route B's helper block, which gets a member for
+    /// it on its first use.
+    fn helper(&mut self, value: HelperValue) -> Result<Handle<Expression>, ConvertError> {
         let member = match self.helpers.iter().position(|s| s.value == value) {
             Some(member) => member,
             None => {
@@ -4168,12 +4399,24 @@ impl Builder<'_> {
                     value,
                     offset: helper_size(&self.helpers),
                 });
+                let pair = self.scalar_type(ScalarKind::Uint, VectorSize::Bi as u32)?;
+                let row = self.scalar_type(ScalarKind::Uint, VectorSize::Quad as u32)?;
+                let layout = self.add_type(TypeInner::Array {
+                    base: row,
+                    size: naga::ArraySize::Constant(
+                        std::num::NonZeroU32::new(TEXEL_LAYOUT_ROWS).expect("rows"),
+                    ),
+                    stride: HELPER_ROW_BYTES,
+                });
                 let members = self
                     .helpers
                     .iter()
                     .map(|s| naga::StructMember {
                         name: None,
-                        ty,
+                        ty: match s.value {
+                            HelperValue::TexelLayout { .. } => layout,
+                            _ => pair,
+                        },
                         binding: None,
                         offset: s.offset,
                     })
@@ -4662,10 +4905,18 @@ fn staged_reflection(stage: SourceStage, bindings: Vec<ReflectedBinding>) -> Ref
 }
 
 /// The bytes of route B's helper block holding `helpers`, each two words
-/// ([`HelperValue::TexelBufferView`]), as a uniform block rounds them.
+/// ([`HelperValue::TexelBufferView`]) or two rows ([`HelperValue::TexelLayout`]), as a uniform
+/// block rounds them.
 fn helper_size(helpers: &[HelperSlot]) -> u32 {
-    let words = size_of::<[u32; VectorSize::Bi as usize]>() as u32;
-    let end = helpers.iter().map(|s| s.offset + words).max().unwrap_or(0);
+    let bytes = |value: HelperValue| match value {
+        HelperValue::TexelLayout { .. } => TEXEL_LAYOUT_ROWS * HELPER_ROW_BYTES,
+        _ => size_of::<[u32; VectorSize::Bi as usize]>() as u32,
+    };
+    let end = helpers
+        .iter()
+        .map(|s| s.offset + bytes(s.value))
+        .max()
+        .unwrap_or(0);
     naga::proc::Alignment::MIN_UNIFORM.round_up(end)
 }
 

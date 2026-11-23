@@ -415,3 +415,70 @@ fn images_of_buffers_are_storage_words_with_their_views_in_helper_constants() {
         .count();
     assert_eq!(storage, images);
 }
+
+const IMAGE_ATOMICS: &str = "#version 450
+layout(local_size_x = 4) in;
+layout(r32ui, binding = 0) uniform uimage2D counts;
+layout(r32i, binding = 1) uniform iimage2DArray lowest;
+layout(r32f, binding = 2) uniform image3D swapped;
+layout(rgba8, binding = 3) uniform writeonly image2D colours;
+void main() {
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    uint before = imageAtomicAdd(counts, at, 1u);
+    imageAtomicCompSwap(counts, at + 1, before, 7u);
+    imageAtomicMin(lowest, ivec3(at, 2), -at.x);
+    imageAtomicExchange(swapped, ivec3(at, 1), 0.5);
+    ivec3 size = imageSize(lowest);
+    if (at.x < size.x && at.y < imageSize(swapped).z) {
+        imageStore(colours, at, vec4(imageLoad(counts, at)) / 255.0);
+    }
+}
+";
+
+#[test]
+fn images_of_textures_under_atomics_are_storage_words_laid_out_by_helper_constants() {
+    let mut stage = Nir::from_glsl(&[(Stage::Compute, IMAGE_ATOMICS)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let key = stage.nir.key().unwrap();
+    let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
+    let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
+    let atomic_images = 3;
+    assert_eq!(routed.typed.buffers.len(), atomic_images);
+    let (module, reflection) = wcontainers_nir::direct::rewrite(
+        routed,
+        bindings,
+        &wcontainers_gpu::VariantKey::default(),
+        &key,
+    )
+    .unwrap();
+    wcontainers_nir::spirv::validate(&module.module).unwrap();
+    let count = |layout: bool| {
+        reflection
+            .helpers
+            .iter()
+            .filter(|h| match h.value {
+                wcontainers_gpu::HelperValue::TexelLayout { .. } => layout,
+                wcontainers_gpu::HelperValue::TexelBufferView { .. } => !layout,
+                _ => false,
+            })
+            .count()
+    };
+    assert_eq!(count(true), atomic_images);
+    assert_eq!(count(false), atomic_images);
+    let globals = |storage: bool| {
+        module
+            .module
+            .global_variables
+            .iter()
+            .filter(|(_, g)| match module.module.types[g.ty].inner {
+                naga::TypeInner::Image { .. } => !storage,
+                _ => storage && matches!(g.space, naga::AddressSpace::Storage { .. }),
+            })
+            .count()
+    };
+    assert_eq!(globals(true), atomic_images);
+    // The image without atomics stays a storage texture.
+    assert_eq!(globals(false), 1);
+}

@@ -1051,7 +1051,11 @@ fn helper_block<B: Backend>(
                     .find(|b| b.set == set && b.binding == binding)
                     .ok_or("a texel buffer's slot unbound")?;
                 let unit = slot.register;
-                if slot.kind == SlotKind::Storage {
+                if slot.kind == SlotKind::Storage && read_as_texels(built, slot) {
+                    // An image of a texture read as its texels: every texel of the buffer.
+                    let layout = crate::view::texel_layout::<B>(bound_image(bound, unit)?)?;
+                    vec![0, layout.texels()]
+                } else if slot.kind == SlotKind::Storage {
                     // An image of a buffer: where its view starts in the bound range.
                     image_buffer::<B>(bound_image(bound, unit)?, storage_align)?
                         .1
@@ -1070,6 +1074,13 @@ fn helper_block<B: Backend>(
                     // The view starts the texture it is copied into.
                     vec![0, texels.length]
                 }
+            }
+            HelperValue::TexelLayout { slot } => {
+                let unit = unit_of(&built.bindings, SlotKind::Storage, slot)
+                    .ok_or("an image read as texels unbound")?;
+                crate::view::texel_layout::<B>(bound_image(bound, unit)?)?
+                    .words()
+                    .to_vec()
             }
             other => return Err(format!("the helper constant {other:?}")),
         };
@@ -1311,13 +1322,23 @@ pub(crate) fn binding_sets<B: Backend>(
                     }
                 }
                 SlotKind::Storage => {
-                    let &(_, index, writable) = images
+                    let &(_, binding, writable) = images
                         .iter()
                         .find(|(unit, ..)| *unit == b.register)
                         .ok_or("an image the program reads is not bound")?;
-                    BindingResource::StorageTexture {
-                        view: &made.views[index],
-                        writable,
+                    match binding {
+                        ImageBinding::View(index) => BindingResource::StorageTexture {
+                            view: &made.views[index],
+                            writable,
+                        },
+                        ImageBinding::Texels(index, size) => BindingResource::StorageBuffer {
+                            range: BufferRange {
+                                buffer: made.texel_buffer(index),
+                                offset: 0,
+                                size,
+                            },
+                            writable,
+                        },
                     }
                 }
                 SlotKind::Counter => {
@@ -1372,14 +1393,31 @@ fn storage_buffer<'a, B: Backend>(
     })
 }
 
-/// A view in `made` of each image the program binds, by its unit, with whether the program may
-/// write it.
+/// How an image the program binds is bound: a view in `made`, or a buffer of its texels there
+/// with its size.
+#[derive(Clone, Copy)]
+enum ImageBinding {
+    View(usize),
+    Texels(usize, u64),
+}
+
+/// Whether the program reads and writes the image at storage binding `b` through a buffer of its
+/// texels (route B's `HelperValue::TexelLayout` of its slot).
+fn read_as_texels<B: Backend>(built: &Built<B>, b: &ReflectedBinding) -> bool {
+    built
+        .helpers
+        .iter()
+        .any(|h| h.value == HelperValue::TexelLayout { slot: b.slot() })
+}
+
+/// How each image the program binds is bound in `made`, by its unit, with whether the program
+/// may write it.
 fn image_views<B: Backend>(
     backend: &mut B,
     bound: &state::StageState<B>,
     built: &Built<B>,
     made: &mut Images<B>,
-) -> Result<Vec<(u32, usize, bool)>, String> {
+) -> Result<Vec<(u32, ImageBinding, bool)>, String> {
     let mut views = Vec::new();
     for b in built.bindings.iter().filter(|b| {
         b.added.is_none() && b.kind == SlotKind::Storage && b.register < PIPE_MAX_SHADER_IMAGES
@@ -1389,9 +1427,14 @@ fn image_views<B: Backend>(
         if views_buffer::<B>(image) {
             continue;
         }
-        let index = crate::view::image_view(backend, image, made)?;
         let writable = u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0;
-        views.push((b.register, index, writable));
+        let binding = if read_as_texels(built, b) {
+            let (index, bytes) = crate::view::image_texels(backend, image, made)?;
+            ImageBinding::Texels(index, bytes)
+        } else {
+            ImageBinding::View(crate::view::image_view(backend, image, made)?)
+        };
+        views.push((b.register, binding, writable));
     }
     Ok(views)
 }

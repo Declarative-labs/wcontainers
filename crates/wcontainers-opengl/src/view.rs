@@ -187,11 +187,159 @@ struct Twin<B: Backend> {
     writable: bool,
 }
 
-/// The views a binding of images made for one draw or dispatch, and the twins they were bound
-/// through; given back by [`Images::finish`] after the work.
+/// An image of a texture read and written through a buffer of its texels, as
+/// `HelperValue::TexelLayout` lays them out: for atomics on it (`AtomicsThroughBuffer`), which the
+/// common form has none of that give the old value. Copied into before the work and, for an image
+/// the program writes, back after it.
+struct Texels<B: Backend> {
+    buffer: B::Buffer,
+    source: B::Texture,
+    layout: TexelLayout,
+    writable: bool,
+}
+
+/// Where an image's texels are in its texture and in the buffer they are read through.
+#[derive(Clone, Copy)]
+pub struct TexelLayout {
+    mip: u32,
+    /// The first layer, or the first depth slice of a volume texture.
+    first: u32,
+    three_d: bool,
+    extent: Extent,
+    texel_bytes: u32,
+}
+
+impl TexelLayout {
+    /// `HelperValue::TexelLayout`'s words: row pitch in texels, rows per layer, then the view's
+    /// width, height and layers.
+    pub fn words(&self) -> [u32; wcontainers_nir::direct::TEXEL_LAYOUT_WORDS] {
+        let e = self.extent;
+        [e.width, e.height, e.width, e.height, e.depth_or_layers]
+    }
+
+    /// The texels in the buffer.
+    pub fn texels(&self) -> u32 {
+        let e = self.extent;
+        e.width * e.height * e.depth_or_layers
+    }
+
+    fn bytes(&self) -> u64 {
+        (u64::from(self.texels()) * u64::from(self.texel_bytes)).next_multiple_of(STORAGE_WORD)
+    }
+
+    fn region<'a, B: Backend>(&self, texture: &'a B::Texture) -> TextureRegion<'a, B> {
+        TextureRegion {
+            texture,
+            mip: self.mip,
+            layer: if self.three_d { 0 } else { self.first },
+            origin: Origin {
+                z: if self.three_d { self.first } else { 0 },
+                ..Origin::default()
+            },
+            stencil: false,
+        }
+    }
+
+    fn rows<'a, B: Backend>(&self, buffer: &'a B::Buffer) -> CopyBufferTexture<'a, B> {
+        CopyBufferTexture {
+            buffer,
+            offset: 0,
+            row_pitch: self.extent.width * self.texel_bytes,
+            rows_per_layer: self.extent.height,
+        }
+    }
+}
+
+/// The layout of the texels of an image of a texture read through a buffer: its level's
+/// layers it names (one slice of a volume texture where it names one), tightly packed.
+pub fn texel_layout<B: Backend>(image: &pipe_image_view) -> Result<TexelLayout, String> {
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let (_, desc) = resource
+        .texture()
+        .ok_or("an image of a buffer read as texels")?;
+    let format = crate::format::format(image.format).ok_or("an image format the device lacks")?;
+    let (width, height, texel_bytes) = format.block();
+    let (their_width, their_height, theirs) = desc.format.block();
+    if (width, height, their_width, their_height) != (1, 1, 1, 1) || texel_bytes != theirs {
+        return Err(format!(
+            "an image in {format:?} read as texels of a texture in {:?}",
+            desc.format
+        ));
+    }
+    if desc.samples > 1 {
+        return refused(format_args!("an atomic on a multisampled image"));
+    }
+    // SAFETY: the image of a texture holds its texture range.
+    let range = unsafe { image.u.tex };
+    let mip = range.level();
+    let size = |n: u32| (n >> mip).max(1);
+    let three_d = desc.dimension == TextureDimension::D3;
+    let (first, layers) = if range.single_layer_view {
+        (range.first_layer(), 1)
+    } else if three_d {
+        (0, size(desc.depth_or_layers))
+    } else {
+        (
+            range.first_layer(),
+            range.last_layer() - range.first_layer() + 1,
+        )
+    };
+    Ok(TexelLayout {
+        mip,
+        first,
+        three_d,
+        extent: Extent {
+            width: size(desc.width),
+            height: size(desc.height),
+            depth_or_layers: layers,
+        },
+        texel_bytes,
+    })
+}
+
+/// The buffer an image of a texture is read and written through, its texels copied into it at
+/// once (outside a pass), with its size in bytes.
+pub fn image_texels<B: Backend>(
+    backend: &mut B,
+    image: &pipe_image_view,
+    images: &mut Images<B>,
+) -> Result<(usize, u64), String> {
+    let layout = texel_layout::<B>(image)?;
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let (texture, _) = resource
+        .texture()
+        .ok_or("an image of a buffer read as texels")?;
+    let bytes = layout.bytes();
+    let buffer = backend
+        .create_buffer(&BufferDesc {
+            size: bytes,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .map_err(|e| format!("an image's texels: {e:?}"))?;
+    backend.slow_paths().hit(SlowPath::AtomicsThroughBuffer);
+    backend.copy_texture_to_buffer(
+        &layout.region::<B>(texture),
+        &layout.rows::<B>(&buffer),
+        layout.extent,
+    );
+    images.texels.push(Texels {
+        buffer,
+        source: texture.clone(),
+        layout,
+        writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
+    });
+    Ok((images.texels.len() - 1, bytes))
+}
+
+/// The views a binding of images made for one draw or dispatch, and the twins and buffers of
+/// texels they were bound through; given back by [`Images::finish`] after the work.
 pub struct Images<B: Backend> {
     pub views: Vec<B::TextureView>,
     twins: Vec<Twin<B>>,
+    texels: Vec<Texels<B>>,
     /// Samplers bound beside texel buffers, which programs load and never sample: Gallium binds
     /// none there, the converted program declares one.
     pub samplers: Vec<B::Sampler>,
@@ -202,14 +350,31 @@ impl<B: Backend> Default for Images<B> {
         Images {
             views: Vec::new(),
             twins: Vec::new(),
+            texels: Vec::new(),
             samplers: Vec::new(),
         }
     }
 }
 
 impl<B: Backend> Images<B> {
-    /// Copies each twin the program wrote back into its texture, then destroys what was made.
+    /// The buffer of texels `image_texels` made at `index`.
+    pub fn texel_buffer(&self, index: usize) -> &B::Buffer {
+        &self.texels[index].buffer
+    }
+
+    /// Copies each twin and buffer of texels the program wrote back into its texture, then
+    /// destroys what was made.
     pub fn finish(self, backend: &mut B) {
+        for t in self.texels {
+            if t.writable {
+                backend.copy_buffer_to_texture(
+                    &t.layout.rows::<B>(&t.buffer),
+                    &t.layout.region::<B>(&t.source),
+                    t.layout.extent,
+                );
+            }
+            backend.destroy(Object::Buffer(t.buffer));
+        }
         for view in self.views {
             backend.destroy(Object::TextureView(view));
         }
