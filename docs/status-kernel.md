@@ -718,6 +718,15 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KF, seventh run: `Start::ceiling` (the highest address the executor can give now, if below
+  the address space's end) has no embedder that sets it today: the single-kernel runtime and
+  hardware-virtualization-inside pass `None`, as their executors' address space is their ceiling,
+  and only the stand-in's embedder tests give one. The ceiling in effect is the lowest of it, the
+  executor's address space's end and the width. It is kept because the brief asks for the
+  executor's ceiling given at start and the streams track's `on_process_outgrown` hook is built on
+  it; dropping it (the executor's address space alone giving the ceiling) is a one-field change
+  if you rule so.
+
 - KF, sixth run: the literal check reports lines in this track's files that restate values other
   tracks named after the lines were written, which rule 8 of docs/literals.md asks the namer to
   settle; this track may not edit those crates. Coincidences of value, not the same facts: the
@@ -5271,11 +5280,14 @@ Everything a reviewer should know about what is not compared, in one place.
   the buffer CPU compare a digest of every guest memory. Placement: kernel unit test
   `placement_fills_the_lowest_tier_first_whatever_the_ceiling_and_width` (widths 2^36, 2^40,
   2^48, ceilings 4 GiB, 16 GiB and the width); compared with the reference: tests/placement.rs
-  (KF, sixth run, with the PMD alignment); the memory size and widths given: tests/machine.rs.
+  (KF, sixth run, with the PMD alignment) and `the_edges_of_the_space_match_reference` (KF,
+  seventh run: a hint below `mmap_min_addr`, and the stack's gap filled once nothing fits below);
+  the memory size and widths given, a width of part pages and one too small for the first
+  program: tests/machine.rs.
   The start values: tests/startoptions.rs (16, against `docker run` options or the reference's
   own call where Docker has none). The
-  whole suite and LTP comparison: scratch kernel/kf5/whole.sh; the literal check at the committed
-  tip: kernel/kf5/literals.sh. The lowest tier under the WebAssembly ceiling is For the
+  whole suite and LTP comparison: scratch kernel/kf7/whole.sh; the literal check at the committed
+  tip: kernel/kf7/literals.sh. The lowest tier under the WebAssembly ceiling is For the
   orchestrator (KF, first run), not built.
 - KC: the build is `cargo check --workspace --all-targets` on the ARM64 machine (passed at
   0ce16ef9 with no error or warning line). The kernel suite is `cargo test -p
@@ -6848,6 +6860,15 @@ All on this shared Mac; noisy, not benchmarks.
   end (runtime feature) does not show its memories' pages, so there the comparisons run as before.
 - KF, second run: Docker has no option for the first process's umask, so startoptions' reference
   runs `umask` in its shell before the same commands; ours starts with the mask.
+
+- KF, seventh run: the lowest address a mapping may take is `wcontainers_abi::LOWEST_ADDRESS`,
+  65536, which `/proc/sys/vm/mmap_min_addr` shows; the reference machine's is 32768. The tests
+  compare placement against the value each side's file shows, not the number.
+- KF, seventh run: Linux's fallback, when its top-down search finds no room below the mmap base,
+  is a bottom-up search from `TASK_UNMAPPED_BASE` (a quarter of the space) to the space's top.
+  Ours makes it in the lowest placement range only (a quarter of that range's top up to it, which
+  holds the stack's gap), before any higher range; higher ranges hold no stack and are searched
+  top-down whole. Under a width of 4 GiB or less (the WebAssembly case) this is Linux's search.
 
 - KF, sixth run: placement independent of the executor (the brief's ask of 2026-11-23) is taken
   as the milestone after KF, not in KF. Why: it moves every address the stand-in's tests see
