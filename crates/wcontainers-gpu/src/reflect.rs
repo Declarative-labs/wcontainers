@@ -489,6 +489,11 @@ bitflags! {
         /// sample of each pixel it keeps. For aliased lines into a multisampled target
         /// ([`crate::SlowPath::AliasedLinesAsQuads`]).
         const LINE_DIAMOND = 1 << 17;
+        /// The vertex or domain program also passes its cull distances, still culled by
+        /// ([`crate::SlowPath::CullDistanceAsGeometry`]), as perspective-correct values after
+        /// [`VariantKey::linked`]'s others, and the pixel shader reads its cull distances from them,
+        /// not from the built-in. The front sets it in both programs' keys.
+        const CULL_DISTANCE_LINKED = 1 << 18;
     }
 }
 
@@ -614,7 +619,8 @@ pub struct TargetInShader {
 /// [`VariantFlags::LAYER_FROM_STAGE`]), then the line coverage values (four f32 interpolated without
 /// perspective, with [`VariantFlags::LINE_COVERAGE`]) or the line's ends (four flat f32, with
 /// [`VariantFlags::LINE_DIAMOND`]), then the primitive's number (one flat u32,
-/// with [`VariantFlags::PRIMITIVE_ID_FROM_STAGE`]). `location` is one past every location either
+/// with [`VariantFlags::PRIMITIVE_ID_FROM_STAGE`]), then the cull distances (four-component f32
+/// values, with [`VariantFlags::CULL_DISTANCE_LINKED`]). `location` is one past every location either
 /// program's reflection lists.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,

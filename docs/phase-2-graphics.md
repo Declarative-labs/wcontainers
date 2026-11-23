@@ -2187,7 +2187,8 @@ the hull stage's patches and the tessellator's points a domain program reads, at
   variant, early tests in the program, the viewport adjustment, texture level and sample counts from
   the helpers (`TEXTURE_INFO`), line coverage (`LINE_COVERAGE`), clip distances and depth clamping in
   the program (`CLIP_DISTANCE`, `DEPTH_CLAMP`) and the primitive index from the stage helper
-  (`PRIMITIVE_ID_FROM_STAGE`) and a geometry shader's replay form (`GEOMETRY_REPLAY`, section 7)
+  (`PRIMITIVE_ID_FROM_STAGE`), cull distances a pixel shader reads, passed on by the vertex
+  program (`CULL_DISTANCE_LINKED`), and a geometry shader's replay form (`GEOMETRY_REPLAY`, section 7)
   are its flags; the clamped texture
   slots are `min_lod_clamped`; storage slots run through a buffer are `texels_through_buffer`; where
   the draw's bases come from is `draw_base`; a view's component mapping, applied by the program
