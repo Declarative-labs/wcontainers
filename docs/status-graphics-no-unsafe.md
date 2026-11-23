@@ -76,6 +76,16 @@ safe library does it, what removing it would cost.
 5. May gpu-webgpu's present test (tests/host, 11) import winit and a screen-capture crate (xcap),
    or count as reference code under 1?
 
+## Run 10 (2026-11-22 late)
+
+- Still no ruling: the graphics brief and the orchestrator's open-with-owner notes were read again
+  and neither rules on these five. No commit on `agents` since run 9 (a1872aa7). Counts unchanged
+  (grep on the Mac): direct3d-12 495, graphics-test 342, graphics-test-forward 197, gpu-webgl 167,
+  gpu-webgpu 30. glow 0.18.0, windows 0.62.2, windows-implement 0.100.0 and retour 0.3.1 are still
+  the newest releases.
+- No build or test: nothing these crates depend on changed. The shaders track's ps_position_centroid*
+  containers are still uncommitted, so declared.expected is not recorded again yet (Next, 5).
+
 ## Run 9 (2026-11-22 late)
 
 - Still no ruling: the graphics brief's newest section and the orchestrator's open-with-owner
