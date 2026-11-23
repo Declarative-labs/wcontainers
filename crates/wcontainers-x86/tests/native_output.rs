@@ -700,78 +700,93 @@ fn a_withheld_operand_is_its_slot() {
     }
 }
 
-/// A guest `gs:` operand is rebuilt on the guest's base from the area, and a `fs:` one is copied.
+/// A guest `gs:` operand is the guest's own instruction made on FS, which holds the guest's GS base from the area
+/// meanwhile, the guest's FS base kept in u; a `fs:` one is copied.
 #[test]
-fn the_area_segment_is_rebuilt_and_fs_is_copied() {
+fn the_area_segment_runs_on_fs_with_the_guests_base() {
     for way in WAYS {
-        let code = decoded("65 48 8b 03", way);
-        assert_eq!(code[0].memory_segment(), Register::GS);
-        assert_eq!(code[0].op0_register(), T);
-        assert_eq!(code[1].memory_segment(), Register::DS);
-        assert_eq!(
-            (code[1].memory_base(), code[1].memory_index()),
-            (Register::RBX, T)
-        );
-        // mov rax, gs:[moffs64]: the 64-bit offset goes to u.
-        let code = decoded("65 48 a1 10 00 00 00 00 00 00 01", way);
-        assert_eq!(code[1].immediate64(), 0x0100_0000_0000_0010);
-        assert_eq!((code[2].memory_base(), code[2].memory_index()), (T, U));
-        assert_eq!(code[2].code(), Code::Mov_r64_rm64);
+        for hex in ["65 48 8b 03", "65 48 a1 10 00 00 00 00 00 00 01"] {
+            // After the count's add.
+            let code: Vec<Iced> = decoded(hex, way)
+                .into_iter()
+                .skip_while(|i| i.mnemonic() == Mnemonic::Lea && i.op0_register() == COUNT)
+                .collect();
+            let codes: Vec<Code> = code.iter().take(5).map(|i| i.code()).collect();
+            assert_eq!(
+                codes[..3],
+                [Code::Rdfsbase_r64, Code::Mov_r64_rm64, Code::Wrfsbase_r64],
+                "{hex}"
+            );
+            assert_eq!(code[0].op0_register(), U);
+            assert_eq!(
+                (code[1].op0_register(), code[1].memory_segment()),
+                (T, Register::GS)
+            );
+            assert_eq!(code[2].op0_register(), T);
+            assert_eq!(code[3].memory_segment(), Register::FS, "{hex}");
+            assert_eq!(code[3].code(), decoded_guest(hex).code(), "{hex}");
+            assert_eq!(
+                (code[4].code(), code[4].op0_register()),
+                (Code::Wrfsbase_r64, U)
+            );
+        }
         let copied = translate(&bytes("64 48 8b 03"), AT, way, false).expect("a piece");
         assert_eq!(&copied.bytes[..4], &bytes("64 48 8b 03")[..]);
     }
 }
 
-/// What native layer 1 found against the CPU: a rebuilt `gs:` access and a stand-in base never take rsp or rbp as
-/// base (the stack segment's fault, #SS, where the guest's access takes #GP), a `pop` based on rsp forms its
-/// address after the pop, a float status operand on `gs:` is rebuilt like any other, and a bit test's register
-/// offset on `gs:` under 0x67 is answered by the inside.
+/// The guest instruction `hex` as decoded.
+fn decoded_guest(hex: &str) -> Iced {
+    let mut code = bytes(hex);
+    code.resize(16, 0);
+    decode(&code).expect("decodes").0.iced
+}
+
+/// What native layer 1 found against the CPU, now each the CPU's own access on FS: a `gs:` access based on rsp or
+/// rbp (whose rebuilt form took the stack segment's fault), a `pop` based on rsp, a float status operand on `gs:`,
+/// and a bit test's register offset on `gs:` under 0x67; and a stand-in base is never rsp or rbp.
 #[test]
 fn what_layer_1_found_on_the_cpu() {
     let on_stack = |r: Register| matches!(r, Register::RSP | Register::RBP);
     for way in WAYS {
-        // add gs:[rsp+43h], ax; rcr qword ptr gs:[rbp], cl; pop word ptr gs:[rsp+rdx*2]; cmpxchg8b [r15]
-        for hex in [
-            "65 66 01 44 24 43",
-            "65 48 d3 5c 65 00",
-            "65 66 8f 04 54",
-            "41 0f c7 0c e7",
+        // add gs:[rsp+43h], ax; rcr qword ptr gs:[rbp], cl; pop word ptr gs:[rsp+rdx*2]; ldmxcsr gs:[r12*4-48h];
+        // bts gs:[edx], rdx under 0x67
+        for (hex, mnemonic) in [
+            ("65 66 01 44 24 43", Mnemonic::Add),
+            ("65 48 d3 5c 65 00", Mnemonic::Rcr),
+            ("65 66 8f 04 54", Mnemonic::Pop),
+            ("65 42 0f ae 14 a5 b8 ff ff ff", Mnemonic::Ldmxcsr),
+            ("65 67 48 0f ab 14 a2", Mnemonic::Bts),
         ] {
-            let code = decoded(hex, way);
-            let access = code
-                .iter()
-                .find(|i| !matches!(i.mnemonic(), Mnemonic::Mov | Mnemonic::Lea))
+            let guest = decoded_guest(hex);
+            let access = decoded(hex, way)
+                .into_iter()
+                .find(|i| i.mnemonic() == mnemonic)
                 .expect("the access");
-            assert!(
-                !on_stack(access.memory_base()),
-                "{hex} in {way:?}: {access:?}"
+            assert_eq!(access.memory_segment(), Register::FS, "{hex} in {way:?}");
+            assert_eq!(
+                (
+                    access.memory_base(),
+                    access.memory_index(),
+                    access.memory_displacement64()
+                ),
+                (
+                    guest.memory_base(),
+                    guest.memory_index(),
+                    guest.memory_displacement64()
+                ),
+                "{hex} in {way:?}: the guest's own operand"
             );
         }
-        let pop = decoded("65 66 8f 04 54", way);
-        let lea = pop
+        // cmpxchg8b [r15]: the stand-in base is never rsp or rbp.
+        let code = decoded("41 0f c7 0c e7", way);
+        let access = code
             .iter()
-            .find(|i| i.mnemonic() == Mnemonic::Lea)
-            .expect("t plus rsp");
-        assert_eq!(
-            (lea.memory_base(), lea.memory_displacement64()),
-            (Register::RSP, 2),
-            "the operand after the pop of two bytes"
-        );
-        // ldmxcsr gs:[r12*4-48h]: on the guest's base, never the hardware's gs.
-        let code = decoded("65 42 0f ae 14 a5 b8 ff ff ff", way);
-        let load = code
-            .iter()
-            .find(|i| i.mnemonic() == Mnemonic::Ldmxcsr)
-            .expect("the load");
-        assert_eq!(load.memory_segment(), Register::DS, "{load:?}");
-        // bts gs:[edx], rdx under 0x67
-        let piece = translate(&bytes("65 67 48 0f ab 14 a2"), AT, way, false).expect("a piece");
+            .find(|i| i.mnemonic() == Mnemonic::Cmpxchg8b)
+            .expect("the access");
         assert!(
-            !host(&piece.bytes)
-                .iter()
-                .any(|(_, i)| i.mnemonic() == Mnemonic::Bts),
-            "answered by the inside:\n{}",
-            listing(&piece.bytes)
+            !on_stack(access.memory_base()),
+            "cmpxchg8b in {way:?}: {access:?}"
         );
     }
 }
@@ -985,25 +1000,28 @@ fn an_access_gives_its_operand() {
     assert_eq!(stopping("0f 05"), Stopping::Syscall);
 }
 
-/// A gather on the area's segment under the guest's 0x67, whose vector index the 32-bit `lea` cannot take, goes to
-/// the inside; without 0x67 it is rebuilt on t.
+/// A gather on the area's segment, with and without the guest's 0x67, is the guest's own on FS.
 #[test]
 fn a_gather_on_the_area_segment() {
     for way in WAYS {
-        let piece = translate(&bytes("65 67 c4 e2 69 90 04 88"), AT, way, false).expect("a piece");
-        let route = X86_64::route(
-            &way,
-            &decode(&bytes("65 67 c4 e2 69 90 04 88 00 00 00 00 00 00 00 00"))
+        for hex in ["65 67 c4 e2 69 90 04 88", "65 c4 e2 69 90 04 88"] {
+            let route = X86_64::route(
+                &way,
+                &decode(&{
+                    let mut code = bytes(hex);
+                    code.resize(16, 0);
+                    code
+                })
                 .expect("decodes")
                 .0,
-            &target(),
-        );
-        assert_eq!(route, Route::Kernel, "{}", listing(&piece.bytes));
-        let code = decoded("65 c4 e2 69 90 04 88", way);
-        let gather = code
-            .iter()
-            .find(|i| i.mnemonic() == Mnemonic::Vpgatherdd)
-            .expect("the gather");
-        assert_eq!(gather.memory_segment(), Register::DS);
+                &target(),
+            );
+            assert_eq!(route, Route::Area, "{hex}");
+            let gather = decoded(hex, way)
+                .into_iter()
+                .find(|i| i.mnemonic() == Mnemonic::Vpgatherdd)
+                .expect("the gather");
+            assert_eq!(gather.memory_segment(), Register::FS, "{hex}");
+        }
     }
 }

@@ -25,6 +25,9 @@ pub const U: Register = Register::R15;
 pub const WITHHELD: [u8; crate::area::WITHHELD] = [R10, R11, R15];
 const T_NUMBER: u8 = WITHHELD[1];
 const U_NUMBER: u8 = WITHHELD[2];
+/// The guest register number of the FS base in a span's relocations: an operand on the thread area's segment holds
+/// it in u.
+pub const FS_BASE_NUMBER: u8 = crate::operand::FS;
 const T_LOW: Register = Register::R11D;
 const U_LOW: Register = Register::R15D;
 
@@ -474,145 +477,92 @@ enum Reach {
     Plain,
     /// RIP-relative, rebuilt on the guest address in t.
     Rebase,
-    /// On the thread area's segment, rebuilt on the guest's base in t.
-    Area,
+    /// On the thread area's segment, made on FS while FS holds the guest's GS base ([`enter_guest_segment`]).
+    GuestSegment,
 }
 
-/// Writes the code that puts the operand's address in t (and u), and gives the instruction made to use it.
-/// The ModRM form of a `mov` to or from an absolute offset (`moffs`), which can then take a base register.
-fn from_offset(code: Code) -> Option<Code> {
-    Some(match code {
-        Code::Mov_AL_moffs8 => Code::Mov_r8_rm8,
-        Code::Mov_AX_moffs16 => Code::Mov_r16_rm16,
-        Code::Mov_EAX_moffs32 => Code::Mov_r32_rm32,
-        Code::Mov_RAX_moffs64 => Code::Mov_r64_rm64,
-        Code::Mov_moffs8_AL => Code::Mov_rm8_r8,
-        Code::Mov_moffs16_AX => Code::Mov_rm16_r16,
-        Code::Mov_moffs32_EAX => Code::Mov_rm32_r32,
-        Code::Mov_moffs64_RAX => Code::Mov_rm64_r64,
-        _ => return None,
-    })
+/// What a host instruction that may reach guest memory is written from.
+enum Written<'a> {
+    /// The guest's own bytes.
+    Bytes(&'a [u8]),
+    Instruction(&'a Iced),
 }
 
-fn reach_operand(
-    way: Way,
-    code: &mut HostCode,
-    i: &Iced,
-    address32: bool,
-    reach: Reach,
-    guest: u64,
-) -> Iced {
-    let mut access = *i;
-    if let Some(form) = from_offset(i.code()) {
-        access.set_code(form);
+/// Writes a host instruction that may reach guest memory, with `resume` its commit point: the one place each way's
+/// form of a guest access is made (section 4). With no memory check it is the instruction itself.
+fn access(way: Way, code: &mut HostCode, written: Written, resume: Option<Resume>) {
+    assert!(
+        matches!(way, Way::Machine | Way::Process),
+        "the checked forms of an access are written at XN2"
+    );
+    let at = code.offset() as u64;
+    let bytes = match written {
+        Written::Bytes(bytes) => bytes.to_vec(),
+        Written::Instruction(i) => bytes_of(i, at),
+    };
+    match resume {
+        Some(resume) => code.commit(&bytes, resume),
+        None => code.push(&bytes),
     }
-    match reach {
-        Reach::Plain => {}
-        Reach::Rebase => {
-            place_address(code, T, guest);
-            if address32 {
-                put(
-                    code,
-                    &Iced::with2(Code::Mov_r32_rm32, T_LOW, T_LOW).expect("a move"),
-                );
-            }
-            access.set_memory_base(T);
-            access.set_memory_index(Register::None);
-            access.set_memory_displacement64(0);
-            access.set_memory_displ_size(0);
+}
+
+/// Puts the guest's GS base on FS, so that an operand on the thread area's segment, made on FS, is the CPU's own
+/// access with the guest's base (each part of an access wrapped under 0x67, an implicit rsi, rdi or rbx, a bit
+/// offset); the guest's FS base is in u until [`leave_guest_segment`] (section 3.1).
+fn enter_guest_segment(way: Way, code: &mut HostCode) {
+    put(
+        code,
+        &Iced::with1(Code::Rdfsbase_r64, U).expect("the guest's FS base kept"),
+    );
+    code.relocate(FS_BASE_NUMBER, Held::Register(U_NUMBER));
+    put(code, &load_area(way, T, GUEST_GS_BASE));
+    put(
+        code,
+        &Iced::with1(Code::Wrfsbase_r64, T).expect("the guest's GS base on FS"),
+    );
+}
+
+/// Puts the guest's FS base back on FS.
+fn leave_guest_segment(code: &mut HostCode) {
+    put(
+        code,
+        &Iced::with1(Code::Wrfsbase_r64, U).expect("the guest's FS base back"),
+    );
+    code.home(FS_BASE_NUMBER);
+}
+
+/// The guest's bytes with each GS override made FS, its other prefixes and their order kept: the CPU then picks
+/// the segment as it would for the guest.
+fn on_fs(bytes: &[u8]) -> Vec<u8> {
+    use crate::encoding::{FS, GS, LEGACY_PREFIXES, is_rex};
+    let mut out = bytes.to_vec();
+    for b in out
+        .iter_mut()
+        .take_while(|b| LEGACY_PREFIXES.contains(b) || is_rex(**b))
+    {
+        if *b == GS {
+            *b = FS;
         }
-        Reach::Area => {
-            put(code, &load_area(way, T, GUEST_GS_BASE));
-            access.set_segment_prefix(Register::None);
-            let (base, index) = (i.memory_base(), i.memory_index());
-            // A `pop` whose operand is based on rsp forms its address after the pop (Intel SDM Vol. 2B, POP).
-            let popped =
-                if i.mnemonic() == Mnemonic::Pop && matches!(base, Register::RSP | Register::ESP) {
-                    i64::from(i.stack_pointer_increment())
-                } else {
-                    0
-                };
-            if i.is_ip_rel_memory_operand() {
-                place_address(code, U, guest);
-                if address32 {
-                    put(
-                        code,
-                        &Iced::with2(Code::Mov_r32_rm32, U_LOW, U_LOW).expect("a move"),
-                    );
-                }
-                set_t_plus_u(&mut access);
-            } else if address32 {
-                let displacement = i64::from(i.memory_displacement32() as i32) + popped;
-                let part = MemoryOperand::new(
-                    base,
-                    index,
-                    i.memory_index_scale(),
-                    displacement,
-                    i.memory_displ_size().max(displacement_size(displacement)),
-                    false,
-                    Register::None,
-                );
-                put(
-                    code,
-                    &Iced::with2(Code::Lea_r32_m, U_LOW, part).expect("the operand's 32-bit part"),
-                );
-                set_t_plus_u(&mut access);
-            } else if from_offset(i.code()).is_some() && !address32 {
-                // A 64-bit absolute offset: no displacement field holds it.
-                put(
-                    code,
-                    &Iced::with2(Code::Mov_r64_imm64, U, i.memory_displacement64())
-                        .expect("a 64-bit constant"),
-                );
-                set_t_plus_u(&mut access);
-            } else if base == Register::None {
-                access.set_memory_base(T);
-            } else if index == Register::None && !stack_based(base) {
-                access.set_memory_index(T);
-                access.set_memory_index_scale(1);
-            } else {
-                // t is the base, so the access stays on the default data segment: one based on rsp or rbp
-                // would take the stack segment's fault (#SS, not #GP) at a non-canonical address.
-                let add = MemoryOperand::with_base_index_scale_displ_size(
-                    base,
-                    T,
-                    1,
-                    popped,
-                    displacement_size(popped),
-                );
-                put(
-                    code,
-                    &Iced::with2(Code::Lea_r64_m, T, add).expect("t plus the operand's base"),
-                );
-                access.set_memory_base(T);
-            }
-        }
+    }
+    out
+}
+
+/// Writes the code that puts a rebuilt operand's address in t, and gives the instruction made to use it.
+fn reach_operand(code: &mut HostCode, i: &Iced, address32: bool, reach: Reach, guest: u64) -> Iced {
+    let mut access = *i;
+    if reach != Reach::Plain && i.is_ip_rel_memory_operand() {
+        place_address(code, T, guest);
+        // Under 0x67 the access keeps its 32-bit address, so the CPU wraps what it adds to t (a bit offset, each
+        // part of the access) as it does for the guest.
+        access.set_memory_base(if address32 { T_LOW } else { T });
+        access.set_memory_index(Register::None);
+        access.set_memory_displacement64(0);
+        access.set_memory_displ_size(0);
+    }
+    if reach == Reach::GuestSegment {
+        access.set_segment_prefix(Register::FS);
     }
     access
-}
-
-/// Based on rsp or rbp, whose accesses take the stack segment.
-fn stack_based(base: Register) -> bool {
-    matches!(base, Register::RSP | Register::RBP)
-}
-
-/// The bytes of a displacement field holding `displacement`: none for zero, else as wide as it needs.
-fn displacement_size(displacement: i64) -> u32 {
-    if displacement == 0 {
-        0
-    } else if i8::try_from(displacement).is_ok() {
-        size_of::<i8>() as u32
-    } else {
-        size_of::<i32>() as u32
-    }
-}
-
-fn set_t_plus_u(access: &mut Iced) {
-    access.set_memory_base(T);
-    access.set_memory_index(U);
-    access.set_memory_index_scale(1);
-    access.set_memory_displacement64(0);
-    access.set_memory_displ_size(0);
 }
 
 fn has_memory_operand(i: &Iced) -> bool {
@@ -644,6 +594,7 @@ fn rewritten(
     if reach == Reach::Plain
         && let Some(on) = on_slot(way, guest)
     {
+        // Its operand is the register area, not guest memory.
         code.slow(NativeReason::WithheldRegisterNamed);
         let at = code.offset() as u64;
         code.commit(&bytes_of(&on, at), next);
@@ -654,6 +605,10 @@ fn rewritten(
         code.slow(NativeReason::WithheldRegisterNamed);
     }
     stand_ins_in(way, code, guest, &swaps);
+    let window = reach == Reach::GuestSegment;
+    if window {
+        enter_guest_segment(way, code);
+    }
     let target = rip_target(i, address);
     let ins = if reach == Reach::Rebase && ins.mnemonic() == Mnemonic::Lea {
         // `lea r, [rip+d]` is the guest address itself.
@@ -662,29 +617,26 @@ fn rewritten(
         lea.set_memory_base(T);
         lea.set_memory_displacement64(0);
         lea.set_memory_displ_size(0);
-        if i.address32 {
-            put(
-                code,
-                &Iced::with2(Code::Mov_r32_rm32, T_LOW, T_LOW).expect("a move"),
-            );
-        }
         lea
     } else {
-        reach_operand(way, code, &ins, i.address32, reach, target)
+        reach_operand(code, &ins, i.address32, reach, target)
     };
-    let high = reach != Reach::Plain && names_high_byte(&ins);
+    // An operand rebuilt on t of an instruction naming a high byte takes its address in one of the first eight.
+    let high = reach != Reach::Plain && guest.is_ip_rel_memory_operand() && names_high_byte(&ins);
     let (ins, legacy) = if high {
-        on_legacy(way, code, &ins)
+        on_legacy(way, code, &ins, i.address32)
     } else {
         (ins, 0)
     };
-    let at = code.offset() as u64;
-    code.commit(&bytes_of(&ins, at), next);
+    access(way, code, Written::Instruction(&ins), Some(next));
     if high {
         put(code, &load_area(way, full(legacy), STAND_IN_VALUES));
         code.home(legacy);
     }
     stand_ins_out(way, code, guest, &swaps);
+    if window {
+        leave_guest_segment(code);
+    }
 }
 
 fn names_high_byte(i: &Iced) -> bool {
@@ -695,9 +647,9 @@ fn names_high_byte(i: &Iced) -> bool {
 
 /// An instruction naming ah, ch, dh or bh cannot take a REX prefix, so its rebuilt operand cannot name t or
 /// u: the address goes to a register of the first eight but rbp (whose accesses take the stack segment), kept in
-/// the area meanwhile. It names no withheld
-/// register, which would need REX itself, so the first stand-in slot is free.
-fn on_legacy(way: Way, code: &mut HostCode, access: &Iced) -> (Iced, u8) {
+/// the area meanwhile. It names no withheld register, which would need REX itself, so the first stand-in slot is
+/// free. Under 0x67 the access stays 32-bit, as on t.
+fn on_legacy(way: Way, code: &mut HostCode, access: &Iced, address32: bool) -> (Iced, u8) {
     let mut info = InstructionInfoFactory::new();
     let used: Vec<u8> = info
         .info(access)
@@ -724,7 +676,11 @@ fn on_legacy(way: Way, code: &mut HostCode, access: &Iced) -> (Iced, u8) {
         &Iced::with2(Code::Lea_r64_m, full(legacy), operand).expect("the address"),
     );
     let mut on = *access;
-    on.set_memory_base(full(legacy));
+    on.set_memory_base(if address32 {
+        sized(legacy, crate::operand::W32)
+    } else {
+        full(legacy)
+    });
     on.set_memory_index(Register::None);
     on.set_memory_index_scale(1);
     on.set_memory_displacement64(0);
@@ -804,10 +760,12 @@ fn carry_plain(
         return;
     }
     match route {
-        Route::Copy if !names_withheld(&i.iced) => code.commit(bytes, Resume::At(next)),
+        Route::Copy if !names_withheld(&i.iced) => {
+            access(way, code, Written::Bytes(bytes), Some(Resume::At(next)));
+        }
         Route::Copy => rewritten(way, code, i, &i.iced, address, Reach::Plain),
         Route::Rebase => rewritten(way, code, i, &i.iced, address, Reach::Rebase),
-        Route::Area => area(way, code, i, address),
+        Route::Area => area(way, code, i, bytes, address),
         Route::Nothing => code.after(Resume::At(next)),
         Route::Kernel => {
             call(way, code, InsideCall::Answer);
@@ -816,15 +774,16 @@ fn carry_plain(
         Route::Trap => call(way, code, InsideCall::Trap),
         Route::FloatStatus => {
             call(way, code, InsideCall::FloatBefore);
-            let reach =
-                if has_memory_operand(&i.iced) && i.iced.memory_segment() == way.area_segment() {
-                    Reach::Area
-                } else if i.iced.is_ip_rel_memory_operand() {
+            if has_memory_operand(&i.iced) && i.iced.memory_segment() == way.area_segment() {
+                area(way, code, i, bytes, address);
+            } else {
+                let reach = if i.iced.is_ip_rel_memory_operand() {
                     Reach::Rebase
                 } else {
                     Reach::Plain
                 };
-            rewritten(way, code, i, &i.iced, address, reach);
+                rewritten(way, code, i, &i.iced, address, reach);
+            }
             code.fixup(Fixup::FloatStatus);
             call(way, code, InsideCall::FloatAfter);
             code.fixed();
@@ -917,8 +876,8 @@ fn x87_pointer(way: Way, code: &mut HostCode, address: u64) {
     code.fixed();
 }
 
-/// An operand or base instruction of the thread area's segment.
-fn area(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
+/// An operand or base instruction of the thread area's segment, `bytes` at guest `address`.
+fn area(way: Way, code: &mut HostCode, i: &Instruction, bytes: &[u8], address: u64) {
     let ins = &i.iced;
     if ins.mnemonic() == Mnemonic::Rdgsbase {
         // `rdgsbase r32` zero-extends, as a 32-bit load does.
@@ -935,8 +894,13 @@ fn area(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
             .expect("a load from the area")
         };
         rewritten(way, code, i, &read, address, Reach::Plain);
+    } else if names_withheld(ins) || ins.is_ip_rel_memory_operand() {
+        rewritten(way, code, i, ins, address, Reach::GuestSegment);
     } else {
-        rewritten(way, code, i, ins, address, Reach::Area);
+        let next = Resume::At(address.wrapping_add(bytes.len() as u64));
+        enter_guest_segment(way, code);
+        access(way, code, Written::Bytes(&on_fs(bytes)), Some(next));
+        leave_guest_segment(code);
     }
 }
 
@@ -1086,7 +1050,8 @@ fn transfer(
             }
             if ins.mnemonic() == Call {
                 place_address(code, T, next);
-                put(code, &Iced::with1(Code::Push_r64, T).expect("a push"));
+                let push = Iced::with1(Code::Push_r64, T).expect("a push");
+                access(way, code, Written::Instruction(&push), None);
                 code.after(Resume::At(target));
                 exit(way, code, target, None, homes);
             } else {
@@ -1101,10 +1066,8 @@ fn transfer(
                 put(code, &store_area(way, own, full(RAX)));
                 code.relocate(RAX, page(own));
                 place_address(code, full(RAX), next);
-                put(
-                    code,
-                    &Iced::with1(Code::Push_r64, full(RAX)).expect("a push"),
-                );
+                let push = Iced::with1(Code::Push_r64, full(RAX)).expect("a push");
+                access(way, code, Written::Instruction(&push), None);
                 code.after(Resume::Through(Held::Register(T_NUMBER)));
                 put(code, &load_area(way, full(RAX), own));
                 code.home(RAX);
@@ -1115,10 +1078,8 @@ fn transfer(
         }
         Ret => {
             let top = MemoryOperand::with_base(full(RSP));
-            put(
-                code,
-                &Iced::with2(Code::Mov_r64_rm64, T, top).expect("the return address"),
-            );
+            let read = Iced::with2(Code::Mov_r64_rm64, T, top).expect("the return address");
+            access(way, code, Written::Instruction(&read), None);
             first_level(way, code);
             let popped = i64::from(SLOT) + i64::from(ins.immediate16());
             let lea = Iced::with2(
@@ -1228,7 +1189,7 @@ fn into_t(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
     let reach = if operand.op0_kind() == OpKind::Register {
         Reach::Plain
     } else if i.iced.memory_segment() == way.area_segment() {
-        Reach::Area
+        Reach::GuestSegment
     } else if i.iced.is_ip_rel_memory_operand() {
         Reach::Rebase
     } else {
@@ -1244,8 +1205,16 @@ fn into_t(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
         code.slow(NativeReason::WithheldRegisterNamed);
     }
     stand_ins_in(way, code, &i.iced, &swaps);
-    let read = reach_operand(way, code, &read, i.address32, reach, rip_target(i, address));
-    put(code, &read);
+    let target = rip_target(i, address);
+    let window = reach == Reach::GuestSegment;
+    if window {
+        enter_guest_segment(way, code);
+    }
+    let read = reach_operand(code, &read, i.address32, reach, target);
+    access(way, code, Written::Instruction(&read), None);
+    if window {
+        leave_guest_segment(code);
+    }
     stand_ins_out(way, code, &i.iced, &swaps);
 }
 

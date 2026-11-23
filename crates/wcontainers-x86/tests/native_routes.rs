@@ -146,8 +146,16 @@ fn broken(
     if copied && m != Lea && memory(i) && on_area {
         return Some("an operand on the thread area's segment copied");
     }
-    if implicit && on_area && ins.segment_prefix() != Register::None && r != Route::Kernel {
-        return Some("an implicit address on the thread area's segment not answered by the inside");
+    let overridden = implicit && on_area && ins.segment_prefix() != Register::None;
+    if overridden && in_process && r != Route::Kernel {
+        return Some(
+            "an implicit address on a segment override not answered by the inside in process",
+        );
+    }
+    if overridden && !in_process && !matches!(r, Route::Area | Route::Kernel) {
+        return Some(
+            "an implicit address on the thread area's segment not carried on the guest's base",
+        );
     }
     if in_process && string && i.address32 && r != Route::Kernel {
         return Some(
@@ -265,16 +273,26 @@ fn the_named_forms() {
         (machine, xeon, "f3 48 0f ae d8", Route::Kernel),
         // maskmovq and maskmovdqu, on and off the thread area's segment.
         (machine, xeon, "0f f7 c1", Route::Copy),
-        (machine, xeon, "65 0f f7 c1", Route::Kernel),
-        (machine, xeon, "66 65 0f f7 c1", Route::Kernel),
+        (machine, xeon, "65 0f f7 c1", Route::Area),
+        (machine, xeon, "66 65 0f f7 c1", Route::Area),
         (process, xeon, "64 0f f7 c1", Route::Copy),
+        (wrapping, xeon, "65 0f f7 c1", Route::Kernel),
+        // A bit test with a register offset and a gather, each on gs: under 0x67 (the check's 0x67 forms).
+        (process, xeon, "67 65 48 0f a3 00", Route::Area),
+        (process, xeon, "67 65 c4 e2 69 90 04 88", Route::Area),
         // Strings with the guest's 0x67 (the eighth check's str67.c), and on the area's segment.
         (machine, xeon, "67 aa", Route::Copy),
         (machine, xeon, "67 f3 aa", Route::Copy),
         (wrapping, xeon, "67 aa", Route::Kernel),
         (exact, xeon, "67 f3 aa", Route::Kernel),
-        (machine, xeon, "65 a4", Route::Kernel),
-        (machine, xeon, "65 d7", Route::Kernel),
+        (machine, xeon, "65 a4", Route::Area),
+        (process, xeon, "65 49 a4", Route::Area),
+        (machine, xeon, "65 d7", Route::Area),
+        (process, xeon, "65 4c d7", Route::Area),
+        (wrapping, xeon, "65 a4", Route::Kernel),
+        // stos and scas reach es:rdi, which no override changes.
+        (process, xeon, "65 aa", Route::Copy),
+        (process, xeon, "65 f3 ae", Route::Copy),
         (machine, xeon, "f3 a4", Route::Copy),
         // Transfers, near and far.
         (machine, xeon, "e8 00 00 00 00", Route::Transfer),

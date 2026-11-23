@@ -497,29 +497,10 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
                 ins.memory_size(),
                 MemorySize::SegPtr16 | MemorySize::SegPtr32 | MemorySize::SegPtr64
             );
-    // Their address is implicit in rsi, rdi or rbx, so it cannot be rebuilt on the guest's segment base.
+    // In process their address is implicit in rsi, rdi or rbx, which the window's check cannot take; in the machine
+    // and P they run on FS holding the guest's GS base, as any operand of the area's segment does.
     let implicit = is_string(i) || matches!(m, Xlatb | Maskmovq | Maskmovdqu | Vmaskmovdqu);
-    let overridden = ins.segment_prefix() != Register::None;
-    let implicit_on_area = implicit
-        && if in_process {
-            overridden
-        } else {
-            overridden && ins.memory_segment() == way.area_segment()
-        };
-    // A vector index cannot take part in the 32-bit `lea` the area's operand is rebuilt with.
-    let index = ins.memory_index();
-    let vector_index_on_area = (index.is_xmm() || index.is_ymm())
-        && !in_process
-        && ins.memory_segment() == way.area_segment()
-        && i.address32;
-    // Under 0x67 a bit test's register offset is added to its operand's address modulo 2^32 too, which the
-    // 64-bit sum on the guest's base no longer wraps.
-    let bit_offset_on_area = matches!(m, Bt | Bts | Btr | Btc)
-        && ins.op1_kind() == OpKind::Register
-        && ins.op0_kind() == OpKind::Memory
-        && !in_process
-        && ins.memory_segment() == way.area_segment()
-        && i.address32;
+    let implicit_on_area = implicit && in_process && ins.segment_prefix() != Register::None;
     let gather = matches!(
         m,
         Vgatherdpd
@@ -537,8 +518,6 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
     segment_register
         || far
         || implicit_on_area
-        || vector_index_on_area
-        || bit_offset_on_area
         || matches!(
             m,
             Cpuid

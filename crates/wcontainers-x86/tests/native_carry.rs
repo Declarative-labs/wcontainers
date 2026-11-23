@@ -1,6 +1,6 @@
 //! The carrying code of an operand on the thread area's segment (docs/x86-native-output.md section 3.1), checked
-//! by the address its host instructions reach against the meaning's: the guest's GS base plus the operand's
-//! offset part taken at the operand's own address size.
+//! by the address its host access reaches on FS, which holds the guest's GS base for it, against the meaning's: the
+//! guest's GS base plus the operand's offset part taken at the operand's own address size.
 
 use iced_x86::{
     Code, Decoder, DecoderOptions, Encoder, Instruction, MemoryOperand, Mnemonic, OpKind, Register,
@@ -84,49 +84,54 @@ impl Values {
     }
 }
 
-/// The address the sequence's last instruction reaches, its earlier ones run: the load of the guest's GS base
-/// from the register area, and the `lea`s.
-fn reached(code: &[u8], mut values: Values, guest_gs: u64) -> u64 {
+/// The guest's FS base, which the carrying code keeps and puts back.
+const GUEST_FS: u64 = 0x7e00_0000_1000;
+
+/// The address the carried access reaches, the code around it run: the guest's FS base kept, the guest's GS base
+/// loaded from the register area onto FS, the access on FS, the FS base put back. Also gives the access's bytes.
+fn reached(code: &[u8], mut values: Values, guest_gs: u64) -> (u64, Vec<u8>) {
     let all: Vec<Instruction> = Decoder::with_ip(64, code, 0, DecoderOptions::NONE)
         .into_iter()
         .collect();
-    let memory = |i: &Instruction| {
-        (0..i.op_count())
-            .find(|&n| i.op_kind(n) == OpKind::Memory)
-            .expect("a memory operand")
-    };
-    let (last, earlier) = all.split_last().expect("code");
-    for i in earlier {
-        let at = i
-            .virtual_address(memory(i), 0, |r, _, _| values.get(r))
-            .expect("registers known");
+    let memory = |i: &Instruction| (0..i.op_count()).find(|&n| i.op_kind(n) == OpKind::Memory);
+    let mut fs = GUEST_FS;
+    let mut access = None;
+    for i in &all {
+        let at = |values: &Values, fs: u64| {
+            memory(i).map(|n| {
+                i.virtual_address(n, 0, |r, _, _| {
+                    if r == Register::FS {
+                        Some(fs)
+                    } else {
+                        values.get(r)
+                    }
+                })
+                .expect("registers known")
+            })
+        };
         match i.mnemonic() {
-            Mnemonic::Mov => {
+            // The Float status route's calls into the inside, around the window.
+            Mnemonic::Int => assert_eq!(fs, GUEST_FS, "a call into the inside outside the window"),
+            Mnemonic::Rdfsbase => values.set(i.op0_register(), fs),
+            Mnemonic::Wrfsbase => fs = values.get(i.op0_register()).expect("a known register"),
+            Mnemonic::Mov if i.segment_prefix() == Register::GS => {
                 assert_eq!(
-                    at,
-                    AREA + GUEST_GS_BASE as u64,
+                    at(&values, fs),
+                    Some(AREA + GUEST_GS_BASE as u64),
                     "the load reads the register area"
                 );
                 values.set(i.op0_register(), guest_gs);
             }
-            Mnemonic::Lea => {
-                let value = if i.op0_register().is_gpr32() {
-                    at & u64::from(u32::MAX)
-                } else {
-                    at
-                };
-                values.set(i.op0_register(), value);
+            _ => {
+                assert_eq!(i.segment_prefix(), Register::FS, "the access is on FS");
+                assert!(access.is_none(), "one access");
+                let bytes = &code[i.ip() as usize..i.next_ip() as usize];
+                access = Some((at(&values, fs).expect("a memory operand"), bytes.to_vec()));
             }
-            other => panic!("{other:?} in the carrying code"),
         }
     }
-    assert_eq!(
-        last.segment_prefix(),
-        Register::None,
-        "the access is on the guest's own address"
-    );
-    last.virtual_address(memory(last), 0, |r, _, _| values.get(r))
-        .expect("registers known")
+    assert_eq!(fs, GUEST_FS, "the guest's FS base is put back");
+    access.expect("an access")
 }
 
 /// `mov eax, gs:[...]` as the guest wrote it.
@@ -177,12 +182,38 @@ fn the_address_size_prefix_wraps_before_the_base() {
     let base = 0x3_0000_0000;
     assert_eq!(
         reached(&carried(&[0x65, 0x67, 0x8b, 0x00]), values(), base),
-        0x3_0000_0010
+        (0x3_0000_0010, vec![0x64, 0x67, 0x8b, 0x00])
     );
     assert_eq!(
-        reached(&carried(&[0x65, 0x8b, 0x00]), values(), base),
+        reached(&carried(&[0x65, 0x8b, 0x00]), values(), base).0,
         0x4_0000_0010
     );
+}
+
+/// The guest's prefixes and their order are kept, each GS override made FS, so the CPU picks the segment it picks
+/// for the guest (the check's `2e 65 36` setg, whose last prefix is ss) and wraps each part of an access under 0x67
+/// (its fxsave64 across offset 2^32).
+#[test]
+fn the_guest_bytes_run_on_fs() {
+    let values = || {
+        Values(vec![
+            (Register::R9, 0xc7),
+            (Register::RAX, 1),
+            (Register::RSI, 2),
+        ])
+    };
+    let setg = [
+        0x2e, 0x65, 0x36, 0x4f, 0x0f, 0x9f, 0x81, 0xdf, 0xbc, 0x7c, 0x48,
+    ];
+    let (_, bytes) = reached(&carried(&setg), values(), 0x4400_0000);
+    assert_eq!(bytes[..3], [0x2e, 0x64, 0x36]);
+    assert_eq!(bytes[3..], setg[3..]);
+    let fxsave = [
+        0x65, 0x67, 0x48, 0x0f, 0xae, 0x84, 0x30, 0x37, 0x05, 0xf1, 0x4b,
+    ];
+    let (_, bytes) = reached(&carried(&fxsave), values(), 0x4400_0000);
+    assert_eq!(bytes[0], 0x64);
+    assert_eq!(bytes[1..], fxsave[1..]);
 }
 
 fn knob(name: &str, default: u64) -> u64 {
@@ -233,7 +264,7 @@ fn every_operand_shape_reaches_the_meanings_address() {
             offset &= u64::from(u32::MAX);
         }
         let guest = guest_load(base, index, scale, disp, narrow);
-        let host = reached(&carried(&guest), Values(values.clone()), guest_gs);
+        let (host, _) = reached(&carried(&guest), Values(values.clone()), guest_gs);
         assert_eq!(
             host,
             guest_gs.wrapping_add(offset),
