@@ -61,6 +61,19 @@ safe library does it, what removing it would cost.
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
 
+## Run 8 (2026-11-22 late)
+
+- Still no ruling: the graphics brief and the orchestrator's open-with-owner notes were read again,
+  and neither names these five boundaries. No commit landed on `agents` after run 7. Counts are
+  unchanged: direct3d-12 495, graphics-test 342, graphics-test-forward 197, gpu-webgl 167,
+  gpu-webgpu 30.
+- The boundary libraries are still the newest releases on crates.io (glow 0.18.0, windows 0.62.2,
+  windows-core and windows-implement 0.100.0, retour 0.3.1), so no new release changes the answers.
+- Windows lint of all five crates, all targets, `-D warnings` (How to run's command): clean, with
+  0 warnings (logs/clippy-windows-run8.log). The desktop's CPU load was 64 % at the end. The job
+  waited about 35 minutes behind another track's GPU job that may reset the driver. This lint
+  covers run 7's rename and declared.rs on Windows.
+
 ## Run 7 (2026-11-23 early)
 
 - Still no ruling (graphics brief; the orchestrator's open-with-owner notes do not list these five).
