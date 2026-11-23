@@ -395,6 +395,11 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
     entry's window ends at its last register store, before the request word, so the two windows meet and no
     instruction belongs to neither;
   - the handler's own tail, after its unblock: it takes the same exit the interrupted handler had already written.
+  As built in P (W1 run 3): the handler resets sp to its thread's signal stack top, reads the interrupted pc from the
+  frame only to choose among these windows (a forged pc can only pick another of our own targets, with our own
+  registers), and leaves through an unblock whose next instruction lies in the window it leaves for, so a stop that
+  lands just after the unblock takes the same way; a stop in the publishing of an exit publishes it again (the same
+  words), and a stop in a thread's `exit` lets it end.
   So no signal mask is changed on a kernel entry path but a resume that carries commands (a mask change is a host
   system call: 125 ns on Graviton4 and 87 to 89 ns on the Xeon, W0 probe run 3).
 - A slice (`Next::Run { slice_nanoseconds }`): P: the runner's futex wait carries the slice as its time-out and
@@ -434,7 +439,8 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   `TPIDR_EL0` back before any Rust code runs. The stop signal is the first signal from libc's `SIGRTMIN()` on (34
   with glibc 2.39, static and dynamic, measured by the third check) whose disposition is the default at start; the
   kernel's 32 and 33 below it are glibc's own (32 is SIGCANCEL, installed at the first `pthread_cancel`, and
-  blocked by I's runners above). The embedder chooses it once and gives P's stubs the number.
+  blocked by I's runners above). That choice is I's; P's stubs hold no C library and the signal is only ever sent to
+  them, so P's stop signal is the kernel's first real-time signal (32), fixed.
 - P: a guest store can reach anything in its stub that is mapped writable (its register pages, its signal stacks),
   and a load anything mapped readable (its control pages too). Guest code makes no host call (it has no `svc`; the
   only host calls are the stub's own routines, reached through the floor's entries), so what the guest can do to
@@ -616,7 +622,8 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   thread id, stop)`: a forged id there can reach only another thread of the same stub, which takes a stale stop
   (3.6). Placement never uses it (4.3). The command names the new thread's index, which the embedder chose free;
   `clone` gets `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
-  CLONE_CHILD_CLEARTID`, with the exit-clear word of the new thread's register page as the word to clear (the
+  CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID`, with the exit-clear word of the new thread's register page as the word
+  to set before the call returns (so the index is never free between the command and the thread's start) and to clear (the
   stub's first thread, index 0, names its own with `set_tid_address` before its filter), and the top of the new
   index's signal stack as its stack, so the new thread's sp is never the maker's guest sp (a signal frame for a fault
   of ours before its `sigaltstack` lands in our area, not in guest memory). The new

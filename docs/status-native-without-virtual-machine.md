@@ -73,18 +73,47 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Verdicts: Graviton4, all 17 tests passed 3 times with /dev/kvm denied (load 9.9 to 22.7), clippy with warnings
     denied clean. Xeon: the same 17 passed 3 times with /dev/kvm denied at 13:47 UTC (load 0.2 to 0.4), clippy clean
     (the machine did not answer SSH from 13:39 to 13:46 UTC).
+- W1, run 3 (2026-11-23), built and tested on both machines:
+  - Threads (stub.rs, zygote/*.rs): a `NewThread` command of a turn makes a host thread (`clone` with 4.1's flags
+    plus `CLONE_PARENT_SETTID`, so the new index's exit-clear word holds the id before the call returns), on its
+    own signal stack as its stack, with x16 / r9 its register page and x15 / r8 the value its answer word holds,
+    which the embedder put in the command so no turn is missed; the maker writes the id to the new register page.
+    The new thread names its signal stack (`sigaltstack`), unblocks the stop and waits. The embedder holds indices
+    (`Stub::new_thread`, `release_thread`, `end_thread`): free means not held and its exit-clear word zero;
+    `thread_gone` waits on that word. The filter allows `clone` with exactly those flags. tests/threads.rs (4): 8
+    threads take 1,000 turns each, each waits on its own signal stack (its sp from /proc's syscall line) and
+    reports the id /proc lists; an index let go while its thread runs is not reused, one whose thread is gone is;
+    an index past the last is refused (`BadTurn`); all 32,768 indices made (32,767 threads in rounds of 64) and the
+    next `new_thread` is `None`.
+  - The stop (3.6): the kernel's first real-time signal (`STOP_SIGNAL`, 32), sent by `tgkill` (`StopTarget`, from
+    any thread). The stub installs its handler before its filter (`SA_SIGINFO | SA_ONSTACK | SA_NODEFER |
+    SA_RESTORER`, mask the stop; the restorer is our own `rt_sigreturn`, never reached, refused by the filter) and
+    thread 0's signal stack. A turn with commands blocks the stop before the first and unblocks it after the last
+    (two `rt_sigprocmask`); a turn without pays nothing. The handler never returns: it resets sp to the thread's
+    signal stack top, takes the interrupted pc from the frame only to choose a window, and jumps (through an
+    unblock whose next instruction is in the same window) to: publish again (from the unblock before the exit's
+    stores to the end of the wake), the wait (from the wait to the instruction that takes the turn, and the jump
+    back to it), the thread's end (its `exit`), or else, after the commands, a `Stopped` exit with the count
+    applied. `Resume::Spin` stands in for guest code. The stub counts where each stop landed in its register page
+    (untrusted, for tests). tests/stop.rs (3): 1,000 spinning turns on each of two threads, with and without
+    commands, each ends `Stopped` with its count; 1,000 stops to a waiting thread then 100 turns each answered once;
+    20,000 seeded turns (`WCHP_SEED=1`, knob `WCHP_ROUNDS`) of four kinds, one making a thread, under a second
+    thread sending stops with random pauses: every turn ended once with its full count, each thread made exactly
+    once and ended, and every stop sent landed once (Graviton4: 20,161 sent, 7,809 ended a turn, 709 in a publish,
+    11,643 in the wait; Xeon: 23,268 = 8,552 + 1,114 + 13,602); a thread told to end under stops ends (no stop
+    landed in its `exit` in either run).
+  - Verdicts: all 24 tests passed on Graviton4 (load 11 to 18) and the Xeon (load 32, another track's job),
+    clippy with warnings denied clean on both. Not yet with /dev/kvm denied for this run's tests.
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- W1, in this order, each tested on both rented machines with /dev/kvm denied: threads (a `Clone` command on the
-  control page, the new thread's start on its own signal stack, `exit` through its exit-clear word, index reuse only
-  after the word is zero, `THREADS_PER_PROCESS` + 1 refused), with `clone` and the thread's calls added to the
-  filter; the stop signal, its handler and its windows (3.6: `sigaltstack`, `rt_sigaction` with `SA_RESTORER` on
-  x86-64, the stop blocked around commands, a stop landing in the wait returns to the wait); copy-on-write and the
-  adversarial fork tests (3.5); placement (4.3), its CPU table in `HostProcessHost`. Hand-written ARM64 pieces
+- W1, in this order, each tested on both rented machines with /dev/kvm denied: the fault handler (a fault exit
+  with its address, a hand-written touch standing in for guest code); copy-on-write and the adversarial fork tests
+  (3.5); placement (4.3), its CPU table in `HostProcessHost`; the runner's resend of an ignored stop every 100 ms
+  and the kill after 10 s (3.6). Hand-written ARM64 pieces
   stand in for translated code until the translator's form exists. Then the `Cpu` and `Executor` traits with the
   `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
 - I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
@@ -226,6 +255,13 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Departures from the plan
 
+- W1 run 3: P's stop signal is the kernel's first real-time signal, fixed, not chosen from the embedder's
+  dispositions: it is only ever sent to a stub, which holds no C library (plan 3.6 and 3.7 say so now; I's choice is
+  unchanged). Both architectures name our own restorer (`SA_RESTORER`), since the stub has no vDSO. A thread's
+  exit-clear word is also set by `CLONE_PARENT_SETTID`, so an index is never free between the command and the new
+  thread's start. A stop in the stub's own code outside the named windows (resume dispatch, the spin) ends the turn
+  as `Stopped`; a malformed turn reports `BadTurn` with the stop blocked throughout.
+
 - W1 run 2: the window cache evicts by the clock algorithm, an approximation of least recently used whose touch is
   one store (plan 4.2 says so now); a stub's start is a turn the embedder waits for (plan 4.1 says so now); the
   filter allows only the calls the stub's routines make so far, and grows with them.
@@ -246,8 +282,10 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 25 in the library (23
-build on ARM64, 21 on x86-64), 1 in its tests:
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 26 in the library (24
+build on ARM64, 22 on x86-64), 1 in its tests:
+- stub.rs: glibc's `tgkill` for the stop (rustix's `tkill` is unsafe too and reaches any thread of the host; nix has
+  none for one thread of another process).
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
   it refers to nothing outside itself); glibc's `__rseq_offset` and `__rseq_size` (no crate has them); the two
   labels around the assembly; the slice of its code between them; the reservation's `mmap` and `munmap`;
@@ -266,7 +304,7 @@ Constants no crate defines, named with their source: glibc's rseq signatures (`R
 ## Dependencies and licences
 
 host-process, Linux only: rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
-Apache-2.0) for the signal mask, `fork` and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
-LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly, wcontainers-abi. All were already in the
-lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
+Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
+LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly, wcontainers-abi; for its tests only, fastrand 2.5.0
+(Apache-2.0 OR MIT). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
 machines.
