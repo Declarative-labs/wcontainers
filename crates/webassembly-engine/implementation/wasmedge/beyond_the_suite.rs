@@ -968,7 +968,7 @@ const HOLDS_A_TYPE_AT_INDEX_ONE: &str = r#"(module
     (type $padding (func (param i64)))
     (type $answers (func (result i32)))
     (table (export "answers") 1 (ref null $answers))
-    (global (export "answer") (mut (ref null $answers)) (ref.null $answers))
+    (global (export "kept_answer") (mut (ref null $answers)) (ref.null $answers))
     (func (export "seven") (type $answers) (i32.const 7))
     (func (export "eight") (result i64) (i64.const 8)))"#;
 
@@ -991,7 +991,7 @@ fn a_reference_read_from_a_typed_slot_carries_the_functions_type_and_no_other() 
     let holding = instantiate(&mut engine, HOLDS_A_TYPE_AT_INDEX_ONE, &[]);
     let seven = function(&mut engine, &holding, "seven");
     let answers = table(&mut engine, &holding, "answers");
-    let answer = global(&mut engine, &holding, "answer");
+    let answer = global(&mut engine, &holding, "kept_answer");
     assert_eq!(engine.write_table(&answers, 0, Some(&seven)), Ok(()));
     assert_eq!(
         engine.write_global(&answer, Value::FunctionReference(Some(seven))),
