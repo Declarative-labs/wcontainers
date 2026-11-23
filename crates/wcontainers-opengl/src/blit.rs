@@ -3,7 +3,10 @@
 
 use std::ffi::c_uint;
 
-use wcontainers_gpu::{Backend, FormatUse, Origin, TextureRegion};
+use wcontainers_gpu::{
+    Backend, Extent, Format, FormatKind, FormatUse, Origin, TextureDesc, TextureDimension,
+    TextureRegion,
+};
 
 use crate::context::Context;
 use crate::gallium::*;
@@ -100,15 +103,13 @@ fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
 
 /// Resolves a whole multisampled level's layer into a single-sampled one of its size and format
 /// by the back end's own resolve, where the blit is that and nothing more; false for any other.
-fn whole_resolve<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) -> bool {
+fn whole_resolve<B: Backend>(
+    context: &mut Context<B>,
+    info: &pipe_blit_info,
+    from: &Resource<B>,
+    to: &Resource<B>,
+) -> bool {
     let (src, dst) = (&info.src, &info.dst);
-    // SAFETY: Mesa's blit names two resources of this driver.
-    let (from, to) = unsafe {
-        (
-            Resource::<B>::of(src.resource),
-            Resource::<B>::of(dst.resource),
-        )
-    };
     let (Some((from_texture, _)), Some((to_texture, _)), Some(format)) = (
         from.texture(),
         to.texture(),
@@ -169,6 +170,79 @@ fn whole_resolve<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) ->
     true
 }
 
+/// Copies texels unchanged where the blit is a copy of their bits and nothing more: one format
+/// for both sides, whose texels are as large as each texture's, unscaled, unmasked and
+/// single-sampled, and either integer or seen in another format than a texture's own and not sRGB
+/// (st/mesa's image copies between formats of one size, seen as one canonical format, unsigned
+/// integer or unsigned normalised, which a blit carries bit for bit); false for any other. The
+/// host copies between formats of one texel size, which no view of a texture in another format is
+/// needed for.
+fn bit_copy<B: Backend>(
+    context: &mut Context<B>,
+    info: &pipe_blit_info,
+    from: &Resource<B>,
+    to: &Resource<B>,
+) -> bool {
+    let (src, dst) = (&info.src, &info.dst);
+    let (Some((from_texture, from_desc)), Some((to_texture, to_desc)), Some(format)) = (
+        from.texture(),
+        to.texture(),
+        crate::format::format(src.format),
+    ) else {
+        return false;
+    };
+    let one_texel = |f: Format| {
+        let (width, height, bytes) = f.block();
+        width == 1 && height == 1 && bytes == format.block().2 && !f.is_depth_stencil()
+    };
+    let (a, b) = (&src.box_, &dst.box_);
+    let reinterprets = src.format != from.base.format() || dst.format != to.base.format();
+    let exact = matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+        || reinterprets && format.linear() == format;
+    let plain = src.format == dst.format
+        && exact
+        && one_texel(from_desc.format)
+        && one_texel(to_desc.format)
+        && from_desc.samples <= 1
+        && to_desc.samples <= 1
+        && info.mask == PIPE_MASK_RGBA
+        && !info.scissor_enable
+        && !info.swizzle_enable
+        && !info.alpha_blend
+        && info.num_window_rectangles == 0
+        && a.width > 0
+        && a.height > 0
+        && a.depth > 0
+        && (a.width, a.height, a.depth) == (b.width, b.height, b.depth);
+    if !plain {
+        return false;
+    }
+    let mut backend = context.screen().backend();
+    if let Err(error) = context.tracker.close(&mut backend) {
+        refuse(format!("closing a pass: {error:?}"));
+    }
+    let corner = |texture, desc: &TextureDesc, level, at: &pipe_box| {
+        crate::view::corner::<B>(
+            texture,
+            desc.dimension == TextureDimension::D3,
+            level,
+            at.x as u32,
+            at.y as u32,
+            at.z as u32,
+        )
+    };
+    backend.copy_texture(
+        &corner(from_texture, from_desc, src.level, a),
+        &corner(to_texture, to_desc, dst.level, b),
+        Extent {
+            width: a.width as u32,
+            height: a.height as u32,
+            depth_or_layers: a.depth as u32,
+        },
+    );
+    true
+}
+
 /// `pipe_context::blit`.
 pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const pipe_blit_info) {
     // SAFETY: Mesa passes this driver's context and a blit.
@@ -181,8 +255,15 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
     if unsafe { (*info).render_condition_enable } && !crate::query::condition_holds(context) {
         return;
     }
-    // SAFETY: as above.
-    if whole_resolve(context, unsafe { &*info }) {
+    // SAFETY: as above; the blit names two resources of this driver.
+    let (info, from, to) = unsafe {
+        (
+            &*info,
+            Resource::<B>::of((*info).src.resource),
+            Resource::<B>::of((*info).dst.resource),
+        )
+    };
+    if whole_resolve(context, info, from, to) || bit_copy(context, info, from, to) {
         return;
     }
     let blitter = context.blitter;

@@ -223,6 +223,10 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // cube arrays.
     caps.seamless_cube_map = true;
     caps.cube_map_array = true;
+    // The interface copies between formats of one texel or block size, a block-compressed one and
+    // a plain one among them (`copy_texture`); st/mesa's copies between other formats of one size
+    // are blits the driver makes as such copies (`blit::bit_copy`).
+    caps.copy_between_compressed_and_plain_formats = true;
     // Every back end bounds a program's buffer accesses: one past a binding's end reads zero or
     // a value inside it and writes nothing outside it.
     caps.robust_buffer_access_behavior = true;
