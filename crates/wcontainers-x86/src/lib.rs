@@ -34,6 +34,8 @@ mod masked;
 #[cfg(feature = "translate")]
 mod meaning;
 #[cfg(feature = "translate")]
+pub mod native;
+#[cfg(feature = "translate")]
 mod operand;
 #[cfg(feature = "translate")]
 mod root;
@@ -54,6 +56,7 @@ pub mod encoding;
 #[cfg(feature = "translate")]
 mod lanes;
 pub mod offer;
+pub mod strings;
 #[cfg(feature = "translate")]
 mod vex;
 #[cfg(feature = "translate")]

@@ -5,6 +5,7 @@ use crate::decode::{Instruction, claim, told_feature};
 use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
 use crate::guest::{Control, Hook, Reason, Trap};
 use crate::operand::*;
+use crate::strings::{BULK_STRING_BYTES, StringKind};
 use crate::{ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DF, ID, NT, TF, X86_64};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, ValType};
@@ -1017,21 +1018,8 @@ fn syscall<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     e.syscall();
 }
 
-/// The bytes one bulk pass of `rep movs` or `rep stos` moves at most, so a stop waits for no more than this.
-pub const BULK_STRING_BYTES: u64 = 1 << 20;
-
-/// What each element of a string instruction does.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StringKind {
-    Move,
-    Store,
-    Load,
-    Compare,
-    Scan,
-}
-
 impl StringKind {
-    fn of(m: Mnemonic) -> Self {
+    pub(crate) fn of(m: Mnemonic) -> Self {
         use Mnemonic::*;
         match m {
             Movsb | Movsw | Movsd | Movsq => StringKind::Move,
@@ -1040,19 +1028,6 @@ impl StringKind {
             Cmpsb | Cmpsw | Cmpsd | Cmpsq => StringKind::Compare,
             _ => StringKind::Scan,
         }
-    }
-
-    /// It reads at rsi.
-    fn source(self) -> bool {
-        matches!(
-            self,
-            StringKind::Move | StringKind::Load | StringKind::Compare
-        )
-    }
-
-    /// It reads or writes at rdi.
-    fn destination(self) -> bool {
-        self != StringKind::Load
     }
 }
 
