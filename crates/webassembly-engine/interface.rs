@@ -3,6 +3,9 @@
 
 extern crate alloc;
 
+pub mod function;
+pub mod memory;
+
 use alloc::vec::Vec;
 use core::future::poll_fn;
 use core::pin::pin;
@@ -10,21 +13,21 @@ use core::pin::pin;
 use futures_core::Stream;
 use thiserror::Error;
 
-pub trait WebAssemblyEngine: Sized {
+use crate::memory::MemoryStore;
+
+pub trait WebAssemblyEngine: Sized + MemoryStore {
     type Config: Clone;
     /// A compiled [module](https://webassembly.github.io/spec/core/syntax/modules.html#modules).
     type Module: Send + Sync;
     /// A [module instance](https://webassembly.github.io/spec/core/exec/runtime.html#module-instances).
     type Instance;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [function](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [function instance](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
     type FunctionAddress: Clone;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [table](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [table instance](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
     type TableAddress: Clone;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [memory](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
-    type MemoryAddress: Clone;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [global](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [global instance](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
     type GlobalAddress: Clone;
-    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [tag](https://webassembly.github.io/spec/core/exec/runtime.html#tag-instances).
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [tag instance](https://webassembly.github.io/spec/core/exec/runtime.html#tag-instances).
     type TagAddress: Clone;
     /// A value held by the engine and lent to each [host function](https://webassembly.github.io/spec/core/exec/runtime.html#syntax-hostfunc) when it is invoked.
     type HostContext;
@@ -83,36 +86,6 @@ pub enum ExternalAddress<Engine: WebAssemblyEngine> {
     Global(Engine::GlobalAddress),
     Tag(Engine::TagAddress),
 }
-
-/// An engine that binds functions of one [function type](https://webassembly.github.io/spec/core/syntax/types.html#syntax-functype) to a Rust signature.
-pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
-    type Function: BoundFunction<Self, Parameters, Results>;
-
-    /// Returns the function at the address after checking that it has the function type.
-    fn bind_engine_function(
-        &mut self,
-        address: Self::FunctionAddress,
-    ) -> Result<Self::Function, BindFunctionError>;
-
-    /// Returns the address of a new [host function](https://webassembly.github.io/spec/core/exec/runtime.html#syntax-hostfunc) that runs the given function.
-    fn bind_host_function(
-        &mut self,
-        function: impl Fn(&mut Self::HostContext, Parameters) -> Results + Send + Sync + 'static,
-    ) -> Self::FunctionAddress;
-}
-
-pub trait BoundFunction<Engine: WebAssemblyEngine, Parameters, Results> {
-    /// Runs the [invocation](https://webassembly.github.io/spec/core/exec/modules.html#invocation) of the function.
-    fn invoke(
-        &self,
-        engine: &mut Engine,
-        parameters: Parameters,
-    ) -> Result<Results, Engine::InvokeError>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("the function does not match the function type it is being bound to")]
-pub struct BindFunctionError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum CompileStreamingError<StreamError, CompileError> {

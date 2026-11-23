@@ -6,10 +6,14 @@ use core::pin::{Pin, pin};
 use core::task::{Context, Poll, Waker};
 
 use futures_core::Stream;
-use wcontainers_webassembly_engine::{
-    BindFunctionError, BoundFunction, ExternalAddress, FunctionTypeBinder, Import,
-    WebAssemblyEngine,
+use wcontainers_webassembly_engine::function::{
+    BindFunctionError, BoundFunction, FunctionTypeBinder,
 };
+use wcontainers_webassembly_engine::memory::{
+    AddressType, GrowMemoryError, Limits, MemoryType, PAGE_SIZE, ReadMemoryError, Sharing,
+    WriteMemoryError,
+};
+use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
 
 /// A [module](https://webassembly.github.io/spec/core/binary/modules.html#binary-module) with nothing in it.
 const EMPTY: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
@@ -56,6 +60,9 @@ const CALLER_NAME: &str = "call";
 
 /// The name the function is exported under.
 const FUNCTION_NAME: &str = "answer";
+
+/// The pages that the [limits](https://webassembly.github.io/spec/core/binary/types.html#limits) of the memory `IMPORTS_MEMORY` imports ask for at least.
+const IMPORTED_PAGES: u64 = 1;
 
 /// The name the memory is exported and imported under.
 const MEMORY_NAME: &str = "memory";
@@ -290,6 +297,137 @@ pub fn invokes_a_host_function<T: FunctionTypeBinder<(), i32, HostContext = i32>
     assert_eq!(*subject.host_context(), i32::MAX);
 }
 
+/// Returns a memory type of exactly as many pages as `IMPORTS_MEMORY` asks for at least.
+fn one_page(sharing: Sharing) -> MemoryType {
+    MemoryType {
+        address_type: AddressType::I32,
+        limits: Limits {
+            minimum: IMPORTED_PAGES,
+            maximum: Some(IMPORTED_PAGES),
+        },
+        sharing,
+    }
+}
+
+/// Checks that an allocated memory has the size of its type and that every byte of it is zero.
+pub fn allocates_a_zeroed_memory<T: WebAssemblyEngine>(mut subject: T) {
+    let memory = subject
+        .allocate_memory(one_page(Sharing::Unshared))
+        .ok()
+        .expect("the memory");
+    assert_eq!(subject.count_memory_pages(&memory), IMPORTED_PAGES);
+    let mut read = [u8::MAX; NOT_A_MODULE.len()];
+    assert_eq!(subject.read_memory(&memory, u64::MIN, &mut read), Ok(()));
+    assert_eq!(read, [u8::MIN; NOT_A_MODULE.len()]);
+}
+
+/// Checks that bytes written into a memory are the bytes read from it.
+pub fn reads_the_bytes_it_wrote<T: WebAssemblyEngine>(mut subject: T) {
+    let memory = subject
+        .allocate_memory(one_page(Sharing::Unshared))
+        .ok()
+        .expect("the memory");
+    assert_eq!(
+        subject.write_memory(&memory, u64::MIN, NOT_A_MODULE),
+        Ok(())
+    );
+    let mut read = [u8::MIN; NOT_A_MODULE.len()];
+    assert_eq!(subject.read_memory(&memory, u64::MIN, &mut read), Ok(()));
+    assert_eq!(read, NOT_A_MODULE);
+}
+
+/// Checks that bytes that start at the end of a memory are neither read nor written.
+pub fn refuses_bytes_outside_a_memory<T: WebAssemblyEngine>(mut subject: T) {
+    let memory = subject
+        .allocate_memory(one_page(Sharing::Unshared))
+        .ok()
+        .expect("the memory");
+    let end = IMPORTED_PAGES * PAGE_SIZE;
+    let mut read = [u8::MIN; NOT_A_MODULE.len()];
+    assert_eq!(
+        subject.read_memory(&memory, end, &mut read),
+        Err(ReadMemoryError)
+    );
+    assert_eq!(
+        subject.write_memory(&memory, end, NOT_A_MODULE),
+        Err(WriteMemoryError)
+    );
+}
+
+/// Checks that a memory grows up to its maximum and no further.
+pub fn grows_a_memory_to_its_maximum<T: WebAssemblyEngine>(mut subject: T) {
+    let limits = Limits {
+        minimum: u64::MIN,
+        maximum: Some(IMPORTED_PAGES),
+    };
+    let memory_type = MemoryType {
+        limits,
+        ..one_page(Sharing::Unshared)
+    };
+    let memory = subject
+        .allocate_memory(memory_type)
+        .ok()
+        .expect("the memory");
+    assert_eq!(subject.grow_memory(&memory, IMPORTED_PAGES), Ok(()));
+    assert_eq!(subject.count_memory_pages(&memory), IMPORTED_PAGES);
+    assert_eq!(
+        subject.grow_memory(&memory, IMPORTED_PAGES),
+        Err(GrowMemoryError)
+    );
+}
+
+/// Checks that an allocated memory can be supplied for a module's import.
+pub fn supplies_an_allocated_memory_for_an_import<T: WebAssemblyEngine>(mut subject: T) {
+    let memory = subject
+        .allocate_memory(one_page(Sharing::Unshared))
+        .ok()
+        .expect("the memory");
+    let module = subject
+        .compile(IMPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
+    let imports = [Import {
+        module_name: IMPORT_MODULE_NAME,
+        item_name: MEMORY_NAME,
+        address: ExternalAddress::Memory(memory),
+    }];
+    assert!(subject.instantiate(&module, &imports).is_ok());
+}
+
+/// Checks that an unshared memory has no form another engine can add.
+pub fn keeps_an_unshared_memory_to_its_engine<T: WebAssemblyEngine>(mut subject: T) {
+    let memory = subject
+        .allocate_memory(one_page(Sharing::Unshared))
+        .ok()
+        .expect("the memory");
+    assert!(subject.to_shared_memory(&memory).is_none());
+}
+
+/// Checks that bytes one engine writes into a shared memory are read by another engine that added it.
+pub fn shares_a_memory_with_another_engine<T: WebAssemblyEngine<HostContext = i32>>(mut subject: T)
+where
+    T::Config: Default,
+{
+    let memory = subject
+        .allocate_memory(one_page(Sharing::Shared))
+        .ok()
+        .expect("the memory");
+    let shared = subject
+        .to_shared_memory(&memory)
+        .expect("the memory is shared");
+    let mut other: T = T::new(T::Config::default(), i32::default())
+        .ok()
+        .expect("the engine is made");
+    let added = other.add_shared_memory(&shared);
+    assert_eq!(
+        subject.write_memory(&memory, u64::MIN, NOT_A_MODULE),
+        Ok(())
+    );
+    let mut read = [u8::MIN; NOT_A_MODULE.len()];
+    assert_eq!(other.read_memory(&added, u64::MIN, &mut read), Ok(()));
+    assert_eq!(read, NOT_A_MODULE);
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 ///
 /// List every suite function here, in the order above, and nothing else.
@@ -354,6 +492,41 @@ macro_rules! tests {
         #[test]
         fn invokes_a_host_function() {
             $crate::invokes_a_host_function($value);
+        }
+
+        #[test]
+        fn allocates_a_zeroed_memory() {
+            $crate::allocates_a_zeroed_memory($value);
+        }
+
+        #[test]
+        fn reads_the_bytes_it_wrote() {
+            $crate::reads_the_bytes_it_wrote($value);
+        }
+
+        #[test]
+        fn refuses_bytes_outside_a_memory() {
+            $crate::refuses_bytes_outside_a_memory($value);
+        }
+
+        #[test]
+        fn grows_a_memory_to_its_maximum() {
+            $crate::grows_a_memory_to_its_maximum($value);
+        }
+
+        #[test]
+        fn supplies_an_allocated_memory_for_an_import() {
+            $crate::supplies_an_allocated_memory_for_an_import($value);
+        }
+
+        #[test]
+        fn keeps_an_unshared_memory_to_its_engine() {
+            $crate::keeps_an_unshared_memory_to_its_engine($value);
+        }
+
+        #[test]
+        fn shares_a_memory_with_another_engine() {
+            $crate::shares_a_memory_with_another_engine($value);
         }
     };
 }
