@@ -152,6 +152,11 @@ probes).
   clean. The new test: 3,494 cases equal to the meaning's, pointers included; natively through the inside 732
   equal to the CPU, 70 known failures, every one `enter` with rsp off the canonical range (the 5-level reference's
   page fault where the meaning gives general protection); 19 s.
+- Regressions (20:17 to 20:27 UTC, load 8.5 before, up to 16 with other tracks' jobs): the x86 crate's tests and
+  the `the_inside_answers_*`, `the_second_call_*` and `a_condition_holds_*` tests pass (7, the same counts); native
+  layer 1, 2008 forms, 1,000 a form, seed 5150, 32 at once: 0 failing, the same 2,594 known failures, 165,030
+  answers equal to the meaning's, the second call in 9,904 runs, 557 s. The literal check: no finding in a line this
+  run wrote (three in the new test removed); the older strings of the test crate's native.rs remain.
 - Controls (rented copy only, scratch xn1r10/controls-enter.sh, 20:15 UTC, load 8.5): all 11 caught: the final
   check left out, rbp's upper bits lost under 16 bits, one copy too many, the frame's own push left out, an 80-bit
   value's last two bytes not written, the status word or the tag word not taken, a NOT_STORED value written, the
