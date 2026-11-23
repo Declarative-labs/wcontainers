@@ -8990,7 +8990,6 @@ code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"a pa
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"begin_pass inside a pass"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::draw_impl	"draw outside a pass"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::draw_in	"8-bit indices are widened by the front"
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::resolve_impl	"a resolve in the other sRGB twin of a texture that cannot be sampled"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::resolve_impl	"resolve in a format this back end does not hold"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::resolve_impl	"resolve inside a pass"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	int	Words	4
