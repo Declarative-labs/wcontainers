@@ -223,11 +223,15 @@ pub(super) fn do_mmap<S: crate::System>(
         }
         address
     } else {
-        let hint = page_down(address);
-        let hint_fits = hint >= LOWEST_ADDRESS
-            && hint
-                .checked_add(length)
-                .is_some_and(|end| end <= map.ceiling && map.free_for_placement(hint, end));
+        // A hint below the lowest address a mapping may take is moved up to it
+        // (`round_hint_to_min`).
+        let hint = match page_down(address) {
+            0 => 0,
+            hint => hint.max(LOWEST_ADDRESS),
+        };
+        let hint_fits = hint
+            .checked_add(length)
+            .is_some_and(|end| end <= map.ceiling && map.free_for_placement(hint, end));
         if hint != 0 && hint_fits {
             hint
         } else {

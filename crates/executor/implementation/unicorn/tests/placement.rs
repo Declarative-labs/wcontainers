@@ -24,3 +24,21 @@ fn relative_placement_matches_reference() {
         &[],
     );
 }
+
+/// A hint below the lowest address a mapping may take goes to that address, and once nothing
+/// fits below the mappings' base the gap above it, below the stack, is filled.
+#[test]
+fn the_edges_of_the_space_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let options = StartOptions {
+        seccomp: Seccomp::Unconfined,
+        ..Default::default()
+    };
+    assert_same_output_with(
+        &out,
+        "spaceedges",
+        options,
+        &[docker::SECURITY_OPTION, docker::SECCOMP_UNCONFINED],
+        &[],
+    );
+}

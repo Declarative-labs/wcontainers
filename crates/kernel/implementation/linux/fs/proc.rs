@@ -427,6 +427,8 @@ const TIMENS_PAD: char = ' ';
 /// `/proc`'s files of the layout's randomization.
 const RANDOMIZE_VA_SPACE: &str = "sys/kernel/randomize_va_space";
 const MMAP_RND_BITS: &str = "sys/vm/mmap_rnd_bits";
+/// `/proc`'s file of the lowest address a mapping may take.
+const MMAP_MIN_ADDR: &str = "sys/vm/mmap_min_addr";
 const MSG_NEXT_ID: &str = "sys/kernel/msg_next_id";
 const SEM_NEXT_ID: &str = "sys/kernel/sem_next_id";
 const SHM_NEXT_ID: &str = "sys/kernel/shm_next_id";
@@ -549,6 +551,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/vm", Global::Directory),
     ("sys/vm/drop_caches", Global::File(0o200)),
     ("sys/vm/hugetlb_shm_group", Global::File(0o644)),
+    (MMAP_MIN_ADDR, Global::File(0o644)),
     (MMAP_RND_BITS, Global::File(0o600)),
     ("sys/vm/nr_hugepages", Global::File(0o644)),
     ("sys/vm/nr_overcommit_hugepages", Global::File(0o644)),
@@ -2025,6 +2028,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 RANDOMIZE_VA_SPACE => {
                     value_line(&mut out, crate::memory::RANDOMIZE_VA_SPACE);
                 }
+                MMAP_MIN_ADDR => value_line(&mut out, wcontainers_abi::LOWEST_ADDRESS),
                 MMAP_RND_BITS => {
                     let random =
                         crate::memory::LayoutRandomization::for_space(machine.lowest_tier_top);
