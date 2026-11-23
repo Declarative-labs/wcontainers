@@ -69,9 +69,13 @@ fn scale() -> u32 {
         .unwrap_or(1)
 }
 
+/// Prints the time per repetition of `run`, repeated as many times as the scale asks.
+fn report(name: &str, repetitions: u32, run: impl FnMut()) {
+    time(name, repetitions * scale(), run);
+}
+
 /// Prints the time per repetition of `run`, the best of five rounds.
-fn report(name: &str, repetitions: u32, mut run: impl FnMut()) {
-    let repetitions = repetitions * scale();
+fn time(name: &str, repetitions: u32, mut run: impl FnMut()) {
     let best = (0..5)
         .map(|_| {
             let start = Instant::now();
@@ -108,7 +112,9 @@ where
         item_name: "hook",
         address: ExternalAddress::Function(hook),
     }];
-    report("instantiate it", 2_000, || {
+    // Not scaled: instances live as long as the engine value, and an engine may cap how many one holds
+    // (wasmtime's store holds at most 10000).
+    time("instantiate it", 1_000, || {
         black_box(
             engine
                 .instantiate(&module, &imports)

@@ -638,12 +638,15 @@ impl<HostContext: 'static> TableStore for WasmtimeEngine<HostContext> {
         function: Option<&Func>,
     ) -> Result<(), WriteTableError> {
         let store = self.store.get_mut();
-        if index >= table.size(&*store) {
-            return Err(WriteTableError::IndexOutsideTable);
-        }
         table
-            .set(store, index, Ref::Func(function.cloned()))
-            .map_err(|_| WriteTableError::ReferenceTypeMismatch)
+            .set(&mut *store, index, Ref::Func(function.cloned()))
+            .map_err(|_| {
+                if index >= table.size(&*store) {
+                    WriteTableError::IndexOutsideTable
+                } else {
+                    WriteTableError::ReferenceTypeMismatch
+                }
+            })
     }
 }
 
