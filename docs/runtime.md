@@ -1170,6 +1170,22 @@ Each bar is checkable by running the named command on this Mac with Docker.
   mid-run and brought back in a new process finishing with the reference's output. The linked kernel's
   results stay as they were; both forms run the same suite from then on.
 
+- **JR, the kernel through its runners, on the owner's interfaces.** The container makes the kernel with
+  `Kernel::new(config, parallelism)`, gives each runner a host thread of its own and an executor of its own,
+  and acts on each `StopReason`: `Finished` and `Panicked` end the container for good (a panic caught on a
+  runner's thread is `Panicked`), every other runner is stopped through the executors' stop and woken from
+  its idle wait; `Idle` waits on the condition variable the runners share until its time on the system's
+  monotonic clock, at most 1 ms when the kernel gives a later time or none (a counted slow path, since the
+  kernel tells the runtime of no wake); `Suspended` waits as `Idle` with no time; `Interrupted` from the
+  kernel runs the runner again, and the run ends as `Interrupted` only when the interrupter asked. An interrupt
+  asked between runs ends the next run alone. Then `Runtime::new(config)` and `make_container` build that
+  container, and the local system serves `MachineDescription` and the rest of `wcontainers_system::System`.
+  The suite (crates/runtime/conformance) takes one `Subject`: a runtime, an image with a POSIX shell, and
+  makers of each container's execution configuration, state and parts (one set whose system panics once the
+  container runs). Bar: the suite at parallelism 1 and 4; the kernel test crate and J5's comparisons give
+  their recorded verdicts at parallelism 1 on the rented machines; clippy clean; the crate inherits the
+  workspace's lints.
+
 The brief's pass bar is met at J5 (layers 1 to 3), J6 (K6b) and J7 (benchmarks).
 
 ## 17. What stays out, and why nothing here rules it out

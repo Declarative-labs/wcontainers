@@ -1,6 +1,79 @@
 # Runtime status
 
-Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md.
+Plan: docs/runtime.md. Branch: agents, in the shared worktree wcontainers-agents. Brief:
+pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections say crates/wcontainers-runtime,
+-kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
+and crates/executor/implementation/unicorn.
+
+## JR, first run (2026-11-23): the runner driver and the suite; the rest waits on the kernel
+
+Built and pushed (97a83cc0, lock file bf2c11c0; plan: docs/runtime.md section 16, JR):
+- single-kernel runners.rs: `KernelContainer<K: Kernel, S: Clock + Sync>` and `RunInterrupter`, implementing the
+  interface's `Container` and `Interrupter`. `new(kernel, runners, executor maker, stop, system)` gives each
+  runner an executor of its own; `run` runs every runner on its own scoped host thread. `Finished` and `Panicked`
+  end the container for good (later runs return the same); a panic caught on a runner's thread is `Panicked`;
+  a panic outranks a finish and a finish an interrupt. When one runner ends the run the others are woken from
+  their idle waits and leave at their next return. `Idle { until }` waits on a shared condition variable until
+  that time on the system's monotonic clock, but at most 1 ms (`IDLE_POLL`) when the time is later or absent,
+  counted (`idle_polls`, reason `IDLE_WITHOUT_WAKE`); `Suspended` waits as `Idle` with no time; `Interrupted`
+  from the kernel runs the runner again; the run returns `Interrupted` only when the interrupter asked, and an
+  interrupt asked between runs ends the next run alone. Nothing calls it yet (see the waits below).
+- crates/runtime/conformance: the placeholder is replaced by 7 checks written against the traits alone, on one
+  `Subject` (a runtime; makers of an image source whose `PATH` has `sh`, of the execution configuration, the
+  state, and of `Parts` (system and standard ends), plus failing parts whose system panics once the container
+  runs): `a_container_runs_to_its_end`, `a_finished_container_stays_finished`,
+  `a_program_that_is_nowhere_is_refused`, `an_interrupt_from_another_thread_stops_a_run` (twice, from a second
+  thread, each interrupt asked twice), `a_run_goes_on_after_an_interrupt`, `work_side_by_side_runs_to_its_end`
+  (four shells at once), `a_host_thread_dying_inside_a_run_ends_the_container`. Parallelism 1 and several is the
+  implementation's choice of `Runtime::Config`: its test file calls `tests!` once per parallelism. No
+  implementation calls `tests!` yet.
+- Measured on the ARM64 machine (load 13 to 17): clippy with warnings denied, all targets, `--no-deps`, on
+  wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean.
+
+Not done, each with what it waits on (so JR is not closed):
+- The kernel's `Runner::run` is not built: crates/kernel/implementation/linux/executing.rs `KernelRunner::run`
+  is `unimplemented!`. Through the runners every container would end `Panicked` at its first run. Kernel track.
+- `KernelConfig::new` (executing.rs) is an `unsafe fn`, so the runtime, once it inherits the workspace's
+  `forbid(unsafe_code)`, cannot make this kernel through `Kernel::new` at all. Its condition is that the system's
+  waiting calls may move between host threads; a `Send` bound on the system interface's futures (the owner's
+  file) or a safe constructor of the kernel's would settle it. Kernel track and the owner (the kernel's status
+  already asks it).
+- The kernel keeps one executor of its own (`Inner { kernel, executor }`) and its runners share it, so an
+  executor of each runner's own, which this driver hands over, is not used by it; and `KernelConfig` takes a
+  `Start<'static, ..>`, so the runtime's arguments and environment (read from the configuration) must be leaked
+  or owned by the kernel. Kernel track.
+- The local system implements the kernel's own `System` (wcontainers_kernel_linux), not the interface's
+  `wcontainers_system::System`: it lacks `ProcessTracer` (whose `type Kernel` names the kernel, so the local
+  system must name its executor), `ProcessorInputs`, `MachineDescription`, `FallbackObserver`, `IcmpSockets`,
+  `RawSockets` and `RouteResolver`. The interface's `Runtime` needs it. This track's next work, together with
+  `Runtime::new(config)` and `make_container` building a `KernelContainer`; MachineDescription is served there.
+- The two unsafe uses (the stop flag, implementation.rs `StopFlag::entered` and `raise`): the flag word is in
+  the wasmtime executor's state memory and the runtime holds its address. For the wasmtime executor's track
+  (as docs/status-no-unsafe.md also says): give `StopFlag::entered` something safe to call, for example
+  `entered(&self, raise: &Arc<dyn Fn() + Send + Sync>)`, one closure kept per thread by the executor that
+  writes its flag word under the executor's own marked unsafe; the runtime then stores and calls the closure
+  and names no address. The call is in crates/executor/implementation/wasmtime/implementation.rs (around line
+  2410, `unsafe { self.stop_flag.entered(flag) }`), not this track's file, so it is not done; the crate keeps its
+  own lints table until then.
+- The J5 verdicts at parallelism 1: nothing the old loop (`Stepper`, `Container::run` of container.rs) uses
+  changed in this run, so the kernel test crate and J5's comparisons were not rerun. At parallelism above 1
+  nothing runs through the runners yet, so no test name passes there.
+
+For the owner (the interfaces, read-only to this track):
+- `StopReason::Idle` carries no way for the kernel to say that a wait it keeps on the system has ended. The
+  runtime parks an idle runner's host thread, and only the kernel's waker sees the system's answer. Example: a
+  guest blocked in `read` on a TCP connection; the runner returns `Idle { until: None }`; the peer's bytes
+  arrive and the system wakes the kernel's waiting call, but the host thread stays parked. So the runtime polls
+  every 1 ms, counted. A wake the runtime hands the kernel (or `Runner::run` waiting itself) would remove it.
+- Nothing in the kernel or executor interface ends a run in progress: the interrupter can only reach the
+  executor through something executor-specific (the driver takes a `stop` closure). Example: a guest in
+  `while (1);` on an executor with no stop of its own never returns from `Runner::run`, so `Interrupter` cannot
+  keep its contract for every executor.
+- Testing the driver's handling of each `StopReason` needs a runner that returns what a test asks; no test
+  double of the kernel interface exists (the layout puts one at crates/kernel/implementation/<name>, not this
+  track's folder), so the driver is tested only through the suite, once a runtime runs it.
+- crates/runtime/implementation/single-kernel still declares traits (`Execution`, `Answer`, `System`,
+  `Executor`) for its old loop, against the layout's rule; they go with the old loop.
 
 ## Where things stand
 
