@@ -69,6 +69,18 @@ const UNEXPORTED_NAME: &str = "other";
 /// Text, which lacks the [magic number](https://webassembly.github.io/spec/core/binary/modules.html#binary-magic) every module starts with.
 const NOT_A_MODULE: &[u8] = b"not a module";
 
+/// Checks that `host_context` returns what `new` was given.
+pub fn holds_the_host_context_it_was_given<T: WebAssemblyEngine<HostContext = i32>>(subject: T)
+where
+    T::Config: Default,
+{
+    drop(subject);
+    let mut made = T::new(T::Config::default(), i32::MAX)
+        .ok()
+        .expect("the engine is made");
+    assert_eq!(*made.host_context(), i32::MAX);
+}
+
 /// Checks that a module with nothing in it compiles and instantiates.
 pub fn instantiates_an_empty_module<T: WebAssemblyEngine>(mut subject: T) {
     let module = subject.compile(EMPTY).ok().expect("the module compiles");
@@ -263,6 +275,11 @@ pub fn invokes_a_host_function<T: FunctionTypeBinder<(), i32, HostContext = i32>
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
+        #[test]
+        fn holds_the_host_context_it_was_given() {
+            $crate::holds_the_host_context_it_was_given($value);
+        }
+
         #[test]
         fn instantiates_an_empty_module() {
             $crate::instantiates_an_empty_module($value);

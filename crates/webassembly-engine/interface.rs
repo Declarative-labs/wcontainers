@@ -11,6 +11,7 @@ use futures_core::Stream;
 use thiserror::Error;
 
 pub trait WebAssemblyEngine: Sized {
+    type Config;
     /// A compiled [module](https://webassembly.github.io/spec/core/syntax/modules.html#modules).
     type Module: Send + Sync;
     /// A [module instance](https://webassembly.github.io/spec/core/exec/runtime.html#module-instances).
@@ -27,16 +28,20 @@ pub trait WebAssemblyEngine: Sized {
     type TagAddress: Clone;
     /// A value held by the engine and lent to each [host function](https://webassembly.github.io/spec/core/exec/runtime.html#syntax-hostfunc) when it is invoked.
     type HostContext;
-    type Error;
+    type InvokeError;
 
+    type NewError;
+    fn new(config: Self::Config, host_context: Self::HostContext) -> Result<Self, Self::NewError>;
+
+    type CompileError;
     /// Compiles a module from its [binary format](https://webassembly.github.io/spec/core/binary/modules.html#binary-module).
-    fn compile(&self, bytes: &[u8]) -> Result<Self::Module, Self::Error>;
+    fn compile(&self, bytes: &[u8]) -> Result<Self::Module, Self::CompileError>;
 
     /// Compiles a module [while its bytes arrive](https://webassembly.github.io/spec/web-api/#dom-webassembly-compilestreaming).
     async fn compile_streaming<StreamError>(
         &self,
         chunks: impl Stream<Item = Result<impl AsRef<[u8]>, StreamError>>,
-    ) -> Result<Self::Module, CompileStreamingError<StreamError, Self::Error>> {
+    ) -> Result<Self::Module, CompileStreamingError<StreamError, Self::CompileError>> {
         let mut chunks = pin!(chunks);
         let mut bytes = Vec::new();
         while let Some(chunk) = poll_fn(|context| chunks.as_mut().poll_next(context)).await {
@@ -45,12 +50,13 @@ pub trait WebAssemblyEngine: Sized {
         self.compile(&bytes).map_err(CompileStreamingError::Compile)
     }
 
+    type InstantiateError;
     /// Runs the [instantiation](https://webassembly.github.io/spec/core/exec/modules.html#instantiation) of the module.
     fn instantiate(
         &mut self,
         module: &Self::Module,
         imports: &[Import<'_, Self>],
-    ) -> Result<Self::Instance, Self::Error>;
+    ) -> Result<Self::Instance, Self::InstantiateError>;
 
     /// Returns the address of the instance's [export](https://webassembly.github.io/spec/core/syntax/modules.html#exports) with the given name.
     fn find_export(
@@ -97,8 +103,11 @@ pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
 
 pub trait BoundFunction<Engine: WebAssemblyEngine, Parameters, Results> {
     /// Runs the [invocation](https://webassembly.github.io/spec/core/exec/modules.html#invocation) of the function.
-    fn invoke(&self, engine: &mut Engine, parameters: Parameters)
-    -> Result<Results, Engine::Error>;
+    fn invoke(
+        &self,
+        engine: &mut Engine,
+        parameters: Parameters,
+    ) -> Result<Results, Engine::InvokeError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
