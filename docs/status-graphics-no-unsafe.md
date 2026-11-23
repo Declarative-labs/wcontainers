@@ -61,6 +61,32 @@ safe library does it, what removing it would cost.
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
 
+## The five questions in short (to bring one at a time)
+
+1. May the reference code call real Direct3D through the `windows` crate, whose every call is
+   `unsafe fn`? 530 uses: graphics-test 342, direct3d-12 examples/check 169, gpu-webgpu
+   tests/direct3d.rs 19.
+2. May the Direct3D 12 Windows library (a C ABI DLL, direct3d-12 examples/directx, 326) be its own
+   package that denies unsafe with each use marked, like the executors?
+3. May the test-only forwarder that hooks a program's Direct3D (graphics-test-forward, 197) be a
+   marked exception?
+4. The WebGL 2 back end (gpu-webgl, 167): web-sys in the browser only (the native ANGLE route
+   ends), glow kept natively as an exception, or a new remote back end that draws natively
+   through headless Chrome?
+5. May gpu-webgpu's present test (tests/host, 11) import winit and a screen-capture crate (xcap),
+   or count as reference code under 1?
+
+## Run 9 (2026-11-22 late)
+
+- Still no ruling: the graphics brief's newest section and the orchestrator's open-with-owner
+  notes were read again, and the notes still do not list these five. Nothing was committed to
+  `agents` after run 8 (origin/agents is 2ed81071). Counts are unchanged: direct3d-12 495,
+  graphics-test 342, graphics-test-forward 197, gpu-webgl 167, gpu-webgpu 30.
+- No build or test was run: nothing they depend on has changed since run 8's clean Windows lint.
+- The shaders track has new containers in tests/own that are not committed yet
+  (ps_position_centroid*). Once they are committed, declared.expected must be recorded again
+  (Next, 5).
+
 ## Run 8 (2026-11-22 late)
 
 - Still no ruling: the graphics brief and the orchestrator's open-with-owner notes were read again,
