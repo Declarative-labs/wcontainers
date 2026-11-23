@@ -5068,6 +5068,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-host-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-abi",
+]
+
+[[package]]
 name = "wcontainers-executor-simulation"
 version = "0.1.0"
 dependencies = [
