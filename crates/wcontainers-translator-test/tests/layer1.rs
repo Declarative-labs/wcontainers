@@ -676,6 +676,340 @@ fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() 
     );
 }
 
+/// The inside's answer equals the meaning's for `case`.
+fn answered_as_the_meaning(case: &Case) {
+    use wcontainers_translator_test::guest::x86_64::native::answered;
+    use wcontainers_translator_test::layer1::translated;
+    let code = case.code.code();
+    let answered =
+        answered(case).unwrap_or_else(|| panic!("{code:02x?}: an instruction the inside answers"));
+    let meaning = translated::<X86_64>(case);
+    assert!(
+        answered == meaning,
+        "{code:02x?}: the answer {:?} {:x?} {:x?}, the meaning {:?} {:x?} {:x?}",
+        answered.stop,
+        answered.state.0,
+        answered.changed,
+        meaning.stop,
+        meaning.state.0,
+        meaning.changed
+    );
+}
+
+/// The inside's answers to the far transfers (`retf`, `iret`, far `jmp` and `call`), `wrfsbase`, `wrgsbase` and
+/// `lfs` through a wrapping 32-bit address equal the meaning's: every selector of Linux's code segments and its
+/// neighbours, canonical and non-canonical targets and bases, every rflags bit `iret` loads, frames and pointers
+/// that fault at each slot; and `rdtsc` and `rdtscp` give the clock as the meaning does.
+#[test]
+fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() {
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_translator_test::guest::x86_64::native::{ANSWER_CLOCK, answered};
+    use wcontainers_translator_test::guest::x86_64::{FS, RFLAGS, RSP, plain};
+    use wcontainers_translator_test::layer1::translated_with;
+    use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_x86::{
+        ALIGNMENT_CHECK, ALWAYS, NT, RAX, RCX, RDX, TF, USER_CS, USER_DS, USER_END, USER32_CS,
+    };
+    let mut checked = 0;
+    let stack = DATA + DATA_WRITABLE / 2;
+    let pointer = stack + 64;
+    let selectors = [
+        USER_CS,
+        USER_CS & !3,
+        USER_CS | 1 << u8::BITS,
+        USER32_CS,
+        USER32_CS & !3,
+        USER_DS,
+        0,
+    ];
+    let targets = [
+        CODE + PAGE_SIZE,
+        USER_END - 1,
+        USER_END,
+        !(USER_END - 1),
+        !USER_END,
+        u64::MAX,
+    ];
+    let slots = |values: &[u64], bytes: usize| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|v| v.to_le_bytes()[..bytes].to_vec())
+            .collect()
+    };
+    let with_stack = |code: &[u8], rsp: u64, placed: Vec<u8>| {
+        let mut case = plain(code);
+        case.state.0[RSP] = rsp.into();
+        case.state.0[usize::from(RCX)] = pointer.into();
+        case.placed = ((rsp.min(pointer) - DATA) as u32, placed);
+        case
+    };
+    // The stacks a frame or a call's slots fault at: the read-only data, its end, the data's start (a call's
+    // return address below it), and off the canonical range.
+    let faulting = |bytes: u64| {
+        [
+            DATA + DATA_WRITABLE,
+            DATA + DATA_BYTES - 1,
+            DATA + bytes,
+            DATA + 2 * bytes - 1,
+            USER_END,
+        ]
+    };
+    // retf (32-bit, 64-bit and 16-bit slots), and retf 0x10.
+    for (prefix, bytes) in [(&[][..], 4), (&[0x48][..], 8), (&[0x66][..], 2)] {
+        for op in [&[0xcb][..], &[0xca, 0x10, 0x00]] {
+            let code = [prefix, op].concat();
+            for selector in selectors {
+                for target in targets {
+                    let frame = slots(&[target, selector.into()], bytes);
+                    answered_as_the_meaning(&with_stack(&code, stack, frame));
+                    checked += 1;
+                }
+            }
+            for rsp in faulting(bytes as u64) {
+                answered_as_the_meaning(&with_stack(&code, rsp, vec![]));
+                checked += 1;
+            }
+        }
+    }
+    // iret with each rflags bit it loads, the ss of Linux's table and others, and NT set before.
+    for (prefix, bytes) in [(&[][..], 4), (&[0x48][..], 8), (&[0x66][..], 2)] {
+        let code = [prefix, &[0xcf]].concat();
+        let flags = [ALWAYS, ALWAYS | TF, ALWAYS | ALIGNMENT_CHECK, u64::MAX, 0];
+        for selector in selectors {
+            for target in targets {
+                for rflags in flags {
+                    for ss in [USER_DS, USER_DS & !3, USER_CS, 0] {
+                        let frame = slots(
+                            &[target, selector.into(), rflags, pointer, ss.into()],
+                            bytes,
+                        );
+                        let mut case = with_stack(&code, stack, frame);
+                        if rflags == 0 {
+                            case.state.0[RFLAGS] |= u128::from(NT);
+                        }
+                        answered_as_the_meaning(&case);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        for rsp in faulting(bytes as u64) {
+            answered_as_the_meaning(&with_stack(&code, rsp, vec![]));
+            checked += 1;
+        }
+    }
+    // jmp far and call far [rcx] (32-bit, 64-bit and 16-bit offsets), from stacks that take the call's slots and
+    // those that fault at either; with 0x67 and fs, a pointer whose selector's address wraps at 2^32.
+    for (prefix, bytes) in [(&[][..], 4), (&[0x48][..], 8), (&[0x66][..], 2)] {
+        for modrm in [0x29, 0x19] {
+            let code = [prefix, &[0xff, modrm]].concat();
+            for selector in selectors {
+                for target in targets {
+                    let mut placed = vec![0; (pointer - stack) as usize];
+                    placed.extend(&target.to_le_bytes()[..bytes]);
+                    placed.extend(selector.to_le_bytes());
+                    answered_as_the_meaning(&with_stack(&code, stack, placed));
+                    checked += 1;
+                }
+            }
+            for rsp in faulting(bytes as u64) {
+                let mut case = with_stack(&code, rsp, vec![]);
+                let mut placed = (CODE + PAGE_SIZE).to_le_bytes()[..bytes].to_vec();
+                placed.extend(USER_CS.to_le_bytes());
+                case.placed = ((pointer - DATA) as u32, placed);
+                answered_as_the_meaning(&case);
+                checked += 1;
+            }
+            let wrapping = [&[0x64, 0x67][..], code.as_slice()].concat();
+            let end = u64::from(u32::MAX) + 1 - bytes as u64;
+            let mut case = with_stack(&wrapping, stack, vec![]);
+            case.state.0[usize::from(RCX)] = end.into();
+            case.state.0[FS] = pointer.wrapping_sub(end).into();
+            let mut placed = (CODE + PAGE_SIZE).to_le_bytes()[..bytes].to_vec();
+            placed.extend(USER_CS.to_le_bytes());
+            case.placed = ((pointer - DATA) as u32, placed);
+            answered_as_the_meaning(&case);
+            checked += 1;
+        }
+    }
+    // lfs eax, fs:[ecx] whose selector's address wraps at 2^32, then the same with the fs base so the selector
+    // is read where the wrap puts it.
+    for (prefix, bytes) in [(&[][..], 4u64), (&[0x48][..], 8), (&[0x66][..], 2)] {
+        let code = [&[0x64, 0x67][..], prefix, &[0x0f, 0xb4, 0x01]].concat();
+        let end = u64::from(u32::MAX) + 1 - bytes;
+        for base in [pointer.wrapping_sub(end), pointer] {
+            let mut case = with_stack(&code, stack, vec![]);
+            case.state.0[usize::from(RCX)] = end.into();
+            case.state.0[FS] = base.into();
+            case.placed = ((pointer - DATA) as u32, USER_DS.to_le_bytes().repeat(8));
+            answered_as_the_meaning(&case);
+            checked += 1;
+        }
+    }
+    // wrfsbase and wrgsbase of ecx and rcx, canonical and not, the upper half set for the 32-bit forms.
+    for code in [
+        &[0xf3, 0x0f, 0xae, 0xd1][..],
+        &[0xf3, 0x48, 0x0f, 0xae, 0xd1],
+        &[0xf3, 0x0f, 0xae, 0xd9],
+        &[0xf3, 0x48, 0x0f, 0xae, 0xd9],
+    ] {
+        for value in targets.into_iter().chain([0, 0x1234_5678_9abc_def0]) {
+            let mut case = plain(code);
+            case.state.0[usize::from(RCX)] = value.into();
+            answered_as_the_meaning(&case);
+            checked += 1;
+        }
+    }
+    // rdtsc and rdtscp: the clock's reading in edx:eax; the rest, rcx's 0 for rdtscp too, as the meaning's.
+    let [rax, rcx, rdx] = [RAX, RCX, RDX].map(usize::from);
+    for code in [&[0x0f, 0x31][..], &[0x0f, 0x01, 0xf9]] {
+        let mut case = plain(code);
+        for field in [rax, rcx, rdx] {
+            case.state.0[field] = u64::MAX.into();
+        }
+        let mut answer = answered(&case).expect("an instruction the inside answers");
+        let mut meaning =
+            translated_with::<X86_64>(&case, |machine| machine.set_clock(ANSWER_CLOCK));
+        let ticks = |state: &[u128]| (state[rdx] as u64) << u32::BITS | state[rax] as u64;
+        assert_eq!(ticks(&answer.state.0), ANSWER_CLOCK, "{code:02x?}");
+        assert!(ticks(&meaning.state.0) >= ANSWER_CLOCK, "{code:02x?}");
+        for field in [rax, rdx] {
+            answer.state.0[field] = 0;
+            meaning.state.0[field] = 0;
+        }
+        assert!(
+            answer == meaning,
+            "{code:02x?}: the answer {:?} {:x?}, the meaning {:?} {:x?}",
+            answer.stop,
+            answer.state.0,
+            meaning.stop,
+            meaning.state.0
+        );
+        checked += 1;
+    }
+    eprintln!(
+        "the inside's far transfers, bases, far pointer wraps and clock equal to the meaning's in {checked} cases"
+    );
+}
+
+/// The inside's answers to `xsave` and `xrstor` (layer 1 leaves them out: XCR0 and XSTATE_BV are by design) equal
+/// the meaning's: each RFBM, components in and out of their initial configuration, a TOP that rotates the
+/// registers, areas whose XSTATE_BV, header and MXCSR `xrstor` takes or refuses, and areas misaligned, in the
+/// read-only data, across the data's end, off the canonical range, and wrapping a 32-bit address under fs.
+#[test]
+fn the_inside_answers_xsave_and_xrstor_as_the_meaning_x86_64() {
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_translator_test::guest::x86_64::{FS, FSW, R0, XMM, YMMH, plain};
+    use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_x86::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87, xsave_bytes};
+    use wcontainers_x86::{Fxsave, MXCSR_AT_START, MXCSR_WRITABLE, RAX, RCX, USER_END};
+    /// XSTATE_BV after the legacy area, the header's next words, MXCSR and the x87 header's reserved byte.
+    const XSTATE_BV: usize = size_of::<Fxsave>();
+    const XCOMP_BV: usize = XSTATE_BV + size_of::<u64>();
+    const MXCSR: usize = std::mem::offset_of!(Fxsave, mxcsr);
+    const RESERVED: usize = std::mem::offset_of!(Fxsave, reserved0);
+    const AREA: usize = xsave_bytes(XSAVE_X87 | XSAVE_SSE | XSAVE_AVX) as usize;
+    let mut checked = 0;
+    // Half an area, keeping its alignment.
+    let legacy = XSTATE_BV as u64;
+    let area_at = DATA + PAGE_SIZE;
+    let mut seed = 0x5eed_u64;
+    let mut next = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        seed
+    };
+    let forms: [&[u8]; 4] = [
+        &[0x0f, 0xae, 0x21],
+        &[0x48, 0x0f, 0xae, 0x21],
+        &[0x0f, 0xae, 0x29],
+        &[0x48, 0x0f, 0xae, 0x29],
+    ];
+    let rfbms = [0, 1, 2, 4, 3, 6, 7, u64::MAX];
+    for code in forms {
+        for rfbm in rfbms {
+            // The x87 status word (TOP 5) and registers, the xmm registers, the upper halves.
+            for (status, registers, vectors, highs) in [
+                (false, false, false, false),
+                (true, true, true, true),
+                (true, true, false, true),
+                (false, true, false, false),
+                (false, false, true, false),
+            ] {
+                for (bv, header, mxcsr, reserved) in [
+                    (7u64, 0u64, MXCSR_AT_START, 0u8),
+                    (0, 0, MXCSR_AT_START, u8::MAX),
+                    (1, 0, MXCSR_AT_START, 0),
+                    (6, 0, MXCSR_WRITABLE, 0),
+                    (7, 0, MXCSR_AT_START | !MXCSR_WRITABLE, 0),
+                    (0xf, 0, MXCSR_AT_START, 0),
+                    (7, 1, MXCSR_AT_START, 0),
+                ] {
+                    let mut case = plain(code);
+                    case.state.0[usize::from(RCX)] = area_at.into();
+                    case.state.0[usize::from(RAX)] = rfbm.into();
+                    if status {
+                        case.state.0[FSW] = (5 << 11) | 0x41;
+                    }
+                    if registers {
+                        for r in 0..8 {
+                            case.state.0[R0 + r] =
+                                u128::from(next()) | u128::from(next() as u16) << 64;
+                        }
+                    }
+                    for r in 0..16 {
+                        if vectors {
+                            case.state.0[XMM + r] = u128::from(next()) << 64 | u128::from(next());
+                        }
+                        if highs {
+                            case.state.0[YMMH + r] = u128::from(next()) << 64 | u128::from(next());
+                        }
+                    }
+                    let mut area: Vec<u8> =
+                        (0..AREA / 8).flat_map(|_| next().to_le_bytes()).collect();
+                    area[XSTATE_BV..][..8].copy_from_slice(&bv.to_le_bytes());
+                    area[XCOMP_BV..][..24].fill(0);
+                    area[XCOMP_BV..][..8].copy_from_slice(&header.to_le_bytes());
+                    area[MXCSR..][..4].copy_from_slice(&mxcsr.to_le_bytes());
+                    area[RESERVED] = reserved;
+                    case.placed = ((area_at - DATA) as u32, area);
+                    answered_as_the_meaning(&case);
+                    checked += 1;
+                }
+            }
+        }
+        // Misaligned, across the writable data's end, the data's end, the canonical range's end, off it.
+        for at in [
+            area_at + 16,
+            DATA + DATA_WRITABLE - legacy,
+            DATA + DATA_BYTES - legacy,
+            USER_END - legacy,
+            USER_END,
+        ] {
+            let mut case = plain(code);
+            case.state.0[usize::from(RCX)] = at.into();
+            case.state.0[usize::from(RAX)] = u64::MAX.into();
+            answered_as_the_meaning(&case);
+            checked += 1;
+        }
+        // fs:[ecx] whose last byte wraps at 2^32 to below the fs base, unmapped, and one that does not wrap.
+        let wrapping = [&[0x64, 0x67][..], code].concat();
+        for (ecx, base) in [
+            (0xffff_ff00u64, area_at.wrapping_sub(0xffff_ff00)),
+            (0, area_at),
+        ] {
+            let mut case = plain(&wrapping);
+            case.state.0[usize::from(RCX)] = ecx.into();
+            case.state.0[FS] = base.into();
+            case.state.0[usize::from(RAX)] = 7u64.into();
+            answered_as_the_meaning(&case);
+            checked += 1;
+        }
+    }
+    eprintln!("the inside's xsave and xrstor equal to the meaning's in {checked} cases");
+}
+
 /// `Condition::holds`, by which the inside takes a `jcc` exit's `int3` hit (docs/x86-native-output.md 3.2), is the
 /// meaning's: `setcc al` under WebAssembly for each of the sixteen conditions on every combination of the five
 /// flags conditions read.

@@ -38,9 +38,11 @@ pub const FS: usize = 18;
 pub const GS: usize = 19;
 const MXCSR: usize = 20;
 const FCW: usize = 21;
-const FSW: usize = 22;
+/// The fields of the x87 status word and of R0, the first x87 register in physical order, each further one's
+/// after it.
+pub const FSW: usize = 22;
 const FTW: usize = 23;
-const R0: usize = 24;
+pub const R0: usize = 24;
 /// The fields of xmm0 and of ymm0's upper half, each further register's after them.
 pub const XMM: usize = 32;
 pub const YMMH: usize = 48;

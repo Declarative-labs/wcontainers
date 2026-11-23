@@ -290,6 +290,15 @@ impl CaseMemory {
     }
 }
 
+/// The clock the inside's answers read in tests: past 2^32 nanoseconds, so that `rdtsc`'s high half is not zero.
+pub const ANSWER_CLOCK: u64 = 3 << u32::BITS;
+
+impl wcontainers_x86::answer::Clock for CaseMemory {
+    fn nanoseconds(&mut self) -> u64 {
+        ANSWER_CLOCK
+    }
+}
+
 impl wcontainers_x86::answer::Memory for CaseMemory {
     fn read(&mut self, at: u64, into: &mut [u8]) -> Result<(), u64> {
         for (k, to) in into.iter_mut().enumerate() {
@@ -309,6 +318,19 @@ impl wcontainers_x86::answer::Memory for CaseMemory {
             *self.byte(to(k), Permissions::WRITE).expect("checked") = *from;
         }
         Ok(())
+    }
+
+    fn check(&mut self, at: u64, bytes: u64, write: bool) -> Result<(), u64> {
+        let access = if write {
+            Permissions::WRITE
+        } else {
+            Permissions::READ
+        };
+        let to = |k: u64| at.wrapping_add(k);
+        match (0..bytes).find(|&k| self.byte(to(k), access).is_none()) {
+            Some(k) => Err(to(k)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -331,11 +353,13 @@ pub fn answered(case: &Case) -> Option<Outcome> {
         &mut constants,
         &mut memory,
     ) {
-        Ok(_) => {
-            block.rip += u64::from(length);
+        Ok(notes) => {
+            if !notes.transferred {
+                block.rip += u64::from(length);
+            }
             Stop::Landed(block.rip)
         }
-        Err(Fault::GeneralProtection) => Stop::GeneralProtection,
+        Err(Fault::GeneralProtection | Fault::FarTransferTo32Bit) => Stop::GeneralProtection,
         Err(Fault::FloatException(raised)) => Stop::FloatException(raised.into()),
         Err(Fault::Memory(address)) => match X86_64::memory_fault(address, code, &block) {
             MemoryFault::Page => Stop::MemoryFault(address),
