@@ -227,7 +227,7 @@ pub fn translate_native_for<G: Native>(
             entries.insert(here, (out.offset(), leads[p]));
             out.enter_ahead(leads[p]);
             part.clear();
-            if let Some(branch) = G::test_loop_invariant(&mut out, &invariants[p]) {
+            if let Some(branch) = G::test_loop_invariant(way, &mut out, &invariants[p]) {
                 tested.push((p, branch));
             }
         }

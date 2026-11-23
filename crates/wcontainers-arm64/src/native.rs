@@ -215,7 +215,7 @@ impl Native for Arm64 {
         carry::aligned_bases(part)
     }
 
-    fn test_loop_invariant(code: &mut HostCode, invariant: &AlignedBases) -> Option<usize> {
+    fn test_loop_invariant(_: &(), code: &mut HostCode, invariant: &AlignedBases) -> Option<usize> {
         carry::test_aligned_bases(code, invariant)
     }
 

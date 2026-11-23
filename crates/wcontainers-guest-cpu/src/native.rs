@@ -76,9 +76,13 @@ pub trait Native: Guest {
     /// What one test before a straight-line part that loops to its own start (`part`, with its guest addresses)
     /// can settle for every turn, because no instruction of the part changes it.
     fn loop_invariant(part: &[(u64, Self::Instruction)]) -> Self::LoopInvariant;
-    /// Writes the test of `invariant`, ending in a branch taken when it holds and pointed later by
+    /// Writes the test of `invariant` for `way`, ending in a branch taken when it holds and pointed later by
     /// [`Self::link`]; gives that branch's offset, or none when it settles nothing.
-    fn test_loop_invariant(code: &mut HostCode, invariant: &Self::LoopInvariant) -> Option<usize>;
+    fn test_loop_invariant(
+        way: &Self::Way,
+        code: &mut HostCode,
+        invariant: &Self::LoopInvariant,
+    ) -> Option<usize>;
     /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says, given the
     /// instructions of its straight-line part before it (`before`, oldest first, with their guest addresses)
     /// and what a test before its loop settled (`invariant`). Its spans start at the instruction, before its
@@ -135,6 +139,8 @@ pub struct HostCode {
     /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
     /// count, or none for a branch only the code's own linking may point elsewhere.
     settling: BTreeMap<u32, Option<u32>>,
+    /// The current instruction's first host byte.
+    begun: u32,
 }
 
 /// Code placed out of line, in the order it was deferred.
@@ -171,6 +177,7 @@ impl HostCode {
             stopping,
         });
         self.owed = counted;
+        self.begun = u32::try_from(self.bytes.len()).expect("host code fits in u32 offsets");
     }
 
     fn state(&mut self) -> &mut Span {
@@ -353,6 +360,17 @@ impl HostCode {
         let now = self.state();
         now.relocated.retain(|r| r.guest != guest);
         now.relocated.push(Relocated { guest, held });
+    }
+
+    /// Throughout the current instruction, from its first byte (an add written before it included), a guest
+    /// register's value is held elsewhere.
+    pub fn relocate_throughout(&mut self, guest: u8, held: Held) {
+        let begun = self.begun;
+        for span in self.spans.iter_mut().rev().take_while(|s| s.start >= begun) {
+            span.relocated.retain(|r| r.guest != guest);
+            span.relocated.push(Relocated { guest, held });
+        }
+        self.relocate(guest, held);
     }
 
     /// From here on a guest register's value is in its own place again.
