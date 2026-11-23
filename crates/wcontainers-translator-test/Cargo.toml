@@ -46,5 +46,6 @@ wait-timeout = "0.2.1"
 [dev-dependencies]
 flate2 = "1.1"
 
-[lints]
-workspace = true
+# TODO: remove this crate's 16 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

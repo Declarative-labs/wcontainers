@@ -72,5 +72,6 @@ path = "conformance.rs"
 # instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
 runtime = ["dep:wcontainers-arm64"]
 
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: an executor calls the unicorn library.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

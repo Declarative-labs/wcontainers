@@ -56,5 +56,6 @@ rand_chacha = "0.9.0"
 [build-dependencies]
 cc = "1"
 
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: it implements Windows COM interfaces, which are raw pointers.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

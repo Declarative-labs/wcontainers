@@ -32,8 +32,6 @@ trace = ["dep:postcard", "dep:serde", "naga/serialize", "naga/deserialize"]
 # frames elsewhere.
 record = ["trace"]
 
-[lints]
-workspace = true
 
 [dev-dependencies]
 anyhow = "1.0.100"
@@ -74,3 +72,7 @@ crate-type = ["cdylib"]
 name = "replay"
 crate-type = ["cdylib"]
 required-features = ["trace"]
+
+# Not under the workspace's ban on unsafe code: it calls the graphics driver.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

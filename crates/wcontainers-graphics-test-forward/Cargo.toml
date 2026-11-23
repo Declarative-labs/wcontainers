@@ -33,5 +33,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 [build-dependencies]
 object = { version = "0.41.0", default-features = false, features = ["read_core", "pe", "std"] }
 
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: it calls Windows graphics interfaces.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

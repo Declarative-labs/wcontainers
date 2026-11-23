@@ -40,5 +40,6 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: it calls Windows graphics interfaces.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

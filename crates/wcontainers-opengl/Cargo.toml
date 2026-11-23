@@ -28,5 +28,6 @@ cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: it implements a C driver interface.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

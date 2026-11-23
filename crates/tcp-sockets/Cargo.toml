@@ -13,3 +13,6 @@ wcontainers-configurable = { path = "../configurable" }
 wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel = { path = "../kernel" }
 wcontainers-negative-route-advisable = { path = "../negative-route-advisable" }
+
+[lints]
+workspace = true

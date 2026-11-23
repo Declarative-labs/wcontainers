@@ -9,3 +9,6 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-kernel = { path = ".." }
+
+[lints]
+workspace = true

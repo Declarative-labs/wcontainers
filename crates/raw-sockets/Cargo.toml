@@ -13,3 +13,6 @@ wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel = { path = "../kernel" }
 etherparse.workspace = true
 wcontainers-configurable = { path = "../configurable" }
+
+[lints]
+workspace = true

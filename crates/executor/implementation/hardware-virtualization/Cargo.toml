@@ -124,6 +124,6 @@ harness = false
 name = "registers"
 harness = false
 
-
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: an executor calls the hypervisor and maps guest memory.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

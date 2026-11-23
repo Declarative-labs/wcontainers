@@ -35,5 +35,6 @@ path = "conformance.rs"
 [dev-dependencies]
 wcontainers-route-resolver-conformance = { path = "../../conformance" }
 
-[lints]
-workspace = true
+# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

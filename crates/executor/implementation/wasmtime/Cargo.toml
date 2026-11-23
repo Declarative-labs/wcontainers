@@ -77,5 +77,6 @@ sha2 = "0.10.9"
 name = "conformance"
 path = "conformance.rs"
 
-[lints]
-workspace = true
+# Not under the workspace's ban on unsafe code: an executor runs generated code and maps guest memory.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

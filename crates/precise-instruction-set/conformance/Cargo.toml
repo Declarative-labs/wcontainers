@@ -11,3 +11,6 @@ path = "conformance.rs"
 wcontainers-precise-instruction-set = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
 wcontainers-processor-architecture-conformance = { path = "../../processor-architecture/conformance" }
+
+[lints]
+workspace = true

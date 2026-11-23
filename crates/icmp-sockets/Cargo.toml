@@ -12,3 +12,6 @@ wcontainers-readiness = { path = "../readiness" }
 wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel = { path = "../kernel" }
 wcontainers-configurable = { path = "../configurable" }
+
+[lints]
+workspace = true

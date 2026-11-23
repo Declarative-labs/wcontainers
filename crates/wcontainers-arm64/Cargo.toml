@@ -33,5 +33,6 @@ translate = [
     "wcontainers-guest-cpu/translate",
 ]
 
-[lints]
-workspace = true
+# TODO: remove this crate's 1 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

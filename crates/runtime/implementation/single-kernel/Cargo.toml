@@ -76,5 +76,6 @@ std = [
 # libzstd, the reference that zstd layers are compared with.
 zstd = "0.13.5"
 
-[lints]
-workspace = true
+# TODO: remove this crate's 7 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

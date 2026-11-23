@@ -19,3 +19,6 @@ wcontainers-udp-sockets = { path = "../udp-sockets" }
 wcontainers-icmp-sockets = { path = "../icmp-sockets" }
 wcontainers-raw-sockets = { path = "../raw-sockets" }
 wcontainers-route-resolver = { path = "../route-resolver" }
+
+[lints]
+workspace = true
