@@ -1936,10 +1936,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     out.push_str("256\n")
                 }
                 // The cap `listen` puts on a backlog.
-                "sys/net/core/somaxconn" => {
-                    let somaxconn = crate::linux_extra::SOMAXCONN;
-                    let _ = writeln!(out, "{somaxconn}");
-                }
+                "sys/net/core/somaxconn" => value_line(&mut out, crate::linux_extra::SOMAXCONN),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");
                 }
