@@ -81,6 +81,27 @@ where
     assert_eq!(*made.host_context(), i32::MAX);
 }
 
+/// Checks that a module compiled by one engine instantiates in another made from the same config.
+pub fn instantiates_a_module_another_engine_compiled<T: WebAssemblyEngine<HostContext = i32>>(
+    subject: T,
+) where
+    T::Config: Default,
+{
+    drop(subject);
+    let config = T::Config::default();
+    let compiling = T::new(config.clone(), i32::default())
+        .ok()
+        .expect("the engine is made");
+    let mut instantiating = T::new(config, i32::default())
+        .ok()
+        .expect("the engine is made");
+    let module = compiling
+        .compile(EXPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
+    assert!(instantiating.instantiate(&module, &[]).is_ok());
+}
+
 /// Checks that a module with nothing in it compiles and instantiates.
 pub fn instantiates_an_empty_module<T: WebAssemblyEngine>(mut subject: T) {
     let module = subject.compile(EMPTY).ok().expect("the module compiles");
@@ -278,6 +299,11 @@ macro_rules! tests {
         #[test]
         fn holds_the_host_context_it_was_given() {
             $crate::holds_the_host_context_it_was_given($value);
+        }
+
+        #[test]
+        fn instantiates_a_module_another_engine_compiled() {
+            $crate::instantiates_a_module_another_engine_compiled($value);
         }
 
         #[test]

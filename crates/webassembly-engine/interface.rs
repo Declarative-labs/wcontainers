@@ -11,7 +11,7 @@ use futures_core::Stream;
 use thiserror::Error;
 
 pub trait WebAssemblyEngine: Sized {
-    type Config;
+    type Config: Clone;
     /// A compiled [module](https://webassembly.github.io/spec/core/syntax/modules.html#modules).
     type Module: Send + Sync;
     /// A [module instance](https://webassembly.github.io/spec/core/exec/runtime.html#module-instances).
