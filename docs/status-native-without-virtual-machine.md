@@ -28,7 +28,12 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 All in plan section 11, with machine and load. Discarded: probe-arm.out and probe-x86.out (a spinning thread of the
 stop test was left running on CPU 3 and slowed the futex figures), probe2-*.out (the stop test looked for its target
-thread among the next 64 thread ids, which the busy machine had passed, and hung). probe3-*.out are the results.
+thread among the next 64 thread ids, which the busy machine had passed, and hung). probe3-*.out are the results;
+on ARM64 its two-CPU futex case did not finish in 550 s at load 43 (a busy CPU: the 2 ms tick case), so
+probe4-arm.out reran the futex slot alone (`./probe 2000 <kernel cpu> <guest cpu>`, -1 for unpinned) on CPUs 60 to
+63 at load 28 to 38. In short: futex slot unpinned 2.40 µs (Graviton4) and 4.23 µs (Xeon 8488C); one CPU 2.34 /
+1.90 µs; a busy target CPU above 1.4 ms; zygote child 89 to 103 / 62 to 96 µs; stop signal to handler 1.6 to 1.9 µs;
+in-process fault round trip 1.3 to 1.4 µs; execute-only mappings work on both machines.
 
 ## Asked of other tracks
 
