@@ -302,16 +302,21 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
         }
         _ => (0, 0),
     };
-    // Storage buffers and images in compute programs, within their shared binding range.
+    // Storage buffers and images in compute programs, within their shared binding range; storage
+    // buffers in fragment programs too, which WebGPU reads and writes there (OpenGL's
+    // `ARB_shader_storage_buffer_object` asks for them).
+    let buffers = limits
+        .storage_buffers_per_stage
+        .min(PIPE_MAX_SHADER_BUFFERS);
     if stage == MESA_SHADER_COMPUTE {
-        let buffers = limits
-            .storage_buffers_per_stage
-            .min(PIPE_MAX_SHADER_BUFFERS);
         caps.max_shader_buffers = buffers;
         caps.max_shader_images = limits
             .storage_textures_per_stage
             .min(PIPE_MAX_SHADER_IMAGES)
             .min(SlotKind::Storage.slots() - buffers);
+    }
+    if stage == MESA_SHADER_FRAGMENT {
+        caps.max_shader_buffers = buffers;
     }
     caps.max_const_buffer0_size = limits.max_uniform_buffer_size;
     // One of the stage's uniform buffers holds a converted program's helper constants.
