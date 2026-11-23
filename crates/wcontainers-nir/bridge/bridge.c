@@ -549,18 +549,53 @@ wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform t
 
 /* A pixel's centre from its corner, along each axis. */
 #define PIXEL_CENTRE 0.5f
-/* The sample count of the one standard pattern of more than one sample the hosts take. */
-#define FOUR_SAMPLES 4
 enum { AXIS_X, AXIS_Y, AXIS_W = 3 };
 
-/* WebGPU's standard positions of four samples, from the pixel's corner in the host's coordinates
- * (https://www.w3.org/TR/webgpu/#:~:text=multisampled%20texture%20with%20sampleCount%20of%204). */
-static const float four_sample_positions[FOUR_SAMPLES][2] = {
-   {0.375f, 0.125f},
-   {0.875f, 0.375f},
-   {0.125f, 0.625f},
-   {0.625f, 0.875f},
+/* The standard sample positions, in steps of SAMPLE_POSITION_STEPS from the pixel's centre
+ * (y down), which Direct3D's standard pattern and Vulkan's standard sample locations share
+ * (https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#primsrast-multisampling);
+ * WebGPU's four are the same. */
+#define SAMPLE_POSITION_STEPS 16.0f
+static const int8_t two_samples[][2] = {{4, 4}, {-4, -4}};
+static const int8_t four_samples[][2] = {{-2, -6}, {6, -2}, {-6, 2}, {2, 6}};
+static const int8_t eight_samples[][2] = {{1, -3}, {-1, 3}, {5, 1},  {-3, -5},
+                                          {-5, 5}, {-7, -1}, {3, 7}, {7, -7}};
+static const int8_t sixteen_samples[][2] = {
+   {1, 1},   {-1, -3}, {-3, 2}, {4, -1}, {-5, -2}, {2, 5},  {5, 3},  {3, -5},
+   {-2, 6},  {0, -7},  {-4, -6}, {-6, 4}, {-8, 0},  {7, -4}, {6, 7},  {-7, -8},
 };
+
+struct sample_pattern {
+   unsigned samples;
+   const int8_t (*at)[2];
+};
+
+#define PATTERN(p) {ARRAY_SIZE(p), p}
+static const struct sample_pattern standard_patterns[] = {
+   PATTERN(two_samples),
+   PATTERN(four_samples),
+   PATTERN(eight_samples),
+   PATTERN(sixteen_samples),
+};
+#undef PATTERN
+
+/* The standard positions of `samples` samples; NULL for a count without them. */
+static const struct sample_pattern *
+standard_pattern(unsigned samples)
+{
+   for (unsigned n = 0; n < ARRAY_SIZE(standard_patterns); n++) {
+      if (standard_patterns[n].samples == samples)
+         return &standard_patterns[n];
+   }
+   return NULL;
+}
+
+/* Whether the positions of `samples` samples are known: the centre for one. */
+static bool
+positions_known(unsigned samples)
+{
+   return samples == 1 || standard_pattern(samples);
+}
 
 /* What a fragment program reads of where its samples are. */
 struct sample_reads {
@@ -620,14 +655,14 @@ struct elsewhere {
 static nir_def *
 sample_position(nir_builder *b, const struct elsewhere *e, nir_def *sample)
 {
-   if (e->samples == 1)
+   const struct sample_pattern *p = standard_pattern(e->samples);
+   if (!p)
       return nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
-   nir_def *at =
-      nir_imm_vec2(b, four_sample_positions[0][AXIS_X], four_sample_positions[0][AXIS_Y]);
-   for (unsigned s = 1; s < FOUR_SAMPLES; s++) {
-      nir_def *here =
-         nir_imm_vec2(b, four_sample_positions[s][AXIS_X], four_sample_positions[s][AXIS_Y]);
-      at = nir_bcsel(b, nir_ieq_imm(b, sample, s), here, at);
+   nir_def *at = NULL;
+   for (unsigned s = 0; s < p->samples; s++) {
+      nir_def *here = nir_imm_vec2(b, PIXEL_CENTRE + p->at[s][AXIS_X] / SAMPLE_POSITION_STEPS,
+                                   PIXEL_CENTRE + p->at[s][AXIS_Y] / SAMPLE_POSITION_STEPS);
+      at = at ? nir_bcsel(b, nir_ieq_imm(b, sample, s), here, at) : here;
    }
    return at;
 }
@@ -665,7 +700,7 @@ evaluate_elsewhere(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    struct elsewhere *e = data;
    if (intr->intrinsic == nir_intrinsic_load_sample_pos) {
-      if (e->samples != 1 && e->samples != FOUR_SAMPLES) {
+      if (!positions_known(e->samples)) {
          e->refused = true;
          return false;
       }
@@ -681,7 +716,7 @@ evaluate_elsewhere(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    const nir_intrinsic_op from = known_at(e->impl, intr);
    const bool needs_samples = bary->intrinsic == nir_intrinsic_load_barycentric_at_sample ||
                               from == nir_intrinsic_load_barycentric_sample;
-   if (needs_samples && e->samples != 1 && e->samples != FOUR_SAMPLES) {
+   if (needs_samples && !positions_known(e->samples)) {
       e->refused = true;
       return false;
    }

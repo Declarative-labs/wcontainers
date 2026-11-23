@@ -1748,6 +1748,8 @@ fn draw<B: Backend>(
     if transform.reverse_z {
         backend.slow_paths().hit(SlowPath::ViewportDepthFlip);
     }
+    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+    let fragment_shader = unsafe { &*fs };
     let fragment = Variant {
         swizzles: swizzles(context.stages.get(Stage::Fragment)),
         targets: target_kinds(&context.framebuffer.state),
@@ -1759,8 +1761,7 @@ fn draw<B: Backend>(
             &context.framebuffer.state,
             bound.blend_color,
         ),
-        // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-        samples: if unsafe { &*fs }.reads_sample_positions || unsafe { &*fs }.fetches_target {
+        samples: if fragment_shader.reads_sample_positions || fragment_shader.fetches_target {
             context.framebuffer.samples.max(1)
         } else {
             0
@@ -1772,8 +1773,7 @@ fn draw<B: Backend>(
     }
     let programs = &mut context.programs;
     // The fragment program first: the last stage's outputs are interpolated as its inputs.
-    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    let built_fragment = programs.built_for(backend, unsafe { &*fs }, &fragment)?;
+    let built_fragment = programs.built_for(backend, fragment_shader, &fragment)?;
     let inputs = built_fragment.inputs.clone();
     // The stage helper's primitives are listed turned where the draw takes flat values it reads
     // from the other vertex.
@@ -1987,8 +1987,7 @@ fn draw<B: Backend>(
         ),
     };
     let mut images = Images::default();
-    // SAFETY: as above.
-    if unsafe { &*fs }.fetches_target {
+    if fragment_shader.fetches_target {
         images.fetch_target(backend, &context.framebuffer.state.cbufs[0])?;
     }
     let mut sets = binding_sets(

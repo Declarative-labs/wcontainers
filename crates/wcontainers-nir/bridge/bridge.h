@@ -232,7 +232,8 @@ bool wc_nir_reads_sample_positions(struct nir_shader *nir);
 
 /* A fragment program's reads of inputs at an offset or a sample and of the sample position made
  * from the values the common form interpolates, for targets of `samples` samples; false where
- * that count's positions are needed and not known (one and four are). */
+ * that count's positions are needed and not known (one, and the standard patterns of two, four,
+ * eight and sixteen, are). */
 bool wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples);
 
 /* Whether a fragment program reads its first target's texels (framebuffer fetch, which Mesa's

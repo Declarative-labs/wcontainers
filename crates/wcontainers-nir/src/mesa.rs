@@ -463,8 +463,8 @@ impl Nir {
 
     /// A fragment program's reads of inputs at an offset or at a sample, and of the sample
     /// position, made from the values the common form interpolates and their slopes, for targets
-    /// of `samples` samples. False where that count's positions are needed and not known (one and
-    /// four are, WebGPU's).
+    /// of `samples` samples. False where that count's positions are needed and not known (one,
+    /// and the standard patterns of two, four, eight and sixteen, are).
     pub fn interpolate_elsewhere(&mut self, samples: u32) -> bool {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_interpolate_elsewhere(self.0, samples) }

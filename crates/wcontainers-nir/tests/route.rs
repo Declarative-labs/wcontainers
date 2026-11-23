@@ -569,9 +569,9 @@ fn inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolat
             .unwrap()
     };
     assert!(stage().nir.reads_sample_positions());
-    // Two samples have no standard positions the hosts take.
-    assert!(!stage().nir.interpolate_elsewhere(2));
-    for samples in [1, 4] {
+    // Three samples have no standard positions.
+    assert!(!stage().nir.interpolate_elsewhere(3));
+    for samples in [1, 2, 4, 8, 16] {
         let mut nir = stage().nir;
         assert!(nir.interpolate_elsewhere(samples));
         nir.to_common_form(Stage::Fragment).unwrap();
