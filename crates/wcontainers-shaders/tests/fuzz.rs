@@ -119,12 +119,13 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
             let at = 32 + rng.below(b.len().saturating_sub(32));
             match rng.below(4) {
                 0 if at < b.len() => {
-                    b[at] ^= 1 << rng.below(8);
-                    what.push(format!("flip@{at}"));
+                    let bit = rng.below(8);
+                    b[at] ^= 1 << bit;
+                    what.push(format!("flip@{at}.{bit}"));
                 }
                 1 if at < b.len() => {
                     b[at] = rng.next() as u8;
-                    what.push(format!("byte@{at}"));
+                    what.push(format!("byte@{at}={:#x}", b[at]));
                 }
                 2 => {
                     let at = 32 + rng.below(b.len().saturating_sub(32));
@@ -132,8 +133,9 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
                     what.push(format!("cut@{at}"));
                 }
                 3 if at + 4 <= b.len() => {
-                    b[at..at + 4].copy_from_slice(&(rng.next() as u32).to_le_bytes());
-                    what.push(format!("word@{at}"));
+                    let word = rng.next() as u32;
+                    b[at..at + 4].copy_from_slice(&word.to_le_bytes());
+                    what.push(format!("word@{at}={word:#x}"));
                 }
                 _ => {}
             }
@@ -177,6 +179,56 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     );
     for (class, n) in &counts {
         eprintln!("  {n:5} {class}");
+    }
+}
+
+/// One mutation of a container, as the seeded fuzz writes it: a bit flipped, a byte written, or a
+/// little-endian word written at a byte.
+enum Mutation {
+    Flip(usize, u8),
+    Byte(usize, u8),
+    Word(usize, u32),
+}
+
+/// Cases of the seeded fuzz (seed 31337, the corpus beside it) whose DXIL module names no entry
+/// point, which ended the process in dxil-spirv's entry point lookups: each is refused.
+#[test]
+fn dxil_naming_no_entry_point_is_refused() {
+    use Mutation::*;
+    let cases: [(&str, &[Mutation]); 3] = [
+        (
+            "hs_line_pow2_point.dxil",
+            &[Byte(2289, 0xa2), Word(2265, 0xbff8_caec)],
+        ),
+        (
+            "ps_pull.dxil",
+            &[Flip(837, 0), Flip(2898, 4), Word(2367, 0x9bb3_446d)],
+        ),
+        (
+            "vs_eval_exact.dxil",
+            &[
+                Word(1024, 0xece5_99d2),
+                Byte(3377, 0x98),
+                Byte(2577, 0xe7),
+                Flip(1210, 2),
+            ],
+        ),
+    ];
+    let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    for (name, mutations) in cases {
+        let mut b = std::fs::read(own.join(name)).unwrap();
+        for m in mutations {
+            match *m {
+                Flip(at, bit) => b[at] ^= 1 << bit,
+                Byte(at, value) => b[at] = value,
+                Word(at, word) => b[at..at + size_of::<u32>()].copy_from_slice(&word.to_le_bytes()),
+            }
+        }
+        sign(&mut b);
+        match convert(Source::Dxil(&b), &VariantKey::default(), None) {
+            Ok(_) => panic!("{name}: converted"),
+            Err(e) => eprintln!("{name}: {e}"),
+        }
     }
 }
 

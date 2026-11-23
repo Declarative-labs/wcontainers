@@ -1,6 +1,48 @@
 --- a/dxil_converter.cpp
 +++ b/dxil_converter.cpp
-@@ -7395,6 +7395,14 @@
+@@ -4200,6 +4200,8 @@
+ static llvm::MDNode *get_entry_point_meta(const llvm::Module &module, const char *entry)
+ {
+ 	auto *ep_meta = module.getNamedMetadata("dx.entryPoints");
++	if (!ep_meta)
++		return nullptr;
+ 	unsigned num_entry_points = ep_meta->getNumOperands();
+ 	for (unsigned i = 0; i < num_entry_points; i++)
+ 	{
+@@ -4229,6 +4231,8 @@
+ {
+ 	// In DXR, a dummy entry point with null function pointer owns the shader flags for whatever reason ...
+ 	auto *ep_meta = module.getNamedMetadata("dx.entryPoints");
++	if (!ep_meta)
++		return nullptr;
+ 	unsigned num_entry_points = ep_meta->getNumOperands();
+ 	for (unsigned i = 0; i < num_entry_points; i++)
+ 	{
+@@ -4249,6 +4253,9 @@
+ 	Vector<String> result;
+ 	auto &module = parser.get_module();
+ 	auto *ep_meta = module.getNamedMetadata("dx.entryPoints");
++	// A module without the entry points' node names none.
++	if (!ep_meta)
++		return result;
+ 
+ 	unsigned num_entry_points = ep_meta->getNumOperands();
+ 	result.reserve(num_entry_points);
+@@ -4256,10 +4263,11 @@
+ 	for (unsigned i = 0; i < num_entry_points; i++)
+ 	{
+ 		auto *node = ep_meta->getOperand(i);
+-		if (node)
++		// An entry is a function and its name; any other is passed over.
++		if (node && node->getNumOperands() >= 2)
+ 		{
+ 			auto &func_node = node->getOperand(0);
+-			if (func_node)
++			if (func_node && llvm::dyn_cast<llvm::MDString>(node->getOperand(1)))
+ 				result.push_back(get_string_metadata(node, 1));
+ 		}
+ 	}
+@@ -7395,6 +7403,14 @@
  			break;
  
  		default:
@@ -15,3 +57,16 @@
  			LOGE("Unexpected input primitive (%u).\n", unsigned(input_primitive));
  			return false;
  		}
+@@ -9159,6 +9175,12 @@
+ 
+ 	auto &module = bitcode_parser.get_module();
+ 	entry_point_meta = get_entry_point_meta(module, options.entry_point.empty() ? nullptr : options.entry_point.c_str());
++	// A module naming no entry point has nothing to convert.
++	if (!entry_point_meta)
++	{
++		LOGE("No entry point.\n");
++		return result;
++	}
+ 	execution_model = get_execution_model(module, entry_point_meta);
+ 	execution_model_lib_target = get_execution_model_lib_target(module, entry_point_meta);
+ 
