@@ -906,7 +906,8 @@ its free time, s about 2 with one other program: 21.60 to 21.65 against 10.78 to
 run 4), I's check with it, while P's round trip there costs c_busy more than the work alone. Then I beats P when
 k > s·f / c_busy.
 With P's placement and the measured f:
-- Graviton4: f = 0.214 (X32-p, section 11). On a free CPU, c = 2.29 to 2.37 µs back to back (run 2) -> 90,000 to
+- Graviton4: f = 0.214 (X32-p, section 11; 0.211 when run 5 re-measured it, which moves no figure below by more
+  than 1.5%). On a free CPU, c = 2.29 to 2.37 µs back to back (run 2) -> 90,000 to
   94,000 entries per second; with 10.8 µs of work between calls c = 2.60 to 2.63 µs (run 4) and 2.50 to 2.53 µs
   (run 5, the stub's answer word on its read-only control page) -> 81,000 to 86,000.
   With every CPU contended, s = 2.00 and c_busy = 6.11 to 6.23 µs (run 4) -> 69,000 to 70,000.
@@ -1171,6 +1172,21 @@ them.
   stopped) with a fault at 0x180800000, the top of the harness's stack mapping, at the outermost return; that is why
   3.2 probes 4 bytes below the new sp after an `add` (that verify output was overwritten by the second's). A
   campaign mixed with a leftover process of the first build was discarded too (w0/run2/spcost-discarded).
+- Run 5 (w0/run5: check5.c, run5.sh, spcost5.sh; outputs arm5-check5.out, x865-check5.out, spcost-results/;
+  2026-11-23 12:07 to 12:20 UTC; Graviton4 at load 16 to 21 for check5 and 5.8 to 6.7 for the campaign, Xeon at
+  0.1 to 0.4; gcc 13.3 -O2 -static). P's round trip with the stub's answer word on a page it maps `PROT_READ` and its
+  request word on a read-write page, both of one memfd the embedder maps read-write, against both read-write, 3
+  rounds of 21 batches, embedder and stub on one least-busy CPU. Graviton4: back to back 2.36 to 2.40 µs (read-only)
+  and 2.33 to 2.36 µs; with 15,000 steps of work between calls 13.24 to 13.27 / 13.23 to 13.26 µs against the work
+  alone 10.73 to 10.74 µs, so c = 2.50 to 2.53 µs. Xeon: 1.93 to 1.98 / 1.88 to 1.94 µs; with work 17.82 to 17.99 /
+  17.85 to 18.03 µs against 15.80 to 15.82 µs, so c = 2.02 to 2.18 µs. The stub's filter rule of 3.7 on both
+  machines: `mmap` of the fixed fd at offset 0 or 4096 to 2^40 refused, at offset 2^20 to 2^20 mapped, at 2^20 to
+  2^32 + 2^20 (only the low words equal) refused, `mprotect` of a read-only shared page to read-write refused,
+  and the same `mprotect` without the filter done. I's check cost again with the harness above, unchanged, 3
+  rounds of 6 alternating pairs on one CPU (the fault program was not built in this copy; output and status equal
+  the plain build's for all 9 programs): X32-e +21.8% wall (+19.2% with calls), X32-p +21.1% (+18.6%),
+  instructions +60.3 / +60.4%; per program within run 2's ranges (sort +34.0 / +34.4%, matrix +76.1 / +70.5%).
+  So f = 0.211 to 0.214 for X32-p.
 - So by section 7's arithmetic, with f = 0.214 (X32-p, 8 programs): Graviton4 c = 2.29 to 2.37 µs on one CPU gives
   90,000 to 94,000 kernel entries per second back to back, 81,000 to 82,000 with work between calls, and 69,000 to
   70,000 when every CPU is contended (run 4, I's work slowed as P's); the Xeon 8488C (Granite Rapids's f, 0.110 to

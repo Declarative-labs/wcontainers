@@ -104,6 +104,8 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 ## Next
 
+- W0 waits only for the orchestrator's independent check of the run 5 plan (no check report existed at run 5's
+  start; run 5's reading was this track's own). Then any fixes it asks for.
 - After the check: W1 (form P on ARM64 Linux), plan section 13. It needs the translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter first (below, "Asked of other tracks"); until they exist,
   W1 can build everything of plan sections 3 and 4 that does not run translated code (layout and reservations,
@@ -152,7 +154,13 @@ times); Xeon c 2.9 to 4.5 µs (clock speed varies), c_busy 4.3 to 5.1 µs; CPU s
 contended; the placement rule's one move 21 to 22 / 118 to 137 µs, then 13.37 to 13.39 / 18.10 to 18.29 µs per
 call; SVE p0 and FFR zero after `getppid`. Crossover with work between calls 81,000 to 82,000 (Graviton4, free),
 69,000 to 70,000 (every CPU contended); Xeon 25,000 to 52,000 and 38,000 to 66,000. Run 1's outputs and run 2's
-unpinned "did not finish" runs give no figure.
+unpinned "did not finish" runs give no figure. Run 5 (w0/run5/; 2026-11-23 12:07 to 12:20 UTC, Graviton4 at load
+16 to 21, then 5.8 to 6.7 for the campaign, Xeon at 0.1 to 0.4): the stub's answer word on a read-only page, back
+to back 2.36 to 2.40 against 2.33 to 2.36 µs read-write (Graviton4), 1.93 to 1.98 against 1.88 to 1.94 µs (Xeon);
+with work between calls c = 2.50 to 2.53 / 2.02 to 2.18 µs, no read-only difference; the filter's two-argument
+`mmap` rule works on both; I's check X32-p +21.1% wall, X32-e +21.8% (3 rounds of 6 pairs, 9 programs, outputs equal
+the plain build's). Crossover with work between calls now 81,000 to 86,000 (Graviton4), 50,000 to 75,000 (Xeon,
+idle).
 
 ## Asked of other tracks
 
