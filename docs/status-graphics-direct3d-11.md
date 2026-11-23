@@ -11,13 +11,26 @@ round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents 
 ## Where things stand
 
 G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of
-2026-11-22) was reported complete at run 5; run 6 fixed what the sixth check found (below). The
+2026-11-22) was reported complete at run 5; run 6 fixed what the sixth check found, and run 7 ran
+the whole bar at that code (below). The
 device reports the highest level whose every format requirement of Microsoft's tables (their
 video columns aside, Departures) it meets (4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on
 Direct3D 12) is 11_0 with every requirement met and tested, and the WebGL 2 build (ANGLE on the
 RTX 3080) is 10_0 since G4h run 5. Still differing from real Direct3D: the Gap list's absent
 features, and atg-simplecomputepc, whose difference is a division the specification lets go
 either way and the RTX 3080 itself gives both ways (Gap list).
+
+G4h run 7 (2026-11-22, from about 17:10 Pacific):
+- The whole bar at 54fc06fc, run 6's code (q5-final.sh r7-bar; Measurements): every result as at
+  run 5, with run 6's two new library tests passing. Nothing failed that is not in the Gap list.
+- Why run 6's library suite never started: its desktop job (pueue task 40) kept running after
+  the Mac's side of it was stopped. It held the queue's hazard group from 15:47. A remote command
+  of the agents' folder held the GPU slot shared, and its `cargo test -p wcontainers-shaders
+  --no-run` waited on a lock with no CPU used for 90 minutes. Each waited for the other. This run
+  killed task 40 (`pueue kill`) and then that hung cargo process, and the queue moved (How to run).
+- Literals: building ahead's tuple key and reported counts are a tuple and a named struct, and
+  their three baseline lines are cut (d05bba20, 39658541). The check at 39658541 finds nothing in
+  this track's crates.
 
 G4h run 6 (2026-11-22, from about 14:00 Pacific), the sixth check's findings:
 - Packed targets read by blends: the WebGPU back end ends the pass part and rounds the
@@ -251,7 +264,8 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
-3080 through the queue, not alone, at beeec184 (G4h run 5, logs/g4h5-bar*):
+3080 through the queue, not alone, at beeec184 (G4h run 5, logs/g4h5-bar*), and the same again at
+54fc06fc (G4h run 7, logs/r7-bar*):
 - d3d11: 152 pass of 166; the 14 failing are the Gap list's absent features. test_format_support
   and test_swapchain_formats fail no check (each runs fewer than real Direct3D, which also makes an
   11_1 device), and test_vertex_formats passes, since G4h run 4.
@@ -575,11 +589,12 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 ## What comes next
 
 In order:
-0. The whole bar at HEAD (scratch main/q5-final.sh <label>, after sourcing main/env.sh): run 6's
-   run was held in the queue (Measurements). Run it first; only the changed paths' tests ran.
 1. atg-simplecomputepc: find what makes the RTX 3080 divide 1200 by 300 as 4 in the real program
    and as 3.9999998 in the same shader run alone (Gap list), if the orchestrator does not accept
-   it as a choice the specification leaves open.
+   it as a choice the specification leaves open. Not yet tried: the program presents between
+   dispatches and the replicas did not. A driver that recompiles a shader with its constant
+   buffer's values folded in would divide exactly, but that is a guess and was not measured. Run
+   the replica with a swap chain and a present after each dispatch.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
 3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
@@ -614,7 +629,10 @@ Commit before running anything. Do not send this checkout's tree (remote, gpu-jo
 scenes) while another of its jobs waits in the queue: the waiting job then stops ("holds tree
 ..., not the sent ..."). Never run `tools/graphics-rig/gpu-job --help` (it queues `--help` as a
 command). The desktop's checkout needs the shaders crate's submodules, so commands start with
-`git submodule update --init --recursive -q`.
+`git submodule update --init --recursive -q`. Stopping a gpu-job on the Mac does not stop its
+job on the desktop. Before a run, look at the queue with `ssh tom@192.168.2.183
+"C:\wc\bin\pueue.exe -c C:\wc\pueue\pueue.yml status"`. Kill a leftover job of this track (label
+`phase-2-graphics-direct3d-11: ...`) with `... pueue.yml kill <id>`.
 
 - Work in progress through the rig without touching the shared index (G4h): `c=$(g4h/trial.sh
   [--patch <file>]... <path>...)` makes a commit of HEAD with this track's working files of the
@@ -944,6 +962,30 @@ listed case of section 12 has its test against real Direct3D.
   and said a depth attachment holds both aspects".
 
 ## Measurements
+
+G4h run 7 (2026-11-22, Pacific). The whole bar at 54fc06fc (q5-final.sh r7-bar, logs/r7-bar-*).
+Machine: the desktop (i9-9900K, RTX 3080), through the queue, not alone unless noted, with other
+tracks' jobs queued.
+- Literal check: nothing in this track's crates. The webgl back end's `clear_buffer::BLOCK` line
+  is new because the kernel added `ECHO_BLOCK`; that line belongs to the WebGL track. At 39658541
+  (rented x86 machine, logs/r7-lit2-front.log): nothing in this track's crates.
+- Lint of both builds: clean. Front 60, unit 6, cache 1 and the infrastructure crate's 11 tests,
+  and clippy, at 39658541's code (trial d0f0585e on the rented x86 machine): pass.
+- Library: com 15 pass (1 ignored), programs 65 pass (8 ignored). The WebGL 2 build's 10_0 cases:
+  7 pass, 1 ignored.
+- Wine d3d11: 152 of 166 pass. The 14 failures are the same tests as at run 5, all in the Gap
+  list. d3d10core: 110 of 111 (test_desktop_window).
+- Scenes through the library: 137 pass, 0 fail, 2 absent. Through the WebGL 2 build: 95 pass, 17
+  fail, 30 absent, as before.
+- Programs: the eleven pass as before. atg-simplemsaa_pc frame 10: 8 pixels beyond (largest 11), 4
+  beyond their tiles' allowance, as before. atg-simplecomputepc: 154,515 beyond in each frame, as
+  before. bgfx: five of six pass or run to their end, and bgfx-26-occlusion fails on its memory
+  line, as before.
+- Release modules (built from 54fc06fc's tree): `wcontainers_directx.dll` is 14,581,760 bytes on
+  WebGPU and 10,154,496 on WebGL 2. The Direct3D 12 track's `wcontainers_d3d12.dll` is 13,983,744.
+  Load times, 20 runs each, `gpu-job --alone`, 18:06, given as min / median / max: the system's
+  d3d11.dll 1,122 / 1,185 / 1,425 us; ours on WebGPU 1,575 / 1,688 / 2,585 us; ours on WebGL 2
+  1,059 / 1,137 / 1,910 us; the Direct3D 12 module 1,586 / 1,691 / 2,679 us.
 
 G4h run 6 (2026-11-22, Pacific). Logs in scratch logs/r6*; the desktop (i9-9900K, RTX 3080),
 library tests through the queue, not alone, other tracks' jobs queued.
