@@ -4,38 +4,30 @@ The WebAssembly engine interface (crates/webassembly-engine) run on a browser's 
 WebAssembly JavaScript API, from our Rust code compiled to wasm32-unknown-unknown and running in a worker.
 Crate: crates/webassembly-engine/implementation/browser, package wcontainers-webassembly-engine-browser.
 
-## Where it stands (milestone E1, run 3, 2026-11-23)
+## Where it stands (milestone E1, run 4, 2026-11-23)
 
 - Done: the crate; the whole suite (29 tests) passing in headless Chrome 158 and headless Firefox 160 in a
-  dedicated worker; 8 tests of this engine's own behaviour (behaviour.rs); a two-worker test where an engine of
-  ours in a second worker uses a module and a shared memory posted from the first; the benchmark and its figures
-  for both browsers; the safe routes measured against unsafe replacements built in scratch (For the owner 4).
-  No unsafe in the crate; `[lints] workspace = true`; clippy for wasm32 with warnings denied is clean.
-- Run 3 fixed what the second independent check found:
-  - A call into a module no longer moves the host context and the host functions in and out: the context stays
-    where the host functions take it from until `host_context` takes it home, and the host functions live in one
-    list per thread. What is left of ours on the call is one branch and the store and restore of one number
-    (measured below at 0.5 ns or less).
-  - The host-context check on a host call is measured (raw-context variant, below); the old line saying it cost
-    nothing measurable was wrong.
-  - A table knows its address type (`typeof table.length` is "bigint" for a 64-bit one) and whether its elements
-    are `funcref` (one module that imports a `funcref` table, instantiated once when the table is described).
-    Every table read and write is one JavaScript call; bounds are checked only when it fails. No throw-and-retry
-    remains; memory and table growth pass the known address type.
-  - An `externref` table refuses a function (ReferenceTypeMismatch) and reads as ElementNotFunction; a mutable
-    `externref` global answers ValueTypeMismatch on write and ReadGlobalError on read; a global of a type the
-    engine cannot tell apart answers ValueTypeMismatch.
-  - A shared 64-bit memory works: its access module imports it with the JavaScript API's page limit as maximum.
-  - `allocate_global` no longer searches for the type it already knows.
-  - A module or shared memory dropped on another thread (possible only in a build whose own memory is shared) is
-    queued and forgotten by its own thread at that thread's next registration. Not tested: a build without
-    atomics cannot have a second thread.
-  - js-sys is used without its default features, which took futures-util, futures-task, pin-project-lite and
-    slab out of the library's dependencies. The dependency list below is complete.
-- Not done: Safari (below). The owner's linter was not run (the notice of 2026-11-22 says not to for now). The
-  literal check was not run: it lists files through git, and the rented machine's copy has no `.git`, while the
-  Mac may not build it. Its likely finding is adapter.rs's `MEMORY64_PAGES = 262_144`, the JavaScript API's page
-  limit for a 64-bit memory, which no crate defines.
+  dedicated worker; 10 tests of this engine's own behaviour (behaviour.rs 9, panic.rs 1); a two-worker test where
+  an engine of ours in a second worker uses a module and a shared memory posted from the first; the benchmark and
+  its figures for both browsers; the safe routes measured against unsafe replacements built in scratch, all on run
+  4's code (For the owner 4). No unsafe in the crate; `[lints] workspace = true`; clippy for wasm32 with warnings
+  denied is clean; the build has no warnings.
+- Run 4 fixed what the third independent check found:
+  - The literal check now gives no line for this crate (it gave 112): argument slots are found from the
+    arguments' places (`slots()` and `set_slots`, arrays the compiler unrolls; no `slots`, `from_fn` or
+    `with_context` function is left in the release wasm), a copy's slots are an enum, the expect strings left the
+    macro, the tests' names are one module (names.rs) with values no constant in reach has, and the script takes
+    its timeout from the caller.
+  - A host function reached outside a call into its own engine (another engine's call, or after its engine was
+    dropped) now traps without a Rust panic: the runner answers whether it ran, and the host module runs
+    `unreachable` when it did not. behaviour.rs checks both cases and that the thread is not panicking after.
+  - The panic test is a test target of its own (panic.rs): a panic aborts on this target and leaves the thread
+    panicking for every later test of the same target.
+  - An uncaught exception is tested (a tag the module defines, and one it imports): `InvokeError::Exception`.
+  - u1 and u2 re-measured on run 4's code (For the owner 4).
+- Not done: Safari (below). The owner's linter was not run (the notice of 2026-11-22 says not to for now).
+- Not mine, seen this run: the shared Cargo.lock is behind the tree (another track's entries, for example
+  `zerocopy` and `thiserror 1.0.69`), so a `--locked` build fails until its owners commit it.
 - Next: the items under "For the owner" wait for his rulings.
 
 ## How to run
@@ -45,18 +37,21 @@ Crate: crates/webassembly-engine/implementation/browser, package wcontainers-web
 - Tools, once, under /work/engine-browser on that machine: the scratch script
   pyro-parked/wcontainers-scratch/engine-browser/setup-tools.sh installs ChromeDriver 158.0.8127.36, Firefox
   160.0.1, geckodriver 0.37.1 and wasm-bindgen-cli 0.2.130 (the version wasm-bindgen is pinned to).
-- `x86-run <checkout> --name engine-browser -- 'WC_BROWSER_TOOLS=/work/engine-browser bash
-  crates/webassembly-engine/implementation/browser/run-in-browsers.sh --test conformance --test behaviour
-  --test workers'` runs the suite, the behaviour tests and the two-worker test in Chrome, then Firefox. For the
-  figures: `... run-in-browsers.sh --release --test benchmark -- --nocapture`.
-- The unsafe variants (measuring only, never committed): pyro-parked/wcontainers-scratch/engine-browser/run3 holds
-  variant.py (turns a copy of the crate into variant no-run or raw-context) and bench.sh, which runs the
-  benchmark of the copy as it is or made into the variant named; run 2's variants (u1, u1dyn, u2, u3, made for
-  run 2's code) are in engine-browser/variants with make-variant.py and bench-variants.sh.
-  Run one variant at a time in its own copy (`--name engine-browser-variants`), with
-  `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C link-arg=--growable-table"` for u2 and u3: the loop in
-  bench-variants.sh once ran two variants unchanged (their figures equalled the current crate's), so every
-  variant figure below comes from a run of that variant alone or was checked by one.
+- `x86-run <checkout> --name engine-browser -- 'WASM_BINDGEN_TEST_TIMEOUT=900 WC_BROWSER_TOOLS=/work/engine-browser
+  bash crates/webassembly-engine/implementation/browser/run-in-browsers.sh'` runs every test target (the suite,
+  behaviour, panic, workers and the benchmark in debug) in Chrome, then Firefox. For the figures: `...
+  run-in-browsers.sh --release --test benchmark -- --nocapture`. The timeout is the seconds the runner waits for
+  one target; the runner's own default is too short for the benchmark.
+- The literal check, on a copy with a fresh git (the copy has no `.git`): `x86-run <checkout> --name
+  engine-browser-literals -- 'git init -q . && git add -A; cargo run -q -p wcontainers-literals -- check >
+  target/literals.txt; grep implementation/browser/ target/literals.txt'`. With no history it fails as a whole;
+  what counts is that no line names this crate.
+- The unsafe variants (measuring only, never committed): pyro-parked/wcontainers-scratch/engine-browser/run4 holds
+  variant.py (turns a copy of the crate into u1, raw, u2 or a join such as u1+raw, for run 4's code) and bench.sh,
+  which runs the benchmark of the copy as it is or made into the variant named (it sets the growable-table flag u2
+  needs); variants.log is run 4's run: one job in `--name engine-browser-variants` that restored the crate from a
+  saved copy before each variant and printed "variant ... made", so each figure is of the variant named. Older
+  variants (run 3: no-run; run 2: u3) are in engine-browser/run3 and engine-browser/variants.
 - wasm-bindgen-test-runner serves the page cross-origin isolated (the benchmark logs `crossOriginIsolated:
   true` and the global scope `DedicatedWorkerGlobalScope`).
 
@@ -110,39 +105,40 @@ Crate: crates/webassembly-engine/implementation/browser, package wcontainers-web
 
 ## Glue: hand-written JavaScript or js-sys's generic objects (measured, figures below)
 
-- An empty call: our route (one call into glue.js plus the caller module) 16.3 ns in Chrome, 14.3 ns in
-  Firefox; js-sys's `Function::call0` on the export 34.1 and 58.8 ns.
-- A 64-byte read: js-sys's typed-array route 181.6 / 201.2 ns; hand-written glue with typed-array views
-  77.2 / 131.0 ns; the access module 24.6 / 20.4 ns.
+- An empty call (run 4): our route (one call into glue.js plus the caller module) 16.2 ns in Chrome, 14.7 ns in
+  Firefox; js-sys's `Function::call0` on the export 35.7 and 52.8 ns.
+- A 64-byte read: js-sys's typed-array route 221.5 / 208.6 ns; hand-written glue with typed-array views
+  76.9 / 113.2 ns; the access module 23.4 / 22.0 ns.
 - Chosen: hand-written glue (39 imported functions, each one call of the JavaScript API) and the access module.
 
 ## Measurements
 
 Rented x86 machine (AWS c7i.metal-24xl, Xeon Platinum 8488C, 96 threads), release build, 2026-11-23, Chrome 158
-headless then Firefox 160 headless, dedicated worker. Two runs of the current code (loads 0.2 to 0.9, then 2.5);
-first run, with the second in brackets where it was taken:
-- compile a small module (two functions, one import): 11.4 µs; 34.6 µs
-- instantiate it: 5.1 µs; 2.8 µs
-- bind a function (compile and instantiate a caller module): 14.8 µs; 37.0 µs
-- empty call into a module: 16.3 (16.2) ns; 14.3 (15.2) ns
-- empty host function called from a module in a loop: 9.6 (9.8) ns; 10.7 (10.7) ns
-- the same, touching the host context: 13.7 (10.4) ns; 9.9 (10.1) ns. Both go through the same take and put of
-  the context, so their difference does not measure it; the raw-context variant does (For the owner 4).
-- read / write 64 B, unshared memory: 24.6 / 23.8 ns; 20.4 / 20.0 ns
-- read / write 64 B, shared memory: 24.2 / 23.7 ns; 19.8 / 20.4 ns
-- read / write 64 KiB, unshared: 975.5 / 1293.4 ns; 1513.6 / 1697.4 ns
-- read / write 64 KiB, shared: 970.8 / 1292.5 ns; 1535.0 / 1685.6 ns
-- write / read a function, 32-bit table: 82.1 (86.1) / 95.5 (109.7) ns; 46.2 (45.8) / 68.4 (67.6) ns
-- write / read a function, 64-bit table: 84.2 (88.2) / 87.1 (89.4) ns; 46.0 (48.0) / 74.6 (78.4) ns
-- not used, for comparison: js-sys `Function::call0`, an empty call 34.1 ns; 58.8 ns. js-sys read 64 B 181.6;
-  201.2 ns, 64 KiB 1134.0; 1255.6 ns. Glue typed-array views, unshared read / write 64 B 77.2 / 71.9; 131.0 /
-  152.2 ns, 64 KiB 1138.8 / 1450.0; 1181.6 / 1463.0 ns; shared 64 KiB 1539.5 / 1745.9; 1600.0 / 1776.6 ns.
-- Run 2's code on the same machine: empty call 26.6 / 25.9 ns, host call 18.3 / 17.3 ns; the independent check
-  measured its 64-bit table write at 2034.7 / 14456.0 ns (the throw-and-retry now gone).
+headless then Firefox 160 headless, dedicated worker. Run 4's code, two runs in one job (load 4.6 to 4.9 from
+other tracks' jobs); Chrome; Firefox, the second run in brackets:
+- compile a small module (two functions, one import): 11.2 (11.5) µs; 35.1 (34.1) µs
+- instantiate it: 4.9 (5.0) µs; 2.9 (2.7) µs
+- bind a function (compile and instantiate a caller module): 14.8 (15.1) µs; 38.2 (35.9) µs
+- empty call into a module: 16.2 (16.3) ns; 14.7 (13.5) ns
+- empty host function called from a module in a loop: 10.5 (10.3) ns; 11.2 (10.9) ns
+- the same, touching the host context: 11.1 (10.8) ns; 10.9 (11.2) ns. Both take and put the context, so the
+  difference does not measure it; the raw variant does (For the owner 4).
+- read / write 64 B, unshared memory: 23.4 / 23.3 (24.4 / 24.2) ns; 22.0 / 21.2 (20.0 / 20.2) ns
+- read / write 64 B, shared memory: 22.9 / 23.5 (22.7 / 22.5) ns; 21.4 / 24.6 (19.6 / 20.0) ns
+- read / write 64 KiB, unshared: 971.6 / 1291.8 (963.5 / 1294.9) ns; 1570.4 / 1781.0 (1547.4 / 1756.8) ns
+- read / write 64 KiB, shared: 969.5 / 1293.5 (968.8 / 1290.8) ns; 1536.2 / 1692.0 (1523.2 / 1693.0) ns
+- write / read a function, 32-bit table: 80.6 / 91.8 (80.4 / 92.1) ns; 47.8 / 70.2 (45.0 / 67.2) ns
+- write / read a function, 64-bit table: 85.4 / 89.8 (84.4 / 100.5) ns; 47.8 / 82.8 (46.0 / 74.6) ns
+- not used, for comparison (second run): js-sys `Function::call0`, an empty call 35.7; 52.8 ns. js-sys read 64 B
+  221.5; 208.6 ns, 64 KiB 1279.2; 1243.0 ns. Glue typed-array views, unshared read / write 64 B 76.9 / 73.1;
+  113.2 / 153.6 ns, 64 KiB 1138.1 / 1432.5; 1197.8 / 1512.0 ns; shared 64 KiB 1543.7 / 1750.2; 1590.8 / 1780.6 ns.
+- Run 3's code on the same machine at load 0.2 to 2.5: empty call 16.3 / 14.3 ns, host call 9.6 / 10.7 ns. Run 4's
+  host call is 0.7 to 0.9 ns slower in Chrome and 0.2 to 0.5 ns in Firefox; the flag the host module tests is one
+  compare and branch, and the load was higher, so how much is the flag is not measured apart.
 
 Places where an engine-specific path, chosen by a probe, would pay (none built):
-- Firefox, 64 KiB reads and writes of an unshared memory: typed-array views beat memory.copy by about 20%
-  (1181.6 against 1513.6 ns read, 1463.0 against 1697.4 ns write). Not for a shared memory, and not in Chrome.
+- Firefox, 64 KiB reads and writes of an unshared memory: typed-array views beat memory.copy by about 15 to 25%
+  (1197.8 against 1547.4 ns read, 1512.0 against 1756.8 ns write, run 4). Not for a shared memory, and not in Chrome.
 - Chrome, small reads and writes: calling the access module through our own table instead of JavaScript halves
   them (variant u3 below), but needs unsafe; in Firefox it gains nothing.
 - Binding compiles a caller module each time, 15 to 37 µs. A cache per signature would leave only the
@@ -166,33 +162,37 @@ Places where an engine-specific path, chosen by a probe, would pay (none built):
    objects with its first message. The linter will report them as public outside the interface. A small
    coupled trait would hold them if he wants it in the contract.
 4. The zero-cost condition is not fully met by the safe routes. What of ours is left on each hot path, and the
-   unsafe that would replace it (none committed; each variant built and measured in a scratch copy on the same
-   machine, Chrome; Firefox):
-   - Call into a module, 16.3 / 14.3 ns. Ours: the branch that puts the context back if `host_context` took it
-     home, and the store and restore of the running engine's number. With both removed (variant no-run, which
-     breaks host functions, so only this figure counts): 15.8 / 14.1 ns, so ours is 0.5 ns or less, near the
-     noise between runs. The rest is the JavaScript hop, the standard's only way to catch a trap. Replacing the
-     hop (u2, run 2): the caller module's export in our own table, called with `unsafe {
-     core::mem::transmute::<usize, extern "C" fn()>(index) }()`, measured 17.6 / 19.0 ns against run 2's 26.6 /
-     25.9 (not measured against the new code). Not usable: WebAssembly cannot catch a trap, so a trap or an
+   unsafe that would replace it (none committed; each variant built from run 4's code and measured in one job on
+   the same machine at load 4.6 to 4.9, against the unchanged code's 16.2 / 14.7 ns call and 10.5 / 11.2 ns host
+   call in the same job; Chrome; Firefox):
+   - Call into a module, 16.2 / 14.7 ns. Ours: the branch that puts the context back if `host_context` took it
+     home, and the store and restore of the running engine's number, 0.5 ns or less (run 3's variant no-run).
+     The rest is the JavaScript hop, the standard's only way to catch a trap. Replacing the hop (u2): the caller
+     module's export placed in our own table when binding, and called with `let entry = unsafe {
+     core::mem::transmute::<usize, extern "C" fn()>(self.index as usize) }; entry();` inside `engine.run`:
+     7.4 / 6.8 ns, so the hop costs 8.8 / 7.9 ns. Not usable: WebAssembly cannot catch a trap, so a trap or an
      uncaught exception in the guest would unwind through our frames with nothing to catch it, and `invoke`
-     could never answer `InvokeError`.
-   - Host call, 9.6 / 10.7 ns. Ours: the compare of the running engine's number (thread-local), a `RefCell`
-     borrow of the thread's list, a bounds check, an `Rc` clone and drop, a dynamic call into the closure, and
-     the take and put of the host context. The context's take and put, replaced (variant raw-context) by a
-     pointer to the boxed context taken when binding, `let pointer = &mut *boxed as *mut HostContext;`, and
-     `function(unsafe { &mut *pointer }, arguments)` in the closure: 8.3 / 8.8 ns, so the context check costs
-     1.3 / 1.9 ns. The lookup and the dynamic call, replaced by a pointer to a monomorphic closure (u1, run 2:
-     `extern "C" fn run_host_function<F: Fn()>(address: u32) { let function = unsafe { &*(address as usize as
-     *const F) }; function(); }`), measured 4.6 / 5.2 ns against run 2's 18.3 / 17.3 ns; not measured against
-     the new code. Caveat for both: a host module's `Function` can outlive its engine in JavaScript, and then
-     the pointer dangles; a real change needs the engine to cut its host modules off when dropped (for example
-     a per-engine table it nulls), not built or measured.
-   - Memory copy, 24.6 / 20.4 ns at 64 B. Replacement (u3, run 2): the access module checks bounds itself and
-     returns 0 or 1 instead of trapping, is placed in our own function table, and is called with `let entry =
-     unsafe { core::mem::transmute::<usize, extern "C" fn() -> u32>(index as usize) }; entry() != 0`.
-     Measured 10.8 / 10.6 ns in Chrome and 19.0 / 18.2 ns in Firefox; 64 KiB unchanged. Needs our table to be
-     growable (`-C link-arg=--growable-table`).
+     could never answer `InvokeError`. Needs `-C link-arg=--growable-table`.
+   - Host call, 10.5 / 11.2 ns. Ours: the compare of the running engine's number (thread-local) and the flag the
+     host module tests, a `RefCell` borrow of the thread's list, a bounds check, an `Rc` clone and drop, a
+     dynamic call into the closure, and the take and put of the host context.
+     - u1, the lookup, `Rc` and dynamic call replaced by a pointer to the monomorphic closure, leaked when bound
+       (`Box::leak(Box::new(function)) as *const F as usize as u32`, passed by the host module), and `extern "C"
+       fn run_host_function<F: Fn()>(engine: u64, address: u32) -> bool { ...; let function = unsafe {
+       &*(address as usize as *const F) }; function(); true }` (the engine check kept): 5.9 / 5.4 ns, so they
+       cost 4.6 / 5.8 ns.
+     - raw, the context's take and put replaced by a pointer to the boxed context taken when binding, `let
+       pointer = &mut *boxed as *mut HostContext;`, and `function(unsafe { &mut *pointer }, arguments)`: 8.7 /
+       9.7 ns, so the context check costs 1.8 / 1.5 ns (run 3 measured 1.3 / 1.9).
+     - u1 and raw together: 5.7 / 4.5 ns, touching the context 4.3 / 4.7 ns: about half the host call is ours.
+     Caveat for both: a host module's `Function` can outlive its engine in JavaScript, and then the pointer
+     dangles; a real change needs the engine to cut its host modules off when dropped (for example a per-engine
+     table it nulls), not built or measured. The variants leak each closure.
+   - Memory copy, 23.4 / 22.0 ns at 64 B. Replacement (u3, run 2, not re-measured: the copy path did not change
+     since): the access module checks bounds itself and returns 0 or 1 instead of trapping, is placed in our own
+     function table, and is called with `let entry = unsafe { core::mem::transmute::<usize, extern "C" fn() ->
+     u32>(index as usize) }; entry() != 0`. Measured 10.8 / 10.6 ns in Chrome and 19.0 / 18.2 ns in Firefox
+     then; 64 KiB unchanged. Needs our table to be growable.
    No vetted library covers these: each turns an integer from outside Rust into a reference or a function.
 5. The workspace's `forbid(unsafe_code)` does not see macro output. glue.rs's `#[wasm_bindgen] extern` block
    expands to wasm-bindgen's generated code for each of its 39 functions, unsafe included, the same code js-sys
@@ -201,13 +201,15 @@ Places where an engine-specific path, chosen by a probe, would pay (none built):
    It is his file, so I left it alone. Clippy of this crate alone uses `--no-deps`.
 7. Safari is not tested: driving it needs `safaridriver --enable` (administrator) and "Allow remote automation",
    both system settings on the Mac.
-8. The suite does not check that a global keeps a NaN's bits, that host functions are dropped with their engine,
+8. The suite does not check `InvokeError::Exception` (an uncaught exception), that a global keeps a NaN's bits, that host functions are dropped with their engine,
    that a host function can bind in another engine, 64-bit tables of a module, `externref` tables and globals,
    or shared 64-bit memories; behaviour.rs checks them for this engine. They may
    belong in the suite.
 9. A panic in a host function makes the call panic (as under wasmtime); the engine's host functions and context
-   are lost with it, because a panic is an abort on wasm32-unknown-unknown. That is what the interface's silence
-   leaves; a ruling on what a host function's panic should do would settle it.
+   are lost with it, because a panic is an abort on wasm32-unknown-unknown, and the thread stays panicking for
+   good (`std::thread::panicking()` is true from then on). That is what the interface's silence leaves; a ruling
+   on what a host function's panic should do would settle it. This engine itself panics on no path a guest can
+   reach: a host function reached outside its engine's code traps.
 
 ## Dependencies (licences; lines with the word `unsafe` in the registry sources)
 
@@ -234,5 +236,6 @@ What `cargo tree -e normal --target wasm32-unknown-unknown` shows for the librar
 - A call into a module leaves the host context where the host functions take it from, and `host_context` takes it
   home, instead of lending it for each call and taking it back: the per-call lending was the cost the check
   found on the call path.
+- The panic test is its own test target (panic.rs), so that the panic it ends in leaves no other test panicking.
 - The two-worker test loads our code in the second worker from the files wasm-bindgen-test-runner serves
   (wasm-bindgen-test.js and its wasm), the only way a test there can start our code in another worker.
