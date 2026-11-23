@@ -973,6 +973,8 @@ fn blend_for<B: Backend>(
 enum Uniform<'a, B: Backend> {
     Copied,
     Range(&'a B::Buffer, u64, u64),
+    /// A buffer of `made`'s, at this index, of this size.
+    Grown(usize, u64),
 }
 
 /// A stream the vertex program fetches an input from itself.
@@ -1207,13 +1209,29 @@ pub(crate) fn binding_sets<B: Backend>(
                 .buffer()
                 .ok_or("a uniform block bound to a texture")?;
             let size = u64::from(slot.size).max(declared);
-            if u64::from(slot.offset) + size > u64::from(resource.base.width0) {
+            let (offset, end) = (u64::from(slot.offset), u64::from(resource.base.width0));
+            if offset + size > end {
+                // Read past the buffer's end as zero: the bound bytes moved into a buffer of
+                // the declared size.
                 backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
-                return refused(format_args!(
-                    "a uniform block bound smaller than the program declares: binding {}, \
-                     {declared} bytes declared, {} bound at {} of a buffer of {}",
-                    b.binding, slot.size, slot.offset, resource.base.width0
-                ));
+                let size = size.next_multiple_of(STORAGE_WORD);
+                let grown = backend
+                    .create_buffer(&BufferDesc {
+                        size,
+                        usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+                        intent: MapIntent::Rarely,
+                    })
+                    .map_err(|e| format!("a grown uniform block: {e:?}"))?;
+                let zeros = vec![0; size as usize];
+                backend.write_buffer(&grown, 0, &zeros, WriteMode::Ordered);
+                let bound = end.saturating_sub(offset).min(u64::from(slot.size));
+                let whole = bound - bound % STORAGE_WORD;
+                if whole != 0 {
+                    backend.copy_buffer(buffer, offset, &grown, 0, whole);
+                }
+                made.buffers.push(grown);
+                uniforms.push((b.binding, Uniform::Grown(made.buffers.len() - 1, size)));
+                continue;
             }
             uniforms.push((
                 b.binding,
@@ -1271,6 +1289,11 @@ pub(crate) fn binding_sets<B: Backend>(
                 Uniform::Range(buffer, offset, size) => BufferRange {
                     buffer: *buffer,
                     offset: *offset,
+                    size: *size,
+                },
+                Uniform::Grown(index, size) => BufferRange {
+                    buffer: &made.buffers[*index],
+                    offset: 0,
                     size: *size,
                 },
             };

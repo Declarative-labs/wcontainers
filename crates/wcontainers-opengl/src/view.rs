@@ -173,15 +173,18 @@ pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut p
     unsafe { release(view) };
 }
 
-/// A texture of an image's own format that the image is bound through, where the texture it
-/// names is of another format of the same texel size (`ReinterpretCopy`): copied into before the
-/// work and, for an image the program writes, back after it, through `buffer`.
+/// A texture of an image's own format and shape that the image is bound through, where the
+/// texture it names is of another format of the same texel size, or is a volume texture of which
+/// the image is one slice (`ReinterpretCopy`): copied into before the work and, for an image the
+/// program writes, back after it, through `buffer`.
 struct Twin<B: Backend> {
     texture: B::Texture,
     buffer: B::Buffer,
     source: B::Texture,
     mip: u32,
     layer: u32,
+    /// The first depth slice of a volume texture's.
+    slice: u32,
     extent: Extent,
     row_pitch: u32,
     writable: bool,
@@ -192,6 +195,8 @@ struct Twin<B: Backend> {
 /// common form has none of that give the old value. Copied into before the work and, for an image
 /// the program writes, back after it.
 struct Texels<B: Backend> {
+    /// The resource the texels are of, which images naming the same texels share.
+    resource: *mut pipe_resource,
     buffer: B::Buffer,
     source: B::Texture,
     layout: TexelLayout,
@@ -199,7 +204,7 @@ struct Texels<B: Backend> {
 }
 
 /// Where an image's texels are in its texture and in the buffer they are read through.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct TexelLayout {
     mip: u32,
     /// The first layer, or the first depth slice of a volume texture.
@@ -306,6 +311,16 @@ pub fn image_texels<B: Backend>(
     images: &mut Images<B>,
 ) -> Result<(usize, u64), String> {
     let layout = texel_layout::<B>(image)?;
+    let writable = u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0;
+    // Images of the same texels are bound to one buffer, as they would be to one texture.
+    if let Some(i) = images
+        .texels
+        .iter()
+        .position(|t| t.resource == image.resource && t.layout == layout)
+    {
+        images.texels[i].writable |= writable;
+        return Ok((i, layout.bytes()));
+    }
     // SAFETY: an image's resource is live while it is bound.
     let resource = unsafe { Resource::<B>::of(image.resource) };
     let (texture, _) = resource
@@ -326,10 +341,11 @@ pub fn image_texels<B: Backend>(
         layout.extent,
     );
     images.texels.push(Texels {
+        resource: image.resource,
         buffer,
         source: texture.clone(),
         layout,
-        writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
+        writable,
     });
     Ok((images.texels.len() - 1, bytes))
 }
@@ -340,6 +356,8 @@ pub struct Images<B: Backend> {
     pub views: Vec<B::TextureView>,
     twins: Vec<Twin<B>>,
     texels: Vec<Texels<B>>,
+    /// Buffers the work reads that were made for it (uniform blocks grown to their declared size).
+    pub buffers: Vec<B::Buffer>,
     /// Samplers bound beside texel buffers, which programs load and never sample: Gallium binds
     /// none there, the converted program declares one.
     pub samplers: Vec<B::Sampler>,
@@ -351,6 +369,7 @@ impl<B: Backend> Default for Images<B> {
             views: Vec::new(),
             twins: Vec::new(),
             texels: Vec::new(),
+            buffers: Vec::new(),
             samplers: Vec::new(),
         }
     }
@@ -375,6 +394,9 @@ impl<B: Backend> Images<B> {
             }
             backend.destroy(Object::Buffer(t.buffer));
         }
+        for buffer in self.buffers {
+            backend.destroy(Object::Buffer(buffer));
+        }
         for view in self.views {
             backend.destroy(Object::TextureView(view));
         }
@@ -394,24 +416,19 @@ impl<B: Backend> Images<B> {
 impl<B: Backend> Twin<B> {
     /// Moves the texels between the twin and its source: into the twin, or back from it.
     fn copy(&self, backend: &mut B, into: bool) {
-        let region = |texture, mip, layer| TextureRegion {
+        let region = |texture, mip, layer, z| TextureRegion {
             texture,
             mip,
             layer,
-            origin: Origin::default(),
+            origin: Origin {
+                z,
+                ..Origin::default()
+            },
             stencil: false,
         };
-        let (from, to) = if into {
-            (
-                region(&self.source, self.mip, self.layer),
-                region(&self.texture, 0, 0),
-            )
-        } else {
-            (
-                region(&self.texture, 0, 0),
-                region(&self.source, self.mip, self.layer),
-            )
-        };
+        let source = region(&self.source, self.mip, self.layer, self.slice);
+        let twin = region(&self.texture, 0, 0, 0);
+        let (from, to) = if into { (source, twin) } else { (twin, source) };
         let rows = CopyBufferTexture {
             buffer: &self.buffer,
             offset: 0,
@@ -443,12 +460,10 @@ pub fn image_view<B: Backend>(
     let three_d = desc.dimension == TextureDimension::D3;
     let mip = range.level();
     let size = |n: u32| (n >> mip).max(1);
+    // One slice of a volume texture, which the host views only whole, is bound through a flat
+    // twin of it.
+    let slice = (range.single_layer_view && three_d).then(|| range.first_layer());
     let (dimension, base_layer, layer_count) = if range.single_layer_view {
-        if three_d {
-            return refused(format_args!(
-                "one slice of a volume texture as a flat image"
-            ));
-        }
         (ViewDimension::D2, range.first_layer(), 1)
     } else if three_d {
         (ViewDimension::D3, 0, 1)
@@ -463,7 +478,7 @@ pub fn image_view<B: Backend>(
         };
         (dimension, range.first_layer(), layers)
     };
-    let (viewed, base_mip, base_layer) = if format == desc.format {
+    let (viewed, base_mip, base_layer) = if format == desc.format && slice.is_none() {
         (texture.clone(), mip, base_layer)
     } else {
         let (width, _, bytes) = format.block();
@@ -478,7 +493,7 @@ pub fn image_view<B: Backend>(
         let extent = Extent {
             width: size(desc.width),
             height: size(desc.height),
-            depth_or_layers: if three_d {
+            depth_or_layers: if three_d && slice.is_none() {
                 size(desc.depth_or_layers)
             } else {
                 layer_count
@@ -487,7 +502,11 @@ pub fn image_view<B: Backend>(
         let row_pitch = extent.width * bytes;
         let twin = backend
             .create_texture(&TextureDesc {
-                dimension: desc.dimension,
+                dimension: if slice.is_some() {
+                    TextureDimension::D2
+                } else {
+                    desc.dimension
+                },
                 format,
                 width: extent.width,
                 height: extent.height,
@@ -515,6 +534,7 @@ pub fn image_view<B: Backend>(
             source: texture.clone(),
             mip,
             layer: if three_d { 0 } else { base_layer },
+            slice: slice.unwrap_or(0),
             extent,
             row_pitch,
             writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
