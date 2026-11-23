@@ -50,6 +50,16 @@ pub const STAGES: usize = 6;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;
+/// Constant buffer slots of a stage (`D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT`).
+const CONSTANT_BUFFER_SLOTS: usize = 14;
+/// Shader resource slots of a stage (`D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT`).
+const RESOURCE_SLOTS: usize = 128;
+/// Sampler slots of a stage (`D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT`).
+const SAMPLER_SLOTS: usize = 16;
+/// Render targets bound at once (`D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT`).
+const TARGET_SLOTS: usize = 8;
+/// Stream output targets (`D3D11_SO_BUFFER_SLOT_COUNT`).
+const STREAM_OUTPUT_SLOTS: usize = 4;
 
 /// The binding set a stage's program reads its slots from.
 /// The bytes a constant buffer window of `(first, count)` 16-byte constants covers: offset and
@@ -128,7 +138,7 @@ pub struct ContextState<B: Backend> {
     hs: Option<Rc<Shader<B>>>,
     ds: Option<Rc<Shader<B>>>,
     /// The stream output targets.
-    so_targets: [Option<Rc<Buffer<B>>>; 4],
+    so_targets: [Option<Rc<Buffer<B>>>; STREAM_OUTPUT_SLOTS],
     /// The vertex stage's set is made for the stage helper's compute programs.
     vertex_compute: bool,
     /// The domain stage's set is made for the stage helper's compute programs.
@@ -227,15 +237,15 @@ impl<B: Backend> ContextState<B> {
             topology: topology::UNDEFINED,
             vertex_buffers: vec![None; VERTEX_SLOTS],
             index: None,
-            constant_buffers: std::array::from_fn(|_| vec![None; 14]),
-            constant_ranges: std::array::from_fn(|_| vec![None; 14]),
-            resources: std::array::from_fn(|_| vec![None; 128]),
-            samplers: std::array::from_fn(|_| vec![None; 16]),
+            constant_buffers: std::array::from_fn(|_| vec![None; CONSTANT_BUFFER_SLOTS]),
+            constant_ranges: std::array::from_fn(|_| vec![None; CONSTANT_BUFFER_SLOTS]),
+            resources: std::array::from_fn(|_| vec![None; RESOURCE_SLOTS]),
+            samplers: std::array::from_fn(|_| vec![None; SAMPLER_SLOTS]),
             uavs: std::array::from_fn(|stage| match stage {
                 PIXEL | COMPUTE => vec![None; UAV_SLOTS],
                 _ => Vec::new(),
             }),
-            targets: vec![None; 8],
+            targets: vec![None; TARGET_SLOTS],
             depth: None,
             blend: None,
             blend_factor: [1.0; COLOR_COMPONENTS],
@@ -663,10 +673,10 @@ impl<B: Backend> Device<B> {
         buffers: &[Option<Rc<Buffer<B>>>],
         offsets: &[u32],
     ) -> Result<()> {
-        if buffers.len() > 4 {
+        if buffers.len() > STREAM_OUTPUT_SLOTS {
             return Err(Error::InvalidArg("more than four stream output targets"));
         }
-        let mut targets: [Option<Rc<Buffer<B>>>; 4] = Default::default();
+        let mut targets: [Option<Rc<Buffer<B>>>; STREAM_OUTPUT_SLOTS] = Default::default();
         for (i, b) in buffers.iter().enumerate() {
             let Some(b) = b else { continue };
             if b.desc.bind_flags & desc::bind::STREAM_OUTPUT == 0 {
@@ -883,10 +893,10 @@ impl<B: Backend> Device<B> {
         targets: &[Option<Rc<View<B>>>],
         depth: Option<Rc<View<B>>>,
     ) -> Result<()> {
-        if targets.len() > 8 {
+        if targets.len() > TARGET_SLOTS {
             return Err(Error::InvalidArg("more than eight render targets"));
         }
-        let mut new = vec![None; 8];
+        let mut new = vec![None; TARGET_SLOTS];
         new[..targets.len()].clone_from_slice(targets);
         let changed = !same(&self.ctx.depth, &depth)
             || new.iter().zip(&self.ctx.targets).any(|(a, b)| !same(a, b));
