@@ -4,14 +4,14 @@
 use std::ops::Range;
 
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
-use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand};
+use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand, Segment};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
 use crate::meaning::{is_string, written};
-use crate::operand::general;
+use crate::operand::{RSP, W32, W64, general};
 use crate::x87::{Code, Operation};
 use crate::{Offer, USER_END, X86_64, carry};
 
@@ -167,36 +167,46 @@ impl Native for X86_64 {
         if ins.mnemonic() == Mnemonic::Syscall {
             return Stopping::Syscall;
         }
+        let width = if i.address32 { W32 } else { W64 };
         let register = |r: Register| match r {
             Register::None => Some(Base::Zero),
-            Register::RIP => Some(Base::Pc),
-            Register::RSP => Some(Base::StackPointer),
+            Register::RIP | Register::EIP => Some(Base::Pc),
             r => general(r)
-                .filter(|g| g.width == u64::BITS as u8)
-                .map(|g| Base::Register(g.number)),
+                .filter(|g| g.width == width)
+                .map(|g| match g.number {
+                    RSP => Base::StackPointer,
+                    n => Base::Register(n),
+                }),
         };
-        // The position map's operand has no segment or address size yet: those accesses are the inside's to
-        // decode.
-        let plain = ins.mnemonic() != Mnemonic::Lea
-            && (0..ins.op_count()).any(|n| ins.op_kind(n) == OpKind::Memory)
-            && ins.segment_prefix() == Register::None
-            && !i.address32;
+        let memory = ins.mnemonic() != Mnemonic::Lea
+            && (0..ins.op_count()).any(|n| ins.op_kind(n) == OpKind::Memory);
         let (Some(base), Some(index)) = (register(ins.memory_base()), register(ins.memory_index()))
         else {
             return Stopping::Plain;
         };
-        if !plain {
+        if !memory {
             return Stopping::Plain;
         }
+        let offset = if i.address32 && base != Base::Pc {
+            i64::from(ins.memory_displacement32() as i32)
+        } else {
+            ins.memory_displacement64() as i64
+        };
         Stopping::Access(Operand {
             base,
-            offset: ins.memory_displacement64() as i64,
+            offset,
             index: (index != Base::Zero).then(|| Index {
                 register: index,
-                bits: u64::BITS as u8,
+                bits: width,
                 signed: false,
                 shift: ins.memory_index_scale().trailing_zeros() as u8,
             }),
+            segment: match ins.memory_segment() {
+                Register::FS => Some(Segment::Fs),
+                Register::GS => Some(Segment::Gs),
+                _ => None,
+            },
+            address_bits: width,
         })
     }
 

@@ -524,3 +524,53 @@ fn a_jcc_exit_records_its_condition() {
         );
     }
 }
+
+/// What a stop in an access needs of it: its operand with the segment and the address's width.
+#[test]
+fn an_access_gives_its_operand() {
+    use wcontainers_guest_cpu::Stopping;
+    use wcontainers_guest_cpu::position::{Base, Index, Operand, Segment};
+    let stopping = |hex: &str| {
+        let mut code = bytes(hex);
+        code.resize(16, 0);
+        let (i, _) = decode(&code).expect("decodes");
+        X86_64::stopping(&i, AT)
+    };
+    let access = |base, offset, index, segment, address_bits| {
+        Stopping::Access(Operand {
+            base,
+            offset,
+            index,
+            segment,
+            address_bits,
+        })
+    };
+    assert_eq!(
+        stopping("65 67 8b 00"),
+        access(Base::Register(0), 0, None, Some(Segment::Gs), 32)
+    );
+    assert_eq!(
+        stopping("48 8b 44 24 08"),
+        access(Base::StackPointer, 8, None, None, 64)
+    );
+    assert_eq!(
+        stopping("8b 05 10 00 00 00"),
+        access(Base::Pc, 0x16, None, None, 64)
+    );
+    let index = Index {
+        register: Base::Register(1),
+        bits: 64,
+        signed: false,
+        shift: 3,
+    };
+    assert_eq!(
+        stopping("64 48 8b 04 c8"),
+        access(Base::Register(0), 0, Some(index), Some(Segment::Fs), 64)
+    );
+    assert_eq!(
+        stopping("48 8d 04 c8"),
+        Stopping::Plain,
+        "lea touches no memory"
+    );
+    assert_eq!(stopping("0f 05"), Stopping::Syscall);
+}
