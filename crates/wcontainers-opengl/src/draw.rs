@@ -712,8 +712,14 @@ fn convert_evaluation<B: Backend>(
     let mut converted = wcontainers_nir::direct::domain(routed, bindings, &rewrites, key)
         .map_err(|e| e.to_string())?;
     // Its outputs, which the shaders crate keeps as given, are its vertex form's, as a vertex
-    // program's are.
-    if let Some(drawn) = converted.modules.first() {
+    // program's are; they are interpolated as the fragment program's inputs, as a vertex
+    // program's are (Mesa's linker may pack an integer value flat into a float one).
+    if let Some(drawn) = converted.modules.first_mut() {
+        if !variant.interpolation.is_empty() {
+            meet_inputs(&mut drawn.module, &variant.interpolation);
+            drawn.info =
+                wcontainers_nir::spirv::validate(&drawn.module).map_err(|e| e.to_string())?;
+        }
         converted.reflection.outputs = stream::outputs(&drawn.module);
     }
     stream::name_outputs(&mut converted.reflection.outputs);
