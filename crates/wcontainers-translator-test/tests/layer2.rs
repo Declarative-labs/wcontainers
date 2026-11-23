@@ -183,3 +183,81 @@ fn full_matches_none_and_the_cpu_arm64() {
 fn full_matches_none_and_the_cpu_x86_64() {
     full_matches_none_and_the_cpu::<wcontainers_x86::X86_64>();
 }
+
+/// The native output for a host process (docs/x86-native-output.md section 8): each program's pieces at none, at
+/// the case's bound and at full, without and with the count, linked and run on this machine against its CPU, and
+/// the count after each system call against the WebAssembly output's. Linux x86-64 only, where the reference is
+/// this machine. Knobs as above.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn natively_matches_the_cpu_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::native_programs::run;
+    use wcontainers_translator_test::progress::run_counting;
+    use wcontainers_translator_test::reference::with_reference;
+    type G = wcontainers_x86::X86_64;
+    let cases = knob("WC_LAYER2_CASES", 64);
+    let seed = knob("WC_LAYER2_SEED", 1);
+    let from = knob("WC_LAYER2_FROM", 0);
+    let jobs = knob("WC_LAYER2_JOBS", 1).max(1);
+    let [ran, faulted, runs, pieces] = std::array::from_fn(|_| AtomicU64::new(0));
+    let failures = Mutex::new(Vec::new());
+    let count = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
+    at_once(jobs, cases, |i| {
+        let case = from + i;
+        let result = generator(seed, case).run(
+            &(program::<G>(), 1..=64u32, any::<u64>()),
+            |(program, bound, _)| {
+                let blob = G::assemble(&program);
+                let cpu = native::<G>(&blob);
+                if cpu.status != 0 {
+                    count(&faulted, 1);
+                }
+                let counted = run_counting::<G>(&blob, (LookAhead::None, Optimise::Speed));
+                assert_eq!(counted.ran, cpu, "the WebAssembly output against the CPU");
+                for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full] {
+                    for counting in [false, true] {
+                        let what = format!("natively at {look_ahead:?}, counted {counting}");
+                        let ours = with_reference(&G::REFERENCE, |reference| {
+                            run(reference, &blob, look_ahead, counting)
+                        })
+                        .map_err(|error| TestCaseError::fail(format!("{what}: {error}")))?;
+                        count(&runs, ours.runs.into());
+                        count(&pieces, ours.pieces as u64);
+                        assert_eq!(ours.ran, cpu, "output {what}");
+                        if counting {
+                            // An ended program's last call is its exit, whose position is the end.
+                            let (calls, end) = match ours.syscalls.split_last() {
+                                Some((last, before)) if cpu.status == 0 => {
+                                    (before, Some(last.count))
+                                }
+                                _ => (&ours.syscalls[..], None),
+                            };
+                            assert_eq!(
+                                calls,
+                                &counted.syscalls[..],
+                                "the count at system calls {what}"
+                            );
+                            if let Some(end) = end {
+                                assert_eq!(end, counted.end, "the count at the end {what}");
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            },
+        );
+        count(&ran, 1);
+        if let Err(error) = result {
+            eprintln!("layer 2 natively, seed {seed}, case {case}: {error}");
+            failures.lock().unwrap().push(case);
+        }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    let [ran, faulted, runs, pieces] = [ran, faulted, runs, pieces].map(|c| c.into_inner());
+    eprintln!(
+        "layer 2 natively: {ran} cases run from case {from}, seed {seed}, {jobs} at once, each at 3 look-aheads with and without the count; {faulted} faulted; {runs} blob runs, {pieces} pieces; {} failing: {failures:?}",
+        failures.len()
+    );
+    assert!(failures.is_empty());
+}
