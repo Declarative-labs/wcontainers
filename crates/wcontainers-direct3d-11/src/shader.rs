@@ -313,6 +313,11 @@ pub fn output_moves(
     Some(moves)
 }
 
+/// Refused: stage values moved make a type equal to one the program has, which naga keeps once.
+const MOVED_ONTO_A_TYPE: &str = "stage values moved onto a type the program has";
+/// Refused: a program whose stage values moved fails validation.
+const MOVED_INVALID: &str = "a program whose stage values moved does not validate";
+
 /// Moves the values `c`'s program passes between stages (a vertex program's outputs, a pixel
 /// program's inputs) from and to the locations `moves` names, in its module and its reflection.
 /// The module's content key becomes one of its key and the moves.
@@ -363,7 +368,7 @@ pub fn relocate(c: &mut Converted, moves: &[(u32, u32)]) -> Result<()> {
         }
         if t != module.types[ty] {
             if module.types.get(&t).is_some() {
-                return not_implemented("stage values moved onto a type the program has");
+                return not_implemented(MOVED_ONTO_A_TYPE);
             }
             module.types.replace(ty, t);
         }
@@ -373,7 +378,7 @@ pub fn relocate(c: &mut Converted, moves: &[(u32, u32)]) -> Result<()> {
         wcontainers_shaders::capabilities(module),
     )
     .validate(module)
-    .or_else(|_| not_implemented("a program whose stage values moved does not validate"))?;
+    .or_else(|_| not_implemented(MOVED_INVALID))?;
     let mut key = blake3::Hasher::new();
     key.update(&m.key);
     for (from, to) in moves {

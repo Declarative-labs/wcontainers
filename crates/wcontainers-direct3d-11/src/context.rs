@@ -371,6 +371,9 @@ const ADJUST_WORDS: usize = 4;
 /// Where a pixel's centre lies within it, in pixels from its top left corner.
 const PIXEL_CENTRE: f32 = 0.5;
 
+/// Refused: a vertex and pixel program pair passing more values between stages than the back
+/// end's inter-stage locations hold after moving them (`VaryingsBeyondLimit`).
+const VARYINGS_BEYOND_LIMIT: &str = "more values between stages than the back end passes";
 /// Draws refused by name.
 pub(crate) const ALPHA_ANTIALIASED_LINES: &str = "alpha-antialiased lines of a geometry or domain stage, an adjacency topology or beside stream output (AntialiasedLinesAsQuads)";
 const LINES_WITHOUT_COMPUTE: &str =
@@ -2079,7 +2082,7 @@ impl<B: Backend> Device<B> {
     /// inter-stage locations hold after moving them (`VaryingsBeyondLimit`).
     fn varyings_beyond_limit<T>(&mut self) -> Result<T> {
         self.backend.slow_paths().hit(SlowPath::VaryingsBeyondLimit);
-        not_implemented("more values between stages than the back end passes")
+        not_implemented(VARYINGS_BEYOND_LIMIT)
     }
 
     /// `bytecode` converted as `key`, its stage values moved by `moves`

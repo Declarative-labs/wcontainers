@@ -51,6 +51,12 @@ impl std::fmt::Debug for Recorder {
     }
 }
 
+/// The vertex buffers and inter-stage values wgpu gives on Direct3D 12, and storage buffers a stage
+/// (fewer than it gives) for the recorder's limits.
+const VERTEX_BUFFERS: u32 = 16;
+const INTER_STAGE_VALUES: u32 = 31;
+const STORAGE_BUFFERS: u32 = 64;
+
 impl Recorder {
     /// The bytes buffer `id` holds now.
     pub fn buffer_bytes(&self, id: Id) -> Option<&[u8]> {
@@ -72,14 +78,14 @@ impl Recorder {
             uniform_buffers_per_stage: 12,
             textures_per_stage: 48,
             samplers_per_stage: 16,
-            storage_buffers_per_stage: 64,
+            storage_buffers_per_stage: STORAGE_BUFFERS,
             storage_textures_per_stage: 8,
-            vertex_streams: 16,
+            vertex_streams: VERTEX_BUFFERS,
             vertex_attributes: 30,
             max_vertex_stride: 2048,
             color_targets: 8,
             color_bytes_per_sample: 128,
-            inter_stage_slots: 31,
+            inter_stage_slots: INTER_STAGE_VALUES,
             min_uniform_offset_alignment: 256,
             min_storage_offset_alignment: 256,
             buffer_copy_alignment: 4,
