@@ -6,7 +6,7 @@
 ))]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::mm::ProtFlags;
 use wcontainers_executor_host_process::layout::GUEST_START;
@@ -34,6 +34,12 @@ fn knob(name: &str, default: u64) -> u64 {
 }
 
 const PAGE: usize = 4096;
+
+/// How long stops are sent back to back to a thread told to end.
+const FLOOD: Duration = Duration::from_secs(1);
+
+/// How soon after such a flood the thread has ended.
+const AFTER_FLOOD: Duration = Duration::from_millis(100);
 
 fn map_one_page() -> Command {
     Command::Map {
@@ -161,14 +167,9 @@ fn stops_landing_anywhere_never_lose_repeat_or_split_a_turn() {
     std::thread::scope(|scope| {
         scope.spawn(|| {
             while running.load(Ordering::Relaxed) {
-                match target.stop() {
-                    Ok(()) => {
-                        sent.fetch_add(1, Ordering::Relaxed);
-                    }
-                    // The host's queue of pending signals is full.
-                    Err(rustix::io::Errno::AGAIN) => {}
-                    Err(other) => panic!("stop: {other}"),
-                }
+                // A stop already pending takes the next one in: the host never refuses it for a full queue.
+                target.stop().expect("stop");
+                sent.fetch_add(1, Ordering::Relaxed);
                 for _ in 0..random_pause(seed, sent.load(Ordering::Relaxed)) {
                     core::hint::spin_loop();
                 }
@@ -240,23 +241,29 @@ fn stops_landing_anywhere_never_lose_repeat_or_split_a_turn() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(host_thread_count(&stub), 2);
-    // Thread 1 is told to end under stops too.
-    let stopping = AtomicBool::new(true);
-    let target_end = std::thread::scope(|scope| {
-        scope.spawn(|| {
-            while stopping.load(Ordering::Relaxed) {
-                if target.stop().is_err() {
-                    break;
-                }
+    // Thread 1 is told to end under stops sent back to back for a while: they may hold it in its handler while they
+    // come faster than it runs, but none is left pending after them, so it ends soon after the last.
+    let flood_sent = std::thread::scope(|scope| {
+        let flood = scope.spawn(|| {
+            let until = Instant::now() + FLOOD;
+            let mut sent = 0u64;
+            while Instant::now() < until && target.stop().is_ok() {
+                sent += 1;
             }
+            sent
         });
         stub.end_thread(1).expect("end");
-        let gone = stub.thread_gone(1, Duration::from_secs(1)).expect("wait");
-        stopping.store(false, Ordering::Relaxed);
-        gone
+        flood.join().expect("flood")
     });
-    assert!(target_end, "thread 1 did not end under stops");
-    eprintln!("ending under stops, landed {:?}", stub.stops_landed(1));
+    let gone = stub.thread_gone(1, AFTER_FLOOD).expect("wait");
+    eprintln!(
+        "ending under {flood_sent} stops, landed {:?}",
+        stub.stops_landed(1)
+    );
+    assert!(
+        gone,
+        "thread 1 did not end within {AFTER_FLOOD:?} of the last stop"
+    );
     stub.end(0).expect("end");
     assert_eq!(zygote.reap(stub.process()).expect("reap"), Ended::Exited(0));
 }

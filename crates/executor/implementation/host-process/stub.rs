@@ -62,9 +62,9 @@ pub(crate) const THREAD_FLAGS: u32 = linux::CLONE_VM
     | linux::CLONE_PARENT_SETTID
     | linux::CLONE_CHILD_CLEARTID;
 
-/// The signal that stops a stub's thread: the kernel's first real-time signal, since a stub holds no C library
-/// that claims it.
-pub const STOP_SIGNAL: u32 = linux::SIGRTMIN;
+/// The signal that stops a stub's thread: a standard one, so stops sent while one is pending are that one, and a
+/// stub holds no C library that claims it.
+pub const STOP_SIGNAL: u32 = linux::SIGUSR1;
 
 /// [`STOP_SIGNAL`] alone, as a kernel signal set.
 pub(crate) const STOP_SET: u64 = 1 << (STOP_SIGNAL - 1);
