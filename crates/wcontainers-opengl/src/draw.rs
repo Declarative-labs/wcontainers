@@ -476,9 +476,9 @@ fn convert<B: Backend>(
     variant: &Variant,
 ) -> Result<Built<B>, String> {
     let mut nir = shader.nir.try_clone().ok_or("out of memory")?;
-    // A geometry program writes its records as written; its pass-through transforms the position.
+    // A geometry program writes its records' depth as written; its pass-through transforms it.
     let transform = match shader.stage {
-        Stage::Geometry => streamed_transform(variant.transform),
+        Stage::Geometry => recorded_transform(variant.transform),
         _ => variant.transform,
     };
     if transform != PositionTransform::default() {
@@ -618,8 +618,9 @@ fn convert_geometry<B: Backend>(
         ));
     };
     let mut drawn = passthrough.clone();
-    if variant.transform != streamed_transform(variant.transform) {
-        crate::position::transform(&mut drawn.module, variant.transform)?;
+    let depth = depth_steps(variant.transform);
+    if depth != PositionTransform::default() {
+        crate::position::transform(&mut drawn.module, depth)?;
         drawn.info = wcontainers_nir::spirv::validate(&drawn.module).map_err(|e| e.to_string())?;
     }
     let shader = backend
@@ -1631,8 +1632,8 @@ fn draw<B: Backend>(
         ..Variant::default()
     };
     // The evaluation program draws the tessellated points with the position's transform, for its
-    // control program's patches; before a geometry program it only runs in the stage helper, its
-    // output as written.
+    // control program's patches; before a geometry program, which takes its position as a vertex
+    // program's, it only runs in the stage helper, untransformed.
     let evaluation = Variant {
         transform: if gs.is_null() {
             transform
@@ -2401,10 +2402,10 @@ fn run_tessellated<B: Backend>(
     };
     programs.built_for(backend, tcs, &control)?;
     // The evaluation program's compute form, which a later stage or stream output reads, writes
-    // its output as written; its drawn form, which reads the patches and points, transforms it.
+    // its depth as written; its drawn form, which reads the patches and points, transforms it.
     let computed = Variant {
         transform: if later {
-            streamed_transform(evaluation.transform)
+            recorded_transform(evaluation.transform)
         } else {
             evaluation.transform
         },
@@ -2659,11 +2660,30 @@ fn streamed_variant<B: Backend>(
     (variant, locations)
 }
 
-/// The position's transform of a stage whose output a later stage reads or stream output takes
-/// as written: none, the point size kept.
+/// The position's transform of a vertex program the stage helper runs: none, the point size kept.
 fn streamed_transform(drawn: PositionTransform) -> PositionTransform {
     PositionTransform {
         fixed_point_size: drawn.fixed_point_size,
+        ..PositionTransform::default()
+    }
+}
+
+/// The position's transform of an evaluation or geometry program whose records a later stage or
+/// stream output reads: y as drawn (the stage helper takes these records' y as the draw's), depth
+/// as written.
+fn recorded_transform(drawn: PositionTransform) -> PositionTransform {
+    PositionTransform {
+        half_z: false,
+        reverse_z: false,
+        ..drawn
+    }
+}
+
+/// What the draw of such records still applies: the depth steps.
+fn depth_steps(drawn: PositionTransform) -> PositionTransform {
+    PositionTransform {
+        half_z: drawn.half_z,
+        reverse_z: drawn.reverse_z,
         ..PositionTransform::default()
     }
 }

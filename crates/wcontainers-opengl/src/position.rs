@@ -1,6 +1,6 @@
 //! The position's transform applied to a vertex program in the common form: the pass-through that
-//! draws a geometry program's output, so that stream output takes the geometry program's position
-//! as written and the host draws it in its own clip space.
+//! draws a geometry program's output, so that stream output takes the geometry program's depth as
+//! written and the host draws it in its own clip space.
 
 use naga::{
     BinaryOperator, Binding, Block, BuiltIn, Expression, Function, Handle, Literal, Module, Span,
