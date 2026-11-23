@@ -390,6 +390,24 @@ impl HostCode {
     }
 }
 
+/// A change to code other threads may be running, written by the way's protocol (x86 by the `int3` protocol,
+/// ARM64 in one store).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Patch {
+    /// Offset of the changed instruction's first byte in the code.
+    pub at: u32,
+    /// The instruction's bytes after the change, the first `length` of them.
+    pub bytes: [u8; 8],
+    pub length: u8,
+}
+
+impl Patch {
+    /// The bytes the patch writes.
+    pub fn written(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
+
 /// Translated code as a loader takes and keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Translation {
