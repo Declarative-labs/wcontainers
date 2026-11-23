@@ -53,17 +53,21 @@ probes).
   bar: layers 1 (2008 forms, 1,000 a form), 2 (10,000 programs) and 3 (1,000 Csmith programs) pass natively against
   the CPU, the count after every system call equal to the WebAssembly output's; speed fails (1.27 against 1.25,
   matrix 2.8 against 1.6); the X9 programs, replay, register groups and hostile guests wait on an x86 executor.
+  Run 5: a loop's homes (plan 3.4): a straight-line part looping to itself that names withheld registers runs its
+  copy with them renamed to registers it never names. Speed now meets the bar uncounted (geometric mean 1.145, the
+  most search 1.395); layers 1 (2008 forms, 1,000 a form), 2 (10,000) and 3 (1,000) pass again with it; the sweep
+  now follows every reachable host instruction's moves against the position map (results below). Left: the replay
+  check, `answer` and the core moves, the pool, the trait's `retarget`, and what waits on an x86 executor.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
 
 ## Next, in order (XN1)
 
-1. Speed (the bar is 1.25 geometric mean, none above 1.6; now 1.27 uncounted, matrix 2.8, run 4 results):
-   no fixed withheld set meets it (run 4's experiment over five sets, "Withheld sets" below), so a piece's own
-   homes for c, t and u (below), measured with native layers 1 to 3 checking it; then what is left: returns and jumps through a register go through the
-   mirror's indirect jump where the host's `ret` is predicted by its return stack (fib 1.25, sort 1.24, interpret
-   1.23), and the count's cost in interpret (1.65 counted).
+1. Speed meets the bar uncounted (run 5). Counted (exact replay, not in the bar) interpret is 1.66: the count's
+   adds. Search (1.40) keeps the slot form in its loops of several parts: homes for a loop of several parts would
+   need the translator's loop copy to take a set of parts (shared). Returns and jumps through a register go through
+   the mirror's indirect jump (fib 1.25, sort 1.20, interpret 1.23).
 2. The replay check: `stop_check` in the trait, `InsideCall::Stop`, and `stop: Option<u64>` in
    `translate_native_for`; ARM64 has no replay check yet, so the trait method needs ARM64's form or a ruling
    (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it. Native layer 2's blob can carry the
@@ -81,6 +85,52 @@ probes).
 7. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
    before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
    area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+
+## What XN1 run 5 changed
+
+- Shared (commit bd1fdd92): `Native::test_loop_invariant` takes the way (ARM64's is `()`), since x86's moves reach
+  the area on the way's segment; `HostCode::relocate_throughout` relocates a guest register from the current
+  instruction's first byte, the count's add written before `carry` included. ARM64's tests, the translator's native
+  tests and hardware-virtualization's build pass on the ARM64 machine.
+- x86 (commits 55013584, 7ce8976f): `LoopInvariant` is `carry::Homes`. `Homes::of(part)` pairs every withheld
+  register the part names with a general register the part never names, implicitly either (never rsp or rbp), or
+  gives none where too few are free. `enter_homes` (the loop's "test"): for each pair the home's own value to its
+  word of the register area (new `RegisterArea::homes`, `HOME_VALUES`), the withheld value into the home, then a
+  `jmp rel32` to the copy (the trait's branch, its offset that of the rel32). In the copy each instruction is
+  carried renamed (iced re-encodes it) and its map holds each withheld register in its home and each home's own
+  value in its word, throughout; Kernel, Trap, FloatStatus, Area, a repeated string, `fldcw` and a RIP-relative
+  operand naming a high byte are carried with the homes left around them; the branch back's not-taken way and
+  every exit's call into the inside (after the linkable `jmp`, so a link skips it) leave the homes first.
+- Tests (crates/wcontainers-x86/tests/native_output.rs): `a_loop_holds_its_withheld_registers_at_home` (the copy
+  names no withheld register and reaches no area word; its map holds them in their homes); the sweep's
+  `map_follows_the_moves`: from the piece's start along every branch and link, it follows each move between a host
+  register and the area, gives a register or area word any other instruction writes the guest value the map gives
+  it there (every other copy of that value then stale), and at each instruction checks every guest register is
+  where the map says. It does not see a map wrong only where an instruction writes. An exit's call is no longer
+  taken as one that comes back (the code after it is another way's).
+- Controls (each in a remote copy only): the leave's store left out: native layer 2 237 of 2,000 failing, and
+  the sweep and the named test fail; the enter's load left out, and `relocate_throughout` replaced by `relocate`:
+  the sweep and the named test fail. Layer 3 at 32 programs did not see the first.
+
+## XN1 run 5 results (rented x86 machine, Xeon 8488C, 5-level paging; sweeps on the ARM64 machine)
+
+- Commit 7ce8976f (other tracks' edits in the tree), 17:05 to 17:38 UTC: clippy with warnings denied on
+  wcontainers-x86, -guest-cpu, -arm64, -translator-test and the translator with `native`: clean; the x86 and
+  guest-cpu crates' tests: all pass; native layer 2, seed 1, 10,000 cases: 0 failing, 3,432 faulted as on the CPU,
+  115,358 blob runs (load 5 before); native layer 3, 1,000 Csmith programs, seed 1: 852 compared, 148 did not end in
+  time on Linux, 0 failing; native layer 1, 2008 forms, 1,000 a form, seed 5150: 0 failing, the same 2,594 known
+  failures as runs 3 and 4 (load up to 20, this run's 32 jobs).
+- Sweep with the map check (ARM64 machine, load 7 to 12): seeds 0x51 and 0x2b17, 300,000 cases each (1,200,000
+  pieces each): 0 broken; before the map check, seeds 0x51, 0x2b17, 0x5eed, 1,000,000 cases each: 0 broken.
+- Benchmarks at full, best of 5, times the host's plain run (uncounted, counted), 16:56 UTC, load 2.6 falling to
+  1.4: fib 1.25, 1.38; sieve 1.01, 0.99; hash 1.00, 1.00; sort 1.20, 1.23; interpret 1.23, 1.66; matrix 1.04, 1.11;
+  walk 1.09, 1.05; search 1.40, 1.47; geometric mean 1.145 (the most 1.395), 1.216 (the most 1.658). With homes only
+  in r8 to r15 (the first version, 16:48 UTC): matrix 1.75 (its inner loop names all three withheld registers and
+  leaves only r13 of those free), geometric mean 1.218. Again at the end of the bar's runs (17:34 UTC, load 4.0
+  falling to 1.6, bar.out in scratch run10/): fib 1.24, 1.37; sieve 1.01, 0.99; hash 1.00, 1.00; sort 1.21, 1.24;
+  interpret 1.23, 1.65; matrix 1.04, 1.12; walk 1.01, 0.94; search 1.38, 1.48; geometric mean 1.133 (the most 1.384),
+  1.202 (the most 1.652). Scratch run10/ also holds the piece dumper (dump.rs, which now follows return points too)
+  and matrix's and search's listings (matrix-dump.txt).
 
 ## What XN1 run 4 changed
 
@@ -847,6 +897,9 @@ brings spin 0.9.9 (MIT); licences read from cargo tree on the rented machine.
 
 ## Security
 
+- XN1 run 5's loop homes (carry.rs, area.rs, native.rs, the shared native.rs files and native_output.rs): no
+  unsafe code, no new import. The register area's home words hold only guest register values, like the withheld
+  slots, so a sibling that writes them changes only the guest's own state; no host address is ever kept there.
 - Unsafe code: none in this track (XN1 run 3's native.rs in the test crate holds none: the blob is machine code in
   a byte buffer the reference runs; XN1 run 2's carry.rs, native.rs, area.rs and native_output.rs hold none;
   XN1 run 1's x86/native.rs, carry.rs, area.rs, strings.rs and two test files hold
