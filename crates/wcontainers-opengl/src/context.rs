@@ -187,16 +187,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.buffer_subdata = Some(resource::buffer_subdata::<B>);
     c.texture_subdata = Some(resource::texture_subdata::<B>);
     state::fill::<B>(c);
-    unbuilt!(
-        c,
-        get_query_result_resource,
-        create_tcs_state,
-        bind_tcs_state,
-        delete_tcs_state,
-        create_tes_state,
-        bind_tes_state,
-        delete_tes_state,
-    );
+    unbuilt!(c, get_query_result_resource);
 }
 
 unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
