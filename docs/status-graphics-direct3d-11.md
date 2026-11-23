@@ -575,6 +575,8 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 ## What comes next
 
 In order:
+0. The whole bar at HEAD (scratch main/q5-final.sh <label>, after sourcing main/env.sh): run 6's
+   run was held in the queue (Measurements). Run it first; only the changed paths' tests ran.
 1. atg-simplecomputepc: find what makes the RTX 3080 divide 1200 by 300 as 4 in the real program
    and as 3.9999998 in the same shader run alone (Gap list), if the orchestrator does not accept
    it as a choice the specification leaves open.
@@ -953,6 +955,13 @@ library tests through the queue, not alone, other tracks' jobs queued.
   before), against the RTX 3080. The WebGPU back end's own `raster` test
   `wireframe_fill_matches_direct3d` fails (214 pixels, on Vulkan) at HEAD 2338bf61 as at the
   trial (r6d-raster-head.log): not this change's; the WebGPU track's test.
+- Trial 4 (the init conversion's dead read-write retry dropped): lint of the front and the
+  library and the front's tests pass. The whole bar at aa99df0f (q5-final.sh r6-bar): the
+  literal check found two new findings of this run (the fractal case's 300.0, fixed in 196fca6a)
+  and one baseline line to cut (cut, 457ff8a1); lint of both builds clean; the library suite then
+  waited in the queue's hazard group from 15:24 to past 17:20 behind another track's job
+  (a `cargo test -p wcontainers-shaders --no-run` held since 15:47), so the whole library suite,
+  Wine's files, scenes and programs were not run again this run.
 - atg-simplecomputepc through ours at trial 1: 154,515 pixels beyond, as before; real Direct3D
   through the rig at 14:40: passes, 0 beyond. The replicas (own_cases `colour_map_edge`): real and
   ours both give 0x3f7ffffc and the colour map's last texel, bit for bit (r6a-*; Gap list).
