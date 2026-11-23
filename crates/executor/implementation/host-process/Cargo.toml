@@ -30,6 +30,9 @@ name = "zygote"
 [[test]]
 name = "stub"
 
+[[test]]
+name = "windows"
+
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
 unsafe_code = "deny"

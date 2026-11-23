@@ -11,6 +11,7 @@ use rustix::thread::futex;
 
 use crate::filter::stub_filter;
 use crate::pages::{Command, ExitKind, Resume, ThreadPages, control, register};
+use crate::windows::FileKey;
 
 /// The stub's socket's fixed descriptor number, above the few the zygote holds when it forks.
 pub const SOCKET_FD: u32 = 8;
@@ -20,12 +21,14 @@ pub const MEMORY_FD: u32 = 9;
 /// How long a runner waits for a thread before it looks whether the stub has ended.
 const LOOK_FOR_END: Duration = Duration::from_millis(100);
 
-/// One stub, owned by the executor; the zygote that forked it reaps it.
+/// One stub, owned by the executor; the zygote that forked it reaps it, and its owner makes the window cache forget
+/// its memory before dropping it.
 pub struct Stub {
     process: Pid,
     socket: OwnedFd,
     pages: ThreadPages,
     memory: OwnedFd,
+    memory_key: FileKey,
 }
 
 /// How a turn ended.
@@ -58,6 +61,7 @@ impl Stub {
             socket,
             pages,
             memory,
+            memory_key: FileKey::new(),
         }
     }
 
@@ -98,6 +102,11 @@ impl Stub {
     /// The memory's memfd: guest address `a` is its offset `a`.
     pub fn memory(&self) -> BorrowedFd<'_> {
         self.memory.as_fd()
+    }
+
+    /// The memory memfd's key in the window cache.
+    pub fn memory_key(&self) -> FileKey {
+        self.memory_key
     }
 
     /// A thread's host id, as the stub reports it (untrusted).

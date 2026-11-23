@@ -29,4 +29,9 @@ pub mod stub;
     target_os = "linux",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
+pub mod windows;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
 pub mod zygote;
