@@ -17,6 +17,8 @@
 //!   frames [--log <output.log>] <process> <short.json> <short frames> <long.json> <long frames>
 //!     <pdb dir>...
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;

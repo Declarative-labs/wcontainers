@@ -6,6 +6,9 @@
 //! topology and layout keys names a cached pipeline, and binding sets become cached bind groups whose
 //! uniform buffers take dynamic offsets (plan sections 4.4 and 4.5).
 
+// The package waits on its tests to inherit the workspace's ban; the back end itself is held to it now.
+#![forbid(unsafe_code)]
+
 mod blocks;
 mod convert;
 mod draw;

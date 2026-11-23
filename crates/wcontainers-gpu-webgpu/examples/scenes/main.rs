@@ -11,6 +11,8 @@
 //! measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
+#![forbid(unsafe_code)]
+
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
 #[allow(dead_code)]
 mod scene;
