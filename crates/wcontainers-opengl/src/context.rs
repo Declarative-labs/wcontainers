@@ -456,6 +456,19 @@ pub fn surface_view<B: Backend>(
     let resource = unsafe { Resource::<B>::of(surface.texture) };
     let (texture, desc) = resource.texture()?;
     let format = crate::format::format(surface.format())?;
+    let reinterprets = desc.reinterpret
+        && backend
+            .caps()
+            .features
+            .contains(wcontainers_gpu::Features::FORMAT_REINTERPRET);
+    let colour = !format.is_depth_stencil() && !desc.format.is_depth_stencil();
+    if colour && format.linear() != desc.format.linear() && !reinterprets {
+        crate::state::refuse(format_args!(
+            "a target in {format:?} of a texture in {:?}, which the host views only in its own \
+             format (not built)",
+            desc.format
+        ));
+    }
     let three_d = desc.dimension == TextureDimension::D3;
     let view = backend
         .create_view(
