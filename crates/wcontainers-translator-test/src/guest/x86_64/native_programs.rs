@@ -11,7 +11,7 @@ use super::native::{
 };
 use super::*;
 use crate::programs::{Blob, Ran, STACK_TOP};
-use crate::progress::Position;
+use crate::progress::{Counted, Position};
 use crate::reference::{BlobRequest, Reference};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
@@ -335,6 +335,58 @@ fn calls(
         }
     }
     Ok(())
+}
+
+/// Runs `blob`'s program natively as [`run`] does and compares it with its run on the CPU, `cpu`, and when
+/// `counting` its count after each system call with the WebAssembly output's, `counted`.
+pub fn compare(
+    reference: &mut Reference,
+    blob: &Blob,
+    look_ahead: LookAhead,
+    counting: bool,
+    cpu: &Ran,
+    counted: &Counted,
+) -> Result<NativeRun, String> {
+    let what = format!("natively at {look_ahead:?}, counted {counting}");
+    let ours = run(reference, blob, look_ahead, counting).map_err(|e| format!("{what}: {e}"))?;
+    if ours.ran != *cpu {
+        return Err(format!(
+            "{what}: output {:?} status {}, the CPU's {:?} status {}",
+            String::from_utf8_lossy(&ours.ran.stdout),
+            ours.ran.status,
+            String::from_utf8_lossy(&cpu.stdout),
+            cpu.status
+        ));
+    }
+    if counting {
+        // An ended program's last call is its exit, whose position is the end.
+        let (calls, end) = match ours.syscalls.split_last() {
+            Some((last, before)) if cpu.status == 0 => (before, Some(last.count)),
+            _ => (&ours.syscalls[..], None),
+        };
+        if calls != counted.syscalls {
+            let at = calls
+                .iter()
+                .zip(&counted.syscalls)
+                .position(|(a, b)| a != b);
+            return Err(format!(
+                "{what}: the positions after {} system calls differ from the WebAssembly output's {}, first at call {at:?}: {:?} against {:?}",
+                calls.len(),
+                counted.syscalls.len(),
+                at.and_then(|k| calls.get(k)),
+                at.and_then(|k| counted.syscalls.get(k)),
+            ));
+        }
+        if let Some(end) = end
+            && end != counted.end
+        {
+            return Err(format!(
+                "{what}: the count at the end is {end}, the WebAssembly output's {}",
+                counted.end
+            ));
+        }
+    }
+    Ok(ours)
 }
 
 /// Runs `blob`'s program natively at `look_ahead`, with the count when `counted`.

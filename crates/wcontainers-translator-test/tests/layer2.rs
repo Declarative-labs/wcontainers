@@ -191,7 +191,7 @@ fn full_matches_none_and_the_cpu_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn natively_matches_the_cpu_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::native_programs::run;
+    use wcontainers_translator_test::guest::x86_64::native_programs::compare;
     use wcontainers_translator_test::progress::run_counting;
     use wcontainers_translator_test::reference::with_reference;
     type G = wcontainers_x86::X86_64;
@@ -216,31 +216,12 @@ fn natively_matches_the_cpu_x86_64() {
                 assert_eq!(counted.ran, cpu, "the WebAssembly output against the CPU");
                 for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full] {
                     for counting in [false, true] {
-                        let what = format!("natively at {look_ahead:?}, counted {counting}");
                         let ours = with_reference(&G::REFERENCE, |reference| {
-                            run(reference, &blob, look_ahead, counting)
+                            compare(reference, &blob, look_ahead, counting, &cpu, &counted)
                         })
-                        .map_err(|error| TestCaseError::fail(format!("{what}: {error}")))?;
+                        .map_err(TestCaseError::fail)?;
                         count(&runs, ours.runs.into());
                         count(&pieces, ours.pieces as u64);
-                        assert_eq!(ours.ran, cpu, "output {what}");
-                        if counting {
-                            // An ended program's last call is its exit, whose position is the end.
-                            let (calls, end) = match ours.syscalls.split_last() {
-                                Some((last, before)) if cpu.status == 0 => {
-                                    (before, Some(last.count))
-                                }
-                                _ => (&ours.syscalls[..], None),
-                            };
-                            assert_eq!(
-                                calls,
-                                &counted.syscalls[..],
-                                "the count at system calls {what}"
-                            );
-                            if let Some(end) = end {
-                                assert_eq!(end, counted.end, "the count at the end {what}");
-                            }
-                        }
                     }
                 }
                 Ok(())
