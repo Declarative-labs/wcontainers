@@ -236,14 +236,38 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     thread livelocks under the flood or its end is lost; the product sends a stop at most every 100 ms.
   - Docker's default profile (scratch w1/run5/sbfinal-*.out, before the hole-punch fix, which only gVisor
     reaches): all 46 tests pass on both machines.
+- W1, run 6 (2026-11-23):
+  - Found why a thread told to end under back-to-back stops sometimes did not end within 1 s: the stop was a
+    real-time signal, so every stop sent was queued, and the thread handled them one at a time, unblocking the stop
+    before going back to its wait, so it went no further while any was pending. Reproduced on Graviton4 (load 4 to
+    10, the test pinned to two CPUs, 1 of 60 runs; scratch w1/run6/repro.sh with stop-diag.rs): 768,008 stops
+    queued (`SigQ` of the 1,430,995 allowed), the thread ended 443 ms after the sender stopped. Unpinned at load 10
+    it did not fail in 90 runs.
+  - The stop is now `SIGUSR1`, a standard signal: stops sent while one is pending are that one, so a burst holds a
+    thread only while it lasts, never fills the user's `RLIMIT_SIGPENDING` (shared with the embedder's whole user),
+    and `tgkill` never answers EAGAIN (plan 3.6, 3.7). Tests changed with it: the end under stops floods for 1 s or
+    until the thread is gone, then requires it gone within 100 ms of the last stop (under contention one run in 60
+    held the thread for the whole flood, 61,827 stops, and it ended after); the main flood now requires every stop
+    accepted; the slice test's held stub now requires the stops sent while it was held to land as one (fewer landed
+    than sent) instead of each landing. Under the same contention 200 runs passed with each signal (the real-time
+    one held a thread through a flood of 159,178 and still drained within 100 ms, so the new test does not by itself
+    catch the queueing; the slice test's assertion does).
+  - Verdicts after the change (17:07 to 17:09 UTC, scratch w1/run6/coalesce-arm.log and coalesce-x86.log): all 46
+    tests of the 12 test binaries 3 times with /dev/kvm denied, 138 of 138 on Graviton4 (load 3.4 to 4.6) and on
+    the Xeon (load 27 to 30 from other tracks), clippy with warnings denied clean on both.
+  - Form I's bounds-check bypass on ARM64, measured as a host program of I's own sequences (scratch
+    w1/run6/specarm.c, plan 11 and 3.2): twelve access shapes, each behind I's own check and behind a slow check,
+    cut and uncut. Behind the slow check the uncut control read the outside byte in about 98% of tries for the nine
+    shapes that load speculatively, the cut access never (0 or 1 in about 1,000, as untouched lines) and its own
+    in-window byte instead; behind I's own check nothing leaked even uncut. Exclusives, `LDADD` and `SWP` do not
+    load speculatively at all here, so the test cannot show their cut. The harness had to defeat the branch
+    predictor learning the original proof's fixed pattern, and the prefetchers (one line timed per round, a new
+    secret each round).
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
-
-- First: find why a thread told to end under back-to-back stops sometimes does not end within 1 s (run 5's final
-  verdicts; `WCHP_ROUNDS` and the test's own flood reproduce it about once in 30 runs on Graviton4).
 
 - W1, in this order, each tested on both rented machines with /dev/kvm denied: placement's remaining bar items
   (a guest's getppid loop with work between calls within 5% of a free CPU's after its move, and at most one move a
@@ -252,7 +276,10 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   until the translator's form exists. Then the `Executor` trait with the `with_parts` loop (4.6), the suites (also
   inside Docker's default profile and under gVisor, as run 5's sandbox.sh does), the register-isolation tests and
   the speed figures.
-- W2's part of W1's bar, form I's bounds-check-bypass test on ARM64 (one per access shape), is not started.
+- W2's part of W1's bar, form I's bounds-check-bypass test on ARM64 (one per access shape), is measured as a host
+  program (run 6); at W2 the same gadgets run as translated guest code. I's stop is a real-time signal (plan 3.6)
+  and queues as P's did: W2 must bound it (send only when none is pending, or a standard signal the embedder leaves
+  free).
 - The adversarial fork with a sibling writing in a loop meanwhile (plan 13) needs a second thread running during a
   `Cpu` call, which today's kernel and its one-thread `with_parts` loop never do (3.9): built with parallel threads.
 - In this shared worktree a `[[test]]` entry in the manifest must never land before its file exists: a missing
@@ -405,6 +432,10 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 run 6: P's stop is `SIGUSR1`, a standard signal, not the kernel's first real-time signal, so stops coalesce
+  (plan 3.6 and 3.7 say so now). Form I's speculation test was run ahead of W2 as a host program of I's own
+  sequences, since the brief makes it part of W1's bar (plan 13 lists it now).
 
 - W1 run 5: the up-front mapping rule leaves a margin of two splits per command, so at the limit it also refuses a
   change that would only merge (Linux would make it); the probe reads /proc/sys/vm/max_map_count, the one /proc

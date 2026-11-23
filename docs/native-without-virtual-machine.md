@@ -169,7 +169,9 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
      so even then it reads or writes only this process's own window, which the guest can read anyway; no
      speculation of a guest access reaches another slot, our area, the kernel or the embedder. The cut is data, not
      a prediction, so it needs no barrier (Cranelift masks its bounds-checked heap accesses for the same reason). The
-     wrapping form (5.2) is safe by the same construction.
+     wrapping form (5.2) is safe by the same construction. Measured on Graviton4 for every shape above that loads
+     speculatively (section 11, W1 run 6): behind a check with a long window the uncut access read a byte outside
+     the window in about 98% of tries and the cut one never did, reading its in-window byte instead.
    - **The stack pointer.** sp holds the host address (slot base plus the guest's sp), since an ARM64 access
      through sp cannot be rebased. The rules keep one invariant: at every guest instruction boundary the guest's sp
      is inside its window, [0, 2^32).
@@ -371,8 +373,13 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
 
 ### 3.6 Stopping a thread, slices and events
 
-- A stop is a real-time signal sent with `tgkill` to the guest thread's host thread. The signal itself is the
-  request: nothing in memory the guest could write decides whether a thread stops. A stop that finds the thread
+- A stop is a signal sent with `tgkill` to the guest thread's host thread. The signal itself is the
+  request: nothing in memory the guest could write decides whether a thread stops. Under P it is a standard signal,
+  so stops sent while one is pending are that one: a burst of stops can hold a thread in its handler only while it
+  lasts, and never fills the host's queue of pending signals, which the embedder's whole user shares
+  (`RLIMIT_SIGPENDING`). A real-time stop queued every one (measured, W1 run 6, Graviton4 at load 4 to 10: a thread
+  told to end under stops sent back to back, its two CPUs shared with the sender, found with 768,008 stops queued
+  and ended 443 ms after the sender stopped). A stop that finds the thread
   already leaving is harmless: the kernel side sees an exit it would have got anyway, or a `Stop` it did not need
   and continues (counted "stale stop"). Measured (W0 probe): from the call to the handler running on a spinning
   target, 1.78 µs median in the same process and 1.68 µs in another (Graviton4); 1.75 / 1.90 µs (Xeon).
@@ -456,7 +463,7 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   with glibc 2.39, static and dynamic, measured by the third check) whose disposition is the default at start; the
   kernel's 32 and 33 below it are glibc's own (32 is SIGCANCEL, installed at the first `pthread_cancel`, and
   blocked by I's runners above). That choice is I's; P's stubs hold no C library and the signal is only ever sent to
-  them, so P's stop signal is the kernel's first real-time signal (32), fixed.
+  them, so P's stop signal is `SIGUSR1` (10), fixed, a standard signal for the reason above.
 - P: a guest store can reach anything in its stub that is mapped writable (its register pages, its signal stacks),
   and a load anything mapped readable (its control pages too). Guest code makes no host call (it has no `svc`; the
   only host calls are the stub's own routines, reached through the floor's entries), so what the guest can do to
@@ -1297,6 +1304,28 @@ them.
   52.7; u = 5 5.6 to 6.1 / 39.5 to 42.7; u = 6 5.4 to 5.5 / 35.5 to 35.9; u = 9 5.2 to 5.3 / 30.7 to 31.0. The
   scattered child holds 2,054 host mappings for u up to 3, 8 from u = 4. Each store is a turn here, so the
   figures carry a round trip that translated code will not.
+- W1 run 6 (2026-11-23 17:00 UTC, Graviton4 at load 4.6, one CPU; scratch w1/run6/specarm.c run by spec.sh, output
+  spec-arm.out): I's accesses under speculation, the bounds-check bypass of 3.2 as a host program, ahead of the same
+  test on translated code at W2. Twelve access shapes (a register offset, byte and Q; an immediate offset; a pair;
+  `LDARB`, `LDAPRB`, `LDXRB`, `LDADDB`, `SWPB`, `LD1`, `LD1R` through `add t, base, wA, uxtw`; sp written by 3.2
+  (d) then read at `[sp]`), each after I's own check (`ubfx`/`cbnz` on the address) and after a check whose bound is
+  a flushed load (a window of about 140 ns), each with its access cut (`uxtw`) and, as the control, uncut (a 64-bit
+  offset). A call is given an outside address at random one time in four; the byte it reads speculatively picks one
+  line of a probe array, and one line is timed per round: the secret's, the cut address's or another. Seeds 1 and
+  2, 3,000 rounds per gadget (about 1,000 per line kind). Behind the slow check, uncut: the secret's line cached in
+  938 to 1,038 of 959 to 1,054 rounds for the nine shapes that load speculatively; cut: 0 or 1 of about 1,000 (as
+  for lines no one touched, 0 or 1), and the cut address's byte's line in 954 to 1,053 of 960 to 1,065, so the
+  speculation ran and read inside the window. Behind I's own check, cut or uncut: at most 2 of about 1,000 for
+  every line kind, so on this core the check on the address register leaves no window the harness can use.
+  `LDXRB`, `LDADDB` and `SWPB` read nothing speculatively even uncut behind the slow check, so for them the test
+  cannot show the cut; their address is formed by the same `add` as the others'. Stores are not measured (a
+  speculative store is seen only through a later load of its own address, which the cut keeps in the window). The
+  harness had to avoid three things these cores do: their branch predictors learn the original proof's fixed
+  pattern of five in-window calls and one outside (a single load behind the slow check then filled its line 9 times
+  in 2,000, against 1,976 with outside calls at random); a prefetcher fills most of 256 flushed probe lines when
+  several are timed in one round (90% in a fixed order, about 40% in a random one); and with the same two bytes in
+  every round the secret's line was filled in up to 60% of rounds of a cut gadget, which a new secret and in-window
+  byte each round ended.
 
 ## 12. Decisions for the owner
 
@@ -1366,6 +1395,9 @@ filter. Pass bar, every item on the rented ARM64 machine:
   within 5% of the same loop on a free CPU, measured in the same run; with every CPU of the set contended, at most
   one move per second;
 - the suites pass inside a container started with Docker's default seccomp profile;
+- I's bounds-check bypass on ARM64 (brief-native.md's last section), one gadget per access shape as a host program
+  of I's own sequences, each beside its uncut control, which must read the byte outside the window: nothing read
+  through a cut access (section 11, W1 run 6); the same test on translated code is W2's;
 - speed, measured with machine and load: the guest's getppid round trip with P's placement, its median under 1.25
   times the bare futex slot on one CPU measured in the same run, alternating, and no round trip over 1 ms in a run of
   1,000,000 on idle CPUs; busybox `sh` starting 1,000 programs, its time at most 1.25 times the model's prediction
