@@ -44,9 +44,11 @@ const SUBNORMAL: &str = "subnormal operand (plan 4.12)";
 /// them, the DXBC route keeps 32 (gap A34).
 const MIN16_SIGNED_CONVERSION: &str = "min16i as def32 (A34)";
 /// fxc picks a vector's component at a run-time index by a dot product with a row of an identity
-/// matrix; on both devices a NaN or infinity elsewhere in the vector makes the result a NaN, which
-/// dxbc-spirv folds into the component alone (gap A35).
-const PICKED_BY_DOT: &str = "component picked by a dot product beside a NaN or infinity (A35)";
+/// matrix; on both devices a NaN or infinity elsewhere in the vector makes the result a NaN, and a
+/// NaN picked comes back as the device's own NaN, where dxbc-spirv folds the pick into the
+/// component alone (gap A35).
+const PICKED_BY_DOT: &str =
+    "a NaN, or a component beside a NaN or infinity, picked by a dot product (A35)";
 
 fn words(bytes: &[u8]) -> Vec<u32> {
     bytes
@@ -294,7 +296,10 @@ const FREXP_OPERANDS: usize = 64;
 /// The operands of one constant buffer row (`float4 operands[16]`).
 const ROW_OPERANDS: usize = size_of::<[f32; 4]>() / size_of::<f32>();
 
-/// The operands: every special value first, then seeded special values and floats of any bits.
+/// The operands: every special value first, each NaN and infinity in a row of finite values (so that
+/// fxc's build, which picks an operand from its row by a dot product, gives the infinities alone and
+/// the finite values beside them are compared; A35), then seeded special values and floats of any
+/// bits.
 fn frexp_constants(seed: u64) -> Constants {
     const SPECIAL: [u32; 17] = [
         f32::NAN.to_bits(),
@@ -316,7 +321,24 @@ fn frexp_constants(seed: u64) -> Constants {
         7604f32.to_bits(),
     ];
     let mut rng = fastrand::Rng::with_seed(seed);
-    let mut operands: Vec<u32> = SPECIAL.to_vec();
+    let finite = |rng: &mut fastrand::Rng| loop {
+        let w = rng.u32(..);
+        if f32::from_bits(w).is_finite() {
+            break w;
+        }
+    };
+    let (odd, plain): (Vec<u32>, Vec<u32>) = SPECIAL
+        .iter()
+        .partition(|&&w| !f32::from_bits(w).is_finite());
+    let mut plain = plain.into_iter();
+    let mut operands = Vec::new();
+    for w in odd {
+        operands.push(w);
+        for _ in 1..ROW_OPERANDS {
+            operands.push(plain.next().unwrap_or_else(|| finite(&mut rng)));
+        }
+    }
+    operands.extend(plain);
     while operands.len() < FREXP_OPERANDS {
         operands.push(match rng.u32(..3) {
             0 => SPECIAL[rng.usize(..SPECIAL.len())],
@@ -343,7 +365,10 @@ const FREXP: Shader = Shader {
         };
         let n = i / 2;
         let row = n / ROW_OPERANDS * ROW_OPERANDS..(n / ROW_OPERANDS + 1) * ROW_OPERANDS;
-        if build == "dxbc" && row.map(&operand).any(|f| !f.is_finite()) {
+        // The dot product's other terms are a NaN where another operand of the row is not finite,
+        // and the devices' dot product of a NaN gives their own NaN, not the operand's payload.
+        let beside = row.filter(|&k| k != n).any(|k| !operand(k).is_finite());
+        if build == "dxbc" && (beside || operand(n).is_nan()) {
             Some(PICKED_BY_DOT)
         } else {
             operand(n).is_subnormal().then_some(SUBNORMAL)
@@ -352,7 +377,8 @@ const FREXP: Shader = Shader {
 };
 
 /// `frexp` of NaNs, infinities, zeros and any bits: both builds give Direct3D 12's parts (the
-/// DXIL build's NaNs with a payload, the runner's frexp line 52, included).
+/// DXIL build's NaNs with a payload, the runner's frexp line 52, included), but where fxc's build
+/// picks a NaN, or an operand beside a NaN or infinity of its row (A35).
 #[test]
 fn frexp_gives_direct3d_12s_parts() {
     alike(&FREXP);
