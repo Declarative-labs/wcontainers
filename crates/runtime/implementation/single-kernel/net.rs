@@ -6,13 +6,14 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Poll, Waker};
 use std::thread::JoinHandle;
 
-use polling::{Event as Interest, Events, Poller};
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll as Poller, Registry, Token};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
 use wcontainers_abi::{Event, HostError};
 use wcontainers_kernel::errno::Errno;
@@ -23,6 +24,20 @@ use crate::errno;
 
 /// The names of the network's threads.
 const NETWORK_THREAD: &str = "wcontainers network";
+
+/// The token of the poller's waker, which no socket's number gives.
+const WAKE: Token = Token(usize::MAX);
+
+/// The most changes taken from the host in one wait; the rest come with the next.
+const EVENTS_AT_ONCE: usize = 1024;
+
+/// What the poller is asked for when neither reading nor writing is, as it takes at least one: on Linux urgent data,
+/// which a socket here has only beside an error; elsewhere readable, as kqueue reports errors and hang-ups only with a
+/// filter.
+#[cfg(target_os = "linux")]
+const LEAST: Interest = Interest::PRIORITY;
+#[cfg(not(target_os = "linux"))]
+const LEAST: Interest = Interest::READABLE;
 
 /// A report of nothing ready.
 const NOTHING: ReadinessReport = ReadinessReport {
@@ -43,6 +58,8 @@ struct Datagram {
     /// What the poller said it is ready for, not yet given to a wait.
     ready: ReadinessReport,
     waker: Option<Waker>,
+    /// Whether the poller reports its next change.
+    armed: bool,
 }
 
 /// A TCP connection, numbered here.
@@ -56,6 +73,8 @@ struct Stream {
     /// What the poller said it is ready for, not yet given to a wait.
     ready: ReadinessReport,
     waker: Option<Waker>,
+    /// Whether the poller reports its next change.
+    armed: bool,
 }
 
 /// A TCP listener, numbered here; one for a port not published has no socket and never accepts.
@@ -63,11 +82,14 @@ struct Listener {
     socket: Option<TcpListener>,
     ready: bool,
     waker: Option<Waker>,
+    /// Whether the poller reports its next change.
+    armed: bool,
 }
 
 /// The network of one container.
 pub(crate) struct Network {
-    poller: Arc<Poller>,
+    registry: Registry,
+    waker: mio::Waker,
     thread: Option<JoinHandle<()>>,
     gone: Arc<AtomicBool>,
     datagrams: HashMap<u32, Datagram>,
@@ -79,9 +101,47 @@ pub(crate) struct Network {
     published: HashMap<u16, SocketAddr>,
 }
 
-/// The poller's key of a socket.
-fn key(id: u32) -> usize {
-    id as usize
+/// The poller's token of a socket.
+fn token(id: u32) -> Token {
+    Token(id as usize)
+}
+
+/// Asks the poller for the socket's next change of what is asked, which [`Network::ready`] takes, so one is told at most
+/// once per asking; one ready already is told at once.
+fn arm(
+    registry: &Registry,
+    socket: BorrowedFd<'_>,
+    id: u32,
+    armed: &mut bool,
+    read: bool,
+    write: bool,
+) {
+    let interest = [
+        read.then_some(Interest::READABLE),
+        write.then_some(Interest::WRITABLE),
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(Interest::add)
+    .unwrap_or(LEAST);
+    let source = &mut SourceFd(&socket.as_raw_fd());
+    let asked = if *armed {
+        registry.reregister(source, token(id), interest)
+    } else {
+        registry.register(source, token(id), interest)
+    };
+    *armed = asked.is_ok();
+}
+
+/// Takes the socket out of the poller's set, which reports nothing more of it until it is armed again.
+fn disarm(registry: &Registry, socket: BorrowedFd<'_>, armed: &mut bool) {
+    if *armed
+        && registry
+            .deregister(&mut SourceFd(&socket.as_raw_fd()))
+            .is_ok()
+    {
+        *armed = false;
+    }
 }
 
 /// Linux's number for a host error, or `otherwise` when Linux has none.
@@ -90,18 +150,18 @@ fn linux_error(error: &std::io::Error, otherwise: u32) -> i32 {
 }
 
 /// Waits for the sockets armed, and tells of each change.
-fn watch(poller: &Poller, arrivals: &Arrivals, gone: &AtomicBool) {
-    let mut events = Events::new();
+fn watch(mut poller: Poller, arrivals: &Arrivals, gone: &AtomicBool) {
+    let mut events = Events::with_capacity(EVENTS_AT_ONCE);
     loop {
-        events.clear();
-        if poller.wait(&mut events, None).is_err() || gone.load(Ordering::SeqCst) {
+        if poller.poll(&mut events, None).is_err() || gone.load(Ordering::SeqCst) {
             return;
         }
-        for event in events.iter() {
+        // An error or a hang-up makes a socket both readable and writable, as a read or write then answers at once.
+        for event in events.iter().filter(|event| event.token() != WAKE) {
             arrivals.push(Arrival::Ready {
-                key: event.key,
-                readable: event.readable,
-                writable: event.writable,
+                key: event.token().0,
+                readable: event.is_readable() || event.is_read_closed() || event.is_error(),
+                writable: event.is_writable() || event.is_write_closed() || event.is_error(),
             });
         }
     }
@@ -116,17 +176,23 @@ fn keep_waker(kept: &mut Option<Waker>, waker: &Waker) {
 
 impl Network {
     pub(crate) fn new(arrivals: Arc<Arrivals>) -> Self {
-        let poller = Arc::new(Poller::new().expect("the host's readiness poller"));
+        let poller = Poller::new().expect("the host's readiness poller");
+        let registry = poller
+            .registry()
+            .try_clone()
+            .expect("the host's readiness poller");
+        let waker = mio::Waker::new(&registry, WAKE).expect("the host's readiness poller");
         let gone = Arc::new(AtomicBool::new(false));
         let thread = {
-            let (poller, gone) = (poller.clone(), gone.clone());
+            let gone = gone.clone();
             std::thread::Builder::new()
                 .name(NETWORK_THREAD.to_string())
-                .spawn(move || watch(&poller, &arrivals, &gone))
+                .spawn(move || watch(poller, &arrivals, &gone))
                 .expect("a network thread")
         };
         Self {
-            poller,
+            registry,
+            waker,
             thread: Some(thread),
             gone,
             datagrams: HashMap::new(),
@@ -157,13 +223,12 @@ impl Network {
             .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
         let id = self.next_number();
-        // SAFETY: the socket stays registered only while it is held here; closing deletes it first.
-        let _ = unsafe { self.poller.add(&socket.as_fd(), Interest::none(key(id))) };
         let datagram = Datagram {
             socket,
             peer: None,
             ready: NOTHING,
             waker: None,
+            armed: false,
         };
         self.datagrams.insert(id, datagram);
         Ok(id)
@@ -211,8 +276,8 @@ impl Network {
     }
 
     pub(crate) fn udp_close(&mut self, id: u32) {
-        if let Some(datagram) = self.datagrams.remove(&id) {
-            let _ = self.poller.delete(datagram.socket.as_fd());
+        if let Some(mut datagram) = self.datagrams.remove(&id) {
+            disarm(&self.registry, datagram.socket.as_fd(), &mut datagram.armed);
         }
     }
 
@@ -228,6 +293,7 @@ impl Network {
             error: None,
             ready: NOTHING,
             waker: None,
+            armed: false,
         };
         match socket.connect(&to.into()) {
             Ok(()) => stream.ready.ready_for = ReadyFor::WRITABLE,
@@ -246,10 +312,7 @@ impl Network {
                 return Ok(id);
             }
         }
-        let socket: TcpStream = socket.into();
-        // SAFETY: as in `connect`.
-        let _ = unsafe { self.poller.add(&socket.as_fd(), Interest::none(key(id))) };
-        stream.socket = Some(socket);
+        stream.socket = Some(socket.into());
         self.streams.insert(id, stream);
         Ok(id)
     }
@@ -297,15 +360,15 @@ impl Network {
     }
 
     pub(crate) fn tcp_close(&mut self, id: u32) {
-        if let Some(socket) = self.streams.remove(&id).and_then(|stream| stream.socket) {
-            let _ = self.poller.delete(socket.as_fd());
-        }
-        if let Some(socket) = self
-            .listeners
-            .remove(&id)
-            .and_then(|listener| listener.socket)
+        if let Some(mut stream) = self.streams.remove(&id)
+            && let Some(socket) = &stream.socket
         {
-            let _ = self.poller.delete(&socket);
+            disarm(&self.registry, socket.as_fd(), &mut stream.armed);
+        }
+        if let Some(mut listener) = self.listeners.remove(&id)
+            && let Some(socket) = &listener.socket
+        {
+            disarm(&self.registry, socket.as_fd(), &mut listener.armed);
         }
     }
 
@@ -322,14 +385,11 @@ impl Network {
             None => None,
         };
         let id = self.next_number();
-        if let Some(socket) = &socket {
-            // SAFETY: as in `connect`.
-            let _ = unsafe { self.poller.add(socket, Interest::none(key(id))) };
-        }
         let listener = Listener {
             socket,
             ready: false,
             waker: None,
+            armed: false,
         };
         self.listeners.insert(id, listener);
         Ok(id)
@@ -360,8 +420,6 @@ impl Network {
             .set_nonblocking(true)
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ECONNABORTED as u32)))?;
         let id = self.next_number();
-        // SAFETY: as in `connect`.
-        let _ = unsafe { self.poller.add(&stream.as_fd(), Interest::none(key(id))) };
         self.streams.insert(
             id,
             Stream {
@@ -370,6 +428,7 @@ impl Network {
                 error: None,
                 ready: NOTHING,
                 waker: None,
+                armed: false,
             },
         );
         Ok(id)
@@ -390,9 +449,8 @@ impl Network {
             keep_waker(&mut datagram.waker, waker);
             let read = interest.contains(ReadyFor::READABLE);
             let write = interest.contains(ReadyFor::WRITABLE);
-            let _ = self
-                .poller
-                .modify(datagram.socket.as_fd(), Interest::new(key(id), read, write));
+            let socket = datagram.socket.as_fd();
+            arm(&self.registry, socket, id, &mut datagram.armed, read, write);
             return Poll::Pending;
         }
         if let Some(stream) = self.streams.get_mut(&id) {
@@ -403,9 +461,14 @@ impl Network {
             if let Some(socket) = &stream.socket {
                 let read = interest.contains(ReadyFor::READABLE);
                 let write = interest.contains(ReadyFor::WRITABLE) || stream.connecting;
-                let _ = self
-                    .poller
-                    .modify(socket.as_fd(), Interest::new(key(id), read, write));
+                arm(
+                    &self.registry,
+                    socket.as_fd(),
+                    id,
+                    &mut stream.armed,
+                    read,
+                    write,
+                );
             }
             return Poll::Pending;
         }
@@ -421,8 +484,14 @@ impl Network {
         }
         keep_waker(&mut listener.waker, waker);
         if let Some(socket) = &listener.socket {
-            let interest = Interest::new(key(id), true, false);
-            let _ = self.poller.modify(socket, interest);
+            arm(
+                &self.registry,
+                socket.as_fd(),
+                id,
+                &mut listener.armed,
+                true,
+                false,
+            );
         }
         Poll::Pending
     }
@@ -430,6 +499,7 @@ impl Network {
     /// Wakes the wait on a socket the poller says changed.
     fn ready(&mut self, id: u32, readable: bool, writable: bool) {
         if let Some(datagram) = self.datagrams.get_mut(&id) {
+            disarm(&self.registry, datagram.socket.as_fd(), &mut datagram.armed);
             if readable {
                 datagram.ready.ready_for |= ReadyFor::READABLE;
             }
@@ -442,6 +512,9 @@ impl Network {
             return;
         }
         if let Some(listener) = self.listeners.get_mut(&id) {
+            if let Some(socket) = &listener.socket {
+                disarm(&self.registry, socket.as_fd(), &mut listener.armed);
+            }
             listener.ready = true;
             if let Some(waker) = listener.waker.take() {
                 waker.wake();
@@ -451,6 +524,9 @@ impl Network {
         let Some(stream) = self.streams.get_mut(&id) else {
             return;
         };
+        if let Some(socket) = &stream.socket {
+            disarm(&self.registry, socket.as_fd(), &mut stream.armed);
+        }
         if readable {
             stream.ready.ready_for |= ReadyFor::READABLE;
         }
@@ -498,9 +574,141 @@ impl Network {
 impl Drop for Network {
     fn drop(&mut self) {
         self.gone.store(true, Ordering::SeqCst);
-        let _ = self.poller.notify();
+        let _ = self.waker.wake();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, TcpStream, UdpSocket};
+    use std::sync::atomic::AtomicUsize;
+    use std::task::Wake;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// How long a change may take to arrive.
+    const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// How long a check waits to see that nothing arrives.
+    const SILENCE: Duration = Duration::from_millis(200);
+
+    /// A waker that counts its wakes.
+    #[derive(Default)]
+    struct Counted(AtomicUsize);
+
+    impl Wake for Counted {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Counted {
+        fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Hands the network what arrives, as the system does, until the waker has been woken `count` times.
+    fn woken(network: &mut Network, arrivals: &Arrivals, waker: &Counted, count: usize) -> bool {
+        let start = Instant::now();
+        while waker.count() < count && start.elapsed() < PATIENCE {
+            arrivals.wait(Some(PATIENCE));
+            for arrival in arrivals.take() {
+                assert!(network.event(&arrival).is_none());
+            }
+        }
+        waker.count() >= count
+    }
+
+    /// Tells whether anything arrives before the silence ends.
+    fn anything_arrives(arrivals: &Arrivals) -> bool {
+        arrivals.wait(Some(SILENCE));
+        !arrivals.take().is_empty()
+    }
+
+    #[test]
+    fn a_datagram_wakes_its_wait_once() {
+        let arrivals = Arc::new(Arrivals::default());
+        let mut network = Network::new(arrivals.clone());
+        let id = network.udp_open(false).expect("a UDP socket");
+        let port = network.datagrams[&id]
+            .socket
+            .local_addr()
+            .expect("its address")
+            .port();
+        let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, u16::MIN)).expect("a peer");
+        network
+            .udp_connect(id, peer.local_addr().expect("the peer's address"))
+            .expect("connect");
+        let counted = Arc::new(Counted::default());
+        let waker = Waker::from(counted.clone());
+        assert!(
+            network
+                .poll_ready(id, ReadyFor::READABLE, &waker)
+                .is_pending()
+        );
+        assert!(!anything_arrives(&arrivals), "a change before the datagram");
+        peer.send_to(b"a datagram", (Ipv4Addr::LOCALHOST, port))
+            .expect("send");
+        assert!(
+            woken(&mut network, &arrivals, &counted, 1),
+            "woken by the datagram"
+        );
+        // Told once per asking: the datagrams after it change nothing until the socket is waited on again.
+        peer.send_to(b"another", (Ipv4Addr::LOCALHOST, port))
+            .expect("send");
+        assert!(
+            !anything_arrives(&arrivals),
+            "a change after the wait was woken"
+        );
+        match network.poll_ready(id, ReadyFor::READABLE, &waker) {
+            Poll::Ready(Ok(report)) => assert!(report.ready_for.contains(ReadyFor::READABLE)),
+            other => panic!("the wait did not finish: {other:?}"),
+        }
+        assert_eq!(counted.count(), 1);
+        network.udp_close(id);
+    }
+
+    #[test]
+    fn a_connection_wakes_the_listeners_wait_and_its_bytes_the_streams() {
+        let arrivals = Arc::new(Arrivals::default());
+        let mut network = Network::new(arrivals.clone());
+        let published = TcpListener::bind((Ipv4Addr::LOCALHOST, u16::MIN))
+            .expect("a free port")
+            .local_addr()
+            .expect("its address");
+        network.publish(published.port(), published);
+        let listener = network.tcp_listen(published.port()).expect("listen");
+        let counted = Arc::new(Counted::default());
+        let waker = Waker::from(counted.clone());
+        assert!(
+            network
+                .poll_ready(listener, ReadyFor::READABLE, &waker)
+                .is_pending()
+        );
+        let mut client = TcpStream::connect(published).expect("connect");
+        assert!(
+            woken(&mut network, &arrivals, &counted, 1),
+            "woken by the connection"
+        );
+        let stream = network.tcp_accept(listener).expect("accept");
+        assert!(
+            network
+                .poll_ready(stream, ReadyFor::READABLE, &waker)
+                .is_pending()
+        );
+        client.write_all(b"bytes").expect("write");
+        assert!(
+            woken(&mut network, &arrivals, &counted, 2),
+            "woken by the bytes"
+        );
+        let mut into = [u8::MIN; 16];
+        assert_eq!(network.tcp_receive(stream, &mut into, false), Ok(b"bytes".len()));
+        network.tcp_close(stream);
+        network.tcp_close(listener);
     }
 }
