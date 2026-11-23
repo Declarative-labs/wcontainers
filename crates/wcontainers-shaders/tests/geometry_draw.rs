@@ -528,15 +528,64 @@ fn gs_clip_distances(x: f32, y: f32, primitive: usize) -> [f32; 3] {
     [x + 0.3037, 0.4129 - y, more]
 }
 
-/// How far, in pixels, texel (x, y)'s centre lies from the nearest part a `gs_clip` triangle keeps
-/// of an edge one of its planes cuts. Direct3D snaps the vertices clipping makes on such an edge to
-/// its subpixel grid, which moves the kept part by up to half a step; the program's clip test takes
-/// the distance at the centre, so a centre within a step of that part may be drawn on one side
-/// only.
-fn from_clipped_edge(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u32) -> Option<f32> {
-    if case.gs != "gs_clip" {
-        return None;
+/// The clip distances the case's planes give a vertex at (x, y) of primitive `primitive`, its
+/// instance moving it right by `moved`; empty for a case clipping by none.
+fn case_clip_distances(case: &Case, x: f32, y: f32, moved: f32, primitive: usize) -> Vec<f32> {
+    if case.gs == "gs_clip" {
+        gs_clip_distances(x + moved, y, primitive).to_vec()
+    } else if case.gs.is_empty() && clipped_in_pixels(case) {
+        // `vs_cull`'s, of the position before its instance's move.
+        vec![x - y + 0.9]
+    } else {
+        Vec::new()
     }
+}
+
+/// The part of an edge from a to b that every plane keeps, as parameters from a (low above high
+/// where none is kept), and whether a plane cuts it.
+fn kept(at_a: &[f32], at_b: &[f32]) -> (f32, f32, bool) {
+    let (mut low, mut high, mut cut) = (0.0f32, 1.0f32, false);
+    for (p, q) in at_a.iter().zip(at_b) {
+        if (*p < 0.0) == (*q < 0.0) {
+            if *p < 0.0 {
+                high = -1.0;
+            }
+            continue;
+        }
+        cut = true;
+        let t = p / (p - q);
+        if *p < 0.0 {
+            low = low.max(t);
+        } else {
+            high = high.min(t);
+        }
+    }
+    (low, high, cut)
+}
+
+/// Where a texel's centre lies, in pixels, from what Direct3D's clipping and line rule decide; each
+/// `None` where the case has none of it.
+#[derive(Default)]
+struct Placed {
+    /// From the nearest part a triangle keeps of an edge a plane cuts. Direct3D snaps the vertices
+    /// clipping makes to its subpixel grid, which moves that part by up to half a step, where the
+    /// program's clip test takes the distance at the centre: a centre within a step of it may be
+    /// drawn on one side only.
+    clipped_edge: Option<f32>,
+    /// From the nearest point where a plane cuts a line. Direct3D ends the line there and lights
+    /// pixels by its diamond rule, where the program keeps the pixels whose centres the plane keeps.
+    clipped_end: Option<f32>,
+    /// From the nearest end of a line that no plane cuts there.
+    line_end: Option<f32>,
+}
+
+/// Where texel (x, y)'s centre lies from the case's clipped edges and line ends ([`Placed`]).
+fn placed(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u32) -> Placed {
+    let n: u32 = match case.topology {
+        InputTopology::LineList | InputTopology::LineStrip => 2,
+        InputTopology::TriangleList | InputTopology::TriangleStrip => 3,
+        _ => return Placed::default(),
+    };
     let floats = COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>();
     let vertex = |i: u32| -> usize {
         let place = case.first + i;
@@ -551,54 +600,56 @@ fn from_clipped_edge(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u
     };
     let half = SIZE as f32 / 2.0;
     let centre = (x as f32 + 0.5, y as f32 + 0.5);
-    let places = primitive_places(case, 3, indices);
-    let mut nearest: Option<f32> = None;
+    let nearer = |slot: &mut Option<f32>, d: f32| *slot = Some(slot.map_or(d, |s| s.min(d)));
+    let mut found = Placed::default();
     for instance in 0..case.instances {
-        for (primitive, corners) in places.iter().enumerate() {
-            let at = |k: u32| {
-                let v = vertex(k) * floats;
-                let (cx, cy) = (vertices[v] + instance as f32 * 0.25, vertices[v + 1]);
-                (
-                    ((cx + 1.0) * half, (1.0 - cy) * half),
-                    gs_clip_distances(cx, cy, primitive),
-                )
-            };
-            for e in 0..3 {
-                let ((a, da), (b, db)) = (at(corners[e]), at(corners[(e + 1) % 3]));
-                // The part of the edge every plane keeps, as parameters from a to b.
-                let (mut low, mut high, mut cut) = (0.0f32, 1.0f32, false);
-                for (p, q) in da.iter().zip(&db) {
-                    if (*p < 0.0) == (*q < 0.0) {
-                        if *p < 0.0 {
-                            high = -1.0;
-                        }
-                        continue;
-                    }
-                    cut = true;
-                    let t = p / (p - q);
-                    if *p < 0.0 {
-                        low = low.max(t);
-                    } else {
-                        high = high.min(t);
-                    }
-                }
+        let moved = instance as f32 * 0.25;
+        for (primitive, places) in primitive_places(case, n, indices).iter().enumerate() {
+            let corners: Vec<((f32, f32), Vec<f32>)> = places
+                .iter()
+                .map(|&k| {
+                    let v = vertex(k) * floats;
+                    let (px, py) = (vertices[v], vertices[v + 1]);
+                    (
+                        ((px + moved + 1.0) * half, (1.0 - py) * half),
+                        case_clip_distances(case, px, py, moved, primitive),
+                    )
+                })
+                .collect();
+            let edges = if n == 2 { 1 } else { 3 };
+            for e in 0..edges {
+                let ((a, da), (b, db)) = (&corners[e], &corners[(e + 1) % n as usize]);
+                let (low, high, cut) = kept(da, db);
                 let (ex, ey) = (b.0 - a.0, b.1 - a.1);
                 let length = ex.hypot(ey);
-                let along = ((centre.0 - a.0) * ex + (centre.1 - a.1) * ey) / (length * length);
-                if !cut || low > high || along < low || along > high {
+                if low > high || length == 0.0 {
                     continue;
                 }
-                let across = (ex * (centre.1 - a.1) - ey * (centre.0 - a.0)).abs() / length;
-                nearest = Some(nearest.map_or(across, |n| n.min(across)));
+                if n == 2 {
+                    for t in [low, high] {
+                        let d = (a.0 + t * ex - centre.0).hypot(a.1 + t * ey - centre.1);
+                        match t > 0.0 && t < 1.0 {
+                            true => nearer(&mut found.clipped_end, d),
+                            false => nearer(&mut found.line_end, d),
+                        }
+                    }
+                    continue;
+                }
+                let along = ((centre.0 - a.0) * ex + (centre.1 - a.1) * ey) / (length * length);
+                if cut && along >= low && along <= high {
+                    let across = (ex * (centre.1 - a.1) - ey * (centre.0 - a.0)).abs() / length;
+                    nearer(&mut found.clipped_edge, across);
+                }
             }
         }
     }
-    nearest
+    found
 }
 
-/// Prints the first texels `picture` draws apart from `reference`, each with how far it lies from
-/// a clipped edge ([`from_clipped_edge`]), and how many of those apart by more than `allowed` lie
-/// within a subpixel step of one.
+/// Prints the first texels `picture` draws apart from `reference`, each with where it lies from the
+/// case's clipped edges and line ends ([`placed`]), and how many of those apart by more than
+/// `allowed` lie within a subpixel step of a clipped edge, within a pixel of a clipped line end, or
+/// within a pixel of a line's own end.
 fn print_apart(
     case: &Case,
     vertices: &[f32],
@@ -607,8 +658,7 @@ fn print_apart(
     picture: &[u8],
     allowed: u64,
 ) {
-    let edge =
-        |i: usize| from_clipped_edge(case, vertices, indices, i as u32 % SIZE, i as u32 / SIZE);
+    let at = |i: usize| placed(case, vertices, indices, i as u32 % SIZE, i as u32 / SIZE);
     let apart: Vec<(usize, &[u8], &[u8])> = reference
         .chunks(4)
         .zip(picture.chunks(4))
@@ -618,27 +668,42 @@ fn print_apart(
         .collect();
     for &(i, a, b) in apart.iter().take(16) {
         let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
-        let near = edge(i).map_or(String::new(), |d| format!(" ({d} px from a clipped edge)"));
+        let p = at(i);
+        let mut near = String::new();
+        for (d, what) in [
+            (p.clipped_edge, "a clipped edge"),
+            (p.clipped_end, "a clipped line end"),
+            (p.line_end, "a line's end"),
+        ] {
+            if let Some(d) = d {
+                near += &format!(" ({d} px from {what})");
+            }
+        }
         eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}{near}");
     }
-    let beyond: Vec<usize> = apart
+    let beyond: Vec<Placed> = apart
         .iter()
         .filter(|(_, a, b)| {
             a.iter()
                 .zip(*b)
                 .any(|(p, q)| u64::from(p.abs_diff(*q)) > allowed)
         })
-        .map(|(i, _, _)| *i)
+        .map(|(i, _, _)| at(*i))
         .collect();
     let step = 2.0f32.powi(-SUBPIXEL_BITS);
-    let at_edge = beyond
-        .iter()
-        .filter(|&&i| edge(i).is_some_and(|d| d <= step))
-        .count();
+    let within = |of: fn(&Placed) -> Option<f32>, reach: f32| {
+        beyond
+            .iter()
+            .filter(|p| of(p).is_some_and(|d| d <= reach))
+            .count()
+    };
     eprintln!(
-        "  {} texels apart by more than {allowed}, {at_edge} of them within a subpixel step of a \
-         clipped edge",
-        beyond.len()
+        "  {} texels apart by more than {allowed}: {} of them within a subpixel step of a clipped \
+         edge, {} within a pixel of a clipped line end, {} within a pixel of a line's end",
+        beyond.len(),
+        within(|p| p.clipped_edge, step),
+        within(|p| p.clipped_end, 1.0),
+        within(|p| p.line_end, 1.0),
     );
 }
 
