@@ -5,117 +5,56 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 ## Where things stand
 
-- W0 (the plan for both forms): written in run 1, revised in run 2 for the first independent check, in run 3 for
-  the second check's eleven findings, in run 4 for the third check's twelve, and in run 5 (2026-11-23) for what this
-  track's own fresh reading found when it tried to break the plan (no check report was waiting). Run 6 (2026-11-23)
-  read the whole plan again and fixed three small things: `clone` gets the new index's signal-stack top as its
-  stack, so a new thread's sp is never the maker's guest sp before its `sigaltstack` (plan 4.1); section 11's
-  crossover summary now carries run 5's figures as section 7 does; the plan's status line. The independent check
-  runs only after a build run reports W0 complete, so run 6 reports it complete. Run 5:
-  - Per-thread pages in P (blocking): the filter refuses any mapping in our area after start, so a new thread's
-    control and register pages could not have been mapped, and the window cache could evict a page a runner waits
-    on. Now each stub has a thread-pages memfd mapped whole at start (control read-only, register read-write, for
-    `THREADS_PER_PROCESS` = 2^15 threads) with anonymous signal stacks, fd closed; the embedder maps it whole,
-    outside the cache. A thread past the limit is refused, counted (plan 4.3, 9).
-  - Thread lifecycle in P: `clone`'s exact flags with `CLONE_CHILD_CLEARTID` on a register-page word; a new thread's
-    inherited blocked stop and cleared alternate stack; its start counts as the wait window; an index is reused
-    only after the host kernel zeroes that word; a drop is a control-page command (plan 4.1, 3.6).
-  - Process ids: the zygote reaped on its own, so `tgkill` or the CPU clock could reach a process that got the id
-    later. Now it reaps only on the embedder's word and kills (SIGKILL, `kill` added to section 6) only its own
-    unreaped child (plan 4.1, 6).
-  - The filter lacked `close` (received shared-block fds accumulated); added, each such fd closed once mapped.
-  - Written marks and watches: the plan had the executor keep marks of its own, duplicating the kernel, which
-    makes both through `Cpu::set_permissions` (memory.rs `take_dirty`, `reapply`); the executor now only honours
-    permissions (plan 3.5).
-  - Queued commands longer than a control page go in rounds, one round trip per page (plan 4.2).
-  - Smaller: I's kernel view laid out as the guest's (shared blocks included); the fallback prefers tmpfs and counts
-    guest memory on disk; an owner's end copies the pages its children borrow (a daemon's double fork), counted;
-    I's reservation refused next to a sanitizer's shadow, named; runtimes that reserve more than 4 GiB as an
-    evaluator input; I's kernel entry returns to the runner's own stack (plan 3.1, 3.4, 3.5, 5.3, 7).
-  - Re-measured (w0/run5): P's round trip with the stub's answer word on a read-only page, both machines, and the
-    filter's two-argument rule; I's check cost (plan 4.3, 3.7, 11).
-  How run 4 answered the third check:
-  - Forged mapping commands in P (blocking): everything a stub obeys (the `Resume`, the answer word, queued
-    commands, placement requests) is now in a per-thread control page mapped read-only in the stub, which its
-    filter cannot make writable; the register page (request word, exit, registers) stays guest-writable and is
-    validated against the embedder's own records. The filter now also pins the memory memfd's `mmap` offset to the
-    address. The claim for an escaped stub is now exact: it can still write pages it lends to fork children before
-    they copy them, and shared blocks past others' protections; closing that (a sealed file per fork) is the
-    owner's decision 12 (plan 3.7, 9, 12; W1 test of A, B, C added).
-  - Placement (blocking): re-measured with guest work between calls (w0/run4/place.c). A new rule: runners take
-    the least-held CPU from one table per embedder process (so containers spread), sample their CPU's share every
-    10 ms from CPU clocks (1.000 free, 0.50 to 0.56 with one other program), and move under 0.75 to a CPU not
-    marked contended in the last second. Measured: one move, then the free CPU's speed (13.37 to 13.39 against
-    27.8 µs pinned on the busy CPU, Graviton4); with every CPU busy, two moves a run, 1.4 to 1.8% dearer than
-    staying. The busy crossover now compares P against I's work slowed the same way: 69,000 to 70,000 entries per
-    second on Graviton4, 38,000 to 66,000 on the Xeon (plan 4.3, 7, 11). Stub threads pin themselves on a request,
-    so no reported thread id is ever used for pinning.
-  - The yield-then-futex wait: considered and rejected with the third check's figures (20 to 22% cheaper idle,
-    3 ms per round trip on a shared CPU) (plan 4.3).
-  - x86-64 handlers get `SA_RESTORER` (plan 3.6); the stop signal counts from libc's `SIGRTMIN()` (plan 3.7);
-    thread ids are used only in `tgkill` with the zygote's process id (plan 4.1).
-  - W1 drives the kernel through `with_parts` with `next` and `exit` as Unicorn does, until the owner's interface
-    item 1 exists (plan 4.6, 13).
-  - The workload split's figures come from the re-run's correction (plan 7); P's speculation line is now only
-    between guest code: our kernel is shared by every container of an embedder process in both forms (plan 3.7, 7,
-    9).
-  - Base-only access forms in I (exclusives, acquire/release, atomics, structures) cost one more instruction, not
-    in f (plan 3.2, 7).
-  - Page size: the 2026-11-18 ruling is followed by split host pages, built at a new W4 (plan 6, 13; decision 13).
-  - Windows of the transition: a resume's queued commands run with the stop held off (two `rt_sigprocmask` only on
-    resumes that carry commands); the queue's order against a fork's protection holds in W1 and W2 by one thread at
-    a time, and needs a socket-byte witness with parallel threads (plan 3.6, 4.2).
-  - The ARM64 runner thread's SVE state: measured dropped at a system call on Graviton4 (p0 and FFR zero after
-    `getppid`), checked by the start-up probe, `smstop za` on SME hosts (plan 3.8).
-  How run 3 answered the second check:
-  - The "unpinned stall" was a lost-wakeup hang in run 2's probe (the guest's futex wait re-read the word instead
-    of passing the value it compared; its zygote test had the same fault). Re-measured with a fixed probe
-    (w0/run3/slot.c), idle and with spinning programs on the CPUs used. Unpinned does not stall when idle (1 of
-    504,000 round trips over 1 ms), but one CPU still halves the round trip, and on busy CPUs one CPU holds a
-    3.6 to 3.9 µs median (Graviton4) while two CPUs or the scheduler's own placement wait about 2 ms per round trip.
-    So one CPU stands (run 4 adds the rule for choosing and leaving a contended one, above). The waits now say
-    they pass the compared value.
-  - P's slot tables (2^46 bytes each, only three fit in the embedder): every embedder view of a stub's memfds is
-    now a 2 MiB window of a bounded cache (16,384 windows, least recently used evicted), measured at 8.5 / 4.8 to
-    5.2 µs to map, touch and unmap (plan 4.2, 3.5). This also answers the minor point on large guest
-    reservations across many stubs.
-  - sp-based register offsets in I: new rule (f) computes the address from sp less the base plus the offset and
-    checks it like any other; a structure access post-indexed by a register is split into (a) and (d). SVE and SME
-    are not offered to guests (the translator decodes neither), so no SVE form reaches the emitter (plan 3.2).
-  - Speculation (Spectre v1): I now uses 4 GiB windows in 8 GiB slots, and the access after the check is
-    `[base, wA, uxtw]`, cut to the window by its addressing mode. That is exactly the measured X32 sequence, so f
-    is unchanged and needs no barrier. sp's speculative drift is bounded by the 4 GiB unmapped on both sides, and
-    jumps through a register are cut the same way. What I does not protect against (branch target injection,
-    cache timing between guests on one core) is named in the plan's sections 3.7 and 9 and is an evaluator input.
-  - Stopping a running thread: plan 8 item 3 now asks for `Executor::Stopper` / `ThreadStopper::stop(thread)`. It
-    used to say "no change", which was wrong.
-  - Several I containers in one embedder process: one layout per process, made by an in-process host that makes
-    each container's executor and gives out slots from one pool of 2047. P needs no fixed range in the embedder,
-    so P and I mix. Construction is asked as `StandaloneExecutorHost` (plan 3.1, 8 item 5).
-  - Minor points:
-    - The pids limit no longer plays any part: r is gone.
-    - memfd refused: data goes to the directory with the most free space, the kernel's side does `fallocate`
-      before it writes, and a guest SIGBUS ends the process as an out-of-memory kill would (plan 3.4).
-    - Zen 4's one-CPU figure is now its median, 5.14 µs.
-    - The mask-change cost is now measured: 125 / 87 to 89 ns.
-    - The 1.4 ms figure is gone.
-    - Pages a fork child touches after a fork now count in the crossover (plan 3.5, 7).
-    - Stub death is learned one way, from the socket hanging up (polled at the runner's 100 ms futex time-out),
-      and the zygote always reaps (run 5: only on the embedder's word).
-    - x86 stubs may now use `arch_prctl(ARCH_SET_GS)`.
-- No code yet. The two crates (crates/executor/implementation/host-process and in-process) are not created: W1
-  creates host-process, W2 in-process. So the root Cargo.toml's unsafe list has no lines of ours yet.
+- W0 (the plan for both forms) is accepted (runs 1 to 6, four independent checks; its history is in git, commit
+  544c6658 and before).
+- W1 (form P), run 1 (2026-11-23):
+  - The fourth check's eight findings are answered in the plan (commit dec511ab): the zygote's inherited
+    restartable-sequences registration (4.1, 6), K2 named as W1's need with `differential` and
+    `count_at_every_stop` waiting on it by name (3.1, 13), the SVE ABI's promise (3.8), the zygote's own end (4.1,
+    7), I's checked address and no second check of pairs (3.2, 7), the probe fault's counter (3.2), the wait window
+    from the request word on (3.6), aliasing instruction caches (3.4).
+  - Built (crates/executor/implementation/host-process): the start-up probe (page size, the user-space top by
+    fixed mappings, ARM64 `CTR_EL0`, SVE after a system call on its own short-lived thread) and the zygote: forked
+    with every signal blocked, its code copied to a memfd and mapped at 2^45 over a reservation, assembly for
+    ARM64 and x86-64 that unregisters the inherited rseq area and proves none is left (registering its own), clears
+    the robust list and exit-clear word, closes every fd but its socket, unmaps everything else, and answers ping,
+    fork, kill and reap over a SOCK_SEQPACKET socket. A forked child closes the zygote's socket, sets
+    PR_SET_PDEATHSIG, checks its parent and waits on a futex word: the stub's start, with no body yet.
+  - Tests (tests/zygote.rs, 8): the zygote moved 200 times between two CPUs answering after each (the fourth
+    check's case); a stub moved, stopped and continued 200 times then killed and reaped as SIGKILL; zygote and stub
+    map only the zygote's pages (x86's vsyscall page aside) and hold at most one fd (read from /proc by the test
+    only); 64 stubs forked, killed, reaped and gone; stubs die with a killed zygote; 16 zygotes from an embedder
+    with 4 busy allocating threads; the probe's values. Passed on Graviton4 (load 17 to 36) and the Xeon (load 0.1
+    to 0.6), 5 runs each with /dev/kvm denied (`sudo setpriv --clear-groups`, checked by an open that fails), and
+    3 more on x86 with it readable. The tests see the fault: with the unregistration and proof skipped on the
+    remote copy, 5 of 8 fail on Graviton4 and 3 of 8 on the Xeon (the migration test on both); the stub test alone
+    does not catch it on the Xeon, which is why the zygote's own proof matters (a stub inherits the zygote's state).
+    The SVE probe reports Dropped on Graviton4 and Kept when its `svc` is replaced by a `nop`.
+  - Probe values: Graviton4 user-space top 2^48, `CTR_EL0` 0xb444c004 (DIC and IDC set, L1Ip PIPT); Xeon 8488C
+    top 0xfffffffffff000 (five-level paging).
+- Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
+  `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
+  test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- W0 is reported complete by run 6; next is the orchestrator's independent check of the plan, then any fixes it
-  asks for.
-- After the check: W1 (form P on ARM64 Linux), plan section 13. It needs the translator's `HostProcess` form and the
-  `stop` crate with the slot table's base as a parameter first (below, "Asked of other tracks"); until they exist,
-  W1 can build everything of plan sections 3 and 4 that does not run translated code (layout and reservations,
-  memfds and the window cache, the zygote and stubs, the control and register pages, placement and runners,
-  copy-on-write, stops, the seccomp filter) and test it with hand-written ARM64 pieces. It drives
-  the kernel through `with_parts` (plan 4.6) and needs none of the owner's interface items.
+- W1, in this order, each tested on both rented machines with /dev/kvm denied: the stub's thread-pages memfd
+  (control and register pages, signal stacks) and its request word and futex round trip, measured against the bare
+  futex slot (plan 4.3); the stub's seccomp filter and the test that a stub calling outside it is killed (3.7);
+  memfd guest memory, the window cache and copy-on-write with the adversarial fork tests (3.5, 4.2); the stop
+  signal and its windows (3.6); placement (4.3); the zygote's end and re-fork (4.1). Hand-written ARM64 pieces
+  stand in for translated code until the translator's form exists. Then the `Cpu` and `Executor` traits with the
+  `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
+- I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
+  ("reservation refused") in an embedder that made an in-process host first.
+
+## How to run
+
+- W1's tests, on either rented machine: `arm-run <checkout> --name nwvm -- 'cargo test -p
+  wcontainers-executor-host-process -j 12'` (or `x86-run`). With /dev/kvm denied: build with `--no-run`, then
+  `sudo setpriv --reuid=$(id -u) --regid=$(id -g) --clear-groups -- <test binary> --test-threads 3`.
+- The fault-visibility runs: scratch keep-rseq.py and keep-rseq-x86.py patch the remote copy (at
+  /work/nwvm-w1 on each machine), then the same test command; the next sync restores the tree.
 
 ## How to run the measurements
 
@@ -166,6 +105,9 @@ with work between calls c = 2.50 to 2.53 / 2.02 to 2.18 µs, no read-only differ
 the plain build's). Crossover with work between calls now 81,000 to 86,000 (Graviton4), 50,000 to 75,000 (Xeon,
 idle).
 
+W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's values and the test verdicts above
+(Graviton4 at load 13 to 36 while other tracks ran, Xeon at 0.1 to 0.6).
+
 ## Asked of other tracks
 
 - Translator and ARM64 (crates/wcontainers-translator, crates/wcontainers-arm64): a form value given to
@@ -184,7 +126,8 @@ idle).
   and 296) taking the slot table's base as a parameter, and `stop` and `translation` in a crate that does not pull
   aarch64-paging, arm-gic, smccc, the kernel or the runtime; the monitor's kept translations (`Translator`,
   hardware-virtualization/translate.rs) usable from such a crate.
-- Kernel: K2 (placement low first, memory size at start) as docs/native.md asks; several threads running at once
+- Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
+  lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
   for `ThreadOrdering::Parallel`; calling the stopper (plan 8 item 3) from `suspend_tasks`, `suspend_threads`,
   signals to a running thread and group stops, if the owner takes it; `ProcessInfo::kernel_entries` if he takes it.
 - Every executor track, if the owner takes plan 8 item 3: a `ThreadStopper` of its own.
@@ -217,7 +160,16 @@ idle).
   - hosts with pages larger than 4 KiB: the ruling of 2026-11-18 followed by split host pages, built at W4 after
     both forms work on 4 KiB hosts.
 
+- Filled in by W1 run 1, where the plan was silent (the fourth check's minor point): when the zygote itself ends,
+  every P guest process of that embedder ends as killed by SIGKILL (its stubs die with it), counted "zygote
+  ended", and a new zygote is forked from the embedder on the next `memory_new`; if that fork fails, P is
+  unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
+
 ## Departures from the plan
+
+- The zygote is forked with every signal already blocked by the forking thread (and its mask restored after),
+  rather than blocking them as its first act, so no handler of the embedder can run in the child (plan 4.1 says
+  so now).
 
 - The brief's "Linux hosts on ARM64 and x86-64 first" is built in two steps: ARM64 at W1 and W2, x86-64 at W3,
   because x86's native output (the x86 track's XN1, XN2) does not exist yet and both forms run only translated code.
@@ -229,10 +181,23 @@ idle).
 
 ## Unsafe code
 
-None yet (no crate). Expected uses are listed in plan section 2.
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 16 in the library (14
+build on ARM64, 12 on x86-64), 1 in its test:
+- zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
+  it refers to nothing outside itself); glibc's `__rseq_offset` and `__rseq_size` (no crate has them); the two
+  labels around the assembly; the slice of its code between them; the reservation's `mmap` and `munmap`;
+  `sigfillset` with `pthread_sigmask`, then `fork`, then `pthread_sigmask` again (rustix has no signal mask call);
+  the jump into the zygote's code in the child, one per architecture.
+- probe.rs: `mrs ctr_el0` (no crate wraps it); the fixed `mmap` and `munmap` of the user-space search; the SVE
+  probe's assembly (set p0 and FFR, `svc`, store them).
+- tests/zygote.rs: glibc's `__rseq_size`, to show the test has a registration to drop.
+Constants no crate defines, named with their source: glibc's rseq signatures (`RSEQ_SIG`), Linux's
+`RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields.
 
 ## Dependencies and licences
 
-None added yet. Planned: rustix (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), and libc (MIT OR Apache-2.0)
-only where rustix has no call. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
+host-process, Linux only: rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
+Apache-2.0) for the signal mask, `fork` and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
+LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly, wcontainers-abi. All were already in the
+lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
 machines.
