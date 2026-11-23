@@ -5,6 +5,85 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 25 (2026-11-23, round 4's third run). Built this run, each linted with warnings denied and
+the nir crate's route tests passed on the x86-64 machine (19 of 19); results on the rig below:
+- Maps of multisampled textures go through Mesa's transfer helper (`u_transfer_helper`, MIT,
+  `U_TRANSFER_HELPER_MSAA_MAP`): a single-sampled texture of the box, blitted from the
+  multisampled one for a read and into every sample of it at the flush of a write. Mesa makes
+  such maps itself only (its fallback texture for a multisampled sampler at a unit holding none,
+  KHR `sample_variables.mask.*.samples_0` and `position`: the refused map raised
+  `GL_OUT_OF_MEMORY`); OpenGL gives a program no way to map one. For it a texture map's flushed
+  parts are now written at the flush (the helper blits before unmapping), and an explicitly
+  flushed map writes nothing more at its unmap. `texture_subdata` of a multisampled texture goes
+  through Mesa's `u_default_texture_subdata`, which maps it.
+- `interpolateAtSample(v, gl_SampleID)` of an input the program reads nowhere else but at its own
+  sample is that input interpolated at the sample by the host (an exact equivalence; the
+  derivative evaluation of other places is not bit-equal to the host's interpolation, which KHR
+  `shader_multisample_interpolation.render.interpolate_at_sample_check.rgba8i` compares with
+  `==`). Test `an_input_read_only_at_its_own_sample_is_interpolated_at_the_sample_by_the_host`.
+- A streamed `gl_PointSize` (transform feedback; the common form keeps the point size as a
+  built-in the stage helper does not stream) is also written at the first generic location no
+  output takes, which the stream names (`stream_point_size_at_a_location`; dEQP-GLES3
+  `transform_feedback` with `gl_PointSize`, 22 process refusals in run 23).
+- Primitives with adjacency drawn without a geometry program are drawn without their adjacent
+  vertices, as OpenGL draws them (`SlowPath::AdjacencyDropped`; Mesa's index translator makes
+  lists with adjacency of strips, the driver keeps each primitive's own vertices): KHR-GLES31
+  `draw_indirect` 8 crashes, KHR-GL33 `primitive_restart.restart_mode`.
+- Arrays of arrays of textures, samplers or images are one array of their elements in OpenGL's
+  order (the order of the units they take) before the elements are split (dEQP-GLES31
+  `uniform_location.nested_array`, 16 refusals). Test
+  `an_array_of_arrays_of_textures_is_one_array_of_its_elements`.
+- A blit's stencil is written a bit at a time by Gallium's blitter (`util_blitter_stencil_fallback`
+  after a stencil clear within the blit and its scissor, as Mesa's freedreno and zink drivers
+  do), since no program writes stencil on the host: the blits the blitter refused with stencil
+  (dEQP-GLES3 `fbo.blit.depth_stencil`, `fbo.msaa`, `fbo.invalidate`, KHR `framebuffer_blit`,
+  `packed_depth_stencil.blit`, `texture_stencil8.multisample`; 74 of run 23's 138 refusals).
+  The slow path's name is asked of the interface track (below).
+- Unsafe code: wcontainers-opengl 357 (eight more: the transfer helper's creation and
+  destruction, the default sub-data write, the stencil blit's three calls), wcontainers-nir 108
+  (one more: the point size call); the root list carries both. No dependency or licence was
+  added (the Mesa files are in the pinned Mesa, MIT, already linked).
+
+Run 25's two whole runs (desktop, RTX 3080, one GPU job each that built and ran, 8 glcts at once,
+other tracks' jobs queued beside; scratch `results/g9r25/{a,b}/<list>/results.csv`, logs
+`logs/g9r25/full.log` and `full-b.log`, case notes `logs/g9r25/case-notes-{a,b}.txt` and their
+counts `reasons-{a,b}.txt`; `scripts/g9r25-table.py <run> <base>` compares two runs):
+- Run A, run 24's driver at 8f0f1fba (13:48 to 14:27 desktop time), against run 23's: 116,449 of
+  117,766 run, 98.88%. Every list now runs in an OpenGL ES 3.2 context where the case asks one
+  (run 23's dEQP-GLES31 ran before Mesa's WGL patch): 2,200 dEQP-GLES31 cases that were
+  NotSupported run (2,111 pass, 89 fail: `state_query.texture_level` and `internal_format` of
+  `texture_2d_multisample_array` 81, `state_query.texture` 8). Run 24's group runs held: 35
+  dEQP-GLES2, 115 dEQP-GLES3 and 80 KHR-GL33 failures pass. 10 dEQP-GLES31
+  `texture.multisample.negative.*` cases that passed fail (the same driver code; they now run in
+  an ES 3.2 context: not yet read) and 48 KHR-GL33 `packed_pixels.pbo_rectangle.compressed_*`
+  cases that passed crash, in processes the BC device loss below ends (deqp-runner groups the
+  cases into other processes run to run).
+- THE TABLE, run B, run 25's driver at 9942d7de (14:29 to 15:09 desktop time), every list whole:
+  - dEQP-GLES2: 17,165 cases; Pass 17,000, Warn 6, Fail 22, Crash 2, Skip 135: 17,006 of 17,030,
+    99.86%.
+  - dEQP-GLES3: 44,768; Pass 44,190, Warn 5, Fail 59, Crash 33, Skip 481: 44,195 of 44,287, 99.79%.
+  - dEQP-GLES31: 37,802; Pass 35,424, Fail 394, Crash 132, Flake 7, Skip 1,845: 35,424 of 35,957,
+    98.52%.
+  - KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+  - KHR-GLES3: 6,498; Pass 6,198, Fail 3, Crash 69, Skip 228: 6,198 of 6,270, 98.85%.
+  - KHR-GLES31: 4,101; Pass 3,427, Fail 21, Crash 62, Timeout 1, Skip 590: 3,427 of 3,511, 97.61%.
+  - KHR-GLES32: 1,405; Pass 837, Fail 16, Crash 55, Flake 1, Skip 496: 837 of 909, 92.08%.
+  - KHR-GL33: 9,886; Pass 9,030, Fail 64, Crash 270, Skip 522: 9,030 of 9,364, 96.43%.
+  - KHR-GL46 (19,714): no 4.6 context (G9's second part).
+  - The bar's measure, every list that starts: 116,555 of 117,766 run, 98.97%, above the 92.9%
+    floor. With KHR-GLES32's 496 NotSupported counted as failed: 116,555 of 118,262, 98.56%.
+  - Against run A: no case that passed fails (three flakes moved either way); 106 cases that
+    failed or crashed pass: dEQP-GLES3 36 (the stencil blits, the streamed point size), KHR-GLES31
+    51 (`sample_variables` 38, `interpolate_at_sample_check` 3, `draw_indirect` 8, ...), dEQP-GLES31
+    6 (`uniform_location.nested_array`), KHR-GLES3 4 and KHR-GL33 6 (stencil blits).
+  - Run B's process refusals, most first: device lost 562 (KHR-GL33's BC textures most of them),
+    an evaluation program reading the point size 145 (asked of the shaders track), sampling an
+    integer texture 126, layered geometry output 74, blits the blitter does not make 64 (all
+    `copy_image` of the 96-bit formats), the stage helper's buffer size 56, a border on a
+    comparison sampler 56. Maps of multisampled textures (76 in run 23), streamed point sizes
+    (22), arrays of arrays (16), uniform blocks named at run time (20) and primitives with
+    adjacency without a geometry program (18) no longer refuse.
+
 G9 run 24 (2026-11-23, round 4's second run): the gap list's groups that were not yet read, read
 from run 23's own logs (`case-notes.ps1`, `g9r24-reasons.py`, the kept `.qpa` files), and the
 causes of this track's fixed. Built this run (linted with warnings denied and the nir crate's
@@ -175,7 +254,9 @@ against run 22's whole run at d8bb7a2e (scratch `results/g9r23/full/<list>/resul
   layered geometry output 56, a border on a comparison sampler 52, comparisons with a bias or
   gradients 34.
 
-G9's FIRST PART IS COMPLETE for its independent check: every list that starts was run whole at
+G9's FIRST PART IS COMPLETE for its independent check (run 25: the table to check against is
+run 25's run B above, every list whole at one driver, 98.97% against the 92.9% floor; run 23's
+below is kept as history). As run 23 left it: every list that starts was run whole at
 one driver (KHR-GLES32 at the same driver with Mesa's WGL patch), the bar's measure is 98.71%
 against the 92.9% floor, and every failing group is in the gap list below with its cause and
 owner, those not yet read named as such. The check asked for: a sample of each list on the rig
@@ -187,7 +268,21 @@ The suite of both crates at 7e686f27 (x86-64 machine, load 21 to 25): fmt clean;
 warnings denied clean with and without Mesa; with Mesa 30 tests pass and 2 are ignored (route 17,
 glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none build that need it.
 
-Next, in order (this track's rows of the gap list, as run 24 left them):
+Next, in order (run 25):
+1. The groups that run 25's ES 3.2 contexts brought in, not yet read: dEQP-GLES31
+   `state_query.texture_level` and `internal_format` of `texture_2d_multisample_array` (81),
+   `state_query.texture` 8, `texture.multisample.negative.*` 10 (compare llvmpipe, the same Mesa
+   frontend: `-Driver llvmpipe -Lists gles31-main -Include dEQP-GLES31.functional.texture.multisample.negative.*`).
+2. Still not read: KHR-GL33 `primitive_restart.restart_mode` (no refusal since run 25),
+   gpu_shader5's `texture_gather_offset_color_*`, `texture_cube_map_array` sampling,
+   shader_image_load_store `misc-fs` and `advanced-*`, dEQP synchronization 10.
+3. Built but not this track's to end: the point size between staged stages (shaders track,
+   asked), the stencil blit's slow path name (interface track, asked).
+4. This track's causes found and not built: layered geometry output, an input read at the
+   centroid and at an offset, storage blocks in tessellation programs, ASTC against 128-bit
+   `copy_image`, the 96-bit `copy_image` blits (64 refusals: not yet traced past the blit).
+
+Run 24's list, kept for its readings (items done in run 25 are marked in the gap list):
 1. The groups still not yet read: KHR sample_variables' map of a multisampled texture
    (`mask.*.samples_0`, `position`), KHR shader_multisample_interpolation 6, gpu_shader5's
    `texture_gather_offset_color_*`, texture_cube_map_array `sampling` and `image_op_compute_sh`,
@@ -204,6 +299,28 @@ Next, in order (this track's rows of the gap list, as run 24 left them):
    3D texture).
 
 ## Gap list (G9's first part, at e742e0be)
+
+Run 25's changes to the rows below, read from run B's case notes (`logs/g9r25/reasons-b.txt`):
+- Done in run 25: KHR `sample_variables` 38 (maps of multisampled textures), KHR
+  `interpolate_at_sample_check` 3, KHR-GLES31 `draw_indirect` 8, dEQP-GLES3 `transform_feedback`
+  with `gl_PointSize`, dEQP-GLES31 `uniform_location.nested_array`, every stencil blit
+  (`fbo.blit.depth_stencil`, `fbo.msaa`, `fbo.invalidate`, KHR `framebuffer_blit`,
+  `packed_depth_stencil.blit`, `texture_stencil8.multisample`,
+  `texture_storage_multisample...multisampled_fbo_to_singlesampled_fbo_blit`); run 24's
+  `fbo.render`, `opaque_type_indexing`, winding and sample mask rows held in run A.
+- KHR `shader_multisample_interpolation.render.interpolate_at_offset_check.rgba8i` 3 Fail: the
+  case compares `interpolateAtOffset(v, gl_SamplePosition - 0.5)` with the host's own per-sample
+  interpolation of the same value by `==`; WGSL has no interpolation at an offset, so the route
+  evaluates it from the value's slopes, which agrees to rounding but not bit for bit (rgba8,
+  rgba8ui and rgba32f pass, their values starting at zero). Absent on WebGPU; no exact route.
+- dEQP-GLES3 and -GLES31 `texture.specification.texsubimage*_depth`, `texsubimage2d_pbo`,
+  KHR-GLES32 `texture_compatibility...depth_component16` device losses: the first device error
+  follows "webgpu: part of a 16-bit depth level written from a buffer" (the WebGPU back end's
+  depth written by a draw for `depth16unorm`; to be asked of it).
+- New with ES 3.2 contexts: dEQP-GLES31 `state_query` of `texture_2d_multisample_array` 81,
+  `state_query.texture` 8, `texture.multisample.negative` 10 Fail: not yet read (this track).
+- `copy_image.non_compressed.viewclass_96_bits` 32 crashes: still "a blit Gallium's blitter does
+  not make" (the stencil blits are gone from that refusal); not yet traced past the blit.
 
 Every failing group of the table with its cause and owner. "This track" means work left in
 wcontainers-nir or wcontainers-opengl; "not yet read" means no cause is named yet, which the bar
@@ -315,8 +432,8 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 
 ## For the owner
 
-- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (349 uses, counted on 2026-11-23 as the
-  root list counts them: every `unsafe` word outside comments) and wcontainers-nir (105) stay on
+- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (357 uses, counted on 2026-11-23 as the
+  root list counts them: every `unsafe` word outside comments) and wcontainers-nir (108) stay on
   the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
   driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
   structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
@@ -360,6 +477,12 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 25: the whole run is still `scripts/g9r24-run.sh <log>` (one GPU job, about 40
+  minutes); `scripts/g9r25-lint.sh [<test args>]` formats, lints both crates with warnings denied
+  with and without Mesa and runs the nir crate's route test on the x86-64 machine (its SSH
+  sometimes times out at the banner: run it again); `scripts/g9r25-table.py <run> <base>`
+  (folders under `results/`) prints each list's counts and the moves against the base. Copy
+  `case-notes.ps1`'s output back before the next run overwrites the process logs.
 - G9 run 24: `scripts/g9r24-run.sh` is run 23's one-command run under its name. Give the
   command that starts it a time limit longer than the queue's wait (an hour or more on
   2026-11-23): a stopped client loses the job's printed counts, though the job carries on and
@@ -846,6 +969,12 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 
 ## Departures from the plan
 
+- G9 run 25: the stencil of a blit written a bit at a time takes the slow way without a counter
+  or warning of its own, since the interface names no such slow path and this round makes no
+  interface change; the name is asked of the interface track. Maps of multisampled textures
+  through a single-sampled one are not counted as a slow path: no faster route exists on any
+  back end, and only Mesa's own code makes such maps (OpenGL gives programs none).
+
 - G9 run 17: a tessellation program's read of a control point at a constant index past the
   draw's input patch reads zero (route B, `missing_point_reads_zero`). OpenGL leaves the value
   undefined; the stage helper holds only the patch's own points, so the read cannot reach a
@@ -1078,6 +1207,18 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 None.
 
 ## Requests to other tracks
+
+- Shaders track (G9 run 25): a staged built-in for the point size (`staged::BuiltIn` has none),
+  passed between the stages the stage helper runs and from the vertex stage into them, and
+  dropped at its final draw: a tessellation or geometry program reading `gl_in[].gl_PointSize`
+  or writing `gl_PointSize` is refused ("not taken: a Evaluation program's input of the built-in
+  PointSize", 144 process refusals in run 23, KHR-GLES31 and -GLES32 `tessellation_shader`).
+  Placing it at a location of this route's own would need the vertex stage to write it there too
+  and a location the device's inter-stage limit leaves free, which only the helper knows.
+- Interface track (G9 run 25): a slow path name for a blit's stencil written by one draw per bit
+  and sample (`util_blitter_stencil_fallback`, eight draws a sample where a program could write
+  stencil, which WebGPU's language cannot), e.g. `SlowPath::StencilWrittenByBits`; the driver
+  takes that route since run 25 without a counter of its own.
 
 - Shaders track (G9 run 24): the stage helper sizes a geometry stage's output after tessellation
   for the largest factor of every patch (`patch_bounds(h.tessellation.max_factor)`, 64 where the
