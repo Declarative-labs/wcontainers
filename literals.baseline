@@ -2537,9 +2537,6 @@ code	crates/kernel/implementation/linux/fs/proc.rs	int	Namespace::ino	0xF000_010
 code	crates/kernel/implementation/linux/fs/proc.rs	int	Source	16
 code	crates/kernel/implementation/linux/fs/proc.rs	int	Source	16
 code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	100
-code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	1024
-code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	1024
-code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	1024
 code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	12
 code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	1216
 code	crates/kernel/implementation/linux/fs/proc.rs	int	contents	1_048_576
@@ -2563,9 +2560,6 @@ code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	0x7fff_ffff
 code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	0x7fff_ffff
 code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	0xff
 code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	0xff
-code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	1000
-code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	1000
-code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	1000
 code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	12
 code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	20
 code	crates/kernel/implementation/linux/fs/proc.rs	int	process_file	3
@@ -2782,10 +2776,6 @@ code	crates/kernel/implementation/linux/implementation.rs	int	Kernel	16
 code	crates/kernel/implementation/linux/implementation.rs	int	Kernel::new	16
 code	crates/kernel/implementation/linux/implementation.rs	int	Kernel::new	16
 code	crates/kernel/implementation/linux/implementation.rs	int	Kernel::new	4
-code	crates/kernel/implementation/linux/implementation.rs	int	Machine::threads_max	0x3fff_ffff
-code	crates/kernel/implementation/linux/implementation.rs	int	Machine::threads_max	1024
-code	crates/kernel/implementation/linux/implementation.rs	int	Machine::threads_max	16
-code	crates/kernel/implementation/linux/implementation.rs	int	Machine::threads_max	20
 code	crates/kernel/implementation/linux/implementation.rs	int	Machine::threads_max	8
 code	crates/kernel/implementation/linux/implementation.rs	str	Kernel::new	"#1 SMP PREEMPT"
 code	crates/kernel/implementation/linux/implementation.rs	str	Kernel::new	"7.0.0-wcontainers"
@@ -2989,11 +2979,9 @@ code	crates/kernel/implementation/linux/syscall/coredump.rs	int	status	34
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	step	0o600
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	step	0o600
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	step	0o677
-code	crates/kernel/implementation/linux/syscall/coredump.rs	int	timeval	1000
 code	crates/kernel/implementation/linux/syscall/epoll.rs	int	Epoll	8
 code	crates/kernel/implementation/linux/syscall/epoll.rs	int	epoll_ctl	4
 code	crates/kernel/implementation/linux/syscall/epoll.rs	int	epoll_ctl	8
-code	crates/kernel/implementation/linux/syscall/epoll.rs	int	epoll_pwait	1_000_000
 code	crates/kernel/implementation/linux/syscall/epoll.rs	int	ioctl	4
 code	crates/kernel/implementation/linux/syscall/epoll.rs	int	ioctl	4
 code	crates/kernel/implementation/linux/syscall/epoll.rs	int	ioctl	5
@@ -3482,7 +3470,6 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	arrival_from	
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	arrival_from	64
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	arrival_messages	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	arrival_outside	64
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	arrived	200_000_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	bind	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	bind	3
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	bind	4
@@ -3506,19 +3493,15 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	datagram_true
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	deferral_rounded	120
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	deferral_rounded	255
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	deferral_seconds	4
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	deferred_request	120_000_000_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	embryo	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	family_takes	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	find_receiver	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	find_receiver	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	0x500
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	120_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	16
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	1_000_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	20
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	200_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	28
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	28
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	32
@@ -3669,12 +3652,8 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	8
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	0xff
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	0xffff
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	1000
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	1000
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	1000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	12
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	120
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	120_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	127
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	20
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	200
@@ -3704,7 +3683,6 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	65
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	8
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	8
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	88
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	999
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	source_for	127
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	source_for	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	source_for	16
@@ -3719,16 +3697,11 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	10
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	12
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	12
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	12
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	1_000_000
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	1_000_000
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	1_000_000
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	1_000_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	250_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	2_000_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	3
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	3
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	3
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	300_000
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	tcp_info	40_000
@@ -3809,7 +3782,6 @@ code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	autobind	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	bind	0o777
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	bound_device	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	buffer_locks	4
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	1000
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	16
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	255
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	32
@@ -3884,19 +3856,16 @@ code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	read_header	56
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	read_header	8
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	read_header	8
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	receive_low_water	4
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	recvmsg	1000
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	recvmsg	12
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	recvmsg	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	recvmsg	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	recvmsg	48
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	send_packet	32
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	1000
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	136
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	15
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	16
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	16
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	16
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	1_000_000
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	32
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	32
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	32
@@ -4131,8 +4100,6 @@ code	crates/kernel/implementation/linux/syscall/socket/procnet.rs	str	udp	"{:5}:
 code	crates/kernel/implementation/linux/syscall/splice.rs	int	vmsplice_to_pipe	16
 code	crates/kernel/implementation/linux/syscall/system.rs	bytestr	uname	b"Linux"
 code	crates/kernel/implementation/linux/syscall/system.rs	bytestr	uname	b"aarch64"
-code	crates/kernel/implementation/linux/syscall/system.rs	int	change_schedule	100_000
-code	crates/kernel/implementation/linux/syscall/system.rs	int	change_schedule	100_000_000
 code	crates/kernel/implementation/linux/syscall/system.rs	int	change_schedule	20
 code	crates/kernel/implementation/linux/syscall/system.rs	int	change_schedule	99
 code	crates/kernel/implementation/linux/syscall/system.rs	int	deadline_valid	10
@@ -4152,28 +4119,21 @@ code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	6
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
-code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	1000
 code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	11000
 code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	32
 code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	9000
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock	3
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock_adjtime	11
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock_adjtime	9
-code	crates/kernel/implementation/linux/syscall/time.rs	int	clock_getres	1_000_000
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock_nanosleep	3
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock_nanosleep	3
 code	crates/kernel/implementation/linux/syscall/time.rs	int	cpu_clock_target	3
 code	crates/kernel/implementation/linux/syscall/time.rs	int	cpu_sleep_clock	3
-code	crates/kernel/implementation/linux/syscall/time.rs	int	gettimeofday	1000
 code	crates/kernel/implementation/linux/syscall/time.rs	int	gettimeofday	8
-code	crates/kernel/implementation/linux/syscall/time.rs	int	timeval	1000
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	cpu_clock	3
-code	crates/kernel/implementation/linux/syscall/timer.rs	int	interval_value	1000
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	interval_value	4_000_000
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	read	8
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	read	8
-code	crates/kernel/implementation/linux/syscall/timer.rs	int	setitimer	1000
-code	crates/kernel/implementation/linux/syscall/timer.rs	int	setitimer	1_000_000
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	signal_queued	16
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	signal_queued	20
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	taken	12
@@ -4193,9 +4153,7 @@ code	crates/kernel/implementation/linux/syscall/timer.rs	int	timer_info	24
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	timer_info	24
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	timer_info	32
 code	crates/kernel/implementation/linux/syscall/timer.rs	int	timer_info	8
-code	crates/kernel/implementation/linux/syscall/timer.rs	int	write_itimerval	1000
 code	crates/kernel/implementation/linux/syscall/tty.rs	int	open_master	3
-code	crates/kernel/implementation/linux/syscall/tty.rs	int	read_into	100_000_000
 code	crates/kernel/implementation/linux/syscall/tty.rs	int	requests	0xff
 code	crates/kernel/implementation/linux/syscall/tty.rs	int	requests	0xff
 code	crates/kernel/implementation/linux/syscall/tty.rs	int	requests	12
@@ -22001,7 +21959,6 @@ policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/gen_WgslLanguage
 policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/gen_gpu_map_mode.rs
 policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/mod.rs
 redefinition	crates/executor/implementation/unicorn/backend/src/main.rs	int	PORT	PORT = 9000
-redefinition	crates/executor/implementation/unicorn/standin.rs	int	copy_touched::CHUNK	CHUNK = 4096
 redefinition	crates/executor/implementation/unicorn/tests/java.rs	int	ESR_EC_DABT_LOW	ESR_EC_DABT_LOW = 36
 redefinition	crates/executor/implementation/unicorn/tests/java.rs	int	ESR_EC_SHIFT	ESR_EC_SHIFT = 26
 redefinition	crates/executor/implementation/wasmtime/tests/surface.rs	str	DOCKER_HOST_NAME	DOCKER_HOST_NAME = "host.docker.internal"
