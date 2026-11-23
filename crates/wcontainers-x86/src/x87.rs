@@ -5,6 +5,7 @@
 
 use crate::Fxsave;
 use crate::transcendental;
+use astro_float_num::Consts;
 use rustc_apfloat::ieee::{
     Double, IeeeFloat, Semantics, Single, X87DoubleExtended, X87DoubleExtendedS,
 };
@@ -705,15 +706,18 @@ pub type Results = [i64; 2];
 /// The unit, over the FXSAVE area of the block.
 pub struct Unit<'a> {
     pub area: &'a mut Fxsave,
+    /// astro-float's constants, which the transcendental instructions work with.
+    pub constants: &'a mut Consts,
     /// The data address of the instruction, which an unmasked exception leaves in FDP.
     pub data: u64,
     pub code: Code,
 }
 
 impl<'a> Unit<'a> {
-    pub fn new(area: &'a mut [u8], code: Code, data: u64) -> Self {
+    pub fn new(area: &'a mut [u8], code: Code, data: u64, constants: &'a mut Consts) -> Self {
         Unit {
             area: Fxsave::mut_from_bytes(area).expect("the FXSAVE area"),
+            constants,
             data,
             code,
         }
@@ -972,9 +976,10 @@ impl<'a> Unit<'a> {
             Operation::Sine | Operation::Cosine | Operation::SineCosine | Operation::Tangent => {
                 self.trigonometric()
             }
-            Operation::ExponentMinusOne => {
-                self.unary(|_| false, |unit, x| exponent_minus_one(x, unit.area.fcw))
-            }
+            Operation::ExponentMinusOne => self.unary(
+                |_| false,
+                |unit, x| exponent_minus_one(unit.constants, x, unit.area.fcw),
+            ),
             Operation::ArcTangent | Operation::Logarithm | Operation::LogarithmPlusOne => {
                 self.of_two()
             }
@@ -1168,7 +1173,7 @@ impl<'a> Unit<'a> {
     fn unary(
         &mut self,
         invalid_operand: impl Fn(Extended) -> bool,
-        f: impl Fn(&Self, Extended) -> Rounded<Extended>,
+        f: impl FnOnce(&mut Self, Extended) -> Rounded<Extended>,
     ) {
         if self.empty(0) {
             if self.stack_fault(false) {
@@ -1471,10 +1476,12 @@ impl<'a> Unit<'a> {
                     return;
                 }
                 match operation {
-                    Operation::Sine => both(sine(x, fcw)),
-                    Operation::Cosine => both(cosine(x, fcw)),
-                    Operation::Tangent => (tangent(x, fcw), exact_value(Extended::ONE)),
-                    _ => (sine(x, fcw), cosine(x, fcw)),
+                    Operation::Sine => both(sine(self.constants, x, fcw)),
+                    Operation::Cosine => both(cosine(self.constants, x, fcw)),
+                    Operation::Tangent => {
+                        (tangent(self.constants, x, fcw), exact_value(Extended::ONE))
+                    }
+                    _ => (sine(self.constants, x, fcw), cosine(self.constants, x, fcw)),
                 }
             }
         };
@@ -1515,9 +1522,9 @@ impl<'a> Unit<'a> {
             r
         } else {
             let rounded = match self.code.operation {
-                Operation::ArcTangent => angle(y, x, fcw),
-                Operation::Logarithm => logarithm(y, x, fcw),
-                _ => logarithm_plus_one(y, x, fcw),
+                Operation::ArcTangent => angle(self.constants, y, x, fcw),
+                Operation::Logarithm => logarithm(self.constants, y, x, fcw),
+                _ => logarithm_plus_one(self.constants, y, x, fcw),
             };
             // An invalid operation or a division by zero is met instead of a denormal operand (seen on the
             // reference).
@@ -1533,6 +1540,7 @@ impl<'a> Unit<'a> {
 }
 
 /// The transcendental instructions, whose results Intel documents as within one unit in the last place.
+#[cfg(feature = "translate")]
 pub fn transcendental(m: iced_x86::Mnemonic) -> bool {
     use iced_x86::Mnemonic::*;
     matches!(
@@ -1558,7 +1566,19 @@ pub fn neighbours(a: u128, b: u128) -> bool {
 /// `None` where the value is exact, the operands are outside its range or the reference follows a rule of its
 /// own (a tiny operand's sine, cosine or `f2xm1`, a tiny quotient's arc tangent, a power of two's logarithm
 /// whose product is exact).
+#[cfg(feature = "translate")]
 pub fn above_exact(
+    m: iced_x86::Mnemonic,
+    x: Extended,
+    y: Extended,
+    result: Extended,
+) -> Option<bool> {
+    transcendental::with_constants(|cc| above_exact_with(cc, m, x, y, result))
+}
+
+#[cfg(feature = "translate")]
+fn above_exact_with(
+    cc: &mut Consts,
     m: iced_x86::Mnemonic,
     x: Extended,
     y: Extended,
@@ -1579,21 +1599,21 @@ pub fn above_exact(
         {
             return None;
         }
-        Fsin => transcendental::sine(x),
-        Fcos | Fsincos => transcendental::cosine(x),
-        Fptan => transcendental::tangent(x),
-        F2xm1 if below(x, 0) => transcendental::exponent_minus_one(x),
+        Fsin => transcendental::sine(cc, x),
+        Fcos | Fsincos => transcendental::cosine(cc, x),
+        Fptan => transcendental::tangent(cc, x),
+        F2xm1 if below(x, 0) => transcendental::exponent_minus_one(cc, x),
         Fyl2x if finite(y) && !x.sign => match power_of_two(x.float()) {
             Some(k) => inexact_power_product(y, k)?,
-            None => transcendental::logarithm(y, x),
+            None => transcendental::logarithm(cc, y, x),
         },
         Fyl2xp1 if finite(y) && (!x.sign || below(x, 0)) => {
             match power_of_two(one_more.value).filter(|_| one_more.status == Status::OK) {
                 Some(k) => inexact_power_product(y, k)?,
-                None => transcendental::logarithm_plus_one(y, x),
+                None => transcendental::logarithm_plus_one(cc, y, x),
             }
         }
-        Fpatan if finite(y) => transcendental::arc_tangent(y, x),
+        Fpatan if finite(y) => transcendental::arc_tangent(cc, y, x),
         _ => return None,
     };
     let result = result.wide();
@@ -1637,27 +1657,27 @@ fn next_to(v: Wide, away: bool) -> Wide {
     if v.is_negative() { -next } else { next }
 }
 
-fn sine(x: Extended, fcw: u16) -> Rounded<Extended> {
+fn sine(cc: &mut Consts, x: Extended, fcw: u16) -> Rounded<Extended> {
     if tiny(x) {
         tiny_trigonometric_value(next_to(x.wide(), false), fcw)
     } else {
-        rounded_wide(transcendental::sine(x), fcw)
+        rounded_wide(transcendental::sine(cc, x), fcw)
     }
 }
 
-fn cosine(x: Extended, fcw: u16) -> Rounded<Extended> {
+fn cosine(cc: &mut Consts, x: Extended, fcw: u16) -> Rounded<Extended> {
     if tiny(x) {
         tiny_trigonometric_value(next_to(Extended::ONE.wide(), false), fcw)
     } else {
-        rounded_wide(transcendental::cosine(x), fcw)
+        rounded_wide(transcendental::cosine(cc, x), fcw)
     }
 }
 
-fn tangent(x: Extended, fcw: u16) -> Rounded<Extended> {
+fn tangent(cc: &mut Consts, x: Extended, fcw: u16) -> Rounded<Extended> {
     if tiny(x) {
         rounded_wide(next_to(x.wide(), true), fcw)
     } else {
-        rounded_wide(transcendental::tangent(x), fcw)
+        rounded_wide(transcendental::tangent(cc, x), fcw)
     }
 }
 
@@ -1690,6 +1710,7 @@ fn power_logarithm(y: Extended, k: i32, fcw: u16) -> Rounded<Extended> {
 /// `y * k`, the value of `fyl2x` of 2^k or `fyl2xp1` of 2^k - 1, rounded to odd (on the same side of every
 /// 64-bit value as the exact one), where it is not exact at 64 bits (the reference's own rule gives an exact
 /// one's result and C1).
+#[cfg(feature = "translate")]
 fn inexact_power_product(y: Extended, k: i32) -> Option<Wide> {
     let product = odd(y
         .wide()
@@ -1722,27 +1743,27 @@ fn signed_infinity(negative: bool) -> Rounded<Extended> {
 
 /// `f2xm1` of a number: outside -1 to 1 the reference leaves the operand, inexact, and flags its exact
 /// results at -1 and 1 inexact.
-fn exponent_minus_one(x: Extended, fcw: u16) -> Rounded<Extended> {
+fn exponent_minus_one(cc: &mut Consts, x: Extended, fcw: u16) -> Rounded<Extended> {
     match x.class() {
         Class::Zero => exact_value(x),
         Class::Infinity if x.sign => exact_value(Extended::ONE.negate()),
         Class::Infinity => exact_value(x),
         _ if x.with_sign(false) == Extended::ONE => {
-            flagged_inexact(rounded_wide(transcendental::exponent_minus_one(x), fcw))
+            flagged_inexact(rounded_wide(transcendental::exponent_minus_one(cc, x), fcw))
         }
         _ if i32::from(x.exponent) >= BIAS => Rounded {
             value: Some(x),
             exceptions: PRECISION,
             up: false,
         },
-        _ if tiny(x) => rounded_wide(transcendental::tiny_exponent_minus_one(x), fcw),
-        _ => rounded_wide(transcendental::exponent_minus_one(x), fcw),
+        _ if tiny(x) => rounded_wide(transcendental::tiny_exponent_minus_one(cc, x), fcw),
+        _ => rounded_wide(transcendental::exponent_minus_one(cc, x), fcw),
     }
 }
 
 /// The angle `fpatan` gives (Intel SDM Vol. 2A, FPATAN's table), as a multiple of π/4 where an operand is
 /// zero or infinite.
-fn angle(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
+fn angle(cc: &mut Consts, y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
     let (yc, xc) = (y.class(), x.class());
     let quarters: i32 = match (yc, xc) {
         (Class::Zero, _) if !x.sign => return exact_value(y),
@@ -1753,12 +1774,15 @@ fn angle(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
         (_, Class::Infinity) if x.sign => QUARTERS_IN_PI,
         (_, Class::Infinity) => return signed_zero(y.sign),
         _ if !x.sign && transcendental::quotient_below(y, x, TINY_QUOTIENT_BELOW) => {
-            return flagged_inexact(rounded_wide(transcendental::tiny_arc_tangent(y, x), fcw));
+            return flagged_inexact(rounded_wide(
+                transcendental::tiny_arc_tangent(cc, y, x),
+                fcw,
+            ));
         }
-        _ => return rounded_wide(transcendental::arc_tangent(y, x), fcw),
+        _ => return rounded_wide(transcendental::arc_tangent(cc, y, x), fcw),
     };
     rounded_wide(
-        transcendental::quarter_pi(if y.sign { -quarters } else { quarters }),
+        transcendental::quarter_pi(cc, if y.sign { -quarters } else { quarters }),
         fcw,
     )
 }
@@ -1766,7 +1790,7 @@ fn angle(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
 const QUARTERS_IN_PI: i32 = 4;
 
 /// `fyl2x` (Intel SDM Vol. 2A, FYL2X's table).
-fn logarithm(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
+fn logarithm(cc: &mut Consts, y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
     let (yc, xc) = (y.class(), x.class());
     if x.sign && xc != Class::Zero {
         return invalid();
@@ -1788,14 +1812,14 @@ fn logarithm(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
         _ if one => signed_zero(y.sign),
         _ => match power_of_two(x.float()) {
             Some(k) => power_logarithm(y, k, fcw),
-            None => rounded_wide(transcendental::logarithm(y, x), fcw),
+            None => rounded_wide(transcendental::logarithm(cc, y, x), fcw),
         },
     }
 }
 
 /// `fyl2xp1` (Intel SDM Vol. 2A, FYL2XP1's table); at -1 and below, which the manual leaves undefined, the
 /// reference takes the logarithm as negative for an infinite or zero ST(1), else leaves ST(0), inexact.
-fn logarithm_plus_one(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
+fn logarithm_plus_one(cc: &mut Consts, y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
     let (yc, xc) = (y.class(), x.class());
     match (yc, xc) {
         (_, Class::Infinity) if x.sign => invalid(),
@@ -1812,7 +1836,7 @@ fn logarithm_plus_one(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
             let sum = x.float().add_r(Extended::ONE.float(), Round::TowardZero);
             match power_of_two(sum.value).filter(|_| sum.status == Status::OK) {
                 Some(k) => power_logarithm(y, k, fcw),
-                None => rounded_wide(transcendental::logarithm_plus_one(y, x), fcw),
+                None => rounded_wide(transcendental::logarithm_plus_one(cc, y, x), fcw),
             }
         }
     }
@@ -2282,21 +2306,22 @@ mod tests {
 
     #[test]
     fn tiny_trigonometric_values_are_the_full_evaluation() {
+        let cc = &mut Consts::new().expect("the constants cache");
         for x in tiny_operands().filter(|x| x.class() != Class::Zero) {
             assert!(tiny(x));
             assert_eq!(
                 next_to(x.wide(), false),
-                transcendental::sine(x),
+                transcendental::sine(cc, x),
                 "sine {x:?}"
             );
             assert_eq!(
                 next_to(Extended::ONE.wide(), false),
-                transcendental::cosine(x),
+                transcendental::cosine(cc, x),
                 "cosine {x:?}"
             );
             assert_eq!(
                 next_to(x.wide(), true),
-                transcendental::tangent(x),
+                transcendental::tangent(cc, x),
                 "tangent {x:?}"
             );
         }
@@ -2304,6 +2329,7 @@ mod tests {
 
     #[test]
     fn the_series_for_a_small_logarithm_is_the_exact_sum() {
+        let cc = &mut Consts::new().expect("the constants cache");
         let y = Extended::of(X87DoubleExtended::from_u128(3).value);
         let exponents = [-65, -66, -69, -100, -300];
         for e in exponents {
@@ -2313,8 +2339,8 @@ mod tests {
                     exponent: (BIAS + e) as u16,
                     significand: 0xc90f_daa2_2168_c235,
                 };
-                let series = transcendental::logarithm_plus_one_by(y, x, true);
-                let exact = transcendental::logarithm_plus_one_by(y, x, false);
+                let series = transcendental::logarithm_plus_one_by(cc, y, x, true);
+                let exact = transcendental::logarithm_plus_one_by(cc, y, x, false);
                 assert_eq!(series, exact, "{x:?}");
             }
         }
@@ -2322,15 +2348,16 @@ mod tests {
 
     #[test]
     fn tiny_operands_take_no_long_evaluation() {
+        let cc = &mut Consts::new().expect("the constants cache");
         let y = Extended::ONE;
         for x in tiny_operands().filter(|x| x.class() != Class::Zero) {
             let start = std::time::Instant::now();
             let _ = (
-                sine(x, CONTROL_AT_START),
-                cosine(x, CONTROL_AT_START),
-                tangent(x, CONTROL_AT_START),
+                sine(cc, x, CONTROL_AT_START),
+                cosine(cc, x, CONTROL_AT_START),
+                tangent(cc, x, CONTROL_AT_START),
             );
-            let _ = logarithm_plus_one(y, x, CONTROL_AT_START);
+            let _ = logarithm_plus_one(cc, y, x, CONTROL_AT_START);
             let took = start.elapsed();
             assert!(took < TINY_TIME_LIMIT, "{x:?} took {took:?}");
         }

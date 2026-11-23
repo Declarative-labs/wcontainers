@@ -470,8 +470,9 @@ impl Guest for X86_64 {
                 unreachable!("the x87 hook's four arguments")
             };
             let code = crate::x87::Code::decode(code as i32);
-            let mut unit = crate::x87::Unit::new(state, code, data as u64);
-            let results = unit.run(a as u64, b as u64);
+            let results = crate::transcendental::with_constants(|constants| {
+                crate::x87::Unit::new(state, code, data as u64, constants).run(a as u64, b as u64)
+            });
             return HookDone {
                 results,
                 reason: Some(

@@ -6,7 +6,6 @@ use crate::root::{GUESS_BITS, WIDE_BITS, big, of_extended, top_bits};
 use crate::x87::{Extended, Wide};
 use astro_float_num::{BigFloat, Consts, RoundingMode, Sign, Word};
 use rustc_apfloat::Float;
-use std::cell::RefCell;
 
 /// The bits of π the trigonometric instructions reduce their argument by (Intel SDM Vol. 1 8.3.10).
 const REDUCTION_PI_BITS: u32 = 66;
@@ -21,46 +20,52 @@ const LAST_BITS: usize = 1 << 16;
 const REDUCTION_BITS: usize = 2 * GUESS_BITS;
 const ROUND: RoundingMode = RoundingMode::ToEven;
 
-thread_local! {
-    static CONSTANTS: RefCell<Consts> = RefCell::new(Consts::new().expect("the constants cache"));
+#[cfg(feature = "translate")]
+std::thread_local! {
+    static CONSTANTS: std::cell::RefCell<Consts> =
+        std::cell::RefCell::new(Consts::new().expect("the constants cache"));
+}
+
+/// Runs `f` with this thread's cache of astro-float's constants, which the translation half keeps.
+#[cfg(feature = "translate")]
+pub(crate) fn with_constants<R>(f: impl FnOnce(&mut Consts) -> R) -> R {
+    CONSTANTS.with_borrow_mut(f)
 }
 
 /// The value `evaluate` works out at a working precision, rounded to odd in the wide semantics. An exact value
 /// is taken as it is; for another the working precision doubles until the bits below the wide precision, but
 /// for the last few that may be in error, tell the truncation apart (they are neither all zero nor all one).
-fn settled(evaluate: impl Fn(usize, &mut Consts) -> BigFloat) -> Wide {
-    CONSTANTS.with_borrow_mut(|cc| {
-        let drop = u128::BITS - WIDE_BITS;
-        let mut bits = FIRST_BITS;
-        loop {
-            let v = evaluate(bits, cc);
-            if v.is_zero() {
-                return Wide::ZERO;
-            }
-            let last = bits >= LAST_BITS;
-            let exact = !v.inexact();
-            let digits = v.mantissa_digits().expect("a finite value");
-            if exact || last || told_apart(digits) {
-                let (top, exponent, lower) = top_bits(&v);
-                let below = (1u128 << drop) - 1;
-                let mut odd = if exact {
-                    top >> drop | u128::from(top & below != 0 || lower)
-                } else if last {
-                    (top >> drop) + (top >> (drop - 1) & 1)
-                } else {
-                    top >> drop | 1
-                };
-                let mut scale = exponent - u128::BITS as i32 + drop as i32;
-                if odd >> WIDE_BITS != 0 {
-                    odd >>= 1;
-                    scale += 1;
-                }
-                let wide = Wide::from_u128(odd).value.scalbn(scale);
-                return if v.is_negative() { -wide } else { wide };
-            }
-            bits *= 2;
+fn settled(cc: &mut Consts, evaluate: impl Fn(usize, &mut Consts) -> BigFloat) -> Wide {
+    let drop = u128::BITS - WIDE_BITS;
+    let mut bits = FIRST_BITS;
+    loop {
+        let v = evaluate(bits, cc);
+        if v.is_zero() {
+            return Wide::ZERO;
         }
-    })
+        let last = bits >= LAST_BITS;
+        let exact = !v.inexact();
+        let digits = v.mantissa_digits().expect("a finite value");
+        if exact || last || told_apart(digits) {
+            let (top, exponent, lower) = top_bits(&v);
+            let below = (1u128 << drop) - 1;
+            let mut odd = if exact {
+                top >> drop | u128::from(top & below != 0 || lower)
+            } else if last {
+                (top >> drop) + (top >> (drop - 1) & 1)
+            } else {
+                top >> drop | 1
+            };
+            let mut scale = exponent - u128::BITS as i32 + drop as i32;
+            if odd >> WIDE_BITS != 0 {
+                odd >>= 1;
+                scale += 1;
+            }
+            let wide = Wide::from_u128(odd).value.scalbn(scale);
+            return if v.is_negative() { -wide } else { wide };
+        }
+        bits *= 2;
+    }
 }
 
 /// The lowest bits of a working value that may be in error: a chain of a few correctly rounded steps is off by
@@ -129,8 +134,8 @@ fn reduced(x: Extended, cc: &mut Consts) -> (BigFloat, u32) {
 const QUADRANTS: i128 = 4;
 
 /// `fsin`'s value.
-pub(crate) fn sine(x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn sine(cc: &mut Consts, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         let (r, quadrant) = reduced(x, cc);
         match quadrant {
             0 => r.sin(p, ROUND, cc),
@@ -142,8 +147,8 @@ pub(crate) fn sine(x: Extended) -> Wide {
 }
 
 /// `fcos`'s value.
-pub(crate) fn cosine(x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn cosine(cc: &mut Consts, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         let (r, quadrant) = reduced(x, cc);
         match quadrant {
             0 => r.cos(p, ROUND, cc),
@@ -155,8 +160,8 @@ pub(crate) fn cosine(x: Extended) -> Wide {
 }
 
 /// `fptan`'s value.
-pub(crate) fn tangent(x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn tangent(cc: &mut Consts, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         let (r, quadrant) = reduced(x, cc);
         let t = r.tan(p, ROUND, cc);
         if quadrant % 2 == 0 {
@@ -174,8 +179,8 @@ fn cancelled(x: Extended) -> usize {
 }
 
 /// `f2xm1`'s value, `2^x - 1`, for `|x| < 1`.
-pub(crate) fn exponent_minus_one(x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn exponent_minus_one(cc: &mut Consts, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         let p = p + cancelled(x);
         let t = of_extended(x).mul(&cc.ln_2(p, ROUND), p, ROUND);
         t.exp(p, ROUND, cc)
@@ -184,8 +189,8 @@ pub(crate) fn exponent_minus_one(x: Extended) -> Wide {
 }
 
 /// `fyl2x`'s value, `y * log2(x)`, for positive `x`.
-pub(crate) fn logarithm(y: Extended, x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn logarithm(cc: &mut Consts, y: Extended, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         of_extended(x)
             .log2(p, ROUND, cc)
             .mul(&of_extended(y), p, ROUND)
@@ -193,8 +198,9 @@ pub(crate) fn logarithm(y: Extended, x: Extended) -> Wide {
 }
 
 /// `fyl2xp1`'s value, `y * log2(x + 1)`, for `x` above -1.
-pub(crate) fn logarithm_plus_one(y: Extended, x: Extended) -> Wide {
+pub(crate) fn logarithm_plus_one(cc: &mut Consts, y: Extended, x: Extended) -> Wide {
     logarithm_plus_one_by(
+        cc,
         y,
         x,
         i32::from(x.exponent) - crate::x87::BIAS < SERIES_BELOW,
@@ -202,8 +208,13 @@ pub(crate) fn logarithm_plus_one(y: Extended, x: Extended) -> Wide {
 }
 
 /// `fyl2xp1`'s value, by the series or by the exact sum `1 + x`.
-pub(crate) fn logarithm_plus_one_by(y: Extended, x: Extended, series: bool) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn logarithm_plus_one_by(
+    cc: &mut Consts,
+    y: Extended,
+    x: Extended,
+    series: bool,
+) -> Wide {
+    settled(cc, |p, cc| {
         let logarithm = if series {
             natural_logarithm_plus_one_small(&of_extended(x), p).div(&cc.ln_2(p, ROUND), p, ROUND)
         } else {
@@ -241,8 +252,8 @@ fn natural_logarithm_plus_one_small(x: &BigFloat, p: usize) -> BigFloat {
 }
 
 /// `fpatan`'s value, the angle of the point (`x`, `y`) from -π to π.
-pub(crate) fn arc_tangent(y: Extended, x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn arc_tangent(cc: &mut Consts, y: Extended, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         let (y, x) = (of_extended(y), of_extended(x));
         let a = y.div(&x, p, ROUND).atan(p, ROUND, cc);
         if !x.is_negative() {
@@ -268,16 +279,16 @@ fn truncated(b: &BigFloat, bits: u32) -> BigFloat {
 }
 
 /// The reference's `f2xm1` of an operand below 2^-68: the operand times ln 2 truncated to 66 bits.
-pub(crate) fn tiny_exponent_minus_one(x: Extended) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn tiny_exponent_minus_one(cc: &mut Consts, x: Extended) -> Wide {
+    settled(cc, |p, cc| {
         let ln_2 = truncated(&cc.ln_2(GUESS_BITS, ROUND), TINY_LN_2_BITS);
         of_extended(x).mul(&ln_2, p, ROUND)
     })
 }
 
 /// The reference's `fpatan` of a positive `x` and a quotient below 2^-40: the quotient truncated to 67 bits.
-pub(crate) fn tiny_arc_tangent(y: Extended, x: Extended) -> Wide {
-    settled(|_, _| {
+pub(crate) fn tiny_arc_tangent(cc: &mut Consts, y: Extended, x: Extended) -> Wide {
+    settled(cc, |_, _| {
         let q = of_extended(y).div(&of_extended(x), FIRST_BITS, RoundingMode::ToZero);
         truncated(&q, TINY_QUOTIENT_BITS)
     })
@@ -291,8 +302,8 @@ pub(crate) fn quotient_below(y: Extended, x: Extended, exponent: i32) -> bool {
 }
 
 /// `n * π / 4`, as `fpatan` gives for its infinite and zero operands.
-pub(crate) fn quarter_pi(n: i32) -> Wide {
-    settled(|p, cc| {
+pub(crate) fn quarter_pi(cc: &mut Consts, n: i32) -> Wide {
+    settled(cc, |p, cc| {
         let pi = cc.pi(p, ROUND);
         let mut q = pi.mul(&signed(big(n.unsigned_abs().into(), 0), n < 0), p, ROUND);
         if let Some(e) = q.exponent() {

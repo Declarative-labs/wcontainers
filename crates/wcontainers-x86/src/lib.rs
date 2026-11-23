@@ -1,5 +1,5 @@
 //! Everything that is only true of x86-64. The core, [`X86_64`]'s [`Personality`] and its register block
-//! [`X86Block`], is `no_std`; with the `translate` feature (on by default) also the decoder (iced-x86), the
+//! [`X86Block`] and the x87 unit, is `no_std`; with the `translate` feature (on by default) also the decoder (iced-x86), the
 //! meaning of every instruction as WebAssembly and [`X86_64`]'s `Guest` implementation.
 
 #![cfg_attr(not(feature = "translate"), no_std)]
@@ -39,7 +39,6 @@ mod meaning;
 pub mod native;
 #[cfg(feature = "translate")]
 mod operand;
-#[cfg(feature = "translate")]
 mod root;
 #[cfg(feature = "translate")]
 mod segments;
@@ -47,9 +46,7 @@ mod segments;
 mod simd;
 #[cfg(feature = "translate")]
 mod text;
-#[cfg(feature = "translate")]
 mod transcendental;
-#[cfg(feature = "translate")]
 pub mod x87;
 
 pub mod area;
