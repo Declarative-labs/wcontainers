@@ -5712,9 +5712,11 @@ fn own_network_namespace() {
 /// The name Linux gives the loopback device of every network namespace.
 ///
 /// https://man7.org/linux/man-pages/man7/network_namespaces.7.html#:~:text=loopback
+#[cfg(target_os = "linux")]
 const LOOPBACK_NAME: &str = "lo";
 
 /// Room for the kernel's answer to a link change: an acknowledgement, or an error that quotes the request.
+#[cfg(target_os = "linux")]
 const LOOPBACK_ANSWER_ROOM: usize = 4096;
 /// The `tcp_ecn` of the namespace of the thread that writes it.
 ///
