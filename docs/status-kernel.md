@@ -38,8 +38,11 @@ The check's findings:
   on one). Now `AddressMap::find_free_anonymous` does the same for mmap (no file, not
   MAP_SHARED, no hint) and for an mremap move of private anonymous memory. Shared anonymous
   memory is not aligned (shmem's huge setting is never), as the reference shows; a private
-  mapping of `/dev/zero` (Linux aligns any length of at least a PMD there) is not. Unit test
-  `anonymous_memory_of_whole_pmds_starts_on_a_boundary`.
+  mapping of `/dev/zero` (Linux aligns any length of at least a PMD there) is not. The boundary
+  is sought in each placement range before the plain search there (b49c49e5), so a lowest range
+  with room only for the unaligned mapping keeps it, under every ceiling. Unit tests
+  `anonymous_memory_of_whole_pmds_starts_on_a_boundary` and
+  `a_pmd_stays_in_the_lowest_range_without_its_boundary`.
 - Placement under a ceiling below 4 GiB: see the decision under Departures (KF, sixth run).
 - The literal check: see below.
 - `MAX_ARG_STRLEN` is `wcontainers_abi::PAGE_SIZE * 32` (d3cda690).
