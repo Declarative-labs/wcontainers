@@ -234,6 +234,17 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
 
 ### 3.3 Exits, the floor and position resolution
 
+As built for P on ARM64 (W1 run 7, before the translator's form exists, with pieces written by the tests standing
+in): the register block in the register page is the hardware's state. A turn's `Enter` loads every register from it
+(FP/SIMD, FPSR, FPCR, `TPIDR_EL0`, NZCV, sp, the general registers) but x23, which holds the code's address, and
+x28, the register page, and branches there. The floor's 64 entries (`mov x23, #n; b save`) save every register
+into the block, the link in x30 and pc, and publish `Called` with n. A stop or a fault (SIGSEGV, SIGBUS, SIGILL,
+SIGTRAP) whose pc is in the code area saves every register from the signal frame (its `fpsimd_context`, checked by
+its tag and size, for the vector registers, FPSR and FPCR) and publishes `Interrupted` with the host pc, or `Fault`.
+A stop during the enter's loads ends the turn as `Stopped` before the code runs, the block untouched; a stop in an
+entry or the save finishes the save from the frame, the entry's number taken from the pc in the table, then from
+x23, then from the block (counted apart). Resolution to guest state is the embedder's, waiting on section 10.
+
 - An inside call enters the floor's entry for its code with the guest's registers in the hardware. The entry
   first stores every general register, sp, pc (from the call site through the position map) and the condition
   flags into the thread's register block, and then the FP/SIMD registers with FPCR and FPSR: the whole file the
@@ -261,6 +272,12 @@ pieces, linking, count placement, the position map) is unchanged. These are the 
   translations to be usable without the hypervisor crates.
 
 ### 3.4 The code area and code a program writes
+
+As built for P on ARM64 (W1 run 7): the code area is [2^45 + 128 KiB, 2^45 + 128 MiB), right after the zygote's
+pages, so every piece reaches the floor's entries at the start of the zygote's code with one `bl` (one code area of
+just under 128 MiB per guest memory until more is needed); the stub receives its memfd like a shared block and maps
+it `PROT_EXEC` alone by a `MapCode` command (the filter allows exactly that call); the embedder writes through its
+own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `dsb ish` (crate code.rs).
 
 - One memfd per guest memory holds its code area: mapped read-write in the embedder's process (the translator
   writes there) and read-execute in the guest's view (P: in the stub; I: a second mapping in the same process).
@@ -630,7 +647,7 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   runs, 80 µs Graviton4, 95 µs Xeon; a plain fork of a small static process 111 / 121 µs). Each request carries
   (`SCM_RIGHTS`) the fds the child needs, its own socket's end among them, which the zygote closes after the fork.
   The child sets `PR_SET_PDEATHSIG` to SIGKILL (and checks that its parent is still the zygote), maps its memory's
-  memfd, its code area (read-execute, then closes that fd), its thread pages and signal stacks (4.3, then closes
+  memfd, its thread pages and signal stacks (4.3, then closes
   that fd), the slot table's fd at its fixed number, installs its
   handlers and signal stacks, unblocks the stop and fault signals, installs its filter, and becomes the memory's
   stub. Its start is thread 0's first turn: the embedder writes the filter into that thread's control page before
@@ -922,9 +939,11 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   `set_robust_list`, `set_tid_address`, `close_range`, `munmap`, `recvmsg`, `sendmsg`, `fork`, `wait4` (on a process
   id the embedder names), `kill` (SIGKILL to its own unreaped child, 4.1), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
   `getppid`, `set_tid_address`, `seccomp(SECCOMP_SET_MODE_FILTER)`, `dup3` (fds to their fixed numbers, before the
-  filter), with the mappings of 4.1 and 4.3. The stub's
+  filter), `rt_sigaction` (the stop's handler, and the fault handler for SIGSEGV, SIGBUS, SIGILL and SIGTRAP), with
+  the mappings of 4.1 and 4.3. The stub's
   own filter then allows: `futex`; `mmap`, `munmap`, `mprotect` bounded as 3.7 (`mmap` of the memory's memfd at
-  the offset equal to the address, or of a shared block's memfd, which is the lowest descriptor, 0, at any offset);
+  the offset equal to the address, or of a shared block's memfd, which is the lowest descriptor, 0, at any offset,
+  and of the code area's memfd, received the same way, `PROT_EXEC` alone over exactly the code area from offset 0);
   `clone` with 4.1's thread flags; `recvmsg` on its socket with `MSG_DONTWAIT` (a block's memfd, sent before the
   turn that maps it, so it never waits) (and `write` on it with parallel threads); `close` of descriptor 0 (the
   block's, once mapped); `sched_setaffinity` on the calling
