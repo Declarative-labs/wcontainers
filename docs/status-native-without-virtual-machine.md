@@ -175,6 +175,15 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - tests/placement.rs (2): two containers' runners in one embedder take different CPUs and each guest thread is
     pinned to its runner's; with a thread spinning on the runner's CPU the runner moves (after 2 turns) and the guest
     thread follows. The executor tests now share one host per test process, as an embedder does.
+  - tests/embedder.rs (2): a stub killed from outside while its thread spins ends the turn as `StubEnded` within
+    150 ms of the kill, and once dropped it is reaped (no zombie); an embedder (this test binary run again as one,
+    with a host and three guest processes) killed by SIGKILL leaves its zygote and every stub gone (or a zombie of
+    init's) within 5 s. tests/threads.rs: the stack-pointer check read /proc's syscall line while a thread had just
+    published and was not yet in its wait ("running"), which failed once on the Xeon; it now reads until the thread
+    is in a call.
+  - Final verdicts (15:13 to 15:15 UTC, scratch w1/run4/embedder2-arm.log and embedder2-x86.log): all 45 tests of the
+    12 test binaries passed 3 times with /dev/kvm denied on Graviton4 (135 of 135, load 7 to 9) and on the Xeon (135
+    of 135, load 13 to 26 from other tracks), clippy with warnings denied clean on both.
   - Verdicts with placement (14:57 to 14:59 UTC, scratch w1/run4/placement-arm.log and placement-x86.log): all 43
     tests of the 11 test binaries passed 3 times with /dev/kvm denied on Graviton4 (129 of 129, load 9 to 10) and on
     the Xeon (129 of 129; load 0.2 at the start, 712 at the end from another track's 32-job run), clippy with
@@ -196,6 +205,9 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   trait with the `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
 - The adversarial fork with a sibling writing in a loop meanwhile (plan 13) needs a second thread running during a
   `Cpu` call, which today's kernel and its one-thread `with_parts` loop never do (3.9): built with parallel threads.
+- In this shared worktree a `[[test]]` entry in the manifest must never land before its file exists: a missing
+  test file stops every cargo command of every track (runs 2 and 3 did this once; the runtime and x86 tracks
+  recorded it).
 - I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
   ("reservation refused") in an embedder that made an in-process host first.
 
