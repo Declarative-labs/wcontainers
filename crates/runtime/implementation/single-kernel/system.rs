@@ -536,7 +536,11 @@ impl LocalState {
     /// Input held for the kernel; the reader may read as much again.
     fn receive_stream(&mut self, peer: u32, into: &mut [u8]) -> Result<usize, HostError> {
         if Some(peer) != self.input_end {
-            return Err(HostError::NotSupported);
+            // A terminal with no input is one nobody types on, as `docker run --tty` without `--interactive` gives.
+            return Err(match peer {
+                TERMINAL => HostError::WouldBlock,
+                _ => HostError::NotSupported,
+            });
         }
         if self.input_held.is_empty() {
             return Err(match self.input_ended && peer == INPUT {
