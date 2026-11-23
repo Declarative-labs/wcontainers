@@ -14,16 +14,18 @@ use naga::{
     VectorSize,
 };
 use std::ffi::{CStr, c_char};
+use wcontainers_gpu::Format as GpuFormat;
 use wcontainers_gpu::{
     HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
     ShaderStage as GpuStage, SlotKind, SourceStage, StageExtras, TEXEL_BUFFER_TEXTURE_WIDTH,
-    VariantKey, helper_binding,
+    TexelBufferRoute, VariantKey, helper_binding,
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
     BuiltIn as StagedBuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram,
     HullProgram, Partitioning, Place, StageVariable, TessellationDomain, TessellatorOutput,
 };
+use wcontainers_shaders::typed::{TypedAtomic, TypedBuffer};
 
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
@@ -403,6 +405,8 @@ enum Intrinsic {
     EndPrimitive,
     LoadTessCoord,
     LoadPatchVerticesIn,
+    ImageDerefAtomic,
+    ImageDerefAtomicSwap,
     Unsupported,
 }
 
@@ -693,6 +697,8 @@ struct Builder<'a> {
     /// the shaders crate's rewrites extend.
     helpers: Vec<HelperSlot>,
     helper_block: Option<Handle<GlobalVariable>>,
+    /// Images of buffers, read and written through `wcontainers_shaders::typed`.
+    typed: TypedBuffers,
 }
 
 /// Which of the stage helper's programs a staged program is.
@@ -779,6 +785,15 @@ pub struct Routed {
     pub tessellator: Option<Tessellator>,
     /// The helper constants the module reads, in its block at [`HELPER_SET`].
     pub helpers: Vec<HelperSlot>,
+    pub typed: TypedBuffers,
+}
+
+/// A program's images of buffers, each a storage buffer of words whose stand-in functions
+/// `wcontainers_shaders::typed::buffers` writes, and the format each slot declares.
+#[derive(Default)]
+pub struct TypedBuffers {
+    pub buffers: Vec<TypedBuffer>,
+    pub formats: Vec<(u32, GpuFormat)>,
 }
 
 /// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
@@ -796,8 +811,9 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
         staged,
         tessellator: _,
         helpers,
+        typed,
     } = routed;
-    if !helpers.is_empty() {
+    if !helpers.is_empty() || !typed.buffers.is_empty() {
         return Err(unsupported(format_args!(
             "a texel buffer, whose length the driver gives"
         )));
@@ -901,6 +917,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         staged: None,
         helpers: Vec::new(),
         helper_block: None,
+        typed: TypedBuffers::default(),
     };
     match f.stage {
         FlatStage::Geometry => b.staged = Some(b.staged_functions(f.geometry.streams)),
@@ -942,6 +959,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
     }
     let rewrites = std::mem::take(&mut b.rewrites);
     let helpers = std::mem::take(&mut b.helpers);
+    let typed = std::mem::take(&mut b.typed);
     let (module, staged) = b.finish(f)?;
     let tessellator = (f.stage == FlatStage::TessEvaluation)
         .then(|| tessellator(&f.tessellation))
@@ -952,6 +970,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         staged,
         tessellator,
         helpers,
+        typed,
     })
 }
 
@@ -1070,6 +1089,85 @@ fn storage_format(f: Format) -> Result<StorageFormat, ConvertError> {
             )));
         }
     })
+}
+
+/// The format an image of a buffer declares, as the interface names it.
+fn buffer_format(f: Format) -> Result<GpuFormat, ConvertError> {
+    Ok(match f {
+        Format::R8Unorm => GpuFormat::R8Unorm,
+        Format::R8Snorm => GpuFormat::R8Snorm,
+        Format::R8Uint => GpuFormat::R8Uint,
+        Format::R8Sint => GpuFormat::R8Sint,
+        Format::R16Uint => GpuFormat::R16Uint,
+        Format::R16Sint => GpuFormat::R16Sint,
+        Format::R16Float => GpuFormat::R16Float,
+        Format::R16Unorm => GpuFormat::R16Unorm,
+        Format::R16Snorm => GpuFormat::R16Snorm,
+        Format::Rg8Unorm => GpuFormat::Rg8Unorm,
+        Format::Rg8Snorm => GpuFormat::Rg8Snorm,
+        Format::Rg8Uint => GpuFormat::Rg8Uint,
+        Format::Rg8Sint => GpuFormat::Rg8Sint,
+        Format::R32Uint => GpuFormat::R32Uint,
+        Format::R32Sint => GpuFormat::R32Sint,
+        Format::R32Float => GpuFormat::R32Float,
+        Format::Rg16Uint => GpuFormat::Rg16Uint,
+        Format::Rg16Sint => GpuFormat::Rg16Sint,
+        Format::Rg16Float => GpuFormat::Rg16Float,
+        Format::Rg16Unorm => GpuFormat::Rg16Unorm,
+        Format::Rg16Snorm => GpuFormat::Rg16Snorm,
+        Format::Rgba8Unorm => GpuFormat::Rgba8Unorm,
+        Format::Rgba8Snorm => GpuFormat::Rgba8Snorm,
+        Format::Rgba8Uint => GpuFormat::Rgba8Uint,
+        Format::Rgba8Sint => GpuFormat::Rgba8Sint,
+        Format::Rgb10a2Uint => GpuFormat::Rgb10a2Uint,
+        Format::Rgb10a2Unorm => GpuFormat::Rgb10a2Unorm,
+        Format::Rg32Uint => GpuFormat::Rg32Uint,
+        Format::Rg32Sint => GpuFormat::Rg32Sint,
+        Format::Rg32Float => GpuFormat::Rg32Float,
+        Format::Rgba16Uint => GpuFormat::Rgba16Uint,
+        Format::Rgba16Sint => GpuFormat::Rgba16Sint,
+        Format::Rgba16Float => GpuFormat::Rgba16Float,
+        Format::Rgba16Unorm => GpuFormat::Rgba16Unorm,
+        Format::Rgba16Snorm => GpuFormat::Rgba16Snorm,
+        Format::Rgba32Uint => GpuFormat::Rgba32Uint,
+        Format::Rgba32Sint => GpuFormat::Rgba32Sint,
+        Format::Rgba32Float => GpuFormat::Rgba32Float,
+        Format::Rg11b10Ufloat => GpuFormat::Rg11b10Float,
+        Format::None => {
+            return Err(unsupported(format_args!(
+                "an image of a buffer without a format"
+            )));
+        }
+        Format::Other => {
+            return Err(unsupported(format_args!(
+                "an image of a buffer of another format"
+            )));
+        }
+    })
+}
+
+/// The typed buffer operation of an atomic on an image of a buffer of `kind`.
+fn typed_atomic(op: Atomic, kind: ScalarKind) -> Result<TypedAtomic, ConvertError> {
+    let needs = |want: ScalarKind, made: TypedAtomic| {
+        if kind == want {
+            Ok(made)
+        } else {
+            Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")))
+        }
+    };
+    match op {
+        Atomic::Add => Ok(TypedAtomic::Add),
+        Atomic::And => Ok(TypedAtomic::And),
+        Atomic::Or => Ok(TypedAtomic::InclusiveOr),
+        Atomic::Xor => Ok(TypedAtomic::ExclusiveOr),
+        Atomic::Imin => needs(ScalarKind::Sint, TypedAtomic::Min),
+        Atomic::Umin => needs(ScalarKind::Uint, TypedAtomic::Min),
+        Atomic::Imax => needs(ScalarKind::Sint, TypedAtomic::Max),
+        Atomic::Umax => needs(ScalarKind::Uint, TypedAtomic::Max),
+        Atomic::Exchange => Ok(TypedAtomic::Exchange),
+        Atomic::CompareExchange => Ok(TypedAtomic::CompareExchange),
+        Atomic::Other => Err(unsupported(format_args!("an atomic of another operation"))),
+    }
 }
 
 impl Builder<'_> {
@@ -1366,6 +1464,152 @@ impl Builder<'_> {
         scalar_of(t.scalar).map_or(ScalarKind::Uint, |s| s.kind)
     }
 
+    /// An image of a buffer: a storage buffer of words at its binding, its type and access
+    /// `wcontainers_shaders::typed` makes (`TexelBufferRoute::Storage`), its format the declared
+    /// one.
+    fn image_buffer(
+        &mut self,
+        var: &FlatVar,
+    ) -> Result<(AddressSpace, Handle<Type>), ConvertError> {
+        if self.staged.is_some() {
+            return Err(unsupported(format_args!(
+                "an image of a buffer in a geometry or tessellation program"
+            )));
+        }
+        let slot = var
+            .binding
+            .checked_sub(SlotKind::Storage.first_binding())
+            .ok_or_else(|| unsupported(format_args!("an image of a buffer out of its range")))?;
+        self.typed.formats.push((slot, buffer_format(var.format)?));
+        // Read-write in compute programs, as their storage buffers are.
+        let mut access = StorageAccess::LOAD;
+        access.set(
+            StorageAccess::STORE,
+            var.writable != 0 || self.stage == ShaderStage::Compute,
+        );
+        let word = self.scalar_type(ScalarKind::Uint, 1)?;
+        let words = self.add_type(TypeInner::Array {
+            base: word,
+            size: naga::ArraySize::Dynamic,
+            stride: size_of::<u32>() as u32,
+        });
+        Ok((AddressSpace::Storage { access }, words))
+    }
+
+    /// A load, store, size or atomic operation of the image of a buffer `image` through the
+    /// stand-in function `wcontainers_shaders::typed` writes, made at its first use.
+    fn image_buffer_access(
+        &mut self,
+        i: &FlatInstr,
+        image: Handle<Expression>,
+        op: Intrinsic,
+    ) -> Result<(), ConvertError> {
+        let Expression::GlobalVariable(g) = self.function.expressions[image] else {
+            return Err(unsupported(format_args!("an array of images of buffers")));
+        };
+        let at = self
+            .typed
+            .buffers
+            .iter()
+            .position(|t| t.global == g)
+            .ok_or_else(|| unsupported(format_args!("an image of a buffer not declared")))?;
+        let kind = self.typed.buffers[at].kind;
+        let index_ty = self.scalar_type(ScalarKind::Uint, 1)?;
+        let element_ty = self.scalar_type(kind, VectorSize::Quad as u32)?;
+        let value_ty = self.scalar_type(kind, 1)?;
+        let atomic = match op {
+            Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap => {
+                Some(typed_atomic(atomic_op(i.value[VectorSize::MAX - 1]), kind)?)
+            }
+            _ => None,
+        };
+        let typed = &self.typed.buffers[at];
+        let (made, arguments, result) = match (op, atomic) {
+            (_, Some(TypedAtomic::CompareExchange)) => (
+                typed
+                    .atomics
+                    .iter()
+                    .find(|t| t.0 == TypedAtomic::CompareExchange)
+                    .map(|t| t.1),
+                vec![index_ty, value_ty, value_ty],
+                Some(value_ty),
+            ),
+            (_, Some(a)) => (
+                typed.atomics.iter().find(|t| t.0 == a).map(|t| t.1),
+                vec![index_ty, value_ty],
+                Some(value_ty),
+            ),
+            (Intrinsic::ImageDerefLoad, None) => (typed.load, vec![index_ty], Some(element_ty)),
+            (Intrinsic::ImageDerefStore, None) => (typed.store, vec![index_ty, element_ty], None),
+            _ => (typed.length, Vec::new(), Some(index_ty)),
+        };
+        let function = made.unwrap_or_else(|| {
+            let stand_in = Function {
+                arguments: arguments
+                    .iter()
+                    .map(|&ty| FunctionArgument {
+                        name: None,
+                        ty,
+                        binding: None,
+                    })
+                    .collect(),
+                result: result.map(|ty| naga::FunctionResult { ty, binding: None }),
+                ..Function::default()
+            };
+            self.module.functions.append(stand_in, Span::UNDEFINED)
+        });
+        let typed = &mut self.typed.buffers[at];
+        match (op, atomic) {
+            (_, Some(a)) if made.is_none() => typed.atomics.push((a, function)),
+            (_, Some(_)) => {}
+            (Intrinsic::ImageDerefLoad, None) => typed.load = Some(function),
+            (Intrinsic::ImageDerefStore, None) => typed.store = Some(function),
+            _ => typed.length = Some(function),
+        }
+        // A negative element's bits are past every length.
+        let mut values = Vec::new();
+        if op != Intrinsic::ImageDerefSize {
+            values.push(self.src(i, 1, 1, ScalarKind::Uint)?);
+        }
+        match op {
+            Intrinsic::ImageDerefStore => {
+                let (value, components) = self.whole(i.src[IMAGE_STORE_VALUE].def, kind)?;
+                if components != VectorSize::Quad as u32 {
+                    return Err(unsupported(format_args!(
+                        "an image store of {components} components"
+                    )));
+                }
+                values.push(value);
+            }
+            // NIR's data, a swap's compared value before its new one; the stand-in takes the
+            // value, then the compared one.
+            Intrinsic::ImageDerefAtomic => {
+                values.push(self.src(i, IMAGE_STORE_VALUE, 1, kind)?);
+            }
+            Intrinsic::ImageDerefAtomicSwap => {
+                values.push(self.src(i, IMAGE_STORE_VALUE + 1, 1, kind)?);
+                values.push(self.src(i, IMAGE_STORE_VALUE, 1, kind)?);
+            }
+            _ => {}
+        }
+        let result = result.map(|_| self.add_unemitted(Expression::CallResult(function)));
+        self.statement(Statement::Call {
+            function,
+            arguments: values,
+            result,
+        });
+        match (op, result) {
+            (Intrinsic::ImageDerefLoad, Some(e)) => {
+                let e = self.first(e, VectorSize::Quad as u32, i.components)?;
+                self.set(i, Value::Expr(e, kind));
+            }
+            (Intrinsic::ImageDerefSize, Some(e)) => self.set(i, Value::Expr(e, ScalarKind::Uint)),
+            (_, Some(e)) => self.set(i, Value::Expr(e, kind)),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn storage_image(&mut self, var: &FlatVar) -> Result<Handle<Type>, ConvertError> {
         let mut t = self.types[var.ty as usize];
         let count = (t.kind == TypeKind::Array).then_some(t.length);
@@ -1636,8 +1880,11 @@ impl Builder<'_> {
                         }
                         t.kind == TypeKind::Image
                     };
-                    let ty = if is_image {
-                        self.storage_image(var)?
+                    let buffer = is_image && self.types[var.ty as usize].dim == Dim::Buffer;
+                    let (space, ty) = if buffer {
+                        self.image_buffer(var)?
+                    } else if is_image {
+                        (space, self.storage_image(var)?)
                     } else if self
                         .atomic_vars
                         .contains(&u32::try_from(index).expect("few"))
@@ -1645,7 +1892,7 @@ impl Builder<'_> {
                         let signed = self
                             .signed_atomic_vars
                             .contains(&u32::try_from(index).expect("few"));
-                        self.atomic_ty(var.ty, signed)?
+                        (space, self.atomic_ty(var.ty, signed)?)
                     } else {
                         let block = self.ty(var.ty)?;
                         let t = self.types[var.ty as usize];
@@ -1653,13 +1900,14 @@ impl Builder<'_> {
                             && matches!(space, AddressSpace::Uniform | AddressSpace::Storage { .. })
                         {
                             let element = self.ty(t.element)?;
-                            self.add_type(TypeInner::BindingArray {
+                            let array = self.add_type(TypeInner::BindingArray {
                                 base: element,
                                 size: std::num::NonZeroU32::new(t.length)
                                     .map_or(naga::ArraySize::Dynamic, naga::ArraySize::Constant),
-                            })
+                            });
+                            (space, array)
                         } else {
-                            block
+                            (space, block)
                         }
                     };
                     let binding = matches!(
@@ -1681,6 +1929,16 @@ impl Builder<'_> {
                         },
                         Span::UNDEFINED,
                     );
+                    if buffer {
+                        self.typed.buffers.push(TypedBuffer {
+                            global,
+                            kind: scalar_of(self.types[var.ty as usize].sampled)?.kind,
+                            load: None,
+                            store: None,
+                            length: None,
+                            atomics: Vec::new(),
+                        });
+                    }
                     self.add(Expression::GlobalVariable(global))
                 }
             };
@@ -3179,6 +3437,21 @@ impl Builder<'_> {
                 self.set(i, Value::Expr(e, Float));
             }
             Intrinsic::LoadPointCoord => self.system_value(i, BuiltIn::PointCoord, Float)?,
+            Intrinsic::ImageDerefLoad
+            | Intrinsic::ImageDerefStore
+            | Intrinsic::ImageDerefSize
+            | Intrinsic::ImageDerefAtomic
+            | Intrinsic::ImageDerefAtomicSwap
+                if self.image(i)?.1.dim == Dim::Buffer =>
+            {
+                let image = self.image(i)?.0;
+                self.image_buffer_access(i, image, intrinsic_op(i.op))?;
+            }
+            Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap => {
+                return Err(unsupported(format_args!(
+                    "an atomic on an image of a texture (not built)"
+                )));
+            }
             Intrinsic::ImageDerefLoad => {
                 let (image, t) = self.image(i)?;
                 let (coordinate, array_index) = self.image_coordinate(i, t)?;
@@ -4258,6 +4531,7 @@ pub fn geometry(
         staged,
         tessellator: _,
         helpers: _,
+        typed: _,
     } = routed;
     let Some(StagedProgram::Geometry(program)) = staged else {
         return Err(unsupported(format_args!("no geometry program")));
@@ -4417,7 +4691,7 @@ pub fn rewrite(
         _ => SourceStage::Compute,
     };
     let helper_size = helper_size(&routed.helpers);
-    let reflection = Reflection {
+    let mut reflection = Reflection {
         stage,
         inputs: Vec::new(),
         outputs: Vec::new(),
@@ -4428,7 +4702,22 @@ pub fn rewrite(
         extras: StageExtras::None,
         slow_paths: Vec::new(),
     };
-    let mut converted = wcontainers_shaders::rewrite(routed.module, reflection, variant, route_key)
+    let mut module = routed.module;
+    if !routed.typed.buffers.is_empty() {
+        let typed = VariantKey {
+            texel_buffers: TexelBufferRoute::Storage,
+            storage_formats: routed.typed.formats,
+            ..VariantKey::default()
+        };
+        wcontainers_shaders::typed::buffers(
+            &mut module,
+            &mut reflection,
+            &typed,
+            &routed.typed.buffers,
+        )
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))?;
+    }
+    let mut converted = wcontainers_shaders::rewrite(module, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))?;
     let module = converted
         .modules

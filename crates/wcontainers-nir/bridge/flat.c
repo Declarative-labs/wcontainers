@@ -832,6 +832,10 @@ intrinsic_of(nir_intrinsic_op op)
       return WC_INTRINSIC_LOAD_TESS_COORD;
    case nir_intrinsic_load_patch_vertices_in:
       return WC_INTRINSIC_LOAD_PATCH_VERTICES_IN;
+   case nir_intrinsic_image_deref_atomic:
+      return WC_INTRINSIC_IMAGE_DEREF_ATOMIC;
+   case nir_intrinsic_image_deref_atomic_swap:
+      return WC_INTRINSIC_IMAGE_DEREF_ATOMIC_SWAP;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
    }

@@ -221,8 +221,14 @@ pub fn supported(
                     && !f.is_depth_stencil()
                     && caps.get(f).contains(FormatUse::SAMPLE)
             });
-        return bindings & !plain == 0
+        // Images of buffers, read and written as storage words by the program
+        // (`TexelBufferAsStorage`).
+        let image = bindings & PIPE_BIND_SHADER_IMAGE == 0
+            || self::format(format)
+                .is_some_and(|f| matches!(f.block(), (1, 1, _)) && !f.is_depth_stencil());
+        return bindings & !(plain | PIPE_BIND_SHADER_IMAGE) == 0
             && texel
+            && image
             && (bindings & PIPE_BIND_VERTEX_BUFFER == 0
                 || vertex_format(format).is_some()
                 || crate::packed::packed_format(format).is_some());

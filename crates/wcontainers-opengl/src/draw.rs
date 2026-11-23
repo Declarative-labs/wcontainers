@@ -518,38 +518,40 @@ fn convert<B: Backend>(
     let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
     fit_stages(&mut routed.module, variant)?;
     crate::packed::unpack_inputs(&mut routed.module, &variant.packed)?;
-    let (module, bindings, helpers, helper_size) =
-        if rewrites == VariantKey::default() && routed.helpers.is_empty() {
-            let module = wcontainers_nir::direct::plain(routed).map_err(|e| e.to_string())?;
-            let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
-            let entry_point = module
-                .entry_points
-                .first()
-                .map(|e| e.name.clone())
-                .ok_or("no entry point")?;
-            (
-                ShaderModule {
-                    module,
-                    info,
-                    entry_point,
-                    stage: stage.shader_stage(),
-                    key,
-                },
-                bindings,
-                Vec::new(),
-                0,
-            )
-        } else {
-            let (module, reflection) =
-                wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
-                    .map_err(|e| e.to_string())?;
-            (
+    let (module, bindings, helpers, helper_size) = if rewrites == VariantKey::default()
+        && routed.helpers.is_empty()
+        && routed.typed.buffers.is_empty()
+    {
+        let module = wcontainers_nir::direct::plain(routed).map_err(|e| e.to_string())?;
+        let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
+        let entry_point = module
+            .entry_points
+            .first()
+            .map(|e| e.name.clone())
+            .ok_or("no entry point")?;
+        (
+            ShaderModule {
                 module,
-                reflection.bindings,
-                reflection.helpers,
-                reflection.helper_size,
-            )
-        };
+                info,
+                entry_point,
+                stage: stage.shader_stage(),
+                key,
+            },
+            bindings,
+            Vec::new(),
+            0,
+        )
+    } else {
+        let (module, reflection) =
+            wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
+                .map_err(|e| e.to_string())?;
+        (
+            module,
+            reflection.bindings,
+            reflection.helpers,
+            reflection.helper_size,
+        )
+    };
     let converted = variant.streamed.then(|| Converted {
         modules: vec![module.clone()],
         reflection: Reflection {
@@ -1037,24 +1039,31 @@ fn helper_block<B: Backend>(
                 vec![unsafe { View::<B>::of(*view) }.components]
             }
             HelperValue::TexelBufferView { set, binding } => {
-                let unit = built
+                let slot = built
                     .bindings
                     .iter()
                     .find(|b| b.set == set && b.binding == binding)
-                    .map(|b| b.register)
                     .ok_or("a texel buffer's slot unbound")?;
-                let view = bound
-                    .views
-                    .get(unit as usize)
-                    .filter(|v| !v.is_null())
-                    .ok_or("a texel buffer the program reads is not bound")?;
-                // SAFETY: the slot holds a reference on a live view of this driver.
-                let texels = unsafe { View::<B>::of(*view) }
-                    .texels
-                    .as_ref()
-                    .ok_or("a texture bound where the program reads a texel buffer")?;
-                // The view starts the texture it is copied into.
-                vec![0, texels.length]
+                let unit = slot.register;
+                if slot.kind == SlotKind::Storage {
+                    // An image of a buffer: where its view starts in the bound range.
+                    image_buffer::<B>(bound_image(bound, unit)?, storage_align)?
+                        .1
+                        .to_vec()
+                } else {
+                    let view = bound
+                        .views
+                        .get(unit as usize)
+                        .filter(|v| !v.is_null())
+                        .ok_or("a texel buffer the program reads is not bound")?;
+                    // SAFETY: the slot holds a reference on a live view of this driver.
+                    let texels = unsafe { View::<B>::of(*view) }
+                        .texels
+                        .as_ref()
+                        .ok_or("a texture bound where the program reads a texel buffer")?;
+                    // The view starts the texture it is copied into.
+                    vec![0, texels.length]
+                }
             }
             other => return Err(format!("the helper constant {other:?}")),
         };
@@ -1287,6 +1296,14 @@ pub(crate) fn binding_sets<B: Backend>(
                 SlotKind::Storage if b.register >= PIPE_MAX_SHADER_IMAGES => {
                     storage_buffer(bound, b.register - PIPE_MAX_SHADER_IMAGES, largest_storage)?
                 }
+                SlotKind::Storage if views_buffer::<B>(bound_image(bound, b.register)?) => {
+                    let image = bound_image(bound, b.register)?;
+                    backend.slow_paths().hit(SlowPath::TexelBufferAsStorage);
+                    BindingResource::StorageBuffer {
+                        range: image_buffer::<B>(image, storage_align)?.0,
+                        writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
+                    }
+                }
                 SlotKind::Storage => {
                     let &(_, index, writable) = images
                         .iter()
@@ -1361,16 +1378,70 @@ fn image_views<B: Backend>(
     for b in built.bindings.iter().filter(|b| {
         b.added.is_none() && b.kind == SlotKind::Storage && b.register < PIPE_MAX_SHADER_IMAGES
     }) {
-        let image = bound
-            .images
-            .get(b.register as usize)
-            .filter(|image| !image.resource.is_null())
-            .ok_or("an image the program reads is not bound")?;
+        let image = bound_image(bound, b.register)?;
+        // An image of a buffer is bound as its buffer.
+        if views_buffer::<B>(image) {
+            continue;
+        }
         let index = crate::view::image_view(backend, image, made)?;
         let writable = u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0;
         views.push((b.register, index, writable));
     }
     Ok(views)
+}
+
+/// The image bound at `unit` of a stage.
+fn bound_image<B: Backend>(
+    bound: &state::StageState<B>,
+    unit: u32,
+) -> Result<&pipe_image_view, String> {
+    bound
+        .images
+        .get(unit as usize)
+        .filter(|image| !image.resource.is_null())
+        .ok_or_else(|| "an image the program reads is not bound".to_string())
+}
+
+/// Whether a bound image views a buffer.
+fn views_buffer<B: Backend>(image: &pipe_image_view) -> bool {
+    // SAFETY: a bound image holds a reference on a live resource.
+    unsafe { Resource::<B>::of(image.resource) }
+        .buffer()
+        .is_some()
+}
+
+/// The range an image of a buffer is bound as, a storage buffer of words
+/// (`TexelBufferRoute::Storage`): from its view's offset rounded down to the back end's
+/// alignment `align` to the view's end rounded up to a word; and its
+/// `HelperValue::TexelBufferView`, the view's first byte in that range and its elements.
+fn image_buffer<'a, B: Backend + 'a>(
+    image: &'a pipe_image_view,
+    align: u64,
+) -> Result<(BufferRange<&'a B::Buffer>, [u32; 2]), String> {
+    // SAFETY: a bound image holds a reference on a live resource.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let buffer = resource.buffer().ok_or("an image of a texture")?;
+    let format =
+        crate::format::format(image.format).ok_or("an image of a buffer the device lacks")?;
+    let (_, _, element_bytes) = format.block();
+    // SAFETY: the image of a buffer holds its buffer range.
+    let range = unsafe { image.u.buf };
+    let first = u64::from(range.offset);
+    let start = first - first % align;
+    let bytes = u64::from(resource.base.width0).next_multiple_of(STORAGE_WORD);
+    let end = (first + u64::from(range.size)).next_multiple_of(STORAGE_WORD);
+    let view = [
+        u32::try_from(first - start).map_err(|e| e.to_string())?,
+        range.size / element_bytes,
+    ];
+    Ok((
+        BufferRange {
+            buffer,
+            offset: start,
+            size: end.min(bytes).saturating_sub(start),
+        },
+        view,
+    ))
 }
 
 /// `pipe_context::draw_vbo`.

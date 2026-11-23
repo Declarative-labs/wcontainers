@@ -360,3 +360,58 @@ fn a_subroutine_uniform_is_named_by_its_api_name_with_a_word_an_element() {
         .collect();
     assert_eq!(named, [("shades", elements)]);
 }
+
+const IMAGE_BUFFERS: &str = "#version 450
+layout(local_size_x = 4) in;
+layout(r32ui, binding = 0) uniform uimageBuffer counts;
+layout(rgba8, binding = 1) uniform writeonly imageBuffer colours;
+layout(r32i, binding = 2) uniform iimageBuffer lowest;
+void main() {
+    int at = int(gl_GlobalInvocationID.x);
+    uint before = imageAtomicAdd(counts, at, 1u);
+    imageAtomicCompSwap(counts, at + 1, before, 7u);
+    imageAtomicMin(lowest, at, -at);
+    if (at < imageSize(counts)) {
+        imageStore(colours, at, vec4(imageLoad(counts, at)) / 255.0);
+    }
+}
+";
+
+#[test]
+fn images_of_buffers_are_storage_words_with_their_views_in_helper_constants() {
+    let mut stage = Nir::from_glsl(&[(Stage::Compute, IMAGE_BUFFERS)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let key = stage.nir.key().unwrap();
+    let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
+    let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
+    let images = 3;
+    assert_eq!(routed.typed.buffers.len(), images);
+    let (module, reflection) = wcontainers_nir::direct::rewrite(
+        routed,
+        bindings,
+        &wcontainers_gpu::VariantKey::default(),
+        &key,
+    )
+    .unwrap();
+    wcontainers_nir::spirv::validate(&module.module).unwrap();
+    let views = reflection
+        .helpers
+        .iter()
+        .filter(|h| {
+            matches!(
+                h.value,
+                wcontainers_gpu::HelperValue::TexelBufferView { .. }
+            )
+        })
+        .count();
+    assert_eq!(views, images);
+    let storage = module
+        .module
+        .global_variables
+        .iter()
+        .filter(|(_, g)| matches!(g.space, naga::AddressSpace::Storage { .. }))
+        .count();
+    assert_eq!(storage, images);
+}
