@@ -31,6 +31,7 @@ gs_cull.dxbc	ok ; glsl absent compute
 gs_cull_lines.dxbc	ok ; glsl absent compute
 gs_cull_points.dxbc	ok ; glsl absent compute
 gs_cut.dxbc	ok ; glsl absent compute
+gs_distances.dxbc	ok ; glsl absent compute
 gs_instances.dxbc	ok ; glsl absent compute
 gs_layers.dxbc	ok ; glsl absent compute
 gs_line_adjacent.dxbc	ok ; glsl absent compute

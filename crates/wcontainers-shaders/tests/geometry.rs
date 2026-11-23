@@ -181,6 +181,56 @@ fn geometry_shaders_write_cull_distances() {
     wgsl(&wcontainers_shaders::stage::geometry_cull_program().unwrap());
 }
 
+/// A geometry shader reading its vertices' clip and cull distances (`gs_distances`, reading
+/// `vs_cull`'s) converts from fxc's and dxc's builds with them reflected as its input signature
+/// places them (one clip, three cull); the vertex stage's compute form and capture program write
+/// them, and a vertex program writing other counts of them is refused by name.
+#[test]
+fn geometry_shaders_read_clip_and_cull_distances() {
+    let pulled = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    for ext in ["dxbc", "dxil"] {
+        let (gs, vs) = (
+            own(&format!("gs_distances.{ext}")),
+            own(&format!("vs_cull.{ext}")),
+        );
+        let source = |b| match ext {
+            "dxbc" => Source::Dxbc(b),
+            _ => Source::Dxil(b),
+        };
+        let g = convert(source(&gs), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("gs_distances.{ext}: {e}"));
+        let count = |system| -> u32 {
+            g.reflection
+                .inputs
+                .iter()
+                .filter(|v| v.system == Some(system))
+                .map(|v| v.mask.count_ones())
+                .sum()
+        };
+        assert_eq!(
+            (
+                count(SystemValue::ClipDistance),
+                count(SystemValue::CullDistance)
+            ),
+            (1, 3),
+            "{ext}"
+        );
+        g.modules.iter().for_each(|m| drop(wgsl(m)));
+        let v = convert(source(&vs), &pulled, None).unwrap();
+        wgsl(&stage::vertex_program(&v, &g).unwrap_or_else(|e| panic!("{ext}: {e}")));
+        let drawn = convert(source(&vs), &VariantKey::default(), None).unwrap();
+        wgsl(&stage::capture_program(&drawn, &g).unwrap_or_else(|e| panic!("{ext}: {e}")));
+        assert_eq!(
+            stage::vertex_program(&vertex(), &g).err(),
+            Some(ConvertError::Unsupported(stage::DISTANCES_READ)),
+            "{ext}"
+        );
+    }
+}
+
 /// Domain shaders writing cull distances (tessellation.hlsl's, every domain, both builds) convert with
 /// their two cull distances reflected; the cull route's programs of them are a compute form writing
 /// the distances' slots after the position and colour, and a pass-through drawing the first two

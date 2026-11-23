@@ -1293,7 +1293,11 @@ impl<'a> Lowering<'a> {
                 builtin::POSITION
                 | builtin::PRIMITIVE_ID
                 | builtin::GS_INSTANCE_ID
-                | builtin::GS_VERTEX_COUNT_IN,
+                | builtin::GS_VERTEX_COUNT_IN
+                // Read from the vertex records, which the stage before fills
+                // ([`crate::stage::Stages::new`]).
+                | builtin::CLIP_DISTANCE
+                | builtin::CULL_DISTANCE,
             ) => true,
             (
                 SourceStage::Vertex | SourceStage::Domain | SourceStage::Geometry,

@@ -610,17 +610,20 @@ impl<B: Backend> Stages<B> {
         }
         // The vertex records hold what the next stage reads: the geometry shader's inputs, or every
         // output of a vertex shader whose output is streamed.
-        let (read, last) = match geometry {
+        let (read, distances, last) = match geometry {
             Some(g) => (
                 super::locations(&g.reflection.inputs),
+                super::read_distances(&g.reflection),
                 &g.reflection.outputs,
             ),
             None => (
                 super::locations(&vertex.reflection.outputs),
+                (0, 0),
                 &vertex.reflection.outputs,
             ),
         };
-        let shader = backend.create_shader(&super::vertex_program_for(vertex, &read)?)?;
+        let shader =
+            backend.create_shader(&super::vertex_program_for(vertex, &read, distances)?)?;
         let vertex_program = backend.create_program(&Program::Compute(&shader))?;
         let geometry = match geometry {
             Some(g) => Some(geometry_parts(backend, g)?),
@@ -649,7 +652,7 @@ impl<B: Backend> Stages<B> {
             lines: None,
             numbered: None,
             strips: None,
-            in_words: super::record_words(read.len()),
+            in_words: super::record_words(super::read_slots(&read, distances)),
             records: None,
             out: None,
             unused,
@@ -891,7 +894,7 @@ impl<B: Backend> Stages<B> {
             }
         }
         let read = super::locations(&hull.reflection.inputs);
-        let shader = backend.create_shader(&super::vertex_program_for(vertex, &read)?)?;
+        let shader = backend.create_shader(&super::vertex_program_for(vertex, &read, (0, 0))?)?;
         let vertex_program = backend.create_program(&Program::Compute(&shader))?;
         let shader = backend.create_shader(&hull.modules[0])?;
         let hull_program = backend.create_program(&Program::Compute(&shader))?;
@@ -924,17 +927,20 @@ impl<B: Backend> Stages<B> {
             }
             (None, None) => (None, None, None),
             _ => {
-                let (read, last) = match geometry {
+                let (read, distances, last) = match geometry {
                     Some(g) => (
                         super::locations(&g.reflection.inputs),
+                        super::read_distances(&g.reflection),
                         &g.reflection.outputs,
                     ),
                     None => (
                         super::locations(&domain.reflection.outputs),
+                        (0, 0),
                         &domain.reflection.outputs,
                     ),
                 };
-                let shader = backend.create_shader(&super::domain_program_for(domain, &read)?)?;
+                let shader =
+                    backend.create_shader(&super::domain_program_for(domain, &read, distances)?)?;
                 let program = backend.create_program(&Program::Compute(&shader))?;
                 let geometry = match geometry {
                     Some(g) => {
@@ -953,7 +959,7 @@ impl<B: Backend> Stages<B> {
                 };
                 let domain = Domain {
                     program,
-                    words: super::record_words(read.len()),
+                    words: super::record_words(super::read_slots(&read, distances)),
                     records: None,
                 };
                 (geometry, Some(domain), stream)

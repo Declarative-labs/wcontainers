@@ -303,7 +303,9 @@ impl<B: Backend> GeometryReplay<B> {
         {
             return Err(GpuError::Absent(Features::TRANSFORM_FEEDBACK).into());
         }
-        let in_slots = 1 + super::locations(&geometry.reflection.inputs).len() as u32;
+        let read = super::locations(&geometry.reflection.inputs);
+        let in_slots =
+            1 + super::read_slots(&read, super::read_distances(&geometry.reflection)) as u32;
         let selects = super::selects(&geometry.reflection);
         let out_slots = 1 + super::drawn_slots(&geometry.reflection);
         let out_words = out_slots * VEC4 + 1;

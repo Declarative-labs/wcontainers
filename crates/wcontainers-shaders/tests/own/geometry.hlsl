@@ -270,6 +270,24 @@ CullOut vs_cull(float3 position : POSITION, float4 colour : COLOR0, uint vertex 
     return o;
 }
 
+// vs_cull's clip and cull distances read by a geometry shader: each triangle passed on with the cull
+// distances it read, which drop what vs_cull's would, coloured by every distance read, so a distance
+// read from the wrong place shows in the colour or in what is dropped.
+[maxvertexcount(3)]
+void gs_distances(triangle CullOut t[3], uint primitive : SV_PrimitiveID,
+                  inout TriangleStream<GsCullOut> stream) {
+    for (uint i = 0; i < 3; i++) {
+        GsCullOut o;
+        o.position = t[i].position;
+        o.colour = float4(saturate(t[i].cull.xy + 0.25), saturate(t[i].clip - 0.5), 1.0);
+        o.ids = t[i].ids + uint4(0, 0, primitive, 0);
+        o.clip = float2(1.0, 0.5);
+        o.cull = t[i].cull.xy;
+        o.more = t[i].cull.z;
+        stream.Append(o);
+    }
+}
+
 float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
 }

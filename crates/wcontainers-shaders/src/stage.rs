@@ -178,32 +178,43 @@ pub fn vertex_program(
     vertex: &crate::Converted,
     geometry: &crate::Converted,
 ) -> Result<wcontainers_gpu::ShaderModule> {
-    vertex_program_for(vertex, &locations(&geometry.reflection.inputs))
+    let read = &geometry.reflection;
+    vertex_program_for(vertex, &locations(&read.inputs), read_distances(read))
 }
 
-/// The compute form of `vertex` writing records with a slot for each of `inputs` (locations).
+/// The compute form of `vertex` writing records with a slot for each of `inputs` (locations), then
+/// the slots of `distances` ([`vertex_as_compute`]).
 pub(crate) fn vertex_program_for(
     vertex: &crate::Converted,
     inputs: &[u32],
+    distances: (u32, u32),
 ) -> Result<wcontainers_gpu::ShaderModule> {
     compute_form(
         &vertex.modules[0],
         &vertex.modules[0].module,
         inputs,
+        distances,
         VERTEX_RECORDS,
     )
 }
 
 /// The compute form of a domain program (converted), writing a record per tessellator point with a
-/// slot for each of `inputs`: point `i` is record `i`. It reads the patches and points from the
+/// slot for each of `inputs`, then the slots of `distances`: point `i` is record `i`. It reads the patches and points from the
 /// helper's own set ([`PATCHES_BINDING`], [`POINTS_BINDING`]) where the drawn form reads them from its
 /// helper set.
 pub(crate) fn domain_program_for(
     domain: &crate::Converted,
     inputs: &[u32],
+    distances: (u32, u32),
 ) -> Result<wcontainers_gpu::ShaderModule> {
     let source = &domain.modules[0];
-    compute_form(source, &domain_module(source), inputs, DOMAIN_RECORDS)
+    compute_form(
+        source,
+        &domain_module(source),
+        inputs,
+        distances,
+        DOMAIN_RECORDS,
+    )
 }
 
 /// The module of a domain program (converted) reading the patches and points from the helper's own
@@ -247,11 +258,13 @@ fn compute_form(
     source: &wcontainers_gpu::ShaderModule,
     module: &Module,
     inputs: &[u32],
+    distances: (u32, u32),
     what: &[u8],
 ) -> Result<wcontainers_gpu::ShaderModule> {
+    let written = (distances != (0, 0)).then_some(distances);
     compute_module(
         source,
-        vertex_as_compute(module, inputs, false)?,
+        vertex_as_compute(module, inputs, written)?,
         inputs,
         what,
     )
@@ -303,7 +316,16 @@ pub fn capture_program(
     geometry: &crate::Converted,
 ) -> Result<wcontainers_gpu::ShaderModule> {
     let inputs = locations(&geometry.reflection.inputs);
-    capture_program_for(vertex, &inputs, (0, 0), CAPTURED_RECORDS)
+    let distances = read_distances(&geometry.reflection);
+    if distances
+        != (
+            clip_distances(&vertex.reflection),
+            cull_distances(&vertex.reflection),
+        )
+    {
+        return Err(ConvertError::Unsupported(DISTANCES_READ));
+    }
+    capture_program_for(vertex, &inputs, distances, CAPTURED_RECORDS)
 }
 
 /// A vertex program's stream output on the replay route ([`replay::GeometryReplay::streamed`]).
@@ -743,6 +765,8 @@ const DOMAIN_CULL_RECORDS: &[u8] = b"domain cull records";
 const CULL_PASSTHROUGH: &[u8] = b"cull pass-through";
 const VERTEX_OUTPUT_SHAPE: &str = "VertexOutputShape";
 const VERTEX_OUTPUT_FOR_GEOMETRY: &str = "VertexOutputForGeometry";
+/// A geometry shader reading other counts of clip or cull distances than the stage before it writes.
+pub const DISTANCES_READ: &str = "GeometryDistancesRead";
 /// The refusal of a vertex program without cull distances on their route.
 const NO_CULL_DISTANCES: &str = "a vertex program without cull distances";
 /// The refusal of a vertex program writing no storage on the storage route.
@@ -796,7 +820,7 @@ fn record_programs_of(
     let drawn = drawn_outputs(source)?;
     let compute = compute_module(
         source,
-        vertex_as_compute(module, &drawn.locations, true)?,
+        vertex_as_compute(module, &drawn.locations, Some((drawn.clip, drawn.cull)))?,
         &drawn.locations,
         what,
     )?;
@@ -1027,7 +1051,11 @@ pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<Li
     line_drawing(source, pixel, |drawn| {
         compute_module(
             source,
-            vertex_as_compute(&source.module, &drawn.locations, true)?,
+            vertex_as_compute(
+                &source.module,
+                &drawn.locations,
+                Some((drawn.clip, drawn.cull)),
+            )?,
             &drawn.locations,
             LINE_RECORDS,
         )
@@ -1152,7 +1180,11 @@ pub fn primitive_programs(
     }
     let compute = compute_module(
         source,
-        vertex_as_compute(&source.module, &drawn.locations, true)?,
+        vertex_as_compute(
+            &source.module,
+            &drawn.locations,
+            Some((drawn.clip, drawn.cull)),
+        )?,
         &drawn.locations,
         PRIMITIVE_RECORDS,
     )?;
@@ -1374,14 +1406,14 @@ pub mod tess {
 }
 
 /// A converted vertex program as a compute program writing vertex records with a slot for each of
-/// `locations` (the geometry stage's input locations), then, with `distances`, the clip distances'
-/// slots and the cull distances' ([`distance_slots`] each). Its inputs must all be pulled
+/// `locations` (the geometry stage's input locations), then the slots of `distances`, its clip and
+/// its cull distances ([`distance_slots`] each), which must be as many as it writes. Its inputs must all be pulled
 /// (`VariantKey::pulled`), so it reads only the vertex and instance numbers, which it makes as a draw
 /// would: the first vertex plus the invocation's place, or the index there plus the base vertex.
 pub(crate) fn vertex_as_compute(
     vertex: &Module,
     locations: &[u32],
-    distances: bool,
+    distances: Option<(u32, u32)>,
 ) -> Result<Module> {
     let mut module = vertex.clone();
     if module.entry_points.len() != 1 || module.entry_points[0].stage != naga::ShaderStage::Vertex {
@@ -1427,9 +1459,8 @@ pub(crate) fn vertex_as_compute(
         let (kind, size) = match inner {
             TypeInner::Vector { scalar, size } => (scalar.kind, *size as u32),
             TypeInner::Scalar(scalar) => (scalar.kind, 1),
-            // Without `distances` no stage after reads them: geometry and hull shaders reading clip
-            // distances are refused at their own conversion, and only the last vertex stage's clip
-            // and cull.
+            // Without `distances` no stage after reads them (hull shaders reading them are refused
+            // at their own conversion).
             TypeInner::Array {
                 size: naga::ArraySize::Constant(count),
                 ..
@@ -1522,10 +1553,14 @@ pub(crate) fn vertex_as_compute(
     let count = value(&mut b, v, word::COUNT);
     let past = b.binary(BinaryOperator::GreaterEqual, x, count);
     b.when(past, |b| b.ret(None));
-    let (clip, cull) = if distances {
-        (clip, cull)
-    } else {
-        (None, None)
+    let (clip, cull) = match distances {
+        Some(wanted) => {
+            if wanted != (clip.map_or(0, |c| c.1), cull.map_or(0, |c| c.1)) {
+                return Err(ConvertError::Unsupported(DISTANCES_READ));
+            }
+            (clip, cull)
+        }
+        None => (None, None),
     };
     let distance_count = |d: Option<(Option<u32>, u32)>| d.map_or(0, |(_, n)| distance_slots(n));
     let slot_count = locations.len() as u32 + distance_count(clip) + distance_count(cull);
@@ -1810,17 +1845,37 @@ pub(crate) fn drawn_slots(reflection: &Reflection) -> u32 {
 
 /// The clip distances a stage's outputs hold, counted from their components.
 pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
-    distances(reflection, wcontainers_gpu::SystemValue::ClipDistance)
+    distances(
+        &reflection.outputs,
+        wcontainers_gpu::SystemValue::ClipDistance,
+    )
 }
 
 /// The cull distances a stage's outputs hold, counted from their components.
 pub(crate) fn cull_distances(reflection: &Reflection) -> u32 {
-    distances(reflection, wcontainers_gpu::SystemValue::CullDistance)
+    distances(
+        &reflection.outputs,
+        wcontainers_gpu::SystemValue::CullDistance,
+    )
 }
 
-fn distances(reflection: &Reflection, system: wcontainers_gpu::SystemValue) -> u32 {
-    reflection
-        .outputs
+/// The clip and the cull distances a geometry stage's inputs hold: its vertex records hold their
+/// slots after its input locations'.
+pub(crate) fn read_distances(reflection: &Reflection) -> (u32, u32) {
+    use wcontainers_gpu::SystemValue;
+    (
+        distances(&reflection.inputs, SystemValue::ClipDistance),
+        distances(&reflection.inputs, SystemValue::CullDistance),
+    )
+}
+
+/// Slots of a record after the position holding `locations` and `distances`, clip and cull.
+pub(crate) fn read_slots(locations: &[u32], (clip, cull): (u32, u32)) -> usize {
+    locations.len() + (distance_slots(clip) + distance_slots(cull)) as usize
+}
+
+fn distances(values: &[wcontainers_gpu::StageValue], system: wcontainers_gpu::SystemValue) -> u32 {
+    values
         .iter()
         .filter(|v| v.system == Some(system))
         .map(|v| v.mask.count_ones())

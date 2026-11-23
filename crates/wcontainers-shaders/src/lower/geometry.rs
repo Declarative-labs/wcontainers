@@ -441,6 +441,44 @@ impl GeometryPass<'_> {
         Ok(found)
     }
 
+    /// The clip (`builtin::CLIP_DISTANCE`) or cull distance inputs, by their index among the values,
+    /// and how many distances each holds a vertex, in declaration order: each vertex record holds them
+    /// after its input locations' slots, the clip distances' slots first, four distances a slot.
+    fn distance_inputs(&self, which: u64) -> Result<Vec<(usize, u32)>> {
+        let mut found = Vec::new();
+        let mut total = 0;
+        for (i, io) in self.values.iter().enumerate() {
+            if io.side != Side::Input || io.builtin != Some(which) {
+                continue;
+            }
+            let element = io.ty.members[..]
+                == [Basic {
+                    scalar: scalar::F32,
+                    size: 1,
+                }];
+            if !element || io.within().len() > 1 {
+                return Err(unsupported(super::CLIP_DISTANCE_TYPE));
+            }
+            let count: u32 = io.within().iter().product();
+            total += count;
+            found.push((i, count));
+        }
+        if total > super::CLIP_OR_CULL_DISTANCES {
+            return Err(unsupported(super::CLIP_DISTANCE_TYPE));
+        }
+        Ok(found)
+    }
+
+    /// The slots of each vertex record holding the input distances.
+    fn input_distance_slots(&self) -> Result<u32> {
+        let mut slots = 0;
+        for which in [builtin::CLIP_DISTANCE, builtin::CULL_DISTANCE] {
+            let distances: u32 = self.distance_inputs(which)?.iter().map(|d| d.1).sum();
+            slots += stage::distance_slots(distances);
+        }
+        Ok(slots)
+    }
+
     /// The primitive number output's variable, if declared: each vertex record then holds it in the
     /// first word of a slot after the clip distances'.
     fn numbered(&self) -> Option<Handle<naga::GlobalVariable>> {
@@ -948,7 +986,8 @@ impl GeometryPass<'_> {
         let streams = counters.len();
         let n = input_vertices(input)?;
         let inputs = self.geometry_locations(true)?;
-        let in_slots = stage::record_words(inputs.len()) / build::VEC4;
+        let in_slots =
+            stage::record_words(inputs.len()) / build::VEC4 + self.input_distance_slots()?;
         let shape = Shape {
             n,
             max,
@@ -985,12 +1024,8 @@ impl GeometryPass<'_> {
                 _ => None,
             };
             if let Some(system) = distances {
-                let member = *io
-                    .ty
-                    .members
-                    .first()
-                    .ok_or(unsupported(super::CLIP_DISTANCE_TYPE))?;
-                self.reflect(i, Side::Output, None, 0, member, 0, Some(system));
+                let count = io.ty.dims.iter().product();
+                self.reflect_distances(i, Side::Output, count, system);
                 continue;
             }
             let member = io.row()?;
@@ -1063,6 +1098,17 @@ impl GeometryPass<'_> {
             modes,
             system,
         });
+    }
+
+    /// Reflects `count` distances of value `value` as `system`, four a stage value.
+    fn reflect_distances(&mut self, value: usize, side: Side, count: u32, system: SystemValue) {
+        for first in (0..count).step_by(build::VEC4 as usize) {
+            let member = Basic {
+                scalar: scalar::F32,
+                size: (count - first).min(build::VEC4) as u8,
+            };
+            self.reflect(value, side, None, 0, member, 0, Some(system));
+        }
     }
 
     /// The replay form's entry point: a vertex program whose vertex `v` draws corner `v % c` of output
@@ -1492,6 +1538,7 @@ impl GeometryPass<'_> {
                     }
                     continue;
                 }
+                (None, Some(builtin::CLIP_DISTANCE | builtin::CULL_DISTANCE)) => continue,
                 _ => return Err(unsupported(crate::refusal::GEOMETRY_INPUT)),
             };
             // A value per input vertex (a row per register where it is an array of rows), from its
@@ -1530,6 +1577,39 @@ impl GeometryPass<'_> {
                 let at = location.map(|_| first + row);
                 self.reflect(i, Side::Input, at, comp, member, 0, system);
             }
+        }
+        // The clip and cull distances of each input vertex, from the slots after its locations'.
+        let mut first = 1 + inputs.len() as u32;
+        for (which, system) in [
+            (builtin::CLIP_DISTANCE, SystemValue::ClipDistance),
+            (builtin::CULL_DISTANCE, SystemValue::CullDistance),
+        ] {
+            let mut start = 0;
+            for (i, count) in self.distance_inputs(which)? {
+                let values = self.values;
+                let io = &values[i];
+                if io.ty.dims.last() != Some(&n) {
+                    return Err(unsupported(crate::refusal::GEOMETRY_INPUT_SHAPE));
+                }
+                let single = io.within().is_empty();
+                for (k, &record) in records.iter().enumerate() {
+                    for d in 0..count {
+                        let index = start + d;
+                        let s = b.u32(first + index / build::VEC4);
+                        let at = b.add(record, s);
+                        let raw = record_slot(b, state, at);
+                        let v = b.field(raw, index % build::VEC4);
+                        let v = b.bitcast(v, ScalarKind::Float);
+                        let g = b.global(io.var);
+                        let p = b.field(g, k as u32);
+                        let p = if single { p } else { b.field(p, d) };
+                        b.store(p, v);
+                    }
+                }
+                self.reflect_distances(i, Side::Input, count, system);
+                start += count;
+            }
+            first += stage::distance_slots(start);
         }
         Ok(())
     }

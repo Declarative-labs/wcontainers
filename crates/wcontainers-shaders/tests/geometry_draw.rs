@@ -2974,8 +2974,9 @@ fn geometry_shaders_draw_as_direct3d_does() {
 }
 
 /// Geometry shaders writing cull distances beside clip distances in one register, as fxc packs them:
-/// triangle, line and point output, cut strips, from lists and strips, indexed and instanced.
-const GEOMETRY_CULLED: [Case; 6] = [
+/// triangle, line and point output, cut strips, from lists and strips, indexed and instanced; and one
+/// writing the clip and cull distances it reads from `vs_cull`'s vertices (`gs_distances`).
+const GEOMETRY_CULLED: [Case; 8] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_cull",
@@ -3042,6 +3043,28 @@ const GEOMETRY_CULLED: [Case; 6] = [
         indexed: None,
         route: Route::Dxbc,
     },
+    Case {
+        vs: "vs_cull",
+        gs: "gs_distances",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "gs_distances",
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(3),
+        route: Route::Dxbc,
+    },
 ];
 
 /// Geometry shaders writing cull distances (`gs_cull`, `gs_cull_lines`, `gs_cull_points`: whole
@@ -3049,7 +3072,8 @@ const GEOMETRY_CULLED: [Case; 6] = [
 /// below zero on another distance kept), run as compute by the stage helper on WebGPU with its
 /// geometry cull program, from fxc's and dxc's builds: every texel equal to real Direct3D 11's
 /// drawing fxc's builds. Every fourth primitive is dropped whole, so a helper that kept every
-/// primitive would draw what Direct3D does not.
+/// primitive would draw what Direct3D does not. `gs_distances` drops by and is coloured by the
+/// distances it reads from the vertex stage, so a distance read from another slot shows.
 #[test]
 fn geometry_shaders_writing_cull_distances_draw_as_direct3d_does() {
     let mut backend = webgpu();

@@ -186,10 +186,8 @@ fn builtin_of(b: u32, side: Side) -> Result<u64, ConvertError> {
         (Some(BuiltIn::InvocationId), Side::Input) => Ok(builtin::GS_INSTANCE_ID),
         (Some(BuiltIn::Layer), Side::Output) => Ok(builtin::LAYER_INDEX),
         (Some(BuiltIn::ViewportIndex), Side::Output) => Ok(builtin::VIEWPORT_INDEX),
-        (Some(BuiltIn::ClipDistance), Side::Output) => Ok(builtin::CLIP_DISTANCE),
-        (Some(BuiltIn::ClipDistance), Side::Input) => unsupported(crate::refusal::CLIP_DISTANCE),
-        (Some(BuiltIn::CullDistance), Side::Output) => Ok(builtin::CULL_DISTANCE),
-        (Some(BuiltIn::CullDistance), Side::Input) => unsupported(crate::refusal::CULL_DISTANCE),
+        (Some(BuiltIn::ClipDistance), _) => Ok(builtin::CLIP_DISTANCE),
+        (Some(BuiltIn::CullDistance), _) => Ok(builtin::CULL_DISTANCE),
         (_, Side::Input) => unsupported(crate::refusal::GEOMETRY_INPUT),
         (_, Side::Output) => unsupported(crate::refusal::GEOMETRY_OUTPUT),
     }
