@@ -36,7 +36,17 @@ safe library does it, what removing it would cost.
    end makes. Natively no vetted safe GLES binding exists (glium is desktop GL and a different,
    higher-level model). Removing it: rewrite the back end's calls on web-sys (browser only, about
    the size of the crate's src/, several runs) and run its tests in Chrome instead of on ANGLE;
-   or keep glow natively as an exception. Asked: which?
+   or keep glow natively as an exception. A third way keeps a native route with no unsafe code
+   (run 3, not built): a remote back end, a new implementation of the graphics interface that
+   sends each call to a page in headless Chrome and waits there for the answers that need one
+   (read backs, queries, fences). Half of it exists (src/trace.rs: `Call` is plain serialized
+   data, `Replay<B>` runs a stream on any back end, examples/replay.rs runs it in the browser);
+   `Answer` holds only success, a bool and a read state, so the bytes of read backs and query
+   results must be added, with a live channel (a WebSocket, through a safe crate such as
+   tungstenite) and the page's end. Native programs and the Direct3D 11 track's Wine tests would
+   then draw on Chrome's own WebGL 2, the shipped target, instead of on our patched native ANGLE
+   (angle/). Cost: every answer is a round trip to the browser, so native timings would not stand
+   for browser timings (the browser pages measure those already). Asked: which of the three?
 5. Test windows and screen reading (gpu-webgpu tests/host 11): the present test makes a real
    window (Win32 or AppKit) and reads what the compositor shows (PrintWindow, DwmFlush;
    ScreenCaptureKit). winit (0.30.13, Apache-2.0, rust-windowing, about 68.6 million downloads)
@@ -45,6 +55,22 @@ safe library does it, what removing it would cost.
    not tried: whether it captures in exact sRGB on macOS and waits for the compositor (DwmFlush)
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
+
+## Run 3 (2026-11-22 night)
+
+- No ruling on the five boundaries was in the graphics brief at the start of the run; the counts
+  are unchanged (summed again per file: direct3d-12 496, graphics-test 342, graphics-test-forward
+  197, gpu-webgl 167, gpu-webgpu 30).
+- Looked again for uses outside the boundaries: none. The small Win32 calls in graphics-test
+  (process launching, job objects, the debugger loop of gt-launch) could go through safe crates,
+  but each is one more import to vet and the crate stays at boundary 1 for its Direct3D calls, so
+  they were left. `D3DCompile` in direct3d-12 tests/gpu.rs could become a run of the SDK's fxc.exe
+  (present on the desktop under Windows Kits 10.0.26100.0, not on PATH); left too, for the same
+  reason (the package stays on the list for examples/).
+- Added the third way for gpu-webgl to question 4.
+- Not split: examples/directx into its own package. Its header says it moves into
+  wcontainers-directx (plan section 10), and the rig's build commands (tools/graphics-rig, not
+  this track's) name it as an example of this package.
 
 ## Done
 
@@ -149,7 +175,9 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
    front package inherits the workspace lints once examples/check (boundary 1) is settled too.
 3. gpu-webgl: if ruling 4 says web-sys, rewrite its calls on web-sys behind one module. Note the
    Direct3D 11 track builds wcontainers-directx with feature `webgl`, which draws through this
-   back end natively on ANGLE (its Wine tests and programs), so web-sys alone ends that route.
+   back end natively on ANGLE (its Wine tests and programs), so web-sys alone ends that route;
+   with the remote back end (the third way) that route moves to Chrome instead. The browser suite
+   (browser/suite.mjs) already runs the crate's checks in Chrome.
 4. If ruling 5 allows winit and a capture crate: tests/host of gpu-webgpu on them, checked against
    today's PrintWindow and ScreenCaptureKit reading.
 5. Removing the extra upload pass needs a fast path in crates/wcontainers-gpu (the front filling
