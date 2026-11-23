@@ -200,7 +200,14 @@ The owner's ruling (asked under "New for the owner"; today's behaviour kept):
   (6029 TriangleStrip (27, 11), red 131 for 115) is the same flip of the triangle on top, which
   shows the one beneath. Since run 115 the tests place every texel apart for every clipping case
   (`placed`: the cull route's plane, taken before the instance's move as the program computes it,
-  besides `gs_clip`'s three), so the printed counts cover the cull route too. Lines: Direct3D
+  besides `gs_clip`'s three), so the printed counts cover the cull route too. Drawn in run 115 on the RTX
+  3080 at the check's seed 6029 (16 cases, g6-r115 gpu2.log, 81 s for the binary, the desktop shared
+  with other tracks' jobs): the check's figures exactly (`geometry_shaders_draw_as_direct3d_does`
+  1,024 comparisons, 34 failed; the WebGL 2 replay 992, 34 failed). Of the 68 failing comparisons'
+  placements, 64 (`gs_clip`, `vs_cull`, `vs_cull_read`, triangles) have every texel beyond the
+  allowance within a subpixel step of a clipped edge (32 with 1 such texel, 28 with 2, 4 with 4);
+  the other 4 are the `vs_cull` LineStrip indexed case on both routes and both tests, 2 texels
+  within a pixel of a clipped line end and 2 the shift described next. Lines: Direct3D
   clips a line where the plane cuts it and lights pixels by its diamond rule, so a clipped end can
   light a pixel whose centre the distance rejects, or leave one it accepts (Known gaps, run 39); the
   tests print each line texel's distance from the nearest point a plane cuts a line at and from the
@@ -208,9 +215,13 @@ The owner's ruling (asked under "New for the owner"; today's behaviour kept):
   and (24, 40), are one-pixel shifts of a line's end (one texel drawn by each); both centres of
   the first pair lie 0.14 pixels on the rejected side of `vs_cull`'s plane (a clipped end: ours
   takes the distance at the centre's place along the line, not at the centre); the second pair's
-  centres lie 20 pixels from the plane, so it is an uncut end, the cull route drawing the strip's surviving lines as a line list: its cause is
-  not yet measured (the GPU run that prints its distance from the line's end is in g6-r115
-  gpu2.log when it has run). And where a pixel centre lies exactly on a plane, Direct3D's fill rule
+  centres lie 20 pixels from the plane and 7.7 and 8.2 pixels from the nearest end (g6-r115
+  gpu2.log), so it is no end at all: it lies on the kept part of a line the plane cuts (segment 2,
+  vertices 7 to 2, cut at 0.955 of its length near vertex 2; scratch `g6-r115/lines.py` from the
+  seeded indices), whose centre line crosses row 40 at x = 24.0002, 0.0002 pixels from the corner
+  of the two pixels' diamonds. Direct3D's snapped cut end turns that line about its uncut end by up
+  to 1/512 of a pixel at the cut, about 0.0005 at this row, which is enough to move the crossing to
+  the other pixel. So this too is the snap of the vertex clipping makes. And where a pixel centre lies exactly on a plane, Direct3D's fill rule
   decides where the program keeps a distance of zero (Known gaps, run 38; seen only with a plane
   through pixel centres). WARP clips as the GPU does (largest 1 apart), so ours lies up to 21 to 99
   from both. The plan's claim that the variant keeps "exactly the set of pixels clipping leaves"
@@ -2389,8 +2400,9 @@ Runs at a00ab267:
   slow path: a clipped line's end is lit by Direct3D's diamond rule on the cut line, where the
   program keeps the pixels whose distance at their place along the line is not negative (one pixel
   of difference at a clipped end). One line case at the check's seed also shifts an uncut end by
-  a pixel, its cause not yet measured (A10). Clipping in the stage helper's compute would have to
-  cut lines too.
+  a pixel in a line's middle; measured in run 115, it is the same snap (the cut end turns the
+  line by up to 1/512 of a pixel, enough where the line crosses a row 0.0002 pixels from a diamond
+  corner). Clipping in the stage helper's compute would have to cut lines too.
 - Run 114, one question from G6's second check (gap A10; today's behaviour kept until you rule).
   On a back end without clip distances the pixel program discards where an interpolated clip
   distance is negative. Real Direct3D (the RTX 3080 and WARP alike) instead cuts the triangle and
@@ -3644,8 +3656,7 @@ G6a run 5's tip):
    list of "G6 reported complete" in the order the fronts need it; items waiting on another track
    or a ruling are not worked until those come. The order below holds for this track's own parts.
 1. This track's own open parts of the gap list ("G6 reported complete", its last group), in the
-   order the fronts need them: A10's uncut line end at seed 6029 (read its distances in g6-r115
-   gpu2.log, or draw `geometry_draw` at seed 6029 again), the NIR track's G9 run 24 asks of the
+   order the fronts need them: the NIR track's G9 run 24 asks of the
    stage helper (output sizing after tessellation, OpenGL's strip-with-adjacency order, records
    read from storage past the device's attributes), A7's pixel shader reading `SV_PrimitiveID` behind a geometry shader
    that does not write it (measured first on the RTX 3080 and WARP), A26's WebGL 2 part for
