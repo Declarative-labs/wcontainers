@@ -37,12 +37,18 @@ function Get-Lists {
 }
 
 # The CTS's own arguments for a list: its first configuration in its folder's mustpass.xml, with
-# the folder glcts reads its data from.
+# the folder glcts reads its data from. Stopping on a lost device is turned off because glcts's
+# desktop packages then call glGetGraphicsResetStatus after every case, an entry point they load
+# only from GL_KHR_robustness or OpenGL 4.5, so a 3.3 context without it calls a null pointer
+# (glcts gl3cTestPackages.cpp, TestCaseWrapper::iterate). A lost device still ends its cases as
+# crashes or failures in deqp-runner's results.
+$KeepRunningOnDeviceLost = '--deqp-terminate-on-device-lost=disable'
 function Get-ListArguments([string]$List) {
     $caselist = Join-Path $Mustpass $List
     [xml]$described = Get-Content (Join-Path (Split-Path $caselist) 'mustpass.xml')
     $configuration = $described.SelectNodes('//Configuration') |
         Where-Object { $_.caseListFile -eq (Split-Path -Leaf $List) } | Select-Object -First 1
     if (-not $configuration) { throw "cts: mustpass.xml has no configuration for $List" }
-    @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$GlctsDir"
+    @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$GlctsDir" +
+        $KeepRunningOnDeviceLost
 }
