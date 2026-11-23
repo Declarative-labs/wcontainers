@@ -35,6 +35,45 @@ For the translator track (found in this run, blocks every back end run that save
   j5c/translator-pool.patch, never committed, is how this run measured the rest of the bar. With it,
   outside.rs at full: 8 passed in 2.2 s, each time (ARM64 machine, load 14).
 
+J5's bar at 0314e263 (ARM64 machine, 12 jobs and 12 test threads, Docker 29.9.3; scratch j5c: `all.sh`
+runs every piece through `bar.sh`, each piece's log and results fetched to j5c/arm/<piece> (the tip) or
+j5c/arm-patched/<piece> (the tip plus the translator pool patch) as it ends; `verdicts.sh` gives one line per
+test; v-*.txt are the lists). The back end's runs are on the patched tree, since at the tip every run that
+saves hangs (above); the stand-in's at the tip. Builds used `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and
+no incremental folder, to fit the machine's disk (Departures).
+- Stand-in (tip, 5,406 s, load 4 to 16): 383 tests, 340 passed, 35 failed, 8 ignored; the 35 are exactly the
+  kernel track's ARM list (its kf5/fails5.txt).
+- Full (patched, 3,433 s, load 6 to 10): equal to the stand-in test by test but the known three (align and
+  sharedviews pass, counterclock across saves ignored), layer1's `sequences_replay_from_their_record` (built
+  for the stand-in only), and these four: java `start_up_matches_reference` and
+  `threads_and_collections_match_reference` ("Could not allocate compressed class space: 1073741824 bytes",
+  with the kernel's warning "process outgrew the ceiling"); python `system_test_modules_match_reference`
+  (its one differing line: `test.test_mmap.LargeMmapTests.test_around_4GB ERROR`, theirs `ok`: the test
+  maps a whole file of 4 GiB and 6 bytes, larger than the back end's 4 GiB address space); cpulimit
+  `cpu_limit_on_the_wall_clock_matches_reference` (ours "handled: killed by 9", theirs "handled: SIGXCPU 1,
+  soft now 2 hard 2"; alone 6 runs of 6 pass at full, 47 s each, load 15 to 42, and 3 of 3 on the stand-in).
+- None (patched, 2,014 s, load 4 to 10; the eight runtimes' tests left out by name and run apart): equal to
+  full but cpulimit, which passes. The runtimes apart (6,000 s limit): go and node x2 pass; java x2 fail as
+  at full; python `system_test_modules_match_reference` failed (its message was not printed: the binary was
+  cut at the limit); python `language_test_modules_match_reference` and `system_program_matches_reference`
+  had not ended (follow-ups below).
+- Bounded (patched, 6,890 s, load 11 to 16; N 237 for seed 0): equal to full but outside
+  `a_full_connection_hears_a_reset` (ours "after reset: poll 1 in out err hup rdhup", theirs "poll 1 in
+  out": ours saw the reset sooner; follow-ups below).
+- The causes listed as waiting at J5 run 9 (patched, full): outside 10 runs of 8 pass (the kernel's parked-call
+  assertion, task.rs, now allows a call woken in its own run: closed); LTP pth_str01 and pth_str03 pass
+  (11.9 s each; the kernel's search goes down to the lowest address: closed); node
+  `system_program_matches_reference` passes (closed: it no longer meets the ceiling).
+- LTP at full (patched, 3,296 s, load 6 to 28) against the stand-in at the tip (3,893 s, load 4 to 16): 4,226
+  tests, 4,222 verdicts equal. gf16 (120.9 s), gf17, mmapstress09 (13.6 s) and mmapstress10 pass within the
+  900 s limit in the whole run, and with 3,600 s alone (130.3 s, 21.6 s): the progress count's cause no
+  longer shows (closed). The four others: fsx22 (stand-in past 900 s, ours passes in 684 s); mem02 (ours
+  "no turn ended and no backend answer came for 120s", the stand-in passes in 3.2 s); clock_gettime04
+  (ours "CLOCK_REALTIME ... Difference between successive readings greater than 5 ms: 18"); setrlimit06
+  (ours "Got only SIGKILL after reaching both limit", the cpulimit test's failure). Follow-ups below.
+- Against the kernel track's stand-in LTP verdicts at 60cb4fe1 (ltp/ours-20260930-60cb4fe1.tsv) the back
+  end's differ in the same 4.
+
 ## JR, third run (2026-11-23): nothing it waits on has changed; nothing built or run
 
 - At 04f5e469 the kernel is as the second run found it: crates/kernel/implementation/linux/executing.rs
