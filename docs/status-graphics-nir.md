@@ -86,6 +86,12 @@ Not built and seen to matter for desktop 3.2: multisampled 2D arrays (the screen
 `glTexImage3DMultisample` gets no sample count); the interface's `VariantKey::texture_layers` is
 the model (a texture per layer).
 
+The check of 7aa5a574 (dEQP-GLES31 texture_buffer, KHR-GLES31 texture_buffer, dEQP-GLES3
+vertex_arrays) did not run: Mesa was built with it (`logs/g9r15-mesa-windows-3.log`), but three
+GPU jobs in a row were refused because other agents' working trees changed the desktop's one copy
+of branch agents (`C:\wc\src\agents`) between sending and starting. Every track on branch
+agents shares that copy now; a job in the queue cannot hold it.
+
 Next, in order (run 14's list below still holds for the rest):
 1. Name KHR-GL33's null function and fix it, then run KHR-GL33 whole; read its failures.
 2. Multisampled 2D arrays as a texture per layer (`VariantKey::texture_layers`), which desktop
