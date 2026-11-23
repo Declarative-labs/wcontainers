@@ -7,7 +7,8 @@ use core::task::{Context, Poll, Waker};
 
 use futures_core::Stream;
 use wcontainers_webassembly_engine::{
-    BindFunctionError, BoundFunction, FunctionTypeBinder, Import, WebAssemblyEngine,
+    BindFunctionError, BoundFunction, ExternalAddress, FunctionTypeBinder, Import,
+    WebAssemblyEngine,
 };
 
 /// A [module](https://webassembly.github.io/spec/core/binary/modules.html#binary-module) with nothing in it.
@@ -59,9 +60,18 @@ pub fn instantiates_an_empty_module<T: WebAssemblyEngine>(mut subject: T) {
 
 /// Checks that one compiled module instantiates twice, each instance with its own exports.
 pub fn instantiates_one_module_twice<T: WebAssemblyEngine>(mut subject: T) {
-    let module = subject.compile(EXPORTS_MEMORY).ok().expect("the module compiles");
-    let first = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
-    let second = subject.instantiate(&module, &[]).ok().expect("the module instantiates again");
+    let module = subject
+        .compile(EXPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
+    let first = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    let second = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates again");
     assert!(subject.find_export(&first, MEMORY_NAME).is_some());
     assert!(subject.find_export(&second, MEMORY_NAME).is_some());
 }
@@ -92,9 +102,17 @@ fn finish<F: Future>(future: F) -> F::Output {
 /// Checks that a module arriving in several chunks compiles to one that instantiates with its export.
 pub fn compiles_a_module_arriving_in_chunks<T: WebAssemblyEngine>(mut subject: T) {
     let chunks = Chunks(EXPORTS_MEMORY.chunks(EMPTY.len()));
-    let module = finish(subject.compile_streaming(chunks)).ok().expect("the module compiles");
-    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
-    assert!(subject.find_export(&instance, MEMORY_NAME).is_some());
+    let module = finish(subject.compile_streaming(chunks))
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    assert!(matches!(
+        subject.find_export(&instance, MEMORY_NAME),
+        Some(ExternalAddress::Memory(_))
+    ));
 }
 
 /// Checks that `compile` returns an error for bytes that lack the magic number.
@@ -104,51 +122,91 @@ pub fn refuses_bytes_that_are_not_a_module<T: WebAssemblyEngine>(subject: T) {
 
 /// Checks that an export is found by its name, and that no other name finds one.
 pub fn finds_an_export_by_its_name<T: WebAssemblyEngine>(mut subject: T) {
-    let module = subject.compile(EXPORTS_MEMORY).ok().expect("the module compiles");
-    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
+    let module = subject
+        .compile(EXPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
     assert!(subject.find_export(&instance, MEMORY_NAME).is_some());
     assert!(subject.find_export(&instance, UNEXPORTED_NAME).is_none());
 }
 
 /// Checks that one instance's export can be supplied for another module's import.
 pub fn supplies_an_export_for_an_import<T: WebAssemblyEngine>(mut subject: T) {
-    let exporting = subject.compile(EXPORTS_MEMORY).ok().expect("the module compiles");
-    let exporter = subject.instantiate(&exporting, &[]).ok().expect("the module instantiates");
-    let address = subject.find_export(&exporter, MEMORY_NAME).expect("the export");
-    let importing = subject.compile(IMPORTS_MEMORY).ok().expect("the module compiles");
-    let imports = [Import { module_name: IMPORT_MODULE_NAME, item_name: MEMORY_NAME, address }];
+    let exporting = subject
+        .compile(EXPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
+    let exporter = subject
+        .instantiate(&exporting, &[])
+        .ok()
+        .expect("the module instantiates");
+    let address = subject
+        .find_export(&exporter, MEMORY_NAME)
+        .expect("the export");
+    let importing = subject
+        .compile(IMPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
+    let imports = [Import {
+        module_name: IMPORT_MODULE_NAME,
+        item_name: MEMORY_NAME,
+        address,
+    }];
     assert!(subject.instantiate(&importing, &imports).is_ok());
 }
 
 /// Checks that a module does not instantiate when one of its imports is not supplied.
 pub fn refuses_a_missing_import<T: WebAssemblyEngine>(mut subject: T) {
-    let module = subject.compile(IMPORTS_MEMORY).ok().expect("the module compiles");
+    let module = subject
+        .compile(IMPORTS_MEMORY)
+        .ok()
+        .expect("the module compiles");
     assert!(subject.instantiate(&module, &[]).is_err());
 }
 
 /// Checks that an exported function, bound to its function type, returns its result when invoked.
 pub fn invokes_a_bound_function<T: FunctionTypeBinder<(), i32>>(mut subject: T) {
-    let module = subject.compile(EXPORTS_FUNCTION).ok().expect("the module compiles");
-    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
-    let address = subject.find_export(&instance, FUNCTION_NAME).expect("the export");
-    let function = subject.bind_function(address).ok().expect("the function has the function type");
+    let module = subject
+        .compile(EXPORTS_FUNCTION)
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(address)) = subject.find_export(&instance, FUNCTION_NAME)
+    else {
+        panic!("the export is a function");
+    };
+    let function = subject
+        .bind_function(address)
+        .ok()
+        .expect("the function has the function type");
     assert_eq!(function.invoke(&mut subject, ()).ok(), Some(i32::MAX));
 }
 
 /// Checks that a function is not bound to a function type with other results.
 pub fn refuses_to_bind_another_function_type<T: FunctionTypeBinder<(), i64>>(mut subject: T) {
-    let module = subject.compile(EXPORTS_FUNCTION).ok().expect("the module compiles");
-    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
-    let address = subject.find_export(&instance, FUNCTION_NAME).expect("the export");
-    assert!(matches!(subject.bind_function(address), Err(BindFunctionError::OtherFunctionType)));
-}
-
-/// Checks that an address that holds a memory is not bound as a function.
-pub fn refuses_to_bind_a_memory<T: FunctionTypeBinder<(), i32>>(mut subject: T) {
-    let module = subject.compile(EXPORTS_MEMORY).ok().expect("the module compiles");
-    let instance = subject.instantiate(&module, &[]).ok().expect("the module instantiates");
-    let address = subject.find_export(&instance, MEMORY_NAME).expect("the export");
-    assert!(matches!(subject.bind_function(address), Err(BindFunctionError::NotFunction)));
+    let module = subject
+        .compile(EXPORTS_FUNCTION)
+        .ok()
+        .expect("the module compiles");
+    let instance = subject
+        .instantiate(&module, &[])
+        .ok()
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Function(address)) = subject.find_export(&instance, FUNCTION_NAME)
+    else {
+        panic!("the export is a function");
+    };
+    assert!(matches!(
+        subject.bind_function(address),
+        Err(BindFunctionError)
+    ));
 }
 
 /// Runs each suite function above as its own test on a value made anew for every test.
@@ -200,11 +258,6 @@ macro_rules! tests {
         #[test]
         fn refuses_to_bind_another_function_type() {
             $crate::refuses_to_bind_another_function_type($value);
-        }
-
-        #[test]
-        fn refuses_to_bind_a_memory() {
-            $crate::refuses_to_bind_a_memory($value);
         }
     };
 }

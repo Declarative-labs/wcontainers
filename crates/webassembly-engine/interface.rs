@@ -8,14 +8,23 @@ use core::future::poll_fn;
 use core::pin::pin;
 
 use futures_core::Stream;
+use thiserror::Error;
 
-pub trait WebAssemblyEngine {
+pub trait WebAssemblyEngine: Sized {
     /// A compiled [module](https://webassembly.github.io/spec/core/syntax/modules.html#modules).
     type Module: Send + Sync;
     /// A [module instance](https://webassembly.github.io/spec/core/exec/runtime.html#module-instances).
     type Instance;
-    /// An [external address](https://webassembly.github.io/spec/core/exec/runtime.html#external-addresses).
-    type ExternalAddress: Clone;
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [function](https://webassembly.github.io/spec/core/exec/runtime.html#function-instances).
+    type FunctionAddress: Clone;
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [table](https://webassembly.github.io/spec/core/exec/runtime.html#table-instances).
+    type TableAddress: Clone;
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [memory](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
+    type MemoryAddress: Clone;
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [global](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
+    type GlobalAddress: Clone;
+    /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [tag](https://webassembly.github.io/spec/core/exec/runtime.html#tag-instances).
+    type TagAddress: Clone;
     type Error;
 
     /// Compiles a module from its [binary format](https://webassembly.github.io/spec/core/binary/modules.html#binary-module).
@@ -38,7 +47,7 @@ pub trait WebAssemblyEngine {
     fn instantiate(
         &mut self,
         module: &Self::Module,
-        imports: &[Import<'_, Self::ExternalAddress>],
+        imports: &[Import<'_, Self>],
     ) -> Result<Self::Instance, Self::Error>;
 
     /// Returns the address of the instance's [export](https://webassembly.github.io/spec/core/syntax/modules.html#exports) with the given name.
@@ -46,14 +55,23 @@ pub trait WebAssemblyEngine {
         &mut self,
         instance: &Self::Instance,
         name: &str,
-    ) -> Option<Self::ExternalAddress>;
+    ) -> Option<ExternalAddress<Self>>;
 }
 
 /// A WASM [import](https://webassembly.github.io/spec/core/syntax/modules.html#imports).
-pub struct Import<'name, ExternalAddress> {
+pub struct Import<'name, Engine: WebAssemblyEngine> {
     pub module_name: &'name str,
     pub item_name: &'name str,
-    pub address: ExternalAddress,
+    pub address: ExternalAddress<Engine>,
+}
+
+/// An [external address](https://webassembly.github.io/spec/core/exec/runtime.html#external-addresses).
+pub enum ExternalAddress<Engine: WebAssemblyEngine> {
+    Function(Engine::FunctionAddress),
+    Table(Engine::TableAddress),
+    Memory(Engine::MemoryAddress),
+    Global(Engine::GlobalAddress),
+    Tag(Engine::TagAddress),
 }
 
 /// An engine that binds functions of one [function type](https://webassembly.github.io/spec/core/syntax/types.html#syntax-functype) to a Rust signature.
@@ -63,21 +81,24 @@ pub trait FunctionTypeBinder<Parameters, Results>: WebAssemblyEngine {
     /// Returns the function at the address after checking that it has the function type.
     fn bind_function(
         &mut self,
-        address: Self::ExternalAddress,
+        address: Self::FunctionAddress,
     ) -> Result<Self::Function, BindFunctionError>;
 }
 
-pub trait BoundFunction<Engine: WebAssemblyEngine + ?Sized, Parameters, Results> {
+pub trait BoundFunction<Engine: WebAssemblyEngine, Parameters, Results> {
     /// Runs the [invocation](https://webassembly.github.io/spec/core/exec/modules.html#invocation) of the function.
-    fn invoke(&self, engine: &mut Engine, parameters: Parameters) -> Result<Results, Engine::Error>;
+    fn invoke(&self, engine: &mut Engine, parameters: Parameters)
+    -> Result<Results, Engine::Error>;
 }
 
-pub enum BindFunctionError {
-    NotFunction,
-    OtherFunctionType,
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[error("the function does not match the function type it is being bound to")]
+pub struct BindFunctionError;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum CompileStreamingError<StreamError, CompileError> {
+    #[error("the stream of the module's bytes failed: {0}")]
     Stream(StreamError),
+    #[error("the module could not compile: {0}")]
     Compile(CompileError),
 }
