@@ -4732,15 +4732,17 @@ fn tessellator(t: &FlatTessellation) -> Result<Tessellator, ConvertError> {
             )));
         }
     };
-    // Both name the winding in the domain's own coordinates, before any program places them.
+    // The same coordinates, seen with OpenGL's origin at the lower left and Direct3D's at the upper
+    // left, so each winding is the other's (as Mesa's d3d12 driver turns it,
+    // https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.3.1/src/gallium/drivers/d3d12/d3d12_compiler.cpp#:~:text=GL%20tess%20domain%20is%20lower%2Dleft).
     let output = if t.point_mode != 0 {
         TessellatorOutput::Points
     } else if domain == TessellationDomain::Isoline {
         TessellatorOutput::Lines
     } else if t.counter_clockwise != 0 {
-        TessellatorOutput::TrianglesCounterClockwise
-    } else {
         TessellatorOutput::TrianglesClockwise
+    } else {
+        TessellatorOutput::TrianglesCounterClockwise
     };
     Ok(Tessellator {
         domain,
