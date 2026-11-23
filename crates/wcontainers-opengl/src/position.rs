@@ -46,7 +46,7 @@ pub fn transform(module: &mut Module, t: PositionTransform) -> Result<(), String
         }
     } else {
         let TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
-            return Err("a pass-through without a position".into());
+            return crate::state::refused(format_args!("a pass-through without a position"));
         };
         let index = members
             .iter()

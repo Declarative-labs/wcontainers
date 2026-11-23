@@ -2556,7 +2556,7 @@ fn run_tessellated<B: Backend>(
     let indexed = info.index_size > 0;
     if indexed && (info.has_user_indices() || index_format(info.index_size) == IndexFormat::U8) {
         return refused(format_args!(
-            "patches from indices in memory or of 8 bits (not built)"
+            "patches from indices in memory or of single bytes (not built)"
         ));
     }
     let (streamed, locations) = streamed_variant(vertex, elements);

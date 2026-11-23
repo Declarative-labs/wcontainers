@@ -1506,11 +1506,14 @@ impl Builder<'_> {
         texels: bool,
     ) -> Result<(AddressSpace, Handle<Type>), ConvertError> {
         if self.staged.is_some() {
-            return Err(unsupported(if texels {
-                "an atomic on an image in a geometry or tessellation program"
-            } else {
+            if texels {
+                return Err(unsupported(format_args!(
+                    "an atomic on an image in a geometry or tessellation program"
+                )));
+            }
+            return Err(unsupported(format_args!(
                 "an image of a buffer in a geometry or tessellation program"
-            }));
+            )));
         }
         let slot = var
             .binding
