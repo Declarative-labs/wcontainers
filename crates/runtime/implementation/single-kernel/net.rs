@@ -556,7 +556,7 @@ impl Network {
     /// The event the kernel is told for one arrival: none, as the standard input's are handed
     /// over by the system and a socket's wakes its wait, whose answer the kernel takes when it
     /// next settles.
-    pub(crate) fn event<'a>(&mut self, arrival: &'a Arrival) -> Option<Event<'a>> {
+    pub(crate) fn event(&mut self, arrival: &Arrival) -> Option<Event> {
         match *arrival {
             Arrival::Input(_) | Arrival::InputEnded(_) | Arrival::Answered => None,
             Arrival::Ready {

@@ -621,8 +621,7 @@ impl wcontainers_system::FuseServer for LocalSystem {
     type Reply = Vec<u8>;
     type Notice = Vec<u8>;
 
-    /// Not built: this system hands its notices to the kernel as the abi's
-    /// `Event::BackendNotice`, until the kernel keeps a wait for them.
+    /// This system's file server sends no notices.
     async fn receive_notice(
         &self,
         applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
