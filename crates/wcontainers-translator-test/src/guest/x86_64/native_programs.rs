@@ -66,8 +66,6 @@ struct Scratch {
     r11: u64,
     /// The guest's rcx while its call site is found.
     dispatch: u64,
-    /// The word below sp, while the flags are pushed there.
-    below: u64,
     record: [u64; RECORD_WORDS],
 }
 const SCRATCH: usize = size_of::<RegisterArea>().next_multiple_of(WORD as usize);
@@ -95,9 +93,9 @@ enum Said {
     /// A repeated string instruction run for the guest, which the count takes pass by pass: the call site's
     /// number and rcx before it.
     StringBefore,
-    /// After it: rcx and rflags.
+    /// After it: rcx.
     StringAfter,
-    /// After it: rsi and rdi.
+    /// Before it and after it: rsi and rdi.
     StringPointers,
 }
 
@@ -521,12 +519,17 @@ fn positions(laid: &Laid, records: &[(Said, u64, u64)]) -> Result<Vec<Position>,
             (Said::StringBefore, Answer::String { repeated, .. }) => {
                 // A run ended in the instruction by a fault has no records after it.
                 let (
-                    Some(&(Said::StringAfter, after, rflags)),
+                    Some(&(Said::StringPointers, _, start)),
+                    Some(&(Said::StringAfter, after, _)),
                     Some(&(Said::StringPointers, source, destination)),
-                ) = (records.next(), records.next())
+                ) = (records.next(), records.next(), records.next())
                 else {
                     break;
                 };
+                // The flags the passes depend on: DF, which way rdi went (a host process keeps TF off). A string
+                // with no element is one pass either way; lods, which leaves rdi, is never bulk.
+                let backward = (destination.wrapping_sub(start) as i64) < 0;
+                let rflags = if backward { wcontainers_x86::DF } else { 0 };
                 let width = |v: u64| {
                     if repeated.address32 {
                         v & u64::from(u32::MAX)
@@ -679,8 +682,6 @@ struct Routines {
 enum Word {
     Register(AsmRegister64),
     Constant(i32),
-    /// rflags, read with the word below sp kept.
-    Flags,
 }
 
 /// Writes a record of `said` and two words to standard error, every register and flag left as it was.
@@ -710,16 +711,6 @@ fn keep_record(
         match value {
             Word::Register(r) => a.mov(at, r)?,
             Word::Constant(c) => a.mov(at, c)?,
-            Word::Flags => {
-                let below = word(core::mem::offset_of!(Scratch, below));
-                a.mov(rax, qword_ptr(rsp - WORD as i32))?;
-                a.mov(below, rax)?;
-                a.pushfq()?;
-                a.pop(rax)?;
-                a.mov(at, rax)?;
-                a.mov(rax, below)?;
-                a.mov(qword_ptr(rsp - WORD as i32), rax)?;
-            }
         }
     }
     system_call(
@@ -792,6 +783,13 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
             }
             Answer::String { bytes, .. } => {
                 keep_record(&mut a, area, Said::StringBefore, k, Word::Register(rcx))?;
+                keep_record(
+                    &mut a,
+                    area,
+                    Said::StringPointers,
+                    Word::Register(rsi),
+                    Word::Register(rdi),
+                )?;
                 let mut copy = a.create_label();
                 a.set_label(&mut copy)?;
                 a.db(bytes)?;
@@ -801,7 +799,7 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
                     area,
                     Said::StringAfter,
                     Word::Register(rcx),
-                    Word::Flags,
+                    Word::Constant(0),
                 )?;
                 keep_record(
                     &mut a,
