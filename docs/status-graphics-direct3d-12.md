@@ -50,31 +50,39 @@ The pass bar, item by item (results under "Results of run 53"):
 
 2026-11-23, RTX 3080, desktop shared with other tracks (the OpenGL track's conformance runs held
 the GPU queue between our jobs); scratch run53/, code at 26137294 but for the use test's last form
-(the known failure's marking, the NV12 plane view) and features-differing.txt's update, which the
-next full run checks:
+(the known failure's marking, the NV12 plane view), features-differing.txt's update and the
+declared test's change, which run 53's last check (quick4, check4) ran:
 - Lint of the infrastructure crate, this front and the Direct3D 11 front with warnings denied:
   clean on the desktop (lint3.log) and the rented x86 machine.
-- The crates' tests (test3.log): all pass but `every_answered_format_ability_is_served` (915 uses;
-  then failing on the copy now marked known, and on the test's own `NV12` target view, since
-  fixed) and `real_containers_declare_what_they_did_before_ranges` (the shaders track's new
-  containers; re-recorded, only lines added, and passing on the x86 machine).
-- Literal check (lit3.log): no finding in this track's crates; seven redefinitions in the
-  Direct3D 11 front's files of constants now defined in the infrastructure crate (asked of G4); two
-  baseline lines of this front removed (bc50ec99).
+- The crates' tests (test4.log, at the final code): all pass, among them
+  `every_answered_format_ability_is_served` (915 uses, the one known failure as marked) and
+  `the_adapter_meets_every_format_requirement_of_11_0`; `real_containers_declare_what_they_did_before_ranges`
+  failed there on a container the shaders track added meanwhile, and now holds recorded containers
+  to their answers and lists new ones (744b8e33; passes on the x86 machine). In test3.log the use
+  test also failed on its own `NV12` target view, since fixed.
+- Literal check (lit3.log, lit4.log): no finding in this track's crates; two baseline lines of this
+  front removed (bc50ec99). The Direct3D 11 track now imports the requirement table, its bits and
+  the levels from the infrastructure crate (6572e2e9, 505618c1), so lit3's seven redefinitions in
+  its files are gone in lit4.
 - Test files 189 of 198 (full3.log, logs-full3/), the same 9 as run 52.
 - Own program (check3.log): draw 0 of 4096 pixels beyond 1; 35 of 35 cases equal;
-  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38; features 154 of 872 differ, the
-  check failing only on listed lines that no longer hold (formats now served) and five new lines
-  (video and tiled bits), all moved in features-differing.txt; outputs 22 of 110 and answers 2 of 40
-  differ, each listed.
+  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38; features 154 of 872 differ, in
+  check3 failing only on listed lines that no longer hold (formats now served) and five new lines
+  (video and tiled bits), all moved in features-differing.txt, and in check4 (the final code) every
+  differing answer listed and none beyond real; outputs 22 of 110 and answers 2 of 40 differ, each
+  listed.
 - Shader runner (runner3.log): 218 of 302 (run 52: 214).
 - Real programs (p3-*.log): Microsoft's two samples equal (0 pixels beyond 8); Godot's 2D
   platformer equal; Godot's 3D platformer the same one pixel as before (1 of 518,400 beyond 8,
   difference 48 at 921,317, frames 10, 60 and 120); bgfx 37 every frame of both runs within its
   allowance (863 to 904 pixels beyond 8).
-- bgfx 01-cubes and 26-occlusion (b3-*.log, references from 6 real runs): every frame of both our
-  runs within the allowance. 35-dynamic, 38-bloom and 26-occlusion's pairs were still queued behind
-  another track's GPU jobs when this was written (run53all.sh 3 runs them; results in run53/).
+- bgfx 01-cubes, 26-occlusion, 35-dynamic and 38-bloom (b3-*.log, references from 6 real runs):
+  every frame of both our runs within the allowance (733 to 1232 pixels beyond 8 of 20,480).
+- bgfx 26-occlusion, 20 real and 20 of our runs alternating, each run compared with each real run
+  as a reference (pairs-occl3.log, .summary): frames 10 and 60 fail none of 400 comparisons of ours
+  (and none of 380 real against real); frame 120 fails 60 of 400 of ours and 102 of 380 of real
+  against real, always one tile (224,496) with the same largest difference (217) real shows
+  against itself; every one of our runs matches some real run in every frame ("Real programs").
 - Scenes and Wine's dxgi tests not rerun (nothing they draw changed but the level gate, which the
   test files and programs pass through).
 
@@ -451,12 +459,20 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   the same one pixel (10 s).
 - bgfx is compared with the overlay's GPU time and memory lines ignored (rectangle 0,208,320,64);
   24-nbody draws differently on every real run, so it has no frames to compare.
-- bgfx 26-occlusion, for the record (sixth check): with references from several real runs, a
-  tile any real run draws differently is not compared, so in a session where a real run draws
-  frame 10's rare outcome, frame 10's occlusion tiles are not checked for ours at all. Ours shows
-  "L: 0" in the overlay's latency counter where real shows "L: 1": ours never runs a frame
-  behind, which is why its occlusion result latency is the same in every frame. Not measured
-  further.
+- bgfx 26-occlusion, the fifth check's finding (frame 10 failing in both of our runs, six tiles,
+  largest difference 254, against references from two real runs; also seen in the third check,
+  icheck31; both at code before run 51). Run 53: not reproduced. Since run 51 our frame 10 has
+  passed in 74 runs (the seventh check's 20 runs against 20 real references and its 30-run loop,
+  runs 52 and 53's 2 each, and run 53's 20 against 20 real references, 400 comparisons, none
+  failing). Real's own frames vary: two real runs already differed in 80 of 3,600 tiles of frame 10
+  in the fifth check (the tiles the comparison then leaves out), and in run 53's pairs a real run
+  fails against another real run at frame 120 in 102 of 380 comparisons, at one tile, as ours does
+  in 60 of 400. The demo draws its cubes by occlusion results of earlier frames, which arrive at a
+  latency the overlay shows ("L: 1" on real, "L: 0" on ours: ours never runs a frame behind), so
+  which cubes a frame shows depends on timing. The check's failing frames were overwritten by later
+  runs, so whether they were one of real's outcomes cannot be shown now. Judged under the
+  2026-11-22 bar: what ours draws is within what real draws run to run; the remaining evidence
+  that would settle the old failure is gone, and it is not seen at the current code.
 - Setup learnt on the way: the rig's forwarding library takes the name d3d12.dll and loads ours
   behind it (`WC_D3D12`), hence `wcontainers_d3d12.dll` and two forwarders; it aborts a program
   calling an export the library behind it lacks; bgfx calls `QueryVideoMemoryInfo` on the adapter
@@ -473,13 +489,6 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 - WebGL 2 back end (G3): the same for S3TC and BPTC, which WebGL takes in 2D arrays only.
 - WebGPU back end (G2), run 52: `d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT` is in the infrastructure
   crate, as asked; its `DX12_PLACEMENT_ALIGNMENT` can import it.
-- Direct3D 11 (G4), new in run 53: the infrastructure crate now holds Microsoft's format
-  requirement tables (`required`, the source of the Direct3D 11 front's `required.rs`, with
-  `unmet`), Direct3D 11's own bits (`support1::CPU_LOCKABLE`, `MIP_AUTOGEN`, `support2::SHAREABLE`),
-  the levels (`required::level`) and `storage_viewed`. Asked: import them and delete the copies
-  (desc.rs's `CPU_LOCKABLE`, `MIP_AUTOGEN`, `SUPPORT2_SHAREABLE` and `level::L10_0` to `L11_0`;
-  required.rs whole); until then the literal check reports those seven redefinitions in that
-  crate's files.
 - WebGPU back end (G2), new in run 53: a copy of an `R32_SINT` texture into a `D32_FLOAT` one
   (`copy_texture_to_texture`, served by a draw, `DepthReadByDraw`) loses the device on the RTX 3080
   (Vulkan); `R32_FLOAT` and `R32_UINT` sources are served. Repro: test
@@ -607,6 +616,9 @@ merges.
   `SlowPath::StorageOffsetInShader` (run 34). Details in the record at cf55bbe8.
 
 ## Measurements
+
+- Run 53: no timing taken (the desktop's GPU queue was shared with the OpenGL track's
+  conformance runs all run).
 
 - Run 52, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at ce605d0d
   (run52/alone1.log, 06:15 to 06:17 on the desktop's clock; desktop CPU load 1 % before and 2 %
