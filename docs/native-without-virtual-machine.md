@@ -101,6 +101,9 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   process; P's zygote removes I's reservation in its child like everything else of the embedder (4.1). A second
   in-process host in the same process is refused ("in-process host exists"), as is a first one whose reservation
   the host refuses.
+- As built (W1 round 3 run 2): a slot page's bytes are the next free page of the code area's memfd past the code
+  area (128 MiB of them), never reused, mapped by a `MapSlots` command execute-only; all in use ends the process,
+  counted "slot pages exhausted".
 - **The slot table** (ARM64; the VM form's entry mirror): a 16-byte slot for every host address H of the guest
   area at `SLOTS | (H << 2)`, `SLOTS` = 2^46, so the table spans [2^46, 2^47). It is one memfd per guest memory
   (P) or one per embedder process (I: the slots of different containers are different host addresses), written by
@@ -890,6 +893,12 @@ loads what the exit stored. A stub thread never uses SVE (the guest has none, 3.
 none), so the host's lazy SVE handling never adds to its wakes.
 
 ### 4.6 How the kernel's runners drive it
+
+As built (W1 round 3 run 2): the kernel's loop (`wcontainers_runtime_single_kernel::drive`) runs P through the
+runtime's `Execution` trait, as it runs the WebAssembly output and the VM form's inside; that is the one module
+that implements an executor trait. A counted turn cannot stop at its exact count in a host process (no stepping
+without ptrace): it ends at the first exit at or after the count, or when a slice of one nanosecond per unit of its
+limit sends the stop, counted "turn limit passed".
 
 `Kernel::new(config, parallelism)` gives N runners; the embedder runs each on a thread of its own with an executor
 handle of its own (section 8). A runner's `run` asks the kernel for the next thread under the kernel's lock, lets the
