@@ -39,6 +39,8 @@ thiserror = { version = "2.0.21", default-features = false }
 
 [dev-dependencies]
 wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
+# Writes the modules of the proposal checks from their text.
+wat = "1.263.0"
 
 [lints]
 workspace = true

@@ -660,7 +660,11 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         if let Some(origin) = &function.origin {
             return Some(origin.clone());
         }
-        let wanted = function.reference.as_raw().Value;
+        // A reference read from a table or a global may carry another type beside the function; making it anew
+        // from the function gives every reference to one function the same bits.
+        let wanted = WasmValue::from_func_ref(&*function.reference.func_ref()?)
+            .as_raw()
+            .Value;
         self.owners.iter().enumerate().find_map(|(owner, found)| {
             let instance = found.as_instance();
             instance.func_names()?.into_iter().find_map(|name| {
@@ -1391,11 +1395,13 @@ impl<HostContext: 'static> MemoryStore for WasmEdgeEngine<HostContext> {
             let Owner::Instance(helper) = &mut self.owners[copier.instance] else {
                 return Err(WriteMemoryError);
             };
-            let mut scratch_memory = helper
-                .get_memory_mut(SCRATCH)
-                .map_err(|_| WriteMemoryError)?;
-            write_unshared(&mut scratch_memory, u64::MIN, chunk)?;
-            drop(scratch_memory);
+            write_unshared(
+                &mut *helper
+                    .get_memory_mut(SCRATCH)
+                    .map_err(|_| WriteMemoryError)?,
+                u64::MIN,
+                chunk,
+            )?;
             Self::call_helper(
                 self.executor.get_mut(),
                 copier.store,
