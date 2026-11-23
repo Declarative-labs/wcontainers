@@ -15,71 +15,64 @@ Free of unsafe and inheriting the workspace's lints (their lines are gone from t
   (netlink-packet-route, netlink-sys) instead of the SIOCSIFFLAGS ioctl.
 
 Fewer uses, still on the list (counts are the `unsafe` words left in the crate's .rs files):
-- tcp host 23 -> 6 (run 2). Gone: the unit tests' counting allocator (tests/allocations.rs, harness-free, counting
-  the waiting thread with allocation-counter as before; see "Open finding"), the plain receive's MaybeUninit cast (rustix's recv takes `&mut [u8]`), the zeroed in6_flowlabel_req,
-  tcp_md5sig, tcp_ao_add, tcp_ao_del and tcp_ao_info_opt (struct literals, arrays by `array::from_fn`), the repair
-  options' bytes (written by offset_of), CMSG_SPACE and the extension headers' control message walk (shared safe
-  walker). Left: `view` (reads uapi::tcp_info and our own repr(C) structures from bytes), `bytes_of` and `zeroed`
-  (tcp_ao_getsockopt, whose getsockopt reads and writes the same structure, and the MPTCP structures), the
-  tcp_ao_getsockopt of holds_authentication_key (2), and the ioctl (SIOCOUTQ, SIOCOUTQNSD, SIOCATMARK).
-- linux-socket-options 30 -> 21 (run 2). Gone: the control message walks (`ControlMessages` now reads the kernel's
-  cmsghdr layout from linux-raw-sys by offset_of, as CMSG_NXTHDR stops), the three CMSG_SPACE (`control_space`),
-  the error queue's MaybeUninit tail.
-- linux-socket-options 40 -> 30 (run 1). Gone: the readiness watcher's four (polling's `add` is unsafe; mio's register is
-  not), setfsuid's four (nix::unistd::setfsuid), if_nameindex's two (nix), the timestamps' read (bytes read by
-  offset_of!).
-- udp host 11 -> 9. Gone: the test's unshare and setns (nix).
-- icmp suite 15 -> 1. Gone: unshare (nix), the packet capture's six (nix socket and recvfrom of a LinkAddr; the socket
-  is no longer bound to the link, the capture keeps only packets whose ifindex is the link's), the counting
-  allocator macro's seven (the raw and icmp hosts' waiting tests use stats_alloc's allocator instead).
-- route-resolver suite 4 -> 2. Gone: unshare and if_nametoindex (nix).
-- runtime single-kernel 7 -> 2. Gone: polling's four `add` (mio), mknodat (rustix's on Linux and the BSDs; on macOS,
-  which has no mknodat in rustix or nix, a FIFO by nix's mkfifo at the directory's path from rustix's getpath, a
-  socket node by binding a std UnixListener there).
-- translator-test 16: not touched yet.
+- tcp host 23 -> 6 (run 2) -> 1 (run 3). Left: the one `ioctl` (SIOCOUTQ, SIOCOUTQNSD, SIOCATMARK, FIONREAD).
+  Run 3: `TCP_INFO` is read into `InformationBytes { info: TcpInfo, ecn: AccurateEcnInformation }`, zerocopy types;
+  `TcpInfo` mirrors linux-raw-sys's tcp_info (bit fields read by linux-raw-sys's own `__BindgenBitfieldUnit::get`);
+  `TCP_CC_INFO` forms, `MPTCP_INFO`, `MPTCP_FULL_INFO` (subflow addresses as `StorageBytes`), `TCP_AO_GET_KEYS`
+  (`KeyQuery`, one builder for both readers), `TCP_AO_INFO` (mirrored, then given as linux-raw-sys's structure for
+  its bit field accessors), `TCP_AO_REPAIR` and `TCP_REPAIR_WINDOW` all read through zerocopy.
+  Run 2: allocation-counter for the test's count, rustix recv, struct literals for what is only passed in.
+- linux-socket-options 40 -> 30 (run 1) -> 21 (run 2) -> 6 (run 3). Left: the raw `setsockopt` and `getsockopt`
+  (set_raw, get_bytes), and in each of the two `recvmsg` paths (linux.rs receive_message, datagram/receive.rs
+  receive_with_tail) the zeroed `libc::msghdr` and the call itself.
+  Run 3: `uapi_mirror!` (mirror.rs, exported): declares a `#[repr(C)]` zerocopy copy of a uapi structure and asserts
+  at compile time its size and every field's offset against the uapi's. Through it: sockaddr_in and sockaddr_in6
+  (`storage_bytes`, `address_of_storage`, `kernel_storage` builds `__kernel_sockaddr_storage` by a union literal,
+  which is safe), in_pktinfo and in6_pktinfo (sent and received), scm_ts_pktinfo, sock_extended_err (read, then
+  given as libc's), so_timestamping, sock_txtime. The send control buffer writes the kernel's cmsghdr fields by
+  offset_of; receive buffers, SO_MEMINFO words and `get_option` (now `T: FromBytes + IntoBytes`) go through
+  zerocopy; the group filter is built as bytes; `as_bytes`, `read_address` (rustix's unsafe SocketAddrAny::read)
+  and `from_in6_addr` (a union read) are gone; ipv6_mreq, group_req and in6_flowlabel_req are struct literals.
+  `set_option<T: Copy>` still takes any plain uapi structure and hands its bytes to the raw call (counted in set_raw).
+  Run 2: control message walks and sizes. Run 1: mio, nix's setfsuid and if_nameindex.
+- icmp suite 15 -> 1, route-resolver suite 4 -> 2 (run 1): raw setsockopt only, see below.
+- runtime single-kernel 7 -> 2 (run 1): the StopFlag, see For the owner.
+- translator-test 16: not touched.
 
 ## What is left, by call, and why no vetted library offers it
-- Raw `setsockopt`/`getsockopt` with option bytes (linux-socket-options set_raw, get_bytes, get_option: 4 uses;
-  route-resolver suite: IP_OPTIONS and IP_UNICAST_IF/IPV6_UNICAST_IF, 2; icmp suite: IPV6_ADDR_PREFERENCES, 1).
-  rustix, socket2 and nix wrap typed options only; none offers raw bytes, rightly, as some options (SO_ATTACH_FILTER)
-  carry pointers. Options the code sets that no vetted crate wraps include TCP_REPAIR_QUEUE, TCP_QUEUE_SEQ,
-  TCP_REPAIR_WINDOW, TCP_REPAIR_OPTIONS, TCP_AO_*, TCP_MD5SIG, TCP_SAVED_SYN, TCP_CC_INFO, MPTCP_INFO, SO_MEMINFO,
-  MCAST_MSFILTER, MCAST_JOIN_GROUP, IP_LOCAL_PORT_RANGE, SO_BUF_LOCK, SO_TXREHASH, SO_WIFI_STATUS,
-  TCP_FASTOPEN_KEY, TCP_FASTOPEN_NO_COOKIE, IP_MINTTL, IP_ROUTER_ALERT, IP_OPTIONS, IP_UNICAST_IF,
-  IPV6_ADDR_PREFERENCES. Removing them: a typed wrapper per option in a vetted crate (upstream to rustix), or the
-  two raw calls stay as the one marked place.
-- `recvmsg` with control messages (linux-socket-options receive_message, datagram/receive.rs; walking them is safe
-  now). rustix's recvmsg parses only SCM_RIGHTS and SCM_CREDENTIALS;
-  socket2's gives no MSG_CTRUNC; nix's parses most into ControlMessageOwned but allocates a Vec for each message it
-  does not know (IPv6 extension headers, IP_RETOPTS, ...), which the zero-allocation receive cannot take. Cost: move
-  the receive path to nix and accept an allocation for the rare unknown messages, or read the raw control bytes
-  some other safe way (none found).
-- uapi structures built and passed as bytes (`zeroed`, `as_bytes`, `storage`, the in6_addr union read, the group
-  filter, the send control buffer: addresses.rs, memberships.rs, send.rs, exchange.rs; the tcp host's
-  tcp_ao_getsockopt, read and written by one getsockopt). Structures only passed in can be built by literal, as
-  the tcp host's now are, but giving them to the kernel as bytes still takes the unsafe `set_option<T>`. linux-raw-sys's and libc's structures derive no zerocopy traits. Cost: our own
-  `#[repr(C)]` zerocopy mirrors of each structure, each checked against the uapi's size and offsets at compile time.
+- Raw `setsockopt`/`getsockopt` with option bytes (linux-socket-options set_raw and get_bytes, 2; route-resolver
+  suite: IP_OPTIONS and IP_UNICAST_IF/IPV6_UNICAST_IF, 2; icmp suite: IPV6_ADDR_PREFERENCES, 1). rustix, socket2
+  and nix wrap typed options only (nix's SetSockOpt cannot be implemented without the raw call); none offers raw
+  bytes, rightly, as some options (SO_ATTACH_FILTER) carry pointers. Options the code sets that no vetted crate
+  wraps include TCP_REPAIR_QUEUE, TCP_QUEUE_SEQ, TCP_REPAIR_WINDOW, TCP_REPAIR_OPTIONS, TCP_AO_*, TCP_MD5SIG,
+  TCP_SAVED_SYN, TCP_CC_INFO, MPTCP_INFO, SO_MEMINFO, MCAST_MSFILTER, MCAST_JOIN_GROUP, IP_LOCAL_PORT_RANGE,
+  SO_BUF_LOCK, SO_TXREHASH, SO_WIFI_STATUS, TCP_FASTOPEN_KEY, TCP_FASTOPEN_NO_COOKIE, IP_MINTTL, IP_ROUTER_ALERT,
+  IP_OPTIONS, IP_UNICAST_IF, IPV6_ADDR_PREFERENCES. Cost of removing: a typed wrapper per option in a vetted crate
+  (upstream to rustix); otherwise these two calls are the one marked place.
+- `recvmsg` with control messages (2 calls and 2 zeroed msghdr). rustix's recvmsg parses only SCM_RIGHTS and
+  SCM_CREDENTIALS; socket2's gives no MSG_CTRUNC; nix's parses most into ControlMessageOwned but allocates a Vec for
+  each message it does not know (IPv6 extension headers, IP_RETOPTS, ...), which the zero-allocation receive cannot
+  take. libc's msghdr cannot be built by a literal on musl (private padding fields), hence the zeroed one. Cost: move
+  the receive path to nix and accept an allocation for the rare unknown messages; or one shared recvmsg function
+  (2 uses instead of 4).
 - `ioctl` SIOCOUTQ, SIOCOUTQNSD and SIOCATMARK (tcp host ioctl_count): rustix's safe ioctls are FIONREAD and a few
-  others, not these; its generic `ioctl` is unsafe. tcp_info gives no exact equivalent of SIOCOUTQ (write_seq -
-  snd_una). Cost: stays, or a typed wrapper upstream in rustix.
-- tcp_info read from bytes (tcp host `view`, 3 uses through one helper): linux-raw-sys's tcp_info derives no
-  zerocopy traits. Cost: our own `#[repr(C)]` zerocopy mirror of its 69 fields used, with its two bitfield bytes,
-  checked against linux-raw-sys's size and offsets at compile time; the MPTCP and congestion structures are ours
-  already and need only the derives.
+  others, not these; its generic `ioctl` and `Getter::new` are unsafe; libc's sockatmark is unsafe. tcp_info's
+  tcpi_notsent_bytes equals SIOCOUTQNSD for an established socket but nothing in it gives SIOCOUTQ (write_seq -
+  snd_una, which only sock_diag's idiag_wqueue gives) or the urgent mark. Cost: stays, or a typed wrapper upstream.
 - Runtime StopFlag `entered`/`raise` (2): the flag word is in the wasmtime executor's guest memory and the runtime
   holds its address. Needs an API change with the executor (another track's crate), see For the owner.
 - translator-test (not started): wasmtime SharedMemory is `&[UnsafeCell<u8>]` with no safe read or write
   (runner.rs, tests/test_guest.rs), the untyped hooks' `MaybeUninit<ValRaw>`, the x86 intrinsics' transmutes in
   tests/reciprocals.rs (zerocopy's `simd` feature could replace those). It is the translator's harness and runs
-  generated code as an executor does.
+  generated code as an executor does: likely an executor-like exception for the owner to rule on.
 
 ## Next
-1. tcp host (6): a zerocopy mirror of tcp_info and tcp_ao_getsockopt, zerocopy derives on the MPTCP and congestion
-   structures; then only the ioctl is left, for the owner.
-2. linux-socket-options (21): the same mirrors for its uapi structures (in_pktinfo, in6_pktinfo, sock_txtime,
-   group_req, group_filter, ipv6_mreq, in6_flowlabel_req) and `set_option`/`get_option` bounded by zerocopy's
-   traits; what then remains is the raw setsockopt/getsockopt and recvmsg calls, for the owner.
-3. translator-test.
+1. The owner's rulings on what is left (For the owner). Meanwhile, optional: one shared recvmsg function in
+   linux-socket-options (6 -> 4), and `set_option` bounded by `IntoBytes + Immutable` with mirrors of the
+   structures the udp, tcp, raw and icmp hosts pass (tcp_ao_add, tcp_ao_del, tcp_md5sig, ...; touches other tracks'
+   raw and icmp hosts), which moves no count but makes every byte view checked.
+2. translator-test: the reciprocals transmutes through zerocopy; the rest is the executor question.
+3. The open finding below.
 
 ## Open finding (run 2)
 Counted over the whole process (stats_alloc, no test harness), the tcp check "a warm wait allocates nothing" found
@@ -101,8 +94,17 @@ yet traced. The tcp check counts the waiting thread, as it did before this track
 - stats_alloc 0.1.10 (MIT; 22 million): the allocator of the raw and icmp hosts' waiting tests (dev-dependency only).
 - netlink-packet-core 0.9.0, netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT; 47 million each; already used by
   the route resolver host): the tcp suite's loopback.
+- zerocopy 0.8.63 (BSD-2-Clause, Apache-2.0 or MIT; Google's; 1.19 billion downloads, 351 million in the last 90 days, per crates.io on 2026-11-22; already a workspace
+  dependency, `derive` only), run 3: now also of linux-socket-options and the tcp host (Linux only), for the uapi
+  copies and byte views that replaced pointer casts. No new crate entered Cargo.lock.
 
 ## Measurements (ARM64 machine, Graviton4, 96 cores, Linux 7.0.0-1018-aws)
+Run 3 (2026-11-22 03:03, load 2.2 falling to 1.4; log speed-compare-run3-after.log): the code at the start of run 3
+(a89862c0, folder before3) against run 3's, alternated three times, two rounds each. TCP send 381-385 ns before,
+382-387 after; TCP receive 396-399 before, 397-400 after; UDP send 1.501-1.515 us before, 1.495-1.512 after; UDP
+receive 777-783 ns before, 755-761 after (about 3% faster in all six rounds; the receive now reads the sender's
+address and the control messages through zerocopy instead of rustix's SocketAddrAny and unaligned reads).
+
 Run 2 (measured in run 3, 2026-11-22 02:45, load 18 falling to 8; log speed-compare-run3.log): the code before run 2
 against run 2's, alternated three times, two rounds each, same test as below. TCP send 384-386 ns before, 382-384
 after; TCP receive 404-407 before, 397-399 after; UDP receive 774-784 both; UDP send 1.482-1.502 us before,
@@ -116,7 +118,14 @@ Speed of one send and one receive over loopback, `tests/speed.rs` of each host (
 UDP receive 781-785 ns before, 776-785 ns after. No difference measured. An earlier single before run at load 23
 gave UDP send 1.45 us; the alternating runs are the comparison.
 
-## Suites (ARM64 machine, after the changes, 2026-11-23)
+## Suites (ARM64 machine, after the changes)
+Run 3 (2026-11-22 03:05, load 2 to 13; log suites-run3-final.log): clippy with warnings denied on every crate of
+the track and the socket crates sharing its helpers; udp conformance 78 + readiness 3 + the harness-free allocation
+check; tcp conformance 140 + unit 2 + the harness-free allocation check (speed ignored); raw, icmp, route resolver,
+configurable, negative-route-advisable and linux-socket-options (binaries of 2, 67, 5, 1, 1, 7, 53, 2, 1, 38, 1);
+runtime 15; arm64 9. All passed. No Mac build this run (the Mac must stay usable): every change is in Linux-only
+modules, and zerocopy is a Linux-only dependency of both crates.
+
 Run 2: udp conformance 78 + readiness 3 + the harness-free allocation check; tcp conformance 140 + unit 2 + the
 harness-free allocation check (speed ignored); raw, icmp, route resolver, configurable, negative-route-advisable
 and linux-socket-options as in run 1. All passed; each allocation check passed 30 of 30 runs.
@@ -129,7 +138,8 @@ datagram wakes its wait once and later datagrams are not told until it is waited
 bytes wake the listener's and the stream's waits) pass on the code before the change too.
 
 The ban is on: with `pub fn ban_probe() { unsafe {} }` added to a copy on the ARM machine, arm64, the route
-resolver host and the tcp suite each fail with "usage of an `unsafe` block" (`-F unsafe-code`).
+resolver host and the tcp suite (run 1) and the udp host (run 3) each fail with "usage of an `unsafe` block"
+(`-F unsafe-code`).
 
 ## How to run
 - Scripts in pyro-parked/wcontainers-scratch/no-unsafe, run as
@@ -158,6 +168,11 @@ resolver host and the tcp suite each fail with "usage of an `unsafe` block" (`-F
   allocations, stronger than the waiting thread's alone, as each binary holds that one test.
 
 ## For the owner
+- What cannot be removed without your ruling, with the count that remains: linux-socket-options 6 (the raw
+  setsockopt and getsockopt, two recvmsg calls and their two zeroed msghdr), tcp host 1 (the ioctl), route-resolver
+  suite 2 and icmp suite 1 (raw setsockopt), runtime 2 (the StopFlag below), translator-test 16 (wasmtime's
+  SharedMemory has no safe access; it runs generated code as an executor does). Why no vetted library offers each,
+  and what removing it would cost, is under "What is left".
 - The runtime's `StopFlag::entered(&self, flag: &AtomicU32)` is an `unsafe fn` and `raise` dereferences the stored
   address: the word is in the wasmtime executor's state memory. Removing it needs the executor to give something
   safe to call, for example `entered(&self, raise: Arc<dyn Fn() + Send + Sync>)` kept per thread by the executor
