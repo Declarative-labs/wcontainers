@@ -931,6 +931,13 @@ fn prologue(blob: &Blob, laid: &Laid, at: &Places) -> Result<Vec<u8>, IcedError>
         a.mov(qword_ptr(label), general_register(n))?;
     }
     let read_write = libc::PROT_READ | libc::PROT_WRITE;
+    // No core dump where the guest's fault ends the blob: the status is the signal's alone, and the host's crash
+    // reporter is not run.
+    system_call(
+        &mut a,
+        libc::SYS_prctl,
+        &[libc::PR_SET_DUMPABLE as u64, u64::from(false)],
+    )?;
     // The program at its own address.
     let image_bytes = (blob.bytes.len() as u64).next_multiple_of(PAGE);
     map(&mut a, blob.load, image_bytes, read_write)?;
