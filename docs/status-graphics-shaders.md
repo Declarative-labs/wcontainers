@@ -71,8 +71,10 @@ the same bytes for every shader; A1's cause read again (the program uses the typ
 first part, the Direct3D 11 front's typed loads of `A8_UNORM`), and A23 closed by a carried
 dxbc-spirv patch with a drawn test. Run 15 (run 102, the section below): A28's second part
 measured (WARP reports a YUY2 view's size as ours does, so nothing is built), the built-in
-storage clear of `A8Unorm`, and a pixel shader reading its clip distances on both routes. Not
-complete: the gap list below.
+storage clear of `A8Unorm`, and a pixel shader reading its clip distances on both routes. Run 16
+(run 103, the section below): A17, aliased lines into a multisampled target by Direct3D's
+diamond-exit rule, the Direct3D 11 front's last ask of this track (an interface flag and slow path,
+the stage helper's line route, a drawn test). Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -154,6 +156,54 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   offset's own type (`int3(...)` for a 3D texture, was always `int2(...)`), so wgpu's Direct3D 12
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
+
+## G6 run 16 (run 103): aliased lines into a multisampled target (A17)
+
+Logs and scripts in scratch `graphics-shaders/g6-r103` (the clone `tip` on branch `shaders-tip`).
+Nothing built on the Mac (rustfmt of single files only). The ARM64 machine's disk was full (576
+of 581 GB, other tracks' build folders); this run's CPU checks ran on the rented x86-64 machine
+(`x86-run`, same command as `arm-cmd.txt`), and my ARM build folder was deleted.
+- Interface (3a86f258): `VariantFlags::LINE_DIAMOND` and `SlowPath::AliasedLinesAsQuads`, with the
+  plan's text (4.12 "Which line rasterisation rule": aliased lines into a multisampled target are
+  no longer a listed loss).
+- The route is the alpha-antialiased one's, its pixel key choosing the rule: the line program
+  (`lines.wgsl`, and `line_replay.wgsl` for WebGL 2) writes a parallelogram reaching 1.5 pixels
+  along the minor axis and past each end, its records' values taken along the line (so constant
+  along the minor axis, as Direct3D's devices take them: with corners moved square to the line
+  the colours were up to 4 codes from the RTX 3080, along the minor axis 1), and in its last slot
+  the line's ends in window pixels snapped to Direct3D's grid of 1/256 pixel (the viewport's place
+  is now given: `Stages::run_lines` and `GeometryReplay::run_lines` take the draw's `Viewport`;
+  `run_antialiased_lines` stays for the size alone and refuses this route). The pass-through
+  passes the ends flat. The pixel program (`variant/diamond.rs`, library `variant/diamond.wgsl`)
+  discards the fragment unless the diamond exit picks its pixel: the diamond as Microsoft's
+  rasterization rules page draws it (lower edges and bottom corner in, the right corner for y-major
+  lines), the line covering a pixel where it meets the diamond and ends outside it; exact in
+  integers of the grid (a corner's side of the line is a cross product in 12-bit halves, exact for
+  ends within 32,768 pixels of the pixel). Per-sample programs test the pixel's centre.
+- Tests: `aliased_lines_take_the_stage_helpers_route` (tests/geometry.rs, any machine: flat ends
+  on both sides, the discard, both line flags refused) and
+  `aliased_lines_into_a_multisampled_target_draw_as_direct3d_does` (tests/stage_draw.rs): four
+  samples, a viewport at (3, 5), `MEASURED`'s twelve lines (pixel centres, between rows, diagonal,
+  ends between centres) and the seeded list, strip and indexed strip, fxc and dxc builds, on
+  WebGPU and replayed on WebGL 2 with and without EXT_clip_control, against Direct3D 11 on the RTX
+  3080 and WARP, resolved. Passes where ours covers no more pixels apart from the RTX 3080 than
+  WARP does and colours are no further apart than the two references' (at least one step).
+  Measured on the RTX 3080 (one GPU job, one test thread), `WCONTAINERS_LINE_CASES=16` from seed 1
+  (49 scenes, 294 comparisons, gpu5.log): 0 failed; in all 294 ours covers exactly the RTX 3080's
+  pixels, where WARP differs from the RTX 3080 by 1 to 4 pixels in 22 of the 49 scenes; colours of
+  pixels both cover 0 codes apart in 72 comparisons and 1 in 222 (the RTX 3080 and WARP: 1 in 46
+  scenes, 100 and 131 in two, 0 in one). The default 4 seeds pass too (gpu4.log). The first form,
+  corners moved square to the line, matched coverage exactly but colours up to 4 codes apart
+  (gpu3.log), which is why values are now taken along the major axis.
+- Checks at the tree committed (x86-64 machine, x86-2.log, load 0.4 to 1.2): `cargo fmt -p
+  wcontainers-shaders --check` clean, clippy with warnings denied clean, every CPU test binary
+  passed, the literal check prints no line of this crate (it named `[f32; 4]` viewports first,
+  x86's first run; the route now takes the interface's `Viewport`). Windows clippy with warnings
+  denied clean (gpu4.log). On the RTX 3080: all six `stage_draw` tests pass (gpu4.log; the
+  antialiased, primitive, storage and geometry routes share the changed `drawn` and line
+  program), and `geometry`'s two line route tests (gpu5.log). Not run: the corpus and Chrome (no
+  converted shader's WGSL changes: the new code runs only under the new flag), the WebAssembly
+  build (no C++ changed), the whole GPU suite.
 
 ## G6 run 15 (run 102): YUY2 view sizes measured (A28), `A8Unorm` clears, clip distances read by pixel shaders
 
@@ -2173,7 +2223,8 @@ The gap list (every item of the pass bar not met):
   Waits: nobody (no host shares a cache file it did not write yet). Takes: either naga's validator
   checking every index and handle before use (carried patches, then upstream), or a record
   signed with a key the host holds so a foreign record is never decoded.
-- A17. Aliased lines (`MultisampleEnable` off) into a multisampled target: Direct3D 10 and 11
+- A17 (CLOSED in run 103: `LINE_DIAMOND`, `AliasedLinesAsQuads`, drawn equal in coverage to the
+  RTX 3080; the run's section). Was: aliased lines (`MultisampleEnable` off) into a multisampled target: Direct3D 10 and 11
   cover every sample of each pixel the diamond-exit rule picks; WebGPU draws lines into a
   multisampled target by its own rule. The plan lists the rule as a loss (4.12, "Which line
   rasterisation rule"), so it is not on the pass bar's words, but the Direct3D 11 front waits on it
@@ -2578,11 +2629,12 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6's gap list in the order the fronts need it: A17's aliased lines into multisampled targets
-   (the Direct3D 11 front's last ask of this track: a variant flag for the pixel program's
-   diamond-exit test, a stage helper route drawing each segment as a rectangle over the pixels it
-   may pick, and a drawn test into 4x targets; A28's second part closed as measured in run 102;
-   a cull distance read by a pixel shader needs `LinkedValues` to carry cull distances; A5's routes on WebGL 2 were finished in runs
+1. G6's gap list in the order the fronts need it (A17 closed in run 103: the Direct3D 11 front can
+   now use `LINE_DIAMOND` and lift its known failure; A28's second part closed as measured in run
+   102): a cull distance read by a pixel shader needs `LinkedValues` to carry cull distances (an
+   interface field breaking four struct literals in the Direct3D 11 and 12 crates; the runner's
+   `clip-cull-distance-1-6-ps` and `-1-8-ps`), a geometry shader reading clip distances as input
+   (`-1-16-gs`); A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
    cull distances from domain shaders; a geometry shader's written primitive number done in run
@@ -2592,7 +2644,10 @@ G6a run 5's tip):
    Direct3D 12 runner item is the DXIL part of A13 (dxil-spirv's; A13's DXBC part closed in run
    89, A14 in runs 89 and 96, A7's cull distances from geometry shaders in run 90, A20 in run 95).
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
-3. Besides, as asked: the NIR track's items (the carried SPIR-V reader's three refusals, on its
+3. Besides, as asked: the NIR track's new ask of its G9 run 15 (not started): an entry taking a
+   common-form module's typed buffers (a global named as one, its format from the variant) through
+   `variant::texel`'s storage route, so its route B's texel buffers need no copy into a texture
+   (it takes the interface's texture route meanwhile, a counted slow path); the NIR track's items (the carried SPIR-V reader's three refusals, on its
    candidate route only; pulled inputs at any byte and naga's HLSL texel offsets done in run 99;
    its geometry and tessellation entry and `rewrite` asks were built in run 88, the array layer's
    rounding in run 97; A26's unordered comparisons in run 98), A30 (the check's `sqrt` form of
@@ -2600,6 +2655,12 @@ G6a run 5's tip):
    cause), A31 when the WebGL 2 track has rounded its gathers, A22 on WARP.
 
 ## Asked of other tracks
+
+- For the Direct3D 11 front (run 103, its known failure
+  `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does`, "Needs an
+  aliased-line route (the shaders track and the interface)"): built, A17. Call it as "How the
+  Direct3D fronts call `convert`" says (pixel key `LINE_DIAMOND`, `run_lines` with the draw's
+  viewport). Drawn here against Direct3D 11 into four samples (run 103's section).
 
 - For the Direct3D 11 front (run 102, its known failure `yuy2_view_sizes_read_as_direct3d_reads_them`
   and its ask "a helper value giving a program a view's width other than its texture's"): WARP
@@ -2821,6 +2882,18 @@ G6a run 5's tip):
   the corpus test names it itself (`CUBE_ARRAY_VIEW`, 5 shaders).
 
 ## How the Direct3D fronts call `convert`
+
+- Aliased lines into a multisampled target (rasterizer state with `MultisampleEnable` and
+  `AntialiasedLineEnable` off, a line topology, a target of more than one sample; since run 103):
+  convert the pixel shader with `VariantFlags::LINE_DIAMOND` and `linked` as for
+  `LINE_COVERAGE`, the vertex shader with every input pulled (or as drawn, for the replay route),
+  make the route with `Stages::antialiased_lines(backend, &vertex, &pixel_key)` (or
+  `GeometryReplay::antialiased_lines`; the pixel key's flag picks the rule) and run each draw
+  with `run_lines(backend, &draw, &viewport)`, the draw's own `wcontainers_gpu::Viewport` (its
+  place is read; `run_antialiased_lines`, which knows only the size, refuses such a route). Draw
+  the `FinalDraw` through `passthrough()` with culling off into the multisampled target, as for
+  antialiased lines. The helper counts `SlowPath::AliasedLinesAsQuads`. A pixel key with both line
+  flags is `Malformed`.
 
 - Vertex shaders writing unordered access views (Direct3D 11.1's UAVs in every stage, Direct3D
   12's; since run 86): they convert as any vertex shader (no longer `VertexStorageWrite`), and
@@ -4162,6 +4235,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 103's scripts in scratch `graphics-shaders/g6-r103` are run 102's with its folder. The CPU
+  checks ran on the rented x86-64 machine (the ARM64 machine's disk was full): `./arm-sync.sh &&
+  x86-run <scratch>/g6-r103/tip-arm --jobs 24 -- "$(cat arm-cmd.txt)"` (x86-run is beside arm-run
+  in the orchestrator's cloud folder; retry when it reports "copying arm-job failed" or a timeout).
+  Run a GPU job with Bash's background mode, not `nohup ... &` from a foreground shell (the job
+  died with the shell, and its half-sent tree made the next job fail "holds tree ..., not the
+  sent ..."; resending fixed it). `--nocapture` is needed for a passing drawn test's figures.
+
 - Run 102's scripts in scratch `graphics-shaders/g6-r102` are run 101's with its folder;
   `arm-sync.sh` now also makes `tip-arm` a git checkout (arm-run copies only checkouts), so the ARM
   checks are `./arm-sync.sh && arm-run tip-arm --jobs 12 -- "$(cat arm-cmd.txt)"`. `yuy2probe` is
@@ -4877,6 +4958,13 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 103, `VariantFlags::LINE_DIAMOND` and `SlowPath::AliasedLinesAsQuads` (commit 3a86f258
+  "interface: a pixel variant keeping the pixels of direct3d's aliased line rule, and its slow
+  path"), with the plan's text (4.12's "Which line rasterisation rule", and the Direct3D 11 list
+  of slow paths): aliased lines into a multisampled target, A17. A new flag and a new reason at
+  the end of `SlowPath::ALL` (no reason moves); `LinkedValues`' doc names the slot the line's ends
+  take. Nothing else changes, so no other crate's arm was needed.
 
 - Run 95, `VertexFormat::Bgrx8Unorm` (commit 02049aeb "interface: a b8g8r8x8 vertex format read
   as blue, green and red with alpha one, with every crate's arm"), the Direct3D 11 track's ask and
