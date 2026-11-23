@@ -33,8 +33,9 @@ pub const RSP: usize = 4;
 pub const RIP: usize = 16;
 /// The field of rflags in the reference's state.
 pub const RFLAGS: usize = 17;
-const FS: usize = 18;
-const GS: usize = 19;
+/// The fields of the FS and GS bases.
+pub const FS: usize = 18;
+pub const GS: usize = 19;
 const MXCSR: usize = 20;
 const FCW: usize = 21;
 const FSW: usize = 22;

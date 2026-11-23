@@ -487,14 +487,19 @@ fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
 #[test]
 fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() {
     use wcontainers_translator_test::guest::x86_64::{
-        RFLAGS, RSP, XMM, YMMH, native::answered, plain,
+        FS, GS, RFLAGS, RSP, XMM, YMMH, native::answered, plain,
     };
     use wcontainers_translator_test::layer1::translated;
     use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
     use wcontainers_x86::{DF, ID, NT, RCX, USER_DS, USER_END};
     let mut checked = 0;
     let mut check = |case: &Case| {
-        let answered = answered(case).expect("an instruction the inside answers");
+        let answered = answered(case).unwrap_or_else(|| {
+            panic!(
+                "{:02x?}: an instruction the inside answers",
+                case.code.code()
+            )
+        });
         let meaning = translated::<X86_64>(case);
         assert!(
             answered == meaning,
@@ -620,8 +625,54 @@ fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() 
             check(&case);
         }
     }
+    // The segment registers: mov from each to eax, ax, rax and [rsp]; mov to each from cx and from [rsp], push and
+    // pop of fs and gs (8 and 2 bytes), and lfs, lgs and lss (16, 32 and 64-bit offsets), each with every selector
+    // of Linux's table and its neighbours, from the writable, read-only and unmapped data.
+    let sreg = |n: u8| 0xc0 | n << 3;
+    let mut segment_forms: Vec<Vec<u8>> = Vec::new();
+    for n in 0..6 {
+        for prefix in [&[][..], &[0x66], &[0x48]] {
+            segment_forms.push([prefix, &[0x8c, sreg(n)]].concat());
+        }
+        segment_forms.push(vec![0x8c, 0x04 | n << 3, 0x24]);
+        // A mov to cs is no instruction.
+        if n != 1 {
+            segment_forms.push(vec![0x8e, sreg(n) | 1]);
+            segment_forms.push(vec![0x8e, 0x04 | n << 3, 0x24]);
+        }
+    }
+    for code in [[0x0f, 0xa0], [0x0f, 0xa8], [0x0f, 0xa1], [0x0f, 0xa9]] {
+        segment_forms.push(code.to_vec());
+        segment_forms.push([&[0x66][..], &code].concat());
+    }
+    for op in [0xb4, 0xb5, 0xb2] {
+        for prefix in [&[][..], &[0x66], &[0x48]] {
+            segment_forms.push([prefix, &[0x0f, op, 0x04, 0x24]].concat());
+        }
+    }
+    for code in &segment_forms {
+        let selectors = (0..=0x80u16).chain([USER_DS | 0x100, u16::MAX]);
+        for selector in selectors {
+            let mut case = plain(code);
+            case.state.0[RSP] = stack.into();
+            case.state.0[usize::from(RCX)] = (u64::MAX << u16::BITS | u64::from(selector)).into();
+            case.state.0[0] = u128::from(u64::MAX);
+            // Bases a load clears.
+            case.state.0[FS] = USER_END.into();
+            case.state.0[GS] = (USER_END - 1).into();
+            // The selector at every place a form reads one: [rsp], and after an offset of 2, 4 or 8 bytes.
+            case.placed = ((stack - DATA) as u32, selector.to_le_bytes().repeat(5));
+            check(&case);
+        }
+        for rsp in [DATA + DATA_WRITABLE, DATA + DATA_BYTES - 1, USER_END] {
+            let mut case = plain(code);
+            case.state.0[RSP] = rsp.into();
+            check(&case);
+        }
+    }
     eprintln!(
-        "the inside's reciprocals, popf and descriptor reads equal to the meaning's in {checked} cases"
+        "the inside's reciprocals, popf, descriptor reads and segment registers equal to the meaning's in \
+         {checked} cases"
     );
 }
 
