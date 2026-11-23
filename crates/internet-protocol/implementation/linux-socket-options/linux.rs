@@ -1,7 +1,6 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
 use std::ffi::{c_int, c_void};
-use std::marker::PhantomData;
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
@@ -549,27 +548,32 @@ pub fn receive_message<'a>(
     })
 }
 
-/// The control messages of a receive as level, type and data, walked in place.
+/// Rounds a length up to the alignment of control messages, a `size_t`'s (`CMSG_ALIGN`).
+const fn control_aligned(length: usize) -> usize {
+    length.next_multiple_of(size_of::<uapi::__kernel_size_t>())
+}
+
+/// Where a control message's data starts, after its header (`CMSG_DATA`).
+const CONTROL_DATA_AT: usize = control_aligned(size_of::<uapi::cmsghdr>());
+
+/// The room one control message of `length` bytes of data takes (`CMSG_SPACE`).
+pub const fn control_space(length: usize) -> usize {
+    control_aligned(length) + CONTROL_DATA_AT
+}
+
+/// The bytes of one field of the control message header at the start of `bytes`.
+fn header_field<const N: usize>(bytes: &[u8], at: usize) -> Option<[u8; N]> {
+    bytes.get(at..at + N)?.try_into().ok()
+}
+
+/// The control messages of a receive as level, type and data, read from the bytes the kernel wrote.
 pub struct ControlMessages<'a> {
-    header: libc::msghdr,
-    next: *const libc::cmsghdr,
-    control: PhantomData<&'a [u8]>,
+    rest: &'a [u8],
 }
 
 impl<'a> ControlMessages<'a> {
-    /// Walks the messages of control bytes the kernel wrote, aligned as `cmsghdr` needs.
     pub fn new(control: &'a [u8]) -> Self {
-        // SAFETY: msghdr is plain data; only its control fields are read by the walk.
-        let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-        header.msg_control = control.as_ptr().cast_mut().cast();
-        header.msg_controllen = control.len() as _;
-        // SAFETY: the header describes `control`, which outlives the walk.
-        let next = unsafe { libc::CMSG_FIRSTHDR(&header) };
-        Self {
-            header,
-            next,
-            control: PhantomData,
-        }
+        Self { rest: control }
     }
 }
 
@@ -577,25 +581,23 @@ impl<'a> Iterator for ControlMessages<'a> {
     type Item = (c_int, c_int, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let message = self.next;
-        if message.is_null() {
-            return None;
-        }
-        // SAFETY: CMSG_FIRSTHDR and CMSG_NXTHDR give only whole message headers inside the control bytes, whose data
-        // runs to `cmsg_len`.
-        unsafe {
-            let data = libc::CMSG_DATA(message);
-            let used = data.offset_from(message.cast::<u8>()) as usize;
-            // A u32 on musl, a usize on glibc.
-            let length: usize = (*message).cmsg_len as _;
-            let data_length = length.saturating_sub(used);
-            self.next = libc::CMSG_NXTHDR(&self.header, message);
-            Some((
-                (*message).cmsg_level,
-                (*message).cmsg_type,
-                std::slice::from_raw_parts(data, data_length),
-            ))
-        }
+        let rest = std::mem::take(&mut self.rest);
+        let length = usize::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_len),
+        )?);
+        let level = c_int::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_level),
+        )?);
+        let kind = c_int::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_type),
+        )?);
+        // As CMSG_NXTHDR, a header that claims less than itself or more than the bytes there ends the walk.
+        let data = rest.get(CONTROL_DATA_AT..length)?;
+        self.rest = rest.get(control_aligned(length)..).unwrap_or_default();
+        Some((level, kind, data))
     }
 }
 

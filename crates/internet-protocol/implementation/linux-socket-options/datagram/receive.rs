@@ -24,10 +24,7 @@ use wcontainers_internet_protocol::{
 use crate::datagram::addresses::{from_in_addr, from_in6_addr, read_address};
 use crate::last_host_error;
 
-const fn space(length: usize) -> usize {
-    // SAFETY: CMSG_SPACE only computes a length.
-    unsafe { libc::CMSG_SPACE(length as u32) as usize }
-}
+use crate::control_space as space;
 
 /// The IPv6 extension headers Linux reports for one packet: hop-by-hop, destination, routing, destination.
 const EXTENSION_HEADERS: usize = 4;
@@ -181,26 +178,9 @@ fn read<T: Copy>(data: &[u8]) -> Option<T> {
 impl<'a> Ancillary<'a> {
     pub fn parse(control: &'a [u8]) -> Self {
         let mut found = Self::default();
-        let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
-        header.msg_control = control.as_ptr() as *mut _;
-        header.msg_controllen = control.len() as _;
         let mut headers = usize::MIN;
-        // SAFETY: the walk stays within `control`, whose messages the kernel wrote.
-        let mut message = unsafe { libc::CMSG_FIRSTHDR(&header) };
-        while !message.is_null() {
-            // SAFETY: `message` points at a complete control message header inside `control`.
-            let (level, kind, data) = unsafe {
-                let start = libc::CMSG_DATA(message);
-                let length = (*message).cmsg_len as usize - (start as usize - message as usize);
-                (
-                    (*message).cmsg_level as u32,
-                    (*message).cmsg_type as u32,
-                    core::slice::from_raw_parts(start, length),
-                )
-            };
-            found.take(level, kind, data, &mut headers);
-            // SAFETY: as above.
-            message = unsafe { libc::CMSG_NXTHDR(&header, message) };
+        for (level, kind, data) in crate::ControlMessages::new(control) {
+            found.take(level as u32, kind as u32, data, &mut headers);
         }
         found
     }

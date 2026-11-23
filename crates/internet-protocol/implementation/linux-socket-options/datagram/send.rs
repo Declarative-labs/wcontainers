@@ -34,10 +34,7 @@ impl From<HostError> for Refusal {
 pub const WIRELESS_STATUS_WITHOUT_KEY: &str =
     "linux reports wireless status without the key of its send";
 
-const fn space(length: usize) -> usize {
-    // SAFETY: CMSG_SPACE only computes a length.
-    unsafe { libc::CMSG_SPACE(length as u32) as usize }
-}
+use crate::control_space as space;
 
 const SEND_CONTROL: usize = space(size_of::<uapi::in6_pktinfo>())
     + space(size_of::<c_int>())
