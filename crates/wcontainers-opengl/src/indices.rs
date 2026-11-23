@@ -73,14 +73,23 @@ fn convention(provoking: ProvokingVertex) -> c_uint {
 /// `count` less the vertices of an unfinished last primitive, or zero where not one is whole.
 pub fn trimmed(mode: mesa_prim, count: u32) -> u32 {
     let line = 2;
+    let [line_adjacency, triangle_adjacency] =
+        [line, TRIANGLE_VERTICES].map(|n| n * WITH_ADJACENCY);
     match mode {
         MESA_PRIM_LINES => count - count % line,
         MESA_PRIM_TRIANGLES => count - count % TRIANGLE_VERTICES,
+        MESA_PRIM_LINES_ADJACENCY => count - count % line_adjacency,
+        MESA_PRIM_TRIANGLES_ADJACENCY => count - count % triangle_adjacency,
         MESA_PRIM_LINE_STRIP | MESA_PRIM_LINE_LOOP if count < line => 0,
         MESA_PRIM_TRIANGLE_STRIP | MESA_PRIM_TRIANGLE_FAN if count < TRIANGLE_VERTICES => 0,
+        MESA_PRIM_LINE_STRIP_ADJACENCY if count < line_adjacency => 0,
+        MESA_PRIM_TRIANGLE_STRIP_ADJACENCY if count < triangle_adjacency => 0,
         _ => count,
     }
 }
+
+/// The vertices of the first primitive with adjacency for each of its own: one beside each.
+const WITH_ADJACENCY: u32 = 2;
 
 fn topology(primitive: mesa_prim) -> Result<Topology, String> {
     Ok(match primitive {
