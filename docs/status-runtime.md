@@ -33,6 +33,19 @@ Built and pushed (a2b0ed42, lock file a599bd67; plan: docs/runtime.md section 16
   wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean; `cargo check --all-targets` of
   the executor wasmtime (wcon, surface, refused), the seeded test policy, hardware virtualization inside and
   the executor unicorn: no error or warning; `cargo test -p wcontainers-runtime-single-kernel`: 15 passed.
+- Found and fixed (7b9b90a3): surface.rs `a_terminal_matches_docker_tty` failed on the ARM64 machine, also at
+  fcf1dfd0, before this run (ours printed nothing; the status was right). Since the kernel's standard streams
+  became the system's endpoints (73b9e266), the kernel takes any receive error but `WouldBlock` on an end as
+  its side letting go, and that hangs up a terminal's output too; the local system answered `NotSupported`
+  for a terminal with no input. A terminal with no input now answers `WouldBlock` (nobody types on it, as
+  `docker run --tty` without `--interactive`).
+- After the fix, at HEAD with only that file changed (scratch jr2/base, an export, because other tracks'
+  unfinished edits in the shared tree stopped the workspace's build: crates/executor/implementation/host-process
+  names a test file it does not have yet, and crates/wcontainers-arm64 did not compile), ARM64 machine, load
+  20 to 48: clippy clean; the wasmtime executor's surface 20 passed, 1 ignored as before; refused 77 passed;
+  single-kernel 15 passed. The kernel test crate and the LTP comparison were not rerun: nothing they run (the
+  stand-in's test host, the kernel) changed in this run, and the kernel track ran its whole suite at a9f8631e
+  (394 passed, 35 failed, exactly the ARM list).
 
 Not done, each with what it waits on (JR is not closed):
 - `Runtime::new(config)` and `make_container` building a `KernelContainer`: they need the kernel made safely
