@@ -1,0 +1,44 @@
+[package]
+name = "wcontainers-webassembly-engine-wasmedge"
+description = "The WebAssembly engine interface run by WasmEdge's ahead-of-time compiler."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[[test]]
+name = "beyond_the_suite"
+path = "beyond_the_suite.rs"
+
+[[test]]
+name = "proposals"
+path = "proposals.rs"
+
+[[bench]]
+name = "engine"
+path = "benchmark.rs"
+harness = false
+
+[dependencies]
+wcontainers-webassembly-engine = { path = "../.." }
+# The library itself is found where WASMEDGE_DIR points, or in WasmEdge's usual install locations.
+wasmedge-sdk = { version = "0.17.1", default-features = false, features = ["aot"] }
+wasmedge-sys = { version = "0.21.1", default-features = false, features = ["aot"] }
+# Writes the modules that link imports by name and reach what the bindings give no direct access to.
+wasm-encoder = "0.263.0"
+thiserror = { version = "2.0.21", default-features = false }
+
+[dev-dependencies]
+wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
