@@ -191,18 +191,68 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Verdicts before placement (14:48 to 14:50 UTC, scratch w1/run4/slice-arm.log and slice-x86.log): all 41 tests of the 10 test
     binaries passed 3 times with /dev/kvm denied on Graviton4 (123 of 123, load 8 to 10) and on the Xeon (123 of
     123, load 1.8 to 3.7), clippy with warnings denied clean on both.
+- W1, run 5 (2026-11-23), built and tested on both machines:
+  - Host mappings counted up front (4.2, view.rs): each memory keeps its stub's guest-area mappings as its queue
+    leaves them (neighbours of equal permission and backing merged, as the host merges them) plus the stub's five
+    own (`OWN_MAPPINGS`); a change of c commands is refused as `OutOfMemory` unless the count plus 2c stays within
+    the host's `vm.max_map_count` (the probe reads it once; Linux's default, warned, where unreadable). Counted
+    "host mappings exhausted". Tests (tests/memory.rs): the count equals /proc's after every load and store of the
+    seeded model, after 10,000 block maps and in the shared-block test; alternating permissions page by page up to
+    the limit (1,048,576 on both machines) is refused once, every change before it applied by the host and none
+    refused there, the count then within 2 of the limit. A view that ignores protections fails 4 of them.
+  - Inside Docker's default seccomp profile (busybox image, the Nix store mounted read-only, an unprivileged user,
+    CapEff 0, Seccomp 2, no /dev/kvm, no network): all test binaries pass on both machines unchanged.
+  - Under gVisor (runsc release 20261109.0, `runsc do`, systrap platform, no KVM), found and handled:
+    - `rseq` answers ENOSYS, which the zygote's proof took for a registration left over; the zygote now takes
+      ENOSYS as no restartable sequences at all (both architectures' assembly).
+    - `SEEK_DATA` on a memfd answers EINVAL, so every fork answered `OutOfMemory`; a fork now lends every private
+      page of the guest area there (slow path, counted "memory extents unknown", warned). The first version also
+      lent the shared ranges, which the shared-block test caught under gVisor.
+    - `fallocate`'s hole punch answers EOPNOTSUPP, so `zero` and `shared_map` answered `OutOfMemory`; zeros are now
+      written instead (slow path, counted "hole punch refused", warned). With both, all 11 memory tests pass under
+      gVisor on Graviton4 (the mapping-limit test returns at once there: gVisor's limit is 2^31 - 1, past
+      `WCHP_MAPPING_LIMIT_MAX`, default 2^22).
+    - On x86-64 gVisor maps its own `[usertrap]` page at 0x63000 in every process (syscall patching) and refuses
+      to unmap it, so the zygote reports `UnmapRefused` and P is unavailable, as it should be; with
+      `--systrap-disable-syscall-patching` the suites run.
+    - Not ours to fix, recorded in plan 6: the systrap platform kills a process at about its 4,097th thread
+      (`every_index_held_refuses_the_next_thread` fails there); `sched_setaffinity` is accepted but does not pin
+      (`a_runner_whose_cpu_another_program_uses_moves_and_its_thread_follows` fails there); /proc's per-thread
+      `syscall` file is missing (the test-only read of `new_threads_take_turns_on_their_own_pages_and_signal_stacks`
+      fails there); glibc registers no restartable sequences (`the_forking_thread_has_a_registration_to_drop`, a
+      test precondition, fails there). The 20,000-turn stop test passes but takes 369 s against about 2 s on the
+      host (at load 46 it passed 900 s and was stopped); beside it, `stops_sent_to_a_waiting_thread_are_stale`
+      failed once on the Xeon (a stop refused while the other test's stops wait in the queue) and passes alone.
+  - The copy unit (3.5) is the constant `COPY_UNIT`, still one page; measured from 1 to 512 pages (plan 11): in
+    order 20 µs a store at one page against 7.8 at 8 pages, scattered 25 against 36. Kept at one page until the
+    same measurement runs on translated code; 8 pages is the candidate.
+  - Final verdicts (16:55 to 17:00 UTC, scratch w1/run5/final2-arm.log and final2-x86.log, after the last code
+    commit): all 46 tests of the 12 test binaries 3 times with /dev/kvm denied: Xeon 138 of 138 (load 1.3 to 7.6);
+    Graviton4 137 of 138 (load 14 to 20), clippy with warnings denied clean on both. The one failure is a known
+    intermittent one, left failing: `stops_landing_anywhere_never_lose_repeat_or_split_a_turn` ends with "thread 1
+    did not end under stops" (thread 1 told to end while another thread sends it stops back to back, given 1 s);
+    alone it failed 1 of 30 runs on Graviton4 (load 13). Its code is run 3's (nothing this run touches the stub's
+    stop or end paths), so it is older than this run and earlier rounds missed it. Not yet known whether the
+    thread livelocks under the flood or its end is lost; the product sends a stop at most every 100 ms.
+  - Docker's default profile (scratch w1/run5/sbfinal-*.out, before the hole-punch fix, which only gVisor
+    reaches): all 46 tests pass on both machines.
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
+- First: find why a thread told to end under back-to-back stops sometimes does not end within 1 s (run 5's final
+  verdicts; `WCHP_ROUNDS` and the test's own flood reproduce it about once in 30 runs on Graviton4).
+
 - W1, in this order, each tested on both rented machines with /dev/kvm denied: placement's remaining bar items
   (a guest's getppid loop with work between calls within 5% of a free CPU's after its move, and at most one move a
-  second with every CPU contended), which need translated code to be the guest; the host mappings each command creates counted up front so `OutOfMemory` comes before a host refusal
-  (4.2; today a refused command makes the touch answer `OutOfMemory`); the copy unit's measurement (3.5, u = 0
-  now). Hand-written pieces stand in for translated code until the translator's form exists. Then the `Executor`
-  trait with the `with_parts` loop (4.6), the suites, the register-isolation tests and the speed figures.
+  second with every CPU contended), which need translated code to be the guest; the copy unit measured again on
+  translated code (`copy_unit_cost` with real stores), then set. Hand-written pieces stand in for translated code
+  until the translator's form exists. Then the `Executor` trait with the `with_parts` loop (4.6), the suites (also
+  inside Docker's default profile and under gVisor, as run 5's sandbox.sh does), the register-isolation tests and
+  the speed figures.
+- W2's part of W1's bar, form I's bounds-check-bypass test on ARM64 (one per access shape), is not started.
 - The adversarial fork with a sibling writing in a loop meanwhile (plan 13) needs a second thread running during a
   `Cpu` call, which today's kernel and its one-thread `with_parts` loop never do (3.9): built with parallel threads.
 - In this shared worktree a `[[test]]` entry in the manifest must never land before its file exists: a missing
@@ -223,6 +273,11 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
   fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
   lines; the fetched log does not).
+- Since run 5: scratch w1/run5/sandbox-both.sh <tag> runs clippy, then sandbox.sh on both machines: every test
+  binary inside Docker's default profile and under gVisor (downloads runsc 20261109.0 into
+  /work/target/nwvm/gvisor, checked against its sha512), writing <tag>-arm.out and <tag>-x86.out; summary.py <log>
+  prints one line per sandbox and binary. gdiag.sh and gtrace.sh run one binary or test under gVisor with its
+  output or its failing host calls. unit.sh <u...> measures the copy unit (it edits `COPY_UNIT` in the remote copy).
 - The fault-visibility runs: scratch keep-rseq.py and keep-rseq-x86.py patch the remote copy (at
   /work/nwvm-w1 on each machine), then the same test command; the next sync restores the tree.
 
@@ -351,6 +406,11 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Departures from the plan
 
+- W1 run 5: the up-front mapping rule leaves a margin of two splits per command, so at the limit it also refuses a
+  change that would only merge (Linux would make it); the probe reads /proc/sys/vm/max_map_count, the one /proc
+  read (plan 6 says so now). Under gVisor a fork lends the whole guest area, since the host does not say which
+  pages hold data.
+
 - W1 run 4: the runner is whichever thread calls the executor, pinned from its first turn for the executor's
   life (the plan's runner threads come with 4.6's loop); a guest thread's move is a command of its own turn, so a
   turn that moves pays the two mask calls of a turn with commands. A slice's stop waits for the thread to take its
@@ -422,6 +482,8 @@ lacks for another process; rangemap 1.8.0 (MIT OR Apache-2.0) for permissions, p
 range, zerocopy 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT) for a register block as bytes (both already in the
 lock file), rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
 Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
-LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly, wcontainers-abi; for its tests only, fastrand 2.5.0
+LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly (since run 5 also its `errno` feature, for
+ENOSYS), wcontainers-abi; for its tests only, fastrand 2.5.0
 (Apache-2.0 OR MIT). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
-machines.
+machines; gVisor's runsc 20261109.0 (Apache-2.0) and the busybox image (GPL-2.0, run only as a container base) for the
+sandbox runs.

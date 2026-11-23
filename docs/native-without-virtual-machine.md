@@ -931,8 +931,9 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   is simply not needed); W1 and W2 run their suites inside a container started with
   Docker's default profile, and under gVisor's runsc (`runsc do`, systrap platform). Found under gVisor (release
   20261109.0, W1 run 5): `rseq` answers ENOSYS (the zygote then has no registration to drop, 4.1); `lseek`'s
-  `SEEK_DATA` on a memfd answers EINVAL (a fork then lends the whole guest area, a slow path counted "memory extents
-  unknown"); on x86-64 gVisor maps its own `[usertrap]` page at 0x63000, inside the guest area, which it refuses to
+  `SEEK_DATA` on a memfd answers EINVAL (a fork then lends every private page of the guest area, a slow path counted
+  "memory extents unknown"); `fallocate`'s hole punch answers EOPNOTSUPP (zeros are then written, 64 KiB at a time,
+  counted "hole punch refused"); on x86-64 gVisor maps its own `[usertrap]` page at 0x63000, inside the guest area, which it refuses to
   unmap, so the zygote reports `UnmapRefused` and P is unavailable unless runsc runs with
   `--systrap-disable-syscall-patching` (which x86's use of the GS base needs too, 3.10); the systrap platform kills a
   process past about 4,096 threads (measured: SIGKILL at the 4,097th), so under gVisor a guest process holds at most
