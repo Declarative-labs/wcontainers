@@ -5,6 +5,7 @@
 use core::ops::ControlFlow;
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,11 +62,18 @@ const ERROR_NOT_WRITTEN: &str = "standard error not written";
 const TIMER_THREAD: &str = "wcontainers timer";
 const INPUT_THREAD: &str = "wcontainers input";
 
-/// The local system.
-pub struct LocalSystem {
+/// The local system, serving a kernel whose threads run on the executor `E`.
+pub struct LocalSystem<E = ()> {
     state: Mutex<LocalState>,
     /// Set with the stop flag, before the first turn.
     timer: OnceLock<Timer>,
+    /// The memory programs are told the machine has, set when the container is made.
+    pub(crate) machine_memory: OnceLock<u64>,
+    /// Made at the container's first use of each.
+    pub(crate) icmp: OnceLock<Result<wcontainers_icmp_sockets_host::HostIcmpSockets, HostError>>,
+    pub(crate) raw: OnceLock<Result<wcontainers_raw_sockets_host::HostRawSockets, HostError>>,
+    pub(crate) routes: OnceLock<wcontainers_route_resolver_host::HostRouteResolver>,
+    executor: PhantomData<fn() -> E>,
 }
 
 /// What the local system changes as the kernel asks.
@@ -115,6 +123,13 @@ struct Deadline {
 impl LocalSystem {
     /// A system writing the container's standard output and error to these streams.
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
+        Self::serving(output, error)
+    }
+}
+
+impl<E> LocalSystem<E> {
+    /// A system for a kernel on the executor `E`, writing the container's standard output and error to these streams.
+    pub fn serving(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         let state = LocalState {
             started: Instant::now(),
             output,
@@ -135,7 +150,17 @@ impl LocalSystem {
         Self {
             state: Mutex::new(state),
             timer: OnceLock::new(),
+            machine_memory: OnceLock::new(),
+            icmp: OnceLock::new(),
+            raw: OnceLock::new(),
+            routes: OnceLock::new(),
+            executor: PhantomData,
         }
+    }
+
+    /// Sets the memory size in bytes programs are told the machine has, as the container is made; else the size set before.
+    pub fn describe_memory(&self, bytes: u64) -> Result<(), u64> {
+        self.machine_memory.set(bytes)
     }
 
     /// Gives the container's first process `input` as its standard input, as `docker run --interactive`
@@ -176,7 +201,7 @@ impl LocalSystem {
     }
 }
 
-impl LocalSystem {
+impl<E: 'static> LocalSystem<E> {
     /// Takes what arrived: the input, and the network's readiness, none of it while the state is
     /// held. Whether anything did.
     fn deliver(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
@@ -294,7 +319,7 @@ impl LocalState {
         nanoseconds_since(self.started)
     }
 
-    fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
+    pub(crate) fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
         match self
             .warnings
             .iter_mut()
@@ -314,7 +339,7 @@ impl LocalState {
     }
 }
 
-impl Drop for LocalSystem {
+impl<E> Drop for LocalSystem<E> {
     /// Stops the timer thread, and the input's reader once it next waits for room (one blocked
     /// reading is left to end with the process).
     fn drop(&mut self) {
@@ -539,7 +564,7 @@ impl LocalState {
 /// The kernel's calls, each made on the state held for it.
 macro_rules! host_on_state {
     ($host:ty, $this:ident => $state:expr) => {
-        impl wcontainers_clock::Clock for $host {
+        impl<E> wcontainers_clock::Clock for $host {
             fn monotonic_nanoseconds(&self) -> u64 {
                 let $this = self;
                 $state.monotonic_nanoseconds()
@@ -551,7 +576,7 @@ macro_rules! host_on_state {
             }
         }
 
-        impl wcontainers_random_source::RandomSource for $host {
+        impl<E> wcontainers_random_source::RandomSource for $host {
             fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
                 let $this = self;
                 $state.random(into);
@@ -559,14 +584,14 @@ macro_rules! host_on_state {
             }
         }
 
-        impl Host for $host {
+        impl<E> Host for $host {
             fn warn(&self, warning: Warning<'_>) {
                 let $this = self;
                 $state.warn(warning);
             }
         }
 
-        impl StreamTransport for $host {
+        impl<E> StreamTransport for $host {
             type Endpoint = u32;
 
             fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
@@ -585,7 +610,7 @@ macro_rules! host_on_state {
             }
         }
 
-        impl Readiness<u32> for $host {
+        impl<E> Readiness<u32> for $host {
             async fn wait_until_ready(
                 &self,
                 peer: &u32,
@@ -606,18 +631,18 @@ macro_rules! host_on_state {
         }
 
         /// Every task id is free.
-        impl wcontainers_system::TaskIdAllocator for $host {
+        impl<E> wcontainers_system::TaskIdAllocator for $host {
             fn free_task_id(&self, _: wcontainers_kernel_linux::TaskId) {}
         }
 
         /// No hook does anything.
-        impl wcontainers_kernel_linux::System for $host {}
+        impl<E: 'static> wcontainers_kernel_linux::System for $host {}
     };
 }
 
-host_on_state!(LocalSystem, system => system.state());
+host_on_state!(LocalSystem<E>, system => system.state());
 
-impl wcontainers_system::FuseServer for LocalSystem {
+impl<E> wcontainers_system::FuseServer for LocalSystem<E> {
     type Reply = Vec<u8>;
     type Notice = Vec<u8>;
 
@@ -635,7 +660,7 @@ impl wcontainers_system::FuseServer for LocalSystem {
     }
 }
 
-impl wcontainers_system::DomainNameResolver for LocalSystem {
+impl<E> wcontainers_system::DomainNameResolver for LocalSystem<E> {
     type AnswerBytes = Vec<u8>;
 
     async fn resolve_domain(
@@ -647,7 +672,7 @@ impl wcontainers_system::DomainNameResolver for LocalSystem {
     }
 }
 
-impl System for LocalSystem {
+impl<E: 'static> System for LocalSystem<E> {
     /// The local system never ends a run itself.
     type End = core::convert::Infallible;
 
@@ -708,10 +733,10 @@ impl System for LocalSystem {
     }
 
     /// The turn is over, so its deadline is dropped: an idle past it raises nothing.
-    fn stopped<E: Execution>(
+    fn stopped<C: Execution>(
         self: &Arc<Self>,
         _: &mut Kernel,
-        _: &mut E,
+        _: &mut C,
     ) -> ControlFlow<Self::End> {
         self.turn_over();
         ControlFlow::Continue(())

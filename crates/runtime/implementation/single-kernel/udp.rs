@@ -123,7 +123,7 @@ fn destination(route: &RouteSelectors<'_>) -> Result<SocketAddr, HostError> {
     }
 }
 
-impl UdpSockets for LocalSystem {
+impl<E> UdpSockets for LocalSystem<E> {
     type Socket = NetworkHandle;
 
     fn open(
@@ -203,7 +203,7 @@ impl UdpSockets for LocalSystem {
     }
 }
 
-impl<'a> Configurable<NetworkHandle, UdpSocketSetting<'a>> for LocalSystem {
+impl<'a, E> Configurable<NetworkHandle, UdpSocketSetting<'a>> for LocalSystem<E> {
     fn configure(
         &self,
         _socket: &NetworkHandle,

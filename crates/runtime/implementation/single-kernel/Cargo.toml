@@ -25,6 +25,14 @@ wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
+# The executor the kernel this system serves runs its threads on, and the host's ICMP echo sockets, raw sockets and routes.
+wcontainers-executor = { path = "../../../executor", optional = true }
+wcontainers-icmp-sockets = { path = "../../../icmp-sockets", optional = true }
+wcontainers-icmp-sockets-host = { path = "../../../icmp-sockets/implementation/host", optional = true }
+wcontainers-raw-sockets = { path = "../../../raw-sockets", optional = true }
+wcontainers-raw-sockets-host = { path = "../../../raw-sockets/implementation/host", optional = true }
+wcontainers-route-resolver = { path = "../../../route-resolver", optional = true }
+wcontainers-route-resolver-host = { path = "../../../route-resolver/implementation/host", optional = true }
 # What to run: the OCI runtime configuration, and the OCI image types it is made from.
 oci-spec = { version = "0.10.0", default-features = false, features = ["runtime", "image"], optional = true }
 serde_json = { version = "1.0.154", optional = true }
@@ -76,6 +84,13 @@ std = [
     "dep:nix",
     "dep:etherparse",
     "dep:domain",
+    "dep:wcontainers-executor",
+    "dep:wcontainers-icmp-sockets",
+    "dep:wcontainers-icmp-sockets-host",
+    "dep:wcontainers-raw-sockets",
+    "dep:wcontainers-raw-sockets-host",
+    "dep:wcontainers-route-resolver",
+    "dep:wcontainers-route-resolver-host",
 ]
 
 [dev-dependencies]

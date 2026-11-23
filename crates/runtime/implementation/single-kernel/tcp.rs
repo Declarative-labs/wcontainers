@@ -44,7 +44,7 @@ fn unspecified(peer: SocketAddr) -> SocketAddr {
     }
 }
 
-impl TcpConnections for LocalSystem {
+impl<E> TcpConnections for LocalSystem<E> {
     type Connection = NetworkHandle;
     type BoundSocket = Infallible;
 
@@ -213,7 +213,7 @@ impl TcpConnections for LocalSystem {
     }
 }
 
-impl TcpListeners for LocalSystem {
+impl<E> TcpListeners for LocalSystem<E> {
     type Listener = NetworkHandle;
 
     fn listen(
@@ -298,7 +298,7 @@ impl TcpListeners for LocalSystem {
     }
 }
 
-impl Readiness<NetworkHandle> for LocalSystem {
+impl<E> Readiness<NetworkHandle> for LocalSystem<E> {
     async fn wait_until_ready(
         &self,
         connection: &NetworkHandle,
@@ -313,7 +313,7 @@ impl Readiness<NetworkHandle> for LocalSystem {
     }
 }
 
-impl<'a> Configurable<NetworkHandle, TcpSetting<'a>> for LocalSystem {
+impl<'a, E> Configurable<NetworkHandle, TcpSetting<'a>> for LocalSystem<E> {
     fn configure(
         &self,
         _connection: &NetworkHandle,
@@ -323,7 +323,7 @@ impl<'a> Configurable<NetworkHandle, TcpSetting<'a>> for LocalSystem {
     }
 }
 
-impl<'a> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem {
+impl<'a, E> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem<E> {
     fn configure(
         &self,
         _listener: &NetworkHandle,
@@ -333,7 +333,7 @@ impl<'a> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem {
     }
 }
 
-impl NegativeRouteAdvisable<NetworkHandle> for LocalSystem {
+impl<E> NegativeRouteAdvisable<NetworkHandle> for LocalSystem<E> {
     fn give_negative_route_advice(&self, _connection: &NetworkHandle) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }

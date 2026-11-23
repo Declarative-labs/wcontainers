@@ -707,7 +707,10 @@ mod tests {
             "woken by the bytes"
         );
         let mut into = [u8::MIN; 16];
-        assert_eq!(network.tcp_receive(stream, &mut into, false), Ok(b"bytes".len()));
+        assert_eq!(
+            network.tcp_receive(stream, &mut into, false),
+            Ok(b"bytes".len())
+        );
         network.tcp_close(stream);
         network.tcp_close(listener);
     }

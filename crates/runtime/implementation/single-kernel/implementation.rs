@@ -24,6 +24,8 @@ mod arrivals;
 #[cfg(feature = "std")]
 mod container;
 #[cfg(feature = "std")]
+mod described;
+#[cfg(feature = "std")]
 mod errno;
 #[cfg(feature = "std")]
 pub mod files;
@@ -46,6 +48,8 @@ pub mod udp;
 
 #[cfg(feature = "std")]
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeConfig};
+#[cfg(feature = "std")]
+pub use described::LocalKernel;
 #[cfg(feature = "std")]
 pub use image::Image;
 #[cfg(feature = "std")]
