@@ -32,7 +32,6 @@ use etherparse::{
     icmpv4, icmpv6, tcp_option,
 };
 use linux_raw_sys::if_tun;
-use linux_raw_sys::ioctl::SIOCSIFFLAGS;
 use linux_raw_sys::net::net_device_flags;
 use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
@@ -5644,26 +5643,7 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
         scope
             .spawn(|| {
                 own_network_namespace();
-                let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
-                    .expect("a socket to bring the loopback up with");
-                // SAFETY: ifreq is plain data.
-                let mut request: linux_raw_sys::net::ifreq = unsafe { core::mem::zeroed() };
-                // SAFETY: the name is the union's only member.
-                let name = unsafe { &mut request.ifr_ifrn.ifrn_name };
-                for (to, from) in name.iter_mut().zip(LOOPBACK_NAME.bytes()) {
-                    *to = from as linux_raw_sys::ctypes::c_char;
-                }
-                request.ifr_ifru.ifru_flags = net_device_flags::IFF_UP as core::ffi::c_short;
-                // SAFETY: SIOCSIFFLAGS takes an ifreq that names the device and gives its flags.
-                unsafe {
-                    rustix::ioctl::ioctl(
-                        &socket,
-                        rustix::ioctl::Setter::<{ SIOCSIFFLAGS as rustix::ioctl::Opcode }, _>::new(
-                            request,
-                        ),
-                    )
-                }
-                .expect("bring the loopback up");
+                bring_loopback_up();
                 std::fs::write(TCP_ECN, tcp_ecn).expect("write tcp_ecn");
                 body()
             })
@@ -5675,9 +5655,53 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
 /// Moves the calling thread into a network namespace of its own, as root.
 #[cfg(target_os = "linux")]
 fn own_network_namespace() {
-    // SAFETY: only the network namespace is unshared, so the thread shares its descriptors as before.
-    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a network namespace of the check's own, as root");
+}
+
+/// Brings the calling thread's loopback up through the kernel's routing socket, as `ip link set lo up` does.
+#[cfg(target_os = "linux")]
+fn bring_loopback_up() {
+    use netlink_packet_core::{
+        NLM_F_ACK, NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload,
+    };
+    use netlink_packet_route::RouteNetlinkMessage;
+    use netlink_packet_route::link::{LinkFlags, LinkMessage};
+    let mut link = LinkMessage::default();
+    link.header.index = nix::net::if_::if_nametoindex(LOOPBACK_NAME).expect("the loopback's index");
+    link.header.flags = LinkFlags::Up;
+    link.header.change_mask = LinkFlags::Up;
+    let mut header = NetlinkHeader::default();
+    header.flags = NLM_F_REQUEST | NLM_F_ACK;
+    let mut request = NetlinkMessage::new(
+        header,
+        NetlinkPayload::from(RouteNetlinkMessage::SetLink(link)),
+    );
+    request.finalize();
+    let mut bytes = vec![u8::MIN; request.buffer_len()];
+    request.serialize(&mut bytes);
+    let socket =
+        netlink_sys::Socket::new(netlink_sys::protocols::NETLINK_ROUTE).expect("a routing socket");
+    // The kernel's port number and no multicast groups (netlink(7)).
+    socket
+        .connect(&netlink_sys::SocketAddr::new(u32::MIN, u32::MIN))
+        .expect("connect the routing socket to the kernel");
+    socket
+        .send(&bytes, i32::from(u8::MIN))
+        .expect("ask for the loopback up");
+    let mut reply = Vec::with_capacity(LOOPBACK_ANSWER_ROOM);
+    socket
+        .recv(&mut reply, i32::from(u8::MIN))
+        .expect("the kernel's answer");
+    match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&reply).map(|answer| answer.payload) {
+        Ok(NetlinkPayload::Error(error)) if error.code.is_none() => {}
+        other => panic!("bring the loopback up: {other:?}"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bring_loopback_up() {
+    panic!("a check's own loopback is in a network namespace, which is Linux's");
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -5689,6 +5713,9 @@ fn own_network_namespace() {
 ///
 /// https://man7.org/linux/man-pages/man7/network_namespaces.7.html#:~:text=loopback
 const LOOPBACK_NAME: &str = "lo";
+
+/// Room for the kernel's answer to a link change: an acknowledgement, or an error that quotes the request.
+const LOOPBACK_ANSWER_ROOM: usize = 4096;
 /// The `tcp_ecn` of the namespace of the thread that writes it.
 ///
 /// https://docs.kernel.org/networking/ip-sysctl.html#:~:text=tcp_ecn%20%2D%20INTEGER
