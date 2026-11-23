@@ -39,9 +39,12 @@ safe library does it, what removing it would cost.
    or keep glow natively as an exception. Asked: which?
 5. Test windows and screen reading (gpu-webgpu tests/host 11): the present test makes a real
    window (Win32 or AppKit) and reads what the compositor shows (PrintWindow, DwmFlush;
-   ScreenCaptureKit). winit could make the window safely and hand wgpu a safe surface, but reading
-   the shown pixels needs Win32 or ScreenCaptureKit calls; a capture crate (xcap) was not evaluated
-   for an exact sRGB capture. Asked together with 1.
+   ScreenCaptureKit). winit (0.30.13, Apache-2.0, rust-windowing, about 68.6 million downloads)
+   could make the window and hand wgpu a safe surface; reading the shown pixels would need a
+   capture crate such as xcap (0.9.10, Apache-2.0, one maintainer, about 3.1 million downloads),
+   not tried: whether it captures in exact sRGB on macOS and waits for the compositor (DwmFlush)
+   is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
+   reference crates' Win32 calls, or these two imports?
 
 ## Done
 
@@ -79,9 +82,44 @@ safe library does it, what removing it would cost.
   differ (run 52: 166; feature answers do not touch mapped memory, other commits since moved it);
   antialiased lines 0 of 4096 beyond 63, largest 38, as run 52. Fence round trip (not alone): ours
   first 152 us, mean 17 us, 99th percentile 19 us; real mean 1 us (run 52 alone: ours mean 17 us).
-- Not rerun: Wine's and vkd3d's test files, scenes and real programs (bgfx, Godot) through the
-  library. The independent check should run them; bgfx and Godot upload every frame, so their
-  times show the extra pass.
+
+## Before and after the cells (run 2, 2026-11-22 evening, RTX 3080, desktop shared)
+
+Two scratch clones of `agents` at fc549b36: gu1-after as it is, gu1-before with dde02576 (the
+cells) reverted, nothing else different; each built on the desktop in its own folder; the rig's
+comparison patch (`$worse` line of desktop/wine-run.ps1) applied in both, uncommitted. One command
+per step: scratch bin/verify.sh `<before|after> <tag> <steps>` (programs, tests, files, own,
+runner, scenes); bin/chain1.sh and chain2.sh ran them. Logs in scratch logs/<variant>-<tag>-*.
+- Real programs, three rounds interleaved before, after (logs/*-r1..r3-programs.log, frames in
+  *-frames/): every frame of ours after is byte-identical to ours before for Godot's 2D and 3D
+  platformers and Microsoft's two samples; bgfx 01-cubes and 38-bloom identical outside the
+  overlay's timing text (0,208,320,64, the rectangle the comparison ignores; scratch
+  bin/pngdiff.py, 0 pixels differ). Against real Direct3D 12 the same as run 52: the 2D platformer
+  and both samples equal, bgfx within its allowance, the 3D platformer the same one pixel (921,317,
+  difference 48).
+- Times, whole run of 120 frames in seconds, desktop CPU load 1 % to 53 % at the runs' starts
+  and ends (Win32_Processor LoadPercentage),
+  other tracks' jobs running beside: Godot 3D before 53.4 (cold shader caches), 9.7, 9.7; after
+  9.8, 10.1, 9.8. Godot 2D before 5.4, 5.1, 4.4; after 4.9, 4.2, 4.0. bgfx 01-cubes 2.6 in all six.
+  bgfx 38-bloom before 2.6, 2.5, 2.5; after 2.6, 2.6, 2.6. Hello triangle and constant buffers 2.5
+  to 2.6 in all. The whole-run time includes start-up; the forwarder records no per-frame times.
+  A difference of the size the extra copy predicts (about 0.1 ms a frame) is below this noise.
+- Tests (after-c-tests.log): 55 pass in binaries of 20, 1, 18, 13, 3 and 0; declared.rs fails at
+  line 454, and fails the same way at line 454 in the before clone (before-declared.log), so it is
+  not this change.
+- Own program (after-c-own.log): draw 0 of 4096 beyond 1; 0 of 35 cases differ; features 157 of
+  872, outputs 22 of 110 and answers 2 of 40 differ, as run 1; antialiased lines 0 of 4096 beyond
+  63, largest 38. Fence round trip ours mean 17 us, 99th percentile 21 us; real mean 1 us.
+- Test files (after-c-files.log, logs in after-c-files-logs/): 189 of 198, the same 9 failures as
+  the Direct3D 12 track's run 52 (its status file's "Test files" list).
+- Shader runner (after-c-runner.log): 218 of 302 (run 52: 214; other tracks' converter work
+  since). Scenes (after-c-scenes.log): 110 pass, 5 fail (msaa-alpha_to_coverage, raster-fill,
+  samplers-filters, tessellation, topology), 1 absent (samplers-reduction). The before clone gives
+  the same: runner 218 of 302 with the same failing files (before-c-runner.log), and every scene
+  line the same, pixel counts included (before-c-scenes.log).
+- So the change of run 1 changed no result and no picture; its time cost is not measurable here.
+- The desktop's gu1-* folders (src, target, out; 16 GB) were deleted after the runs; the Mac's
+  scratch clones (no build output) and logs stay as evidence.
 
 ## Doing COM and FFI safely: what compiles under `forbid(unsafe_code)` (for the other tracks)
 
@@ -109,7 +147,13 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
 2. If ruling 2 allows a separate package: move examples/directx into it (the rig builds it with
    `cargo build -p wcontainers-direct3d-12 --examples`; tools/graphics-rig must follow), then the
    front package inherits the workspace lints once examples/check (boundary 1) is settled too.
-3. gpu-webgl: if ruling 4 says web-sys, rewrite its calls on web-sys behind one module.
+3. gpu-webgl: if ruling 4 says web-sys, rewrite its calls on web-sys behind one module. Note the
+   Direct3D 11 track builds wcontainers-directx with feature `webgl`, which draws through this
+   back end natively on ANGLE (its Wine tests and programs), so web-sys alone ends that route.
+4. If ruling 5 allows winit and a capture crate: tests/host of gpu-webgpu on them, checked against
+   today's PrintWindow and ScreenCaptureKit reading.
+5. Removing the extra upload pass needs a fast path in crates/wcontainers-gpu (the front filling
+   the back end's staging bytes, wgpu's `Queue::write_buffer_with`); not this track's crate.
 
 ## How to run
 
@@ -123,6 +167,12 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
 - Tests: `tools/graphics-rig/gpu-job --build "set CARGO_INCREMENTAL=0&& cargo test -j 3 -p
   wcontainers-direct3d-12 --no-run" -- "cargo test -j 3 --no-fail-fast -p wcontainers-direct3d-12"`.
 - Counting: `grep -rcw unsafe crates/<crate> --include='*.rs'`.
+- Before and after a change, away from the shared tree: clone `agents` into scratch twice
+  (`git clone --shared`), branch gu1-before and gu1-after (the rig names the desktop folders after
+  the branch), revert the change in one, build each with `tools/graphics-rig/remote "set
+  CARGO_INCREMENTAL=0&& git submodule update -q --init --recursive && cargo build -j 3 -p
+  wcontainers-direct3d-12 --examples && cargo build -j 3 -p wcontainers-graphics-test -p
+  wcontainers-graphics-test-forward"` one after the other (3 jobs), then scratch bin/verify.sh.
 - Logs in scratch graphics-no-unsafe/logs.
 
 ## Measurements
