@@ -5,7 +5,8 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
-G9 run 16 (2026-11-22, the fourth run of this batch): KHR-GL33 now runs whole. On the bar's
+G9 run 16 (2026-11-22, the fourth run of this batch): KHR-GL33 now runs whole, 95.98% at
+37d0d53e. On the bar's
 measure (KHR-GLES32 counted as run and failed) the floor is passed for the first time, from
 whole runs at two different commits (below); a whole run of every list at one commit is next.
 
@@ -39,6 +40,13 @@ Done this run:
   operations made 2D by Mesa's `nir_lower_tex` `lower_1d` (`Nir::textures_1d_as_2d`).
   1D images are unchanged (not seen yet).
 
+KHR-GL33 WHOLE again at 37d0d53e (desktop, RTX 3080, one GPU job, 8 glcts at once, other tracks'
+jobs queued beside), 20:11:07 to 20:20:55 (Pacific): 9,886 cases; Pass 8,988, Fail 147, Crash
+229, Skip 522: 8,988 of 9,364 run, 95.98%. texture_swizzle went from 130 crashes and 55 failures
+to 10 crashes and 55 failures (not yet read); texture_lod_basic passes; texture_size_promotion
+fails instead of crashing (not yet read). Results `results/g9r16/gl33-main-2/`, log
+`logs/g9r16-gl33-full-2.log`.
+
 The table, KHR-GL33 WHOLE at 766c8820's scripts and 7aa5a574's driver (desktop, RTX 3080, one GPU
 job, 8 glcts at once, other tracks' jobs queued beside), 19:40:00 to 19:52:35 (Pacific):
 - KHR-GL33: 9,886 cases; Pass 8,867, Fail 146, Crash 351, Skip 522: 8,867 of 9,364 run, 94.69%.
@@ -56,8 +64,8 @@ job, 8 glcts at once, other tracks' jobs queued beside), 19:40:00 to 19:52:35 (P
   loss, cause not yet read); KHR-GLES31 core.texture_buffer 16, Pass 8, Crash 8 ("not taken: a
   texel buffer", 16 refusals: not yet read); dEQP-GLES3 vertex_arrays 1,005, all Pass.
 - The bar's measure, from whole runs: the six ES lists of run 15 (87,275 of 88,591, at 38ea343f)
-  with KHR-GL33 above, KHR-GLES32's 1,405 counted as run and failed: 96,142 of 99,360, 96.76%,
-  above the 92.9% floor. Not yet the bar: the lists ran at two commits, KHR-GL33's failures do not
+  with KHR-GL33 at 37d0d53e (8,988 of 9,364), KHR-GLES32's 1,405 counted as run and failed:
+  96,263 of 99,360, 96.88%, above the 92.9% floor (with the first KHR-GL33 run, 96.76%). Not yet the bar: the lists ran at two commits, KHR-GL33's failures do not
   all have reasons, NotSupported is not yet checked group by group, and bgfx's and Godot's
   renderers and the independent check are not done. G9's second part (4.6, KHR-GL46 at 98.6%)
   has not started: no 4.x context.
