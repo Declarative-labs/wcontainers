@@ -1,0 +1,38 @@
+[package]
+name = "wcontainers-webassembly-engine-wasmtime"
+description = "The WebAssembly engine interface run by wasmtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[[test]]
+name = "beyond_the_suite"
+path = "beyond_the_suite.rs"
+
+[[bench]]
+name = "engine"
+path = "benchmark.rs"
+harness = false
+
+[dependencies]
+wcontainers-webassembly-engine = { path = "../.." }
+wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
+# Writes the module that copies between a shared memory and one the host can read.
+wasm-encoder = "0.263.0"
+thiserror = { version = "2.0.21", default-features = false }
+
+[dev-dependencies]
+wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
