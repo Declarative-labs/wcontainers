@@ -267,12 +267,64 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     load speculatively at all here, so the test cannot show their cut. The harness had to defeat the branch
     predictor learning the original proof's fixed pattern, and the prefetchers (one line timed per round, a new
     secret each round).
-- Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
+- W1, run 7 (2026-11-23), ARM64 only (the x86-64 machine did not answer SSH all run, "not set up", from 17:50 UTC;
+  the crate type-checks for x86-64 Linux on the Mac against musl, where only glibc's `tgkill` is missing):
+  - Nothing the translator's form or the stop crate needed had landed (no commit to the translator, ARM64, the VM
+    inside or its status since run 6), so this run built the stub's side of the floor and the code area, which
+    need neither, with pieces the tests write in the native output's own encodings (wcontainers-arm64's encoder, a
+    dev-dependency) standing in for translated code (plan 3.3 and 3.4, "as built").
+  - The code area (code.rs, layout.rs): one memfd per stub, [2^45 + 128 KiB, 2^45 + 128 MiB) in the stub, so every
+    piece reaches the floor's entries with one `bl`; the embedder writes through its own mapping and then cleans and
+    invalidates by `CTR_EL0`'s lines where IDC and DIC ask (the probe's `code_lines`), each ended by `dsb ish`.
+    `Command::MapCode` maps it in the stub `PROT_EXEC` alone, received like a shared block; the filter allows that
+    one call exactly (address, length, protection, flags, fd 0, offset 0). The view counts its one mapping.
+  - The enter and the floor (zygote/aarch64.rs): `Resume::Enter` loads every register of the thread's block (now the
+    hardware's state: general, sp, NZCV, v0 to v31, FPSR, FPCR, `TPIDR_EL0`) but x23 (the code's address) and x28 (the
+    register page, the native output's withheld registers), refusing an address outside the code area (`BadTurn`).
+    64 floor entries at the start of the zygote's code (`FLOOR_ENTRIES`) save every register and publish `Called`
+    with the entry's number. A stop or a fault (SIGSEGV, SIGBUS and now SIGILL and SIGTRAP, all on the fault handler)
+    in the code area saves every register from the signal frame (`fpsimd_context` checked by tag and size; a page
+    in x28 that is not a register page ends the stub as "stub fault") and publishes `Interrupted` with the host pc,
+    or `Fault`. A stop in the enter's loads ends the turn `Stopped` with the block untouched; a stop in an entry or
+    the save finishes it from the frame (counted in the register page, `STOPS_IN_CALL`).
+  - tests/floor.rs (6 and one measurement; seeded, `WCHP_SEED`, `WCHP_TURNS`, `WCHP_ROUNDS`, `WCHP_STOP_PAUSE`):
+    pieces that change every register (32 vector loads from the thread's own data page, every general register but
+    x1, x23 and x28 incremented, sp moved, NZCV, FPSR, FPCR and `TPIDR_EL0` set), then call, spin or fault; the
+    saved block must equal a model of the pieces. 1,000 calls of each kind and the last entry from the code area's
+    far end; 100 rounds of a stop and of four faults (unmapped load and store, `udf` as SIGILL `ILL_ILLOPC`, `brk`
+    as SIGTRAP `TRAP_BRKPT`) with every register; the code area neither readable nor writable from the code
+    (`SEGV_ACCERR`); an enter outside the code area refused. Register isolation (brief-native.md's last section):
+    thread 0 holds its values in the hardware when it makes 7 threads, each of which then reads zeros at its first
+    instruction; then 4,000 seeded rounds over the 8 threads, each going on from the registers it last saved, each
+    reading back exactly its own. A stop flood (20,000 rounds of a piece 64 times longer, re-entered at every stop
+    with the registers saved there, as a resumed thread would be): 10,968,293 stops sent, 37,183 landed in the code
+    at every kind of instruction and resumed exactly, 37,615 in the enter, 2,077 in an entry or the save, and every
+    call's block equal to the model. tests/stub.rs: six forged code-area maps (readable, writable, partial, another
+    offset, execute-only in the guest area or past the code area) each kill the stub by SIGSYS.
+  - The tests see the faults (scratch w1/run7/mutate.sh, mutate2.sh, outputs mutate2-arm.out, mutate3-arm.out): each
+    of nine breaks of the remote copy fails at least one test: v0 and v1 not loaded; a stop in the save not
+    finished from the frame; the page taken from x28 after the save; the entry's number taken from the block
+    during the stores; a stop in the code taken for one in the stub; the frame's last vector, or its FPSR and FPCR,
+    not saved; v30 and v31 not saved at a call; the flags not loaded. Before the pieces changed every register
+    three of these went unseen (the block already held the values), hence the scramble pieces.
+  - Measured (Graviton4, CPU 41, load 1.3 to 1.5, scratch w1/run7/callrt-arm.out, 3 runs of 21 alternating batches of
+    10,000): a call from code, with every register loaded and saved, 2,777 to 2,782 ns median against a turn without
+    code 2,700 to 2,742 ns: 35 to 80 ns more per kernel entry.
+  - Verdicts (17:53 UTC, scratch w1/run7/floor-arm.log): all 13 test binaries 3 times with /dev/kvm denied on
+    Graviton4, 156 of 156 passed (load 2.9 to 6.6), clippy with warnings denied clean. Not run on the Xeon (down).
+- Not built yet (W1's bar is not met): everything that runs translated guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
+- The x86-64 machine: run scripts w1/run7/both.sh there once it answers (run 7's changes reach x86 only through the
+  shared files; its stub answers `Enter` as `BadTurn`, its floor is W3's).
+- When the translator's `HostProcess` form lands: match the stand-ins to it (x28's page is the stub's register
+  page and the block the hardware's state here; the translator's `RegisterPage` and its saved link must sit where
+  x28 points, and its call codes must be the entries' numbers, 64 today), then resolution through `stop`, the slot
+  table's page-by-page mapping (3.1, a command the filter allows in [2^46, 2^47)), and `Cpu::registers` from the
+  resolved guest state instead of the block.
 - W1, in this order, each tested on both rented machines with /dev/kvm denied: placement's remaining bar items
   (a guest's getppid loop with work between calls within 5% of a free CPU's after its move, and at most one move a
   second with every CPU contended), which need translated code to be the guest; the copy unit measured again on
@@ -304,6 +356,8 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - Since run 4: scratch w1/run4/both.sh <tag> runs clippy and nokvm.sh's three rounds on both machines at once and
   fetches each job's own log as <tag>-arm.log and <tag>-x86.log, printing the counts (the streamed output can miss
   lines; the fetched log does not).
+- Since run 7: scratch w1/run7/both.sh <tag> is run 6's writing into run7; mutate.sh (sent inline through `arm-run`)
+  breaks the remote copy's floor nine ways and runs tests/floor.rs after each, each of which must fail.
 - Since run 6: scratch w1/run6/both.sh and sandbox-both.sh are run 4 and run 5's, writing into run6; flood.sh and repro.sh rerun the stop flood with either signal ($PIN to pin it), spec.sh runs specarm.c (form I's speculation, `specarm <rounds> <seed> [gadget]`).
 - Since run 5: scratch w1/run5/sandbox-both.sh <tag> runs clippy, then sandbox.sh on both machines: every test
   binary inside Docker's default profile and under gVisor (downloads runsc 20261109.0 into
@@ -438,6 +492,11 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Departures from the plan
 
+- W1 run 7: the code area is mapped by a command after the stub's start (received like a shared block), not at its
+  start, so a stub that never runs code maps none; it is execute-only, one per stub, just under 128 MiB, beside the
+  zygote's code where the floor's entries are. The register block in the register page is the hardware's state
+  (x23 and x28 the floor's), not the guest's, so the kernel's side will read guest registers through resolution.
+
 - W1 run 6: P's stop is `SIGUSR1`, a standard signal, not the kernel's first real-time signal, so stops coalesce
   (plan 3.6 and 3.7 say so now). Form I's speculation test was run ahead of W2 as a host program of I's own
   sequences, since the brief makes it part of W1's bar (plan 13 lists it now).
@@ -486,8 +545,11 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 26 in the library (24
-build on ARM64, 22 on x86-64), 1 in its tests:
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 30 in the library (28
+build on ARM64, 25 on x86-64), 1 in its tests:
+- code.rs (run 7): the code area's `mmap` where the host chooses and its `munmap`; the embedder's write into it (a
+  slice of its own mapping, which only it writes and a stub only runs); cache maintenance by address and its
+  barriers (`dc cvau`, `ic ivau`, `dsb ish`; no crate wraps them), ARM64 only.
 - stub.rs: glibc's `tgkill` for the stop (rustix's `tkill` is unsafe too and reaches any thread of the host; nix has
   none for one thread of another process).
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
@@ -505,11 +567,16 @@ build on ARM64, 22 on x86-64), 1 in its tests:
 - The stub's routine that receives a shared block's memfd and maps it is in the same assembly (no new use); it
   reads the control message the host kernel wrote on its own stack, checks its length, level and type, and maps
   only what the filter allows.
+- The floor's entries, its save and the enter (run 7) are in the same assembly (no new use); the save from a signal
+  frame reads the frame's general registers and its `fpsimd_context` (tag and size checked) on the thread's own
+  signal stack, and writes them only to the register page that x28 names after checking it is one.
 - The stub's handlers live in the zygote's assembly (no new use): they read the interrupted pc, and for a fault the
   signal's code and address, from the frame on the thread's own signal stack, which a guest thread of the same stub
   could write; that reading only chooses among our own targets or is reported to the kernel as the guest's fault.
 Constants no crate defines, named with their source: glibc's rseq signatures (`RSEQ_SIG`), Linux's
-`RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields.
+`RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields, Linux's `struct fpsimd_context`
+and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs the `msr` encodings of NZCV,
+FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
 
@@ -520,6 +587,6 @@ lock file), rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), 
 Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
 LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly (since run 5 also its `errno` feature, for
 ENOSYS), wcontainers-abi; for its tests only, fastrand 2.5.0
-(Apache-2.0 OR MIT). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
+(Apache-2.0 OR MIT) and, on ARM64 since run 7, wcontainers-arm64 (this workspace's, for the floor test's pieces). All were already in the lock file. Measurement tools only, never dependencies: gcc 13.3 and clang 21 on the rented
 machines; gVisor's runsc 20261109.0 (Apache-2.0) and the busybox image (GPL-2.0, run only as a container base) for the
 sandbox runs.
