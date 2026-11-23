@@ -26,8 +26,8 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::core::Interface;
 
-/// The formats WGSL has storage views of.
-const FORMATS: [Format; 40] = [
+/// The formats WGSL has storage views of, and `A8Unorm`, which the back ends hold as `rgba8unorm`.
+const FORMATS: [Format; 41] = [
     Format::R8Unorm,
     Format::R8Snorm,
     Format::R8Uint,
@@ -68,6 +68,7 @@ const FORMATS: [Format; 40] = [
     Format::Rgba32Uint,
     Format::Rgba32Sint,
     Format::Rgba32Float,
+    Format::A8Unorm,
 ];
 
 /// Float clear values, from which each case picks four.

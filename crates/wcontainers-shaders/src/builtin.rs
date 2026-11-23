@@ -55,8 +55,7 @@ pub fn pixel_program_for_variant(variant: &VariantKey) -> Result<Converted, Conv
         reflection,
     })
 }
-use crate::variant::pull::{Kind, layout};
-use crate::variant::texel::vertex_format;
+use crate::variant::pull::Kind;
 
 /// The clear program's parameters in set 0: a uniform buffer of [`CLEAR_PARAMS_BYTES`], which
 /// [`clear_params`] gives.
@@ -83,13 +82,14 @@ struct ClearBlock {
 pub const CLEAR_PARAMS_BYTES: usize = core::mem::size_of::<ClearBlock>();
 
 /// The program clearing storage views of `format` and `dimension` (`D2`, `D2Array` or `D3`; one
-/// dimensional views are 2D views of one row). Refused by name: formats with no storage form
-/// (`StorageFormatAbsent`) and cube dimensions (`ClearDimension`: their storage views are 2D arrays).
+/// dimensional views are 2D views of one row; `A8Unorm` views as the back ends hold them,
+/// `rgba8unorm`). Refused by name: formats with no storage form (`StorageFormatAbsent`) and cube
+/// dimensions (`ClearDimension`: their storage views are 2D arrays).
 pub fn storage_clear(
     format: Format,
     dimension: ViewDimension,
 ) -> Result<ShaderModule, ConvertError> {
-    let storage = crate::lower::storage_format(format).ok_or(ConvertError::Unsupported(
+    let storage = crate::lower::storage_form(format).ok_or(ConvertError::Unsupported(
         crate::refusal::STORAGE_FORMAT_ABSENT,
     ))?;
     // WGSL's name of a storage format is naga's variant name in lower case.
@@ -169,25 +169,32 @@ pub fn clear_groups(origin: [u32; CLEAR_AXES], end: [u32; CLEAR_AXES]) -> [u32; 
 /// R11G11B10_FLOAT as floats, measured). Refused by name where the store cannot give the result, so the front clears otherwise:
 /// a float clear of an integer format (`FloatClearOfInteger`; Direct3D 11 drops the call), the
 /// most negative code of a signed normalised component (`SnormMostNegative`: a store gives -1.0 the
-/// code one above it), and formats with no storage form (`StorageFormatAbsent`).
+/// code one above it), and formats with no storage form (`StorageFormatAbsent`). A format whose
+/// first component is not red (`A8Unorm`) takes the values of its channels and stores zeros in the
+/// others.
 pub fn storage_clear_value(
     format: Format,
     values: [u32; CLEAR_COMPONENTS],
     float: bool,
 ) -> Result<[u32; CLEAR_COMPONENTS], ConvertError> {
     let absent = ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_ABSENT);
-    if crate::lower::storage_format(format).is_none() {
+    if crate::lower::storage_form(format).is_none() {
         return Err(absent);
     }
-    let (kind, components, _) = layout(vertex_format(format).ok_or(absent)?);
+    let (kind, components, _, first) =
+        crate::variant::texel::TexelBuffer::layout(format).map_err(|_| absent)?;
+    let first = first as usize;
     if float {
         return match kind {
             Kind::Uint | Kind::Sint => Err(ConvertError::Unsupported(
                 crate::refusal::FLOAT_CLEAR_OF_INTEGER,
             )),
             // Denormal floats as zeros of their sign, as Direct3D's float arithmetic takes them.
-            _ => Ok(values.map(|v| {
-                if v & crate::build::F32_EXPONENT_MASK == 0 {
+            _ => Ok(core::array::from_fn(|i| {
+                let v = values[i];
+                if i < first {
+                    0
+                } else if v & crate::build::F32_EXPONENT_MASK == 0 {
                     v & crate::build::F32_SIGN_MASK
                 } else {
                     v
@@ -196,7 +203,10 @@ pub fn storage_clear_value(
         };
     }
     let mut out = [0; CLEAR_COMPONENTS];
-    for (o, (&v, &(_, _, bits))) in out.iter_mut().zip(values.iter().zip(&components)) {
+    for (o, (&v, &(_, _, bits))) in out[first..]
+        .iter_mut()
+        .zip(values[first..].iter().zip(&components))
+    {
         let low = if bits == u32::BITS {
             v
         } else {

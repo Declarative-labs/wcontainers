@@ -53,8 +53,8 @@ fn every_storage_format_and_dimension_gives_a_clear_program() {
             )),
         );
     }
-    // The 40 formats WGSL has a storage form of, three dimensions each.
-    assert_eq!(made, 120);
+    // The 40 formats WGSL has a storage form of and `A8Unorm`, three dimensions each.
+    assert_eq!(made, 123);
 }
 
 #[test]
@@ -129,6 +129,11 @@ fn integer_clears_store_each_components_own_bits() {
         v(Format::R32Float, [0x7fc0_1234, 0, 0, 0], false),
         Ok([0x7fc0_1234, 0, 0, 0])
     );
+    // `A8Unorm`: its one code from the alpha value, zeros in the channels it lacks.
+    assert_eq!(
+        v(Format::A8Unorm, [7, 9, 11, 0x1_0033], false),
+        Ok([0, 0, 0, ((51.0f64 / 255.0) as f32).to_bits()])
+    );
 }
 
 #[test]
@@ -142,6 +147,10 @@ fn float_clears_pass_the_floats_and_refuse_integer_formats() {
     ] {
         assert_eq!(storage_clear_value(f, values, true), Ok(values));
     }
+    assert_eq!(
+        storage_clear_value(Format::A8Unorm, values, true),
+        Ok([0, 0, 0, values[3]])
+    );
     // Denormals become zeros of their sign.
     let denormal = [1e-40f32, -1e-40, 2e-38, 0.0].map(f32::to_bits);
     assert_eq!(
