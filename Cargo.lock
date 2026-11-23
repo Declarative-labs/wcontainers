@@ -5094,6 +5094,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-clock",
  "wcontainers-executor-arm64-stop",
+ "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
  "wcontainers-kernel-linux",
