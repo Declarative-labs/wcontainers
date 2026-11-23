@@ -19,6 +19,9 @@ pub struct RegisterArea {
     /// The guest's values of the registers standing in for withheld ones around one instruction, in the order
     /// the stand-ins are taken.
     pub stand_ins: [u64; WITHHELD],
+    /// The guest address of the last x87 instruction that is not a control one (FIP), which the hardware's
+    /// never holds.
+    pub x87_ip: u64,
 }
 
 /// The words of the thread area's second page, which only the way writes: read-only to guest code.
@@ -38,6 +41,8 @@ pub const GUEST_GS_BASE: usize = core::mem::offset_of!(RegisterArea, gs_base);
 pub const WITHHELD_VALUES: usize = core::mem::offset_of!(RegisterArea, withheld);
 /// The guest value of the k-th stand-in is at `STAND_IN_VALUES + 8 * k`.
 pub const STAND_IN_VALUES: usize = core::mem::offset_of!(RegisterArea, stand_ins);
+/// The guest's FIP, as an offset from the thread area's segment base.
+pub const X87_IP: usize = core::mem::offset_of!(RegisterArea, x87_ip);
 /// The fixed part's offset from the segment base.
 pub const FIXED: usize = PAGE_SIZE as usize;
 /// The inside's routine for call code k is at `ENTRIES + 8 * k`.

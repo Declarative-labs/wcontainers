@@ -77,7 +77,18 @@ fn translate(code: &[u8], address: u64, way: Way, exact: bool) -> Option<HostCod
 }
 
 /// Checks one piece against its own position map and the guest code it came from, giving what was broken.
-fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way) -> Option<String> {
+/// A string instruction with a repeat prefix, which the inside runs when the count is kept.
+fn repeated_string(i: &Iced) -> bool {
+    let string = (0..i.op_count()).any(|n| {
+        matches!(
+            i.op_kind(n),
+            OpKind::MemorySegRSI | OpKind::MemorySegESI | OpKind::MemoryESRDI | OpKind::MemoryESEDI
+        )
+    });
+    string && (i.has_rep_prefix() || i.has_repne_prefix())
+}
+
+fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -> Option<String> {
     let decoded = host(&piece.bytes);
     let starts: std::collections::BTreeMap<usize, Iced> = decoded.iter().copied().collect();
     let at = |offset: u32| starts.get(&(offset as usize));
@@ -124,7 +135,7 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way) -> Option<Stri
         let Some((i, length)) = guest.get(offset..).and_then(decode) else {
             continue;
         };
-        if X86_64::route(&way, &i, &target()) != Route::Copy {
+        if X86_64::route(&way, &i, &target()) != Route::Copy || exact && repeated_string(&i.iced) {
             continue;
         }
         let end = piece.spans[k + 1].start as usize;
@@ -210,7 +221,7 @@ fn pieces_decode_and_match_their_maps() {
                 piece.finish();
                 pieces += 1;
                 instructions += piece.spans.len() as u64;
-                if let Some(what) = broken(&piece, &guest, AT, way) {
+                if let Some(what) = broken(&piece, &guest, AT, way, exact) {
                     panic!(
                         "case {case} of seed {seed:#x} ({way:?}, count {exact}): {what}\nguest \
                          {guest:02x?}\n{}",
@@ -398,4 +409,44 @@ fn the_count_is_a_lea() {
     assert_eq!(code[0].mnemonic(), Mnemonic::Lea);
     assert_eq!(code[0].op0_register(), COUNT);
     assert_eq!(code[0].op_kind(1), OpKind::Memory);
+}
+
+/// A copied x87 instruction stores its guest address as the guest's FIP, a fix-up covering the store.
+#[test]
+fn x87_arithmetic_stores_the_guest_pointer() {
+    use wcontainers_guest_cpu::position::Fixup;
+    for way in WAYS {
+        // fld st(0); fldcw [rax], a control instruction, which leaves FIP as it is
+        let piece = translate(&bytes("d9 c0 d9 28"), AT, way, false).expect("a piece");
+        let code = host(&piece.bytes);
+        assert_eq!(&piece.bytes[..2], &bytes("d9 c0")[..]);
+        assert_eq!(code[1].1.immediate64(), AT, "{}", listing(&piece.bytes));
+        assert_eq!(code[2].1.memory_segment(), Register::GS);
+        assert_eq!(code[2].1.op1_register(), T);
+        let fixed: Vec<_> = piece
+            .spans
+            .iter()
+            .filter(|s| s.fixups.contains(&Fixup::X87Pointer(AT)))
+            .collect();
+        assert!(!fixed.is_empty() && fixed.iter().all(|s| s.guest == AT));
+        let stores = code
+            .iter()
+            .filter(|(_, i)| i.mnemonic() == Mnemonic::Mov && i.op1_register() == T)
+            .count();
+        assert_eq!(stores, 1, "the control instruction stores nothing");
+    }
+}
+
+/// A repeated string instruction is copied, and run by the inside when the count must take its passes.
+#[test]
+fn a_rep_string_is_copied_or_counted_by_the_inside() {
+    use wcontainers_guest_cpu::NativeReason;
+    for way in WAYS {
+        let plain = translate(&bytes("f3 a4"), AT, way, false).expect("a piece");
+        assert_eq!(&plain.bytes[..2], &bytes("f3 a4")[..]);
+        assert_eq!(plain.sites_of(NativeReason::RepeatedStringCounted), 0);
+        let counted = translate(&bytes("f3 a4"), AT, way, true).expect("a piece");
+        assert_eq!(counted.sites_of(NativeReason::RepeatedStringCounted), 1);
+        assert!(!counted.bytes.windows(2).any(|w| w == bytes("f3 a4")));
+    }
 }

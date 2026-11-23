@@ -133,7 +133,7 @@ fn no_wait(m: Mnemonic) -> bool {
 }
 
 /// The control instructions, which leave the last instruction pointer as it is (seen on the reference).
-fn control(m: Mnemonic) -> bool {
+pub(crate) fn control(m: Mnemonic) -> bool {
     use Mnemonic::*;
     no_wait(m) || matches!(m, Fldcw | Fldenv | Frstor | Wait)
 }

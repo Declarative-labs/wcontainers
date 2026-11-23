@@ -11,6 +11,7 @@ use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, Route};
 use crate::USER_END;
 use crate::area::{
     ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_GS_BASE, STAND_IN_VALUES, WITHHELD_VALUES,
+    X87_IP,
 };
 use crate::decode::Instruction;
 use crate::native::Way;
@@ -441,6 +442,15 @@ pub fn carry(
         "the in-process forms are written at XN2"
     );
     let next = address.wrapping_add(bytes.len() as u64);
+    let repeated =
+        crate::meaning::is_string(i) && (i.iced.has_rep_prefix() || i.iced.has_repne_prefix());
+    if repeated && code.lead_after_commit() < code.lead() {
+        // The count takes the meaning's passes, which the hardware's run of it does not show.
+        code.slow(NativeReason::RepeatedStringCounted);
+        call(way, code, InsideCall::Answer);
+        code.after(Resume::At(next));
+        return;
+    }
     match route {
         Route::Copy if !names_withheld(&i.iced) => code.commit(bytes, Resume::At(next)),
         Route::Copy => rewritten(way, code, i, &i.iced, address, Reach::Plain),
@@ -469,6 +479,22 @@ pub fn carry(
             unreachable!("x86-64 gives no {route:?} route")
         }
     }
+    let m = i.iced.mnemonic();
+    if matches!(route, Route::Copy | Route::Rebase | Route::Area)
+        && crate::fpu::written(m)
+        && !crate::fpu::control(m)
+    {
+        x87_pointer(way, code, address);
+    }
+}
+
+/// After a copied x87 instruction that is not a control one: its guest address stored as the guest's FIP, the
+/// hardware's holding a host address (section 3.1).
+fn x87_pointer(way: Way, code: &mut HostCode, address: u64) {
+    code.fixup(Fixup::X87Pointer(address));
+    place_address(code, T, address);
+    put(code, &store_area(way, X87_IP, T));
+    code.fixed();
 }
 
 /// An operand or base instruction of the thread area's segment.
