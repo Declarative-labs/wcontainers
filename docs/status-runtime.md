@@ -5,6 +5,47 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections sa
 -kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
 and crates/executor/implementation/unicorn.
 
+## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
+
+What I found at the start: the kernel the brief says is ready is not ready for this milestone yet. At 08900894,
+crates/kernel/implementation/linux/executing.rs `KernelRunner::run` is still `unimplemented!` (its doc: the
+executor interface has no call that runs a thread, so the kernel drives its own executor through
+`with_parts`), and `KernelConfig::new` and `KernelWithExecutor::start`, the only ways to make that kernel,
+are still `unsafe fn`. The kernel status's For the owner (KC, second and third runs) says the same. So no
+container can run through the runners yet, and `make_container` cannot be written without an `unsafe` block,
+which the owner's rule bans outside the executors.
+
+Built and pushed (a2b0ed42, lock file a599bd67; plan: docs/runtime.md section 16, JR):
+- `LocalSystem<E = ()>`: the interface's `ProcessTracer` names the kernel a system serves, and so the
+  executor, so the local system takes the executor as a parameter. `LocalSystem::new` still makes the
+  `()` one the old loop and wcon use; `LocalSystem::<E>::serving(output, error)` makes one for a kernel on `E`.
+- `LocalSystem<E>` implements `wcontainers_system::System` for every `E: Cpu + Executor<TranslatorConfig:
+  Send> + Send + 'static` (new file described.rs): `ProcessTracer` (state `()`, kernel `LocalKernel<E>` =
+  `KernelWithExecutor<E, (), LocalSystem<E>>`), `ProcessorInputs` (the system's monotonic clock; random
+  numbers from its random source), `MachineDescription` (the processors the kernel gives; the memory size
+  `describe_memory` set as the container was made, which the runtime is to set to the executor's address
+  space as the old loop's start does), `FallbackObserver<Warning<'static>>` (kept with the kernel's
+  warnings), `TcpSockets`, and `IcmpSockets`, `RawSockets` and `RouteResolver` through
+  wcontainers-icmp-sockets-host, -raw-sockets-host and -route-resolver-host (workspace crates, the workspace's
+  licence), each made at its first use; a failure to make one is the answer of every later call. A build-time
+  check (`serves_the_whole_interface`, generic over `E`) holds it.
+- Measured on the ARM64 machine (load 13 to 22): clippy with warnings denied, all targets, `--no-deps`, on
+  wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean; `cargo check --all-targets` of
+  the executor wasmtime (wcon, surface, refused), the seeded test policy, hardware virtualization inside and
+  the executor unicorn: no error or warning; `cargo test -p wcontainers-runtime-single-kernel`: 15 passed.
+
+Not done, each with what it waits on (JR is not closed):
+- `Runtime::new(config)` and `make_container` building a `KernelContainer`: they need the kernel made safely
+  (`KernelConfig::new` is `unsafe`; kernel track, or the owner's `Send` bound on the system's futures, as the
+  kernel's For the owner asks). Nothing else blocks them: the system is ready and the driver is built.
+- The suite through the runners at parallelism 1 and 4: waits on `KernelRunner::run` (kernel track) and on
+  the item above. Until then every test of it would end `Panicked` at the first run.
+- The stop flag's two unsafe uses and the crate's own lints table: unchanged, still waiting on the wasmtime
+  executor (first run's section below).
+- The old loop (`Stepper`, `Execution`, `cpu.run`, the crate's own traits) stays: wcon, the surface tests, the
+  kernel test crate's runtime feature and the test policy still run through it, and nothing can run through
+  the runners yet.
+
 ## JR, first run (2026-11-23): the runner driver and the suite; the rest waits on the kernel
 
 Built and pushed (97a83cc0, lock file bf2c11c0; plan: docs/runtime.md section 16, JR):

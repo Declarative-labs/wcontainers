@@ -1180,6 +1180,12 @@ Each bar is checkable by running the named command on this Mac with Docker.
   kernel runs the runner again, and the run ends as `Interrupted` only when the interrupter asked. An interrupt
   asked between runs ends the next run alone. Then `Runtime::new(config)` and `make_container` build that
   container, and the local system serves `MachineDescription` and the rest of `wcontainers_system::System`.
+  The interface's `ProcessTracer` names the kernel the system serves, and so its executor, so the local
+  system is `LocalSystem<E>` (`()` by default, which the old loop uses), serving `KernelWithExecutor<E, (),
+  LocalSystem<E>>`; processes carry no state of its; programs are told the processors the kernel gives and the
+  memory the runtime describes as it makes the container (the executor's address space, as the old loop's
+  start does); ICMP echo sockets, raw sockets and routes go to the host implementations of those interfaces,
+  each made at its first use; a fallback the kernel reports is kept with its warnings.
   The suite (crates/runtime/conformance) takes one `Subject`: a runtime, an image with a POSIX shell, and
   makers of each container's execution configuration, state and parts (one set whose system panics once the
   container runs). Bar: the suite at parallelism 1 and 4; the kernel test crate and J5's comparisons give
