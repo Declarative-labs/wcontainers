@@ -49,6 +49,15 @@ fn store(cpu: &mut HostProcessExecutor, thread: ThreadId, address: u64, value: u
         .expect("store")
 }
 
+/// The host mappings a process holds, as the host lists them (x86's vsyscall page is not one).
+fn host_mappings(process: rustix::process::Pid) -> usize {
+    std::fs::read_to_string(format!("/proc/{}/maps", process.as_raw_nonzero()))
+        .expect("maps")
+        .lines()
+        .filter(|line| !line.ends_with("[vsyscall]"))
+        .count()
+}
+
 fn fault(address: u64, access: Access) -> Touched {
     Touched::Fault { address, access }
 }
@@ -431,6 +440,10 @@ fn a_shared_block_shows_every_mapper_s_writes_until_it_is_unmapped() {
         store(&mut cpu, b.1, page(16), 1),
         fault(page(16), Access::Write)
     );
+    for process in [a, b, c] {
+        let _ = load(&mut cpu, process.1, BASE);
+        same_mappings(&cpu, process.0, 0);
+    }
     for process in [c, b, a] {
         end(&mut cpu, process);
     }
@@ -475,6 +488,11 @@ fn a_block_mapped_ten_thousand_times_leaves_no_descriptor_behind() {
     assert_eq!(load(&mut cpu, thread, page(0)), Touched::Loaded(11));
     assert_eq!(load(&mut cpu, thread, page(1)), Touched::Loaded(0));
     assert_eq!(
+        host_mappings(cpu.stub_process(memory)),
+        cpu.host_mappings(memory),
+        "the host mappings counted"
+    );
+    assert_eq!(
         descriptors(cpu.stub_process(memory)),
         2,
         "its socket and its memory"
@@ -510,6 +528,85 @@ fn a_queue_longer_than_a_page_is_applied_in_rounds() {
             expected,
             "page {index}"
         );
+    }
+    end(&mut cpu, (memory, thread));
+}
+
+/// A change that could take a stub past the host's limit on mappings is refused as out of memory before the host
+/// refuses it, and every change before it is applied.
+#[test]
+fn a_change_past_the_host_s_mapping_limit_is_refused_up_front() {
+    let mut cpu = executor();
+    let limit = HOST.get().expect("the host").probe().mapping_limit();
+    let pages = limit as u64 + 8;
+    let (memory, thread) = process(&mut cpu, pages);
+    let _ = load(&mut cpu, thread, BASE);
+    let refused = (1..pages).step_by(2).find_map(|index| {
+        cpu.set_permissions(memory, page(index), PAGE, Permissions::READ)
+            .err()
+            .map(|error| (index, error))
+    });
+    let (index, error) = refused.expect("a change refused before the limit");
+    assert_eq!(error, CpuError::OutOfMemory);
+    assert_eq!(cpu.counters().mappings_exhausted, 1);
+    assert_eq!(store(&mut cpu, thread, page(0), 1), Touched::Stored);
+    assert_eq!(
+        store(&mut cpu, thread, page(index - 2), 1),
+        fault(page(index - 2), Access::Write)
+    );
+    assert_eq!(
+        store(&mut cpu, thread, page(index), 1),
+        Touched::Stored,
+        "the refused change is not made"
+    );
+    let held = host_mappings(cpu.stub_process(memory));
+    assert_eq!(held, cpu.host_mappings(memory));
+    assert!(held <= limit && held + 2 > limit, "{held} of {limit}");
+    // Merging needs no new mapping, but the rule's margin refuses it too, never the host.
+    assert_eq!(
+        cpu.set_permissions(memory, page(1), PAGE, READ_WRITE),
+        Err(CpuError::OutOfMemory)
+    );
+    end(&mut cpu, (memory, thread));
+}
+
+/// The cost of a fork's copies to its child, one store per page over `WCHP_PAGES` written pages, in order and in a
+/// seeded order touching every `WCHP_STRIDE`th page (`WCHP_SEED`), and the host mappings each side holds after.
+#[test]
+#[ignore = "a measurement"]
+fn copy_unit_cost() {
+    let pages = knob("WCHP_PAGES", 4096);
+    let stride = knob("WCHP_STRIDE", 16);
+    let mut random = fastrand::Rng::with_seed(knob("WCHP_SEED", 1));
+    let mut cpu = executor();
+    let (memory, thread) = process(&mut cpu, pages);
+    for index in 0..pages {
+        assert_eq!(store(&mut cpu, thread, page(index), index), Touched::Stored);
+    }
+    let mut scattered: Vec<u64> = (0..pages).step_by(stride as usize).collect();
+    random.shuffle(&mut scattered);
+    for (name, order) in [
+        ("in order", (0..pages).collect::<Vec<_>>()),
+        ("scattered", scattered),
+    ] {
+        let child = fork(&mut cpu, memory);
+        let _ = load(&mut cpu, child.1, page(0));
+        let copied = cpu.counters().pages_copied;
+        let started = std::time::Instant::now();
+        for &index in &order {
+            assert_eq!(store(&mut cpu, child.1, page(index), 1), Touched::Stored);
+        }
+        let took = started.elapsed();
+        let _ = load(&mut cpu, thread, page(0));
+        eprintln!(
+            "{name}: {} stores, {:.2} us each, {} pages copied, host mappings child {} parent {}",
+            order.len(),
+            took.as_secs_f64() * 1e6 / order.len() as f64,
+            cpu.counters().pages_copied - copied,
+            host_mappings(cpu.stub_process(child.0)),
+            host_mappings(cpu.stub_process(memory)),
+        );
+        end(&mut cpu, child);
     }
     end(&mut cpu, (memory, thread));
 }
@@ -550,6 +647,15 @@ fn same_as_model(
             first + index
         );
     }
+}
+
+/// The host mappings a stub holds once its queue is applied are the ones the executor counts.
+fn same_mappings(cpu: &HostProcessExecutor, memory: MemoryId, step: u64) {
+    assert_eq!(
+        host_mappings(cpu.stub_process(memory)),
+        cpu.host_mappings(memory),
+        "step {step}, memory {memory:?}"
+    );
 }
 
 /// Seeded forks, ends, the kernel's writes and zeros, the guest's loads and stores and permission changes on up to six
@@ -604,6 +710,7 @@ fn copy_on_write_matches_a_model_where_a_fork_is_a_copy() {
             }
             25..50 => {
                 let got = store(&mut cpu, thread, address, value);
+                same_mappings(&cpu, memory, step);
                 if model.allowed[index as usize].contains(Permissions::WRITE) {
                     assert_eq!(got, Touched::Stored, "step {step}");
                     model.words[word_index as usize] = value;
@@ -613,6 +720,7 @@ fn copy_on_write_matches_a_model_where_a_fork_is_a_copy() {
             }
             50..80 => {
                 let got = load(&mut cpu, thread, address);
+                same_mappings(&cpu, memory, step);
                 if model.allowed[index as usize].intersects(READ_WRITE) {
                     assert_eq!(
                         got,

@@ -50,6 +50,10 @@ pub const SIGNAL_STACKS: usize = THREAD_PAGES + THREAD_PAGES_SIZE;
 /// Every signal stack of a stub.
 pub const SIGNAL_STACKS_SIZE: usize = THREADS_PER_PROCESS * SIGNAL_STACK_SIZE;
 
+/// The host mappings a stub keeps outside its guest area: the zygote's code and stack, its control pages, its register
+/// pages and its signal stacks.
+pub const OWN_MAPPINGS: usize = 5;
+
 const _: () = assert!(ZYGOTE >= OUR_AREA);
 const _: () = assert!(THREAD_PAGES >= ZYGOTE + ZYGOTE_SIZE);
 const _: () = assert!(SIGNAL_STACKS + SIGNAL_STACKS_SIZE <= 1 << 46);

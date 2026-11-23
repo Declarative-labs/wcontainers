@@ -125,6 +125,11 @@ impl HostProcessHost {
         Ok(())
     }
 
+    /// What the start-up probe found.
+    pub fn probe(&self) -> &HostProbe {
+        &self.probe
+    }
+
     /// The window cache, for one executor call's copies.
     pub(crate) fn windows(&self) -> std::sync::MutexGuard<'_, WindowCache> {
         self.windows

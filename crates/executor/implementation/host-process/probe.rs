@@ -26,6 +26,7 @@ pub enum Unavailable {
 pub struct HostProbe {
     page_size: usize,
     user_space_top: usize,
+    mapping_limit: usize,
     #[cfg(target_arch = "aarch64")]
     cache_type: u64,
     #[cfg(target_arch = "aarch64")]
@@ -54,6 +55,7 @@ impl HostProbe {
         let probe = Self {
             page_size,
             user_space_top: user_space_top(page_size),
+            mapping_limit: mapping_limit(),
             #[cfg(target_arch = "aarch64")]
             cache_type: cache_type(),
             #[cfg(target_arch = "aarch64")]
@@ -76,6 +78,11 @@ impl HostProbe {
         self.user_space_top
     }
 
+    /// The most mappings a host process may hold.
+    pub fn mapping_limit(&self) -> usize {
+        self.mapping_limit
+    }
+
     /// The host's `CTR_EL0`.
     #[cfg(target_arch = "aarch64")]
     pub fn cache_type(&self) -> u64 {
@@ -94,6 +101,25 @@ impl HostProbe {
         let coherent = self.cache_type & CTR_EL0_DIC != 0;
         let policy = (self.cache_type >> CTR_EL0_L1IP_SHIFT) & CTR_EL0_L1IP_MASK;
         coherent || policy == CTR_EL0_L1IP_PIPT
+    }
+}
+
+/// Linux's limit on a process's mappings where the host does not say (`DEFAULT_MAX_MAP_COUNT`, include/linux/mm.h).
+const DEFAULT_MAPPING_LIMIT: usize = u16::MAX as usize - 5;
+
+/// The host's `vm.max_map_count`, or Linux's default, warned, where it cannot be read.
+fn mapping_limit() -> usize {
+    match std::fs::read_to_string("/proc/sys/vm/max_map_count")
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+    {
+        Some(limit) => limit,
+        None => {
+            eprintln!(
+                "wcontainers warning: the host's limit on mappings is unreadable, Linux's default of {DEFAULT_MAPPING_LIMIT} assumed"
+            );
+            DEFAULT_MAPPING_LIMIT
+        }
     }
 }
 

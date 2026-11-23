@@ -18,10 +18,11 @@ use wcontainers_abi::{
 use zerocopy::IntoBytes;
 
 use crate::host::HostProcessHost;
-use crate::layout::OUR_AREA;
+use crate::layout::{OUR_AREA, OWN_MAPPINGS};
 use crate::pages::control::MAX_COMMANDS;
 use crate::pages::{Command, Resume};
 use crate::stub::{Stub, TurnEnd};
+use crate::view::View;
 use crate::windows::FileKey;
 
 /// The guest's addresses.
@@ -49,12 +50,24 @@ struct Memory {
     queue: Vec<Command>,
     /// The memfd of each `MapShared` in the queue, in order.
     queued_blocks: Vec<Arc<OwnedFd>>,
+    /// The stub's guest-area mappings once the queue is applied.
+    view: View,
     /// The stub's thread indices in use: every guest thread's and the spare's.
     indices: Vec<usize>,
     /// An index whose host thread no guest thread holds: the stub's first, or the last one dropped.
     spare: Option<usize>,
     /// Dropped by the kernel, its stub ended, kept only for the pages others still borrow from it.
     retired: bool,
+}
+
+impl Memory {
+    /// Queues a change to the view; a `MapShared` comes with its block and memfd.
+    fn push(&mut self, command: Command, block: Option<(SharedId, Arc<OwnedFd>)>) {
+        self.view
+            .apply(&command, block.as_ref().map(|(shared, _)| *shared));
+        self.queue.push(command);
+        self.queued_blocks.extend(block.map(|(_, file)| file));
+    }
 }
 
 /// One block of shared pages.
@@ -72,6 +85,10 @@ struct Thread {
     /// The CPU its host thread was last moved to.
     cpu: Option<usize>,
 }
+
+/// The pages a fault the executor settles copies or gives away at once: the aligned unit around the page, within the
+/// range of one permission (plan 3.5's 2^u).
+const COPY_UNIT: u64 = PAGE_SIZE;
 
 /// How much of a runner's busy time it samples its CPU's share over.
 const SAMPLE_EVERY: Duration = Duration::from_millis(10);
@@ -113,6 +130,10 @@ pub struct Counters {
     pub placement_moves: u64,
     /// Runners that place without samples, the CPU clocks being refused ("placement without samples").
     pub placement_without_samples: u64,
+    /// Changes refused because the stub's host mappings could pass the host's limit ("host mappings exhausted").
+    pub mappings_exhausted: u64,
+    /// Forks that lent the whole guest area, the host not saying which pages hold data ("memory extents unknown").
+    pub extents_unknown: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -197,6 +218,11 @@ impl HostProcessExecutor {
     /// The process id of a memory's stub.
     pub fn stub_process(&self, memory: MemoryId) -> Pid {
         self.memory(memory).stub.process()
+    }
+
+    /// The host mappings a memory's stub holds once its queue is applied.
+    pub fn host_mappings(&self, memory: MemoryId) -> usize {
+        self.memory(memory).view.count() + OWN_MAPPINGS
     }
 
     /// Where a thread's stops landed, as its stub counts them (untrusted).
@@ -293,10 +319,12 @@ impl HostProcessExecutor {
         if !allowed {
             return Ok(FaultOwner::Guest);
         }
-        let this_page = page..page + PAGE_SIZE;
-        self.unborrow(id, this_page.clone(), true)?;
+        self.room(id, 1)?;
+        let unit = page & !(COPY_UNIT - 1);
+        let unit = unit.max(granted_range.start)..(unit + COPY_UNIT).min(granted_range.end);
+        self.unborrow(id, unit.clone(), true)?;
         if access == Access::Write {
-            self.unlend(id, this_page)?;
+            self.unlend(id, unit)?;
         }
         let memory = self.memory(id);
         let (run, view) = match memory.pages.get_key_value(&page) {
@@ -326,7 +354,7 @@ impl HostProcessExecutor {
                 (start..end, host_protection(granted))
             }
         };
-        self.memory_mut(id).queue.push(protect(run, view));
+        self.memory_mut(id).push(protect(run, view), None);
         self.counters.faults_resolved += 1;
         Ok(FaultOwner::Executor)
     }
@@ -486,7 +514,7 @@ impl HostProcessExecutor {
         for (piece, granted) in granted {
             if let Some(granted) = granted {
                 let view = self.view_bound(id, piece.clone(), granted);
-                self.memory_mut(id).queue.push(protect(piece, view));
+                self.memory_mut(id).push(protect(piece, view), None);
             }
         }
     }
@@ -500,14 +528,45 @@ impl HostProcessExecutor {
             .collect();
         memory.shared.remove(range);
         for (piece, _) in &ended {
-            memory.queue.push(Command::Map {
-                address: piece.start as usize,
-                length: (piece.end - piece.start) as usize,
-                permissions: ProtFlags::empty(),
-                offset: piece.start as usize,
-            });
+            memory.push(
+                Command::Map {
+                    address: piece.start as usize,
+                    length: (piece.end - piece.start) as usize,
+                    permissions: ProtFlags::empty(),
+                    offset: piece.start as usize,
+                },
+                None,
+            );
         }
         ended
+    }
+
+    /// Refuses a change of at most `commands` commands that could take the stub past the host's limit on mappings,
+    /// each command splitting at most two (plan 4.2).
+    fn room(&mut self, id: MemoryId, commands: usize) -> Result<(), CpuError> {
+        let limit = self.host.probe().mapping_limit();
+        if self.host_mappings(id) + 2 * commands <= limit {
+            return Ok(());
+        }
+        Err(self.mappings_exhausted())
+    }
+
+    /// Counts and warns of a change refused for want of host mappings.
+    fn mappings_exhausted(&mut self) -> CpuError {
+        self.counters.mappings_exhausted += 1;
+        eprintln!(
+            "wcontainers warning: host mappings exhausted, a change refused, {} so far",
+            self.counters.mappings_exhausted
+        );
+        CpuError::OutOfMemory
+    }
+
+    /// The commands a change of a range's view takes at most: one for each shared piece it ends, one for each
+    /// piece of what the kernel allows.
+    fn view_commands(&self, id: MemoryId, range: Range<u64>) -> usize {
+        let memory = self.memory(id);
+        memory.shared.overlapping(range.clone()).count()
+            + memory.permissions.overlapping(range).count()
     }
 
     fn take_queue(&mut self, id: MemoryId) -> (Vec<Command>, Vec<Arc<OwnedFd>>) {
@@ -724,23 +783,51 @@ impl Cpu for HostProcessExecutor {
             permissions: RangeMap::new(),
             pages: RangeMap::new(),
             shared: RangeMap::new(),
-            queue: vec![Command::Map {
-                address: GUEST.start as usize,
-                length: (GUEST.end - GUEST.start) as usize,
-                permissions: ProtFlags::empty(),
-                offset: GUEST.start as usize,
-            }],
+            queue: Vec::new(),
             queued_blocks: Vec::new(),
+            view: View::default(),
             indices: vec![0],
             spare: Some(0),
             retired: false,
         };
-        Ok(MemoryId(place(&mut self.memories, memory) as u32))
+        let id = MemoryId(place(&mut self.memories, memory) as u32);
+        self.memory_mut(id).push(
+            Command::Map {
+                address: GUEST.start as usize,
+                length: (GUEST.end - GUEST.start) as usize,
+                permissions: ProtFlags::empty(),
+                offset: GUEST.start as usize,
+            },
+            None,
+        );
+        Ok(id)
     }
 
     /// The child borrows every private page the source owns or borrows and maps its shared ranges, and the source's
     /// writable ranges lose write in its view before this returns, which is the fork's instant.
     fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+        let writable = self
+            .memory(source)
+            .permissions
+            .iter()
+            .filter(|(_, granted)| granted.contains(Permissions::WRITE))
+            .count();
+        self.room(source, writable)?;
+        let child_commands = 1 + self
+            .memory(source)
+            .shared
+            .iter()
+            .map(|(range, _)| {
+                1 + self
+                    .memory(source)
+                    .permissions
+                    .overlapping(range.clone())
+                    .count()
+            })
+            .sum::<usize>();
+        if OWN_MAPPINGS + 2 * child_commands > self.host.probe().mapping_limit() {
+            return Err(self.mappings_exhausted());
+        }
         let child = self.memory_new()?;
         let borrowed: Vec<_> = self
             .memory(source)
@@ -757,7 +844,17 @@ impl Cpu for HostProcessExecutor {
                 .pages
                 .insert(range, PageState::Borrowed(owner));
         }
-        let owned = data_extents(self.memory(source).stub.memory()).map_err(host_error)?;
+        let owned = match data_extents(self.memory(source).stub.memory()).map_err(host_error)? {
+            Some(extents) => extents,
+            None => {
+                self.counters.extents_unknown += 1;
+                eprintln!(
+                    "wcontainers warning: memory extents unknown, a fork lends every page, {} so far",
+                    self.counters.extents_unknown
+                );
+                vec![GUEST]
+            }
+        };
         for extent in owned {
             for (piece, state) in pieces(&self.memory(source).pages, extent) {
                 if !matches!(state, Some(PageState::Borrowed(_))) {
@@ -779,23 +876,32 @@ impl Cpu for HostProcessExecutor {
         }
         let mut blocks = Vec::new();
         for (range, (block, delta)) in shared.iter() {
-            blocks.push((range.clone(), self.block(*block).file.clone(), *delta));
+            blocks.push((
+                range.clone(),
+                *block,
+                self.block(*block).file.clone(),
+                *delta,
+            ));
         }
         let memory = self.memory_mut(child);
         memory.permissions = permissions;
         memory.shared = shared;
-        for (range, file, delta) in blocks {
-            let memory = self.memory_mut(child);
-            memory.queue.push(Command::MapShared {
-                address: range.start as usize,
-                length: (range.end - range.start) as usize,
-                permissions: ProtFlags::empty(),
-                offset: range.start.wrapping_add(delta) as usize,
-            });
-            memory.queued_blocks.push(file);
+        for (range, block, file, delta) in blocks {
+            self.memory_mut(child).push(
+                Command::MapShared {
+                    address: range.start as usize,
+                    length: (range.end - range.start) as usize,
+                    permissions: ProtFlags::empty(),
+                    offset: range.start.wrapping_add(delta) as usize,
+                },
+                Some((block, file)),
+            );
             self.queue_view(child, range);
         }
-        self.memory_mut(source).queue.extend(protect_source);
+        let memory = self.memory_mut(source);
+        for command in protect_source {
+            memory.push(command, None);
+        }
         if let Err(error) = self.apply_now(source) {
             self.memory_drop(child);
             return Err(error);
@@ -891,6 +997,7 @@ impl Cpu for HostProcessExecutor {
     /// Ends any sharing in the range, then punches it out of the memfd, its lent pages first given to a borrower.
     fn zero(&mut self, id: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
         let range = checked(address, length)?;
+        self.room(id, self.view_commands(id, range.clone()))?;
         if !self.unshare(id, range.clone()).is_empty() {
             self.queue_view(id, range.clone());
         }
@@ -908,6 +1015,7 @@ impl Cpu for HostProcessExecutor {
         permissions: Permissions,
     ) -> Result<(), CpuError> {
         let range = checked(address, length)?;
+        self.room(id, 1)?;
         let view = self.view_bound(id, range.clone(), permissions);
         let memory = self.memory_mut(id);
         if permissions.is_empty() {
@@ -915,7 +1023,7 @@ impl Cpu for HostProcessExecutor {
         } else {
             memory.permissions.insert(range.clone(), permissions);
         }
-        memory.queue.push(protect(range, view));
+        memory.push(protect(range, view), None);
         Ok(())
     }
 
@@ -953,6 +1061,7 @@ impl Cpu for HostProcessExecutor {
             return Err(CpuError::BadAddress);
         }
         let file = block.file.clone();
+        self.room(memory, 1 + self.view_commands(memory, range.clone()))?;
         self.unshare(memory, range.clone());
         self.unborrow(memory, range.clone(), false)?;
         self.unlend(memory, range.clone())?;
@@ -961,13 +1070,15 @@ impl Cpu for HostProcessExecutor {
         target
             .shared
             .insert(range.clone(), (shared, offset.wrapping_sub(address)));
-        target.queue.push(Command::MapShared {
-            address: address as usize,
-            length: length as usize,
-            permissions: ProtFlags::empty(),
-            offset: offset as usize,
-        });
-        target.queued_blocks.push(file);
+        target.push(
+            Command::MapShared {
+                address: address as usize,
+                length: length as usize,
+                permissions: ProtFlags::empty(),
+                offset: offset as usize,
+            },
+            Some((shared, file)),
+        );
         self.queue_view(memory, range);
         Ok(())
     }
@@ -980,6 +1091,7 @@ impl Cpu for HostProcessExecutor {
         length: u64,
     ) -> Result<(), CpuError> {
         let range = checked(address, length)?;
+        self.room(memory, self.view_commands(memory, range.clone()))?;
         for (piece, (block, delta)) in self.unshare(memory, range.clone()) {
             let mut bytes = vec![0; (piece.end - piece.start) as usize];
             let block = self.block(block);
@@ -1192,14 +1304,16 @@ fn pieces<V: Clone + Eq>(
     out
 }
 
-/// The extents of a memfd's guest area that hold pages, rounded out to whole pages.
-fn data_extents(file: BorrowedFd<'_>) -> Result<Vec<Range<u64>>, Errno> {
+/// The extents of a memfd's guest area that hold pages, rounded out to whole pages; none where the host's files do
+/// not say (gVisor refuses `SEEK_DATA` with EINVAL).
+fn data_extents(file: BorrowedFd<'_>) -> Result<Option<Vec<Range<u64>>>, Errno> {
     let mut extents = Vec::new();
     let mut at = GUEST.start;
     while at < GUEST.end {
         let start = match rustix::fs::seek(file, SeekFrom::Data(at)) {
             Ok(start) => start,
             Err(Errno::NXIO) => break,
+            Err(Errno::INVAL) => return Ok(None),
             Err(other) => return Err(other),
         };
         if start >= GUEST.end {
@@ -1209,7 +1323,7 @@ fn data_extents(file: BorrowedFd<'_>) -> Result<Vec<Range<u64>>, Errno> {
         extents.push(page_cover(&(start..end)));
         at = end;
     }
-    Ok(extents)
+    Ok(Some(extents))
 }
 
 /// Frees a range of a memfd, which then reads as zeros.
