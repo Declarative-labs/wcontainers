@@ -53,6 +53,14 @@ crates/runtime/implementation/single-kernel.
   and 2 failed, rootbackend 1 passed and 2 failed, all four on the known ARM list
   (file_capabilities, special_files, root_files, core_dumps); `backend_notices_are_handled`
   passed.
+- The whole suite at 60cb4fe1 (ARM64, 05:35 to 07:04 UTC, load 3 to 21, 8 test threads; scratch
+  kernel/kc4/whole.sh, log kc4/attach1.log, job kernel/20261123-053521-249150), after a
+  `cargo check --workspace --all-targets` that gave no error: 390 passed, 35 failed, 8 ignored;
+  the 35 are exactly the known ARM list (kc4/fails4.txt is the same as kc3/fails3.txt). The
+  commits after it (207e89ea: the proc contents built from named pieces, the same bytes; the
+  removed mark) were tested apart at the tip: clippy on the kernel and the stand-in gives
+  nothing; processors 1 and outside 8 pass, procaccess 2 of 4, procwrite 3 of 5, fileioctl 0 of
+  1 and priorities 0 of 1, each failure on the ARM list.
 - The literal check (the checker built on the Mac on the 21st, after its crate's last change, run
   with `nice -n 19`, about 20 s; it needs git's history, which the rented machines' copies lack;
   logs scratch kernel/kc4/literals*.log): exits 1, on other tracks' files (the shaders'
