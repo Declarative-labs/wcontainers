@@ -54,9 +54,47 @@ symbols: `logs/g9r15-gl33-renderer.log`); not our driver's code; the same with t
 forced to 4.5; llvmpipe passes `KHR-GL33.info.renderer`. Next: a glcts built with symbols, or
 an extension-by-extension `MESA_EXTENSION_OVERRIDE` bisection, to name the entry point.
 
+The table of lists and shares on our driver, the six ES lists WHOLE at 38ea343f (desktop, RTX
+3080, one GPU job, 8 glcts at once, other tracks' jobs queued beside), 18:06:42 to 18:30:41
+(Pacific):
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64% (run 14: the same).
+- dEQP-GLES3: 44,768 cases; Pass 44,027, Warn 5, Fail 174, Crash 69, Skip 493: 44,032 of 44,275,
+  99.45% (run 14: 99.35%; 42 crashes fewer, the packed vertex formats).
+- dEQP-GLES31: 37,802 cases; Pass 16,827, Fail 104, Crash 763, Flake 2, Skip 20,106: 16,827 of
+  17,696, 95.09% (run 14: 16,605 of 17,086, 97.18%). Texel buffers are now reported, so 610 more
+  cases run: texture.texture_buffer 232 and image_load_store.buffer 125 fail. Their refusals: "a
+  sampler the program reads is not bound" 538 (Gallium binds no sampler beside a texel buffer;
+  fixed in 7aa5a574, not yet in a whole run) and image buffers, refused by name (250).
+- KHR-GLES2: 473; Pass 438, Skip 35: 100.00%.
+- KHR-GLES3: 6,498; Pass 6,191, Fail 3, Crash 73, Skip 231: 6,191 of 6,267, 98.79% (as run 14).
+- KHR-GLES31: 4,101; Pass 2,818, Fail 17, Crash 50, Skip 1,216: 2,818 of 2,885, 97.68% (run 14:
+  2,805 of 2,868, 97.80%).
+- KHR-GL33 (9,886): starts now and runs no case past its first call (above). KHR-GLES32 (1,405)
+  and KHR-GL46 (19,714): no context of their version.
+- Over the six ES lists: 87,275 of 88,591 run, 98.51% (run 14: 86,996 of 87,964, 98.90%). The
+  bar's measure, counting KHR-GLES32's and KHR-GL33's 11,291 cases as run and failed: 87,275 of
+  99,882, 87.38%; not met (92.9%).
+- Most frequent refusals of dEQP-GLES31: the sampler above 538, image atomics 296 and 32, image
+  buffers 250, `gl_HelperInvocation` 160, flat values from a geometry program's last vertex 60,
+  one slice of a volume texture as an image 52, border on a comparison sampler 48, layered
+  geometry output 36, primitives made by a geometry program without stream output 8.
+- Results: scratch `results/g9r15/full/<list>/`, the job's output `logs/g9r15-full.log`. No
+  comparison with the RTX 3080's own OpenGL and no independent check this run.
+
 Not built and seen to matter for desktop 3.2: multisampled 2D arrays (the screen makes none, so
 `glTexImage3DMultisample` gets no sample count); the interface's `VariantKey::texture_layers` is
 the model (a texture per layer).
+
+Next, in order (run 14's list below still holds for the rest):
+1. Name KHR-GL33's null function and fix it, then run KHR-GL33 whole; read its failures.
+2. Multisampled 2D arrays as a texture per layer (`VariantKey::texture_layers`), which desktop
+   3.2's `ARB_texture_multisample` needs.
+3. A whole run of dEQP-GLES31 with 7aa5a574 (the texel buffer sampler); image buffers through
+   the storage-image paths.
+4. Run 14's items 1 to 6: layered geometry output, the route B geometry refusals, tessellation,
+   ES 3.2's requirements, image atomics, the comparison with the RTX 3080's own OpenGL and the
+   independent check.
 
 G9 run 14 (2026-11-22): the driver has a geometry stage. The screen reports it where the back end
 runs compute work, so OpenGL ES 3.1 contexts now have `OES_geometry_shader`; the version is still
