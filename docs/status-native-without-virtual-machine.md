@@ -448,6 +448,11 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     step test's /proc read, as in run 9; the floor binary as a whole passed its 900 s limit (the full 20,000-round
     stop flood), so its verdicts under gVisor are the separate runs above (calls, stops, faults and register
     isolation pass; the code-area read and the flood's coverage fail).
+  - Sandboxes after the leave routine (20:38 to 20:48 UTC, scratch w1/run10/sbfinal-arm.out and sbfinal-x86.out;
+    Graviton4 load 12 to 15, Xeon 7.3 to 7.8): inside Docker's default profile every test binary passes on both
+    machines. Under gVisor on both: run 5's four known failures and the step test's /proc read, nothing else; on
+    Graviton4 the floor binary now finishes there (186 s): its calls, stops, faults and register isolation pass
+    (4), and the two failures named above (the code-area read, the flood's coverage) are its only ones.
   - Final verdicts after the last code commit (20:34 to 20:37 UTC, scratch w1/run10/final2-arm.log and
     final2-x86.log), each test binary 3 times with /dev/kvm denied, clippy with warnings denied clean on both:
     Graviton4 180 of 180 (load 12 to 22), Xeon 156 of 156 (load 2.2 to 7.4). Before the leave routine (final-*.log):
