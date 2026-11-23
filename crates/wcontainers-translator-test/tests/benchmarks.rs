@@ -289,6 +289,59 @@ fn measure_benchmarks_x86_64() {
     measure_benchmarks::<wcontainers_x86::X86_64>();
 }
 
+/// The benchmark set built for x86-64, run on this machine plainly and through the x86-64 native output for a host
+/// process (docs/x86-native-output.md section 8), its pieces at full look-ahead linked in a blob of their own,
+/// without and with the count; best of `WC_BENCH_RUNS` (default 5) each, with the geometric mean of the ratios.
+/// Linux x86-64 only, where the reference is this machine. `WC_BENCH_WORKLOADS` as above.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore]
+fn measure_benchmarks_natively_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::native_programs::run_timed;
+    use wcontainers_translator_test::reference::with_reference;
+    let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(5, |v| v.parse().unwrap());
+    let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS").map_or((1..=8).collect(), |v| {
+        v.split(',').map(|n| n.parse().unwrap()).collect()
+    });
+    let mut ratios = [Vec::new(), Vec::new()];
+    for k in chosen {
+        let name = WORKLOADS[k - 1];
+        let workload = format!("WORKLOAD={k}");
+        let blob = build_with::<X86_64>(
+            "bench",
+            "-O2",
+            Library::None,
+            &["SCALE=1", &workload],
+            Position::Fixed,
+        );
+        let expected = native::<X86_64>(&blob);
+        let plain = native_seconds::<X86_64>(&blob, runs);
+        eprintln!("{name}: on the host {plain:.3} s (load {})", load());
+        for (ratios, counted) in ratios.iter_mut().zip([false, true]) {
+            let (ours, seconds) = with_reference(&X86_64::REFERENCE, |reference| {
+                run_timed(reference, &blob, LookAhead::Full, counted, runs)
+            })
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(ours.ran, expected, "{name} natively, counted {counted}");
+            let ratio = seconds / plain;
+            ratios.push(ratio);
+            eprintln!(
+                "{name}: native output at full, counted {counted}: {seconds:.3} s, {ratio:.3} times the host's ({} pieces, made in {} runs; load {})",
+                ours.pieces,
+                ours.runs,
+                load()
+            );
+        }
+    }
+    for (ratios, counted) in ratios.iter().zip([false, true]) {
+        let mean = (ratios.iter().map(|r| r.ln()).sum::<f64>() / ratios.len() as f64).exp();
+        let most = ratios.iter().copied().fold(0.0, f64::max);
+        eprintln!(
+            "native output at full, counted {counted}: geometric mean {mean:.3} times the host's, the most {most:.3}"
+        );
+    }
+}
+
 /// x86-64's 128-by-64 long division (`programs/x86_64/divide.c`) against the CPU's own `div`: each with a
 /// high half (the long path) and with none (the fast path), natively on the reference and at look-ahead none
 /// in wasmtime here; their difference is the long path's own cost a division.

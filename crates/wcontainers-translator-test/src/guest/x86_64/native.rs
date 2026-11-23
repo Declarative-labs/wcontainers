@@ -37,10 +37,10 @@ pub const REFERENCE_HOST: HostMatches = HostMatches {
     undefined_results: true,
 };
 
-const PAGE: u64 = PAGE_SIZE;
+pub(super) const PAGE: u64 = PAGE_SIZE;
 /// Where the blob is loaded, far from every address a case reaches; its parts follow at fixed offsets.
-const LOAD: u64 = 1 << 43;
-const PROLOGUE: u64 = LOAD;
+pub(super) const LOAD: u64 = 1 << 43;
+pub(super) const PROLOGUE: u64 = LOAD;
 const HANDLER: u64 = LOAD + PAGE;
 /// The stepping handler's page: the restorer `rt_sigreturn` returns through, then the handler.
 const RESTORER: u64 = HANDLER + PAGE;
@@ -59,7 +59,7 @@ const FIRST: u64 = AREA + FIRST_LEVEL as u64;
 /// reading its word, as the plan has it (section 3.3).
 pub(super) const LOWER_REGIONS: u64 = USER_END >> u32::BITS;
 /// The second level every first-level word points into, never mapped: every lookup misses there, its target in t.
-const SECOND_LEVEL: u64 = 1 << 44;
+pub(super) const SECOND_LEVEL: u64 = 1 << 44;
 /// How far apart the second-level tables of two regions are.
 pub(super) const REGION_BYTES: u64 = WORD << u32::BITS;
 /// The inside's entries: call code k jumps to `ENTRY_TRAPS + k * ENTRY_STRIDE`, in a page never mapped.
@@ -68,14 +68,14 @@ const ENTRY_STRIDE: u64 = 16;
 /// Where a call the inside makes nothing of in a host process (before a float status instruction: the hardware
 /// holds the guest's float status) goes: `jmp t`, back to the piece. The handler's page ends there.
 const RESUME: u64 = PIECE - ENTRY_STRIDE;
-const ALTERNATE_STACK: u64 = LOAD - (2 << 20);
-const ALTERNATE_STACK_BYTES: u64 = 16 * PAGE;
+pub(super) const ALTERNATE_STACK: u64 = LOAD - (2 << 20);
+pub(super) const ALTERNATE_STACK_BYTES: u64 = 16 * PAGE;
 const STACK_TOP: u64 = LOAD - (4 << 20);
 const STACK_BYTES: u64 = 16 * PAGE;
 /// The signals a stop raises, which the handler takes.
 pub(super) const STOP_SIGNALS: [u32; 5] = [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV];
 
-const GENERAL_REGISTERS: usize = 16;
+pub(super) const GENERAL_REGISTERS: usize = 16;
 /// The block's words: the case's general registers in encoding order, rflags, the FS base, the selectors.
 const GENERAL_AT: u64 = 0;
 const FLAGS_AT: u64 = GENERAL_AT + GENERAL_REGISTERS as u64 * WORD;
@@ -131,7 +131,7 @@ const FRAME_GENERAL: [libc::c_int; GENERAL_REGISTERS] = [
     libc::REG_R15,
 ];
 
-fn general_register(number: usize) -> AsmRegister64 {
+pub(super) fn general_register(number: usize) -> AsmRegister64 {
     [
         rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
     ][number]

@@ -6,7 +6,7 @@ use iced_x86::{
     MemoryOperand, Mnemonic, OpKind, Register,
 };
 use wcontainers_guest_cpu::position::{AddressPlace, DirectExit, Fixup, Held, Holds, Resume};
-use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, Patch, Route};
+use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, PATCH_BYTES, Patch, Route};
 
 use crate::USER_END;
 use crate::area::{
@@ -713,7 +713,7 @@ pub fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {
 /// is longer: the rest becomes `nop`s); none where a rel32 cannot reach.
 pub fn retarget(code: &[u8], exit: &DirectExit, distance: i64) -> Option<Patch> {
     let at = usize::try_from(exit.start).expect("a host offset fits usize");
-    let mut bytes = [0; 8];
+    let mut bytes = [0; PATCH_BYTES];
     let (at, length) = match exit.retarget {
         None => {
             let over = iced_x86::Decoder::new(crate::MODE_BITS, &code[at..], DecoderOptions::NONE)

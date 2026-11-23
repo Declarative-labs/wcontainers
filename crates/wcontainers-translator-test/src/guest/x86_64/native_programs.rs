@@ -7,7 +7,9 @@
 //! signal, as on the reference.
 
 use super::native::{
-    LOWER_REGIONS, REGION_BYTES, STOP_SIGNALS, copy, map, protect, restorer, system_call,
+    ALTERNATE_STACK, ALTERNATE_STACK_BYTES, GENERAL_REGISTERS, LOAD, LOWER_REGIONS, PAGE, PROLOGUE,
+    REGION_BYTES, SECOND_LEVEL, STOP_SIGNALS, copy, general_register, map, protect, restorer,
+    system_call,
 };
 use super::*;
 use crate::programs::{Blob, Ran, STACK_TOP};
@@ -15,8 +17,8 @@ use crate::progress::{Counted, Position};
 use crate::reference::{BlobRequest, Reference};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
-    AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r8, r9, r10, r11, r12, r13, r14, r15, rax,
-    rbp, rbx, rcx, rdi, rdx, rsi, rsp,
+    AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r10, r11, r12, r13, r14, r15, rax, rbx,
+    rcx, rdi, rdx, rsi, rsp,
 };
 use linux_raw_sys::general::{SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, sigaltstack};
 use std::collections::BTreeMap;
@@ -30,10 +32,7 @@ use wcontainers_x86::area::{
 use wcontainers_x86::carry::{WITHHELD, retarget};
 use wcontainers_x86::native::{Target, Way};
 
-const PAGE: u64 = PAGE_SIZE;
-/// Where the blob is loaded, far from the program and its stack; its parts follow at fixed offsets.
-const LOAD: u64 = 1 << 43;
-const PROLOGUE: u64 = LOAD;
+/// The blob is loaded at `LOAD`, far from the program and its stack; its parts follow at fixed offsets.
 const PROLOGUE_ROOM: u64 = 2 * PAGE;
 const HANDLER: u64 = PROLOGUE + PROLOGUE_ROOM;
 const RESTORER: u64 = HANDLER + PAGE;
@@ -41,10 +40,6 @@ const BLOCK: u64 = RESTORER + PAGE;
 /// The pieces, then the routines for the inside's calls, the second level's words, the program's bytes and the
 /// thread area, whose first level the prologue maps after the blob.
 const PIECES: u64 = BLOCK + PAGE;
-/// The second level: one region's table, which every first-level word of the lower half points at.
-const SECOND_LEVEL: u64 = 1 << 44;
-const ALTERNATE_STACK: u64 = LOAD - (2 << 20);
-const ALTERNATE_STACK_BYTES: u64 = 16 * PAGE;
 /// Pieces start on this boundary, as a loader places them.
 const PIECE_ALIGN: usize = 16;
 /// The byte between pieces: `int3`.
@@ -361,7 +356,7 @@ pub fn compare(
     if counting {
         // An ended program's last call is its exit, whose position is the end.
         let (calls, end) = match ours.syscalls.split_last() {
-            Some((last, before)) if cpu.status == 0 => (before, Some(last.count)),
+            Some((last, before)) if cpu.status == libc::EXIT_SUCCESS => (before, Some(last.count)),
             _ => (&ours.syscalls[..], None),
         };
         if calls != counted.syscalls {
@@ -396,6 +391,18 @@ pub fn run(
     look_ahead: LookAhead,
     counted: bool,
 ) -> Result<NativeRun, String> {
+    run_timed(reference, blob, look_ahead, counted, 0).map(|(run, _)| run)
+}
+
+/// [`run`], then the blob with every piece it reached run `timed` times more, and the best of their times in
+/// seconds, from before the reference makes its process until it has ended, as it times a blob.
+pub fn run_timed(
+    reference: &mut Reference,
+    blob: &Blob,
+    look_ahead: LookAhead,
+    counted: bool,
+    timed: u32,
+) -> Result<(NativeRun, f64), String> {
     let mut pieces = Pieces {
         blob,
         look_ahead,
@@ -410,7 +417,7 @@ pub fn run(
     for runs in 1..=MOST_RUNS {
         let laid = lay_out(&pieces)?;
         let bytes = harness(blob, &laid).map_err(|e| format!("the blob does not assemble: {e}"))?;
-        let ran = reference.blob(&BlobRequest {
+        let request = |runs: u32| BlobRequest {
             bytes: &bytes,
             load: LOAD,
             stack_top: STACK_TOP,
@@ -418,8 +425,9 @@ pub fn run(
             headers: blob.headers_in_memory(),
             auxiliary: <X86_64 as GuestTest>::AUXILIARY,
             stdin: &[],
-            runs: 0,
-        })?;
+            runs,
+        };
+        let ran = reference.blob(&request(0))?;
         if ran.stderr.len() % RECORD_BYTES != 0 {
             return Err(format!(
                 "standard error of {} bytes: {}",
@@ -463,7 +471,12 @@ pub fn run(
             }
             _ => {
                 let syscalls = positions(&laid, &records)?;
-                return Ok(NativeRun {
+                let seconds = if timed > 0 {
+                    reference.blob(&request(timed))?.seconds
+                } else {
+                    ran.seconds
+                };
+                let run = NativeRun {
                     ran: Ran {
                         stdout: ran.stdout,
                         stderr: Vec::new(),
@@ -472,7 +485,8 @@ pub fn run(
                     syscalls,
                     runs,
                     pieces: pieces.made.values().flatten().count(),
-                });
+                };
+                return Ok((run, seconds));
             }
         };
         if matches!(pieces.made.get(&missed), Some(Some(_))) {
@@ -539,15 +553,6 @@ fn positions(laid: &Laid, records: &[(Said, u64, u64)]) -> Result<Vec<Position>,
     }
     Ok(positions)
 }
-
-fn general_register(number: usize) -> AsmRegister64 {
-    [
-        rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
-    ][number]
-}
-
-/// The guest's general registers, in encoding order.
-const GENERAL_REGISTERS: usize = 16;
 
 /// Where each part of the blob is, from the pieces' size on.
 struct Places {
