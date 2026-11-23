@@ -27,11 +27,14 @@ pub enum InsideCall {
     Unreachable,
     /// A jump's first miss: the inside makes the target its last target, then the jump goes on.
     LastTarget,
+    /// A copied `fldcw` unmasked an x87 exception: the inside enters the unmasked x87 mode, or raises the pending
+    /// exception as the meaning does (x86).
+    X87Control,
 }
 
 impl InsideCall {
     /// Every call.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Exit,
         Self::Answer,
         Self::FloatBefore,
@@ -40,6 +43,7 @@ impl InsideCall {
         Self::Misaligned,
         Self::Unreachable,
         Self::LastTarget,
+        Self::X87Control,
     ];
 
     /// The code a call carries.

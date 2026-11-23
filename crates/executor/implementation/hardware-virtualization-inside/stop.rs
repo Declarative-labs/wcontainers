@@ -474,6 +474,8 @@ pub fn resolve(
                     Stop::Alignment(to)
                 }
             }
+            // x86's alone: ARM64 code never makes it.
+            InsideCall::X87Control => return Err(unexpected),
             InsideCall::FloatBefore | InsideCall::FloatAfter | InsideCall::LastTarget => {
                 return Err(unexpected);
             }
