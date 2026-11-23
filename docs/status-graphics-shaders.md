@@ -88,7 +88,9 @@ sample (the Direct3D 12 runner's `eval-attrib-3`), A7's indirect draws found ser
 Run 21 (run 108, the section below): the NIR track's G9 run 18 ask, flat values from the last
 vertex of each primitive a geometry or tessellation stage makes (`Stages::provoking`). Run 22 (run
 109, the section below): geometry shaders reading their vertices' clip and cull distances (the
-Direct3D 12 runner's `clip-cull-distance-1-16-gs`, both builds).
+Direct3D 12 runner's `clip-cull-distance-1-16-gs`, both builds). Run 23 (run 110, the section
+below): pixel shaders reading cull distances (`VariantFlags::CULL_DISTANCE_LINKED`, an interface
+flag; the runner's `clip-cull-distance-1-6-ps` and `-1-8-ps`).
 Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
@@ -226,6 +228,70 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 23 (run 110): pixel shaders reading cull distances (the Direct3D 12 runner)
+
+Logs and scripts in scratch `graphics-shaders/g6-r110` (the clone `tip` moved there from g6-r109;
+`compile.log`, `arm1.log`, `arm2.log`, `gpu1.log` and on, `mutant.sh`, `dxbc_decls.py`, which
+prints a DXBC container's signatures and declarations). Nothing built on the Mac (rustfmt of
+single files only).
+- Chosen: the Direct3D 12 front's runner items `clip-cull-distance-1-6-ps` (both builds) and
+  `-1-8-ps` (dxc), `CullDistance`, the last converter-reachable refusal on its runner list.
+- Interface (9476e0c2): `VariantFlags::CULL_DISTANCE_LINKED`, not the `LinkedValues` field earlier
+  runs named ("Interface changes").
+- Built: with the flag a vertex or domain program keeps its `CullDistance` built-in (the cull
+  route culls by it) and also writes the distances as perspective-correct values, four a location,
+  at `stage::cull_distance_location` (after every other linked value); the cull route's
+  pass-throughs pass them on as any output location. A pixel program's cull distance input is one
+  array (DXBC: `lower.rs` `distance_input`, the clip distances' path made to serve both; DXIL:
+  dxil-spirv's input taken under the flag) replaced by those values (`variant.rs`
+  `cull_distance_reads`). The distances' order is dxbc-spirv's and dxil-spirv's, both from the
+  signature (semantic index, then component), so a pixel shader declaring only some components
+  (fxc declares `v2.xz` where the vertex shader writes `o2.xyz`, as in the runner's `-1-6-ps`)
+  reads the right ones. A geometry shader given the flag is refused `GeometryVariant`.
+- Found on the way, and fixed by a carried dxbc-spirv patch (the second hunk of
+  `converter-patches/dxbc-spirv/dxbc/dxbc_io_map.cpp.patch`, b9edb814): dxbc-spirv gave a clip or
+  cull distance declaration's components consecutive array elements from its element's first, so
+  a pixel shader declaring `v2.xz` read `z` from the element of `y`. Each component now takes its
+  place among the signature's components. Before the patch the first drawn run differed in 1,244
+  of 1,260 texels (`ps_cull_read`'s green, `cull.y` read for `cull.z`; gpu1.log). The same held
+  for clip distances a pixel shader declares in part; the runner's `clip-cull-distance-2-2-ps`
+  (run 102) declares whole elements, so it read right before too. No drawn test of a partly
+  declared clip distance.
+- Tests: own `vs_cull_read` (vs_cull's distances plus a fourth cull distance sharing a register
+  with two clip distances, packed as the runner's `-1-5-vs`, checked with `dxbc_decls.py`) and
+  `ps_cull_read` (reads three of the four), fxc and dxc builds, recorded in the corpus
+  (`vs_cull_read` `ok`, `ps_cull_read` `unsupported CullDistance` under the corpus's plain key). CPU
+  test `cull_distances_a_pixel_program_reads_come_from_the_linked_values` (tests/variants.rs).
+  Drawn: two `vs_cull_read` cases added to `CULLED` (tests/geometry_draw.rs; `linked` sets the flag
+  where the plain pixel conversion is refused `CullDistance`, as a front would, with
+  `CLIP_DISTANCE` beside it, which dxc's build needs; the cases take the allowance of 2 the
+  `vs_cull` cases have, as both clip in the pixel program). On the RTX 3080 against real
+  Direct3D 11 drawing fxc's builds, seeds 1 to 4, both builds: in
+  `geometry_shaders_draw_as_direct3d_does` (WebGPU, the cull route) and
+  `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` (WebGL 2 on ANGLE,
+  `GeometryReplay::culled`) 32 comparisons of `ps_cull_read`, 669 to 1,703 texels drawn, at most
+  21 texels apart and none by more than one code; the two tests' 256 and 248 comparisons all
+  passed, and the other two binaries' tests with `geometry_shaders_` in their names too (gpu3.log).
+  Without the allowance 6 of the 32 failed at one code (gpu2.log), as the `vs_cull` cases would.
+  With each cull distance read from the next component of its slot (`mutant.sh`) all 16 WebGPU
+  comparisons of `ps_cull_read` differ in every drawn texel, largest 140 to 143 (gpu4-mutant.log),
+  so the test catches a misplaced read.
+- The runner's files, checked on the ARM64 machine with a probe test kept in scratch
+  (`runner_probe.rs`, arm5.log): `-1-6-ps` (both builds) and `-1-8-ps.dxil` convert with
+  `CULL_DISTANCE_LINKED` and `CLIP_DISTANCE` (they read clip distances too), and are refused
+  `ClipDistance` without `CLIP_DISTANCE`; their vertex shaders `-1-5-vs` and `-1-7-vs.dxil` convert
+  with the flags. Not drawn here (the front's runner draws them).
+- Runs: ARM64 machine (load 15 to 22): rustfmt and clippy with warnings denied clean, every CPU test
+  binary with every corpus (`--include-ignored`) passed, before and after the carried patch (arm2.log,
+  arm4.log); the literal check names no line of this crate but the baseline line the change removed
+  (deleted, 5d97e6d2). Desktop (RTX 3080, one GPU job at a time, 3 cargo jobs): Windows clippy clean
+  (gpu1.log). By mistake one `gpu-job --help` was started (it takes the word as a command) and
+  stopped while still queued.
+- Not run: WebAssembly (the C++ change is one loop of dxbc-spirv; the native and WebAssembly builds
+  were byte-equal at run 100 and nothing here touches what differed then) and Chrome's compile check
+  on the new files (the corpus test's glslang verdicts are recorded and held; the pixel program
+  under the flag is drawn through wgpu above and its GLSL on ANGLE).
 
 ## G6 run 22 (run 109): geometry shaders reading clip and cull distances (the Direct3D 12 runner)
 
@@ -2080,7 +2146,8 @@ The pass bar, item by item:
    - `pull_draw`: `pulled` (every vertex format against what Direct3D 11 fetches).
    - `early_draw`: `EARLY_TESTS` (with storage writes, against Direct3D 11).
    - `stage_draw`: `LINE_COVERAGE` (against the RTX 3080 within a stated allowance),
-     `PRIMITIVE_ID_FROM_STAGE`. `geometry_draw`: `LAYER_FROM_STAGE`
+     `PRIMITIVE_ID_FROM_STAGE`. `geometry_draw`: `CULL_DISTANCE_LINKED` (since run 110, the
+     `vs_cull_read` cases of the cull route on WebGPU and WebGL 2), `LAYER_FROM_STAGE`
      (`layers_past_the_views_draw_into_the_first_as_direct3d_11_does`), `CLIP_DISTANCE` behind a
      geometry stage (met at the default seeds 1 to 4 only: gap A10), `DEPTH_CLAMP` behind a
      geometry stage (since run 56, `depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`,
@@ -2901,8 +2968,8 @@ The gap list (every item of the pass bar not met):
   with a border colour (needs the comparison in `SamplerState`); and dxil-spirv's crashes on signed
   but malformed DXIL (fuzz, Known gaps). The Direct3D 12 front's runner items besides (its status,
   "Asked of other tracks"): `DepthGatherComponent`, `SparseFeedback`, a cull distance read by a
-  pixel shader (a clip distance read converts with `CLIP_DISTANCE` since run 102; a cull distance
-  needs `LinkedValues` to carry them, an interface field; a geometry shader reading either converts
+  pixel shader (a clip distance read converts with `CLIP_DISTANCE` since run 102, a cull distance
+  read with `CULL_DISTANCE_LINKED` since run 110; a geometry shader reading either converts
   since run 109), a DXIL pixel shader's layer and
   viewport index, and values that differ without a
   refusal (`min16float` constants, subnormals not flushed; DXIL `frexp` of a NaN, whose `x != 0`
@@ -2950,7 +3017,9 @@ G6a run 5's tip):
   `SampleClamp` 0 (the runner's `sampler-13` and `-15`, both builds, convert since run 93);
   `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
   since run 87, recorded `UnboundedResourceArray` as the corpus has no ranges); a clip or cull distance read as an input
-  (`ClipDistance` 2, `CullDistance` 3: pixel shaders, DXBC and, since run 65, DXIL; the geometry
+  (`ClipDistance` 2, `CullDistance` 3: pixel shaders, DXBC and, since run 65, DXIL; the three
+  `CullDistance` convert with `CULL_DISTANCE_LINKED` since run 110, a key the corpus does not
+  give, so their records stay; the geometry
   shader `clip-cull-distance-1-16-gs`'s two builds convert since run 109; since run 102 `clip-cull-distance-2-2-ps`'s two builds convert with
   `CLIP_DISTANCE` and `linked`, a key the corpus does not give, so their records stay). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
   builtin" 4) converts since run 66.
@@ -2959,10 +3028,10 @@ G6a run 5's tip):
 
 1. G6's gap list in the order the fronts need it (A17 closed in run 103: the Direct3D 11 front can
    now use `LINE_DIAMOND` and lift its known failure; A28's second part closed as measured in run
-   102): a cull distance read by a pixel shader needs `LinkedValues` to carry cull distances (an
-   interface field breaking four struct literals in the Direct3D 11 and 12 crates; the runner's
-   `clip-cull-distance-1-6-ps` and `-1-8-ps`; a geometry shader reading clip and cull distances
-   as input, `-1-16-gs`, done in run 109); A5's routes on WebGL 2 were finished in runs
+   102; a cull distance read by a pixel shader done in run 110, `CULL_DISTANCE_LINKED`, the
+   runner's `clip-cull-distance-1-6-ps` and `-1-8-ps`; one read behind a geometry shader is
+   refused `GeometryVariant`, no file of any corpus has one; a geometry shader reading clip and
+   cull distances as input, `-1-16-gs`, done in run 109); A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; indirect draws through the stages are
    the fronts' read back, run 107; left: a pixel shader reading `SV_PrimitiveID` behind a geometry
@@ -2988,6 +3057,16 @@ G6a run 5's tip):
 
 ## Asked of other tracks
 
+- For the Direct3D 12 front (run 110, its runner): a pixel shader reading `SV_CullDistance`
+  (`clip-cull-distance-1-6-ps`, both builds, and `-1-8-ps`) converts with
+  `VariantFlags::CULL_DISTANCE_LINKED` and `linked` in its key and its vertex shader's ("How the
+  Direct3D fronts call `convert`"); without the flag it stays `CullDistance`, which tells you to
+  ask for it. All three read clip distances too, so they need `CLIP_DISTANCE` and
+  `clip_distances` beside it (refused `ClipDistance` otherwise; dxc's builds declare every
+  distance of the signature, so a dxc build needs it even when it reads none). Checked on the ARM64
+  machine (scratch g6-r110 arm5.log): with both flags all three convert, as do the vertex shaders
+  `-1-5-vs` (both builds) and `-1-7-vs.dxil`. Draw through the cull route as for any vertex
+  shader writing cull distances. Rerun them.
 - For the Direct3D 12 front (run 109, its runner): `clip-cull-distance-1-16-gs` (both builds), a
   geometry shader reading its vertices' clip and cull distances, converts and draws through
   `Stages::new` as before; nothing changes in the calls. Rerun it.
@@ -3506,6 +3585,17 @@ let reflection = &converted.reflection;
   linked values on as any output location. `tests/geometry_draw.rs` draws both (`vs_cull` writes
   a clip distance beside its cull distances; the `gs_clip` cases) on wgpu's Direct3D 12 path,
   which has no clip distances, against real Direct3D 11.
+- `CULL_DISTANCE_LINKED` (since run 110): a pixel shader reading `SV_CullDistance` is refused
+  `CullDistance` under a key without it. Convert it and its vertex (or domain) shader with the flag
+  and the same `linked` (`location` from the vertex program's outputs, as for a pixel shader
+  reading clip distances; with `CLIP_DISTANCE` and `clip_distances` beside it where the back end
+  lacks clip distances), and draw through the cull route as before (`Stages::culled`,
+  `GeometryReplay::culled`, `Stages::tessellated_with`): the vertex program still culls by its
+  built-in and also passes its cull distances, perspective-correct, after every other linked value
+  (`primitive_id_location` plus one with `PRIMITIVE_ID_FROM_STAGE`, else plus none), four a
+  location, where the pixel program reads them. Count those locations against the inter-stage
+  limit too. A geometry shader given the flag is refused `GeometryVariant` (a pixel shader reading
+  the cull distances a geometry shader writes is not built).
 - `mirror_once_in_shader` (without `Features::MIRROR_ONCE`): bind the sampler with each mirror-once
   axis made `Clamp`, and write `SamplerState { sampler }` (nine words: min, mag, mip filter, the three
   address modes of the API's sampler as `AddressMode as u32`, anisotropy, then the level range as
@@ -5367,6 +5457,14 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 110, `VariantFlags::CULL_DISTANCE_LINKED` (commit 9476e0c2 "interface: a variant flag
+  passing a vertex program's cull distances to the pixel program that reads them"), with the plan's text
+  (section 6's list of flags): pixel shaders reading `SV_CullDistance`. A flag and not the
+  `LinkedValues` field earlier runs named: the cull distances go after every other linked value,
+  so neither program needs the other's count, and a field would have broken four struct literals
+  in the Direct3D 11 and 12 crates, where other agents have uncommitted edits. `LinkedValues`' doc
+  names their place. Nothing else changes.
 
 - Run 103, `VariantFlags::LINE_DIAMOND` and `SlowPath::AliasedLinesAsQuads` (commit 3a86f258
   "interface: a pixel variant keeping the pixels of direct3d's aliased line rule, and its slow
