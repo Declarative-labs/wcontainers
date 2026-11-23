@@ -58,7 +58,6 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/route-resolver/conformance (4)
 #   crates/tcp-sockets/conformance (4)
 #   crates/route-resolver/implementation/host (2)
-#   crates/wcontainers-arm64 (1)
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
