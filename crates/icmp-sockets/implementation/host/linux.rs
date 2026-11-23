@@ -1,6 +1,5 @@
 use core::cell::RefCell;
 use core::cmp::Ordering;
-use core::mem::MaybeUninit;
 use core::num::{NonZeroU16, NonZeroU32};
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -555,9 +554,10 @@ impl HostIcmpSockets {
         let fd = socket.fd();
         let mut control = ControlBuffer::new();
         // Linux cuts a ping socket's packet to the buffers given and tells only what it copied.
-        let mut tail = [MaybeUninit::<u8>::uninit(); LARGEST_MESSAGE];
-        let tail = &mut tail[..LARGEST_MESSAGE.saturating_sub(into.len())];
-        let message = receive::receive_with_tail(fd, into, tail, &mut control, false)?;
+        let message = receive::with_tail(|tail| {
+            let room = LARGEST_MESSAGE.saturating_sub(into.len()).min(tail.len());
+            receive::receive_with_tail(fd, into, &mut tail[..room], &mut control, false)
+        })?;
         if message.control_truncated {
             self.shortfalls.count(receive::CONTROL_TRUNCATED);
         }

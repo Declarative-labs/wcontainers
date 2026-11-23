@@ -85,11 +85,26 @@ pub fn receive<'a>(
     receive_with_tail(fd, into, &mut [], control, error_queue)
 }
 
+/// The largest payload of one receive: an IP packet's largest length.
+const LARGEST_PAYLOAD: usize = u16::MAX as usize;
+
+std::thread_local! {
+    static TAIL: core::cell::RefCell<Box<[u8]>> =
+        core::cell::RefCell::new(vec![u8::MIN; LARGEST_PAYLOAD].into_boxed_slice());
+}
+
+/// Runs `with` on this thread's room for a whole payload, made once so that a receive does not clear it.
+///
+/// Not reentrant: `with` may not call it again.
+pub fn with_tail<R>(with: impl FnOnce(&mut [u8]) -> R) -> R {
+    TAIL.with_borrow_mut(|tail| with(tail))
+}
+
 /// One `recvmsg` into `into` and, for what does not fit there, on into `tail`.
 pub fn receive_with_tail<'a>(
     fd: BorrowedFd<'_>,
     into: &mut [u8],
-    tail: &mut [MaybeUninit<u8>],
+    tail: &mut [u8],
     control: &'a mut ControlBuffer,
     error_queue: bool,
 ) -> Result<Message<'a>, HostError> {
