@@ -83,6 +83,8 @@ enum wc_builtin {
    WC_BUILTIN_LAYER,
    WC_BUILTIN_VIEWPORT_INDEX,
    WC_BUILTIN_PRIMITIVE_ID,
+   WC_BUILTIN_TESS_LEVEL_OUTER,
+   WC_BUILTIN_TESS_LEVEL_INNER,
    WC_BUILTIN_OTHER,
 };
 
@@ -151,6 +153,9 @@ struct wc_flat_var {
    uint32_t stream;
    /* A fragment output's blend source: 1 for dual-source blending's second. */
    uint32_t blend_source;
+   /* One value for the patch: a control program's patch output, an evaluation program's patch
+    * input. */
+   uint32_t patch;
 };
 
 enum wc_flat_kind {
@@ -198,7 +203,8 @@ enum wc_flat_kind {
    X(DDX) X(DDY) X(DDX_FINE) X(DDY_FINE) X(DDX_COARSE) X(DDY_COARSE) X(LOAD_POINT_COORD)        \
    X(IMAGE_DEREF_LOAD) X(IMAGE_DEREF_STORE) X(IMAGE_DEREF_SIZE) X(DEREF_ATOMIC)                 \
    X(DEREF_ATOMIC_SWAP) X(LOAD_STAGE) X(STORE_STAGE) X(DEMOTE_SAMPLES) X(LOAD_SAMPLE_MASK_IN)   \
-   X(LOAD_PRIMITIVE_ID) X(LOAD_INVOCATION_ID) X(EMIT_VERTEX) X(END_PRIMITIVE)
+   X(LOAD_PRIMITIVE_ID) X(LOAD_INVOCATION_ID) X(EMIT_VERTEX) X(END_PRIMITIVE) X(LOAD_TESS_COORD) \
+   X(LOAD_PATCH_VERTICES_IN)
 
 #define WC_ENUM_ENTRY(name) WC_ALU_##name,
 enum wc_alu_op { WC_ALU_OPS(WC_ENUM_ENTRY) WC_ALU_UNSUPPORTED };
@@ -281,7 +287,45 @@ struct wc_flat_instr {
    const char *name;
 };
 
-enum wc_stage_kind { WC_FLAT_VERTEX, WC_FLAT_FRAGMENT, WC_FLAT_COMPUTE, WC_FLAT_GEOMETRY };
+enum wc_stage_kind {
+   WC_FLAT_VERTEX,
+   WC_FLAT_FRAGMENT,
+   WC_FLAT_COMPUTE,
+   WC_FLAT_GEOMETRY,
+   WC_FLAT_TESS_CONTROL,
+   WC_FLAT_TESS_EVALUATION,
+};
+
+/* An evaluation program's domain and spacing, in wcontainers_shaders::staged's order. */
+enum wc_tess_domain {
+   WC_TESS_TRIANGLES,
+   WC_TESS_QUADS,
+   WC_TESS_ISOLINES,
+   WC_TESS_DOMAIN_OTHER,
+};
+enum wc_tess_spacing {
+   WC_TESS_EQUAL,
+   WC_TESS_FRACTIONAL_ODD,
+   WC_TESS_FRACTIONAL_EVEN,
+   WC_TESS_SPACING_OTHER,
+};
+
+/* The tessellation levels a patch has: GLSL's gl_TessLevelOuter and gl_TessLevelInner. */
+#define WC_TESS_OUTER_LEVELS 4
+#define WC_TESS_INNER_LEVELS 2
+
+/* A tessellation program's declarations: the control points of its input patch (given to
+ * wc_nir_flatten: the draw's patch size for a control program, its control program's output for an
+ * evaluation program), a control program's output control points, and an evaluation program's
+ * domain, spacing, winding and point mode. */
+struct wc_flat_tessellation {
+   uint32_t points_in;
+   uint32_t points_out;
+   enum wc_tess_domain domain;
+   enum wc_tess_spacing spacing;
+   uint32_t counter_clockwise;
+   uint32_t point_mode;
+};
 
 /* A geometry program's primitives, in wcontainers_shaders::staged's order. */
 enum wc_geometry_input {
@@ -326,11 +370,13 @@ struct wc_flat {
    struct wc_flat_instr *instrs;
    uint32_t instr_count;
    struct wc_flat_geometry geometry;
+   struct wc_flat_tessellation tessellation;
 };
 
 /* Candidate B's preparation (out of SSA, values used outside their block in registers) and the
- * shader flattened; the arrays are the bridge's until wc_flat_free. False when out of memory. */
-bool wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out);
+ * shader flattened; the arrays are the bridge's until wc_flat_free. `points_in` is a tessellation
+ * program's input control points (unused for other stages). False when out of memory. */
+bool wc_nir_flatten(struct nir_shader *nir, uint32_t points_in, struct wc_flat *out);
 void wc_flat_free(struct wc_flat *flat);
 
 #endif

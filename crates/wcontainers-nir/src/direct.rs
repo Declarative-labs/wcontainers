@@ -21,7 +21,8 @@ use wcontainers_gpu::{
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
-    BuiltIn as StagedBuiltIn, GeometryInput, GeometryOutput, GeometryProgram, Place, StageVariable,
+    BuiltIn as StagedBuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram,
+    HullProgram, Partitioning, Place, StageVariable, TessellationDomain, TessellatorOutput,
 };
 
 const NONE: u32 = u32::MAX;
@@ -134,6 +135,8 @@ enum FlatBuiltIn {
     Layer,
     ViewportIndex,
     PrimitiveId,
+    TessLevelOuter,
+    TessLevelInner,
     Other,
 }
 
@@ -211,6 +214,7 @@ struct FlatVar {
     initialised: u32,
     stream: u32,
     blend_source: u32,
+    patch: u32,
 }
 
 #[repr(C)]
@@ -397,6 +401,8 @@ enum Intrinsic {
     LoadInvocationId,
     EmitVertex,
     EndPrimitive,
+    LoadTessCoord,
+    LoadPatchVerticesIn,
     Unsupported,
 }
 
@@ -493,6 +499,42 @@ enum FlatStage {
     Fragment,
     Compute,
     Geometry,
+    TessControl,
+    TessEvaluation,
+}
+
+/// `enum wc_tess_domain`, in `staged::TessellationDomain`'s order.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum FlatTessDomain {
+    Triangles,
+    Quads,
+    Isolines,
+    Other,
+}
+
+/// `enum wc_tess_spacing`, in `staged::Partitioning`'s order.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum FlatTessSpacing {
+    Equal,
+    FractionalOdd,
+    FractionalEven,
+    Other,
+}
+
+/// `struct wc_flat_tessellation`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct FlatTessellation {
+    points_in: u32,
+    points_out: u32,
+    domain: FlatTessDomain,
+    spacing: FlatTessSpacing,
+    counter_clockwise: u32,
+    point_mode: u32,
 }
 
 /// `enum wc_geometry_input`, in `staged::GeometryInput`'s order.
@@ -547,10 +589,11 @@ struct Flat {
     instrs: *const FlatInstr,
     instr_count: u32,
     geometry: FlatGeometry,
+    tessellation: FlatTessellation,
 }
 
 unsafe extern "C" {
-    fn wc_nir_flatten(nir: *mut NirShader, out: *mut Flat) -> bool;
+    fn wc_nir_flatten(nir: *mut NirShader, points_in: u32, out: *mut Flat) -> bool;
     fn wc_flat_free(flat: *mut Flat);
 }
 
@@ -652,12 +695,27 @@ struct Builder<'a> {
     helper_block: Option<Handle<GlobalVariable>>,
 }
 
-/// A geometry program's stage values (private variables) and the empty functions its emits, one a
-/// stream, and its strips' ends call, which the shaders crate fills (`wcontainers_shaders::staged`).
+/// Which of the stage helper's programs a staged program is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StagedForm {
+    Geometry,
+    Control,
+    Evaluation,
+}
+
+/// A geometry or tessellation program's stage values (private variables), and a geometry
+/// program's empty functions its emits, one a stream, and its strips' ends call, which the shaders
+/// crate fills (`wcontainers_shaders::staged`).
 struct Staged {
+    form: StagedForm,
     values: Vec<StageVariable>,
     emit: Vec<Handle<Function>>,
-    cut: Handle<Function>,
+    cut: Option<Handle<Function>>,
+    /// A tessellation program's input control points.
+    points_in: u32,
+    /// A control program waits for its other control points (`barrier()`), which the stage helper
+    /// runs one after another.
+    barrier: bool,
     /// The position output, whose y each emit negates as a vertex program's return does.
     position: Option<Handle<GlobalVariable>>,
     /// The built-in inputs read so far.
@@ -673,12 +731,42 @@ pub struct Rewrites {
     pub runtime_gather_offsets: bool,
 }
 
-/// Route B's module and what it needs of the rewrites; a geometry program's declarations, for
-/// [`geometry`], where the program is one.
+/// What route B gives of a program the stage helper runs.
+pub enum StagedProgram {
+    /// For [`geometry`].
+    Geometry(GeometryProgram),
+    /// A control program's stage values and declarations, for [`hull`], which takes the
+    /// tessellator's from its evaluation program.
+    Control(ControlProgram),
+    /// An evaluation program's, for [`domain`].
+    Evaluation(DomainProgram),
+}
+
+/// A control program as route B gives it: its function and stage values, the control points of
+/// its input and output patches.
+pub struct ControlProgram {
+    pub function: Handle<Function>,
+    pub input_points: u32,
+    pub output_points: u32,
+    pub values: Vec<StageVariable>,
+}
+
+/// The tessellator's declarations, which OpenGL makes in the evaluation program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tessellator {
+    pub domain: TessellationDomain,
+    pub partitioning: Partitioning,
+    pub output: TessellatorOutput,
+}
+
+/// Route B's module and what it needs of the rewrites; a geometry or tessellation program's
+/// declarations, where the program is one.
 pub struct Routed {
     pub module: Module,
     pub rewrites: Rewrites,
-    pub geometry: Option<GeometryProgram>,
+    pub staged: Option<StagedProgram>,
+    /// An evaluation program's tessellator, for its control program's [`hull`].
+    pub tessellator: Option<Tessellator>,
     /// The helper constants the module reads, in its block at [`HELPER_SET`].
     pub helpers: Vec<HelperSlot>,
 }
@@ -695,7 +783,8 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
     let Routed {
         module,
         rewrites,
-        geometry,
+        staged,
+        tessellator: _,
         helpers,
     } = routed;
     if !helpers.is_empty() {
@@ -703,9 +792,9 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
             "a texel buffer, whose length the driver gives"
         )));
     }
-    if geometry.is_some() {
+    if staged.is_some() {
         return Err(unsupported(format_args!(
-            "a geometry program outside the stage helper"
+            "a geometry or tessellation program outside the stage helper"
         )));
     }
     if !rewrites.formatless.is_empty() {
@@ -724,6 +813,12 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
 /// Candidate B: the program of `nir` as a naga module, with what it leaves for the shaders crate's
 /// rewrites ([`rewrite`]). The shader is changed by the preparation.
 pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
+    route_patches(nir, 0)
+}
+
+/// [`route`], for a tessellation program whose input patches have `points_in` control points (a
+/// control program's draw's patch size, an evaluation program's control program's output).
+pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertError> {
     let mut flat = Flattened(Flat {
         stage: FlatStage::Vertex,
         workgroup_size: WorkgroupSize::default(),
@@ -747,17 +842,27 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
             invocations: 0,
             streams: 0,
         },
+        tessellation: FlatTessellation {
+            points_in: 0,
+            points_out: 0,
+            domain: FlatTessDomain::Other,
+            spacing: FlatTessSpacing::Other,
+            counter_clockwise: 0,
+            point_mode: 0,
+        },
     });
     // SAFETY: the shader is live; the bridge fills `flat` with arrays it owns.
-    if !unsafe { wc_nir_flatten(nir.raw(), &mut flat.0) } {
+    if !unsafe { wc_nir_flatten(nir.raw(), points_in, &mut flat.0) } {
         return Err(ConvertError::Mesa(FLATTEN));
     }
     let f = &flat.0;
     let stage = match f.stage {
         FlatStage::Vertex => ShaderStage::Vertex,
         FlatStage::Fragment => ShaderStage::Fragment,
-        // A geometry program becomes the stage helper's compute work.
-        FlatStage::Compute | FlatStage::Geometry => ShaderStage::Compute,
+        // A geometry or control program becomes the stage helper's compute work; an evaluation
+        // program the vertex program the helper's tessellator draws through.
+        FlatStage::Compute | FlatStage::Geometry | FlatStage::TessControl => ShaderStage::Compute,
+        FlatStage::TessEvaluation => ShaderStage::Vertex,
     };
     let mut b = Builder {
         stage,
@@ -787,11 +892,33 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         helpers: Vec::new(),
         helper_block: None,
     };
-    if f.stage == FlatStage::Geometry {
-        b.staged = Some(b.staged_functions(f.geometry.streams));
+    match f.stage {
+        FlatStage::Geometry => b.staged = Some(b.staged_functions(f.geometry.streams)),
+        FlatStage::TessControl | FlatStage::TessEvaluation => {
+            b.staged = Some(Staged {
+                form: if f.stage == FlatStage::TessControl {
+                    StagedForm::Control
+                } else {
+                    StagedForm::Evaluation
+                },
+                values: Vec::new(),
+                emit: Vec::new(),
+                cut: None,
+                points_in: f.tessellation.points_in,
+                barrier: false,
+                position: None,
+                inputs: Vec::new(),
+            });
+        }
+        _ => {}
     }
     let instrs = slice(f.instrs, f.instr_count);
     b.mark_atomics(instrs);
+    if let Some(staged) = b.staged.as_mut().filter(|s| s.form == StagedForm::Control) {
+        staged.barrier = instrs
+            .iter()
+            .any(|i| i.kind == Kind::Intrinsic && intrinsic_op(i.op) == Intrinsic::Barrier);
+    }
     b.emitter.start(&b.function.expressions);
     b.variables()?;
     if instrs
@@ -805,11 +932,15 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
     }
     let rewrites = std::mem::take(&mut b.rewrites);
     let helpers = std::mem::take(&mut b.helpers);
-    let (module, geometry) = b.finish(f)?;
+    let (module, staged) = b.finish(f)?;
+    let tessellator = (f.stage == FlatStage::TessEvaluation)
+        .then(|| tessellator(&f.tessellation))
+        .transpose()?;
     Ok(Routed {
         module,
         rewrites,
-        geometry,
+        staged,
+        tessellator,
         helpers,
     })
 }
@@ -1388,6 +1519,12 @@ impl Builder<'_> {
                     var.builtin
                 )));
             }
+            FlatBuiltIn::TessLevelOuter | FlatBuiltIn::TessLevelInner => {
+                return Err(unsupported(format_args!(
+                    "a stage value of the built-in {:?} outside a tessellation program",
+                    var.builtin
+                )));
+            }
         })
     }
 
@@ -1395,7 +1532,12 @@ impl Builder<'_> {
     fn variables(&mut self) -> Result<(), ConvertError> {
         for (index, var) in self.vars.iter().enumerate() {
             let place = match var.mode {
-                VarMode::Input | VarMode::Output if self.staged.is_some() => {
+                // An evaluation program's outputs are its vertex entry point's own.
+                VarMode::Input | VarMode::Output
+                    if self.staged.as_ref().is_some_and(|s| {
+                        var.mode == VarMode::Input || s.form != StagedForm::Evaluation
+                    }) =>
+                {
                     self.staged_value(var)?
                 }
                 VarMode::Input | VarMode::Output => {
@@ -2624,7 +2766,7 @@ impl Builder<'_> {
         self.statement(Statement::Store { pointer, value });
     }
 
-    fn finish(mut self, f: &Flat) -> Result<(Module, Option<GeometryProgram>), ConvertError> {
+    fn finish(mut self, f: &Flat) -> Result<(Module, Option<StagedProgram>), ConvertError> {
         if !self.open.is_empty() {
             return Err(unsupported(format_args!(
                 "control flow the walk did not close"
@@ -2633,11 +2775,25 @@ impl Builder<'_> {
         self.ret();
         let _ = self.emitter.finish(&self.function.expressions);
         self.function.body = self.blocks.pop().expect("the body");
-        if let Some(staged) = self.staged.take() {
-            let main = self.module.functions.append(self.function, Span::UNDEFINED);
-            let program = geometry_program(&f.geometry, staged, main)?;
-            return Ok((self.module, Some(program)));
-        }
+        let staged = self.staged.take();
+        let evaluation = match staged {
+            Some(staged) if staged.form == StagedForm::Evaluation => Some(staged),
+            Some(staged) => {
+                let main = self.module.functions.append(self.function, Span::UNDEFINED);
+                let program = if staged.form == StagedForm::Geometry {
+                    StagedProgram::Geometry(geometry_program(&f.geometry, staged, main)?)
+                } else {
+                    StagedProgram::Control(ControlProgram {
+                        function: main,
+                        input_points: f.tessellation.points_in,
+                        output_points: f.tessellation.points_out,
+                        values: staged.values,
+                    })
+                };
+                return Ok((self.module, Some(program)));
+            }
+            None => None,
+        };
         self.module.entry_points.push(naga::EntryPoint {
             name: wcontainers_shaders::ENTRY_POINT.into(),
             stage: self.stage,
@@ -2653,7 +2809,15 @@ impl Builder<'_> {
             task_payload: None,
             incoming_ray_payload: None,
         });
-        Ok((self.module, None))
+        let program = match evaluation {
+            Some(staged) => Some(StagedProgram::Evaluation(DomainProgram {
+                domain: tessellator(&f.tessellation)?.domain,
+                input_points: staged.points_in,
+                values: staged.values,
+            })),
+            None => None,
+        };
+        Ok((self.module, program))
     }
 }
 
@@ -2961,6 +3125,17 @@ impl Builder<'_> {
             Intrinsic::Barrier => {
                 let mut flags = naga::Barrier::empty();
                 let [execution, shared, storage, ..] = i.value;
+                // A control program's wait for its other control points: the stage helper runs
+                // them one after another, each after every earlier one has written its outputs.
+                if self
+                    .staged
+                    .as_ref()
+                    .is_some_and(|s| s.form == StagedForm::Control)
+                    && shared == 0
+                    && storage == 0
+                {
+                    return Ok(());
+                }
                 flags.set(naga::Barrier::WORK_GROUP, shared != 0);
                 flags.set(naga::Barrier::STORAGE, storage != 0);
                 if execution != 0 {
@@ -3047,6 +3222,16 @@ impl Builder<'_> {
             Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap => self.atomic(i)?,
             Intrinsic::LoadStage => {
                 let (mut pointer, mut ty) = self.stage_value(i)?;
+                let output = self
+                    .vars
+                    .get(i.value[0] as usize)
+                    .is_some_and(|v| v.mode == VarMode::Output);
+                if output && self.staged.as_ref().is_some_and(|s| s.barrier) {
+                    return Err(unsupported(format_args!(
+                        "a control program reading outputs after barrier(), whose control points \
+                         the stage helper runs one after another"
+                    )));
+                }
                 if i.arrayed != 0 {
                     let index = self.src(i, 0, 1, Uint)?;
                     pointer = self.add(Expression::Access {
@@ -3060,7 +3245,16 @@ impl Builder<'_> {
                 self.set(i, Value::Expr(e, self.kind_of(ty)));
             }
             Intrinsic::StoreStage => {
-                let (pointer, ty) = self.stage_value(i)?;
+                let (mut pointer, mut ty) = self.stage_value(i)?;
+                // A control program's output for one control point, its second source.
+                if i.arrayed != 0 {
+                    let index = self.src(i, 1, 1, Uint)?;
+                    pointer = self.add(Expression::Access {
+                        base: pointer,
+                        index,
+                    });
+                    ty = self.types[ty as usize].element;
+                }
                 let (value, components) = self.whole(i.src[0].def, self.kind_of(ty))?;
                 if self.types[ty as usize].kind == TypeKind::Scalar {
                     self.statement(Statement::Store { pointer, value });
@@ -3101,7 +3295,27 @@ impl Builder<'_> {
                 self.statement(Statement::Store { pointer, value });
             }
             Intrinsic::LoadPrimitiveId => self.staged_input(i, StagedBuiltIn::PrimitiveId)?,
-            Intrinsic::LoadInvocationId => self.staged_input(i, StagedBuiltIn::GeometryInstance)?,
+            Intrinsic::LoadInvocationId => {
+                let builtin = match self.staged.as_ref().map(|s| s.form) {
+                    Some(StagedForm::Control) => StagedBuiltIn::ControlPointId,
+                    _ => StagedBuiltIn::GeometryInstance,
+                };
+                self.staged_input(i, builtin)?;
+            }
+            Intrinsic::LoadPatchVerticesIn => match self.staged.as_ref() {
+                Some(s) if s.form == StagedForm::Control => {
+                    self.staged_input(i, StagedBuiltIn::ControlPointCount)?;
+                }
+                // An evaluation program's patches are its control program's output.
+                Some(s) if s.form == StagedForm::Evaluation => {
+                    let points = s.points_in;
+                    self.set(i, Value::Const([points, 0, 0, 0], 1, false));
+                }
+                _ => return Err(unsupported(name(i))),
+            },
+            Intrinsic::LoadTessCoord => {
+                self.staged_input(i, StagedBuiltIn::TessellationCoordinate)?
+            }
             Intrinsic::EmitVertex => {
                 let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
                 let function = *staged.emit.get(i.value[0] as usize).ok_or_else(|| {
@@ -3121,7 +3335,7 @@ impl Builder<'_> {
             }
             Intrinsic::EndPrimitive => {
                 let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
-                let function = staged.cut;
+                let function = staged.cut.ok_or_else(|| unsupported(name(i)))?;
                 self.statement(Statement::Call {
                     function,
                     arguments: Vec::new(),
@@ -3636,7 +3850,7 @@ impl Builder<'_> {
         };
         if self.staged.is_some() {
             return Err(unsupported(format_args!(
-                "a texel buffer in a geometry program"
+                "a texel buffer in a geometry or tessellation program"
             )));
         }
         let at = self.module.global_variables[g]
@@ -3812,30 +4026,44 @@ impl Builder<'_> {
         };
         let emit = (0..streams.max(1)).map(|_| empty()).collect();
         Staged {
+            form: StagedForm::Geometry,
             values: Vec::new(),
             emit,
-            cut: empty(),
+            cut: Some(empty()),
+            points_in: 0,
+            barrier: false,
             position: None,
             inputs: Vec::new(),
         }
     }
 
-    /// A geometry program's stage value as a private variable the shaders crate fills or reads. The
-    /// vertex stage's positions come with y negated (its return's), which is undone here.
+    /// A geometry or tessellation program's stage value as a private variable the shaders crate
+    /// fills or reads. The vertex stage's positions come with y negated (its return's), which is
+    /// undone here.
     fn staged_value(&mut self, var: &FlatVar) -> Result<Handle<Expression>, ConvertError> {
         let output = var.mode == VarMode::Output;
+        let form = self.staged.as_ref().expect("a staged program").form;
+        let tessellation = form != StagedForm::Geometry;
         let place = match var.builtin {
             FlatBuiltIn::None => Place::Location {
                 location: var.location,
                 component: 0,
             },
             FlatBuiltIn::Position => Place::BuiltIn(StagedBuiltIn::Position),
-            FlatBuiltIn::ClipDistance if output => Place::BuiltIn(StagedBuiltIn::ClipDistance),
+            FlatBuiltIn::ClipDistance if output || tessellation => {
+                Place::BuiltIn(StagedBuiltIn::ClipDistance)
+            }
             FlatBuiltIn::Layer if output => Place::BuiltIn(StagedBuiltIn::Layer),
             FlatBuiltIn::ViewportIndex if output => Place::BuiltIn(StagedBuiltIn::ViewportIndex),
+            FlatBuiltIn::TessLevelOuter if tessellation => {
+                Place::BuiltIn(StagedBuiltIn::OuterFactors)
+            }
+            FlatBuiltIn::TessLevelInner if tessellation => {
+                Place::BuiltIn(StagedBuiltIn::InnerFactors)
+            }
             other => {
                 return Err(unsupported(format_args!(
-                    "a geometry program's {} of the built-in {other:?}",
+                    "a {form:?} program's {} of the built-in {other:?}",
                     if output { "output" } else { "input" }
                 )));
             }
@@ -3858,13 +4086,16 @@ impl Builder<'_> {
             output,
             place,
             stream: var.stream,
-            patch: false,
+            patch: var.patch != 0,
         });
-        if output && var.builtin == FlatBuiltIn::Position {
+        // A geometry program's emits flip its position as a vertex program's return does; a
+        // control program's outputs go to the evaluation program, whose return flips them.
+        if output && var.builtin == FlatBuiltIn::Position && form == StagedForm::Geometry {
             staged.position = Some(variable);
         }
         let pointer = self.add(Expression::GlobalVariable(variable));
-        if !output && var.builtin == FlatBuiltIn::Position {
+        // The inputs a vertex program wrote; an evaluation program's are its control program's.
+        if !output && var.builtin == FlatBuiltIn::Position && form != StagedForm::Evaluation {
             for vertex in 0..self.types[var.ty as usize].length {
                 let at = self.add(Expression::AccessIndex {
                     base: pointer,
@@ -3876,13 +4107,23 @@ impl Builder<'_> {
         Ok(pointer)
     }
 
-    /// A geometry program's built-in input, an unsigned integer.
+    /// A staged program's built-in input: an unsigned integer, or the tessellation coordinate's
+    /// three floats.
     fn staged_input(&mut self, i: &FlatInstr, builtin: StagedBuiltIn) -> Result<(), ConvertError> {
         let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
+        let (inner, kind) = if builtin == StagedBuiltIn::TessellationCoordinate {
+            let inner = TypeInner::Vector {
+                size: VectorSize::Tri,
+                scalar: Scalar::F32,
+            };
+            (inner, ScalarKind::Float)
+        } else {
+            (TypeInner::Scalar(Scalar::U32), ScalarKind::Uint)
+        };
         let pointer = match staged.inputs.iter().find(|(b, _)| *b == builtin) {
             Some(&(_, pointer)) => pointer,
             None => {
-                let ty = self.add_type(TypeInner::Scalar(Scalar::U32));
+                let ty = self.add_type(inner);
                 let variable = self.module.global_variables.append(
                     GlobalVariable {
                         name: None,
@@ -3908,9 +4149,48 @@ impl Builder<'_> {
             }
         };
         let e = self.add(Expression::Load { pointer });
-        self.set(i, Value::Expr(e, ScalarKind::Uint));
+        self.set(i, Value::Expr(e, kind));
         Ok(())
     }
+}
+
+/// An evaluation program's tessellator in the shaders crate's terms.
+fn tessellator(t: &FlatTessellation) -> Result<Tessellator, ConvertError> {
+    let domain = match t.domain {
+        FlatTessDomain::Triangles => TessellationDomain::Triangle,
+        FlatTessDomain::Quads => TessellationDomain::Quad,
+        FlatTessDomain::Isolines => TessellationDomain::Isoline,
+        FlatTessDomain::Other => {
+            return Err(unsupported(format_args!(
+                "an evaluation program without a domain"
+            )));
+        }
+    };
+    let partitioning = match t.spacing {
+        FlatTessSpacing::Equal => Partitioning::Integer,
+        FlatTessSpacing::FractionalOdd => Partitioning::FractionalOdd,
+        FlatTessSpacing::FractionalEven => Partitioning::FractionalEven,
+        FlatTessSpacing::Other => {
+            return Err(unsupported(format_args!(
+                "an evaluation program without a spacing"
+            )));
+        }
+    };
+    // Both name the winding in the domain's own coordinates, before any program places them.
+    let output = if t.point_mode != 0 {
+        TessellatorOutput::Points
+    } else if domain == TessellationDomain::Isoline {
+        TessellatorOutput::Lines
+    } else if t.counter_clockwise != 0 {
+        TessellatorOutput::TrianglesCounterClockwise
+    } else {
+        TessellatorOutput::TrianglesClockwise
+    };
+    Ok(Tessellator {
+        domain,
+        partitioning,
+        output,
+    })
 }
 
 /// A geometry program's declarations in the shaders crate's terms, `main` its function.
@@ -3944,7 +4224,7 @@ fn geometry_program(
     Ok(GeometryProgram {
         main,
         emit: staged.emit,
-        cut: staged.cut,
+        cut: staged.cut.expect("a geometry program's end function"),
         input,
         output,
         max_vertices: g.max_vertices,
@@ -3965,10 +4245,13 @@ pub fn geometry(
     let Routed {
         module,
         rewrites,
-        geometry,
+        staged,
+        tessellator: _,
         helpers: _,
     } = routed;
-    let program = geometry.ok_or_else(|| unsupported(format_args!("no geometry program")))?;
+    let Some(StagedProgram::Geometry(program)) = staged else {
+        return Err(unsupported(format_args!("no geometry program")));
+    };
     let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
     if !rewrites.formatless.iter().all(named) {
         return Err(unsupported(format_args!(
@@ -3988,6 +4271,89 @@ pub fn geometry(
     };
     wcontainers_shaders::staged::geometry(module, &program, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))
+}
+
+/// A control program of route B (`routed.staged`) in the stage helper's compute form, with the
+/// tessellator of its evaluation program, as `wcontainers_shaders::staged::hull` makes it;
+/// otherwise as [`geometry`].
+pub fn hull(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    tessellator: Tessellator,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<wcontainers_shaders::Converted, ConvertError> {
+    let (module, staged, bindings) = staged_parts(routed, bindings, variant)?;
+    let Some(StagedProgram::Control(control)) = staged else {
+        return Err(unsupported(format_args!("no control program")));
+    };
+    let program = HullProgram {
+        control_point: control.function,
+        patch_constant: None,
+        domain: tessellator.domain,
+        partitioning: tessellator.partitioning,
+        output: tessellator.output,
+        input_points: control.input_points,
+        output_points: control.output_points,
+        values: control.values,
+    };
+    let reflection = staged_reflection(SourceStage::Hull, bindings);
+    wcontainers_shaders::staged::hull(module, &program, reflection, variant, route_key)
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))
+}
+
+/// An evaluation program of route B (`routed.staged`) in the vertex form the stage helper's
+/// tessellator draws through, as `wcontainers_shaders::staged::domain` makes it; otherwise as
+/// [`geometry`].
+pub fn domain(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<wcontainers_shaders::Converted, ConvertError> {
+    let (module, staged, bindings) = staged_parts(routed, bindings, variant)?;
+    let Some(StagedProgram::Evaluation(program)) = staged else {
+        return Err(unsupported(format_args!("no evaluation program")));
+    };
+    let reflection = staged_reflection(SourceStage::Domain, bindings);
+    wcontainers_shaders::staged::domain(module, &program, reflection, variant, route_key)
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))
+}
+
+/// A staged program's module and declarations, where every storage slot without a format is
+/// one `variant` names and the program reads no helper constants of route B's own.
+fn staged_parts(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    variant: &VariantKey,
+) -> Result<(Module, Option<StagedProgram>, Vec<ReflectedBinding>), ConvertError> {
+    let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
+    if !routed.rewrites.formatless.iter().all(named) {
+        return Err(unsupported(format_args!(
+            "a storage image without a format the variant does not name"
+        )));
+    }
+    if !routed.helpers.is_empty() {
+        return Err(unsupported(format_args!(
+            "a texel buffer in a tessellation program"
+        )));
+    }
+    Ok((routed.module, routed.staged, bindings))
+}
+
+/// The reflection the shaders crate's staged forms start from: the program's bindings.
+fn staged_reflection(stage: SourceStage, bindings: Vec<ReflectedBinding>) -> Reflection {
+    Reflection {
+        stage,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        bindings,
+        helpers: Vec::new(),
+        helper_size: 0,
+        sampled_pairs: Vec::new(),
+        extras: StageExtras::None,
+        slow_paths: Vec::new(),
+    }
 }
 
 /// The bytes of route B's helper block holding `helpers`, each two words

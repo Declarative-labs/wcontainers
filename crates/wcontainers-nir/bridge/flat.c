@@ -32,8 +32,10 @@
  * slot, its type and interpolation gathered from the intrinsics that reach it. */
 struct io_slot {
    bool output;
-   /* One value a vertex of the input primitive: an array of them. */
+   /* One value a vertex of the input primitive (or a control point of a patch): an array of them. */
    bool per_vertex;
+   /* One value for a patch. */
+   bool patch;
    unsigned stream;
    unsigned location;
    /* A fragment output's blend source: 1 for dual-source blending's second. */
@@ -350,6 +352,10 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
       return WC_BUILTIN_VIEWPORT_INDEX;
    case VARYING_SLOT_PRIMITIVE_ID:
       return WC_BUILTIN_PRIMITIVE_ID;
+   case VARYING_SLOT_TESS_LEVEL_OUTER:
+      return WC_BUILTIN_TESS_LEVEL_OUTER;
+   case VARYING_SLOT_TESS_LEVEL_INNER:
+      return WC_BUILTIN_TESS_LEVEL_INNER;
    case VARYING_SLOT_COL0:
    case VARYING_SLOT_COL1:
    case VARYING_SLOT_BFC0:
@@ -366,6 +372,11 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
       if (slot < VARYING_SLOT_VAR0) {
          *location = slot;
          return WC_BUILTIN_OTHER;
+      }
+      /* A patch's own values have locations of their own. */
+      if (slot >= VARYING_SLOT_PATCH0) {
+         *location = slot - VARYING_SLOT_PATCH0;
+         return WC_BUILTIN_NONE;
       }
       *location = slot - VARYING_SLOT_VAR0;
       return WC_BUILTIN_NONE;
@@ -429,9 +440,14 @@ add_var(struct flattening *f, nir_variable *var)
 /* What an IO intrinsic reaches: its slot (the clip distances folded into one array) and its first
  * component, or the reason it is refused. */
 struct io_access {
+   /* An output slot, and whether the intrinsic writes it (a control program also reads them). */
    bool output;
-   /* One value a vertex of the input primitive, its vertex the intrinsic's first source. */
+   bool store;
+   /* One value a vertex of the input primitive or a control point, its vertex the intrinsic's
+    * vertex source. */
    bool per_vertex;
+   /* One value for a patch. */
+   bool patch;
    /* A geometry program's output stream. */
    unsigned stream;
    unsigned location;
@@ -455,20 +471,36 @@ io_access(const nir_shader *nir, nir_intrinsic_instr *intr, struct io_access *a)
    case nir_intrinsic_store_output:
       output = true;
       break;
+   case nir_intrinsic_store_per_vertex_output:
+   case nir_intrinsic_load_output:
+   case nir_intrinsic_load_per_vertex_output:
+      /* A control program writes one control point's values and reads any of its outputs. */
+      if (nir->info.stage != MESA_SHADER_TESS_CTRL)
+         return false;
+      output = true;
+      break;
    default:
       return false;
    }
+   bool store = intr->intrinsic == nir_intrinsic_store_output ||
+                intr->intrinsic == nir_intrinsic_store_per_vertex_output;
    nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
    nir_src *offset = nir_get_io_offset_src(intr);
-   const nir_def *value = output ? intr->src[0].ssa : &intr->def;
+   const nir_def *value = store ? intr->src[0].ssa : &intr->def;
    *a = (struct io_access){
       .output = output,
-      .per_vertex = intr->intrinsic == nir_intrinsic_load_per_vertex_input,
+      .store = store,
+      .per_vertex = intr->intrinsic == nir_intrinsic_load_per_vertex_input ||
+                    intr->intrinsic == nir_intrinsic_store_per_vertex_output ||
+                    intr->intrinsic == nir_intrinsic_load_per_vertex_output,
+      .patch = semantics.location >= VARYING_SLOT_PATCH0 ||
+               semantics.location == VARYING_SLOT_TESS_LEVEL_OUTER ||
+               semantics.location == VARYING_SLOT_TESS_LEVEL_INNER,
       .location = semantics.location,
       .first = nir_intrinsic_component(intr),
       .count = value->num_components,
-      .base = nir_alu_type_get_base_type(output ? nir_intrinsic_src_type(intr)
-                                                : nir_intrinsic_dest_type(intr)),
+      .base = nir_alu_type_get_base_type(store ? nir_intrinsic_src_type(intr)
+                                               : nir_intrinsic_dest_type(intr)),
    };
    if (output && nir->info.stage == MESA_SHADER_GEOMETRY) {
       unsigned streams = semantics.gs_streams;
@@ -540,6 +572,7 @@ gather_slots(struct flattening *f, nir_function_impl *impl)
             *s = (struct io_slot){
                .output = a.output,
                .per_vertex = a.per_vertex,
+               .patch = a.patch,
                .stream = a.stream,
                .location = a.location,
                .blend_source = a.blend_source,
@@ -588,6 +621,20 @@ base_type_of(nir_alu_type base)
    }
 }
 
+/* The vertices or control points a per-vertex value is held for. */
+static uint32_t
+per_vertex_count(const struct flattening *f, bool output)
+{
+   switch (f->nir->info.stage) {
+   case MESA_SHADER_TESS_CTRL:
+      return output ? f->out->tessellation.points_out : f->out->tessellation.points_in;
+   case MESA_SHADER_TESS_EVAL:
+      return f->out->tessellation.points_in;
+   default:
+      return f->out->geometry.vertices_in;
+   }
+}
+
 /* One variable a slot, after the shader's own. */
 static bool
 add_slots(struct flattening *f)
@@ -606,7 +653,11 @@ add_slots(struct flattening *f)
       /* A built-in has its own type whatever part of it the program reaches. */
       const struct glsl_type *type =
          v.builtin == WC_BUILTIN_CLIP_DISTANCE ? glsl_array_type(glsl_float_type(), s->components, 0)
-         : v.builtin == WC_BUILTIN_POSITION    ? glsl_vec4_type()
+         : v.builtin == WC_BUILTIN_TESS_LEVEL_OUTER
+            ? glsl_array_type(glsl_float_type(), WC_TESS_OUTER_LEVELS, 0)
+         : v.builtin == WC_BUILTIN_TESS_LEVEL_INNER
+            ? glsl_array_type(glsl_float_type(), WC_TESS_INNER_LEVELS, 0)
+         : v.builtin == WC_BUILTIN_POSITION ? glsl_vec4_type()
          : v.builtin == WC_BUILTIN_SAMPLE_MASK ? glsl_uint_type()
          : v.builtin == WC_BUILTIN_FRAG_DEPTH || v.builtin == WC_BUILTIN_POINT_SIZE
             ? glsl_float_type()
@@ -615,7 +666,7 @@ add_slots(struct flattening *f)
                ? glsl_uint_type()
                : glsl_vector_type(base_type_of(s->base), s->components);
       if (s->per_vertex)
-         type = glsl_array_type(type, f->out->geometry.vertices_in, 0);
+         type = glsl_array_type(type, per_vertex_count(f, s->output), 0);
       if (!type_index(f, type, &v.type))
          return false;
       /* Lowered IO keeps the interpolation only where a fragment input is loaded; an output takes
@@ -629,6 +680,7 @@ add_slots(struct flattening *f)
                                                                   : WC_INTERP_PERSPECTIVE;
       v.stream = s->stream;
       v.blend_source = s->blend_source;
+      v.patch = s->patch;
       v.centroid = s->load == nir_intrinsic_load_barycentric_centroid;
       v.sample = s->load == nir_intrinsic_load_barycentric_sample;
       GROW(f->out->vars, f->out->var_count, f->var_capacity);
@@ -776,6 +828,10 @@ intrinsic_of(nir_intrinsic_op op)
    case nir_intrinsic_end_primitive:
    case nir_intrinsic_end_primitive_with_counter:
       return WC_INTRINSIC_END_PRIMITIVE;
+   case nir_intrinsic_load_tess_coord:
+      return WC_INTRINSIC_LOAD_TESS_COORD;
+   case nir_intrinsic_load_patch_vertices_in:
+      return WC_INTRINSIC_LOAD_PATCH_VERTICES_IN;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
    }
@@ -957,7 +1013,7 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
          i->name = refused;
          return true;
       }
-      i->op = a.output ? WC_INTRINSIC_STORE_STAGE : WC_INTRINSIC_LOAD_STAGE;
+      i->op = a.store ? WC_INTRINSIC_STORE_STAGE : WC_INTRINSIC_LOAD_STAGE;
       i->value[0] = f->first_slot_var + (uint32_t)(s - f->slots);
       i->component = a.first;
       i->arrayed = a.per_vertex;
@@ -1236,8 +1292,48 @@ geometry_of(const nir_shader *nir)
    return g;
 }
 
+static struct wc_flat_tessellation
+tessellation_of(const nir_shader *nir, uint32_t points_in)
+{
+   struct wc_flat_tessellation t = {
+      .points_in = points_in,
+      .points_out = nir->info.tess.tcs_vertices_out,
+      .domain = WC_TESS_DOMAIN_OTHER,
+      .spacing = WC_TESS_SPACING_OTHER,
+      .counter_clockwise = nir->info.tess.ccw,
+      .point_mode = nir->info.tess.point_mode,
+   };
+   switch (nir->info.tess._primitive_mode) {
+   case TESS_PRIMITIVE_TRIANGLES:
+      t.domain = WC_TESS_TRIANGLES;
+      break;
+   case TESS_PRIMITIVE_QUADS:
+      t.domain = WC_TESS_QUADS;
+      break;
+   case TESS_PRIMITIVE_ISOLINES:
+      t.domain = WC_TESS_ISOLINES;
+      break;
+   default:
+      break;
+   }
+   switch (nir->info.tess.spacing) {
+   case TESS_SPACING_EQUAL:
+      t.spacing = WC_TESS_EQUAL;
+      break;
+   case TESS_SPACING_FRACTIONAL_ODD:
+      t.spacing = WC_TESS_FRACTIONAL_ODD;
+      break;
+   case TESS_SPACING_FRACTIONAL_EVEN:
+      t.spacing = WC_TESS_FRACTIONAL_EVEN;
+      break;
+   default:
+      break;
+   }
+   return t;
+}
+
 bool
-wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
+wc_nir_flatten(struct nir_shader *nir, uint32_t points_in, struct wc_flat *out)
 {
    memset(out, 0, sizeof(*out));
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
@@ -1257,9 +1353,13 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
    out->stage = nir->info.stage == MESA_SHADER_VERTEX     ? WC_FLAT_VERTEX
                 : nir->info.stage == MESA_SHADER_FRAGMENT ? WC_FLAT_FRAGMENT
                 : nir->info.stage == MESA_SHADER_GEOMETRY ? WC_FLAT_GEOMETRY
-                                                          : WC_FLAT_COMPUTE;
+                : nir->info.stage == MESA_SHADER_TESS_CTRL ? WC_FLAT_TESS_CONTROL
+                : nir->info.stage == MESA_SHADER_TESS_EVAL ? WC_FLAT_TESS_EVALUATION
+                                                           : WC_FLAT_COMPUTE;
    if (nir->info.stage == MESA_SHADER_GEOMETRY)
       out->geometry = geometry_of(nir);
+   if (nir->info.stage == MESA_SHADER_TESS_CTRL || nir->info.stage == MESA_SHADER_TESS_EVAL)
+      out->tessellation = tessellation_of(nir, points_in);
    for (unsigned d = 0; d < ARRAY_SIZE(out->workgroup_size); d++)
       out->workgroup_size[d] = nir->info.workgroup_size[d];
    out->early_fragment_tests =
