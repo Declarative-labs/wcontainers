@@ -628,8 +628,7 @@ pub fn read(gpu: &Gpu, texture: &ID3D11Texture2D, format: Format) -> Vec<u8> {
 }
 
 pub fn bytes_of(v: &[f32]) -> &[u8] {
-    // SAFETY: f32 has no padding and every byte pattern is a valid u8.
-    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), std::mem::size_of_val(v)) }
+    zerocopy::IntoBytes::as_bytes(v)
 }
 
 pub fn buffer<B: Backend>(b: &mut B, data: &[u8], usage: BufferUsage) -> B::Buffer {

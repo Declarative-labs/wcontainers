@@ -14,6 +14,7 @@ use std::collections::hash_map::Entry;
 
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{Reflection, ShaderModule, ShaderStage, VariantKey};
+use zerocopy::IntoBytes;
 
 use crate::container::DxilViews;
 use crate::{CONVERTER_VERSION, ConvertError, Converted, Source, convert};
@@ -264,7 +265,7 @@ pub fn shader_key(source: Source<'_>, variant: &VariantKey) -> [u8; KEY_BYTES] {
     match source {
         Source::Dxbc(b) => keyed(KeyedFrom::Dxbc, b, variant),
         Source::Dxil(b) => keyed(KeyedFrom::Dxil, b, variant),
-        Source::SpirV(w) => keyed(KeyedFrom::SpirV, words_as_bytes(w), variant),
+        Source::SpirV(w) => keyed(KeyedFrom::SpirV, w.as_bytes(), variant),
     }
 }
 
@@ -285,11 +286,6 @@ fn keyed(from: KeyedFrom, bytes: &[u8], variant: &VariantKey) -> [u8; KEY_BYTES]
     hasher.update(CONVERTER_VERSION.as_bytes());
     hasher.update(&variant);
     *hasher.finalize().as_bytes()
-}
-
-fn words_as_bytes(words: &[u32]) -> &[u8] {
-    // SAFETY: u32 has no padding, every byte pattern is a valid u8, and the length is the same memory.
-    unsafe { core::slice::from_raw_parts(words.as_ptr().cast(), core::mem::size_of_val(words)) }
 }
 
 /// The record of a converted shader: each module with its entry point and stage, and the reflection.
