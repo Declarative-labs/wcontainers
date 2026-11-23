@@ -3,6 +3,7 @@
 // TODO: a wait costs one indirect call to wake the kernel, because Rust cannot yet resolve a future's waker at compile time. Check on https://github.com/rust-lang/rfcs/pull/3434 (a future generic over its context) and on https://goals.rust-lang.org/2026/async-statemachine-optimisation.html; adopt either when it is stable.
 #![allow(async_fn_in_trait)]
 
+use core::num::NonZeroUsize;
 use core::ops::{ControlFlow, Deref, Range};
 
 use domain::base::{Message, Name, Question};
@@ -24,6 +25,7 @@ use wcontainers_udp_sockets::UdpSockets;
 pub trait System:
     ProcessTracer
     + ProcessorInputs
+    + MachineDescription
     + TaskIdAllocator
     + StreamTransport
     + Clock
@@ -144,6 +146,21 @@ pub trait ProcessorInputs: ProcessTracer {
         process: P,
         thread: TaskId,
     ) -> u64;
+}
+
+pub trait MachineDescription: ProcessTracer {
+    /// Returns the number of [processors the process is told are online](https://man7.org/linux/man-pages/man3/sysconf.3.html#:~:text=The%20number%20of%20processors%20currently%20online).
+    fn report_online_processors<P: ProcessOf<Self::ProcessState, Self::Kernel>>(
+        &self,
+        process: P,
+        available: NonZeroUsize,
+    ) -> NonZeroUsize {
+        available
+    }
+
+    /// Returns the size in bytes of the memory the process is told the machine has.
+    fn report_memory_size<P: ProcessOf<Self::ProcessState, Self::Kernel>>(&self, process: P)
+    -> u64;
 }
 
 pub trait TaskIdAllocator {
