@@ -36,6 +36,8 @@ struct io_slot {
    bool per_vertex;
    unsigned stream;
    unsigned location;
+   /* A fragment output's blend source: 1 for dual-source blending's second. */
+   unsigned blend_source;
    nir_alu_type base;
    unsigned components;
    /* A fragment input's load: load_input (flat) or the barycentric's op; nir_num_intrinsics before
@@ -433,6 +435,7 @@ struct io_access {
    /* A geometry program's output stream. */
    unsigned stream;
    unsigned location;
+   unsigned blend_source;
    unsigned first;
    unsigned count;
    nir_alu_type base;
@@ -481,8 +484,7 @@ io_access(const nir_shader *nir, nir_intrinsic_instr *intr, struct io_access *a)
       a->refused = "a stage value indexed at run time";
    if (value->bit_size != WC_VALUE_BITS)
       a->refused = "a stage value of other than 32 bits";
-   if (semantics.dual_source_blend_index)
-      a->refused = "a second blend source";
+   a->blend_source = semantics.dual_source_blend_index;
    bool varying = (nir->info.stage == MESA_SHADER_FRAGMENT) != output;
    if (varying &&
        (a->location == VARYING_SLOT_CLIP_DIST0 || a->location == VARYING_SLOT_CLIP_DIST1)) {
@@ -493,10 +495,11 @@ io_access(const nir_shader *nir, nir_intrinsic_instr *intr, struct io_access *a)
 }
 
 static struct io_slot *
-find_slot(struct flattening *f, bool output, unsigned location)
+find_slot(struct flattening *f, bool output, unsigned location, unsigned blend_source)
 {
    for (uint32_t n = 0; n < f->slot_count; n++) {
-      if (f->slots[n].output == output && f->slots[n].location == location)
+      if (f->slots[n].output == output && f->slots[n].location == location &&
+          f->slots[n].blend_source == blend_source)
          return &f->slots[n];
    }
    return NULL;
@@ -530,7 +533,7 @@ gather_slots(struct flattening *f, nir_function_impl *impl)
          struct io_access a;
          if (!io_access(f->nir, intr, &a) || a.refused)
             continue;
-         struct io_slot *s = find_slot(f, a.output, a.location);
+         struct io_slot *s = find_slot(f, a.output, a.location, a.blend_source);
          if (!s) {
             GROW(f->slots, f->slot_count, f->slot_capacity);
             s = &f->slots[f->slot_count++];
@@ -539,6 +542,7 @@ gather_slots(struct flattening *f, nir_function_impl *impl)
                .per_vertex = a.per_vertex,
                .stream = a.stream,
                .location = a.location,
+               .blend_source = a.blend_source,
                .base = a.base,
                .load = nir_num_intrinsics,
             };
@@ -624,6 +628,7 @@ add_slots(struct flattening *f)
                            : s->interp == INTERP_MODE_FLAT        ? WC_INTERP_FLAT
                                                                   : WC_INTERP_PERSPECTIVE;
       v.stream = s->stream;
+      v.blend_source = s->blend_source;
       v.centroid = s->load == nir_intrinsic_load_barycentric_centroid;
       v.sample = s->load == nir_intrinsic_load_barycentric_sample;
       GROW(f->out->vars, f->out->var_count, f->var_capacity);
@@ -944,7 +949,8 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
    }
    struct io_access a;
    if (io_access(f->nir, intr, &a)) {
-      const struct io_slot *s = a.refused ? NULL : find_slot(f, a.output, a.location);
+      const struct io_slot *s =
+         a.refused ? NULL : find_slot(f, a.output, a.location, a.blend_source);
       const char *refused = s ? s->refused : a.refused;
       if (refused) {
          i->kind = WC_FLAT_UNSUPPORTED;

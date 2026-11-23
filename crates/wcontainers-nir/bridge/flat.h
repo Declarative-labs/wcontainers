@@ -149,6 +149,8 @@ struct wc_flat_var {
    uint32_t initialised;
    /* A geometry program's output stream. */
    uint32_t stream;
+   /* A fragment output's blend source: 1 for dual-source blending's second. */
+   uint32_t blend_source;
 };
 
 enum wc_flat_kind {

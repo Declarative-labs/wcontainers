@@ -15,7 +15,9 @@ use naga::{
 };
 use std::ffi::{CStr, c_char};
 use wcontainers_gpu::{
-    ReflectedBinding, Reflection, ShaderModule, SlotKind, SourceStage, StageExtras, VariantKey,
+    HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
+    ShaderStage as GpuStage, SlotKind, SourceStage, StageExtras, TEXEL_BUFFER_TEXTURE_WIDTH,
+    VariantKey, helper_binding,
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
@@ -208,6 +210,7 @@ struct FlatVar {
     format: Format,
     initialised: u32,
     stream: u32,
+    blend_source: u32,
 }
 
 #[repr(C)]
@@ -643,6 +646,10 @@ struct Builder<'a> {
     rewrites: Rewrites,
     /// A geometry program's stage values and the functions its emits and ends call.
     staged: Option<Staged>,
+    /// Route B's own helper constants (each texel buffer's view) and the block holding them, which
+    /// the shaders crate's rewrites extend.
+    helpers: Vec<HelperSlot>,
+    helper_block: Option<Handle<GlobalVariable>>,
 }
 
 /// A geometry program's stage values (private variables) and the empty functions its emits, one a
@@ -672,16 +679,30 @@ pub struct Routed {
     pub module: Module,
     pub rewrites: Rewrites,
     pub geometry: Option<GeometryProgram>,
+    /// The helper constants the module reads, in its block at [`HELPER_SET`].
+    pub helpers: Vec<HelperSlot>,
 }
 
 /// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
 /// shaders crate's rewrites (refused by name otherwise). The shader is changed by the preparation.
 pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
+    plain(route(nir)?)
+}
+
+/// Route B's module of `routed`, where it needs none of the shaders crate's rewrites and reads no
+/// helper constants (refused by name otherwise).
+pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
     let Routed {
         module,
         rewrites,
         geometry,
-    } = route(nir)?;
+        helpers,
+    } = routed;
+    if !helpers.is_empty() {
+        return Err(unsupported(format_args!(
+            "a texel buffer, whose length the driver gives"
+        )));
+    }
     if geometry.is_some() {
         return Err(unsupported(format_args!(
             "a geometry program outside the stage helper"
@@ -763,6 +784,8 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         kept_samples: None,
         rewrites: Rewrites::default(),
         staged: None,
+        helpers: Vec::new(),
+        helper_block: None,
     };
     if f.stage == FlatStage::Geometry {
         b.staged = Some(b.staged_functions(f.geometry.streams));
@@ -781,11 +804,13 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         b.instr(instr)?;
     }
     let rewrites = std::mem::take(&mut b.rewrites);
+    let helpers = std::mem::take(&mut b.helpers);
     let (module, geometry) = b.finish(f)?;
     Ok(Routed {
         module,
         rewrites,
         geometry,
+        helpers,
     })
 }
 
@@ -1026,6 +1051,16 @@ impl Builder<'_> {
             }
             TypeKind::Sampler => TypeInner::Sampler {
                 comparison: t.shadow != 0,
+            },
+            // A texel buffer is read through the 2D texture the driver copies it into
+            // (`TexelBufferRoute::Texture`).
+            TypeKind::Texture if t.dim == Dim::Buffer => TypeInner::Image {
+                dim: ImageDimension::D2,
+                arrayed: false,
+                class: ImageClass::Sampled {
+                    kind: scalar_of(t.sampled)?.kind,
+                    multi: false,
+                },
             },
             TypeKind::Texture => TypeInner::Image {
                 dim: dimension(t.dim)?,
@@ -1314,11 +1349,17 @@ impl Builder<'_> {
                 if self.stage == ShaderStage::Vertex && var.mode == VarMode::Input
                     || self.stage == ShaderStage::Fragment && var.mode == VarMode::Output
                 {
+                    // With dual-source blending both of target 0's outputs name their source.
+                    let dual = self.stage == ShaderStage::Fragment
+                        && self
+                            .vars
+                            .iter()
+                            .any(|v| v.mode == VarMode::Output && v.blend_source != 0);
                     Binding::Location {
                         location: var.location,
                         interpolation: None,
                         sampling: None,
-                        blend_src: None,
+                        blend_src: dual.then_some(var.blend_source),
                         per_primitive: false,
                     }
                 } else {
@@ -3311,6 +3352,9 @@ impl Builder<'_> {
             ))
         })?;
         let (image, _) = self.pointer(texture)?;
+        if i.dim == Dim::Buffer {
+            return self.texel_buffer(i, op, image);
+        }
         let dim = dimension(i.dim)?;
         let space = coordinate_size(dim);
         let arrayed = i.arrayed != 0;
@@ -3496,6 +3540,170 @@ impl Builder<'_> {
         };
         self.set(i, Value::Expr(e, kind));
         Ok(())
+    }
+
+    /// A texel buffer's load or length. It is read through the 2D texture of
+    /// [`TEXEL_BUFFER_TEXTURE_WIDTH`] texels a row the driver copies the view into
+    /// (`TexelBufferRoute::Texture`), its length from the helper constants
+    /// (`HelperValue::TexelBufferView`); elements at or past the length read zero.
+    fn texel_buffer(
+        &mut self,
+        i: &FlatInstr,
+        op: TexOp,
+        image: Handle<Expression>,
+    ) -> Result<(), ConvertError> {
+        use ScalarKind::{Float, Sint, Uint};
+        let view = self.texel_buffer_view(image)?;
+        let length = self.add(Expression::AccessIndex {
+            base: view,
+            index: 1,
+        });
+        let kind = match i.ty {
+            t if t == FlatScalar::Float as u32 => Float,
+            t if t == FlatScalar::Sint as u32 => Sint,
+            _ => Uint,
+        };
+        let (e, kind) = match op {
+            TexOp::Size => (length, Uint),
+            TexOp::Load => {
+                let def = self.tex_src(i, TexSrc::Coord).ok_or_else(|| {
+                    unsupported(format_args!("a texture instruction without coordinates"))
+                })?;
+                // A negative element's bits are past every length.
+                let element = self.whole(def, Uint)?.0;
+                let width = self.scalar_constant(Uint, TEXEL_BUFFER_TEXTURE_WIDTH);
+                let column = self.add(Expression::Binary {
+                    op: BinaryOperator::Modulo,
+                    left: element,
+                    right: width,
+                });
+                let row = self.add(Expression::Binary {
+                    op: BinaryOperator::Divide,
+                    left: element,
+                    right: width,
+                });
+                let ty = self.scalar_type(Uint, VectorSize::Bi as u32)?;
+                let coordinate = self.add(Expression::Compose {
+                    ty,
+                    components: vec![column, row],
+                });
+                let level = self.scalar_constant(Uint, 0);
+                let load = self.add(Expression::ImageLoad {
+                    image,
+                    coordinate,
+                    array_index: None,
+                    sample: None,
+                    level: Some(level),
+                });
+                let inside = self.add(Expression::Binary {
+                    op: BinaryOperator::Less,
+                    left: element,
+                    right: length,
+                });
+                let ty = self.scalar_type(kind, VectorSize::Quad as u32)?;
+                let zero = self.add(Expression::ZeroValue(ty));
+                let e = self.add(Expression::Select {
+                    condition: inside,
+                    accept: load,
+                    reject: zero,
+                });
+                let e = if i.components == 1 {
+                    self.add(Expression::AccessIndex { base: e, index: 0 })
+                } else {
+                    e
+                };
+                (e, kind)
+            }
+            _ => {
+                return Err(unsupported(format_args!(
+                    "a texel buffer read other than by a load or its size"
+                )));
+            }
+        };
+        self.set(i, Value::Expr(e, kind));
+        Ok(())
+    }
+
+    /// The view of the texel buffer `image`, its two words of [`HelperValue::TexelBufferView`]
+    /// (where the view starts in the texture, zero, and its length), loaded from the helper
+    /// block, which gets a member for it on its first use.
+    fn texel_buffer_view(
+        &mut self,
+        image: Handle<Expression>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let Expression::GlobalVariable(g) = self.function.expressions[image] else {
+            return Err(unsupported(format_args!("an array of texel buffers")));
+        };
+        if self.staged.is_some() {
+            return Err(unsupported(format_args!(
+                "a texel buffer in a geometry program"
+            )));
+        }
+        let at = self.module.global_variables[g]
+            .binding
+            .ok_or_else(|| unsupported(format_args!("a texel buffer without a binding")))?;
+        let value = HelperValue::TexelBufferView {
+            set: at.group,
+            binding: at.binding,
+        };
+        let ty = self.scalar_type(ScalarKind::Uint, VectorSize::Bi as u32)?;
+        let member = match self.helpers.iter().position(|s| s.value == value) {
+            Some(member) => member,
+            None => {
+                self.helpers.push(HelperSlot {
+                    value,
+                    offset: helper_size(&self.helpers),
+                });
+                let members = self
+                    .helpers
+                    .iter()
+                    .map(|s| naga::StructMember {
+                        name: None,
+                        ty,
+                        binding: None,
+                        offset: s.offset,
+                    })
+                    .collect();
+                let block = self.add_type(TypeInner::Struct {
+                    members,
+                    span: helper_size(&self.helpers),
+                });
+                match self.helper_block {
+                    Some(b) => self.module.global_variables[b].ty = block,
+                    None => {
+                        let stage = match self.stage {
+                            ShaderStage::Vertex => GpuStage::Vertex,
+                            ShaderStage::Fragment => GpuStage::Fragment,
+                            _ => GpuStage::Compute,
+                        };
+                        self.helper_block = Some(self.module.global_variables.append(
+                            GlobalVariable {
+                                name: None,
+                                space: AddressSpace::Uniform,
+                                binding: Some(naga::ResourceBinding {
+                                    group: HELPER_SET,
+                                    binding: helper_binding(stage),
+                                }),
+                                ty: block,
+                                init: None,
+                                memory_decorations: naga::MemoryDecorations::empty(),
+                            },
+                            Span::UNDEFINED,
+                        ));
+                    }
+                }
+                self.helpers.len() - 1
+            }
+        };
+        let block = self
+            .helper_block
+            .expect("the helper block, made with its first member");
+        let base = self.add(Expression::GlobalVariable(block));
+        let pointer = self.add(Expression::AccessIndex {
+            base,
+            index: u32::try_from(member).expect("few members"),
+        });
+        Ok(self.add(Expression::Load { pointer }))
     }
 
     /// A texture sampled with a comparison is a depth texture in the common form; NIR's texture
@@ -3758,6 +3966,7 @@ pub fn geometry(
         module,
         rewrites,
         geometry,
+        helpers: _,
     } = routed;
     let program = geometry.ok_or_else(|| unsupported(format_args!("no geometry program")))?;
     let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
@@ -3779,6 +3988,14 @@ pub fn geometry(
     };
     wcontainers_shaders::staged::geometry(module, &program, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))
+}
+
+/// The bytes of route B's helper block holding `helpers`, each two words
+/// ([`HelperValue::TexelBufferView`]), as a uniform block rounds them.
+fn helper_size(helpers: &[HelperSlot]) -> u32 {
+    let words = size_of::<[u32; VectorSize::Bi as usize]>() as u32;
+    let end = helpers.iter().map(|s| s.offset + words).max().unwrap_or(0);
+    naga::proc::Alignment::MIN_UNIFORM.round_up(end)
 }
 
 /// Why [`rewrite`] failed where the shaders crate gave no module.
@@ -3823,13 +4040,14 @@ pub fn rewrite(
         Some(ShaderStage::Fragment) => SourceStage::Pixel,
         _ => SourceStage::Compute,
     };
+    let helper_size = helper_size(&routed.helpers);
     let reflection = Reflection {
         stage,
         inputs: Vec::new(),
         outputs: Vec::new(),
         bindings,
-        helpers: Vec::new(),
-        helper_size: 0,
+        helpers: routed.helpers,
+        helper_size,
         sampled_pairs: Vec::new(),
         extras: StageExtras::None,
         slow_paths: Vec::new(),
