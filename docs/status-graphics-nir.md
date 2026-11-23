@@ -57,6 +57,108 @@ the x86-64 machine (route tests 17 of 17 there); every list's whole run at e742e
   stand-ins above, and the vertex program for its inputs' kinds); the root list carries them
   (2b0f6ad4, 64fa3b6a). No dependency or licence was added.
 
+The table, EVERY LIST WHOLE AT ONE COMMIT, e742e0be's driver (desktop, RTX 3080, one GPU job
+that built and ran, 8 glcts at once, 11:35 to 12:13 Pacific, other tracks' jobs queued beside),
+against run 22's whole run at d8bb7a2e (scratch `results/g9r23/full/<list>/results.csv`,
+`scripts/g9r23-table.py`, log `logs/g9r23-full.log`):
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64% (the same).
+- dEQP-GLES3: 44,768; Pass 44,039, Warn 5, Fail 174, Crash 69, Skip 481: 44,044 of 44,287, 99.45%
+  (the same).
+- dEQP-GLES31: 37,802; Pass 33,234, Fail 329, Crash 187, Flake 7, Skip 4,045: 33,234 of 33,757,
+  98.45% (run 22: 32,597 of 33,790, 96.47%). 630 crashes pass (`texture.gather` and
+  `opaque_type_indexing`'s run-time offsets and arrays, `copy_image.non_compressed` through
+  target twins, `texture_buffer.render_modify` and `early_fragment_tests` without copies in a
+  pass, `blend_equation_advanced.msaa`); 33 failures became NotSupported (`layout_binding.negative.image`
+  28: "Vertex shader: not enough uniforms available", the vertex stage has no images, which ES
+  3.1 allows; `program_interface_query.uniform.random` 5, not yet read); two passing cases fail
+  (`geometry_shading.layered.render_with_default_layer_3d`, one of the intermittent coherence
+  family).
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,194, Fail 3, Crash 73, Skip 228: 98.79% (the same).
+- KHR-GLES31: 4,101; Pass 3,371, Fail 65, Crash 74, Timeout 1, Skip 590: 3,371 of 3,511, 96.01%
+  (run 22: 3,288, 93.65%); `sample_variables.mask` 82 crashes pass and 21 now fail (read below).
+- KHR-GL33: 9,886; Pass 8,992, Fail 143, Crash 229, Skip 522: 8,992 of 9,364, 96.03%.
+- KHR-GLES32 (1,405): no context at e742e0be; the cause was Mesa's WGL frontend, which refuses
+  every ES context above 3.1 by its version before asking the driver (`stw_ext_context.c`);
+  patched in 62db0bd1 (`mesa/patches/wgl-es32-contexts.patch`), its run follows.
+- KHR-GL46 (19,714): no 4.6 context (G9's second part).
+- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
+  run and failed: 113,242 of 116,062, 97.57%, above the 92.9% floor (run 22: 112,521 of 116,095,
+  96.92%). Without KHR-GLES32: 113,242 of 114,657, 98.77%.
+- The run's process refusals, most first: device lost 464 (KHR-GL33's BC textures most of them),
+  blits the blitter does not make 138, the stage helper's invalid calls 134, sampling an integer
+  texture 126, maps of multisampled textures 76, an evaluation program reading the point size 72,
+  layered geometry output 56, a border on a comparison sampler 52, comparisons with a bias or
+  gradients 34.
+
+## Gap list (G9's first part, at e742e0be)
+
+Every failing group of the table with its cause and owner. "This track" means work left in
+wcontainers-nir or wcontainers-opengl; "not yet read" means no cause is named yet, which the bar
+does not allow, so those are this track's next work. The RTX 3080's own OpenGL passed every case
+of every group holding a failure in G9 run 12 (77 groups); it is to be run again on today's
+groups in the independent check.
+- KHR-GLES32 1,405, and every ES 3.2 group: Mesa's WGL version check (this track, patched in
+  62db0bd1, run pending).
+- KHR-GL46 19,714: OpenGL 4.0 to 4.6 (this track, G9's second part: `ARB_gpu_shader_fp64`, the
+  rest of `ARB_gpu_shader5`, transform feedback 2 and 3, ...).
+- KHR-GL33 packed_pixels 198 crashes: BC textures whose level 0 is not whole blocks lose the
+  device in wgpu (the WebGPU back end; asked in G9 run 17).
+- KHR-GL33 pixelstoragemodes compressedteximage2d and 3d 80 Fail: not yet read (this track).
+- dEQP-GLES31 copy_image.mixed 256 Fail: copies between ASTC and 128-bit integer formats (the
+  driver's ASTC textures are decoded where the device lacks ASTC, so a copy of their blocks
+  meets decoded texels; this track); copy_image.non_compressed 32 crashes: the 96-bit RGB32
+  formats, which the host has no format of (this track: a twin of 128 bits copied by rows).
+- dEQP-GLES2 and -GLES3 fbo.render 148 Fail: colour buffers re-specified at another size or
+  format while attached, and the 565 framebuffer WebGPU renders no format of (this track; the
+  565 part absent on WebGPU, to be reported incomplete or drawn through a twin).
+- dEQP-GLES2 and -GLES3 shaders.invariance 40, KHR shader_integer_mix 9, dEQP-GLES3 shaders.builtin_functions 26,
+  state_query.floats 4: precision and invariance where the host's compiler reorders arithmetic
+  (`invariant` has no WGSL form; the shaders track's naga writers) and not yet read (this track).
+- dEQP-GLES3 shaders.texture_functions 25 crashes: comparisons with a bias, gradients or a level
+  the common form lacks (the shaders track's common form; refused by name), and naga's HLSL
+  writer's 3D texel offsets (the shaders track, fixed in its run 99: to be checked).
+- KHR-GLES3 copy_tex_image_conversions.required 63 crashes: a vertex program sampling integer
+  samplers at units holding no integer texture, in a branch not taken: c1d5158c's stand-ins
+  should lift it in the fragment stage; the crash is a refusal before binding (this track: read
+  again).
+- dEQP-GLES3 fbo.msaa 9, fbo.blit 8, fbo.invalidate 8 crashes, KHR framebuffer_blit 2: blits the
+  blitter does not make (this track).
+- dEQP-GLES3 transform_feedback 9 crashes: `gl_PointSize` streamed (this track: "a streamed value
+  that is neither at a location nor the position", 22 refusals).
+- dEQP-GLES31 opaque_type_indexing 46 crashes: samplers of integer arrays whose elements'
+  samplers differ, arrays of arrays (this track), uniform blocks indexed at run time (`load_ubo`
+  refusals, this track).
+- dEQP-GLES31 texture.border_clamp 24, KHR texture_border_clamp: a border on a comparison sampler
+  (the shaders track's filter library: `BorderInShaderOnComparison`).
+- dEQP-GLES31 geometry_shading.layered 15 and instanced 6, KHR geometry_shader 14: a geometry
+  program writing a layer or viewport (this track: layered targets in the stage helper's final
+  draw, not built).
+- dEQP-GLES31 primitive_bounding_box 28 crashes: not yet read (this track).
+- dEQP-GLES31 shaders.sample_variables 27 Fail, KHR sample_variables 38 Fail,
+  shader_multisample_interpolation 6 and dEQP multisample_interpolation 11: not yet read (this
+  track; two-, eight- and sixteen-sample targets are made with the standard positions since
+  d8bb7a2e, and the stand-in of a multisampled integer texture reads zeros, not (0, 0, 0, 1)).
+- KHR-GLES31 tessellation_shader 46: an evaluation program reading the point size (72 refusals,
+  this track: `gl_in[].gl_PointSize` through the stage helper's values), a control program
+  reading outputs after `barrier()` (the stage helper runs control points one after another:
+  the shaders track), primitives with adjacency (18 refusals, this track).
+- KHR-GLES31 draw_indirect 8 crashes, gpu_shader5 7, texture_cube_map_array 3,
+  shader_image_load_store 3, dEQP synchronization 10, tessellation common_edge 6 and winding 4,
+  tessellation_geometry_interaction.feedback 6, uniform_location.nested_array 6 (arrays of
+  arrays), image_load_store.early_fragment_tests 6 (forced early tests: absent on WebGPU, the
+  shaders track's capability for wgpu natively): the rest not yet read (this track).
+- The stage helper's invalid calls (134 refusals: "buffer larger than max_buffer_size", "a binding
+  set lacks a binding its program reads"): the shaders track's stage helper, or this driver's
+  bindings of it; not yet told apart (this track to read first).
+- Maps of multisampled textures (76 refusals, KHR-GLES31): the host reads no multisampled
+  texture back (absent on WebGPU by the plan; to be resolved through a draw, this track).
+- Device losses left: textures destroyed while a recorded pass uses them (KHR-GLES3
+  packed_depth_stencil, KHR-GL33 texture_swizzle: the WebGPU back end, unless a trace shows
+  the driver's misuse), dEQP-GLES3 fbo.color.tex3d 2 (a 2D view of a 3D texture, not yet
+  traced, this track).
+
 G9 run 22 is told in full in `git show d14e748a:docs/status-graphics-nir.md` (its whole run at
 d8bb7a2e: the bar's measure 112,521 of 116,095, 96.92%, with KHR-GLES32 counted as run and
 failed). G9 runs 20 and 21 are told in full in `git show cf468387:docs/status-graphics-nir.md` (run 21's
