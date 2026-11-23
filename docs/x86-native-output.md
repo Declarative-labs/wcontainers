@@ -425,6 +425,19 @@ whose results Intel leaves undefined (the probe's match covers the register form
 (a write of fewer than 32 bits keeps the rest, so reads it) and stored back only where it writes it. Measured
 (XN1 run 4, the benchmark set at full on the Xeon): matrix from 6.2 to 3.8 times the host's with the slot form and
 to 2.8 with the lighter stand-ins, search from 4.1 to 2.0 and 1.4, the geometric mean from 1.64 to 1.41 and 1.27.
+No fixed choice of c, t and u meets the bar (XN1 run 4 measured five), so a loop holds the withheld registers it
+names in homes of its own: a straight-line part that loops to its own start (the translator's loop copy,
+`Native::loop_invariant`) and names withheld registers, with as many general registers it never names (implicitly
+either; never rsp or rbp) free, runs its copy with each withheld register renamed to one of them; the moves before
+the copy put each home's own guest value in the register area's home words and the withheld value in the home,
+and every way out of the copy (the branch back not taken, an exit's call into the inside after its linkable
+`jmp`) moves them back first. Inside the copy the position map holds each withheld register in its home and the
+home's own value in its word, from each instruction's first byte (the count's add before it included,
+`HostCode::relocate_throughout`). An instruction that calls the inside or rebuilds its operand in a register of the
+first eight (Kernel, Trap, FloatStatus, Area, a repeated string, `fldcw`, a RIP-relative operand with a high byte)
+is written with the homes left around it. Where fewer registers are free than withheld ones are named, no homes:
+the loop keeps the slot form and stand-ins. Measured (XN1 run 5): matrix from 2.8 to 1.04 times the host's, the
+geometric mean from 1.27 to 1.15.
 
 ### 3.5 The Kernel route: who answers
 
