@@ -1,7 +1,7 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
 use std::ffi::{c_int, c_void};
-use std::mem::{MaybeUninit, size_of};
+use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
@@ -19,6 +19,7 @@ use wcontainers_internet_protocol::{
     PortSharing, RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
 };
 use wcontainers_kernel::UserId;
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::{Shortfalls, host_error, io_host_error, last_host_error, sock};
 
@@ -126,14 +127,14 @@ pub fn get_bytes(
 }
 
 /// Reads a socket option whose value is plain data that every bit pattern is valid for.
-pub fn get_option<T: Copy>(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<T, HostError> {
-    let mut value = MaybeUninit::<T>::zeroed();
-    // SAFETY: a zeroed T is a valid T for the plain uapi types this is used with, and the buffer is its bytes.
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>()) };
-    get_bytes(socket, level, name, bytes)?;
-    // SAFETY: zeroed and then written by the kernel, so initialised.
-    Ok(unsafe { value.assume_init() })
+pub fn get_option<T: FromBytes + IntoBytes>(
+    socket: BorrowedFd<'_>,
+    level: u32,
+    name: u32,
+) -> Result<T, HostError> {
+    let mut value = T::new_zeroed();
+    get_bytes(socket, level, name, value.as_mut_bytes())?;
+    Ok(value)
 }
 
 pub fn get_int(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<c_int, HostError> {
@@ -534,13 +535,8 @@ pub fn receive_message<'a>(
     if length < 0 {
         return Err(last_host_error());
     }
-    // SAFETY: the kernel wrote `msg_controllen` bytes of control messages into the buffer.
-    let control = unsafe {
-        std::slice::from_raw_parts(
-            control.0.as_ptr().cast::<u8>(),
-            header.msg_controllen as usize,
-        )
-    };
+    let control: &'a ControlBuffer = control;
+    let control = &control.0.as_bytes()[..header.msg_controllen as usize];
     Ok(ReceivedMessage {
         length: length as usize,
         flags: header.msg_flags,

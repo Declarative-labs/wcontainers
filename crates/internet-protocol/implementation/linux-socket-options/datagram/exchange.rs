@@ -13,6 +13,7 @@ use wcontainers_internet_protocol::{
     BufferSizes, ByteCount, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent,
     TransmitReport, TransmitReportKey, TransmitReportRequest, TransmitTimeError,
 };
+use zerocopy::IntoBytes;
 
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
 use crate::{Shortfalls, io_host_error, sock};
@@ -353,11 +354,7 @@ pub fn error_entry(
 fn memory_information(fd: BorrowedFd<'_>, count: c_int) -> Result<u32, HostError> {
     const COUNTS: usize = libc::SK_MEMINFO_DROPS as usize + 1;
     let mut words = [u32::MIN; COUNTS];
-    // SAFETY: the words are plain data, written by the kernel as their bytes.
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), size_of_val(&words))
-    };
-    crate::get_bytes(fd, uapi::SOL_SOCKET, uapi::SO_MEMINFO, bytes)?;
+    crate::get_bytes(fd, uapi::SOL_SOCKET, uapi::SO_MEMINFO, words.as_mut_bytes())?;
     Ok(words[count as usize])
 }
 

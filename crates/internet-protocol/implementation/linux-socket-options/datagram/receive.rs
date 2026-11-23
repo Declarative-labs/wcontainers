@@ -1,7 +1,7 @@
 //! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, `TransmitReport`s and
 //! packets written whole from their IP header.
 
-use core::mem::{MaybeUninit, size_of};
+use core::mem::size_of;
 use core::num::NonZeroU32;
 use core::time::Duration;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -13,7 +13,6 @@ use etherparse::{
 };
 use libc::{c_int, socklen_t};
 use linux_raw_sys::net as uapi;
-use rustix::net::addr::SocketAddrStorage;
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     ByteCount, DropCount, FragmentSize, FrameLength, InterfaceIndex, PacketMark, PacketPriority,
@@ -21,8 +20,34 @@ use wcontainers_internet_protocol::{
     TransmitReportKey, TransmitStage,
 };
 
-use crate::datagram::addresses::{from_in_addr, from_in6_addr, read_address};
-use crate::last_host_error;
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
+
+use crate::datagram::addresses::{
+    Ipv4PacketInformation, Ipv6PacketInformation, StorageBytes, address_of_storage,
+};
+use crate::{last_host_error, uapi_mirror};
+
+uapi_mirror! {
+    /// `struct scm_ts_pktinfo`.
+    struct TimestampingPacketInformation mirrors uapi::scm_ts_pktinfo {
+        if_index: u32,
+        pkt_length: u32,
+        reserved: [u32; 2],
+    }
+}
+
+uapi_mirror! {
+    /// `struct sock_extended_err`.
+    struct ExtendedError mirrors libc::sock_extended_err {
+        ee_errno: u32,
+        ee_origin: u8,
+        ee_type: u8,
+        ee_code: u8,
+        ee_pad: u8,
+        ee_info: u32,
+        ee_data: u32,
+    }
+}
 
 use crate::control_space as space;
 
@@ -59,8 +84,7 @@ impl ControlBuffer {
     }
 
     pub fn bytes(&self) -> &[u8] {
-        // SAFETY: the words are read as the bytes the kernel wrote the messages to.
-        unsafe { core::slice::from_raw_parts(self.0.as_ptr().cast::<u8>(), RECEIVE_CONTROL) }
+        &self.0.as_bytes()[..RECEIVE_CONTROL]
     }
 }
 
@@ -105,7 +129,7 @@ pub fn receive_with_tail<'a>(
     control: &'a mut ControlBuffer,
     error_queue: bool,
 ) -> Result<Message<'a>, HostError> {
-    let mut name = MaybeUninit::<SocketAddrStorage>::zeroed();
+    let mut name = StorageBytes::new_zeroed();
     let mut vectors = [
         libc::iovec {
             iov_base: into.as_mut_ptr().cast(),
@@ -117,8 +141,8 @@ pub fn receive_with_tail<'a>(
         },
     ];
     let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
-    header.msg_name = name.as_mut_ptr().cast();
-    header.msg_namelen = size_of::<SocketAddrStorage>() as socklen_t;
+    header.msg_name = name.bytes.as_mut_ptr().cast();
+    header.msg_namelen = size_of::<StorageBytes>() as socklen_t;
     header.msg_iov = vectors.as_mut_ptr();
     header.msg_iovlen = vectors.len() as _;
     header.msg_control = control.0.as_mut_ptr().cast();
@@ -138,7 +162,10 @@ pub fn receive_with_tail<'a>(
     let control_length: usize = header.msg_controllen as _;
     Ok(Message {
         length: length as usize,
-        source: read_address(&name, header.msg_namelen),
+        source: name
+            .bytes
+            .get(..header.msg_namelen as usize)
+            .and_then(address_of_storage),
         control: &control.bytes()[..control_length],
         control_truncated: header.msg_flags & libc::MSG_CTRUNC != 0,
     })
@@ -170,9 +197,9 @@ pub struct Ancillary<'a> {
     pub segment_size: Option<u16>,
 }
 
-fn read<T: Copy>(data: &[u8]) -> Option<T> {
-    // SAFETY: the bytes are a control message's data, read unaligned as the plain uapi type it carries.
-    (data.len() >= size_of::<T>()).then(|| unsafe { data.as_ptr().cast::<T>().read_unaligned() })
+/// Reads the value a control message's data starts with.
+fn read<T: FromBytes>(data: &[u8]) -> Option<T> {
+    T::read_from_prefix(data).ok().map(|(value, _)| value)
 }
 
 impl<'a> Ancillary<'a> {
@@ -189,17 +216,18 @@ impl<'a> Ancillary<'a> {
         let integer = || read::<c_int>(data);
         match (level, kind) {
             (uapi::SOL_IP, uapi::IP_PKTINFO) => {
-                if let Some(information) = read::<uapi::in_pktinfo>(data) {
+                if let Some(information) = read::<Ipv4PacketInformation>(data) {
                     self.interface = Some(information.ipi_ifindex as u32);
-                    self.specific_destination = Some(from_in_addr(information.ipi_spec_dst));
-                    self.header_destination = Some(IpAddr::V4(from_in_addr(information.ipi_addr)));
+                    self.specific_destination = Some(Ipv4Addr::from(information.ipi_spec_dst));
+                    self.header_destination =
+                        Some(IpAddr::V4(Ipv4Addr::from(information.ipi_addr)));
                 }
             }
             (uapi::SOL_IPV6, uapi::IPV6_PKTINFO) => {
-                if let Some(information) = read::<uapi::in6_pktinfo>(data) {
+                if let Some(information) = read::<Ipv6PacketInformation>(data) {
                     self.interface = Some(information.ipi6_ifindex as u32);
                     self.header_destination =
-                        Some(IpAddr::V6(from_in6_addr(information.ipi6_addr)));
+                        Some(IpAddr::V6(Ipv6Addr::from(information.ipi6_addr)));
                 }
             }
             (uapi::SOL_IP, uapi::IP_ORIGDSTADDR) | (uapi::SOL_IPV6, uapi::IPV6_ORIGDSTADDR) => {
@@ -237,15 +265,21 @@ impl<'a> Ancillary<'a> {
                 (self.software, self.hardware) = crate::timestamps(data);
             }
             (uapi::SOL_SOCKET, uapi::SCM_TIMESTAMPING_PKTINFO) => {
-                self.link = read::<uapi::scm_ts_pktinfo>(data)
+                self.link = read::<TimestampingPacketInformation>(data)
                     .map(|information| (information.if_index, information.pkt_length));
             }
             (uapi::SOL_IP, uapi::IP_RECVERR) | (uapi::SOL_IPV6, uapi::IPV6_RECVERR) => {
-                if let Some(error) = read::<libc::sock_extended_err>(data) {
-                    self.error = Some((
-                        error,
-                        address(&data[size_of::<libc::sock_extended_err>()..]),
-                    ));
+                if let Some(error) = read::<ExtendedError>(data) {
+                    let error = libc::sock_extended_err {
+                        ee_errno: error.ee_errno,
+                        ee_origin: error.ee_origin,
+                        ee_type: error.ee_type,
+                        ee_code: error.ee_code,
+                        ee_pad: error.ee_pad,
+                        ee_info: error.ee_info,
+                        ee_data: error.ee_data,
+                    };
+                    self.error = Some((error, address(&data[size_of::<ExtendedError>()..])));
                 }
             }
             (level, kind) if level == libc::SOL_UDP as u32 && kind == libc::UDP_GRO as u32 => {
@@ -316,16 +350,7 @@ impl<'a> Ancillary<'a> {
 
 /// A `sockaddr_in` or `sockaddr_in6` at the start of a control message's data.
 fn address(data: &[u8]) -> Option<SocketAddr> {
-    let length = data.len().min(size_of::<SocketAddrStorage>());
-    let mut storage = MaybeUninit::<SocketAddrStorage>::zeroed();
-    // SAFETY: `length` bytes fit in the storage.
-    unsafe {
-        core::ptr::copy_nonoverlapping(data.as_ptr(), storage.as_mut_ptr().cast::<u8>(), length)
-    };
-    let family = read::<u16>(data)?;
-    (u32::from(family) == uapi::AF_INET || u32::from(family) == uapi::AF_INET6)
-        .then(|| read_address(&storage, length as socklen_t))
-        .flatten()
+    address_of_storage(data)
 }
 
 /// The largest run of headers written before a payload: IPv6, its extension headers, ICMPv6 and a quoted IPv6

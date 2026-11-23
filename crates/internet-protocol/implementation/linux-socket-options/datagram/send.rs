@@ -1,6 +1,6 @@
 //! The fields of `IpHeaderFields` and `IpSendFields` as socket options and `sendmsg` control messages.
 
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 use std::net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::BorrowedFd;
 
@@ -13,10 +13,29 @@ use wcontainers_internet_protocol::{
     RouteSelectors, SourceAddressCheck, TemporaryAddressPreference, TransmitClock,
     TransmitTimeMode,
 };
+use zerocopy::{Immutable, IntoBytes};
 
-use crate::datagram::addresses::{in_addr, in6_addr, zeroed};
+use crate::datagram::addresses::{Ipv4PacketInformation, Ipv6PacketInformation, in6_addr};
 use crate::datagram::sticky::{Slot, Sticky};
-use crate::set_option;
+use crate::{set_option, uapi_mirror};
+
+uapi_mirror! {
+    /// `struct so_timestamping`, as `SO_TIMESTAMPING` takes it.
+    #[derive(IntoBytes)]
+    struct Timestamping mirrors uapi::so_timestamping {
+        flags: c_int,
+        bind_phc: c_int,
+    }
+}
+
+uapi_mirror! {
+    /// `struct sock_txtime`, as `SO_TXTIME` takes it.
+    #[derive(IntoBytes)]
+    struct TransmitTime mirrors uapi::sock_txtime {
+        clockid: c_int,
+        flags: u32,
+    }
+}
 
 /// A send the host cannot make as asked, by the named reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,36 +79,32 @@ impl Control {
         }
     }
 
-    pub fn push<T: Copy>(&mut self, level: u32, kind: u32, value: &T) {
-        let size = size_of::<T>();
+    pub fn push<T: IntoBytes + Immutable>(&mut self, level: u32, kind: u32, value: &T) {
+        let data = value.as_bytes();
         assert!(
-            self.length + space(size) <= SEND_CONTROL,
+            self.length + space(data.len()) <= SEND_CONTROL,
             "the send control buffer holds every message"
         );
-        // SAFETY: the header and its data fit in the buffer at `length`, which is aligned for a header.
-        unsafe {
-            let header = self
-                .buffer
-                .0
-                .as_mut_ptr()
-                .cast::<u8>()
-                .add(self.length)
-                .cast::<libc::cmsghdr>();
-            (*header).cmsg_len = libc::CMSG_LEN(size as u32) as _;
-            (*header).cmsg_level = level as c_int;
-            (*header).cmsg_type = kind as c_int;
-            core::ptr::copy_nonoverlapping(
-                (value as *const T).cast::<u8>(),
-                libc::CMSG_DATA(header),
-                size,
-            );
-        }
-        self.length += space(size);
+        let message = &mut self.buffer.0.as_mut_bytes()[self.length..][..space(data.len())];
+        let mut put =
+            |at: usize, value: &[u8]| message[at..at + value.len()].copy_from_slice(value);
+        // `CMSG_LEN`: the header and the data.
+        let length = (space(usize::MIN) + data.len()) as uapi::__kernel_size_t;
+        put(offset_of!(uapi::cmsghdr, cmsg_len), &length.to_ne_bytes());
+        put(
+            offset_of!(uapi::cmsghdr, cmsg_level),
+            &(level as c_int).to_ne_bytes(),
+        );
+        put(
+            offset_of!(uapi::cmsghdr, cmsg_type),
+            &(kind as c_int).to_ne_bytes(),
+        );
+        put(space(usize::MIN), data);
+        self.length += space(data.len());
     }
 
     pub fn bytes(&self) -> &[u8] {
-        // SAFETY: the words are read as the bytes the messages were written to.
-        unsafe { core::slice::from_raw_parts(self.buffer.0.as_ptr().cast::<u8>(), self.length) }
+        &self.buffer.0.as_bytes()[..self.length]
     }
 }
 
@@ -130,7 +145,7 @@ impl SendState {
         Ok(state)
     }
 
-    fn timestamping(&self) -> uapi::so_timestamping {
+    fn timestamping(&self) -> Timestamping {
         let mut flags = TIMESTAMPING_BASE | self.receive_timestamps;
         if !self.packet_reports {
             flags |= uapi::SOF_TIMESTAMPING_OPT_TSONLY as u32;
@@ -138,7 +153,7 @@ impl SendState {
         if self.bound_clock.is_some() {
             flags |= uapi::SOF_TIMESTAMPING_BIND_PHC as u32;
         }
-        uapi::so_timestamping {
+        Timestamping {
             flags: flags as c_int,
             bind_phc: self.bound_clock.unwrap_or(u32::MIN) as c_int,
         }
@@ -255,14 +270,15 @@ impl SendState {
                     self.apply_route(fd, &RouteSelectors::V4(header.route), port, ipv6_socket)?;
                 // The interface also goes here: a multicast send takes it from this, not from IP_UNICAST_IF.
                 if header.route.source.is_some() || header.route.interface.is_some() {
-                    let mut information = zeroed::<uapi::in_pktinfo>();
-                    information.ipi_spec_dst = in_addr(
-                        header
+                    let information = Ipv4PacketInformation {
+                        ipi_ifindex: selected_interface(header.route.interface) as c_int,
+                        ipi_spec_dst: header
                             .route
                             .source
-                            .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-                    );
-                    information.ipi_ifindex = selected_interface(header.route.interface) as c_int;
+                            .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)
+                            .octets(),
+                        ipi_addr: std::net::Ipv4Addr::UNSPECIFIED.octets(),
+                    };
                     control.push(uapi::SOL_IP, uapi::IP_PKTINFO, &information);
                 }
                 if let Some(limit) = header.time_to_live {
@@ -281,14 +297,14 @@ impl SendState {
                     ipv6_socket,
                 )?;
                 if header.route.source.is_some() || header.route.interface.is_some() {
-                    let mut information = zeroed::<uapi::in6_pktinfo>();
-                    information.ipi6_addr = in6_addr(
-                        header
+                    let information = Ipv6PacketInformation {
+                        ipi6_addr: header
                             .route
                             .source
-                            .unwrap_or(std::net::Ipv6Addr::UNSPECIFIED),
-                    );
-                    information.ipi6_ifindex = selected_interface(header.route.interface) as c_int;
+                            .unwrap_or(std::net::Ipv6Addr::UNSPECIFIED)
+                            .octets(),
+                        ipi6_ifindex: selected_interface(header.route.interface) as c_int,
+                    };
                     control.push(uapi::SOL_IPV6, uapi::IPV6_PKTINFO, &information);
                 }
                 if let Some(limit) = header.hop_limit {
@@ -340,11 +356,13 @@ impl SendState {
         }
         self.sticky.ensure(fd, Slot::Priority, &fields.priority.0)?;
         if let Some(time) = fields.transmit_time {
-            let mut configuration = zeroed::<uapi::sock_txtime>();
-            configuration.clockid = match time.clock {
-                TransmitClock::Realtime => libc::CLOCK_REALTIME,
-                TransmitClock::Monotonic => libc::CLOCK_MONOTONIC,
-                TransmitClock::InternationalAtomicTime => libc::CLOCK_TAI,
+            let mut configuration = TransmitTime {
+                clockid: match time.clock {
+                    TransmitClock::Realtime => libc::CLOCK_REALTIME,
+                    TransmitClock::Monotonic => libc::CLOCK_MONOTONIC,
+                    TransmitClock::InternationalAtomicTime => libc::CLOCK_TAI,
+                },
+                flags: u32::MIN,
             };
             if time.mode == TransmitTimeMode::Deadline {
                 configuration.flags |= uapi::txtime_flags::SOF_TXTIME_DEADLINE_MODE as u32;
@@ -427,12 +445,16 @@ fn lease_flow_label(
     destination: std::net::Ipv6Addr,
     label: u32,
 ) -> Result<(), HostError> {
-    let mut request = zeroed::<uapi::in6_flowlabel_req>();
-    request.flr_dst = in6_addr(destination);
-    request.flr_label = label.to_be();
-    request.flr_action = uapi::IPV6_FL_A_GET as u8;
-    request.flr_share = uapi::IPV6_FL_S_ANY as u8;
-    request.flr_flags = uapi::IPV6_FL_F_CREATE as u16;
+    let request = uapi::in6_flowlabel_req {
+        flr_dst: in6_addr(destination),
+        flr_label: label.to_be(),
+        flr_action: uapi::IPV6_FL_A_GET as u8,
+        flr_share: uapi::IPV6_FL_S_ANY as u8,
+        flr_flags: uapi::IPV6_FL_F_CREATE as u16,
+        flr_expires: u16::MIN,
+        flr_linger: u16::MIN,
+        __flr_pad: u32::MIN,
+    };
     set_option(fd, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request)
 }
 
