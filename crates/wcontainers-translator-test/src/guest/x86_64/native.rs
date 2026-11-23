@@ -254,6 +254,9 @@ fn five_level_only(stop: Stop) -> bool {
 /// The cases whose outcome by the inside's `answer` was compared with the meaning's.
 pub static ANSWERS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The runs that reached the Float status route's second call, which the inside's `float_status_after` finished.
+pub static SECOND_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A case's memory as layer 1 lays it out, for the inside's answers: the data area and the code area holding the
 /// guest's filler with the instruction at `CODE`, each with the permissions layer 1 gives it.
 struct CaseMemory {
@@ -375,6 +378,49 @@ pub fn answered(case: &Case) -> Option<Outcome> {
     })
 }
 
+/// The Float status route's second call as the inside makes it, on the state and data a run reached it with: the
+/// instruction at `guest`, FIP from the register area, FDP and FOP the block's (a case starts them at zero, and no
+/// copied instruction changes them while every exception is masked).
+fn float_status_after(
+    case: &Case,
+    guest: u64,
+    area: &RegisterArea,
+    state: State,
+    data: &[u8],
+) -> Result<(State, Changed, Pointers), String> {
+    let code = case.code.code();
+    let (i, _) = code
+        .get((guest - CODE) as usize..)
+        .and_then(wcontainers_x86::decode)
+        .ok_or("no instruction at the second call")?;
+    let status = wcontainers_x86::native::float_status(&i).ok_or_else(|| {
+        format!(
+            "a second call after {:?}, not a float status instruction",
+            i.iced
+        )
+    })?;
+    let mut thread = vec![0; size_of::<X86Block>()];
+    X86_64::from_state(&state, &mut thread);
+    let mut block = X86Block::read_from_bytes(&thread).expect("a block");
+    let next = block.rip;
+    block.rip = guest;
+    block.fxsave.fip = area.x87_ip;
+    let mut memory = CaseMemory::new(case);
+    memory.data.copy_from_slice(data);
+    let mut tracking = case.tracking;
+    wcontainers_x86::answer::float_status_after(status, &mut block, &mut tracking, &mut memory)
+        .map_err(|fault| format!("the second call faulted: {fault:?}"))?;
+    SECOND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    block.rip = next;
+    thread.copy_from_slice(block.as_bytes());
+    let f = &block.fxsave;
+    Ok((
+        X86_64::to_state(&thread),
+        changed_bytes(case, &memory.data),
+        (f.fip, f.fdp, f.fop),
+    ))
+}
+
 /// Runs a case natively: its outcome and how it ended. When `checked`, the piece has the count's adds and the
 /// trap flag stops it after every host instruction: at each stop in the piece the guest's state read through the
 /// position map must be the case's start before the commit point and the final one after it, and its count (the
@@ -385,6 +431,24 @@ pub fn run(
     host: HostMatches,
     checked: bool,
 ) -> Result<(Outcome, Ended), String> {
+    run_with_pointers(reference, case, host, checked, LookAhead::None)
+        .map(|(outcome, ended, _)| (outcome, ended))
+}
+
+/// FIP, FDP and FOP as the inside holds them after a run's last call.
+pub type Pointers = (u64, u64, u16);
+/// The data area's changed bytes, by offset.
+type Changed = Vec<(u32, u8)>;
+
+/// [`run`] of a piece made with `look_ahead`, with the x87 pointers where the run ended at the Float status route's
+/// second call. Checked, the case is one instruction.
+pub fn run_with_pointers(
+    reference: &mut Reference,
+    case: &Case,
+    host: HostMatches,
+    checked: bool,
+    look_ahead: LookAhead,
+) -> Result<(Outcome, Ended, Option<Pointers>), String> {
     let target = Target {
         host,
         offer: X86_64::case_offer(case),
@@ -392,7 +456,7 @@ pub fn run(
     let code = translate_native_for::<X86_64>(
         case.code.code(),
         CODE,
-        LookAhead::None,
+        look_ahead,
         checked,
         &Way::Process,
         &target,
@@ -435,7 +499,7 @@ pub fn run(
         .collect();
     let (record, data, area) = stops.last().expect("a stop");
     let (record, area) = (*record, *area);
-    let changed = changed_bytes(case, data);
+    let mut changed = changed_bytes(case, data);
     let host = HostState::new(&record);
     let rip = host.rip;
     let signal = record.signal as u32;
@@ -447,7 +511,7 @@ pub fn run(
     let first_level = FIRST..FIRST + (u64::from(u32::MAX) + 1) * WORD;
     let second_level = SECOND_LEVEL..SECOND_LEVEL + (u64::from(u32::MAX) + 1) * WORD;
     let calls = ENTRY_TRAPS..ENTRY_TRAPS + InsideCall::ALL.len() as u64 * ENTRY_STRIDE;
-    let (span, ended) = if signal == SIGSEGV && calls.contains(&rip) {
+    let (span, ended, second_call) = if signal == SIGSEGV && calls.contains(&rip) {
         let kind = InsideCall::from_code(((rip - ENTRY_TRAPS) / ENTRY_STRIDE) as u16)
             .ok_or("an entry no call has")?;
         // The call's return point is in t; its jump through the area is the span's last instruction.
@@ -458,7 +522,7 @@ pub fn run(
             InsideCall::Exit | InsideCall::X87Control | InsideCall::FloatAfter => Ended::Exit,
             other => Ended::Answered(other),
         };
-        (span, ended)
+        (span, ended, kind == InsideCall::FloatAfter)
     } else if let Some(span) = in_piece(rip) {
         // The lookup's two reads: the first level's `mov u, gs:[FIRST_LEVEL + 8 * u]`, the second's
         // `jmp [u + 8 * t]`.
@@ -484,14 +548,14 @@ pub fn run(
         } else {
             Ended::Fault
         };
-        (span, ended)
+        (span, ended, false)
     } else {
         return Err(format!(
             "the blob stopped outside the piece: signal {signal}, code {}, rip {rip:#x}, address {:#x}",
             record.code, record.address
         ));
     };
-    let state = guest_state(case, &record, &host, &area, span)?;
+    let mut state = guest_state(case, &record, &host, &area, span)?;
     if checked {
         let (instruction, _) =
             <X86_64 as Guest>::decode(case.code.code()).ok_or("no instruction to count")?;
@@ -539,6 +603,11 @@ pub fn run(
             }
         }
     }
+    let mut pointers = None;
+    if second_call {
+        let after = float_status_after(case, span.guest, &area, state, data)?;
+        (state, changed, pointers) = (after.0, after.1, Some(after.2));
+    }
     let stop = match ended {
         Ended::Exit | Ended::Lookup => Stop::Landed(state.0[RIP] as u64),
         Ended::Fault => X86_64::reference_stop(
@@ -572,7 +641,7 @@ pub fn run(
                     meaning.stop
                 ));
             }
-            return Ok((meaning, ended));
+            return Ok((meaning, ended, None));
         }
         Ended::NotRun(_) => unreachable!("a run that was made"),
     };
@@ -583,6 +652,7 @@ pub fn run(
             changed,
         },
         ended,
+        pointers,
     ))
 }
 

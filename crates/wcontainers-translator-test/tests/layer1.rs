@@ -415,7 +415,7 @@ fn every_form_matches_the_cpu_x86_64() {
 #[test]
 fn every_form_matches_the_cpu_natively_x86_64() {
     use wcontainers_translator_test::guest::x86_64::native::{
-        ANSWERS_CHECKED, REFERENCE_HOST, compare,
+        ANSWERS_CHECKED, REFERENCE_HOST, SECOND_CALLS, compare,
     };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
@@ -426,9 +426,11 @@ fn every_form_matches_the_cpu_natively_x86_64() {
             Ok(agreement)
         });
     eprintln!(
-        "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}",
+        "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}; \
+         the float status route's second call made in {}",
         ended.into_inner().unwrap(),
-        ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
+        ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
+        SECOND_CALLS.load(std::sync::atomic::Ordering::Relaxed)
     );
     assert!(
         failures.is_empty(),
@@ -651,7 +653,7 @@ fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() 
         }
     }
     for code in &segment_forms {
-        let selectors = (0..=0x80u16).chain([USER_DS | 0x100, u16::MAX]);
+        let selectors = (0..=0x80u16).chain([USER_DS | 1 << u8::BITS, u16::MAX]);
         for selector in selectors {
             let mut case = plain(code);
             case.state.0[RSP] = stack.into();
@@ -1008,6 +1010,173 @@ fn the_inside_answers_xsave_and_xrstor_as_the_meaning_x86_64() {
         }
     }
     eprintln!("the inside's xsave and xrstor equal to the meaning's in {checked} cases");
+}
+
+/// The Float status route's second call (docs/x86-native-output.md 3.1, 3.5) writes a save's x87 pointers and FOP,
+/// and takes a load's, as the meaning does: every save and load form run natively, uncounted and counted, after no
+/// x87 instruction, a non-control one, two, one with a memory operand and a control one after a non-control one,
+/// its operand on a register, rip, fs, the area's gs and a 32-bit address; each outcome and the pointers the block
+/// holds after compared with the meaning's, and each save's outcome with the CPU's.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_translator::LookAhead;
+    use wcontainers_translator_test::guest::x86_64::native::{
+        REFERENCE_HOST, compare as natively, run_with_pointers,
+    };
+    use wcontainers_translator_test::guest::x86_64::{FS, GS, plain};
+    use wcontainers_translator_test::layout::{CODE, DATA};
+    use wcontainers_x86::x87::{BUSY, SUMMARY};
+    use wcontainers_x86::{Fxsave, MXCSR_AT_START, MXCSR_WRITABLE, RCX, RDX, X86Block};
+    use zerocopy::FromBytes;
+    /// The control word's bits that mask the six exceptions, with the reserved bit 6 the CPU reads as one, and
+    /// the bits it keeps (Intel SDM Vol. 1 8.1.5).
+    const MASKED: u16 = 0x7f;
+    const KEPT_CONTROL: u16 = 0x1f3f;
+    const MXCSR: usize = std::mem::offset_of!(Fxsave, mxcsr);
+    let mut reference = Reference::start(&X86_64::REFERENCE);
+    // The image on the writable data's second page, the prior instructions' operand on its third.
+    let image_at = DATA + PAGE_SIZE;
+    let operand_at = image_at + PAGE_SIZE;
+    let base = 0x1234_5000_u64;
+    let mut seed = 0x5eed_u64;
+    let mut next = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        seed
+    };
+    // fld1; fadd st0, st1; fld qword [rdx]; fnstcw [rdx]; fnclex.
+    let (fld1, fadd, fld, fnstcw, fnclex) = (
+        [0xd9, 0xe8],
+        [0xd8, 0xc1],
+        [0xdd, 0x02],
+        [0xd9, 0x3a],
+        [0xdb, 0xe2],
+    );
+    let priors: Vec<Vec<u8>> = vec![
+        vec![],
+        fld1.to_vec(),
+        [fld1, fadd].concat(),
+        fld.to_vec(),
+        [fld1, fnstcw].concat(),
+        [fld1, fnclex].concat(),
+    ];
+    // Each form on [rcx]: fxsave, fxsave64, fnstenv, fnsave, each 32-bit and 16-bit, then their loads.
+    let forms: [(&[u8], bool); 12] = [
+        (&[0x0f, 0xae, 0x01], false),
+        (&[0x48, 0x0f, 0xae, 0x01], false),
+        (&[0xd9, 0x31], false),
+        (&[0x66, 0xd9, 0x31], false),
+        (&[0xdd, 0x31], false),
+        (&[0x66, 0xdd, 0x31], false),
+        (&[0x0f, 0xae, 0x09], true),
+        (&[0x48, 0x0f, 0xae, 0x09], true),
+        (&[0xd9, 0x21], true),
+        (&[0x66, 0xd9, 0x21], true),
+        (&[0xdd, 0x21], true),
+        (&[0x66, 0xdd, 0x21], true),
+    ];
+    let (mut checked, mut same, mut differ) = (0, 0, 0);
+    for (form, restore) in forms {
+        for prior in if restore { &priors[..2] } else { &priors[..] } {
+            // [rcx], [rip + disp32], fs:[rcx], gs:[rcx], [ecx].
+            for place in 0..5 {
+                let (prefix, rip_relative): (&[u8], bool) = match place {
+                    1 => (&[], true),
+                    2 => (&[0x64], false),
+                    3 => (&[0x65], false),
+                    4 => (&[0x67], false),
+                    _ => (&[], false),
+                };
+                let mut code = [prior.as_slice(), prefix, form].concat();
+                if rip_relative {
+                    let modrm = code.pop().expect("a ModRM byte");
+                    code.push(modrm & 0x38 | 0x05);
+                    let end = CODE + code.len() as u64 + size_of::<i32>() as u64;
+                    let displacement = i32::try_from(image_at as i64 - end as i64).unwrap();
+                    code.extend(displacement.to_le_bytes());
+                }
+                let mut case = plain(&code);
+                case.tracking = true;
+                let rcx = match place {
+                    2 | 3 => image_at - base,
+                    4 => image_at | 1 << u32::BITS,
+                    _ => image_at,
+                };
+                case.state.0[usize::from(RCX)] = rcx.into();
+                case.state.0[usize::from(RDX)] = operand_at.into();
+                case.state.0[FS] = base.into();
+                case.state.0[GS] = base.into();
+                if restore {
+                    let mut image: Vec<u8> = (0..size_of::<Fxsave>() / size_of::<u64>())
+                        .flat_map(|_| next().to_le_bytes())
+                        .collect();
+                    // A control word with every exception masked and its reserved bits as the CPU keeps them,
+                    // a status word whose summary and busy bits agree with it, and an MXCSR `fxrstor` takes.
+                    let control = u16::from_le_bytes([image[0], image[1]]) & KEPT_CONTROL | MASKED;
+                    image[..size_of::<u16>()].copy_from_slice(&control.to_le_bytes());
+                    // The status word follows the control word's word: 16 bits in an FXSAVE image and the
+                    // 16-bit environment, 32 in the 32-bit one.
+                    let sixteen = form.contains(&0xae) || form[0] == 0x66;
+                    let status = if sixteen {
+                        size_of::<u16>()
+                    } else {
+                        size_of::<u32>()
+                    };
+                    image[status] &= !(SUMMARY as u8);
+                    image[status + 1] &= !((BUSY >> u8::BITS) as u8);
+                    let mxcsr = next() as u32 & MXCSR_WRITABLE | MXCSR_AT_START;
+                    image[MXCSR..][..size_of::<u32>()].copy_from_slice(&mxcsr.to_le_bytes());
+                    case.placed = ((image_at - DATA) as u32, image);
+                }
+                let (meaning, machine) = translated_on::<X86_64>(&case, |_| {});
+                let (block, _) =
+                    X86Block::read_from_prefix(machine.stopped_state()).expect("a block");
+                let f = &block.fxsave;
+                let pointers = (f.fip, f.fdp, f.fop);
+                // The count's check at every host instruction reads a piece of one instruction.
+                let counts: &[bool] = if prior.is_empty() {
+                    &[false, true]
+                } else {
+                    &[false]
+                };
+                let stretch = LookAhead::Bounded(code.len() as u32);
+                for &counted in counts {
+                    let (outcome, ended, after) =
+                        run_with_pointers(&mut reference, &case, REFERENCE_HOST, counted, stretch)
+                            .unwrap_or_else(|e| panic!("{code:02x?}: {e}"));
+                    assert!(
+                        outcome == meaning && after == Some(pointers),
+                        "{code:02x?}, counted {counted}, ended {ended:?}: natively {:?} {:x?} {:x?} \
+                         {after:x?}, the meaning {:?} {:x?} {:x?} {pointers:x?}",
+                        outcome.stop,
+                        outcome.state.0,
+                        outcome.changed,
+                        meaning.stop,
+                        meaning.state.0,
+                        meaning.changed
+                    );
+                    checked += 1;
+                }
+                // The reference runs one instruction.
+                if !restore && prior.is_empty() {
+                    match natively(&mut reference, &case, REFERENCE_HOST) {
+                        Ok((Agreement::Same, _)) => same += 1,
+                        other => {
+                            differ += 1;
+                            eprintln!("{code:02x?} against the CPU: {other:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "the second call as the meaning in {checked} runs; the saves equal to the CPU's in {same}, \
+         different in {differ}"
+    );
 }
 
 /// `Condition::holds`, by which the inside takes a `jcc` exit's `int3` hit (docs/x86-native-output.md 3.2), is the
