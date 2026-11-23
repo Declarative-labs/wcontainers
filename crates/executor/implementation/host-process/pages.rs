@@ -89,6 +89,14 @@ pub enum Command {
         /// The bytes unmapped.
         length: usize,
     },
+    /// Makes a host thread for a free index, which then waits for turns after `last_turn` (from
+    /// [`crate::stub::Stub::new_thread`]).
+    NewThread {
+        /// The new thread's index.
+        thread: usize,
+        /// The value its answer word holds now.
+        last_turn: u32,
+    },
 }
 
 /// The kinds of command, as the stub reads them.
@@ -97,6 +105,7 @@ pub(crate) enum CommandKind {
     Map = 1,
     Protect = 2,
     Unmap = 3,
+    NewThread = 4,
 }
 
 impl Command {
@@ -131,6 +140,12 @@ impl Command {
                 with(CommandKind::Unmap, ProtFlags::empty()),
                 address as u64,
                 length as u64,
+                0,
+            ],
+            Self::NewThread { thread, last_turn } => [
+                with(CommandKind::NewThread, ProtFlags::empty()),
+                thread as u64,
+                u64::from(last_turn),
                 0,
             ],
         }

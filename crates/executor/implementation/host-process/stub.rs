@@ -4,12 +4,14 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use linux_raw_sys::general as linux;
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
 use rustix::process::Pid;
 use rustix::thread::futex;
 
 use crate::filter::stub_filter;
+use crate::layout::THREADS_PER_PROCESS;
 use crate::pages::{Command, ExitKind, Resume, ThreadPages, control, register};
 use crate::windows::FileKey;
 
@@ -31,7 +33,20 @@ pub struct Stub {
     pages: ThreadPages,
     memory: OwnedFd,
     memory_key: FileKey,
+    /// One bit per thread index the executor holds, from its `new_thread` to its `end_thread`.
+    held: Vec<u64>,
 }
+
+/// How a stub's threads are made: sharing everything a thread of one process shares, the new thread's exit-clear word
+/// written before the call returns and cleared, with a wake, at its end.
+pub(crate) const THREAD_FLAGS: u32 = linux::CLONE_VM
+    | linux::CLONE_FS
+    | linux::CLONE_FILES
+    | linux::CLONE_SIGHAND
+    | linux::CLONE_THREAD
+    | linux::CLONE_SYSVSEM
+    | linux::CLONE_PARENT_SETTID
+    | linux::CLONE_CHILD_CLEARTID;
 
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +79,8 @@ impl Stub {
         pages: ThreadPages,
         memory: OwnedFd,
     ) -> Self {
+        let mut held = vec![0; THREADS_PER_PROCESS / u64::BITS as usize];
+        held[0] = 1;
         Self {
             process,
             zygote,
@@ -71,6 +88,69 @@ impl Stub {
             pages,
             memory,
             memory_key: FileKey::new(),
+            held,
+        }
+    }
+
+    /// Holds the first free thread index and gives the command that makes its thread, for a turn of a thread in a
+    /// kernel entry; `None` when every index is held or still ending. An index is free once the executor has let it
+    /// go and the host kernel has cleared its exit-clear word.
+    pub fn new_thread(&mut self) -> Option<Command> {
+        let thread = (0..THREADS_PER_PROCESS).find(|&thread| {
+            !self.holds(thread)
+                && self
+                    .pages
+                    .register32(thread, register::EXIT_CLEAR)
+                    .load(Ordering::Acquire)
+                    == 0
+        })?;
+        self.held[thread / u64::BITS as usize] |= 1 << (thread % u64::BITS as usize);
+        let last_turn = self
+            .pages
+            .control32(thread, control::ANSWER)
+            .load(Ordering::Relaxed);
+        Some(Command::NewThread { thread, last_turn })
+    }
+
+    /// Lets an index go: its thread was refused, or has been given its end.
+    pub fn release_thread(&mut self, thread: usize) {
+        self.held[thread / u64::BITS as usize] &= !(1 << (thread % u64::BITS as usize));
+    }
+
+    fn holds(&self, thread: usize) -> bool {
+        self.held[thread / u64::BITS as usize] & (1 << (thread % u64::BITS as usize)) != 0
+    }
+
+    /// Ends one thread of several and lets its index go; the index is reused only after the host kernel clears its
+    /// exit-clear word.
+    pub fn end_thread(&mut self, thread: usize) -> Result<(), Errno> {
+        self.give(thread, &[], Resume::ExitThread)?;
+        self.release_thread(thread);
+        Ok(())
+    }
+
+    /// Waits up to `limit` for the host kernel to clear a thread's exit-clear word, which it does after the thread has
+    /// left every page of its index; whether it did.
+    pub fn thread_gone(&self, thread: usize, limit: Duration) -> Result<bool, Errno> {
+        let word = self.pages.register32(thread, register::EXIT_CLEAR);
+        let until = std::time::Instant::now() + limit;
+        loop {
+            let seen = word.load(Ordering::Acquire);
+            if seen == 0 {
+                return Ok(true);
+            }
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            let wait = Timespec {
+                tv_sec: left.as_secs() as i64,
+                tv_nsec: i64::from(left.subsec_nanos()),
+            };
+            match futex::wait(word, futex::Flags::empty(), seen, Some(&wait)) {
+                Ok(()) | Err(Errno::AGAIN | Errno::INTR | Errno::TIMEDOUT) => {}
+                Err(other) => return Err(other),
+            }
         }
     }
 

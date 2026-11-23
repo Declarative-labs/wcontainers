@@ -14,11 +14,12 @@ use super::{
     MESSAGE, RSEQ_AREA, RSEQ_FLAG_UNREGISTER, RSEQ_SIG, Request, StubDescriptor, ZygoteEnd,
 };
 use crate::layout::{
-    CONTROL_PAGES_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACKS, SIGNAL_STACKS_SIZE,
-    THREAD_PAGES, ZYGOTE, ZYGOTE_CODE_SIZE, ZYGOTE_SIZE,
+    CONTROL_PAGES_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACK_SIZE, SIGNAL_STACKS,
+    SIGNAL_STACKS_SIZE, THREAD_PAGE_SIZE, THREAD_PAGES, THREADS_PER_PROCESS, ZYGOTE,
+    ZYGOTE_CODE_SIZE, ZYGOTE_SIZE,
 };
 use crate::pages::{CommandKind, ExitKind, Resume, control, register};
-use crate::stub::{MEMORY_FD, SOCKET_FD};
+use crate::stub::{MEMORY_FD, SOCKET_FD, THREAD_FLAGS};
 
 // The stub's turn loop reads the answer word and publishes the request word with `ldar` and `stlr`, which take no
 // offset.
@@ -385,7 +386,35 @@ core::arch::global_asm!(
     "b.eq .Lwchp_protect",
     "cmp x13, #{command_unmap}",
     "b.eq .Lwchp_unmap_command",
+    "cmp x13, #{command_new_thread}",
+    "b.eq .Lwchp_new_thread",
     "b .Lwchp_bad_turn",
+    // A thread: its register page in x16 and its last turn in x15 for the new thread, which starts on its signal
+    // stack with every register but x0 and sp the maker's.
+    ".Lwchp_new_thread:",
+    "lsr x9, x14, #{threads_shift}",
+    "cbnz x9, .Lwchp_bad_turn",
+    "wchp_mov64 x16, {register_pages}",
+    "add x16, x16, x14, lsl #{page_shift}",
+    "wchp_mov64 x1, {signal_stacks}",
+    "add x9, x14, #1",
+    "add x1, x1, x9, lsl #{stack_shift}",
+    "wchp_mov64 x0, {thread_flags}",
+    "add x2, x16, #{exit_clear}",
+    "mov x3, #0",
+    "mov x4, x2",
+    "mov x8, #{nr_clone}",
+    "svc #0",
+    "cbz x0, .Lwchp_thread_start",
+    "tbnz x0, #63, .Lwchp_refused",
+    "str w0, [x16, #{thread_id}]",
+    "b .Lwchp_applied",
+    ".Lwchp_thread_start:",
+    "mov x27, x16",
+    "wchp_mov64 x9, {register_pages_offset}",
+    "sub x26, x16, x9",
+    "mov w28, w15",
+    "b .Lwchp_turn_wait",
     ".Lwchp_map:",
     "mov x0, x14",
     "mov x1, x15",
@@ -553,6 +582,11 @@ core::arch::global_asm!(
     command_map = const CommandKind::Map as u32,
     command_protect = const CommandKind::Protect as u32,
     command_unmap = const CommandKind::Unmap as u32,
+    command_new_thread = const CommandKind::NewThread as u32,
+    threads_shift = const THREADS_PER_PROCESS.trailing_zeros(),
+    page_shift = const THREAD_PAGE_SIZE.trailing_zeros(),
+    stack_shift = const SIGNAL_STACK_SIZE.trailing_zeros(),
+    thread_flags = const THREAD_FLAGS,
     resume_ping = const Resume::Ping as u64,
     resume_exit_thread = const Resume::ExitThread as u64,
     exit_done = const ExitKind::Done as u64,

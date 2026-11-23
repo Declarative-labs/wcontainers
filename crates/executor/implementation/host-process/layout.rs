@@ -53,3 +53,9 @@ pub const SIGNAL_STACKS_SIZE: usize = THREADS_PER_PROCESS * SIGNAL_STACK_SIZE;
 const _: () = assert!(ZYGOTE >= OUR_AREA);
 const _: () = assert!(THREAD_PAGES >= ZYGOTE + ZYGOTE_SIZE);
 const _: () = assert!(SIGNAL_STACKS + SIGNAL_STACKS_SIZE <= 1 << 46);
+// The stubs find a thread's pages and stack by shifts.
+const _: () = assert!(
+    THREADS_PER_PROCESS.is_power_of_two()
+        && THREAD_PAGE_SIZE.is_power_of_two()
+        && SIGNAL_STACK_SIZE.is_power_of_two()
+);

@@ -36,6 +36,9 @@ name = "windows"
 [[test]]
 name = "host"
 
+[[test]]
+name = "threads"
+
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
 unsafe_code = "deny"

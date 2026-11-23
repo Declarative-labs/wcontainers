@@ -13,7 +13,7 @@ use libc::{
 use linux_raw_sys::general as linux;
 
 use crate::layout::{GUEST_START, OUR_AREA};
-use crate::stub::MEMORY_FD;
+use crate::stub::{MEMORY_FD, THREAD_FLAGS};
 
 #[cfg(target_arch = "aarch64")]
 const ARCHITECTURE: u32 = linux_raw_sys::ptrace::AUDIT_ARCH_AARCH64;
@@ -205,7 +205,8 @@ impl Program {
 
 /// The stub's filter: `futex`, `exit` and `exit_group` as they come; `mmap` of the memory's memfd only, shared and
 /// fixed, inside the guest area, never executable, at the offset equal to the address; `mprotect` inside the guest
-/// area, never executable; `munmap` inside the guest area. Anything else kills the stub.
+/// area, never executable; `munmap` inside the guest area; `clone` of a thread of the stub only. Anything else kills
+/// the stub.
 pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mut program = Program {
         ops: Vec::new(),
@@ -216,6 +217,7 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mmap = program.label();
     let mprotect = program.label();
     let munmap = program.label();
+    let clone = program.label();
     program.load(offset_of!(seccomp_data, arch));
     program.jump(
         BPF_JEQ | BPF_K,
@@ -231,6 +233,7 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
         (linux::__NR_mmap, mmap),
         (linux::__NR_mprotect, mprotect),
         (linux::__NR_munmap, munmap),
+        (linux::__NR_clone, clone),
     ] {
         program.jump(BPF_JEQ | BPF_K, number, Target::Label(to), Target::Next);
     }
@@ -262,6 +265,10 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
 
     program.place(munmap);
     program.guest_range(0, 1, kill);
+    program.always(allow);
+
+    program.place(clone);
+    program.argument_is(0, u64::from(THREAD_FLAGS), kill);
     program.always(allow);
 
     // Last, since a filter's jumps go only forward.

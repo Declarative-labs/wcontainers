@@ -14,11 +14,12 @@ use super::{
     MESSAGE, RSEQ_AREA, RSEQ_FLAG_UNREGISTER, RSEQ_SIG, Request, StubDescriptor, ZygoteEnd,
 };
 use crate::layout::{
-    CONTROL_PAGES_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACKS, SIGNAL_STACKS_SIZE,
-    THREAD_PAGES, ZYGOTE, ZYGOTE_CODE_SIZE, ZYGOTE_SIZE,
+    CONTROL_PAGES_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACK_SIZE, SIGNAL_STACKS,
+    SIGNAL_STACKS_SIZE, THREAD_PAGE_SIZE, THREAD_PAGES, THREADS_PER_PROCESS, ZYGOTE,
+    ZYGOTE_CODE_SIZE, ZYGOTE_SIZE,
 };
 use crate::pages::{CommandKind, ExitKind, Resume, control, register};
-use crate::stub::{MEMORY_FD, SOCKET_FD};
+use crate::stub::{MEMORY_FD, SOCKET_FD, THREAD_FLAGS};
 
 // The stub's turn loop reads the answer word and publishes the request word at their pages' starts.
 const _: () = assert!(control::ANSWER == 0 && register::REQUEST == 0);
@@ -395,7 +396,41 @@ core::arch::global_asm!(
     "je .Lwchp_protect",
     "cmp rax, {command_unmap}",
     "je .Lwchp_unmap_command",
+    "cmp rax, {command_new_thread}",
+    "je .Lwchp_new_thread",
     "jmp .Lwchp_bad_turn",
+    // A thread: its register page in r9 and its last turn in r8 for the new thread, which starts on its signal stack
+    // with every register but rax, rcx, r11 and rsp the maker's.
+    ".Lwchp_new_thread:",
+    "mov rax, rdi",
+    "cmp rax, {threads_per_process}",
+    "jae .Lwchp_bad_turn",
+    "mov r8, rsi",
+    "mov r9, rax",
+    "shl r9, {page_shift}",
+    "mov rcx, {register_pages}",
+    "add r9, rcx",
+    "lea rdx, [r9 + {exit_clear}]",
+    "mov r10, rdx",
+    "inc rax",
+    "shl rax, {stack_shift}",
+    "mov rsi, {signal_stacks}",
+    "add rsi, rax",
+    "mov edi, {thread_flags}",
+    "mov eax, {nr_clone}",
+    "syscall",
+    "test rax, rax",
+    "jz .Lwchp_thread_start",
+    "js .Lwchp_refused",
+    "mov dword ptr [r9 + {thread_id}], eax",
+    "jmp .Lwchp_applied",
+    ".Lwchp_thread_start:",
+    "mov r13, r9",
+    "mov r12, r9",
+    "mov rax, {register_pages_offset}",
+    "sub r12, rax",
+    "mov r14d, r8d",
+    "jmp .Lwchp_turn_wait",
     ".Lwchp_map:",
     "mov r10d, {map_shared_fixed}",
     "mov r8d, {memory_fd}",
@@ -560,6 +595,11 @@ core::arch::global_asm!(
     command_map = const CommandKind::Map as u32,
     command_protect = const CommandKind::Protect as u32,
     command_unmap = const CommandKind::Unmap as u32,
+    command_new_thread = const CommandKind::NewThread as u32,
+    threads_per_process = const THREADS_PER_PROCESS,
+    page_shift = const THREAD_PAGE_SIZE.trailing_zeros(),
+    stack_shift = const SIGNAL_STACK_SIZE.trailing_zeros(),
+    thread_flags = const THREAD_FLAGS,
     resume_ping = const Resume::Ping as u64,
     resume_exit_thread = const Resume::ExitThread as u64,
     exit_done = const ExitKind::Done as u64,
