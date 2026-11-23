@@ -144,36 +144,12 @@ format_28.support1 0x33fcd3f3 0x3fcd3f3
 format_29.support1 0x11fcd3f0 0x1fcd3f0
 format_87.support1 0x33fcd3f3 0x3fcd3f3
 format_91.support1 0x11fcd3f0 0x1fcd3f0
+format_24.support1 0x33fcd3f3 0x3fcd3f3
+format_88.support1 0x30f4d3f3 0xf4d3f3
+format_89.support1 0x11180020 0x1180020
 #
-# R10G10B10A2_UNORM: back buffers cast to R10G10B10_XR_BIAS_A2_UNORM (BACK_BUFFER_CAST), with the
-# video abilities: no browser canvas shows the extended-range bias encoding (status, gap list):
-format_24.support1 0x33fcd3f3 0x2fcd3f3
-#
-# R32G32B32 (6, 7, 8): multisample load (required at 11_0 for all three) and resolve (required
-# for 6): WebGPU renders no three-channel format, so none is multisampled; section 9's named
-# multisample count shortfall (status, gap list). 6 is sampled and gathered beyond real (served).
-# R32G32B32_UINT also lacks logic operations (absent).
-format_6.support1 0x5411fb 0x9013fb
-format_7.support1 0x5011fb 0x1011fb
-format_8.support1 0x5011fb 0x1011fb
-#
-# A8_UNORM: typed unordered access (TYPED_UNORDERED_ACCESS_VIEW, UAV_TYPED_LOAD and _STORE), with
-# tiled resources: the WebGPU back end gives A8Unorm, held as rgba8unorm, no storage use, and the
-# front's StorageFormatThroughBuffer route is not built for a format held converted (status, gap
-# list: the front's own open part, asked of G2).
-format_65.support1 0x2e4d3f0 0xe4d3f0
-format_65.support2 0x2c0 0x0
-#
-# B8G8R8X8_UNORM: typed buffer views and vertex input (BUFFER, IA_VERTEX_BUFFER), with the video
-# abilities: the interface has no vertex format reading the fourth byte as one (status, gap list:
-# asked of G1).
-format_88.support1 0x30f4d3f3 0xf4d3f0
-#
-# R10G10B10_XR_BIAS_A2_UNORM: the whole format (2D textures, scan-out, casts within its bit layout,
-# back buffer casts, video processor output, tiled): it is only shown, cast and copied, and no
-# browser canvas shows the extended-range bias encoding (status, gap list).
-format_89.support1 0x11180020 err_80004005
-format_89.support2 0x200 err_80004005
+# R32G32B32_FLOAT (6): sampled and gathered beyond real (served, SERVED_BEYOND_REAL).
+format_6.support1 0x5411fb 0xd413fb
 #
 # NV12 (103), 420_OPAQUE (106) and YUY2 (107): stored as ordinary textures (plan 4.12: two planes,
 # or rgba8unorm of half the width), with every ability Direct3D defines for them but the video
@@ -205,19 +181,10 @@ format_113.support2 0x0 err_80004005
 format_114.support1 0x20000020 err_80004005
 format_114.support2 0x0 err_80004005
 #
-# B5G6R5 (85), B5G5R5A1 (86), B4G4R4A4 (115): sampled through rgba8unorm (FormatConverted), but
-# no exact route draws, blends or stores into them (an rgba8unorm store keeps blended values at 8
-# bits where Direct3D keeps 4, 5 or 6), so targets, storage and multisampling are answered absent
-# (status, departures).
-format_115.support1 0x8413f0 0x8013f0
+# B5G6R5 (85), B5G5R5A1 (86), B4G4R4A4 (115), A8_UNORM (65) and R10G10B10_XR_BIAS_A2_UNORM (89):
+# tiled resources, absent (section 9).
 format_115.support2 0x200 0x0
-format_85.quality_levels_2 0x1 0x0
-format_85.quality_levels_4 0x1 0x0
-format_85.quality_levels_8 0x1 0x0
-format_85.support1 0xe4d3f0 0x8013f0
 format_85.support2 0x200 0x0
-format_86.quality_levels_2 0x1 0x0
-format_86.quality_levels_4 0x1 0x0
-format_86.quality_levels_8 0x1 0x0
-format_86.support1 0xe4d3f0 0x8013f0
 format_86.support2 0x200 0x0
+format_65.support2 0x2c0 0xc0
+format_89.support2 0x200 0x0
