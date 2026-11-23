@@ -221,6 +221,9 @@ pub mod reason {
     /// section 15, the address space is small): a fixed one is refused (ENOMEM), a hint is placed
     /// elsewhere. Detail: the address.
     pub const ADDRESS_ABOVE_SPACE: &str = "address above the address space";
+    /// A container's address space asked for wider than the reference's 48 bit one (ARM64's 52
+    /// bit addresses are not built): it gets the reference's. Detail: the size asked for.
+    pub const ADDRESS_SPACE_NARROWED: &str = "address space narrowed to 48 bits";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes

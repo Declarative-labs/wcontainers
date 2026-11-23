@@ -71,7 +71,8 @@ pub struct Start<'a, E> {
     /// What descriptors 0 to 2 are.
     pub standard: Standard<E>,
     /// The container's address-space size: one past the highest address its processes may use,
-    /// at most [`crate::ARM64_ADDRESS_SPACE_BYTES`], the reference's.
+    /// at most [`crate::ARM64_ADDRESS_SPACE_BYTES`], the reference's; a larger one is cut to it,
+    /// counted and warned of.
     pub address_space_bytes: u64,
     /// The memory size the guest is told (`/proc/meminfo`, `sysinfo`, tmpfs's limits).
     pub memory_bytes: u64,
@@ -997,6 +998,13 @@ impl Kernel {
         cx.random(&mut self.boot_id);
         cx.random(&mut self.files.generation_key);
         self.machine.memory_bytes = start.memory_bytes;
+        if start.address_space_bytes > crate::ARM64_ADDRESS_SPACE_BYTES {
+            self.counters.count(
+                cx.host,
+                crate::counters::reason::ADDRESS_SPACE_NARROWED,
+                start.address_space_bytes,
+            );
+        }
         let space = start
             .address_space_bytes
             .min(crate::ARM64_ADDRESS_SPACE_BYTES);

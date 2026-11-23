@@ -1295,6 +1295,10 @@ pub struct Prepared {
     pub hooks: Option<Box<dyn Hooks>>,
     /// The executor's ceiling given at start, if below the address space's end.
     pub ceiling: Option<u64>,
+    /// The container's address-space size given at start.
+    pub address_space_bytes: u64,
+    /// The memory size the guest is told, if not the executor's address space's end.
+    pub memory_bytes: Option<u64>,
     /// Whether the guest's clocks are the machine's and its waits take their time, so a test that
     /// runs for a span of time takes that span, rather than moving only with the work run.
     pub wall_clock: bool,
@@ -1317,6 +1321,8 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         client: StreamClient::default(),
         hooks: None,
         ceiling: None,
+        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
+        memory_bytes: None,
         wall_clock: false,
         tape: None,
         options: Default::default(),
@@ -1403,8 +1409,8 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
         groups: Box::leak(prepared.groups.into_boxed_slice()),
         backend: None,
         standard: host.standard(),
-        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes: cpu.address_space().end,
+        address_space_bytes: prepared.address_space_bytes,
+        memory_bytes: prepared.memory_bytes.unwrap_or(cpu.address_space().end),
         ceiling: prepared.ceiling,
         options: prepared.options,
     };
@@ -1631,6 +1637,8 @@ where
         echo,
         client,
         ceiling,
+        address_space_bytes,
+        memory_bytes,
         wall_clock,
         options,
         ..
@@ -1695,8 +1703,8 @@ where
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
         standard: host.standard(),
-        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes: cpu.address_space().end,
+        address_space_bytes,
+        memory_bytes: memory_bytes.unwrap_or(cpu.address_space().end),
         ceiling,
         options,
     };
