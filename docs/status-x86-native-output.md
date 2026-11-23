@@ -72,6 +72,11 @@ probes).
   the meaning in two new edge tests; `lfs`/`lgs`/`lss` now wrap the selector's address by itself under 0x67, as
   the meaning does (an unchecked-form 0x67 defect of run 7's answer, found while building the far branches). Still
   to answer: the partial-write and undefined-result forms (for hosts whose probe finds them different).
+  Run 9: the Float status route's second call is built (`answer::float_status_after`, `native::float_status`): a
+  save's image gets FIP from the register area and FDP, FOP, the selectors and MXCSR's mask from the block as the
+  meaning writes them, a load leaves the image's pointers in the block, `fnsave` clears them, `ldmxcsr` turns
+  tracking on. Native layer 1 now makes the call wherever a run reaches it, and a new test runs every save and
+  load form after x87 instructions (one piece for the stretch) against the meaning (results below).
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -99,9 +104,51 @@ probes).
 6. What still needs an x86 executor (P's at W3 of the native-without-virtual-machine track, or a floor): the X9
    programs (real binaries: threads, signals, `execve`, the kernel), replay, register groups, hostile guests, the
    mirror's memory on busybox and python, links' batches and traps. Layers 1 to 3 and speed run in blobs now.
-7. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
-   before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
-   area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+7. The second call (run 9) is checked for FIP after x87 instructions and for every pointer a load takes; a save's
+   FDP and FOP are checked only as zero, since no case can start with them otherwise (the case's state has no field
+   for them, and the native harness ends a run at its first second call, so a load cannot precede a save). That
+   check comes with the `x87_unmasked` mode, whose exceptions set them. Also open: the floor's entry rule for MXCSR
+   (the block takes the hardware's flags when tracking is on or the mode is not the default; native layer 1 runs
+   with tracking on), and the note of an MXCSR read while not kept for `xsave` (the meaning warns; `answer` is not
+   told tracking).
+
+## What XN1 run 9 changed
+
+- `answer::float_status_after(status, block, tracking, memory) -> Result<Notes, Fault>` (core) and `FloatStatus`
+  (`LoadMxcsr`, `StoreMxcsr`, `Image { restore, wide, at }`, `Environment { restore, registers, wide, at }`), with
+  `native::float_status(i)` giving it; `Notes::mxcsr_flags_read_not_kept`. Plan 3.5 says what the block it takes
+  holds and what the caller does after.
+- The environment's layout (`x87::Environment`, `ENVIRONMENT_32`, `ENVIRONMENT_16`, its reserved halves) moved from
+  fpu.rs into the core; fpu.rs reads it.
+- Test crate: native.rs makes the second call at a run's FloatAfter (`float_status_after`, FIP from the register
+  area, counted in `SECOND_CALLS`, which layer 1's summary line prints); `run_with_pointers` (a piece of a given
+  look-ahead, returning FIP, FDP and FOP after the second call) beside `run`. tests/layer1.rs
+  `the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64`: fxsave, fxsave64, fnstenv and fnsave
+  in both sizes and their six loads, after none, `fld1`, `fld1; fadd`, `fld qword [rdx]`, `fld1; fnstcw` and
+  `fld1; fnclex` (loads after the first two), on [rcx], [rip + disp32], fs:, gs: (the area's segment in P) and
+  [ecx]; outcome and pointers against the meaning, uncounted and (one instruction) counted; saves with no prior
+  against the CPU too. Load images keep the control word's reserved bits as the CPU does: the meaning keeps all 16
+  bits of a loaded control word where the CPU keeps 0x1f3f and reads bit 6 as one (seen: image 0xc3ff, CPU 0x37f,
+  meaning 0xc3ff), and clears neither ES nor B; that is the meaning's, the x86 track's to answer, and not this
+  call's.
+
+## XN1 run 9 results (rented x86 machine, Xeon 8488C, 5-level paging)
+
+- Clippy with warnings denied, `--no-deps`, on wcontainers-x86 (all targets, and without `translate`) and
+  -translator-test (all targets): clean.
+- The new test (19:42 UTC, load 2.3): 300 runs equal to the meaning's, pointers included; the 30 saves with no x87
+  instruction before equal to the CPU's (uncounted and counted).
+- Controls (rented copy only, scratch xn1r9/controls-float.sh, 19:45 UTC): caught: FIP left out of an environment
+  save, FIP left out of an image save, a 32-bit image load's pointers not cut to 32 bits, `fnsave` keeping the
+  pointers, FOP loaded with more than its 11 bits, the 32-bit environment's reserved half written zero, MXCSR's
+  mask written zero. Not caught: FOP left out of the environment's selector word (FOP is zero in every save here,
+  item 7 of the next steps).
+- Native layer 1 with the second call (19:44 to 19:56 UTC, load 10.9 before, up to 14.5 during with other
+  tracks' jobs): 2008 forms, 1,000 a form, seed 5150, 32 at once: 0 failing, the same 2,594 known failures; the
+  second call made in 9,904 runs; 165,030 answers equal to the meaning's; 694 s.
+- The x86 crate's tests and the four `the_inside_answers_*` tests (19:57 UTC): all pass, the same case counts.
+- The literal check: no finding in a line this run wrote; one earlier line of tests/layer1.rs (`USER_DS | 0x100`)
+  now writes its bit by name. The error-message strings of the test crate's native.rs remain.
 
 ## What XN1 run 8 changed
 
@@ -607,6 +654,10 @@ The inside's answers against the meaning (rented x86 machine, about a minute): `
 wcontainers-translator-test --test layer1 the_inside_answers -- --nocapture` (four tests: cpuid and xgetbv; the
 reciprocals, flags, descriptors and segment registers; far transfers, bases and the clock; xsave and xrstor).
 Scratch run9/controls.sh and controls-xstate.sh are run 8's controls, sent inline with `--no-sync`.
+
+The second call against the meaning (rented x86 machine, seconds): `cargo test -q -p wcontainers-translator-test
+--test layer1 the_second_call -- --nocapture`. Scratch xn1r9/controls-float.sh is run 9's controls, sent the same
+way.
 
 ## Departures from the plan (XN1)
 

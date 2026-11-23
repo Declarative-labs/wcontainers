@@ -471,6 +471,22 @@ case's outcome by `answer` equal to the meaning's; forms layer 1 leaves out (`cp
 ours; `rdtsc`, `rdtscp`, the clock; `xsave`, `xrstor`, XCR0 and XSTATE_BV by design) and the operands its random
 cases rarely reach have edge tests of their own against the meaning (tests/layer1.rs `the_inside_answers_*`).
 
+The Float status route's second call (section 3.1) is `answer::float_status_after(status, block, tracking,
+memory) -> Result<Notes, Fault>`, with `native::float_status` giving the `FloatStatus` of a decoded instruction
+(`ldmxcsr`, `stmxcsr`, the FXSAVE image, the x87 environment, each with its operand). The block it is given is the
+hardware's state just after the copied instruction but for FIP (the register area's word, or the fix-up), FDP and
+FOP, which are the meaning's from before it; its rip is the instruction's own. A save's image gets FIP, FDP, FOP,
+the selectors and MXCSR's mask as the meaning writes them (the environment's layout is the core's, which the
+meaning's x86/fpu.rs reads too); a load leaves the image's FIP, FDP and FOP in the block as the meaning loads them;
+`fnsave` clears them, as the initialisation after its store does; `ldmxcsr` keeps MXCSR's flags from then on; a
+read of MXCSR while its flags are not kept is a note. Its caller writes the register area's FIP from the block on
+return. A fault is the image's, made unreachable by a sibling since the hardware reached it. Native layer 1 makes
+the call at every run that reaches it, and `the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64`
+runs every save and load form after none, one, two, a memory and a control x87 instruction (one piece for the
+stretch), on a register, rip, fs, the area's gs and a 32-bit address, against the meaning, the pointers the block
+holds after included. The reference runner runs one instruction, so with an x87 instruction before the save only
+the meaning is compared.
+
 ### 3.6 System calls, faults, the count
 
 - The call into the inside, one function `call(way, kind)`, writing no flag and touching no guest byte (the red
