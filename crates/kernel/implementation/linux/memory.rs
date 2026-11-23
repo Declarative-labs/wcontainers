@@ -1057,35 +1057,24 @@ impl AddressMap {
     /// Free space as [`AddressMap::find_free`] finds it with `taken` in use too: where the loader
     /// will place a new program's parts.
     pub fn find_free_beside(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
-        let found = self.search(length, taken);
-        if found.is_none() && self.ceiling < self.end {
-            self.note(|notes| notes.outgrown.set(Some(length)));
-        }
-        found
+        self.search(length, taken, false)
     }
 
     /// Free space as [`AddressMap::find_free`] finds it for anonymous private memory placed with
-    /// no hint: a length of whole PMDs starts on a PMD's boundary, as Linux places it for its
-    /// transparent huge pages (`__thp_get_unmapped_area` with the top-down search: the space for
-    /// one PMD more, and the boundary in it, or one PMD higher when the space starts on one).
+    /// no hint: a length of whole PMDs starts on a PMD's boundary where its range has room for
+    /// that, as Linux places it for its transparent huge pages (`__thp_get_unmapped_area`).
     pub fn find_free_anonymous(&self, length: u64) -> Option<u64> {
-        if length.is_multiple_of(PMD_SIZE)
-            && let Some(start) = length
-                .checked_add(PMD_SIZE)
-                .and_then(|padded| self.search(padded, &[]))
-        {
-            let to_boundary = start.wrapping_neg() & (PMD_SIZE - 1);
-            return Some(if to_boundary == 0 {
-                start + PMD_SIZE
-            } else {
-                start + to_boundary
-            });
-        }
-        self.find_free(length)
+        self.search(length, &[], length.is_multiple_of(PMD_SIZE))
     }
 
-    /// The search of [`AddressMap::find_free_beside`], noting nothing when it finds no space.
-    fn search(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
+    /// The search of [`AddressMap::find_free_beside`], range by range, and on a PMD's boundary
+    /// first if `on_boundary`; when it finds no space below a ceiling it is noted as outgrown.
+    fn search(
+        &self,
+        length: u64,
+        taken: &[core::ops::Range<u64>],
+        on_boundary: bool,
+    ) -> Option<u64> {
         let mut ranges = alloc::vec![(LOWEST_ADDRESS, self.mmap_base)];
         let mut floor = first_tier_top(self.ceiling);
         for tier in PLACEMENT_TIERS.into_iter().chain([self.end]) {
@@ -1101,9 +1090,25 @@ impl AddressMap {
             if top > self.ceiling {
                 break;
             }
+            // Linux's top-down search for one PMD more, then the boundary in that space, or one
+            // PMD higher when the space starts on one.
+            let padded = length.checked_add(PMD_SIZE).filter(|_| on_boundary);
+            if let Some(start) =
+                padded.and_then(|padded| self.find_free_between(floor, top, padded, taken))
+            {
+                let to_boundary = start.wrapping_neg() & (PMD_SIZE - 1);
+                return Some(if to_boundary == 0 {
+                    start + PMD_SIZE
+                } else {
+                    start + to_boundary
+                });
+            }
             if let Some(start) = self.find_free_between(floor, top, length, taken) {
                 return Some(start);
             }
+        }
+        if self.ceiling < self.end {
+            self.note(|notes| notes.outgrown.set(Some(length)));
         }
         None
     }
@@ -1861,6 +1866,29 @@ mod tests {
             assert_eq!(start, expected, "{length:#x}");
             place(&mut map, start, length);
             top = start;
+        }
+    }
+
+    /// The lowest range's room for a PMD but not for one on a boundary keeps the mapping there
+    /// unaligned, under any ceiling, rather than sending it to a higher range.
+    #[test]
+    fn a_pmd_stays_in_the_lowest_range_without_its_boundary() {
+        let hole = PMD_SIZE + PAGE_SIZE;
+        for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1]] {
+            let notes = Rc::new(MapNotes::default());
+            let mut map = AddressMap::new(PLACEMENT_TIERS[1], ceiling, notes);
+            let base = map.mmap_base;
+            place(
+                &mut map,
+                LOWEST_ADDRESS + hole,
+                base - LOWEST_ADDRESS - hole,
+            );
+            let start = map.find_free_anonymous(PMD_SIZE);
+            assert_eq!(
+                start,
+                Some(LOWEST_ADDRESS + hole - PMD_SIZE),
+                "{ceiling:#x}"
+            );
         }
     }
 
