@@ -5788,6 +5788,7 @@ dependencies = [
 name = "wcontainers-runtime-conformance"
 version = "0.1.0"
 dependencies = [
+ "oci-spec",
  "wcontainers-executor",
  "wcontainers-kernel",
  "wcontainers-runtime",
@@ -5822,6 +5823,7 @@ dependencies = [
  "wcontainers-negative-route-advisable",
  "wcontainers-random-source",
  "wcontainers-readiness",
+ "wcontainers-runtime",
  "wcontainers-system",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
