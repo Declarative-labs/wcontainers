@@ -122,6 +122,11 @@ const GEOMETRY_OUTPUT_VERTICES: c_uint = 256;
 const GEOMETRY_OUTPUT_COMPONENTS: c_uint = 1024;
 const GEOMETRY_INVOCATIONS: c_uint = 32;
 
+/// The values a tessellation control program writes once a patch, the least OpenGL 4.0 and
+/// `OES_tessellation_shader` allow (120 components): the stage helper sizes its patch records by
+/// the program's own declarations.
+const PATCH_VARYINGS: c_uint = 30;
+
 /// Stream output's limits: the stage helper's (every vertex output written to its records, into
 /// its four buffers), on back ends with compute work; none without.
 fn stream_output(ours: &Caps) -> (c_uint, c_uint) {
@@ -191,6 +196,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
         caps.max_geometry_output_vertices = GEOMETRY_OUTPUT_VERTICES;
         caps.max_geometry_total_output_components = GEOMETRY_OUTPUT_COMPONENTS;
         caps.max_gs_invocations = GEOMETRY_INVOCATIONS;
+        caps.max_shader_patch_varyings = PATCH_VARYINGS;
     }
     // Compute work, storage buffers and images (in compute programs), indirect draws (their
     // arguments read back), multisampled textures, gathers, stencil texturing and framebuffers
@@ -247,13 +253,22 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.gl_clamp = false;
 }
 
-/// The stages the driver takes programs for; the geometry stage where the back end runs compute
-/// work.
+/// The stages the driver takes programs for; the geometry and tessellation stages where the back
+/// end runs compute work (`STAGED`).
 const STAGES: &[mesa_shader_stage] = &[
     MESA_SHADER_VERTEX,
     MESA_SHADER_FRAGMENT,
     MESA_SHADER_COMPUTE,
     MESA_SHADER_GEOMETRY,
+    MESA_SHADER_TESS_CTRL,
+    MESA_SHADER_TESS_EVAL,
+];
+
+/// The stages the stage helper runs as compute work.
+const STAGED: &[mesa_shader_stage] = &[
+    MESA_SHADER_GEOMETRY,
+    MESA_SHADER_TESS_CTRL,
+    MESA_SHADER_TESS_EVAL,
 ];
 
 /// The compute grid's limits, the interface's.
@@ -280,7 +295,9 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     (caps.max_inputs, caps.max_outputs) = match stage {
         MESA_SHADER_VERTEX => (limits.vertex_attributes, limits.inter_stage_slots),
         MESA_SHADER_FRAGMENT => (limits.inter_stage_slots, limits.color_targets),
-        MESA_SHADER_GEOMETRY => (limits.inter_stage_slots, limits.inter_stage_slots),
+        MESA_SHADER_GEOMETRY | MESA_SHADER_TESS_CTRL | MESA_SHADER_TESS_EVAL => {
+            (limits.inter_stage_slots, limits.inter_stage_slots)
+        }
         _ => (0, 0),
     };
     // Storage buffers and images in compute programs, within their shared binding range.
@@ -344,11 +361,8 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
     // st/mesa hands shaders over in the NIR route's shape.
     base.nir_options
         .fill(wcontainers_nir::mesa::compiler_options().cast());
-    let geometry = ours.has(Features::COMPUTE);
-    for &stage in STAGES
-        .iter()
-        .filter(|&&s| geometry || s != MESA_SHADER_GEOMETRY)
-    {
+    let staged = ours.has(Features::COMPUTE);
+    for &stage in STAGES.iter().filter(|&&s| staged || !STAGED.contains(&s)) {
         fill_shader_caps(&mut base.shader_caps[stage as usize], stage, &ours);
     }
     if ours.has(Features::COMPUTE) {

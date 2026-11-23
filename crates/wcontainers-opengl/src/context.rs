@@ -601,6 +601,8 @@ pub fn stage(stage: mesa_shader_stage) -> Option<Stage> {
         MESA_SHADER_FRAGMENT => Some(Stage::Fragment),
         MESA_SHADER_COMPUTE => Some(Stage::Compute),
         MESA_SHADER_GEOMETRY => Some(Stage::Geometry),
+        MESA_SHADER_TESS_CTRL => Some(Stage::TessControl),
+        MESA_SHADER_TESS_EVAL => Some(Stage::TessEvaluation),
         _ => None,
     }
 }

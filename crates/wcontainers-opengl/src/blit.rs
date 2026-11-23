@@ -44,8 +44,18 @@ fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
     blitter.saved_vs = context.stages.get(Stage::Vertex).shader.cast_mut().cast();
     blitter.saved_fs = context.stages.get(Stage::Fragment).shader.cast_mut().cast();
     blitter.saved_gs = context.stages.get(Stage::Geometry).shader.cast_mut().cast();
-    blitter.saved_tcs = std::ptr::null_mut();
-    blitter.saved_tes = std::ptr::null_mut();
+    blitter.saved_tcs = context
+        .stages
+        .get(Stage::TessControl)
+        .shader
+        .cast_mut()
+        .cast();
+    blitter.saved_tes = context
+        .stages
+        .get(Stage::TessEvaluation)
+        .shader
+        .cast_mut()
+        .cast();
     blitter.saved_ms = std::ptr::null_mut();
     blitter.saved_stencil_ref = pipe_stencil_ref {
         ref_value: bound.stencil_ref,

@@ -43,23 +43,30 @@ pub enum Stage {
     Fragment,
     Compute,
     Geometry,
+    TessControl,
+    TessEvaluation,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 4] = [
+    pub const ALL: [Stage; 6] = [
         Stage::Vertex,
         Stage::Fragment,
         Stage::Compute,
         Stage::Geometry,
+        Stage::TessControl,
+        Stage::TessEvaluation,
     ];
 
-    /// The route's stage of a program: a geometry program runs as the stage helper's compute work,
-    /// which binds its resources in compute's set.
+    /// The route's stage of a program: geometry and tessellation control programs run as the
+    /// stage helper's compute work, which binds their resources in compute's set; an evaluation
+    /// program draws the tessellated points as a vertex program does.
     pub fn nir(self) -> wcontainers_nir::mesa::Stage {
         match self {
-            Stage::Vertex => wcontainers_nir::mesa::Stage::Vertex,
+            Stage::Vertex | Stage::TessEvaluation => wcontainers_nir::mesa::Stage::Vertex,
             Stage::Fragment => wcontainers_nir::mesa::Stage::Fragment,
-            Stage::Compute | Stage::Geometry => wcontainers_nir::mesa::Stage::Compute,
+            Stage::Compute | Stage::Geometry | Stage::TessControl => {
+                wcontainers_nir::mesa::Stage::Compute
+            }
         }
     }
 }
@@ -176,6 +183,8 @@ pub struct Bound<B: Backend> {
     pub sample_mask: u32,
     pub viewport: pipe_viewport_state,
     pub scissor: pipe_scissor_state,
+    /// The control points of a patch (`set_patch_vertices`).
+    pub patch_vertices: u8,
 }
 
 impl<B: Backend> Default for Bound<B> {
@@ -191,6 +200,7 @@ impl<B: Backend> Default for Bound<B> {
             sample_mask: u32::MAX,
             viewport: pipe_viewport_state::default(),
             scissor: pipe_scissor_state::default(),
+            patch_vertices: 0,
         }
     }
 }
@@ -985,10 +995,13 @@ fn create_shader(
             nir.number_vertex_elements();
         }
         Stage::Fragment => nir.fragcolor_to_buffers(PIPE_MAX_COLOR_BUFS),
-        Stage::Compute | Stage::Geometry => {}
+        Stage::Compute | Stage::Geometry | Stage::TessControl | Stage::TessEvaluation => {}
     }
     // The last stage before the rasterizer streams its outputs.
-    if matches!(stage, Stage::Vertex | Stage::Geometry) {
+    if matches!(
+        stage,
+        Stage::Vertex | Stage::Geometry | Stage::TessEvaluation
+    ) {
         streamed = match nir.stream_outputs::<STREAM_BUFFERS>() {
             Some((outputs, _)) if outputs.is_empty() => Ok(None),
             Some((outputs, strides)) => Ok(Some(stream::declaration(&outputs, strides))),
@@ -1046,6 +1059,41 @@ unsafe extern "C" fn bind_gs_state<B: Backend>(pipe: *mut pipe_context, state: *
         .stages
         .get_mut(Stage::Geometry)
         .shader = state.cast();
+}
+
+unsafe extern "C" fn create_tcs_state(
+    pipe: *mut pipe_context,
+    state: *const pipe_shader_state,
+) -> *mut c_void {
+    create_stage(pipe, state, Stage::TessControl)
+}
+
+unsafe extern "C" fn bind_tcs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+    // SAFETY: Mesa passes this driver's context.
+    unsafe { Context::<B>::of(pipe) }
+        .stages
+        .get_mut(Stage::TessControl)
+        .shader = state.cast();
+}
+
+unsafe extern "C" fn create_tes_state(
+    pipe: *mut pipe_context,
+    state: *const pipe_shader_state,
+) -> *mut c_void {
+    create_stage(pipe, state, Stage::TessEvaluation)
+}
+
+unsafe extern "C" fn bind_tes_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+    // SAFETY: Mesa passes this driver's context.
+    unsafe { Context::<B>::of(pipe) }
+        .stages
+        .get_mut(Stage::TessEvaluation)
+        .shader = state.cast();
+}
+
+unsafe extern "C" fn set_patch_vertices<B: Backend>(pipe: *mut pipe_context, vertices: u8) {
+    // SAFETY: Mesa passes this driver's context.
+    unsafe { Context::<B>::of(pipe) }.bound.patch_vertices = vertices;
 }
 
 unsafe extern "C" fn create_compute_state(
@@ -1352,6 +1400,13 @@ pub fn fill<B: Backend>(c: &mut pipe_context) {
     c.create_gs_state = Some(create_gs_state);
     c.bind_gs_state = Some(bind_gs_state::<B>);
     c.delete_gs_state = Some(delete_shader_state::<B>);
+    c.create_tcs_state = Some(create_tcs_state);
+    c.bind_tcs_state = Some(bind_tcs_state::<B>);
+    c.delete_tcs_state = Some(delete_shader_state::<B>);
+    c.create_tes_state = Some(create_tes_state);
+    c.bind_tes_state = Some(bind_tes_state::<B>);
+    c.delete_tes_state = Some(delete_shader_state::<B>);
+    c.set_patch_vertices = Some(set_patch_vertices::<B>);
     c.set_blend_color = Some(set_blend_color::<B>);
     c.set_stencil_ref = Some(set_stencil_ref::<B>);
     c.set_sample_mask = Some(set_sample_mask::<B>);

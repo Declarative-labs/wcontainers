@@ -7,14 +7,16 @@ use std::ffi::c_uint;
 
 use wcontainers_gpu::{
     AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
-    BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DrawCall, DrawRange, FanOrLoop,
-    Features, Filter, FormatKind, FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding,
-    IndexFormat, IndexSource, Interpolation, MAX_BINDING_SETS, MapIntent, Object, PassTracker,
-    Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
-    STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
-    SourceStage, StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding,
-    VertexFormat, Viewport, WriteMode, cut_scissors, helper_binding,
+    BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DOMAIN_PATCHES_BINDING,
+    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, Filter, FormatKind, FormatUse,
+    HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource, Interpolation,
+    MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, PassTracker, Program, ProvokingVertex,
+    RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind, STORAGE_WORD, SamplerDesc,
+    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageSet,
+    StepMode, Topology, VariantKey, VertexBinding, VertexFormat, VertexLayoutDesc, Viewport,
+    WriteMode, cut_scissors, helper_binding,
 };
+use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
@@ -32,7 +34,9 @@ use crate::{indices, outputs, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
 pub(crate) struct Built<B: Backend> {
-    pub(crate) shader: B::Shader,
+    /// The program drawn or dispatched; none for a control program, which only the stage helper
+    /// runs.
+    pub(crate) shader: Option<B::Shader>,
     bindings: Vec<ReflectedBinding>,
     /// The bytes each uniform block declares, by its binding in the converted program.
     uniform_sizes: HashMap<u32, u64>,
@@ -50,6 +54,8 @@ pub(crate) struct Built<B: Backend> {
     layered: Vec<u32>,
     /// A vertex program converted for the stage helper: its module, with its outputs.
     converted: Option<Converted>,
+    /// An evaluation program's tessellator, which its control program is converted with.
+    tessellator: Option<Tessellator>,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -78,6 +84,10 @@ pub(crate) struct Variant {
     /// The inputs of packed formats the interface lacks, by location, which the program unpacks
     /// from one word each (vertex programs).
     packed: Vec<(u32, Packed)>,
+    /// The control points of a tessellation program's input patches.
+    points_in: u32,
+    /// The tessellator a control program's evaluation program declares.
+    tessellator: Option<Tessellator>,
 }
 
 impl Variant {
@@ -125,6 +135,8 @@ pub struct Programs<B: Backend> {
     /// The stage helpers of vertex programs and the geometry programs after them (none: zero),
     /// by both programs and variants.
     staged: HashMap<(ShaderId, Variant, ShaderId, Variant), Staged<B>>,
+    /// The stage helpers of vertex programs and the control and evaluation programs after them.
+    tessellated: HashMap<[(ShaderId, Variant); 3], Staged<B>>,
 }
 
 /// A vertex program and the geometry program after it run by the stage helper, and the vertex
@@ -181,6 +193,7 @@ impl<B: Backend> Default for Programs<B> {
             masked: HashMap::new(),
             compute: HashMap::new(),
             staged: HashMap::new(),
+            tessellated: HashMap::new(),
         }
     }
 }
@@ -191,8 +204,8 @@ impl<B: Backend> Programs<B> {
         let id = shader as ShaderId;
         let built: Vec<_> = self.built.keys().filter(|k| k.0 == id).cloned().collect();
         for key in built {
-            if let Some(b) = self.built.remove(&key) {
-                screen.retire(Object::Shader(b.shader));
+            if let Some(shader) = self.built.remove(&key).and_then(|b| b.shader) {
+                screen.retire(Object::Shader(shader));
             }
         }
         let programs: Vec<_> = self
@@ -223,12 +236,23 @@ impl<B: Backend> Programs<B> {
                 staged.destroy(&mut screen.backend());
             }
         }
+        let tessellated: Vec<_> = self
+            .tessellated
+            .keys()
+            .filter(|k| k.iter().any(|(shader, _)| *shader == id))
+            .cloned()
+            .collect();
+        for key in tessellated {
+            if let Some(staged) = self.tessellated.remove(&key) {
+                staged.destroy(&mut screen.backend());
+            }
+        }
     }
 
     /// Gives every object back, with the context.
     pub fn release(&mut self, screen: &Screen<B>) {
-        for (_, b) in self.built.drain() {
-            screen.retire(Object::Shader(b.shader));
+        for shader in self.built.drain().filter_map(|(_, b)| b.shader) {
+            screen.retire(Object::Shader(shader));
         }
         for (_, p) in self.programs.drain() {
             screen.retire(Object::Program(p));
@@ -242,7 +266,13 @@ impl<B: Backend> Programs<B> {
         for (_, r) in self.masked.drain() {
             screen.retire(Object::Raster(r));
         }
-        for (_, staged) in self.staged.drain() {
+        let tessellated = self.tessellated.drain().map(|(_, staged)| staged);
+        for staged in self
+            .staged
+            .drain()
+            .map(|(_, staged)| staged)
+            .chain(tessellated)
+        {
             staged.destroy(&mut screen.backend());
         }
     }
@@ -443,8 +473,13 @@ fn convert<B: Backend>(
     let stage = shader.stage.nir();
     let set = wcontainers_nir::bind::stage_set(stage.shader_stage());
     let bindings = nir.to_common_form(stage).map_err(|e| e.to_string())?;
-    if shader.stage == Stage::Geometry {
-        return convert_geometry(backend, &mut nir, bindings, variant, &key);
+    match shader.stage {
+        Stage::Geometry => return convert_geometry(backend, &mut nir, bindings, variant, &key),
+        Stage::TessControl => return convert_control(&mut nir, bindings, variant, &key),
+        Stage::TessEvaluation => {
+            return convert_evaluation(backend, &mut nir, bindings, variant, &key);
+        }
+        Stage::Vertex | Stage::Fragment | Stage::Compute => {}
     }
     let rewrites = VariantKey {
         pulled: variant.pulled.clone(),
@@ -515,7 +550,7 @@ fn convert<B: Backend>(
         .create_shader(&module)
         .map_err(|e| format!("{e:?}"))?;
     Ok(Built {
-        shader,
+        shader: Some(shader),
         bindings,
         uniform_sizes,
         flat_inputs,
@@ -525,6 +560,7 @@ fn convert<B: Backend>(
         pulled,
         layered,
         converted,
+        tessellator: None,
     })
 }
 
@@ -557,7 +593,7 @@ fn convert_geometry<B: Backend>(
         .map_err(|e| format!("{e:?}"))?;
     let set = wcontainers_nir::bind::stage_set(ShaderStage::Compute);
     Ok(Built {
-        shader,
+        shader: Some(shader),
         bindings: converted.reflection.bindings.clone(),
         uniform_sizes: uniform_sizes(&compute.module, set),
         flat_inputs: false,
@@ -567,6 +603,89 @@ fn convert_geometry<B: Backend>(
         pulled: Vec::new(),
         layered: layered_textures(&compute.module),
         converted: Some(converted),
+        tessellator: None,
+    })
+}
+
+/// A tessellation control program through route B in the stage helper's compute form, for input
+/// patches of `variant.points_in` control points and its evaluation program's tessellator.
+fn convert_control<B: Backend>(
+    nir: &mut wcontainers_nir::mesa::Nir,
+    bindings: Vec<ReflectedBinding>,
+    variant: &Variant,
+    key: &[u8; wcontainers_shaders::cache::KEY_BYTES],
+) -> Result<Built<B>, String> {
+    let tessellator = variant
+        .tessellator
+        .ok_or("a control program without its evaluation program's tessellator")?;
+    let rewrites = VariantKey {
+        border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        ..VariantKey::default()
+    };
+    let routed = wcontainers_nir::direct::route_patches(nir, variant.points_in)
+        .map_err(|e| e.to_string())?;
+    let converted = wcontainers_nir::direct::hull(routed, bindings, tessellator, &rewrites, key)
+        .map_err(|e| e.to_string())?;
+    let compute = converted
+        .modules
+        .first()
+        .ok_or("a control program without its compute form")?;
+    let set = wcontainers_nir::bind::stage_set(ShaderStage::Compute);
+    Ok(Built {
+        shader: None,
+        bindings: converted.reflection.bindings.clone(),
+        uniform_sizes: uniform_sizes(&compute.module, set),
+        flat_inputs: false,
+        inputs: Vec::new(),
+        helpers: converted.reflection.helpers.clone(),
+        helper_size: converted.reflection.helper_size,
+        pulled: Vec::new(),
+        layered: layered_textures(&compute.module),
+        converted: Some(converted),
+        tessellator: None,
+    })
+}
+
+/// A tessellation evaluation program through route B in the vertex form that draws the
+/// tessellated points, for patches of `variant.points_in` control points, its outputs written as
+/// the fragment program interpolates them; with the tessellator it declares.
+fn convert_evaluation<B: Backend>(
+    backend: &mut B,
+    nir: &mut wcontainers_nir::mesa::Nir,
+    bindings: Vec<ReflectedBinding>,
+    variant: &Variant,
+    key: &[u8; wcontainers_shaders::cache::KEY_BYTES],
+) -> Result<Built<B>, String> {
+    let rewrites = VariantKey {
+        border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        output_interpolation: output_interpolation(&variant.interpolation),
+        ..VariantKey::default()
+    };
+    let routed = wcontainers_nir::direct::route_patches(nir, variant.points_in)
+        .map_err(|e| e.to_string())?;
+    let tessellator = routed
+        .tessellator
+        .ok_or("an evaluation program without a tessellator")?;
+    let converted = wcontainers_nir::direct::domain(routed, bindings, &rewrites, key)
+        .map_err(|e| e.to_string())?;
+    let drawn = converted
+        .modules
+        .first()
+        .ok_or("an evaluation program without its vertex form")?;
+    let shader = backend.create_shader(drawn).map_err(|e| format!("{e:?}"))?;
+    let set = wcontainers_nir::bind::stage_set(ShaderStage::Vertex);
+    Ok(Built {
+        shader: Some(shader),
+        bindings: converted.reflection.bindings.clone(),
+        uniform_sizes: uniform_sizes(&drawn.module, set),
+        flat_inputs: false,
+        inputs: Vec::new(),
+        helpers: converted.reflection.helpers.clone(),
+        helper_size: converted.reflection.helper_size,
+        pulled: Vec::new(),
+        layered: layered_textures(&drawn.module),
+        converted: Some(converted),
+        tessellator: Some(tessellator),
     })
 }
 
@@ -940,7 +1059,8 @@ pub(crate) fn binding_sets<B: Backend>(
     let visibility = |stage| match stage {
         Stage::Vertex => vertex_visible,
         Stage::Fragment => StageSet::FRAGMENT,
-        Stage::Compute | Stage::Geometry => StageSet::COMPUTE,
+        Stage::TessEvaluation => StageSet::VERTEX,
+        Stage::Compute | Stage::Geometry | Stage::TessControl => StageSet::COMPUTE,
     };
     // Every stage's helper constants, in the one helper set.
     let mut blocks = Vec::new();
@@ -1353,8 +1473,33 @@ fn draw<B: Backend>(
     draws: &[pipe_draw_start_count_bias],
 ) -> Result<(), String> {
     let gs = context.stages.get(Stage::Geometry).shader;
-    // Behind a geometry program each range runs the stage helper and draws what it made.
-    if !gs.is_null() && draws.len() > 1 {
+    let [tcs, tes] =
+        [Stage::TessControl, Stage::TessEvaluation].map(|s| context.stages.get(s).shader);
+    let tessellated = !tes.is_null();
+    if tessellated {
+        // OpenGL draws nothing through tessellation but patches (the API refuses others).
+        if mesa_prim::from(info.mode) != MESA_PRIM_PATCHES {
+            return Ok(());
+        }
+        if tcs.is_null() {
+            return refused(format_args!(
+                "an evaluation program without a control program (its default levels not built)"
+            ));
+        }
+        if !gs.is_null() {
+            return refused(format_args!(
+                "a geometry program behind tessellation (not built)"
+            ));
+        }
+        if context.streams.active() {
+            return refused(format_args!(
+                "stream output behind tessellation (not built)"
+            ));
+        }
+    }
+    // Behind a geometry program or tessellation each range runs the stage helper and draws what
+    // it made.
+    if (!gs.is_null() || tessellated) && draws.len() > 1 {
         for d in draws {
             draw(context, info, std::slice::from_ref(d))?;
         }
@@ -1381,7 +1526,7 @@ fn draw<B: Backend>(
     let (raster, depth_stencil, blend, elements) =
         unsafe { (&*raster, &*depth_stencil, &*blend, &*elements) };
     let api_topology = topology(mesa_prim::from(info.mode));
-    if gs.is_null() && api_topology.is_none() {
+    if gs.is_null() && !tessellated && api_topology.is_none() {
         return refused(format_args!(
             "a primitive with adjacency without a geometry program, or one the screen does not \
              report"
@@ -1443,6 +1588,8 @@ fn draw<B: Backend>(
         targets: Vec::new(),
         second_source: None,
         packed: elements.packed.clone(),
+        points_in: 0,
+        tessellator: None,
     };
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
@@ -1454,10 +1601,28 @@ fn draw<B: Backend>(
         interpolation: inputs,
         ..Variant::default()
     };
-    let (first, first_variant) = if gs.is_null() {
-        (vs, vertex.clone())
+    // The evaluation program takes the position's transform and draws the tessellated points,
+    // for its control program's patches.
+    let evaluation = Variant {
+        transform,
+        swizzles: swizzles(context.stages.get(Stage::TessEvaluation)),
+        nearest: nearest_samplers(context.stages.get(Stage::TessEvaluation)),
+        border: border_in_program(context.stages.get(Stage::TessEvaluation)),
+        interpolation: geometry.interpolation.clone(),
+        // SAFETY: as above.
+        points_in: if tessellated {
+            unsafe { &*tcs }.nir.control_points_out()
+        } else {
+            0
+        },
+        ..Variant::default()
+    };
+    let (first, first_variant, first_stage) = if tessellated {
+        (tes, evaluation.clone(), Stage::TessEvaluation)
+    } else if gs.is_null() {
+        (vs, vertex.clone(), Stage::Vertex)
     } else {
-        (gs, geometry.clone())
+        (gs, geometry.clone(), Stage::Geometry)
     };
     // SAFETY: as above.
     programs.built_for(backend, unsafe { &*first }, &first_variant)?;
@@ -1470,7 +1635,25 @@ fn draw<B: Backend>(
     if !vertex.packed.is_empty() {
         backend.slow_paths().hit(SlowPath::VertexFormatConverted);
     }
-    let made = if gs.is_null() {
+    let made = if tessellated {
+        let Some(d) = draws.first() else {
+            return Ok(());
+        };
+        backend.slow_paths().hit(SlowPath::TessellationAsCompute);
+        let control = Variant {
+            swizzles: swizzles(context.stages.get(Stage::TessControl)),
+            nearest: nearest_samplers(context.stages.get(Stage::TessControl)),
+            border: border_in_program(context.stages.get(Stage::TessControl)),
+            points_in: u32::from(context.bound.patch_vertices),
+            ..Variant::default()
+        };
+        // SAFETY: as above.
+        let stages = unsafe { [(&*vs, &vertex), (&*tcs, &control), (&*tes, &evaluation)] };
+        match run_tessellated(context, backend, stages, elements, info, d)? {
+            Some(made) => Some(made),
+            None => return Ok(()),
+        }
+    } else if gs.is_null() {
         for path in paths {
             backend.slow_paths().hit(path);
         }
@@ -1503,7 +1686,7 @@ fn draw<B: Backend>(
         }
     };
     if !context.streams.active() {
-        query::count_drawn::<B>(&context.counting, info, draws, !gs.is_null())?;
+        query::count_drawn::<B>(&context.counting, info, draws, !gs.is_null() || tessellated)?;
     }
     let topology = match &made {
         Some(m) => m.out.topology,
@@ -1524,7 +1707,8 @@ fn draw<B: Backend>(
         && topology != Topology::PointList;
     if flat_from_other && made.is_some() {
         return refused(format_args!(
-            "flat values from the last vertex of a geometry program's primitives (not built)"
+            "flat values from the last vertex of a geometry or tessellation stage's primitives \
+             (not built)"
         ));
     }
     let provoking = flat_from_other.then_some(Provoking {
@@ -1537,15 +1721,25 @@ fn draw<B: Backend>(
         slot.insert(
             backend
                 .create_program(&Program::Render {
-                    vertex: &built[0].shader,
-                    fragment: Some(&built[1].shader),
+                    vertex: built[0]
+                        .shader
+                        .as_ref()
+                        .ok_or("a drawn program without its shader")?,
+                    fragment: Some(
+                        built[1]
+                            .shader
+                            .as_ref()
+                            .ok_or("a fragment program without its shader")?,
+                    ),
                 })
                 .map_err(|e| format!("a program: {e:?}"))?,
         );
     }
     // Behind a geometry program the vertex stage ran already: the draw binds the fragment stage's.
-    let both = [(Stage::Vertex, built[0]), (Stage::Fragment, built[1])];
+    // Behind tessellation the evaluation program draws, with its own resources.
+    let both = [(first_stage, built[0]), (Stage::Fragment, built[1])];
     let (fetched, drawn) = match &made {
+        Some(_) if tessellated => (Vec::new(), &both[..]),
         Some(_) => (Vec::new(), &both[1..]),
         None => (
             fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?,
@@ -1553,7 +1747,7 @@ fn draw<B: Backend>(
         ),
     };
     let mut images = Images::default();
-    let sets = binding_sets(
+    let mut sets = binding_sets(
         backend,
         &context.stages,
         drawn,
@@ -1562,6 +1756,24 @@ fn draw<B: Backend>(
         StageSet::VERTEX,
         &mut images,
     )?;
+    // The evaluation program reads the patches and points from the helper set.
+    if let Some(t) = made.as_ref().and_then(|m| m.out.tessellated.as_ref()) {
+        if sets[HELPER_SET as usize].is_some() {
+            return refused(format_args!(
+                "helper constants in an evaluation or fragment program behind tessellation (not \
+                 built)"
+            ));
+        }
+        let entries = [
+            domain_read::<B>(DOMAIN_PATCHES_BINDING, &t.patches),
+            domain_read::<B>(DOMAIN_POINTS_BINDING, &t.points),
+        ];
+        sets[HELPER_SET as usize] = Some(
+            backend
+                .create_binding_set(&entries)
+                .map_err(|e| format!("the tessellated points' set: {e:?}"))?,
+        );
+    }
     let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
     let layout = match &made {
         Some(m) => m.layout.clone(),
@@ -1585,6 +1797,7 @@ fn draw<B: Backend>(
     };
     let mut streams = Vec::new();
     match &made {
+        Some(m) if m.out.tessellated.is_some() => {}
         Some(m) => streams.push(Some(VertexBinding {
             buffer: &m.out.buffer,
             offset: 0,
@@ -1740,6 +1953,23 @@ struct Made<B: Backend> {
 /// The draw of what the stage helper made, as `pass` binds it otherwise: its vertices from the
 /// helper's buffer as stream 0, through its indices (32-bit, strips restarting) where it gives them.
 fn draw_made<B: Backend>(backend: &mut B, pass: &DrawCall<'_, B>, out: &FinalDraw<B>) {
+    // Tessellated points: an indexed indirect draw the tessellator wrote, its indices at the
+    // buffer's start, without vertex streams.
+    if let Some(t) = &out.tessellated {
+        backend.draw(&DrawCall {
+            index: Some(IndexBinding {
+                buffer: &out.buffer,
+                offset: 0,
+                format: IndexFormat::U32,
+            }),
+            range: DrawRange::IndexedIndirect {
+                args: &t.arguments,
+                offset: 0,
+            },
+            ..*pass
+        });
+        return;
+    }
     let index = out.index_offset.map(|offset| IndexBinding {
         buffer: &out.buffer,
         offset,
@@ -2064,6 +2294,182 @@ fn run_stages<B: Backend>(
         _ => None,
     };
     Ok(made)
+}
+
+/// One range of a draw through tessellation run by the stage helper outside the pass
+/// (`TessellationAsCompute`): the vertex program, the control program and the tessellator. What
+/// the evaluation program draws; `None` where the range holds no whole patch. The control
+/// program's variant is completed here with its evaluation program's tessellator.
+fn run_tessellated<B: Backend>(
+    context: &mut Context<B>,
+    backend: &mut B,
+    [(vs, vertex), (tcs, control), (tes, evaluation)]: [(&Shader, &Variant); 3],
+    elements: &state::Elements<B>,
+    info: &pipe_draw_info,
+    d: &pipe_draw_start_count_bias,
+) -> Result<Option<Made<B>>, String> {
+    let points = context.bound.patch_vertices;
+    if points == 0 || d.count < u32::from(points) {
+        return Ok(None);
+    }
+    let indexed = info.index_size > 0;
+    if indexed && (info.has_user_indices() || index_format(info.index_size) == IndexFormat::U8) {
+        return refused(format_args!(
+            "patches from indices in memory or of 8 bits (not built)"
+        ));
+    }
+    let (streamed, locations) = streamed_variant(vertex, elements);
+    let programs = &mut context.programs;
+    programs.built_for(backend, vs, &streamed)?;
+    let tessellator = programs
+        .built_for(backend, tes, evaluation)?
+        .tessellator
+        .ok_or("an evaluation program without its tessellator")?;
+    let control = Variant {
+        tessellator: Some(tessellator),
+        ..control.clone()
+    };
+    programs.built_for(backend, tcs, &control)?;
+    let id = |shader: &Shader| std::ptr::from_ref(shader) as ShaderId;
+    let key = [
+        (id(vs), streamed),
+        (id(tcs), control),
+        (id(tes), evaluation.clone()),
+    ];
+    let [built_vertex, built_control, built_evaluation] =
+        key.each_ref().map(|k| &programs.built[k]);
+    if built_control.helper_size != 0 {
+        return refused(format_args!(
+            "helper constants in a control program (not built)"
+        ));
+    }
+    let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
+    let mut images = Images::default();
+    let vertex_sets = binding_sets(
+        backend,
+        &context.stages,
+        &[(Stage::Vertex, built_vertex)],
+        &fetched,
+        info.start_instance,
+        StageSet::VERTEX.union(StageSet::COMPUTE),
+        &mut images,
+    )?;
+    let control_sets = binding_sets(
+        backend,
+        &context.stages,
+        &[(Stage::TessControl, built_control)],
+        &[],
+        info.start_instance,
+        StageSet::COMPUTE,
+        &mut images,
+    )?;
+    if !programs.tessellated.contains_key(&key) {
+        let stages = Stages::tessellated(
+            backend,
+            staged_forms(built_vertex)?,
+            staged_forms(built_control)?,
+            staged_forms(built_evaluation)?,
+        )
+        .map_err(|e| format!("the stage helper: {e:?}"))?;
+        // The tessellated points are drawn without vertex streams.
+        let layout = backend
+            .create_vertex_layout(&VertexLayoutDesc {
+                streams: [None; MAX_VERTEX_STREAMS],
+                attributes: [None; MAX_VERTEX_STREAMS],
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        programs.tessellated.insert(
+            key.clone(),
+            Staged {
+                stages,
+                layout: Some(layout),
+                indices: None,
+            },
+        );
+    }
+    let staged = programs
+        .tessellated
+        .get_mut(&key)
+        .ok_or("the stage helper")?;
+    context
+        .tracker
+        .close(backend)
+        .map_err(|e| format!("{e:?}"))?;
+    let index = if indexed {
+        // SAFETY: an indexed draw without indices in memory names a live buffer.
+        let resource = unsafe { Resource::<B>::of(info.index.resource) };
+        Some(StageIndex {
+            buffer: resource.buffer().ok_or("indices in a texture")?,
+            size: u64::from(resource.base.width0).next_multiple_of(STORAGE_WORD),
+            offset: 0,
+            format: index_format(info.index_size),
+        })
+    } else {
+        None
+    };
+    let range = if indexed {
+        DrawRange::Indexed {
+            first: d.start,
+            count: d.count,
+            base_vertex: d.index_bias,
+            first_instance: info.start_instance,
+            instances: info.instance_count,
+        }
+    } else {
+        DrawRange::Vertices {
+            first: d.start,
+            count: d.count,
+            first_instance: info.start_instance,
+            instances: info.instance_count,
+        }
+    };
+    let ran = staged.stages.run(
+        backend,
+        &StageDraw {
+            vertex_sets: std::array::from_fn(|set| vertex_sets[set].as_ref()),
+            geometry_sets: std::array::from_fn(|set| control_sets[set].as_ref()),
+            index,
+            topology: InputTopology::PatchList(points),
+            range,
+            stream_output: None,
+        },
+    );
+    for set in vertex_sets.into_iter().chain(control_sets).flatten() {
+        backend.destroy(Object::BindingSet(set));
+    }
+    images.finish(backend);
+    let out = ran.map_err(|e: StageError| format!("the stage helper: {e:?}"))?;
+    Ok(match (out, &staged.layout) {
+        (Some(out), Some(layout)) => Some(Made {
+            out,
+            layout: layout.clone(),
+        }),
+        _ => None,
+    })
+}
+
+/// A program's forms for the stage helper.
+fn staged_forms<B: Backend>(built: &Built<B>) -> Result<&Converted, &'static str> {
+    built
+        .converted
+        .as_ref()
+        .ok_or("a staged program without its forms")
+}
+
+/// A buffer of the tessellated patches or points the evaluation program reads.
+fn domain_read<B: Backend>(binding: u32, range: &BufferRange<B::Buffer>) -> BindingEntry<'_, B> {
+    BindingEntry {
+        binding,
+        stages: StageSet::VERTEX,
+        resource: BindingResource::StorageBuffer {
+            range: BufferRange {
+                buffer: &range.buffer,
+                offset: range.offset,
+                size: range.size,
+            },
+            writable: false,
+        },
+    }
 }
 
 /// The variant of a vertex program the stage helper runs, and the locations of its inputs: every

@@ -46,8 +46,12 @@ fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Resu
     let missing = !programs.compute.contains_key(&key);
     let built = programs.built_for(backend, shader, &variant)?;
     if missing {
+        let shader = built
+            .shader
+            .as_ref()
+            .ok_or("a compute program without its shader")?;
         let program = backend
-            .create_program(&Program::Compute(&built.shader))
+            .create_program(&Program::Compute(shader))
             .map_err(|e| format!("a compute program: {e:?}"))?;
         programs.compute.insert(key.clone(), program);
     }

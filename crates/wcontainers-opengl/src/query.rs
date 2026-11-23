@@ -259,13 +259,13 @@ fn primitives(mode: mesa_prim, count: u32) -> u32 {
 
 /// After a draw the stage helper did not run: each running count of primitives made takes the
 /// draw's, counted on the host from its ranges. A draw restarting its strips, whose count needs
-/// its indices read, and one through a geometry program without stream output, whose count the
-/// stage helper does not keep, are refused by name.
+/// its indices read, and one through a geometry or tessellation stage without stream output,
+/// whose count the stage helper does not keep, are refused by name.
 pub fn count_drawn<B: Backend>(
     counting: &[*mut pipe_query],
     info: &pipe_draw_info,
     draws: &[pipe_draw_start_count_bias],
-    geometry: bool,
+    staged: bool,
 ) -> Result<(), String> {
     for &query in counting {
         // SAFETY: a running count lives until it ends.
@@ -275,9 +275,10 @@ pub fn count_drawn<B: Backend>(
         if emitted.word != MADE_WORD {
             continue;
         }
-        if geometry {
+        if staged {
             return refused(format_args!(
-                "a count of primitives made by a geometry program without stream output"
+                "a count of primitives made by a geometry or tessellation stage without stream \
+                 output"
             ));
         }
         if info.primitive_restart() && info.index_size > 0 {
