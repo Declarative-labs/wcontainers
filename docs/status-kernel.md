@@ -52,6 +52,12 @@ crates/runtime/implementation/single-kernel.
   and two better than at 0ce16ef9 (4167). Against 0ce16ef9's verdicts 2 differ, getrusage04 and
   ADSP072, which now pass (the two timings the first run explained). So the verdicts are no worse
   than before the merges.
+- The merge of main's 401e14eb at 543e8756 (`StopReason::Panicked`, the system's
+  `MachineDescription`) needed nothing: the whole workspace's `cargo check --all-targets` passes at
+  701fa613 on the ARM64 machine (04:53 UTC, load 8). The kernel never returns `Panicked` (its
+  runners are not built), and `MachineDescription` is a subtrait of `ProcessTracer`, which no
+  system implements and the kernel does not call yet (For the owner), so the kernel still answers
+  the processors online and the memory size itself. No interface file differs from local main.
 
 ## KC, second run: the independent check's findings
 
