@@ -1327,16 +1327,25 @@ fn disconnect_tcp<S: crate::System>(
         State::Connected => reset_peer(kernel, cx, socket),
         State::Closed => {}
     }
+    super::outside::disconnect(kernel, cx, socket);
     let (packets, port) = {
         let mut own = socket.borrow_mut();
+        // A connection made or being made is left with the reset pending, as Linux leaves it.
+        let reset = state == State::Connected
+            || own
+                .inet
+                .as_deref()
+                .is_some_and(|inet| inet.connecting.is_some());
         own.state = State::Closed;
         own.peer = None;
         own.shutdown = 0;
-        own.error = 0;
+        own.error = if reset { Errno::ECONNRESET.0 as i32 } else { 0 };
         let family = own.family;
         let inet = own.inet.as_deref_mut().unwrap();
         inet.remote = None;
         inet.connecting = None;
+        inet.outside = None;
+        inet.room = false;
         inet.done = false;
         // Closing lets go of what the program did not choose (`inet_reset_saddr`, and
         // `tcp_set_state`'s `inet_put_port`, which leaves the port shown); a socket already

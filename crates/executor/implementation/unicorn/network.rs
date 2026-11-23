@@ -268,6 +268,18 @@ impl Network {
         self.listeners.remove(&number);
     }
 
+    /// Closes TCP connection `number` with a reset, as a close lingering for no time does.
+    pub fn tcp_reset(&mut self, number: u32) {
+        let Some(socket) = self
+            .streams
+            .remove(&number)
+            .and_then(|stream| stream.socket)
+        else {
+            return;
+        };
+        let _ = socket2::SockRef::from(&socket).set_linger(Some(Duration::ZERO));
+    }
+
     /// Tells the next change a wait on socket `number` asks for, or an error or hang-up, which
     /// every wait hears.
     pub fn arm(&mut self, number: u32, interest: ReadyFor) {

@@ -112,11 +112,20 @@ pub(crate) struct Outside {
     listeners: BTreeMap<u32, Link>,
     last_lookup: u64,
     lookups: BTreeMap<u64, Lookup>,
-    /// The system's handles let go, closed at the next flush once no wait holds them.
-    closing: Vec<Rc<dyn Any>>,
+    /// The system's handles let go, ended at the next flush once no wait holds them.
+    closing: Vec<(Rc<dyn Any>, Ending)>,
     /// What every pull receives into, kept between pulls so that one which finds nothing allocates
     /// nothing; a queued packet holds a copy of only the bytes it received.
     received: Vec<u8>,
+}
+
+/// How a handle let go is ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    /// Closed, a connection in order: its socket's last descriptor went.
+    Closed,
+    /// A connection reset as a connect to `AF_UNSPEC` does (`tcp_disconnect`).
+    Disconnected,
 }
 
 /// A name query waiting for the system's resolver, which is asked as a waiting call of its number.
@@ -217,15 +226,24 @@ fn datagram_of<S: crate::System>(kernel: &Kernel, id: u32) -> Option<&<S as UdpS
     }
 }
 
-/// Hands a let-go handle back to the system, once no wait holds it.
-fn close_handle<S: crate::System>(system: &S, handle: Rc<dyn Any>) {
+/// Hands a let-go handle back to the system, once no wait holds it. A disconnect's socket given
+/// back is released, since the kernel keeps no socket bound at the system, and its pending error
+/// is left to the guest's socket, which the disconnect already set as for a connection inside the
+/// container.
+fn close_handle<S: crate::System>(system: &S, handle: Rc<dyn Any>, ending: Ending) {
     let Ok(handle) = handle.downcast::<HandleOf<S>>() else {
         return;
     };
     match Rc::try_unwrap(handle) {
-        Ok(Handle::Connection(connection)) => {
-            TcpConnections::close(system, connection, TcpClose::Orderly);
-        }
+        Ok(Handle::Connection(connection)) => match ending {
+            Ending::Closed => TcpConnections::close(system, connection, TcpClose::Orderly),
+            Ending::Disconnected => {
+                let disconnected = TcpConnections::disconnect(system, connection);
+                if let Some(bound) = disconnected.bound_socket {
+                    TcpConnections::release(system, bound);
+                }
+            }
+        },
         Ok(Handle::Listener(listener)) => TcpListeners::stop_listening(system, listener),
         Ok(Handle::Datagram(socket)) => UdpSockets::close(system, socket),
         Err(_) => debug_assert!(false, "a handle let go while a wait holds it"),
@@ -386,16 +404,21 @@ pub(super) fn open<S: crate::System>(
     Ok(id)
 }
 
-/// Lets go of a link: its wait is dropped and its handle closed at the next flush.
-fn let_go(kernel: &mut Kernel, id: u32, link: Link) {
+/// Lets go of a link: its wait is dropped and its handle ended as `ending` says at the next flush.
+fn let_go(kernel: &mut Kernel, id: u32, link: Link, ending: Ending) {
     kernel
         .waiting
         .drop_where(|about| *about == WaitFor::Ready(id));
-    kernel.sockets.inet.outside.closing.push(link.handle);
+    kernel
+        .sockets
+        .inet
+        .outside
+        .closing
+        .push((link.handle, ending));
 }
 
-/// Ends every host connection of a socket whose last descriptor went.
-pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+/// Ends every host connection of a socket as `ending` says.
+fn end_connections(kernel: &mut Kernel, socket: &SocketRef, ending: Ending) {
     let ids: Vec<u32> = kernel
         .sockets
         .inet
@@ -407,10 +430,26 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
         .collect();
     for id in ids {
         if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
-            let_go(kernel, id, link);
+            let_go(kernel, id, link, ending);
         }
     }
+}
+
+/// Ends every host connection of a socket whose last descriptor went.
+pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+    end_connections(kernel, socket, Ending::Closed);
     stop_listening(kernel, socket);
+}
+
+/// Resets a TCP socket's connection to the outside, made or being made, at once, as a connect to
+/// `AF_UNSPEC` does.
+pub(super) fn disconnect<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
+    end_connections(kernel, socket, Ending::Disconnected);
+    flush(kernel, cx);
 }
 
 /// Asks the system to accept connections from outside for a listener on its port. A system that
@@ -487,7 +526,7 @@ pub(super) fn stop_listening(kernel: &mut Kernel, socket: &SocketRef) {
         .collect();
     for id in ids {
         if let Some(link) = kernel.sockets.inet.outside.listeners.remove(&id) {
-            let_go(kernel, id, link);
+            let_go(kernel, id, link, Ending::Closed);
         }
     }
 }
@@ -571,8 +610,8 @@ pub(super) fn take<S: crate::System>(
 
 /// Hands the system the connections and listeners released since the last call.
 pub(super) fn flush<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
-    for handle in core::mem::take(&mut kernel.sockets.inet.outside.closing) {
-        close_handle(&**cx.system, handle);
+    for (handle, ending) in core::mem::take(&mut kernel.sockets.inet.outside.closing) {
+        close_handle(&**cx.system, handle, ending);
     }
 }
 
@@ -723,7 +762,7 @@ pub(super) fn ready<S: crate::System>(
         if failed {
             let error = failure(kernel, cx, id, Errno::ECONNREFUSED);
             if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
-                let_go(kernel, id, link);
+                let_go(kernel, id, link, Ending::Closed);
             }
             flush(kernel, cx);
             super::inet::failed(kernel, cx, &socket, error);
@@ -976,7 +1015,7 @@ fn pull<S: crate::System>(
 /// A UDP socket's host connection to one destination is gone.
 fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
     if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
-        let_go(kernel, id, link);
+        let_go(kernel, id, link, Ending::Closed);
     }
     if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
         inet.flows.retain(|_, flow| *flow != id);

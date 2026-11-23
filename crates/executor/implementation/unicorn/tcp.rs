@@ -225,16 +225,21 @@ impl<H: Send> TcpConnections for TestHost<H> {
         Ok(())
     }
 
-    fn close(&self, connection: Self::Connection, _manner: TcpClose) {
+    fn close(&self, connection: Self::Connection, manner: TcpClose) {
         if !self.replaying() {
-            lock(&self.network).tcp_close(connection.0);
+            let mut network = lock(&self.network);
+            match manner {
+                TcpClose::Orderly => network.tcp_close(connection.0),
+                TcpClose::Abort => network.tcp_reset(connection.0),
+            }
         }
     }
 
-    /// Closes the connection, whose port no bind of its own holds, leaving the reset Linux leaves pending.
+    /// Resets the connection, whose port no bind of its own holds, leaving the reset Linux leaves
+    /// pending.
     fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
         if !self.replaying() {
-            lock(&self.network).tcp_close(connection.0);
+            lock(&self.network).tcp_reset(connection.0);
         }
         TcpDisconnected {
             bound_socket: None,

@@ -168,6 +168,52 @@ fn a_full_connection_hears_a_reset() {
     assert!(text.contains("so_error Connection reset by peer"), "{text}");
 }
 
+/// How long the telling server waits to hear what the first connection of a pair does.
+const HEARING_PATIENCE: Duration = Duration::from_secs(2);
+
+/// A server on this machine that, for each pair of connections, tells the second what the first
+/// heard by the time the second came and up to [`HEARING_PATIENCE`] after: "reset", "end",
+/// "bytes" or "nothing". Returns its port.
+fn telling_server() -> u16 {
+    let listener = TcpListener::bind("0.0.0.0:0").expect("a TCP port");
+    let port = listener.local_addr().expect("an address").port();
+    std::thread::spawn(move || {
+        loop {
+            let Ok((mut first, _)) = listener.accept() else {
+                return;
+            };
+            let (heard, hearing) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut byte = [0u8];
+                let what = match first.read(&mut byte) {
+                    Ok(0) => "end",
+                    Ok(_) => "bytes",
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => "reset",
+                    Err(_) => "an error",
+                };
+                let _ = heard.send(what);
+            });
+            let Ok((mut second, _)) = listener.accept() else {
+                return;
+            };
+            let what = hearing.recv_timeout(HEARING_PATIENCE).unwrap_or("nothing");
+            let _ = second.write_all(what.as_bytes());
+        }
+    });
+    port
+}
+
+/// A connection to the outside disconnected with a connect to `AF_UNSPEC` is reset at once, as
+/// Linux's `tcp_disconnect` sends a reset, though its descriptor stays open.
+#[test]
+fn a_disconnected_connection_resets_its_outside_end() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let port = telling_server().to_string();
+    let ours = assert_same_output(&out, "disconnectout", &[DOCKER_HOST_NAME, &port]);
+    let text = String::from_utf8_lossy(&ours.outcome.stdout);
+    assert!(text.contains("the server heard: reset"), "{text}");
+}
+
 /// A connection to the outside reads as reset after the container is saved and brought back on
 /// a new host (plan section 12); without a save it goes on.
 #[test]
