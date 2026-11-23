@@ -55,9 +55,38 @@ target refusal), against run 20's whole run at dd1ca38f: dEQP-GLES31 14,297 of 1
   device errors per process counted by scratch `scripts/lost-causes.ps1 -List <list>` (on the
   desktop).
 
+The table, EVERY LIST WHOLE AT ONE COMMIT, 9d7d1173 (its driver; desktop, RTX 3080, one GPU job,
+8 glcts at once), 06:07:57 to about 06:46 (Pacific), against run 20's whole run at dd1ca38f:
+- dEQP-GLES2: 17,165 cases; Pass 16,963, Warn 6, Fail 57, Crash 4, Skip 135: 16,969 of 17,030,
+  99.64% (the same).
+- dEQP-GLES3: 44,768; Pass 44,026, Warn 5, Fail 174, Crash 69, Flake 1, Skip 493: 44,031 of
+  44,275, 99.45% (`flush_finish.flush`, a timing case, flaked, as in run 20's stopped run).
+- dEQP-GLES31: 37,802; Pass 31,820, Fail 375, Crash 419, Flake 6, Skip 5,182: 31,820 of 32,620,
+  97.55% (run 20: 19,726 of 20,225, 97.53%). copy_image runs (12,395 cases, as the group check
+  above); 235 crashes now pass (texture.specification 100, texture.format 50, fbo.color 19,
+  shaders.linkage 19, opaque_type_indexing 16, primitive_bounding_box 28, tessellation 3). One
+  case that passed fails, `synchronization.inter_invocation.ssbo_atomic_overwrite`, and two
+  `image_load_store.3d.qualifiers.volatile_*` flaked: the intermittent coherence family.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100.00%.
+- KHR-GLES3: 6,498; Pass 6,194, Fail 3, Crash 73, Skip 228: 98.79% (the same).
+- KHR-GLES31: 4,101; Pass 2,996, Fail 18, Crash 74, Skip 1,013: 2,996 of 3,088, 97.02% (the same
+  passes).
+- KHR-GL33: 9,886; Pass 8,990, Fail 145, Crash 229, Skip 522: 96.01% (the same).
+- KHR-GLES32 (1,405) and KHR-GL46 (19,714): still no context of their version.
+- The bar's measure, the six ES lists and KHR-GL33 at one commit, KHR-GLES32's 1,405 counted as
+  run and failed: 111,438 of 114,490, 97.33%, above the 92.9% floor (without KHR-GLES32: 111,438
+  of 113,085, 98.54%). Still not the bar, for the reasons of run 20.
+- The run's process refusals, most first: device lost 572, blits the blitter does not make 138,
+  sampling an integer texture 126 (498 in run 20), targets in another format 496 (`Bgra8Unorm` of
+  `Bgrx8Unorm` 120 and of `Bgrx8UnormSrgb` 96, `Rgba8Unorm` of `Rgba8Uint`, `Rgba8Snorm` and
+  `Rgba8Sint` 72 each, `Rgba32Uint` of `Rgba32Float` 64: the copy_image cases of the check
+  above, no case that passed among them), an evaluation program reading the point size 72,
+  layered geometry output 56, `BorderInShaderOnComparison` 48.
+- Results scratch `results/g9r21/full/<list>/results.csv` (the 3.0 and 3.1 lists), log
+  `logs/g9r21-full.log`, refusal counts `logs/g9r21-full.out`.
+
 Next, in order:
-1. A whole run of every list at this run's last commit (not yet run), with the table.
-2. ES 3.2's two missing requirements, so that KHR-GLES32 starts: `OES_sample_variables` (the
+1. ES 3.2's two missing requirements, so that KHR-GLES32 starts: `OES_sample_variables` (the
    screen's `sample_shading` without `force_persample_interp`, so st/mesa makes the per-sample
    variant itself (`nir_lower_sample_shading`, `sample` inputs, which route B maps); route B's
    `load_sample_pos` from the standard sample positions by `sample_index`; `interp_deref_at_*`
@@ -67,11 +96,11 @@ Next, in order:
    reads an output of `fb_fetch_output` at `FRAGMENT_RESULT_DATA0`, a `load_output` in a
    fragment program, which flat.c refuses; route B would load it from a copy of target 0 the
    driver binds per draw, by `sample_index` where the target is multisampled).
-3. Targets in another format through a twin drawn into and copied back (the 24-bit copies above);
+2. Targets in another format through a twin drawn into and copied back (the 24-bit copies above);
    the 96-bit and ASTC copy failures.
-4. Device losses: `texture.texture_buffer.render_modify` (45 crashes, the first error of the
+3. Device losses: `texture.texture_buffer.render_modify` (45 crashes, the first error of the
    process is the loss itself, no validation error before it) and `image_load_store.early_fragment_tests`.
-5. As run 20's list: layered geometry output, point size read by an evaluation program, border
+4. As run 20's list: layered geometry output, point size read by an evaluation program, border
    colors on comparison samplers, blits the blitter does not make; the NotSupported check, the
    comparison with the RTX 3080's own OpenGL, bgfx and Godot, the independent check; 4.0 and 4.6.
 
