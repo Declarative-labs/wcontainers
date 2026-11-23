@@ -30,6 +30,11 @@ and crates/executor/implementation/unicorn.
   touches crates/kernel, crates/system, crates/runtime or crates/executor; the kernel status's newest section
   (KF, fifth run) and brief-kernel.md's newest entry (executor-independent addresses) say nothing of the runner
   or the `Send` bound. Nothing of this track's was uncommitted. Nothing built or run.
+- Sixth run (2026-11-23, at a9c7c0f2, nothing newer on origin/agents; origin/main at 2b546ee0): the same again.
+  executing.rs still has `unimplemented!` at line 471 and `unsafe fn` at 195 and 225; the wasmtime executor still
+  has `unsafe { self.stop_flag.entered(flag) }` at implementation.rs line 2410; brief-runtime.md is unchanged
+  since 2026-11-20, interface-changes.md since 2026-11-22 18:22, and brief-kernel.md's newest entry is still the
+  executor-independent addresses. Nothing of this track's was uncommitted. Nothing built or run.
 
 ## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
 
