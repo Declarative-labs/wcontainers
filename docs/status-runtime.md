@@ -35,6 +35,10 @@ and crates/executor/implementation/unicorn.
   has `unsafe { self.stop_flag.entered(flag) }` at implementation.rs line 2410; brief-runtime.md is unchanged
   since 2026-11-20, interface-changes.md since 2026-11-22 18:22, and brief-kernel.md's newest entry is still the
   executor-independent addresses. Nothing of this track's was uncommitted. Nothing built or run.
+- Seventh run (2026-11-23 13:07 UTC, at d9afc83f, nothing newer on origin/agents; origin/main at 2b546ee0): the
+  same again. No commit since 08900894 touches crates/kernel, crates/system, crates/runtime/interface.rs, the
+  wasmtime executor's implementation.rs or the root Cargo.toml; executing.rs lines 195, 225 and 471 and the
+  executor's line 2410 are as above; the briefs and interface-changes.md are unchanged. Nothing built or run.
 
 ## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
 
