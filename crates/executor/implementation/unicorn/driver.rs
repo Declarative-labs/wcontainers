@@ -1161,8 +1161,8 @@ pub fn exit_code(wait_status: i32) -> i32 {
 }
 
 /// How many turns on the CPU side this process's runs have ended, backend answers they have
-/// taken and steps of deadlines they have waited for, for a watchdog that tells a run that is
-/// slow from one stuck inside a single call or turn.
+/// taken, steps of deadlines they have waited for and backends they have started, for a watchdog
+/// that tells a run that is slow from one stuck inside a single call or turn.
 pub static PROGRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a container starts with: its files and its first process.
@@ -1645,6 +1645,7 @@ where
             served,
             container.cached,
         ));
+        PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let arguments: Vec<&[u8]> = container
         .arguments

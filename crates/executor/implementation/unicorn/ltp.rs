@@ -278,9 +278,9 @@ pub fn run_reference(test: &Test, limit: Duration, logs: &Path) -> Line {
 /// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own forked
 /// from one that holds the image's files in a prepared kernel, so the files are loaded once. A
 /// test that runs past `limit` is killed and reported as a timeout; one whose kernel ends no turn
-/// and takes no backend answer for [`STUCK`], or whose processes all wait with nothing to wake them, is a hang; one whose
-/// kernel fails is a crash, and one the stand-in CPU cannot run is unsupported. Each finished
-/// test's line goes to `report` as it ends.
+/// and takes no backend answer for [`STUCK`] once it has begun, or whose processes all wait with
+/// nothing to wake them, is a hang; one whose kernel fails is a crash, and one the stand-in CPU
+/// cannot run is unsupported. Each finished test's line goes to `report` as it ends.
 pub fn run_ours(
     tests: &[Test],
     tar: &Path,
@@ -439,13 +439,16 @@ fn run_one(
         let log = log.to_path_buf();
         let id = test.id();
         std::thread::spawn(move || {
-            let mut last = (driver::PROGRESS.load(Ordering::Relaxed), Instant::now());
+            // Until the first step, the run is still being made (Docker starting the backend's
+            // container), which only the limit bounds.
+            let first = driver::PROGRESS.load(Ordering::Relaxed);
+            let mut last = (first, Instant::now());
             loop {
                 std::thread::sleep(Duration::from_secs(5));
                 let turns = driver::PROGRESS.load(Ordering::Relaxed);
                 if turns != last.0 {
                     last = (turns, Instant::now());
-                } else if last.1.elapsed() > STUCK {
+                } else if turns != first && last.1.elapsed() > STUCK {
                     eprintln!("no turn ended and no backend answer came for {STUCK:?}");
                     let line = Line {
                         id: id.clone(),
