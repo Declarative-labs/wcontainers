@@ -544,6 +544,8 @@ fn convert<B: Backend>(
     let (module, bindings, helpers, helper_size) = if rewrites == VariantKey::default()
         && routed.helpers.is_empty()
         && routed.typed.buffers.is_empty()
+        && routed.rewrites == wcontainers_nir::direct::Rewrites::default()
+        && !binds_arrays(&routed.module)
     {
         let module = wcontainers_nir::direct::plain(routed).map_err(|e| e.to_string())?;
         let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
@@ -570,7 +572,7 @@ fn convert<B: Backend>(
                 .map_err(|e| e.to_string())?;
         (
             module,
-            reflection.bindings,
+            elements(reflection.bindings),
             reflection.helpers,
             reflection.helper_size,
         )
@@ -3364,6 +3366,41 @@ fn pulled_inputs<B: Backend>(
     }
     pulled.sort_unstable();
     (pulled, paths)
+}
+
+/// Whether a module binds arrays of resources, which the shaders crate's rewrite splits into a
+/// binding an element (the host may have no arrays of bindings).
+fn binds_arrays(module: &naga::Module) -> bool {
+    module.global_variables.iter().any(|(_, g)| {
+        matches!(
+            module.types[g.ty].inner,
+            naga::TypeInner::BindingArray { .. }
+        )
+    })
+}
+
+/// `bindings` with each array of textures, samplers or images, which the shaders crate's rewrite
+/// splits into its elements at consecutive bindings, as one binding an element at consecutive
+/// units.
+fn elements(bindings: Vec<ReflectedBinding>) -> Vec<ReflectedBinding> {
+    bindings
+        .into_iter()
+        .flat_map(|b| {
+            let split = b.added.is_none()
+                && match b.kind {
+                    SlotKind::Texture | SlotKind::Sampler => true,
+                    SlotKind::Storage => b.register < PIPE_MAX_SHADER_IMAGES,
+                    SlotKind::Uniform | SlotKind::Counter => false,
+                };
+            let count = if split { b.count } else { 1 };
+            (0..count).map(move |k| ReflectedBinding {
+                register: b.register + k,
+                binding: b.binding + k,
+                count: if split { 1 } else { b.count },
+                ..b.clone()
+            })
+        })
+        .collect()
 }
 
 /// `formats`, by image unit, by the storage slots the route binds those units at.
