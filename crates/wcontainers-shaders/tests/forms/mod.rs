@@ -1,18 +1,20 @@
 //! The own geometry, hull and domain shaders written as another route hands them to
-//! `wcontainers_shaders::staged` (`tests/own/staged_*.wgsl`), and their forms made from them.
+//! `wcontainers_shaders::staged` (`tests/own/staged_*.wgsl`), and their forms made from them; and
+//! `cs_texels` as such a route hands it to `wcontainers_shaders::typed` (`tests/own/typed_texels.wgsl`).
 
 #![allow(dead_code)]
 
 use naga::{Function, GlobalVariable, Handle, Module};
 use std::path::Path;
 use wcontainers_gpu::{
-    ReflectedBinding, Reflection, SourceStage, StageExtras, StageValue, VariantKey,
+    ReflectedBinding, Reflection, SlotKind, SourceStage, StageExtras, StageValue, VariantKey,
 };
-use wcontainers_shaders::Converted;
 use wcontainers_shaders::staged::{
     self, BuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram, HullProgram,
     Partitioning, Place, StageVariable, TessellationDomain, TessellatorOutput,
 };
+use wcontainers_shaders::typed::{self, TypedAtomic, TypedBuffer};
+use wcontainers_shaders::{ConvertError, Converted};
 
 /// The module of `tests/own/{name}.wgsl`, and the key its route gives it.
 pub fn module(name: &str) -> (Module, [u8; wcontainers_shaders::cache::KEY_BYTES]) {
@@ -204,4 +206,75 @@ pub fn domain(
         ..bare(SourceStage::Domain, Vec::new())
     };
     staged::domain(m, &program, reflection, &VariantKey::default(), &key)
+}
+
+/// `cs_texels`' typed buffers in `typed_texels.wgsl`.
+pub const TYPED_TEXELS: [&str; 6] = ["floats", "uints", "ints", "pairs", "written", "counts"];
+
+/// `typed_texels.wgsl` with the typed buffers named in `typed` given their functions under `variant`
+/// by `typed::buffers`, then `rewrite`; with `cs_texels`' bindings (t0 to t3, u0 to u2).
+pub fn typed_texels(variant: &VariantKey, typed: &[&str]) -> Result<Converted, ConvertError> {
+    let (mut m, key) = module("typed_texels");
+    let mut reflection = typed_texels_reflection();
+    let buffers: Vec<_> = typed
+        .iter()
+        .map(|&name| {
+            let f = |suffix: &str| {
+                let full = format!("{name}_{suffix}");
+                m.functions
+                    .iter()
+                    .find(|(_, f)| f.name.as_deref() == Some(full.as_str()))
+                    .map(|(h, _)| h)
+            };
+            let kind = match name {
+                "uints" | "counts" => naga::ScalarKind::Uint,
+                "ints" => naga::ScalarKind::Sint,
+                _ => naga::ScalarKind::Float,
+            };
+            let atomics = [
+                (TypedAtomic::Add, "add"),
+                (TypedAtomic::Max, "max"),
+                (TypedAtomic::InclusiveOr, "or"),
+            ];
+            TypedBuffer {
+                global: variable(&m, name),
+                kind,
+                load: f("load"),
+                store: f("store"),
+                length: f("length"),
+                atomics: atomics
+                    .into_iter()
+                    .filter_map(|(op, s)| f(s).map(|h| (op, h)))
+                    .collect(),
+            }
+        })
+        .collect();
+    typed::buffers(&mut m, &mut reflection, variant, &buffers)?;
+    wcontainers_shaders::rewrite(m, reflection, variant, &key)
+}
+
+/// The reflection of `typed_texels.wgsl`: `cs_texels`' bindings, no helper constants.
+pub fn typed_texels_reflection() -> Reflection {
+    let slot = |kind: SlotKind, register: u32, stride: u32| ReflectedBinding {
+        kind,
+        space: 0,
+        register,
+        count: 1,
+        set: 0,
+        binding: kind.binding(register).unwrap(),
+        added: None,
+        stride,
+    };
+    let (t, u) = (SlotKind::Texture, SlotKind::Storage);
+    let uint4 = 16;
+    let bindings = vec![
+        slot(t, 0, 0),
+        slot(t, 1, 0),
+        slot(t, 2, 0),
+        slot(t, 3, 0),
+        slot(u, 0, 0),
+        slot(u, 1, 0),
+        slot(u, 2, uint4),
+    ];
+    bare(SourceStage::Compute, bindings)
 }

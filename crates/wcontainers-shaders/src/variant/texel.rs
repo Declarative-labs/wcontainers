@@ -108,6 +108,8 @@ pub(crate) struct TexelBuffer {
     at: Option<Handle<Function>>,
     size_of: Option<Handle<Function>>,
     atomics: Vec<(u64, Handle<Function>)>,
+    /// A function of the module the next function made is written into, in place of appending it.
+    into: Option<Handle<Function>>,
 }
 
 impl TexelBuffer {
@@ -175,6 +177,24 @@ impl TexelBuffer {
             at: None,
             size_of: None,
             atomics: Vec::new(),
+            into: None,
+        }
+    }
+
+    /// Writes the next function made into `f`, a function of the module whose calls already name it
+    /// (a route that brought its program into the common form with stand-ins for these functions).
+    pub(crate) fn fill(&mut self, f: Handle<Function>) {
+        self.into = Some(f);
+    }
+
+    /// Puts a function made into the module.
+    fn put(&mut self, module: &mut Module, f: Function) -> Handle<Function> {
+        match self.into.take() {
+            Some(h) => {
+                module.functions[h] = f;
+                h
+            }
+            None => module.functions.append(f, Span::UNDEFINED),
         }
     }
 
@@ -309,7 +329,7 @@ impl TexelBuffer {
         let none = b.u32(u32::MAX);
         let index = b.select(inside, at, none);
         b.ret(Some(index));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.at = Some(f);
         f
     }
@@ -333,7 +353,7 @@ impl TexelBuffer {
         let [_, _, width, height, layers] = self.texel_layout(module, reflection, &mut b);
         let v = b.compose(vec3u, vec![width, height, layers]);
         b.ret(Some(v));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.size_of = Some(f);
         f
     }
@@ -396,7 +416,7 @@ impl TexelBuffer {
             let value = b.select(inside, read, zero);
             let value = self.as_declared(&mut b, value);
             b.ret(Some(value));
-            let f = module.functions.append(b.finish(), Span::UNDEFINED);
+            let f = self.put(module, b.finish());
             self.load = Some(f);
             return f;
         }
@@ -435,7 +455,7 @@ impl TexelBuffer {
         let value = b.select(inside, read, zero);
         let value = self.as_declared(&mut b, value);
         b.ret(Some(value));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.load = Some(f);
         f
     }
@@ -472,7 +492,7 @@ impl TexelBuffer {
         });
         let (_, length) = self.view(module, reflection, &mut b);
         b.ret(Some(length));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.length = Some(f);
         f
     }
@@ -601,7 +621,7 @@ impl TexelBuffer {
             accept,
             reject: Block::new(),
         });
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.store = Some(f);
         f
     }
@@ -707,7 +727,7 @@ impl TexelBuffer {
         });
         let r = b.load(out);
         b.ret(Some(r));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.atomics.push((code, f));
         Ok(f)
     }

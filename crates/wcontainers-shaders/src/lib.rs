@@ -15,6 +15,7 @@ mod lower;
 pub mod refusal;
 pub mod stage;
 pub mod staged;
+pub mod typed;
 mod variant;
 
 use alloc::format;
@@ -230,7 +231,8 @@ fn finished(
 /// one reading the draw's first vertex or instance (`BuiltIn::BaseVertex`, `BaseInstance`) reads them
 /// from where `draw_base` says.
 /// `route_key` is the key the route gives the program it made; the module carries
-/// [`cache::rewritten_key`] of it. Geometry, hull and domain programs take [`staged`]'s entries.
+/// [`cache::rewritten_key`] of it. Geometry, hull and domain programs take [`staged`]'s entries;
+/// typed buffers are given their functions by [`typed::buffers`] first.
 pub fn rewrite(
     module: naga::Module,
     reflection: Reflection,
