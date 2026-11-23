@@ -62,7 +62,12 @@ probes).
   `x86_64-unknown-none`; `answer` (x86/answer.rs, core) answers `cpuid`, `xgetbv` and the eight transcendental
   instructions, each checked equal to the meaning's WebAssembly case by case (native layer 1 for the
   transcendentals, a new test for `cpuid` and `xgetbv`, which layer 1 leaves out as the CPU's own table differs).
-  The rest of the Kernel route's answers (plan 3.5) are not built yet.
+  Run 7: `answer` takes the guest's memory (`answer::Memory`) and forms a memory operand's address from the block
+  (`answer::address` over the shared `Operand`); it now also answers the reciprocal estimates (legacy and VEX),
+  `popf`, the descriptor reads (`lar`, `lsl`, `verr`, `verw`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`), the segment
+  register moves, `push`/`pop` of fs and gs, and `lfs`/`lgs`/`lss`, each equal to the meaning (native layer 1 now
+  compares 82,000 answered cases; a new test 19,427 edge cases). Still to answer: the clock, `iretq`, `retf` and far
+  `call`/`jmp`, `wrfsbase`/`wrgsbase`, the XSAVE family, the partial-write and undefined-result forms.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -77,11 +82,13 @@ probes).
    `translate_native_for`; ARM64 has no replay check yet, so the trait method needs ARM64's form or a ruling
    (coordinate with the ARM64 back end). `Step` and P's stepping pieces with it. Native layer 2's blob can carry the
    replay test once the check exists (a stop word in the area, the Stop entry recording the position).
-3. `answer` for the rest of the Kernel route (plan 3.5; run 6 built `cpuid`, `xgetbv` and the transcendentals):
-   `rdtsc`/`rdtscp`/`rdpid` (the clock), `popf`/`iretq`, the segment reads, writes and far transfers, the
-   descriptor reads, `wrfsbase`/`wrgsbase`, the reciprocals, the XSAVE family, the partial-write and
-   undefined-result forms, each a `Question` with `native::question` giving it and native layer 1 comparing it with
-   the meaning (the forms layer 1 leaves out by a test of their own, as run 6's for `cpuid`). Then x87_answer.rs
+3. `answer` for the rest of the Kernel route (plan 3.5; runs 6 and 7 built `cpuid`, `xgetbv`, the
+   transcendentals, the reciprocals, `popf`, the descriptor reads, the segment moves, pushes and pops, and
+   `lfs`/`lgs`/`lss`): `rdtsc`/`rdtscp`/`rdpid` (the clock: the question needs the clock's reading, which the
+   inside gives), `iretq`, `retf` and far `call`/`jmp` (their frames' slots fault one by one, `segments::frame_slots`),
+   `wrfsbase`/`wrgsbase`, the XSAVE family, the partial-write and undefined-result forms, each a `Question` with
+   `native::question` giving it, native layer 1 comparing it with the meaning and an edge test in
+   tests/layer1.rs `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64`. Then x87_answer.rs
    and the unmasked mode, and P's flags table. (`Condition::holds` against the meaning: done in run 6.)
 4. The trait's `retarget` (plan 9) in place of `link`, with ARM64's; x86's is built (run 4) and used by the native
    blobs, and `link` writes its patch.
@@ -93,6 +100,53 @@ probes).
 7. Layer 1 does not see the x87 pointers a save writes (FIP, FDP, FOP: zero on both sides, no x87 instruction runs
    before the case), so the inside's FloatAfter for `fxsave`, `fnsave`, `fnstenv` (the pointers from the register
    area into the image) has no check yet; build it with `answer` and test it with an x87 instruction before.
+
+## What XN1 run 7 changed
+
+- `answer(question, block, offer, constants, memory) -> Result<Notes, Fault>`: `answer::Memory` (read or write a
+  range all or nothing, else the first address it may not reach), `Fault::Memory(address)` (the caller classifies it
+  by the guest's `memory_fault`, page, stack or general protection, as every fault), `Notes` (a struct: AVX asked
+  while told no, TF set by `popf`, AC asked for, a `mov` to ss holding a trap back) in place of `Note`;
+  `answer::address(block, &Operand)` (base, index extended and shifted, the sum modulo 2^address_bits, then the
+  segment base; rip is the instruction's own address) and `Place` (a general register with its width, a vector
+  register, or memory).
+- New questions: `Reciprocal` (rcpps, rcpss, rsqrtps, rsqrtss and their VEX forms: legacy keeps the upper halves,
+  VEX.128 clears them, the scalar forms merge the other lanes, a legacy packed memory operand not 16-aligned is
+  general protection before the read) by `answer::estimate`, the meaning's formula (`float::reciprocal`) in plain
+  Rust with libm's `sqrt` and `rint`; `PopFlags`; `Descriptor` (with the table in x86/user_segments.rs, core, which
+  descriptors.rs and segments.rs now read too); `SegmentRead`, `SegmentWrite` (no cs: iced decodes a `mov` to cs as
+  no instruction), `SegmentPush`, `SegmentPop`, `FarPointer` (the offset read, then the selector after it, each
+  faulting by itself; then the load, then the register).
+- Shared constants named once: the float format constants and the estimate's bit counts in answer.rs (float.rs reads
+  them), `QUIET32` and `DEFAULT32` in lib.rs (host.rs re-exports them), `POPPED_CONTROL` in answer.rs (meaning.rs
+  reads it). `native::operand` (the memory operand as the shared `Operand`) is factored out of `stopping`, which
+  uses it unchanged.
+- Test crate: native.rs's `answered` runs `answer` over the case's own memory (`CaseMemory`: layer 1's data area and
+  code area with their permissions, layer1.rs's `regions`, `code_area`, `start_data` and `changed` now crate-wide)
+  and compares the data changed too; tests/layer1.rs
+  `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64` (new): every exponent of both signs
+  with eight fractions (interval edges, the quiet bit, the largest) through the eight reciprocal forms; `popf` and
+  `popfw` of each bit, none and all, with DF, NT and ID clear and set before, and from read-only, unmapped and
+  non-canonical stacks; `lar`/`lsl` at three widths, `verr`, `verw` of selectors 0 to 255 with the upper bits clear
+  and set; `sgdt`, `sidt`, `smsw`, `sldt`, `str`, `lar` with memory operands in writable, read-only, partly mapped
+  and non-canonical places, and `smsw`, `sldt`, `str` to eax, rax and ax; every segment move, push, pop, `lfs`,
+  `lgs`, `lss` with selectors 0 to 0x80 and two more.
+
+## XN1 run 7 results (rented x86 machine, Xeon 8488C, 5-level paging)
+
+- Clippy with warnings denied on wcontainers-x86 (with and without `translate`) and -translator-test, all targets,
+  `--no-deps`: clean. The x86 crate's tests: all pass.
+- Native layer 1 with the reciprocals, `popf` and descriptor answers (18:23 UTC, load 0.3 before, up to 17 during):
+  2008 forms, 1,000 a form, seed 5150, 32 at once: 0 failing, the same 2,594 known failures; 88,693 cases answered
+  by the inside, of which 82,000 had a question and the answer equal to the meaning's (16,000 in run 6); 608 s.
+  Again with the segment questions too (18:45 UTC, load 4.9 before, up to 18 during): 0 failing, the same 2,594
+  known failures, 127,030 answers compared equal; 563 s.
+- The new edge test: 19,427 cases equal (12,593 before the segment questions); with cpuid's test, 2 tests, 38 s.
+- Controls, each in the rented machine's copy only, each failing the edge test: rsqrt's exponent parity not
+  inverted ("[0f, 52, c1]: the answer ..."); `verw` taking every segment as writable; `popf`'s written bits not
+  limited to the operand's size (failed only once the starting rflags had ID set, so the test sets it); ss accepting
+  any selector ("[8e, d1]"); fs' base not cleared by a load (failed only once the cases started with nonzero bases,
+  so they do: "[8e, e1]").
 
 ## What XN1 run 6 changed
 
@@ -379,6 +433,13 @@ entry and exits (a loop inside the piece pays once); that is the next speed step
   5,705,008 spans, before the fldcw and call-map checks), seed 0x51 4,000,000 cases (16,000,000 pieces, 45,570,238
   spans, release, all checks): 0 broken. native_routes seed 0x51, 2,000,000 cases: 0 broken. native_carry seed 11,
   1,000,000 cases: 0 differences.
+
+## Departures from the plan (XN1 run 7)
+
+- `answer` takes the guest's memory as a generic `answer::Memory` (a trait of the core's own, the plan gives none)
+  and reports `Notes`, a plain struct, since `popf` may warn of two things at once.
+- The table of Linux's user segments moved into the core (x86/user_segments.rs), not in plan 9's list: the
+  descriptor and segment answers need it without `translate`.
 
 ## Departures from the plan (XN1 run 6)
 
@@ -938,6 +999,9 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 - P on a 4-level host: about 3,000 guest threads per process (plan 3.3, 5).
 
 ## Licences
+
+XN1 run 7 made libm 0.2.16 (MIT, already in the lock) a dependency of the x86 core: the reciprocal estimates' square
+root and rounding, correctly rounded as WebAssembly's, without std.
 
 XN1 run 6 made rustc_apfloat 0.2.3 (Apache-2.0 WITH LLVM-exception) and astro-float-num 0.3.7 (MIT) dependencies of
 the x86 core, and added lazy_static 1.5.1 (MIT OR Apache-2.0) with `spin_no_std`, which brings spin 0.9.9 (MIT);

@@ -450,10 +450,17 @@ through the meaning's astro-float-num function (in the core once moved, section 
 meaning's image. Pure answers (all but the clock, the system call and the far transfers' kernel part) need no
 kernel; whether P answers them in the guest's host process is P's choice. Where an answer is WebAssembly logic in
 the meaning and Rust logic here, the differential test (section 7) proves them equal case by case.
-`answer(question, block, offer, constants) -> Result<Note, Fault>` (x86/answer.rs) takes a `Question`, which the
-translate half's `native::question` gives for a decoded instruction (the inside finds the instruction by the
-position map's guest pc), so the core needs no decoder; on `Ok` the caller moves rip past the instruction, on a
-`Fault` nothing has changed, and a `Note` names what the meaning warns of (`cpuid` asking for AVX while told no).
+`answer(question, block, offer, constants, memory) -> Result<Notes, Fault>` (x86/answer.rs) takes a `Question`,
+which the translate half's `native::question` gives for a decoded instruction (the inside finds the instruction by
+the position map's guest pc), so the core needs no decoder; a memory operand comes as the shared `Operand`, whose
+address the core forms from the block (`answer::address`), and the guest's memory as `answer::Memory` (a read or
+write of a range, all or nothing, or the first address it may not reach). On `Ok` the caller moves rip past the
+instruction; on a `Fault` nothing has changed, and `Fault::Memory(address)` goes to the guest's `memory_fault` as
+every other fault does (page, stack or general protection); `Notes` names what the meaning warns of (`cpuid`
+asking for AVX while told no, `popf` setting TF, which starts stepping, or AC, which is never held). Built: `cpuid`,
+`xgetbv`, the transcendentals, the reciprocals (by `answer::estimate`, the meaning's formula in plain Rust, with
+libm's correctly rounded square root and rounding as WebAssembly's), `popf`, the descriptor reads (from the
+table both share, x86/user_segments.rs), the segment register moves, pushes and pops, and `lfs`/`lgs`/`lss`.
 Native layer 1 requires every answered case's outcome by `answer` equal to the meaning's; forms layer 1 leaves out
 (`cpuid`, `xgetbv`, whose table is ours, not the CPU's) have a test of their own against the meaning.
 
