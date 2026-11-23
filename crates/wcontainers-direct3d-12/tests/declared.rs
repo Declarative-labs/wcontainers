@@ -56,7 +56,14 @@ fn answers() -> String {
     let mut out = String::new();
     for path in containers() {
         let code = std::fs::read(&path).unwrap();
-        let name = path.strip_prefix(&root).unwrap().display().to_string();
+        // Named with `/` on every host, as declared.expected holds them.
+        let name = path
+            .strip_prefix(&root)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         for (label, r) in [("", &[][..]), ("ranged ", &ranges[..])] {
             let views = dxbc::typed_views(&code, r).map(|v| elements(&v));
             let arrays = dxbc::multisampled_arrays(&code, r).map(|a| slots(&a));
