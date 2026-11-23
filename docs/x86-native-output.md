@@ -1,6 +1,7 @@
 # x86-64 native output: plan
 
-Status: plan (XN0, run 8, 2026-11-23), revised after its seven independent checks. What the translator's native output
+Status: plan (XN0, run 8, 2026-11-23), revised after its seven independent checks, and at XN1's start for the
+eighth check's findings. What the translator's native output
 (docs/native.md section 3, built for ARM64) becomes for x86-64 guests on x86-64 hosts, in the three ways of running
 natively: inside a virtual machine (KVM, docs/native.md section 5, "the machine"), each guest process as a host
 process ("P"), and the kernel in process with inline memory checks ("I"; both from the owner's ruling of
@@ -117,10 +118,17 @@ Never copied, by route:
   because hosts differ: AMD honours a 66-prefixed near branch (16-bit rip, 2-byte pop) where Intel and the meaning
   ignore the prefix; the emitter computes the target as the meaning does.
 - Area: the guest's own use of the thread area's segment: `gs:` operands, `rdgsbase`, `wrgsbase` (and in I `fs:`,
-  `rdfsbase`, `wrfsbase`). An operand becomes `mov t, seg:[guest base]` and the access on `[t + base + index*scale +
-  disp]` (`lea t, [t + base]` first when it has both a base and an index); a string instruction or `xlat` on the
-  area's segment (in I, on any segment override) goes to the inside (Kernel, counted), since its address is
-  implicit in rsi or rbx and cannot take t (0.00 `gs:` per 1000 instructions, results/shapes86.out); `rd*base r`
+  `rdfsbase`, `wrfsbase`). The meaning forms such an address as the segment base plus the operand's offset part
+  (base + index*scale + disp) taken at the operand's own address size, so wrapped to 32 bits under the guest's
+  0x67 before the base is added (x86/operand.rs `address`). An operand becomes `mov t, seg:[guest base]` and,
+  without 0x67, the access on `[t + base + index*scale + disp]` (`lea t, [t + base]` first when it has both a base
+  and an index); with 0x67, `lea u32, [base32 + index32*scale + disp]` (u zero-extended, no flag) and the access on
+  `[t + u]`, so a base at or above 2^32 is kept as the meaning keeps it (the check's gs67.c: GS base 0x300000000,
+  rax 0x100000010, `65 67 8b 00` reads at 0x300000010, where `[t + rax]` faulted at 0x400000010). A RIP-relative
+  operand on the area's segment takes the guest address in u (`mov u, imm64`, an address place) and the access on
+  `[t + u]`. A string instruction, `xlat`, `maskmovq` (0F F7), `maskmovdqu` or `vmaskmovdqu` on the area's segment
+  (in I, on any segment override) goes to the inside (Kernel, counted), since its address is implicit in rsi, rdi
+  or rbx and cannot take t (0.00 `gs:` per 1000 instructions, results/shapes86.out); `rd*base r`
   is `mov r, seg:[guest base]` (the 32-bit form `mov r32`, as `rdfsbase r32` zero-extends); `wr*base` goes to
   the inside (Kernel), which refuses a non-canonical base with general protection as the meaning does, since its
   canonical check would write flags inline. A copied `wrgsbase` would let the guest choose where the lookup reads
@@ -174,11 +182,17 @@ Never copied, by route:
     exception runs pieces in the request's `x87_unmasked` mode (section 9, a cache key bit as `step` is), counted and
     warned "x87 exceptions unmasked". In that mode the x87 register stack and tags stay in the hardware, whose
     control word the inside keeps with every exception masked; the guest's control word, status word, FDP and FOP
-    live in the block. Every x87 instruction takes the Kernel route, answered by the meaning's x87 unit (x86/x87.rs,
-    plain Rust, over the block's FXSAVE area; moved into the core for the machine's floor, section 9; in P run by
-    the embedder, since the stub is assembly): the inside moves the register stack from the hardware into the block
-    (`fxsave`), runs the unit, which sets FDP, FOP and the pending exception as the meaning does, and moves it back
-    (`fxrstor`, the masked control word kept). MMX instructions stay copied, since they raise no x87 exception of
+    live in the block. Every x87 instruction takes the Kernel route, answered by `answer`'s x87 part: the meaning's
+    x87 unit (x86/x87.rs `Unit`, plain Rust over the block's FXSAVE area, moved into the core, section 9) does only
+    the arithmetic the x87 hook does, and the rest of each instruction's meaning is WebAssembly in the
+    translate-only x86/fpu.rs `emit`: the check for a pending unmasked exception (`pending`), the memory operand's
+    address, its split and permission checks, the read, and the store with NOT_STORED and `fstp m80`'s order of
+    its two parts. So `answer` gains a plain-Rust twin of that instruction-level part (new code, x86/x87_answer.rs
+    in the core, section 9) which reads and writes guest memory through the inside's own access to it, and the
+    differential test (section 7) proves it equal to fpu.rs's output form by form, faults across a page included.
+    In P it runs in the embedder, since the stub is assembly. The inside moves the register stack from the hardware
+    into the block (`fxsave`), runs the twin, which sets FDP, FOP and the pending exception as the meaning does,
+    and moves it back (`fxrstor`, the masked control word kept). MMX instructions stay copied, since they raise no x87 exception of
     their own and their meanings are WebAssembly (x86/simd.rs) with no plain-Rust twin; each is preceded by a call of
     kind X87Control, which raises the meaning's #MF when the block holds a pending unmasked exception (as an MMX
     instruction does on the reference) and else returns, so the copied instruction works on the hardware's stack as
@@ -517,10 +531,23 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   instruction `mov seg:[rep count], rcx` (rcx before, in the register area; no flag); after it, out of line, rsp
   moved to the area's count stack (`mov seg:[saved rsp], rsp; mov rsp, seg:[count stack]`, the stack named by the
   read-only part, so the guest's stack and red zone stay untouched), `pushfq`, the passes computed from rcx before
-  and after, DF, TF and the overlap of the rsi and rdi ranges by the one pass function of the x86 core that the
-  meaning uses (its emitted form; the range's permissions need no test, since an instruction that ran to its end
-  natively had every page allowed, and a fault inside it is the inside's to count), added to c by one `lea c, [c +
-  t]`, rflags put back (in P the saved word read once into t and put back through the flags table, since sibling
+  and after, DF, TF and the distance between rdi and rsi, added to c by one `lea c, [c + t]`, rflags put back.
+  The pass rule is the meaning's, and the meaning's is WebAssembly in the translate-only meaning.rs
+  (`repeated_string`, `bulk_or_element`, `repeated_compare`); no plain form of it exists, so this output carries
+  a second implementation of it, in two forms of its own: `string_passes` in the x86 core (plain Rust, which the
+  inside uses for the `RepPasses` fix-up and the twin) and the emitted after-code, both tested against the
+  WebAssembly output's count (section 7, Count). The rule, for an instruction that ran to its end (its ranges'
+  permissions need no test, since natively every page was allowed, and a fault inside it is the inside's to
+  count): `repe`/`repne` `cmps` and `scas`, `lods`, and any string with the guest's 0x67 (Reason::StringAddress32)
+  go one element a pass, so the passes are rcx before less rcx after; `movs` and `stos` with DF or TF set likewise;
+  otherwise each pass takes n = min(rcx, 2^20 / element bytes) elements (`BULK_STRING_BYTES`) as one bulk pass,
+  except a `movs` whose destination lies 1 to n * bytes - 1 bytes above its source (`rdi - rsi - 1 < n * bytes -
+  1`, unsigned, each pass with its own n), which takes one element. rsi and rdi advance together, so the distance
+  d = rdi - rsi is the same at every pass and the passes have a closed form: one element a pass while d >= 1 and
+  min(rcx, cap) * bytes > d, then bulk passes of min(rcx, cap) until rcx is spent. For a forward `rep movsb`
+  with rdi = rsi + 10 and rcx = 100 that is 90 element passes, then one bulk pass of 10: 91. The after-code
+  computes that form flag-free where it can and with the flags saved on the count stack where it compares; its
+  length is not estimated here (XN1 counts its instructions and measures it, below) (in P the saved word read once into t and put back through the flags table, since sibling
   threads can write the count stack; in the machine and I by `popfq` of the saved word itself, TF and AC the
   guest's), rsp put back. The count stack's word is at a fixed offset of the register page (rsp is set to the same
   address each time), so the position map can name both moved values with what exists: from the store of rsp to its
@@ -528,9 +555,9 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   `Relocated { guest: RFLAGS, held: Held::Page(count word) }` (RFLAGS is the x86 crate's number for rflags in the
   map, after the sixteen general registers; section 9). The span from the instruction's commit point to that `lea`
   carries the fix-up `RepPasses` ("the rep string's passes owed"), so a stop or fault there is resolved by the
-  inside computing the same passes from rcx before and the registers, and the span after the `lea` none. Expected cost about twenty instructions per executed rep string, `popfq` the dearest (not measured:
-  XN1 measures it on the benchmark set and on glibc's `memcpy` above its `rep movsb` threshold, and the elements
-  form beside it for the owner).
+  inside computing the same passes from rcx before and the registers by `string_passes`, and the span after the
+  `lea` none. Cost not estimated: XN1 counts the after-code's instructions, measures it on the benchmark set and on
+  glibc's `memcpy` above its `rep movsb` threshold, and the elements form beside it for the owner.
 - TF: in the machine and I as docs/native.md 3.4 (routed `popf`/`iretq`, hardware TF equal to the guest's, steps
   resolved through the map); every host instruction of the carrying code steps too, and the handler resumes those
   silently at the host instruction ("single step through host instructions"), which is safe there because the
@@ -746,7 +773,9 @@ window needs the bound in a register, measured at XN2 if asked).
 - None (machine, P): the operand as the guest wrote it (only the area segment's operands rewritten, section 3.1).
 - Wrapping: the instruction re-encoded with the address-size prefix and `gs:`, so the hardware forms the address in
   32 bits and adds B: no instruction added. A guest `fs:`/`gs:` operand is `mov t, fs:[guest base]`, `lea t, [t +
-  base]` when it has a base, and the access on `gs:[t + index*scale + disp]` in 32-bit form. Measured earlier
+  base]` when it has a base, and the access on `gs:[t + index*scale + disp]` in 32-bit form (the sum modulo 2^32
+  is the meaning's address modulo 2^32 with or without the guest's 0x67, so this form needs no case for it;
+  section 3.1 has the meaning's rule). Measured earlier
   (costs-cloud.json, stack exempt): +0.0% instructions, +1.8 to +4.3% wall on Granite Rapids, -7.8 to +5.0% cycles on
   AMD Zen 4, +2 to +4% on the laptop. Its named difference: an address at or above 2^32 lands at its value modulo
   2^32 inside the guest's own window, where the WebAssembly output faults (it cannot reach anything not the
@@ -761,7 +790,10 @@ window needs the bound in a register, measured at XN2 if asked).
   address 8 to 2^35 bytes below it, in a reservation without access, then the access on `gs:[t32]`; counted "exact
   check with live flags". The limit is at most 2^32, so a t that passes either is below 2^32 and t32 is t: the cut
   changes nothing a check let through. A guest operand with its own address-size prefix takes `lea t32,
-  [operand]`, so t is the meaning's wrapped address. A fault on either is the guest's fault at t, from the span.
+  [operand]`, so t is the meaning's wrapped address; on a segment (`fs:`, `gs:`) the segment base is added after
+  the wrap, as section 3.1 has it: `mov t, fs:[guest base]; lea u32, [base32 + index32*scale + disp]; lea t, [t +
+  u]`, then the check on t, so a base at or above 2^32 faults as the meaning does (`lea t32` over the whole
+  operand would wrap the base too). A fault on either is the guest's fault at t, from the span.
   Measured earlier (stack exempt): X32 +11.0 to +15.2% wall (Granite Rapids), +10.0 to +25.4% cycles (Zen 4), +14
   to +32% on the laptop. Whether the cut (one prefix byte an access, no instruction) changes
   them is not measured; XN2's speed bar measures the cut form itself.
@@ -804,9 +836,10 @@ window needs the bound in a register, measured at XN2 if asked).
   at most its own size past that start, and no access is larger than a page (the largest, the guest's XSAVE image
   of 832 bytes, is the inside's), so one page catches a run over the top. The routing test (section 7) fails if any
   form with a memory operand whose reach is not its operand's address alone (the bit tests above, strings, `xlat`,
-  `enter`, the gathers, `maskmovdqu`) takes the plain exact sequence, and if any guest access either form emits is
-  on an address not cut to 32 bits (a `gs:` operand without the address-size prefix, or a string without its
-  `mov esi, esi` or `mov edi, edi`; Speculation, below).
+  `enter`, the gathers, `maskmovq`, `maskmovdqu`, `vmaskmovdqu`) takes the plain exact sequence, if any string
+  with the guest's own address-size prefix is routed other than Kernel (below), and if any guest access either
+  form emits is on an address not cut to 32 bits (a `gs:` operand without the address-size prefix, or a string
+  without its `mov esi, esi` or `mov edi, edi`; Speculation, below).
 - Implicit accesses: `push`, `pop`, `call`, `ret`, `enter`, `leave` become explicit accesses through `access` on rsp
   (`mov gs:[esp - 8], src` then `lea rsp, [rsp - 8]`, the store the commit point and the `lea` its fix-up, section 9).
   The source must be a register: `push m` and `pop m` go through t; a `call` pushes its return address from a
@@ -819,9 +852,17 @@ window needs the bound in a register, measured at XN2 if asked).
   does, section 3.6; in I the count stack is outside every window), then the push of t through `access` like any
   other (the 16-bit `pushf` stores t's low half). Every implicit access is so on a 32-bit address (`gs:[esp - 8]`).
   `xlat` is re-encoded with the address-size prefix on `gs:[ebx + al]`, in the exact form after the check of `movzx
-  u, al; lea u, [rbx + u]` (wrapping: its named difference, the address modulo 2^32). The AVX2 gathers in the exact form go to the inside (rare; their lanes cannot be
+  u, al; lea u, [rbx + u]`, or with the guest's 0x67 (`67 d7`) `lea u32, [rbx + u]`, wrapping as the meaning does
+  (wrapping: its named difference, the address modulo 2^32). The AVX2 gathers in the exact form go to the inside (rare; their lanes cannot be
   bounded by one probe), counted.
-- Strings and `maskmovdqu`: their start is bounded first, then rdi is rebased. For each of rdi and rsi the instruction
+- Strings, `maskmovq` and `maskmovdqu`: a string instruction with the guest's own address-size prefix (0x67) goes to
+  the inside in both forms (Kernel, counted "string with address-size prefix answered by the inside"). Under that
+  prefix the hardware forms the rdi side as edi plus the low half of the rebase, wrapped to 32 bits, on ES's base
+  0, so no rebase of rdi can reach B + edi: measured by the check (check-xn0h/str67.c, the sequence below with
+  guest edi 0x100000), `67 aa` stored at host 0x102000 and left the guest's rdi 0xfffffff700100001 (the meaning:
+  0x100001), and `67 f3 aa` with rcx 16 stored its 16 bytes there. The meaning runs these one element a pass
+  already (x86/meaning.rs `repeated_string`, Reason::StringAddress32), so the inside's answer is the same slow
+  path. Every other string: its start is bounded first, then rdi is rebased. For each of rdi and rsi the instruction
   uses, the flag-free probe above on that register (wrapping and exact alike: a start at or above 2^32 faults on the
   probe, and the inside performs the instruction as the meaning does in that form: modulo 2^32, or the guest's
   fault; counted "string start outside the window"). Then each register so probed is cut to 32 bits, `mov esi, esi`
@@ -832,8 +873,10 @@ window needs the bound in a register, measured at XN2 if asked).
   fs:[negated base]; lea rdi, [rdi + t]`; the position map holds "rdi less B" while rebased (`Held::Rebased`). A run
   from a start inside the window moves one element at a time, so upward it faults on the guard page above B + 2^32
   and downward on the page below B; that fault goes to the inside, which in the wrapping form goes on modulo 2^32 as
-  the meaning does and in the exact form is the guest's fault there. `maskmovdqu` (16 bytes at rdi) is re-encoded on
-  `gs:` with the address-size prefix (so on edi) in both forms, after the probe in the exact one. Measured by the
+  the meaning does and in the exact form is the guest's fault there. `maskmovq` (8 bytes at rdi, x86/simd.rs
+  `masked_store_mmx`) and `maskmovdqu` and `vmaskmovdqu` (16 bytes at rdi) store at DS:[rdi], which a segment
+  override can change, so each is re-encoded on `gs:` with the address-size prefix (so on edi; the guest's own
+  0x67 changes nothing there) in both forms, after the probe in the exact one. Measured by the
   check (check-xn0/partial.out): with the run-1 sequence and no bound, a guest rdi of 2^40 wrote host bytes at B +
   rdi; section 7's way I tests hold this case.
 - Speculation. A check is a prediction until it resolves: after `cmp; jae` a mispredicted branch, and after the
@@ -917,6 +960,10 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
   the `int3` hit's three condition forms (section 3.2: `Condition::holds`, P's flags-table and `jcc`-table
   assembly, and the meaning's emitted condition through the WebAssembly output) on all 16 conditions and all 32
   combinations of CF, PF, ZF, SF and OF, each with seeded values of the other flags: all three must agree.
+- Rep string passes: `string_passes` and the emitted after-code against the WebAssembly output's count, seeded
+  over every string kind, element size, prefix (rep, repe, repne, 0x67), DF, TF, rcx (0, 1, the cap and either
+  side of it) and rdi - rsi (0, 1 to the length, negative, above the cap), with the check's case (`rep movsb`,
+  rdi = rsi + 10, rcx 100: 91 passes); seed and cases arguments.
 - Count: the same count at every stop across look-ahead none, bounded and full on the benchmark set and layer 2's
   programs, the kernel test's hash with a stop at every counted event; the every-offset test with a stop at every
   host instruction of every piece, the lookup and the twins.
@@ -936,7 +983,9 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
   `rep stosq` and `repe cmpsb`; an instruction straddling into a page that cannot run code; a 66-prefixed `jmp`,
   `call` and `ret`; `xsave` with edx:eax all ones beside a guest buffer of the offered size; `wrfsbase`,
   `wrgsbase`, `rdgsbase` and `mov r, gs` (each way); `enter 0, 3` and `fstp m80` across a page that refuses writes;
-  `rdsspq` and `incsspq` (the reserved-NOP results); `rep movsb` and `xlat` with a `gs:` override; `popf` setting
+  `rdsspq` and `incsspq` (the reserved-NOP results); `rep movsb`, `xlat`, `maskmovq` and `maskmovdqu` with a `gs:`
+  override; a `gs:` operand with the guest's 0x67 and a GS base at or above 2^32 (`65 67 8b 00`, GS base
+  0x300000000, rax 0x100000010, reading at 0x300000010), and with a RIP-relative operand; `popf` setting
   TF followed by a `ret` and a `jmp r` (each way, P on stepping pieces); a thread with TF set running `rep movsb`
   and then ten one-byte instructions, each step reported (each way: in the machine and I the hardware TF must
   survive the rep string count's `popfq`, as check-xn0e/tf.c showed a table word would not).
@@ -976,7 +1025,11 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
   checked against what its zygote left in them.
 - Way I: no access outside the window succeeds in either form, through every operand shape: one byte past a
   mapping, 2^32 - 1 with 8 bytes, a SIB with a large index, `fs:` with a negative offset, a downward and an upward
-  string with a large rcx, a string and `maskmovdqu` with rdi and rsi at 2^32, 2^32 + 2^35, 2^40 and -1, `bt`,
+  string with a large rcx, a string, `maskmovq` and `maskmovdqu` with rdi and rsi at 2^32, 2^32 + 2^35, 2^40 and
+  -1, `stos`, `movs`, `cmps` and `scas` with the guest's 0x67, plain and `rep`, with edi inside the window and the
+  upper half of rdi set (the check's str67.c: edi 0x100000, `67 aa` writes the window's byte B + 0x100000 and
+  leaves rdi 0x100001, nothing at host 0x102000), `fs:` and `gs:` operands with the guest's 0x67 and a base at or
+  above 2^32 in the exact form (the meaning's fault), `67 d7` with rbx's upper half set (the wrapped address), `bt`,
   `bts`, `btr` and `btc` (plain and `lock`ed) of each operand size with a register bit offset of 0, -1, w, -w - 1,
   2^31 - 1, -2^31, 2^35, 2^60 and -2^63 (each taken at the operand size) from operands at the window's first and last bytes and in its middle, with
   the flags dead and live after them (a seeded sweep beside these, seed and cases arguments), the same bit tests
@@ -1077,6 +1130,11 @@ suites passing:
   `thread_local!` cache of astro-float's `Consts` becomes a `&mut Consts` its functions take: the translate half
   keeps today's per-thread cache around them, and the floor and I's inside keep one per virtual processor or
   runner.
+- x86/x87_answer.rs (new, core): the plain-Rust twin of x86/fpu.rs's instruction-level part for the unmasked x87
+  mode (section 3.1): the pending-exception check, the memory operand (address, split, permissions, read, store
+  with NOT_STORED and `fstp m80`'s order) around the unit, over a guest-memory access the inside passes in.
+- x86/strings.rs (new, core): `string_passes`, the plain form of the meaning's rep string pass rule (section 3.6),
+  for the `RepPasses` fix-up and the twin; the after-code is its emitted form.
 - Cargo.toml: rustc_apfloat (Apache-2.0 WITH LLVM-exception) and astro-float-num (MIT, default features off) move
   from `translate` to the core's dependencies, and the core gains `lazy_static = { version = "1.5", features =
   ["spin_no_std"] }` (MIT OR Apache-2.0, bringing spin 0.9.9, MIT) only to give astro-float-num's lazy_static that
@@ -1090,7 +1148,8 @@ impl Condition {
     pub fn from_code(code: u8) -> Self;
 }
 ```
-In gcpu/position.rs: `Operand` gains `segment: Option<Segment>`
+`Route` gains `Area` (the guest's own use of the thread area's segment, section 3.1), which ARM64 never gives (its
+carrying code's match takes it as unreachable). In gcpu/position.rs: `Operand` gains `segment: Option<Segment>`
 (`Fs`, `Gs`) and `address_bits: u8` (32 or 64); `DirectExit::retarget` and `BranchTable::retarget` hold the branch's
 displacement as `{ at: u8, bits: u8 }` in bytes, not ARM64's instruction field; `DirectExit` gains
 ```rust
