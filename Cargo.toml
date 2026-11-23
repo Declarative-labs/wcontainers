@@ -35,7 +35,7 @@ wgpu = { path = "third_party/wgpu" }
 # TODO: not yet done (uses counted on 2026-11-22); each inherits these lints once it is free of it, or, for an executor,
 # denies it once every use left is marked:
 #   crates/wcontainers-directx (1091)
-#   crates/wcontainers-direct3d-12 (496)
+#   crates/wcontainers-direct3d-12 (495)
 #   crates/wcontainers-graphics-test (342)
 #   crates/kernel/implementation/linux (336)
 #   crates/wcontainers-opengl (326)
