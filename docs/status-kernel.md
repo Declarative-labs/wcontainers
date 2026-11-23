@@ -53,6 +53,18 @@ crates/runtime/implementation/single-kernel.
   and 2 failed, rootbackend 1 passed and 2 failed, all four on the known ARM list
   (file_capabilities, special_files, root_files, core_dumps); `backend_notices_are_handled`
   passed.
+- The literal check (the checker built on the Mac on the 21st, after its crate's last change, run
+  with `nice -n 19`, about 20 s; it needs git's history, which the rented machines' copies lack;
+  logs scratch kernel/kc4/literals*.log): exits 1, on other tracks' files (the shaders'
+  submodules alone give thousands of lines) and the interface's. In this track's files: nothing
+  new from this run (the cpuinfo and stat contents are built from named pieces, the messages of
+  the test host's notice check are text); the baseline lost 7 lines whose literals are gone (the
+  two old proc contents, four `8`s of the affinity calls, tty.rs's `ECHO_BLOCK` restated line)
+  and gained none. The `standalone 300` mark in the stand-in's tests/outside.rs is removed: the
+  check refuses a mark in test code, so it never settled `TOLD_AFTER_RESET`, which stays For the
+  orchestrator. New and not this run's: hardware-virtualization-inside syndrome.rs
+  `WRITE_NOT_READ = 64` is now a redefinition of the one processor-architecture's arm64 crate
+  added (For the orchestrator).
 - Not fixed, with its reason: the suite's check that another process's thread is not suspended
   through a handle stays in round_trips (`a_handle_takes_no_thread_of_another_process`): no
   suite function can hold both a handle and its kernel through the interface (For the owner, KA,
@@ -526,6 +538,11 @@ side of each is worked around without changing the interface.
   `fn event(&mut self, arrival: &Arrival) -> Option<Event>`) and corrected that crate's
   `receive_notice` comment (system.rs: its file server sends no notices), in a commit of their
   own.
+- KC, fourth run: the literal check reports hardware-virtualization-inside syndrome.rs
+  `WRITE_NOT_READ = 64` (this track's embedder) as a redefinition of
+  crates/processor-architecture/implementation/arm64/syndrome.rs `WRITE_NOT_READ = 1 << 6`, which
+  another track added since. The fix is to import it, which needs the inside crate to depend on
+  that crate (built for the machine's inside, `no_std`): left until a ruling on whether it may.
 
 - KC: should a guest's TCP `bind` bind at the system (networking-fixes/tcp/for-implementers.md),
   though the container has its own network namespace and its connects leave through the exit
