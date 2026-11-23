@@ -719,3 +719,29 @@ fn an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_ever
     unlike.to_common_form(Stage::Fragment).unwrap();
     assert!(wcontainers_nir::direct::route(&mut unlike).is_err());
 }
+
+const ARRAYS_OF_ARRAYS: &str = "#version 450
+layout(binding = 0) uniform sampler2D textures[2][3];
+layout(location = 0) in vec2 at;
+layout(location = 1) flat in int which;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = texture(textures[1][2], at) + texture(textures[which][1], at);
+}
+";
+
+#[test]
+fn an_array_of_arrays_of_textures_is_one_array_of_its_elements() {
+    let mut nir = Nir::from_glsl(&[(Stage::Fragment, ARRAYS_OF_ARRAYS)])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .nir;
+    nir.split_resource_arrays();
+    let key = nir.key().unwrap();
+    let bindings = nir.to_common_form(Stage::Fragment).unwrap();
+    let routed = wcontainers_nir::direct::route(&mut nir).unwrap();
+    let unnamed = wcontainers_gpu::VariantKey::default();
+    let (module, _) = wcontainers_nir::direct::rewrite(routed, bindings, &unnamed, &key).unwrap();
+    wcontainers_nir::spirv::validate(&module.module).unwrap();
+}

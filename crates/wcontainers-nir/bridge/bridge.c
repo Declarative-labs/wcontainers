@@ -1777,9 +1777,68 @@ constant_element(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+/* Whether a uniform is an array of arrays of textures, samplers or images. */
+static bool
+is_resource_arrays(const nir_variable *var)
+{
+   const struct glsl_type *bare = glsl_without_array(var->type);
+   return var->data.mode == nir_var_uniform && glsl_type_is_array_of_arrays(var->type) &&
+          (glsl_type_is_sampler(bare) || glsl_type_is_texture(bare) || glsl_type_is_image(bare));
+}
+
+/* An element of an array of arrays of resources named in one array of every element, in
+ * OpenGL's order, which is the order of the units its elements take. */
+static bool
+flatten_element(nir_builder *b, nir_instr *instr, void *flattened)
+{
+   if (instr->type != nir_instr_type_deref)
+      return false;
+   nir_deref_instr *deref = nir_instr_as_deref(instr);
+   if (deref->deref_type != nir_deref_type_array || glsl_type_is_array(deref->type))
+      return false;
+   nir_deref_instr *root = deref;
+   while (root->deref_type == nir_deref_type_array)
+      root = nir_deref_instr_parent(root);
+   if (root->deref_type != nir_deref_type_var ||
+       !_mesa_set_search((struct set *)flattened, root->var))
+      return false;
+   b->cursor = nir_before_instr(instr);
+   nir_def *index = NULL;
+   unsigned stride = 1;
+   for (nir_deref_instr *d = deref; d != root; d = nir_deref_instr_parent(d)) {
+      nir_def *step = nir_imul_imm(b, d->arr.index.ssa, stride);
+      index = index ? nir_iadd(b, index, step) : step;
+      stride *= glsl_get_length(nir_deref_instr_parent(d)->type);
+   }
+   nir_deref_instr *element = nir_build_deref_array(b, nir_build_deref_var(b, root->var), index);
+   nir_def_replace(&deref->def, &element->def);
+   return true;
+}
+
+/* Every array of arrays of resources as one array of its elements. */
+static void
+flatten_resource_arrays(nir_shader *nir)
+{
+   struct set *flattened = _mesa_pointer_set_create(NULL);
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
+      if (!is_resource_arrays(var))
+         continue;
+      var->type = glsl_array_type(glsl_without_array(var->type), glsl_get_aoa_size(var->type), 0);
+      _mesa_set_add(flattened, var);
+   }
+   if (flattened->entries &&
+       nir_shader_instructions_pass(nir, flatten_element, nir_metadata_control_flow, flattened)) {
+      /* The chains of the arrays' old type go first. */
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(_, nir, nir_opt_constant_folding);
+   }
+   _mesa_set_destroy(flattened, NULL);
+}
+
 void
 wc_nir_split_resource_arrays(nir_shader *nir)
 {
+   flatten_resource_arrays(nir);
    struct resource_elements r = {_mesa_pointer_hash_table_create(NULL), nir};
    if (nir_shader_instructions_pass(nir, constant_element, nir_metadata_control_flow, &r)) {
       NIR_PASS(_, nir, nir_opt_dce);
