@@ -91,6 +91,11 @@ impl<B: Backend> View<B> {
         self.view.as_ref().map_err(|why| (*why).to_owned())
     }
 
+    /// Whether the view reads a copy, which [`View::copy_texels`] makes (outside a pass).
+    pub fn copies(&self) -> bool {
+        self.twin.is_some() || self.texels.is_some()
+    }
+
     /// Copies what the view reads into the texture it views, where that is a copy: a texel buffer
     /// view's range, or a twin's levels and layers, as they are now; nothing for another view.
     pub fn copy_texels(&self, backend: &mut B) -> Result<(), String> {
@@ -464,7 +469,12 @@ impl<B: Backend> Images<B> {
                 depth_or_layers: 1,
                 mip_levels: 1,
                 samples: desc.samples,
-                usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                // A multisampled texture is made only as a target (WebGPU's rule).
+                usage: if desc.samples > 1 {
+                    TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::RENDER
+                } else {
+                    TextureUsage::SAMPLE | TextureUsage::COPY_DST
+                },
                 cube: false,
                 reinterpret: false,
             })
@@ -496,6 +506,11 @@ impl<B: Backend> Images<B> {
         };
         self.fetched = Some((texture, view));
         Ok(())
+    }
+
+    /// Whether [`Images::finish`] copies anything back into a texture (outside a pass).
+    pub fn copies_back(&self) -> bool {
+        self.texels.iter().any(|t| t.writable) || self.twins.iter().any(|t| t.writable)
     }
 
     /// Copies each twin and buffer of texels the program wrote back into its texture, then
@@ -559,6 +574,20 @@ impl<B: Backend> Twin<B> {
         backend.copy_texture_to_buffer(&from, &rows, self.extent);
         backend.copy_buffer_to_texture(&rows, &to, self.extent);
     }
+}
+
+/// Whether [`image_view`] binds an image of a texture through a copy (a twin): a view in another
+/// format than its texture's, or one slice of a volume texture.
+pub fn image_copied<B: Backend>(image: &pipe_image_view) -> bool {
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let Some((_, desc)) = resource.texture() else {
+        return false;
+    };
+    // SAFETY: the image of a texture holds its texture range.
+    let range = unsafe { image.u.tex };
+    crate::format::format(image.format) != Some(desc.format)
+        || (range.single_layer_view && desc.dimension == TextureDimension::D3)
 }
 
 /// The interface's view of an image a program binds, kept in `images`: one layer, or the layers

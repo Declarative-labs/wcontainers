@@ -1135,7 +1135,8 @@ const TEXEL_SAMPLER: SamplerDesc = SamplerDesc {
 /// Binds every resource the programs read, one set a stage, as the route's reflection numbers
 /// them, with the streams the vertex program fetches itself and its helper constants; the vertex
 /// program's visible to `vertex_visible`. What images are bound through goes to `made`, to
-/// finish after the work that binds them (outside a pass: an image may be copied at once).
+/// finish after the work that binds them (outside a pass where binding copies texels:
+/// [`close_for_copies`]).
 pub(crate) fn binding_sets<B: Backend>(
     backend: &mut B,
     stages: &state::Stages<B>,
@@ -1504,6 +1505,48 @@ fn bound_image<B: Backend>(
         .get(unit as usize)
         .filter(|image| !image.resource.is_null())
         .ok_or("an image the program reads is not bound")
+}
+
+/// Closes the open pass where binding the resources of `built`'s stages copies texels
+/// ([`binding_sets`]).
+fn close_for_copies<B: Backend>(
+    tracker: &mut PassTracker<B>,
+    backend: &mut B,
+    stages: &state::Stages<B>,
+    built: &[(Stage, &Built<B>)],
+) -> Result<(), String> {
+    if built
+        .iter()
+        .any(|&(stage, b)| makes_copies(stages.get(stage), b))
+    {
+        tracker
+            .close(backend)
+            .map_err(|e| format!("closing the pass for a copy: {e:?}"))?;
+    }
+    Ok(())
+}
+
+/// Whether binding a stage's resources copies texels, which is done outside a pass: a texture
+/// read from a copy of its texels, an image bound through a twin or a buffer of its texels.
+fn makes_copies<B: Backend>(bound: &state::StageState<B>, built: &Built<B>) -> bool {
+    built
+        .bindings
+        .iter()
+        .filter(|b| b.added.is_none())
+        .any(|b| match b.kind {
+            SlotKind::Texture if b.register != FETCHED_UNIT => {
+                let view = bound.views[b.register as usize];
+                // SAFETY: the slot holds a reference on a live view of this driver.
+                !view.is_null() && unsafe { View::<B>::of(view) }.copies()
+            }
+            SlotKind::Storage if b.register < PIPE_MAX_SHADER_IMAGES => {
+                bound_image(bound, b.register).is_ok_and(|image| {
+                    !views_buffer::<B>(image)
+                        && (read_as_texels(built, b) || crate::view::image_copied::<B>(image))
+                })
+            }
+            _ => false,
+        })
 }
 
 /// Whether a bound image views a buffer.
@@ -1997,8 +2040,13 @@ fn draw<B: Backend>(
     };
     let mut images = Images::default();
     if fragment_shader.fetches_target {
+        context
+            .tracker
+            .close(backend)
+            .map_err(|e| format!("closing the pass for a copy: {e:?}"))?;
         images.fetch_target(backend, &context.framebuffer.state.cbufs[0])?;
     }
+    close_for_copies(&mut context.tracker, backend, &context.stages, drawn)?;
     let mut sets = binding_sets(
         backend,
         &context.stages,
@@ -2182,6 +2230,12 @@ fn draw<B: Backend>(
     }
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
+    }
+    if images.copies_back() {
+        context
+            .tracker
+            .close(backend)
+            .map_err(|e| format!("closing the pass for a copy: {e:?}"))?;
     }
     images.finish(backend);
     Ok(())
@@ -2399,6 +2453,14 @@ fn run_stages<B: Backend>(
     }
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
     let mut images = Images::default();
+    let mut bound_stages = vec![(Stage::Vertex, built_vertex)];
+    bound_stages.extend(built_geometry.map(|g| (Stage::Geometry, g)));
+    close_for_copies(
+        &mut context.tracker,
+        backend,
+        &context.stages,
+        &bound_stages,
+    )?;
     let vertex_sets = binding_sets(
         backend,
         &context.stages,
@@ -2647,6 +2709,18 @@ fn run_tessellated<B: Backend>(
     }
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
     let mut images = Images::default();
+    let mut bound_stages = vec![
+        (Stage::Vertex, built_vertex),
+        (Stage::TessControl, built_control),
+        (Stage::TessEvaluation, built_evaluation),
+    ];
+    bound_stages.extend(built_geometry.map(|g| (Stage::Geometry, g)));
+    close_for_copies(
+        &mut context.tracker,
+        backend,
+        &context.stages,
+        &bound_stages,
+    )?;
     let vertex_sets = binding_sets(
         backend,
         &context.stages,
