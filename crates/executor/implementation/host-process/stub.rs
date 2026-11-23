@@ -3,7 +3,7 @@
 use std::io::IoSlice;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use linux_raw_sys::general as linux;
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -25,8 +25,13 @@ pub const MEMORY_FD: u32 = 9;
 /// above.
 pub const BLOCK_FD: u32 = 0;
 
-/// How long a runner waits for a thread before it looks whether the stub has ended.
+/// How long a runner waits for a thread before it looks whether the stub has ended, and how long a stopped thread
+/// may take to come back before it is sent its stop again.
 const LOOK_FOR_END: Duration = Duration::from_millis(100);
+
+/// How long after its first stop a thread that has not come back has its stub killed: only a compromised stub can
+/// hold the stop off.
+pub const STOP_IGNORED: Duration = Duration::from_secs(10);
 
 /// One stub, owned by the executor; the zygote that forked it reaps it, and its owner makes the window cache forget
 /// its memory before dropping it.
@@ -164,13 +169,13 @@ impl Stub {
     /// left every page of its index; whether it did.
     pub fn thread_gone(&self, thread: usize, limit: Duration) -> Result<bool, Errno> {
         let word = self.pages.register32(thread, register::EXIT_CLEAR);
-        let until = std::time::Instant::now() + limit;
+        let until = Instant::now() + limit;
         loop {
             let seen = word.load(Ordering::Acquire);
             if seen == 0 {
                 return Ok(true);
             }
-            let left = until.saturating_duration_since(std::time::Instant::now());
+            let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Ok(false);
             }
@@ -273,14 +278,62 @@ impl Stub {
         value: u64,
         resume: Resume,
     ) -> Result<TurnEnd, Errno> {
+        let turn = self.begin_touch(thread, commands, address, value, resume)?;
+        self.wait(thread, turn)
+    }
+
+    /// Gives a thread a turn as [`Self::touch`] does, without waiting for it; the turn's number.
+    pub fn begin_touch(
+        &self,
+        thread: usize,
+        commands: &[Command],
+        address: usize,
+        value: u64,
+        resume: Resume,
+    ) -> Result<u32, Errno> {
         self.pages
             .control64(thread, control::TOUCH_ADDRESS)
             .store(address as u64, Ordering::Relaxed);
         self.pages
             .control64(thread, control::TOUCH_VALUE)
             .store(value, Ordering::Relaxed);
-        let turn = self.give(thread, commands, resume)?;
-        self.wait(thread, turn)
+        self.give(thread, commands, resume)
+    }
+
+    /// Waits for the end of `turn`, sending the stop when `slice` has passed and again every 100 ms after; `None` if
+    /// the thread has not come back [`STOP_IGNORED`] after its first stop. Counts the stops sent in `stops`.
+    pub fn wait_sliced(
+        &self,
+        thread: usize,
+        turn: u32,
+        slice: Option<Duration>,
+        stops: &mut u64,
+    ) -> Result<Option<TurnEnd>, Errno> {
+        let mut stop_at = slice.map(|slice| Instant::now() + slice);
+        let mut first_stop = None;
+        loop {
+            let limit = stop_at.map_or(LOOK_FOR_END, |at| {
+                at.saturating_duration_since(Instant::now())
+                    .min(LOOK_FOR_END)
+            });
+            if let Some(end) = self.wait_within(thread, turn, limit)? {
+                return Ok(Some(end));
+            }
+            if self.hung_up()? {
+                return Ok(Some(TurnEnd::StubEnded));
+            }
+            let now = Instant::now();
+            if stop_at.is_some_and(|at| now >= at) {
+                if first_stop.is_some_and(|first| now.duration_since(first) >= STOP_IGNORED) {
+                    return Ok(None);
+                }
+                // A thread id the stub forged reaches no thread; the kill above ends that.
+                let _ = self.stop(thread);
+                *stops += 1;
+                first_stop.get_or_insert(now);
+                stop_at = Some(now + LOOK_FOR_END);
+            }
+        }
     }
 
     /// Sends a shared block's memfd for the next [`Command::MapShared`] a thread of the stub applies.
@@ -362,13 +415,13 @@ impl Stub {
         limit: Duration,
     ) -> Result<Option<TurnEnd>, Errno> {
         let request = self.pages.register32(thread, register::REQUEST);
-        let until = std::time::Instant::now() + limit;
+        let until = Instant::now() + limit;
         loop {
             let seen = request.load(Ordering::Acquire);
             if seen == turn {
                 return Ok(Some(self.exit(thread)));
             }
-            let left = until.saturating_duration_since(std::time::Instant::now());
+            let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Ok(None);
             }

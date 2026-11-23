@@ -43,11 +43,11 @@ fn word(cpu: &mut HostProcessExecutor, memory: MemoryId, address: u64) -> u64 {
 }
 
 fn load(cpu: &mut HostProcessExecutor, thread: ThreadId, address: u64) -> Touched {
-    cpu.touch(thread, Touch::Load(address)).expect("load")
+    cpu.touch(thread, Touch::Load(address), None).expect("load")
 }
 
 fn store(cpu: &mut HostProcessExecutor, thread: ThreadId, address: u64, value: u64) -> Touched {
-    cpu.touch(thread, Touch::Store(address, value))
+    cpu.touch(thread, Touch::Store(address, value), None)
         .expect("store")
 }
 

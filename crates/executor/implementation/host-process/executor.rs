@@ -4,6 +4,7 @@
 use std::ops::Range;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rangemap::RangeMap;
 use rustix::fs::{FallocateFlags, MemfdFlags, SeekFrom};
@@ -85,6 +86,10 @@ pub struct Counters {
     pub threads_exhausted: u64,
     /// Memories dropped while lending pages, kept as files until no page is borrowed ("owner ended while lending").
     pub retired_owners: u64,
+    /// Stops sent when a slice ran out, and again while a thread did not come back.
+    pub stops_sent: u64,
+    /// Stubs killed because a thread did not come back 10 s after its stop ("thread ignored its stop").
+    pub stops_ignored: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -96,13 +101,15 @@ pub enum FaultOwner {
     Guest,
 }
 
-/// A single access standing in for guest code.
+/// What a turn runs, standing in for guest code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Touch {
     /// Loads the word at the address.
     Load(u64),
     /// Stores a word at the address.
     Store(u64, u64),
+    /// Runs until a stop ends the turn.
+    Spin,
 }
 
 /// How a touch ended.
@@ -158,12 +165,25 @@ impl HostProcessExecutor {
         self.memory(memory).stub.process()
     }
 
-    /// Runs one access on a thread, standing in for guest code, settling every fault that is the executor's.
-    pub fn touch(&mut self, thread: ThreadId, touch: Touch) -> Result<Touched, CpuError> {
+    /// Where a thread's stops landed, as its stub counts them (untrusted).
+    pub fn stops_landed(&self, thread: ThreadId) -> crate::stub::StopsLanded {
+        let Thread { memory, index } = self.thread(thread);
+        self.memory(memory).stub.stops_landed(index)
+    }
+
+    /// Runs a turn on a thread, standing in for guest code, for at most `slice` before it is stopped, settling every
+    /// fault that is the executor's.
+    pub fn touch(
+        &mut self,
+        thread: ThreadId,
+        touch: Touch,
+        slice: Option<Duration>,
+    ) -> Result<Touched, CpuError> {
         let Thread { memory, index } = self.thread(thread);
         let (address, value, resume, access) = match touch {
             Touch::Load(address) => (address, 0, Resume::Load, Access::Read),
             Touch::Store(address, value) => (address, value, Resume::Store, Access::Write),
+            Touch::Spin => (0, 0, Resume::Spin, Access::Read),
         };
         loop {
             let (commands, blocks) = self.take_queue(memory);
@@ -172,7 +192,7 @@ impl HostProcessExecutor {
                 index,
                 &commands,
                 &blocks,
-                Some((address as usize, value, resume)),
+                Some((address as usize, value, resume, slice)),
             )?;
             return Ok(match end {
                 TurnEnd::Loaded { value } if resume == Resume::Load => Touched::Loaded(value),
@@ -353,7 +373,7 @@ impl HostProcessExecutor {
         index: usize,
         commands: &[Command],
         blocks: &[Arc<OwnedFd>],
-        touch: Option<(usize, u64, Resume)>,
+        touch: Option<(usize, u64, Resume, Option<Duration>)>,
     ) -> Result<TurnEnd, CpuError> {
         let rounds = commands.len().div_ceil(MAX_COMMANDS).max(1);
         let mut blocks = blocks.iter();
@@ -368,13 +388,32 @@ impl HostProcessExecutor {
                 }
             }
             let last = round + 1 == rounds;
-            let end = match touch {
-                Some((address, value, resume)) if last => {
-                    stub.touch(index, chunk, address, value, resume)
-                }
-                _ => stub.turn(index, chunk),
+            let (address, value, resume, slice) = match touch {
+                Some(touch) if last => touch,
+                _ => (0, 0, Resume::Ping, None),
+            };
+            let turn = stub
+                .begin_touch(index, chunk, address, value, resume)
+                .map_err(host_error)?;
+            let mut stops = 0;
+            let waited = stub
+                .wait_sliced(index, turn, slice, &mut stops)
+                .map_err(host_error);
+            if matches!(waited, Ok(None)) {
+                let _ = self.host.kill(stub);
             }
-            .map_err(host_error)?;
+            self.counters.stops_sent += stops;
+            let end = match waited? {
+                Some(end) => end,
+                None => {
+                    self.counters.stops_ignored += 1;
+                    eprintln!(
+                        "wcontainers warning: thread ignored its stop, its process killed, {} so far",
+                        self.counters.stops_ignored
+                    );
+                    TurnEnd::StubEnded
+                }
+            };
             if last {
                 return Ok(end);
             }

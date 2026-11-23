@@ -54,6 +54,9 @@ name = "touch"
 [[test]]
 name = "memory"
 
+[[test]]
+name = "slice"
+
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
 unsafe_code = "deny"
