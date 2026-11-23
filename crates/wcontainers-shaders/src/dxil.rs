@@ -75,6 +75,20 @@ unsafe extern "C" {
     fn wcs_free(p: *mut c_void);
 }
 
+/// The reason the carried patch of dxil-spirv's reader logs for a type of LLVM outside DXIL
+/// (`converter-patches/dxil-spirv/bc/module.cpp.patch`).
+const OUTSIDE_DXIL: &str = "LLVM type outside DXIL";
+
+/// The refusal of the C side's reason in `error`: by name for a type outside DXIL, otherwise
+/// dxil-spirv's own reason.
+fn rejected(error: *mut c_char) -> ConvertError {
+    let reason = reason(error);
+    match reason == OUTSIDE_DXIL {
+        true => ConvertError::Unsupported(crate::refusal::TYPE_OUTSIDE_DXIL),
+        false => ConvertError::Rejected(reason),
+    }
+}
+
 /// The reason in `error` from the C side (a log line, its line end dropped), freed.
 fn reason(error: *mut c_char) -> String {
     if error.is_null() {
@@ -133,7 +147,7 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
         )
     };
     if status != 0 {
-        return Err(ConvertError::Rejected(reason(error)));
+        return Err(rejected(error));
     }
     let spirv = self::words(out, words);
     let resources = self::words(table, table_words)
@@ -158,7 +172,7 @@ fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError
     // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
     let status = unsafe { read(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
     if status != SUCCESS {
-        return Err(ConvertError::Rejected(reason(error)));
+        return Err(rejected(error));
     }
     Ok(words(out, n))
 }

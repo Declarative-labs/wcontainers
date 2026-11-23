@@ -561,13 +561,6 @@ const CITED_FORMS: [(&str, &[&str]); 5] = [
 /// extension (wcontainers-gpu-webgl's caps.rs): a shader needing only these must be written.
 const WEBGL_DECLARABLE: [&str; 3] = ["DUAL_SOURCE_BLEND", "POINT_SIZE", "SAMPLE_SHADING"];
 
-/// Shaders whose recorded verdict is not a named one, each with its gap: their verdict must still
-/// equal the record.
-const KNOWN_UNNAMED: [(&str, &str); 1] = [(
-    "hlsl+distance-4-ps.dxil",
-    "gap A1: dxc 10.0.26100 writes a PPC_FP128 constant, cast to the float the program stores, which dxil-spirv's reader does not know",
-)];
-
 /// A verdict's GLSL ES part as its `needs` words (with their space, empty where none) and the
 /// outcome after them.
 fn split_needs(glsl: &str) -> (&str, &str) {
@@ -680,12 +673,8 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
         let matches = expected
             .get(&file)
             .is_some_and(|e| as_checked(e, glslang) == v);
-        // Only conversions and named failures may be recorded, besides the known ones.
-        let known = KNOWN_UNNAMED.iter().find(|(f, _)| *f == file);
-        if let Some((_, gap)) = known {
-            eprintln!("{file}: known unnamed verdict {v:?} ({gap})");
-        }
-        if !matches || (!is_named(&v) && known.is_none()) {
+        // Only conversions and named failures may be recorded.
+        if !matches || !is_named(&v) {
             differ.push(format!(
                 "{file}: expected {:?}, got {v:?}",
                 expected.get(&file)

@@ -389,7 +389,7 @@ hlsl+discard-6-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE wri
 hlsl+distance-1-ps.dxil	ok ; glsl compiles
 hlsl+distance-2-ps.dxil	ok ; glsl compiles
 hlsl+distance-3-ps.dxil	ok ; glsl compiles
-hlsl+distance-4-ps.dxil	convert rejected: Unknown type!
+hlsl+distance-4-ps.dxil	unsupported TypeOutsideDxil
 hlsl+distance-5-ps.dxil	ok ; glsl compiles
 hlsl+dot-1-ps.dxil	ok ; glsl compiles
 hlsl+dot-2-ps.dxil	ok ; glsl compiles

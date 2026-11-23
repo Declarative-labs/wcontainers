@@ -148,6 +148,8 @@ pub const TYPED_BUFFER_STORAGE_AS_TEXTURE: &str = "TypedBufferStorageAsTexture";
 pub const TYPED_BUFFER_USE: &str = "TypedBufferUse";
 pub const TYPE_16_BIT: &str = "Type16Bit";
 pub const TYPE_64_BIT_INTEGER: &str = "Type64BitInteger";
+/// A type of LLVM that DXIL does not have (dxc writes a `ppc_fp128` constant for some programs).
+pub const TYPE_OUTSIDE_DXIL: &str = "TypeOutsideDxil";
 /// An array declared without a length where `VariantKey::register_ranges` holds no range sizing it.
 pub const UNBOUNDED_RESOURCE_ARRAY: &str = "UnboundedResourceArray";
 pub const VECTOR_LOAD_ACROSS_ELEMENTS: &str = "VectorLoadAcrossElements";
