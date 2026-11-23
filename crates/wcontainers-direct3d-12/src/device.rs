@@ -1196,9 +1196,15 @@ impl<B: Backend> Device<B> {
         let clip_distances = clip_distances(&vs.reflection.outputs);
         let mut slow_paths = Vec::new();
         let drawn_directly = !has_geometry && !vertex_alone;
+        // A pixel shader reading its clip distances reads them as values the vertex program
+        // passes.
+        let pixel_reads_clip = ps
+            .iter()
+            .flat_map(|p| &p.reflection.inputs)
+            .any(|i| i.system == Some(SystemValue::ClipDistance));
         let clipped_in_shader = clip_distances != 0
             && drawn_directly
-            && !self.backend.caps().has(Features::CLIP_DISTANCE);
+            && (!self.backend.caps().has(Features::CLIP_DISTANCE) || pixel_reads_clip);
         // Depth clamping the back end lacks (`DepthClampInShader`): the vertex program keeps z
         // inside the clip volume; with a depth target it also passes z past both programs' values
         // and the pixel program writes it clamped to the viewport's depth range.

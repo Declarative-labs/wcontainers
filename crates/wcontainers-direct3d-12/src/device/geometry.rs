@@ -134,13 +134,29 @@ impl<B: Backend> Device<B> {
         };
         let converted = convert(self, key.clone())?;
         let outputs = &converted.reflection.outputs;
-        let clip_distances = match self.backend.caps().has(Features::CLIP_DISTANCE) {
+        // The pixel program reads clip and cull distances only as values the last stage passes.
+        let pixel_reads = |value| {
+            pixel_inputs
+                .unwrap_or_default()
+                .iter()
+                .any(|i| i.system == Some(value))
+        };
+        let clip_distances = match self.backend.caps().has(Features::CLIP_DISTANCE)
+            && !pixel_reads(SystemValue::ClipDistance)
+        {
             true => 0,
             false => super::clip_distances(outputs),
         };
         let mut flags = VariantFlags::empty();
         if clip_distances != 0 {
             flags |= VariantFlags::CLIP_DISTANCE;
+        }
+        if pixel_reads(SystemValue::CullDistance)
+            && outputs
+                .iter()
+                .any(|o| o.system == Some(SystemValue::CullDistance))
+        {
+            flags |= VariantFlags::CULL_DISTANCE_LINKED;
         }
         if clamp {
             flags |= VariantFlags::DEPTH_CLAMP;
