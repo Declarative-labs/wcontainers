@@ -1,0 +1,34 @@
+[package]
+name = "wcontainers-webassembly-engine-browser"
+description = "The WebAssembly engine interface run by the browser's own engine, through the WebAssembly JavaScript API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[[test]]
+name = "benchmark"
+path = "benchmark.rs"
+
+[dependencies]
+wcontainers-webassembly-engine = { path = "../.." }
+js-sys = "0.3.107"
+wasm-bindgen = "=0.2.130"
+# Writes the small modules that move a call's values through our own memory.
+wasm-encoder = "0.263.0"
+
+[dev-dependencies]
+wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true
