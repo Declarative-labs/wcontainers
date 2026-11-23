@@ -956,7 +956,7 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
   `g9r20-compare.py <lists>` (a whole run's results against run 19's); on the desktop
   `refusals.ps1 -List <list>` counts a list's refusals and its cases' groups while it runs, and
   `first-lost.ps1 -List <list> -Group <text>` prints the first device error of the processes
-  that ran a group (both copied to `C:\wc\graphics-nir`). The literal check's
+  that ran a group (copy both to `C:\wc\graphics-nir` with scp first). The literal check's
   `literal-check.sh` now clones branch agents from the bundle.
 - G9 run 19's one-command scripts (scratch `scripts/`, run 18's with the run's names; give the
   log as an absolute path): `g9r19-group.sh <log> <lists> [<regexes>]` builds Mesa with the driver
