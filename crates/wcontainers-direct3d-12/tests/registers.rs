@@ -30,7 +30,7 @@ use wcontainers_gpu_webgpu::WebGpu;
 const VS: &[u8] = include_bytes!("registers/vs.dxbc");
 const PS: &[u8] = include_bytes!("registers/ps.dxbc");
 /// The target's side.
-const SIDE: u32 = 4;
+const TARGET_SIDE: u32 = 4;
 /// What real Direct3D 12 draws, on the RTX 3080 and on WARP alike: the pixel shader's weighted
 /// sum of the 31 values (tests/registers/ps.hlsl) of the first vertex.
 const DRAWN: [f32; 4] = [409.25, 454.25, 1395.0, 797.5];
@@ -149,8 +149,8 @@ fn thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12() {
     }));
     let desc = ResourceDesc {
         dimension: DIMENSION_TEXTURE2D,
-        width: u64::from(SIDE),
-        height: SIDE,
+        width: u64::from(TARGET_SIDE),
+        height: TARGET_SIDE,
         depth_or_array_size: 1,
         mip_levels: 1,
         format: float4,
@@ -186,12 +186,12 @@ fn thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12() {
             depth: None,
         },
         Command::Viewports(vec![ViewportF {
-            width: SIDE as f32,
-            height: SIDE as f32,
+            width: TARGET_SIDE as f32,
+            height: TARGET_SIDE as f32,
             max_depth: 1.0,
             ..Default::default()
         }]),
-        Command::Scissors(vec![[0, 0, SIDE as i32, SIDE as i32]]),
+        Command::Scissors(vec![[0, 0, TARGET_SIDE as i32, TARGET_SIDE as i32]]),
         Command::Topology(TOPOLOGY_TRIANGLELIST),
         Command::VertexBuffers { start: 0, views },
         Command::Draw {
@@ -228,12 +228,12 @@ fn thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12() {
     assert!(device.removed().is_none(), "{:?}", device.removed());
     let pitch = footprints[0].footprint.row_pitch as usize;
     let texel = 4 * float as usize;
-    let read: Vec<u8> = device.map(readback).unwrap()[..pitch * SIDE as usize]
+    let read: Vec<u8> = device.map(readback).unwrap()[..pitch * TARGET_SIDE as usize]
         .iter()
         .map(std::cell::Cell::get)
         .collect();
-    for y in 0..SIDE as usize {
-        for x in 0..SIDE as usize {
+    for y in 0..TARGET_SIDE as usize {
+        for x in 0..TARGET_SIDE as usize {
             let at = &read[y * pitch + x * texel..][..texel];
             let drawn: Vec<f32> = at
                 .chunks(4)

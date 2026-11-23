@@ -9,7 +9,7 @@ use wcontainers_gpu::{
 };
 
 use wcontainers_directx_graphics_infrastructure::stage_registers::{
-    input_moves, output_moves, relocate,
+    TOO_MANY_VALUES, input_moves, output_moves, relocate,
 };
 
 use super::*;
@@ -73,9 +73,6 @@ pub(super) struct StageMoves {
     pub inputs: Vec<(u32, u32)>,
 }
 
-/// Refused: a vertex and pixel program pair passing more values than the back end's inter-stage
-/// locations hold after moving them (`VaryingsBeyondLimit`).
-const VARYINGS_BEYOND_LIMIT: &str = "more values between the stages than the back end passes";
 /// Refused: values past the back end's inter-stage locations where the front's moves are not
 /// built.
 const MOVES_NOT_BUILT: &str = "values between the stages past the back end's locations behind \
@@ -173,7 +170,7 @@ impl<B: Backend> Device<B> {
             },
         ) else {
             self.backend.slow_paths().hit(SlowPath::VaryingsBeyondLimit);
-            return Err(Error::NotImplemented(VARYINGS_BEYOND_LIMIT));
+            return Err(Error::NotImplemented(TOO_MANY_VALUES));
         };
         let moves = StageMoves {
             outputs,

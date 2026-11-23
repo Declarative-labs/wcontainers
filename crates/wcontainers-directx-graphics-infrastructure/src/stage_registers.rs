@@ -12,6 +12,9 @@ pub const INPUT_SLOTS: u32 = 32;
 /// shader's input registers; one of them holds the position.
 pub const OUTPUT_REGISTERS: u32 = 32;
 
+/// Refused: a vertex and pixel program pair passing more values than the back end's inter-stage
+/// locations hold after moving them (`SlowPath::VaryingsBeyondLimit`).
+pub const TOO_MANY_VALUES: &str = "more values between the stages than the back end passes";
 /// Refused: stage values moved make a type equal to one the program has, which naga keeps once.
 pub const MOVED_ONTO_A_TYPE: &str = "stage values moved onto a type the program has";
 /// Refused: a program whose stage values moved fails validation.

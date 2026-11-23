@@ -14,6 +14,7 @@ use wcontainers_direct3d_12::resource::*;
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
+use wcontainers_directx_graphics_infrastructure::stage_registers::TOO_MANY_VALUES;
 use wcontainers_gpu::{Backend, Features};
 
 #[test]
@@ -378,12 +379,7 @@ fn values_past_the_back_ends_locations_move_or_are_refused_by_name() {
     // They do not fit 30: refused by name and counted.
     let (mut device, refused) = registers_pipeline(30);
     assert!(
-        matches!(
-            refused,
-            Err(Error::NotImplemented(
-                "more values between the stages than the back end passes"
-            ))
-        ),
+        matches!(refused, Err(Error::NotImplemented(TOO_MANY_VALUES))),
         "{refused:?}"
     );
     let slow = device.backend().slow_paths();
