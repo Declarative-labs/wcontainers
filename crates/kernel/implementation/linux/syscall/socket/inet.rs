@@ -4,9 +4,9 @@
 //! to its destination.
 
 use crate::linux_extra::{
-    INITIAL_JIFFIES_BEFORE_ZERO, MICROSECONDS_PER_SECOND, MILLISECONDS_PER_SECOND,
-    NANOSECONDS_PER_JIFFY, NANOSECONDS_PER_MICROSECOND, NANOSECONDS_PER_MILLISECOND, TCP_RTO_MAX,
-    TCP_RTO_MIN, TCP_TIMEOUT_INIT,
+    INITIAL_JIFFIES_BEFORE_ZERO, MICROSECONDS_PER_SECOND, NANOSECONDS_PER_JIFFY,
+    NANOSECONDS_PER_MICROSECOND, NANOSECONDS_PER_MILLISECOND, TCP_RTO_MAX, TCP_RTO_MIN,
+    TCP_TIMEOUT_INIT,
 };
 use alloc::collections::VecDeque;
 use alloc::rc::{Rc, Weak};
@@ -4395,7 +4395,8 @@ pub(super) fn set_option<S: crate::System>(
                 // Retransmission's bounds: nothing is lost between the container's own sockets.
                 TCP_RTO_MAX_MS => {
                     let most = TCP_RTO_MAX / NANOSECONDS_PER_MILLISECOND;
-                    if !(MILLISECONDS_PER_SECOND..=most).contains(&(value as u64)) {
+                    let least = NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MILLISECOND;
+                    if !(least..=most).contains(&(value as u64)) {
                         return Some(Err(Errno::EINVAL));
                     }
                     store(socket, value)

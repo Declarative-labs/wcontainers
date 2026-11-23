@@ -359,6 +359,9 @@ fn same_owner(kernel: &Kernel, tid: Tid, target: &Task) -> bool {
 const BASE_SLICE: u64 = 700_000;
 /// The length of a scheduler tick (`TICK_NSEC`).
 const TICK: u64 = NANOSECONDS_PER_JIFFY;
+/// The least and most a fair thread's slice may be asked to be (`__setparam_fair`).
+const SLICE_MIN: u64 = NANOSECONDS_PER_MILLISECOND / 10;
+const SLICE_MAX: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
 /// A round-robin thread's time slice (`RR_TIMESLICE`).
 const ROUND_ROBIN_SLICE: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
 
@@ -477,10 +480,7 @@ fn change_schedule(
         schedule.slice = if request.runtime == 0 {
             0
         } else {
-            request.runtime.clamp(
-                NANOSECONDS_PER_MILLISECOND / 10,
-                100 * NANOSECONDS_PER_MILLISECOND,
-            )
+            request.runtime.clamp(SLICE_MIN, SLICE_MAX)
         };
     }
     if policy == SCHED_DEADLINE {

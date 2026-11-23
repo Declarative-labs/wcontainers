@@ -905,15 +905,13 @@ pub(crate) const USER_HZ: u64 = 100;
 pub(crate) const NANOSECONDS_PER_TICK: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / USER_HZ;
 
 /// Nanoseconds per millisecond and per microsecond (`NSEC_PER_MSEC`, `NSEC_PER_USEC`), and
-/// microseconds and milliseconds per second (`USEC_PER_SEC`, `MSEC_PER_SEC`).
+/// microseconds per second (`USEC_PER_SEC`).
 pub(crate) const NANOSECONDS_PER_MILLISECOND: u64 =
     core::time::Duration::from_millis(1).as_nanos() as u64;
 pub(crate) const NANOSECONDS_PER_MICROSECOND: u64 =
     core::time::Duration::from_micros(1).as_nanos() as u64;
 pub(crate) const MICROSECONDS_PER_SECOND: u64 =
     core::time::Duration::from_secs(1).as_micros() as u64;
-pub(crate) const MILLISECONDS_PER_SECOND: u64 =
-    core::time::Duration::from_secs(1).as_millis() as u64;
 
 /// The kernel's own ticks a second (`HZ`; 1000 on the reference, measured), which jiffies count,
 /// and the length of one (`TICK_NSEC`).
@@ -929,11 +927,9 @@ pub(crate) const TCP_TIMEOUT_INIT: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND
 pub(crate) const TCP_RTO_MIN: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / 5;
 pub(crate) const TCP_RTO_MAX: u64 = 120 * wcontainers_abi::NANOSECONDS_PER_SECOND;
 
-/// Bytes per KiB, the unit /proc's memory sizes count in.
-pub(crate) const KIB: u64 = 1 << 10;
+pub(crate) use wcontainers_abi::KIB;
 
-/// A thread's kernel stack (`THREAD_SIZE`) and the fewest and most threads `set_max_threads`
-/// allows.
+/// A thread's kernel stack (`THREAD_SIZE`) and the fewest threads `set_max_threads` allows.
 pub(crate) const THREAD_SIZE: u64 = 16 * KIB;
 pub(crate) const MIN_THREADS: u64 = 20;
 

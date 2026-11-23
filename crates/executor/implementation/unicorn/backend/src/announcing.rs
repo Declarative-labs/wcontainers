@@ -19,6 +19,10 @@ use fuse_backend_rs::passthrough::PassthroughFs;
 
 pub struct Announcing(pub PassthroughFs);
 
+/// The names of a directory's own entry and its parent's.
+const OWN: &CStr = c".";
+const PARENT: &CStr = c"..";
+
 /// The position after `..`: the passthrough's own positions are shifted past it.
 const AFTER_DOTS: u64 = 2;
 
@@ -63,15 +67,15 @@ impl Announcing {
         };
         if offset == 0 {
             let (own, _) = self.0.getattr(ctx, inode, None)?;
-            if add_entry(directory(own.st_ino, 1, b"."))? == 0 {
+            if add_entry(directory(own.st_ino, 1, OWN.to_bytes()))? == 0 {
                 return Ok(None);
             }
         }
         if offset < AFTER_DOTS {
             // The passthrough's lookup of the root's `..` gives the root.
-            let parent = self.0.lookup(ctx, inode, c"..")?;
+            let parent = self.0.lookup(ctx, inode, PARENT)?;
             self.0.forget(ctx, parent.inode, 1);
-            if add_entry(directory(parent.attr.st_ino, AFTER_DOTS, b".."))? == 0 {
+            if add_entry(directory(parent.attr.st_ino, AFTER_DOTS, PARENT.to_bytes()))? == 0 {
                 return Ok(None);
             }
         }

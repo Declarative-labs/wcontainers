@@ -48,8 +48,6 @@ static COUNTING: Counting = Counting;
 
 const DEFAULT_COUNT: u64 = 700;
 const DEFAULT_ROUNDS: usize = 5;
-/// For showing whole runs in microseconds.
-const NANOSECONDS_PER_MICROSECOND: u64 = std::time::Duration::from_micros(1).as_nanos() as u64;
 
 fn knob<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
@@ -162,8 +160,8 @@ fn wait_costs() {
             let (long, long_allocations) = at(2 * count);
             times.push((long as f64 - short as f64) / count as f64);
             runs.push((
-                short / NANOSECONDS_PER_MICROSECOND,
-                long / NANOSECONDS_PER_MICROSECOND,
+                std::time::Duration::from_nanos(short).as_micros(),
+                std::time::Duration::from_nanos(long).as_micros(),
             ));
             allocations.push((long_allocations as f64 - short_allocations as f64) / count as f64);
         }
