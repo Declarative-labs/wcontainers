@@ -73,3 +73,14 @@ Each is a question with one example in FOR-THE-OWNER.md: how executors and preci
 when two execution states hold the same memory (`leave_same_memory` stands in); a batch form of execution;
 permissions on part of a page; listing an instruction's behaviors; reading operands back out of a state; operand
 independence and one value type in the input domain.
+
+## Data from other tracks (for x86-64 chip sets)
+
+- From the x86-64 native output (docs/status-x86-native-output.md, gap list item 2), 2026-11-23: the x86 track's
+  flags sweep on an AMD EPYC 9R14 against its Xeon 8488C output: of 15,644 distinct cases 9,447 differ, all in
+  rflags alone (OF 4,124, AF 6,842, SF, ZF and PF 170 each, the last only in mul, imul, div and idiv), on shifts and
+  rotates by more than one, mul, imul, div, idiv, tzcnt and lzcnt; and, or, xor, test, the bit tests, bsf, bsr and
+  popcnt agree. Example: `rol al, 2` (c0 c0 02), al 1, rflags 0xad7 before: 0xad6 on the Xeon, 0x2d6 on AMD. Also
+  partial writes: `fstp m80` and `fbstp` across a fault leave none on AMD where the Xeon leaves the first 8 bytes.
+  Raw data and scripts: pyro-parked/wcontainers-scratch/x86-native-output/xn1r10/ (amd-flags-compare.out,
+  amd-flags-sweep.out, amd-c7a.large.out). Native x86-64 on AMD hosts waits on a set per chip for these.
