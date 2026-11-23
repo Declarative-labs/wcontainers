@@ -5,6 +5,82 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 16 (2026-11-22, the fourth run of this batch): KHR-GL33 now runs whole. On the bar's
+measure (KHR-GLES32 counted as run and failed) the floor is passed for the first time, from
+whole runs at two different commits (below); a whole run of every list at one commit is next.
+
+Found this run: KHR-GL33's null function is `glGetGraphicsResetStatus`. glcts's desktop packages
+call it after every case when stopping on a lost device is on (`--deqp-terminate-on-device-lost`,
+default on; glcts gl3cTestPackages.cpp `TestCaseWrapper::iterate`), and load it only from
+`GL_KHR_robustness` or OpenGL 4.5 (glwInitExtGL.inl), which a 3.3 context need not have. Named
+from the crash's call site (`call [rax+0x888]`, entry 273 of glcts's `glw::Functions`, read with
+the LLVM release's llvm-objdump on the desktop). The conformance scripts now pass
+`--deqp-terminate-on-device-lost=disable` to every list (766c8820; Departures). Our driver does
+not report `KHR_robustness` (Mesa ties it to robust buffer access, which waits on G8's routed
+`HelperValue::BufferRange`).
+
+Done this run:
+- 766c8820: the harness change above.
+- a0e07cf2: route B makes tessellation control and evaluation programs in the shaders crate's
+  staged forms (`direct::route_patches`, `direct::hull`, `direct::domain`, `direct::Tessellator`;
+  bridge `WC_FLAT_TESS_CONTROL` and `WC_FLAT_TESS_EVALUATION`): per-control-point inputs and
+  outputs arrayed by control point (the input count given per draw, the output count the
+  program's), patch values (`patch`, their own locations), the tessellation levels as
+  `OuterFactors` and `InnerFactors`, `gl_InvocationID` as `ControlPointId`,
+  `gl_PatchVerticesIn` (the control program's `ControlPointCount`, the evaluation program's a
+  constant), `gl_TessCoord`; domain, spacing, winding (in the domain's own coordinates, as Mesa's
+  DXIL route maps it) and point mode from the evaluation program. A control program's `barrier()`
+  is dropped (the stage helper runs control points one after another); reading its outputs after
+  one is refused by name. NOT YET EXERCISED by any test: the driver has no tessellation stage yet
+  (next, item 2), and the GLSL test harness compiles vertex, fragment and compute programs only.
+- 37d0d53e: 1D textures. The driver makes every 1D texture a 2D texture of one row, but programs
+  sampled them as 1D (a binding mismatch, then device loss: KHR-GL33 texture_swizzle's 130
+  crashes and 55 failures). Now each program's 1D samplers and textures are retyped 2D and their
+  operations made 2D by Mesa's `nir_lower_tex` `lower_1d` (`Nir::textures_1d_as_2d`).
+  1D images are unchanged (not seen yet).
+
+The table, KHR-GL33 WHOLE at 766c8820's scripts and 7aa5a574's driver (desktop, RTX 3080, one GPU
+job, 8 glcts at once, other tracks' jobs queued beside), 19:40:00 to 19:52:35 (Pacific):
+- KHR-GL33: 9,886 cases; Pass 8,867, Fail 146, Crash 351, Skip 522: 8,867 of 9,364 run, 94.69%.
+- Its failures by cause: compressed textures whose first level is not a whole number of blocks
+  (WebGPU refuses them; OpenGL allows any size), packed_pixels rectangle groups 198 crashes, all
+  compressed formats (`Width 7 is not a multiple of Bc5RgUnorm's block width (4)`, then device
+  loss); pixelstoragemodes compressedteximage2d and 3d 80 failures (not yet read; likely the
+  same); 1D textures 185 (fixed in 37d0d53e, check below); packed_depth_stencil 14 crashes,
+  transform_feedback with geometry 5 failures and 2 crashes, shader_integer_mix 3, clip
+  distances read by a fragment program 2, blits the blitter does not make 2, adjacency 1,
+  primitive_restart 1, texture_lod_basic 1, texture_size_promotion 1, frag_coord_conventions 1:
+  not yet read.
+- In the same job, the check of 7aa5a574 (the sampler beside texel buffers): dEQP-GLES31
+  texture.texture_buffer 351 cases, Pass 306, Crash 45 (run 15: 232 failed; the 45 end in device
+  loss, cause not yet read); KHR-GLES31 core.texture_buffer 16, Pass 8, Crash 8 ("not taken: a
+  texel buffer", 16 refusals: not yet read); dEQP-GLES3 vertex_arrays 1,005, all Pass.
+- The bar's measure, from whole runs: the six ES lists of run 15 (87,275 of 88,591, at 38ea343f)
+  with KHR-GL33 above, KHR-GLES32's 1,405 counted as run and failed: 96,142 of 99,360, 96.76%,
+  above the 92.9% floor. Not yet the bar: the lists ran at two commits, KHR-GL33's failures do not
+  all have reasons, NotSupported is not yet checked group by group, and bgfx's and Godot's
+  renderers and the independent check are not done. G9's second part (4.6, KHR-GL46 at 98.6%)
+  has not started: no 4.x context.
+- Results: scratch `results/g9r16/<list>/` (`results.csv`, `failures.csv`; KHR-GL33's logs in
+  `gl33-main/logs`); logs `logs/g9r16-*.log`.
+
+Next, in order:
+1. Compressed textures whose first level is not a whole number of blocks: keep them in the
+   decompressed format (Mesa's util_format unpacking on upload; BC4 and BC5 into 16-bit floats,
+   BC1 to BC3 and BC7 into RGBA8, sRGB kept, BC6H into RGBA16F), a counted slow path with its
+   warning; reading back the compressed bytes of such a texture refused by name until a shadow
+   copy is kept. Then read KHR-GL33's remaining failures above.
+2. The driver's tessellation stage: `Stage::TessControl` and `TessEvaluation`, their create, bind
+   and delete, `set_patch_vertices`, each converted per draw's patch size (`direct::route_patches`,
+   `direct::hull` with the bound evaluation program's `Routed::tessellator`, `direct::domain`),
+   `Stages::tessellated_with` in `run_stages`, the position transform on the evaluation program,
+   the screen's stages and limits. An evaluation program without a control program refused by
+   name until default levels are built.
+3. A whole run of all nine lists at one commit with the table; the NotSupported check; the
+   remaining items of run 15's list below (multisampled 2D arrays, image buffers, layered
+   geometry output, ES 3.2's requirements, image atomics), the comparison with the RTX 3080's own
+   OpenGL, bgfx's and Godot's renderers, and the independent check.
+
 G9 run 15 (2026-11-22, the third run of this batch): desktop OpenGL 3.3 core now starts on our
 driver. KHR-GL33 still passes no case: every case dies at its start in glcts, calling a function
 pointer that is null (below); llvmpipe passes the same case with the same `opengl32.dll`.
@@ -377,6 +453,20 @@ Earlier runs (G8 runs 1 to 15, G9 runs 1 to 11) are told in this file's history:
 `git show 054465ac:docs/status-graphics-nir.md` held runs up to G9 run 8 in full, `git show
 8d7f5472:docs/status-graphics-nir.md` G9 run 9, `git show cb0371e1:docs/status-graphics-nir.md`
 G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
+
+## For the owner
+
+- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (326 uses) and wcontainers-nir (98) stay on
+  the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
+  driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
+  structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
+  Mesa's NIR through the C bridge. No vetted library gives a safe Gallium or NIR binding (bindgen
+  gives the declarations, every call still unsafe). Removing them means moving that glue into C
+  (the same work, no longer checked by Rust) or writing and vetting a safe binding of Gallium's
+  and NIR's structures, a project of its own. The few that are not the boundary (the transmutes of
+  the bridge's enum values, `slice::from_raw_parts` of its arrays) can go with zerocopy-style
+  checked conversions; not done yet. Asked: whether the boundary is the damn good reason the rule
+  allows, or which of the two the owner wants.
 
 ## How to run
 
@@ -857,6 +947,12 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
 
 ## Departures from the plan
 
+- G9 run 16: every conformance list runs with `--deqp-terminate-on-device-lost=disable`, not
+  the mustpass configuration alone. With glcts's default (on), its desktop packages call
+  `glGetGraphicsResetStatus` after every case although they load it only from `GL_KHR_robustness`
+  or OpenGL 4.5, so on a 3.3 context without it every case dies at its first frame. The option
+  also stops glcts asking for a lose-context-on-reset context, which our driver cannot report
+  either way. A lost device still ends its cases as crashes or failures; nothing is waived.
 - G9 run 15: texel buffers take the interface's texture route (a copy per bind), not its storage
   route: the shaders crate's storage route decodes formats only inside its own DXBC and DXIL
   routes, and route B has no entry to it. A copy per bind is a counted slow path; a copy only
