@@ -42,7 +42,10 @@ const WORD: u64 = size_of::<u64>() as u64;
 const LOAD: u64 = 1 << 43;
 const PROLOGUE: u64 = LOAD;
 const HANDLER: u64 = LOAD + PAGE;
-const PIECE: u64 = LOAD + 2 * PAGE;
+/// The stepping handler's page: the restorer `rt_sigreturn` returns through, then the handler.
+const RESTORER: u64 = HANDLER + PAGE;
+const STEP_HANDLER: u64 = RESTORER + ENTRY_STRIDE;
+const PIECE: u64 = RESTORER + PAGE;
 /// The most host code one instruction's piece may take here.
 const PIECE_ROOM: u64 = 2 * PAGE;
 const BLOCK: u64 = PIECE + PIECE_ROOM;
@@ -81,7 +84,8 @@ const FS_BASE_AT: u64 = FLAGS_AT + WORD;
 const SELECTORS_AT: u64 = FS_BASE_AT + WORD;
 const INSTRUCTION_AT: u64 = SELECTORS_AT + wcontainers_x86::SEGMENT_REGISTERS as u64 * WORD;
 const ACTION_AT: u64 = INSTRUCTION_AT + size_of::<[u8; 16]>() as u64;
-const ALTERNATE_AT: u64 = ACTION_AT + size_of::<kernel_sigaction>() as u64;
+const STEP_ACTION_AT: u64 = ACTION_AT + size_of::<kernel_sigaction>() as u64;
+const ALTERNATE_AT: u64 = STEP_ACTION_AT + size_of::<kernel_sigaction>() as u64;
 const RECORD_AT: u64 = (ALTERNATE_AT + size_of::<sigaltstack>() as u64).next_multiple_of(WORD);
 
 /// The bytes of a frame's general registers, which its XSAVE area's pointer follows, and how many there are.
@@ -156,8 +160,9 @@ pub enum Ended {
 const STEPPING_NOT_BUILT: &str =
     "not run natively: TF or AC set, which a host process runs on stepping pieces (not built yet)";
 
-/// Compares a case's native runs with the CPU's, translated without the count and with it (when the process
-/// asked for exact replay): `Ok` with how the first ended when both agree.
+/// Compares a case's native runs with the CPU's: translated without the count, and with it (when the process
+/// asked for exact replay) and stopped by the trap flag after every host instruction; `Ok` with how the first
+/// ended when both agree.
 pub fn compare(
     reference: &mut Reference,
     case: &Case,
@@ -235,14 +240,15 @@ fn five_level_only(stop: Stop) -> bool {
     }
 }
 
-/// Runs a case natively, with the count's adds when `counted`: its outcome and how it ended. With the count, the
-/// guest's count at the stop (the count register less the span's lead) must be the events the instruction
-/// completed.
+/// Runs a case natively: its outcome and how it ended. When `checked`, the piece has the count's adds and the
+/// trap flag stops it after every host instruction: at each stop in the piece the guest's state read through the
+/// position map must be the case's start before the commit point and the final one after it, and its count (the
+/// count register less the span's lead) none or the events the instruction completed.
 pub fn run(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
-    counted: bool,
+    checked: bool,
 ) -> Result<(Outcome, Ended), String> {
     let target = Target {
         host,
@@ -252,7 +258,7 @@ pub fn run(
         case.code.code(),
         CODE,
         LookAhead::None,
-        counted,
+        checked,
         &Way::Process,
         &target,
     )
@@ -260,7 +266,7 @@ pub fn run(
     if code.bytes.len() as u64 > PIECE_ROOM {
         return Err(format!("a piece of {} bytes", code.bytes.len()));
     }
-    let blob = blob(case, &code.bytes);
+    let blob = blob(case, &code.bytes, checked);
     let ran = reference.blob(&BlobRequest {
         bytes: &blob,
         load: LOAD,
@@ -271,27 +277,30 @@ pub fn run(
         stdin: &[],
         runs: 0,
     })?;
-    let (record, rest) = Record::read_from_prefix(&ran.stdout).map_err(|_| {
-        format!(
-            "the blob wrote no record: status {}, stop {:?}, error {}",
+    // A stop's record, the data area and the register area, for every stop; the last ends the run.
+    let chunk = size_of::<Record>() + DATA_BYTES as usize + size_of::<RegisterArea>();
+    if ran.stdout.is_empty() || ran.stdout.len() % chunk != 0 {
+        return Err(format!(
+            "the blob wrote {} bytes: status {}, stop {:?}, error {}",
+            ran.stdout.len(),
             ran.status,
             ran.stop,
             String::from_utf8_lossy(&ran.stderr)
-        )
-    })?;
-    let data_bytes = DATA_BYTES as usize;
-    let (Some(data), Some(area)) = (
-        rest.get(..data_bytes),
-        rest.get(data_bytes..)
-            .and_then(|r| RegisterArea::read_from_prefix(r).ok()),
-    ) else {
-        return Err(format!(
-            "the blob's output ended early: {} bytes",
-            ran.stdout.len()
         ));
-    };
-    let area = area.0;
-    let changed = changed(case, data);
+    }
+    let stops: Vec<(Record, &[u8], RegisterArea)> = ran
+        .stdout
+        .chunks_exact(chunk)
+        .map(|c| {
+            let (record, rest) = Record::read_from_prefix(c).expect("a record");
+            let (data, area) = rest.split_at(DATA_BYTES as usize);
+            let (area, _) = RegisterArea::read_from_prefix(area).expect("a register area");
+            (record, data, area)
+        })
+        .collect();
+    let (record, data, area) = stops.last().expect("a stop");
+    let (record, area) = (*record, *area);
+    let changed = changed_bytes(case, data);
     let host = HostState::new(&record);
     let rip = host.rip;
     let signal = record.signal as u32;
@@ -348,16 +357,52 @@ pub fn run(
         ));
     };
     let state = guest_state(case, &record, &host, &area, span)?;
-    if counted {
-        let count = host.general[usize::from(wcontainers_x86::R10)].wrapping_sub(span.lead.into());
+    if checked {
         let (instruction, _) =
             <X86_64 as Guest>::decode(case.code.code()).ok_or("no instruction to count")?;
         let event = wcontainers_guest_cpu::counted(CODE, &<X86_64 as Guest>::flow(&instruction));
-        let done = u64::from(event && span.side == Side::After);
-        if count != done {
-            return Err(format!(
-                "the count is {count} at the stop ({ended:?}), not {done}"
-            ));
+        let count_at = |host: &HostState, span: &Span| -> Result<(), String> {
+            let count =
+                host.general[usize::from(wcontainers_x86::R10)].wrapping_sub(span.lead.into());
+            let done = u64::from(event && span.side == Side::After);
+            if count == done {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the count is {count} at host {:#x}, not {done}",
+                    host.rip
+                ))
+            }
+        };
+        count_at(&host, span)?;
+        // The trap after the jump into the piece stops at its first instruction at least.
+        if stops.len() < 2 {
+            return Err("the trap flag stopped nowhere in the piece".into());
+        }
+        let mut last = None;
+        for (step, data, area) in &stops[..stops.len() - 1] {
+            let at = HostState::new(step);
+            // A rep string's passes stop at its own instruction, mid-way.
+            if last.replace(at.rip) == Some(at.rip) {
+                continue;
+            }
+            let span = in_piece(at.rip)
+                .ok_or_else(|| format!("a step outside the piece, at {:#x}", at.rip))?;
+            count_at(&at, span)?;
+            let now = guest_state(case, step, &at, area, span)?;
+            let (want, want_changed) = match span.side {
+                Side::Before => (&case.state, &Vec::new()),
+                Side::After => (&state, &changed),
+            };
+            if now != *want || changed_bytes(case, data) != *want_changed {
+                return Err(format!(
+                    "a stop at host {:#x} ({:?}) reads {} and data {:?}",
+                    at.rip - PIECE,
+                    span.side,
+                    differences(want, &now),
+                    changed_bytes(case, data)
+                ));
+            }
         }
     }
     let stop = match ended {
@@ -405,7 +450,7 @@ fn differences(want: &State, got: &State) -> String {
 }
 
 /// The data area's bytes that differ from the case's start.
-fn changed(case: &Case, now: &[u8]) -> Vec<(u32, u8)> {
+fn changed_bytes(case: &Case, now: &[u8]) -> Vec<(u32, u8)> {
     start_data(case)
         .iter()
         .zip(now)
@@ -487,7 +532,8 @@ fn guest_state(
         *to = from.into();
     }
     s[RIP] = rip.into();
-    s[RFLAGS] = u128::from(host.rflags) & !RF;
+    // TF only ever stops the piece here: a host process never sets it for the guest.
+    s[RFLAGS] = u128::from(host.rflags) & !RF & !u128::from(wcontainers_x86::TF);
     s[FS] = record.fs_base.into();
     s[GS] = area.gs_base.into();
     let (legacy, _) = Fxsave::read_from_prefix(&record.xstate).expect("the legacy area");
@@ -535,13 +581,16 @@ fn guest_state(
 
 /// The blob of a case and its piece: the prologue, the handler, the piece, the block, the XSAVE image, the data
 /// area's bytes and the thread area's first two pages.
-fn blob(case: &Case, piece: &[u8]) -> Vec<u8> {
+fn blob(case: &Case, piece: &[u8], stepping: bool) -> Vec<u8> {
     let mut bytes = vec![0u8; (FIRST - LOAD) as usize];
     let mut put = |at: u64, part: &[u8]| {
         let at = (at - LOAD) as usize;
         bytes[at..at + part.len()].copy_from_slice(part);
     };
-    put(PROLOGUE, &prologue(case).expect("the prologue assembles"));
+    put(
+        PROLOGUE,
+        &prologue(case, stepping).expect("the prologue assembles"),
+    );
     let handler = handler().expect("the handler assembles");
     assert!(
         HANDLER + handler.len() as u64 <= RESUME,
@@ -549,13 +598,25 @@ fn blob(case: &Case, piece: &[u8]) -> Vec<u8> {
     );
     put(HANDLER, &handler);
     put(RESUME, &resume().expect("the jump back assembles"));
+    put(RESTORER, &restorer().expect("the restorer assembles"));
+    let step = step_handler().expect("the stepping handler assembles");
+    assert!(
+        STEP_HANDLER + step.len() as u64 <= PIECE,
+        "the stepping handler fits its page"
+    );
+    put(STEP_HANDLER, &step);
     put(PIECE, piece);
     let s = &case.state.0;
     let word = |v: u128| (v as u64).to_le_bytes();
     for (n, &value) in s[..GENERAL_REGISTERS].iter().enumerate() {
         put(BLOCK + GENERAL_AT + n as u64 * WORD, &word(value));
     }
-    put(BLOCK + FLAGS_AT, &word(s[RFLAGS]));
+    let trap = if stepping {
+        u128::from(wcontainers_x86::TF)
+    } else {
+        0
+    };
+    put(BLOCK + FLAGS_AT, &word(s[RFLAGS] | trap));
     put(BLOCK + FS_BASE_AT, &word(s[FS]));
     for n in 0..wcontainers_x86::SEGMENT_REGISTERS {
         put(
@@ -564,33 +625,31 @@ fn blob(case: &Case, piece: &[u8]) -> Vec<u8> {
         );
     }
     put(BLOCK + INSTRUCTION_AT, &case.code.bytes);
-    let action = |field: usize, value: u64| (ACTION_AT + field as u64, value.to_le_bytes());
-    let flags = SA_SIGINFO | SA_ONSTACK | SA_RESTORER;
-    for (at, value) in [
-        action(
-            core::mem::offset_of!(kernel_sigaction, sa_handler_kernel),
-            HANDLER,
-        ),
-        action(
-            core::mem::offset_of!(kernel_sigaction, sa_flags),
-            flags as u64,
-        ),
-        // Never returned to: the handler ends the process.
-        action(
-            core::mem::offset_of!(kernel_sigaction, sa_restorer),
-            HANDLER,
-        ),
-        action(core::mem::offset_of!(kernel_sigaction, sa_mask), 0),
+    let flags = u64::from(SA_SIGINFO | SA_ONSTACK | SA_RESTORER);
+    for (at, handler) in [(ACTION_AT, HANDLER), (STEP_ACTION_AT, STEP_HANDLER)] {
+        for (field, value) in [
+            (
+                core::mem::offset_of!(kernel_sigaction, sa_handler_kernel),
+                handler,
+            ),
+            (core::mem::offset_of!(kernel_sigaction, sa_flags), flags),
+            (
+                core::mem::offset_of!(kernel_sigaction, sa_restorer),
+                RESTORER,
+            ),
+            (core::mem::offset_of!(kernel_sigaction, sa_mask), 0),
+        ] {
+            put(BLOCK + at + field as u64, &value.to_le_bytes());
+        }
+    }
+    for (field, value) in [
+        (core::mem::offset_of!(sigaltstack, ss_sp), ALTERNATE_STACK),
         (
-            ALTERNATE_AT + core::mem::offset_of!(sigaltstack, ss_sp) as u64,
-            ALTERNATE_STACK.to_le_bytes(),
-        ),
-        (
-            ALTERNATE_AT + core::mem::offset_of!(sigaltstack, ss_size) as u64,
-            ALTERNATE_STACK_BYTES.to_le_bytes(),
+            core::mem::offset_of!(sigaltstack, ss_size),
+            ALTERNATE_STACK_BYTES,
         ),
     ] {
-        put(BLOCK + at, &value);
+        put(BLOCK + ALTERNATE_AT + field as u64, &value.to_le_bytes());
     }
     put(XSAVE_IMAGE, &xsave_image(s));
     put(DATA_IMAGE, &start_data(case));
@@ -687,7 +746,7 @@ fn protect(
 }
 
 /// The code that sets the case up and enters the piece.
-fn prologue(case: &Case) -> Result<Vec<u8>, IcedError> {
+fn prologue(case: &Case, stepping: bool) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
     let read_write = libc::PROT_READ | libc::PROT_WRITE;
     // The data area with the case's bytes, its last page read-only.
@@ -738,12 +797,17 @@ fn prologue(case: &Case) -> Result<Vec<u8>, IcedError> {
     map(&mut a, ALTERNATE_STACK, ALTERNATE_STACK_BYTES, read_write)?;
     system_call(&mut a, libc::SYS_sigaltstack, &[BLOCK + ALTERNATE_AT, 0])?;
     for signal in STOP_SIGNALS {
+        let action = if stepping && signal == SIGTRAP {
+            STEP_ACTION_AT
+        } else {
+            ACTION_AT
+        };
         system_call(
             &mut a,
             libc::SYS_rt_sigaction,
             &[
                 signal.into(),
-                BLOCK + ACTION_AT,
+                BLOCK + action,
                 0,
                 size_of::<kernel_sigset_t>() as u64,
             ],
@@ -800,11 +864,46 @@ fn resume() -> Result<Vec<u8>, IcedError> {
     a.assemble(RESUME)
 }
 
-/// The stop handler: writes the record, the data area and the register area to standard output and ends the
-/// process.
+/// The stop handler: writes the stop's record, the data area and the register area to standard output and ends
+/// the process.
 fn handler() -> Result<Vec<u8>, IcedError> {
-    use linux_raw_sys::general::{__sifields__bindgen_ty_5, siginfo__bindgen_ty_1__bindgen_ty_1};
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
+    write_stop(&mut a)?;
+    system_call(&mut a, libc::SYS_exit_group, &[0])?;
+    a.assemble(HANDLER)
+}
+
+/// The trap flag's handler: writes a stop in the piece as the stop handler does, and returns.
+fn step_handler() -> Result<Vec<u8>, IcedError> {
+    let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
+    let context = core::mem::offset_of!(libc::ucontext_t, uc_mcontext);
+    let frame_rip = context
+        + core::mem::offset_of!(libc::mcontext_t, gregs)
+        + libc::REG_RIP as usize * size_of::<libc::greg_t>();
+    let mut back = a.create_label();
+    a.mov(rax, qword_ptr(rdx + frame_rip as i32))?;
+    a.mov(rcx, PIECE)?;
+    a.sub(rax, rcx)?;
+    a.mov(rcx, PIECE_ROOM)?;
+    a.cmp(rax, rcx)?;
+    a.jae(back)?;
+    write_stop(&mut a)?;
+    a.set_label(&mut back)?;
+    a.ret()?;
+    a.assemble(STEP_HANDLER)
+}
+
+/// `rt_sigreturn`, which a handler returns into.
+fn restorer() -> Result<Vec<u8>, IcedError> {
+    let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
+    system_call(&mut a, libc::SYS_rt_sigreturn, &[])?;
+    a.assemble(RESTORER)
+}
+
+/// A handler's writing of its stop: the record from rdi (the signal), rsi (its information) and rdx (the
+/// context), then the record, the data area and the register area to standard output.
+fn write_stop(a: &mut CodeAssembler) -> Result<(), IcedError> {
+    use linux_raw_sys::general::{__sifields__bindgen_ty_5, siginfo__bindgen_ty_1__bindgen_ty_1};
     let field = |offset: usize| (RECORD_AT as usize + offset) as i32;
     let info_code = core::mem::offset_of!(siginfo__bindgen_ty_1__bindgen_ty_1, si_code) as i32;
     let info_address = (core::mem::offset_of!(siginfo__bindgen_ty_1__bindgen_ty_1, _sifields)
@@ -859,8 +958,7 @@ fn handler() -> Result<Vec<u8>, IcedError> {
         (DATA, DATA_BYTES),
         (AREA, size_of::<RegisterArea>() as u64),
     ] {
-        system_call(&mut a, libc::SYS_write, &[STANDARD_OUTPUT, from, bytes])?;
+        system_call(a, libc::SYS_write, &[STANDARD_OUTPUT, from, bytes])?;
     }
-    system_call(&mut a, libc::SYS_exit_group, &[0])?;
-    a.assemble(HANDLER)
+    Ok(())
 }
