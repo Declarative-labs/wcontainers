@@ -269,6 +269,69 @@ fn a_stub_making_a_host_call_outside_its_filter_is_killed() {
     }
 }
 
+fn map_shared(address: usize, permissions: ProtFlags) -> Command {
+    Command::MapShared {
+        address,
+        length: WINDOW,
+        permissions,
+        offset: 0,
+    }
+}
+
+/// A block's memfd is received without waiting, mapped as guest memory only, and closed.
+#[test]
+fn a_shared_block_is_mapped_only_once_sent_and_only_as_guest_memory() {
+    let zygote = zygote();
+    let block =
+        rustix::fs::memfd_create("a test's block", rustix::fs::MemfdFlags::CLOEXEC).expect("memfd");
+    rustix::fs::ftruncate(&block, WINDOW as u64).expect("size");
+    rustix::io::pwrite(&block, &5u64.to_ne_bytes(), 8).expect("write the block");
+    let stub = zygote.fork_stub().expect("fork");
+    assert_eq!(
+        stub.turn(0, &[map_shared(1 << 40, READ_WRITE)]),
+        Ok(TurnEnd::CommandRefused {
+            index: 0,
+            errno: Errno::AGAIN
+        }),
+        "a block not sent is refused, not waited for"
+    );
+    stub.send_block(rustix::fd::AsFd::as_fd(&block))
+        .expect("send");
+    assert_eq!(done(&zygote, &stub, &[map_shared(1 << 40, READ_WRITE)]), 1);
+    assert_eq!(
+        stub.load(0, (1 << 40) + 8),
+        Ok(TurnEnd::Loaded { value: 5 })
+    );
+    assert_eq!(end_and_reap(&zygote, &stub), Ended::Exited(0));
+    let executable = ProtFlags::READ | ProtFlags::EXEC;
+    for (what, command) in [
+        ("a block mapped executable", map_shared(1 << 40, executable)),
+        (
+            "a block over the signal stacks",
+            map_shared(SIGNAL_STACKS, READ_WRITE),
+        ),
+        (
+            "a block below the guest's lowest address",
+            map_shared(0, READ_WRITE),
+        ),
+    ] {
+        let stub = zygote.fork_stub().expect("fork");
+        assert_eq!(
+            done(&zygote, &stub, &[]),
+            0,
+            "{what}: the stub did not start"
+        );
+        stub.send_block(rustix::fd::AsFd::as_fd(&block))
+            .expect("send");
+        assert_eq!(stub.turn(0, &[command]), Ok(TurnEnd::StubEnded), "{what}");
+        assert_eq!(
+            zygote.reap(stub.process()),
+            Ok(Ended::Killed(Signal::SYS.as_raw().unsigned_abs())),
+            "{what}"
+        );
+    }
+}
+
 #[test]
 fn a_stub_killed_from_outside_is_seen_ended_within_its_wait() {
     let zygote = zygote();

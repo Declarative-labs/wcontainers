@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use wcontainers_abi::{Access, CpuError, MemoryId, Permissions, RegisterBlock, ThreadId};
+use wcontainers_abi::{Access, Cpu, CpuError, MemoryId, Permissions, RegisterBlock, ThreadId};
 use wcontainers_executor_host_process::executor::{
     FaultOwner, HostProcessExecutor, Touch, Touched,
 };
@@ -372,6 +372,120 @@ fn a_forged_fault_report_does_only_what_a_real_access_would() {
     for process in [c, b, a] {
         end(&mut cpu, process);
     }
+}
+
+/// A block mapped by two processes and a fork child shows each one's writes to the others; one that unmaps it keeps a
+/// private copy, and one that zeroes its range has private zeros there.
+#[test]
+fn a_shared_block_shows_every_mapper_s_writes_until_it_is_unmapped() {
+    let mut cpu = executor();
+    let block = cpu.shared_new(2 * PAGE).expect("block");
+    let a = process(&mut cpu, 2);
+    let b = process(&mut cpu, 20);
+    cpu.shared_map(block, 0, a.0, BASE, 2 * PAGE)
+        .expect("map in A");
+    cpu.shared_map(block, 0, b.0, page(16), 2 * PAGE)
+        .expect("map in B");
+    assert_eq!(store(&mut cpu, a.1, BASE, 1), Touched::Stored);
+    assert_eq!(load(&mut cpu, b.1, page(16)), Touched::Loaded(1));
+    assert_eq!(store(&mut cpu, b.1, page(17) + 8, 2), Touched::Stored);
+    assert_eq!(load(&mut cpu, a.1, page(1) + 8), Touched::Loaded(2));
+    let mut seen = [0; 8];
+    cpu.shared_read(block, PAGE + 8, &mut seen)
+        .expect("read the block");
+    assert_eq!(u64::from_le_bytes(seen), 2);
+    cpu.shared_write(block, 16, &3u64.to_le_bytes())
+        .expect("write the block");
+    assert_eq!(load(&mut cpu, a.1, BASE + 16), Touched::Loaded(3));
+    assert_eq!(word(&mut cpu, b.0, page(16) + 16), 3);
+    cpu.write(b.0, page(16) + 24, &4u64.to_le_bytes())
+        .expect("the kernel writes B's view of the block");
+    assert_eq!(load(&mut cpu, a.1, BASE + 24), Touched::Loaded(4));
+    // A fork child maps the block too, and writes to it are no copy.
+    let c = fork(&mut cpu, a.0);
+    assert_eq!(load(&mut cpu, c.1, BASE), Touched::Loaded(1));
+    assert_eq!(store(&mut cpu, c.1, BASE + 32, 5), Touched::Stored);
+    assert_eq!(load(&mut cpu, b.1, page(16) + 32), Touched::Loaded(5));
+    assert_eq!(store(&mut cpu, a.1, BASE + 40, 6), Touched::Stored);
+    assert_eq!(load(&mut cpu, c.1, BASE + 40), Touched::Loaded(6));
+    assert_eq!(cpu.counters().pages_copied, 0);
+    // Unmapped from A: A keeps what it held, and no longer sees the block.
+    cpu.shared_unmap(a.0, BASE, 2 * PAGE).expect("unmap from A");
+    assert_eq!(load(&mut cpu, a.1, BASE + 32), Touched::Loaded(5));
+    assert_eq!(store(&mut cpu, b.1, page(16), 7), Touched::Stored);
+    assert_eq!(load(&mut cpu, a.1, BASE), Touched::Loaded(1));
+    assert_eq!(store(&mut cpu, a.1, page(1), 8), Touched::Stored);
+    assert_eq!(load(&mut cpu, b.1, page(17)), Touched::Loaded(0));
+    assert_eq!(load(&mut cpu, c.1, BASE), Touched::Loaded(7));
+    // Zeroed in C: private zeros there from now on.
+    cpu.zero(c.0, BASE, PAGE).expect("zero in C");
+    assert_eq!(load(&mut cpu, c.1, BASE), Touched::Loaded(0));
+    assert_eq!(store(&mut cpu, b.1, page(16), 9), Touched::Stored);
+    assert_eq!(load(&mut cpu, c.1, BASE), Touched::Loaded(0));
+    assert_eq!(
+        load(&mut cpu, c.1, page(1) + 8),
+        Touched::Loaded(2),
+        "the rest is still shared"
+    );
+    cpu.set_permissions(b.0, page(16), PAGE, Permissions::READ)
+        .expect("permissions");
+    assert_eq!(
+        store(&mut cpu, b.1, page(16), 1),
+        fault(page(16), Access::Write)
+    );
+    for process in [c, b, a] {
+        end(&mut cpu, process);
+    }
+    cpu.shared_drop(block);
+}
+
+fn descriptors(process: rustix::process::Pid) -> usize {
+    std::fs::read_dir(format!("/proc/{}/fd", process.as_raw_nonzero()))
+        .expect("the stub's descriptors")
+        .count()
+}
+
+/// The embedder's descriptors of shared blocks: this test's, and those of any other test running beside it.
+fn blocks_held() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("our descriptors")
+        .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+        .filter(|target| {
+            target
+                .to_string_lossy()
+                .contains("wcontainers shared block")
+        })
+        .count()
+}
+
+/// Each mapping's memfd is closed in the stub once mapped, and in the embedder once sent.
+#[test]
+fn a_block_mapped_ten_thousand_times_leaves_no_descriptor_behind() {
+    let mut cpu = executor();
+    let maps = knob("WCHP_MAPS", 10_000);
+    let block = cpu.shared_new(PAGE).expect("block");
+    cpu.shared_write(block, 0, &11u64.to_le_bytes())
+        .expect("write the block");
+    let (memory, thread) = process(&mut cpu, 2 * maps);
+    for index in 0..maps {
+        cpu.shared_map(block, 0, memory, page(2 * index), PAGE)
+            .expect("map");
+        if index % 1000 == 999 {
+            assert_eq!(load(&mut cpu, thread, page(2 * index)), Touched::Loaded(11));
+        }
+    }
+    assert_eq!(load(&mut cpu, thread, page(0)), Touched::Loaded(11));
+    assert_eq!(load(&mut cpu, thread, page(1)), Touched::Loaded(0));
+    assert_eq!(
+        descriptors(cpu.stub_process(memory)),
+        2,
+        "its socket and its memory"
+    );
+    // Other tests beside this one hold a few blocks; a copy kept per map would be thousands.
+    let held = blocks_held();
+    assert!(held < 16, "{held} block descriptors after {maps} maps");
+    end(&mut cpu, (memory, thread));
+    cpu.shared_drop(block);
 }
 
 /// More queued changes than one control page holds are applied in rounds before the access.

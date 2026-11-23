@@ -116,6 +116,18 @@ pub enum Command {
         /// The bytes unmapped.
         length: usize,
     },
+    /// Maps the shared block whose memfd the stub receives first on its socket, shared and fixed at `address`, from
+    /// the block's `offset`, then closes it.
+    MapShared {
+        /// The first byte.
+        address: usize,
+        /// The bytes mapped.
+        length: usize,
+        /// Their permissions.
+        permissions: ProtFlags,
+        /// The block's offset.
+        offset: usize,
+    },
     /// Makes a host thread for a free index, which then waits for turns after `last_turn` (from
     /// [`crate::stub::Stub::new_thread`]).
     NewThread {
@@ -133,6 +145,7 @@ pub(crate) enum CommandKind {
     Protect = 2,
     Unmap = 3,
     NewThread = 4,
+    MapShared = 5,
 }
 
 impl Command {
@@ -149,6 +162,17 @@ impl Command {
                 offset,
             } => [
                 with(CommandKind::Map, permissions),
+                address as u64,
+                length as u64,
+                offset as u64,
+            ],
+            Self::MapShared {
+                address,
+                length,
+                permissions,
+                offset,
+            } => [
+                with(CommandKind::MapShared, permissions),
                 address as u64,
                 length as u64,
                 offset as u64,

@@ -13,7 +13,7 @@ use libc::{
 use linux_raw_sys::general as linux;
 
 use crate::layout::{GUEST_START, OUR_AREA};
-use crate::stub::{MEMORY_FD, THREAD_FLAGS};
+use crate::stub::{BLOCK_FD, MEMORY_FD, SOCKET_FD, THREAD_FLAGS};
 
 #[cfg(target_arch = "aarch64")]
 const ARCHITECTURE: u32 = linux_raw_sys::ptrace::AUDIT_ARCH_AARCH64;
@@ -203,10 +203,11 @@ impl Program {
     }
 }
 
-/// The stub's filter: `futex`, `exit`, `exit_group`, `rt_sigprocmask` and `sigaltstack` as they come; `mmap` of the
-/// memory's memfd only, shared and fixed, inside the guest area, never executable, at the offset equal to the address;
-/// `mprotect` inside the guest area, never executable; `munmap` inside the guest area; `clone` of a thread of the stub
-/// only. Anything else kills the stub.
+/// The stub's filter: `futex`, `exit`, `exit_group`, `rt_sigprocmask` and `sigaltstack` as they come; `mmap` shared and
+/// fixed, inside the guest area, never executable, of the memory's memfd at the offset equal to the address or of a
+/// shared block's received memfd; `mprotect` inside the guest area, never executable; `munmap` inside the guest area;
+/// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block. Anything
+/// else kills the stub.
 pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mut program = Program {
         ops: Vec::new(),
@@ -218,6 +219,8 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     let mprotect = program.label();
     let munmap = program.label();
     let clone = program.label();
+    let recvmsg = program.label();
+    let close = program.label();
     program.load(offset_of!(seccomp_data, arch));
     program.jump(
         BPF_JEQ | BPF_K,
@@ -236,6 +239,8 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
         (linux::__NR_mprotect, mprotect),
         (linux::__NR_munmap, munmap),
         (linux::__NR_clone, clone),
+        (linux::__NR_recvmsg, recvmsg),
+        (linux::__NR_close, close),
     ] {
         program.jump(BPF_JEQ | BPF_K, number, Target::Label(to), Target::Next);
     }
@@ -245,7 +250,14 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     program.guest_range(0, 1, kill);
     program.not_executable(2, kill);
     program.argument_is(3, u64::from(linux::MAP_SHARED | linux::MAP_FIXED), kill);
+    // A block's memfd at any offset, the block being the embedder's to choose; the memory's at the address.
     program.load_low(4);
+    program.jump(
+        BPF_JEQ | BPF_K,
+        BLOCK_FD,
+        Target::Label(allow),
+        Target::Next,
+    );
     program.jump(
         BPF_JEQ | BPF_K,
         MEMORY_FD,
@@ -271,6 +283,15 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
 
     program.place(clone);
     program.argument_is(0, u64::from(THREAD_FLAGS), kill);
+    program.always(allow);
+
+    program.place(recvmsg);
+    program.argument_is(0, u64::from(SOCKET_FD), kill);
+    program.argument_is(2, u64::from(linux_raw_sys::net::MSG_DONTWAIT), kill);
+    program.always(allow);
+
+    program.place(close);
+    program.argument_is(0, u64::from(BLOCK_FD), kill);
     program.always(allow);
 
     // Last, since a filter's jumps go only forward.

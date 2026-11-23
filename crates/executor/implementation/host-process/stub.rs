@@ -1,5 +1,6 @@
 //! A stub: one guest memory as a host process forked by the zygote, each of its threads driven through its pages.
 
+use std::io::IoSlice;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -7,6 +8,7 @@ use std::time::Duration;
 use linux_raw_sys::general as linux;
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
 use rustix::process::Pid;
 use rustix::thread::futex;
 
@@ -19,6 +21,9 @@ use crate::windows::FileKey;
 pub const SOCKET_FD: u32 = 8;
 /// The memory memfd's fixed descriptor number.
 pub const MEMORY_FD: u32 = 9;
+/// The number a shared block's memfd gets in the stub while it is mapped: the lowest, as the stub holds only the two
+/// above.
+pub const BLOCK_FD: u32 = 0;
 
 /// How long a runner waits for a thread before it looks whether the stub has ended.
 const LOOK_FOR_END: Duration = Duration::from_millis(100);
@@ -276,6 +281,23 @@ impl Stub {
             .store(value, Ordering::Relaxed);
         let turn = self.give(thread, commands, resume)?;
         self.wait(thread, turn)
+    }
+
+    /// Sends a shared block's memfd for the next [`Command::MapShared`] a thread of the stub applies.
+    pub fn send_block(&self, block: BorrowedFd<'_>) -> Result<(), Errno> {
+        let blocks = [block];
+        let mut space = [core::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut ancillary = SendAncillaryBuffer::new(&mut space);
+        if !ancillary.push(SendAncillaryMessage::ScmRights(&blocks)) {
+            return Err(Errno::NOBUFS);
+        }
+        let sent = rustix::net::sendmsg(
+            &self.socket,
+            &[IoSlice::new(&[0])],
+            &mut ancillary,
+            SendFlags::DONTWAIT,
+        )?;
+        if sent == 1 { Ok(()) } else { Err(Errno::PROTO) }
     }
 
     /// Reads a thread's register block, word by word, as the stub left it (untrusted).

@@ -89,6 +89,36 @@ mod frame {
     const _: () = assert!(offset_of!(libc::sock_fprog, len) == 0);
 }
 
+/// What a stub's thread puts below its stack pointer to receive a shared block's memfd: offsets from the new one.
+mod block_frame {
+    use core::mem::{offset_of, size_of};
+
+    /// The `msghdr`.
+    pub const HEADER: usize = 0;
+    pub const HEADER_IOVEC: usize = HEADER + offset_of!(libc::msghdr, msg_iov);
+    pub const HEADER_IOVEC_COUNT: usize = HEADER + offset_of!(libc::msghdr, msg_iovlen);
+    pub const HEADER_CONTROL: usize = HEADER + offset_of!(libc::msghdr, msg_control);
+    pub const HEADER_CONTROL_LENGTH: usize = HEADER + offset_of!(libc::msghdr, msg_controllen);
+    /// The one `iovec`, over one byte.
+    pub const IOVEC: usize = HEADER + size_of::<libc::msghdr>();
+    pub const IOVEC_LENGTH: usize = IOVEC + offset_of!(libc::iovec, iov_len);
+    pub const BYTE: usize = IOVEC + size_of::<libc::iovec>();
+    /// One control message of one descriptor.
+    pub const CONTROL: usize = BYTE + size_of::<u64>();
+    pub const CONTROL_LEVEL: usize = CONTROL + offset_of!(libc::cmsghdr, cmsg_level);
+    pub const CONTROL_TYPE: usize = CONTROL + offset_of!(libc::cmsghdr, cmsg_type);
+    pub const CONTROL_DESCRIPTOR: usize = CONTROL + size_of::<libc::cmsghdr>();
+    /// The control message's length with its descriptor, and the room it takes.
+    pub const CONTROL_FULL: usize = size_of::<libc::cmsghdr>() + size_of::<i32>();
+    pub const CONTROL_SIZE: usize = CONTROL_FULL.next_multiple_of(size_of::<usize>());
+    /// The whole frame, keeping the stack pointer's alignment.
+    pub const SIZE: usize = (CONTROL + CONTROL_SIZE).next_multiple_of(16);
+
+    // The assembly zeroes the header as seven words and reads the level and type as one pair.
+    const _: () = assert!(size_of::<libc::msghdr>() == 7 * 8);
+    const _: () = assert!(CONTROL_TYPE == CONTROL_LEVEL + 4);
+}
+
 /// The descriptors a fork request carries, in order.
 #[repr(usize)]
 #[derive(Clone, Copy)]
