@@ -263,6 +263,8 @@ pub struct PipelineKey {
     /// `None` for lists.
     strip_index: Option<wgpu::IndexFormat>,
     layouts: [BindingLayoutKey; MAX_BINDING_SETS],
+    /// Front faces wind the other way: a strip's odd triangle drawn alone (`packed::Piece`).
+    flipped: bool,
 }
 
 type SetKey = Vec<(u32, u8, u64, u64, u64)>;
@@ -914,7 +916,11 @@ impl WebGpu {
                 primitive: wgpu::PrimitiveState {
                     topology: key.topology,
                     strip_index_format: key.strip_index,
-                    front_face: convert::front_face(raster.front),
+                    front_face: match (convert::front_face(raster.front), key.flipped) {
+                        (wgpu::FrontFace::Ccw, true) => wgpu::FrontFace::Cw,
+                        (wgpu::FrontFace::Cw, true) => wgpu::FrontFace::Ccw,
+                        (face, false) => face,
+                    },
                     cull_mode: convert::cull(raster.cull),
                     unclipped_depth: !raster.depth_clip,
                     polygon_mode: convert::fill(raster.fill),
@@ -1172,7 +1178,8 @@ impl WebGpu {
         pass.packed_unrounded = false;
         between(self);
         let raw = pass.occlusion_set.as_ref().map(|q| q.0.page(pass.page));
-        let encoder = self.encoder.as_mut().expect("a pass implies an encoder");
+        // `between` may have submitted, so the encoder is made again where it did.
+        let encoder = self.encoder();
         pass.rp = open(encoder, &pass.colors, &pass.depth, raw.as_ref(), true);
         if let Some(slot) = carried {
             pass.rp.begin_occlusion_query(slot);
@@ -1212,6 +1219,7 @@ impl WebGpu {
             topology,
             strip_index: None,
             layouts: desc.program.0.own_keys(desc.layouts),
+            flipped: false,
         };
         let strips: &[_] = match topology.is_strip() {
             true => &[
@@ -1245,23 +1253,147 @@ impl WebGpu {
         let Some(shadows) = self.vertex_shadows(call) else {
             return;
         };
-        // A blend reads the target as its format holds it, so what earlier draws left in a packed
-        // target is rounded to its bits first.
-        if self
+        // A blend reads the target as its format holds it, so what earlier draws and primitives
+        // left in a packed target is rounded to its bits first: a draw of several primitives is
+        // drawn one primitive at a time.
+        let reads = self
             .pass
             .as_ref()
-            .is_some_and(|p| p.packed_unrounded && reads_target(&call.blend.0.desc, p.packed_slots))
-        {
-            self.split_pass(SlowPath::PackedTargetReadByBlend, |_| {});
-        }
-        let Some(mut pass) = self.pass.take() else {
-            return;
+            .is_some_and(|p| reads_target(&call.blend.0.desc, p.packed_slots));
+        let pieces = match reads {
+            true => match self.primitives(call) {
+                Some(p) => p,
+                None => return,
+            },
+            false => None,
         };
-        match self.draw_in(&mut pass, call, &shadows) {
-            Ok(()) => pass.packed_unrounded |= pass.packed_slots != 0,
-            Err(why) => self.fail(why),
+        let whole = [None];
+        let parts: Vec<_> = match &pieces {
+            Some((p, base)) => p.iter().map(|p| Some((p, *base))).collect(),
+            None => whole.to_vec(),
+        };
+        for piece in parts {
+            if reads && self.pass.as_ref().is_some_and(|p| p.packed_unrounded) {
+                self.split_pass(SlowPath::PackedTargetReadByBlend, |_| {});
+            }
+            let Some(mut pass) = self.pass.take() else {
+                return;
+            };
+            let drawn = self.draw_in(&mut pass, call, &shadows, piece);
+            match drawn {
+                Ok(()) => pass.packed_unrounded |= pass.packed_slots != 0,
+                Err(why) => self.fail(why),
+            }
+            self.pass = Some(pass);
+            if drawn.is_err() {
+                return;
+            }
         }
-        self.pass = Some(pass);
+    }
+
+    /// The primitives of a draw of more than one, with the base vertex of an indexed draw; None
+    /// inside when it has at most one. Indirect arguments, and a strip's indices where it restarts,
+    /// are read back first, which ends the pass part and waits. None when the read failed.
+    fn primitives(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+    ) -> Option<Option<(Vec<crate::packed::Piece>, Option<i32>)>> {
+        let topology = convert::topology(call.topology)?;
+        let read = |w: &mut WebGpu, buffer: &Buffer, offset: u64, size: u64| {
+            let mut bytes = vec![0; size as usize];
+            let mut read = Ok(());
+            w.split_pass(SlowPath::PackedTargetReadByBlend, |w| {
+                read = wcontainers_gpu::Backend::read_back_now(
+                    w,
+                    &wcontainers_gpu::ReadSource::Buffer {
+                        buffer,
+                        offset,
+                        size,
+                    },
+                    &mut bytes,
+                );
+            });
+            read.ok().map(|()| bytes)
+        };
+        let words = |bytes: Vec<u8>| -> Vec<u32> {
+            bytes
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect()
+        };
+        let (first, count, base, instances) = match &call.range {
+            DrawRange::Vertices {
+                first,
+                count,
+                first_instance,
+                instances,
+            } => (
+                *first,
+                *count,
+                None,
+                *first_instance..first_instance + instances,
+            ),
+            DrawRange::Indexed {
+                first,
+                count,
+                base_vertex,
+                first_instance,
+                instances,
+            } => (
+                *first,
+                *count,
+                Some(*base_vertex),
+                *first_instance..first_instance + instances,
+            ),
+            // Arguments in WebGPU's order.
+            DrawRange::Indirect { args, offset } => {
+                let &[count, instances, first, first_instance] =
+                    &words(read(self, args, *offset, ARGS_BYTES)?)[..]
+                else {
+                    return None;
+                };
+                let instances = first_instance..first_instance.saturating_add(instances);
+                (first, count, None, instances)
+            }
+            DrawRange::IndexedIndirect { args, offset } => {
+                let &[count, instances, first, base_vertex, first_instance] =
+                    &words(read(self, args, *offset, INDEXED_ARGS_BYTES)?)[..]
+                else {
+                    return None;
+                };
+                let instances = first_instance..first_instance.saturating_add(instances);
+                (first, count, Some(base_vertex as i32), instances)
+            }
+        };
+        let strip = matches!(
+            topology,
+            wgpu::PrimitiveTopology::LineStrip | wgpu::PrimitiveTopology::TriangleStrip
+        );
+        let mut cuts = Vec::new();
+        if let (true, true, Some(index)) = (strip, call.restart, &call.index)
+            && count > 0
+        {
+            let size = index.format.size() as u64;
+            let start = index.offset + u64::from(first) * size;
+            let end = (start + u64::from(count) * size).min(index.buffer.0.desc.size);
+            let bytes = match end > start {
+                true => read(self, index.buffer, start, end - start)?,
+                false => Vec::new(),
+            };
+            cuts = match index.format {
+                wcontainers_gpu::IndexFormat::U16 => bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c) == u16::MAX)
+                    .collect(),
+                _ => words(bytes).into_iter().map(|i| i == u32::MAX).collect(),
+            };
+        }
+        let pieces = crate::packed::pieces(topology, first, count, instances, &cuts);
+        Some((pieces.len() > 1).then_some((pieces, base)))
     }
 
     fn draw_in(
@@ -1269,6 +1401,7 @@ impl WebGpu {
         pass: &mut Pass,
         call: &DrawCall<'_, Self>,
         shadows: &[crate::vertex::Bound],
+        piece: Option<(&crate::packed::Piece, Option<i32>)>,
     ) -> Result<(), &'static str> {
         let topology =
             convert::topology(call.topology).ok_or("fans and loops go through draw_fan_or_loop")?;
@@ -1307,6 +1440,7 @@ impl WebGpu {
             topology,
             strip_index: strip.then(|| index_format.unwrap_or(wgpu::IndexFormat::Uint32)),
             layouts,
+            flipped: piece.is_some_and(|(p, _)| p.odd),
         };
         let rp = &mut pass.rp;
         let last = &mut pass.last;
@@ -1468,6 +1602,14 @@ impl WebGpu {
         let n = call.immediates.len().min(layout.immediates);
         if n > 0 {
             rp.set_immediates(0, &words(&call.immediates[..n]));
+        }
+        if let Some((p, base)) = piece {
+            let instance = p.instance..p.instance + 1;
+            match base {
+                Some(base) => rp.draw_indexed(p.range.clone(), base, instance),
+                None => rp.draw(p.range.clone(), instance),
+            }
+            return Ok(());
         }
         match &call.range {
             DrawRange::Vertices {
@@ -1642,6 +1784,10 @@ impl WebGpu {
         }
     }
 }
+
+/// The bytes of an indirect draw's arguments, and of an indexed one's.
+const ARGS_BYTES: u64 = size_of::<wgpu::util::DrawIndirectArgs>() as u64;
+const INDEXED_ARGS_BYTES: u64 = size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
 
 /// Whether `blend` reads what a target holds in any of the colour slots of `slots`.
 fn reads_target(blend: &wcontainers_gpu::BlendDesc, slots: u32) -> bool {

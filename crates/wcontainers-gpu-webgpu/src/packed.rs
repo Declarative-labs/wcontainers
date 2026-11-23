@@ -697,6 +697,72 @@ fn moved<'a>(region: &TextureRegion<'a, WebGpu>, x: u32) -> TextureRegion<'a, We
 }
 
 /// The whole of a texture's first level and layer, as a copy names it.
+/// One primitive of a draw, drawn alone where a blend reads a packed target, so that each
+/// primitive's blend reads what the one before it left rounded to the format's bits
+/// (`PackedTargetReadByBlend`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Piece {
+    /// Its vertices, or its indices in an indexed draw.
+    pub range: std::ops::Range<u32>,
+    pub instance: u32,
+    /// A strip's odd triangle, whose facing the strip reverses and a draw of its own does not.
+    pub odd: bool,
+}
+
+/// The vertices each primitive of `topology` takes.
+fn vertices_per_primitive(topology: wgpu::PrimitiveTopology) -> u32 {
+    use wgpu::PrimitiveTopology as T;
+    /// A triangle's corners.
+    const CORNERS: u32 = 3;
+    match topology {
+        T::PointList => 1,
+        T::LineList | T::LineStrip => 2,
+        T::TriangleList | T::TriangleStrip => CORNERS,
+    }
+}
+
+/// The primitives of `count` vertices or indices from `first`, instance by instance, in the order
+/// they are rasterised. `cuts` marks a strip's restart indices, by position from `first`.
+pub(crate) fn pieces(
+    topology: wgpu::PrimitiveTopology,
+    first: u32,
+    count: u32,
+    instances: std::ops::Range<u32>,
+    cuts: &[bool],
+) -> Vec<Piece> {
+    let n = vertices_per_primitive(topology);
+    let strip = topology.is_strip();
+    let mut starts = Vec::new();
+    if strip {
+        let mut run = 0;
+        for p in 0..count {
+            if cuts.get(p as usize) == Some(&true) {
+                run = 0;
+                continue;
+            }
+            run += 1;
+            if run >= n {
+                starts.push((
+                    first + p + 1 - n,
+                    topology == wgpu::PrimitiveTopology::TriangleStrip
+                        && !(run - n).is_multiple_of(2),
+                ));
+            }
+        }
+    } else {
+        starts.extend((0..count / n).map(|i| (first + i * n, false)));
+    }
+    instances
+        .flat_map(|instance| {
+            starts.iter().map(move |&(start, odd)| Piece {
+                range: start..start + n,
+                instance,
+                odd,
+            })
+        })
+        .collect()
+}
+
 fn at_origin(texture: &Texture) -> TextureRegion<'_, WebGpu> {
     TextureRegion {
         texture,
@@ -710,6 +776,41 @@ fn at_origin(texture: &Texture) -> TextureRegion<'_, WebGpu> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lists split into whole primitives, strips into every primitive they make, restarting at a
+    /// cut, with odd triangles counted from the strip's start; instances follow one another.
+    #[test]
+    fn draws_split_into_their_primitives_in_order() {
+        use wgpu::PrimitiveTopology as T;
+        let ranges = |p: Vec<Piece>| -> Vec<(u32, u32, u32, bool)> {
+            p.into_iter()
+                .map(|p| (p.range.start, p.range.end, p.instance, p.odd))
+                .collect()
+        };
+        assert_eq!(
+            ranges(pieces(T::TriangleList, 2, 7, 0..2, &[])),
+            [
+                (2, 5, 0, false),
+                (5, 8, 0, false),
+                (2, 5, 1, false),
+                (5, 8, 1, false)
+            ]
+        );
+        assert_eq!(
+            ranges(pieces(T::TriangleStrip, 0, 5, 3..4, &[])),
+            [(0, 3, 3, false), (1, 4, 3, true), (2, 5, 3, false)]
+        );
+        let cut = [false, false, false, true, false, false, false, false];
+        assert_eq!(
+            ranges(pieces(T::TriangleStrip, 10, 8, 0..1, &cut)),
+            [(10, 13, 0, false), (14, 17, 0, false), (15, 18, 0, true)]
+        );
+        assert_eq!(
+            ranges(pieces(T::LineStrip, 0, 3, 0..1, &[])),
+            [(0, 2, 0, false), (1, 3, 0, false)]
+        );
+        assert_eq!(ranges(pieces(T::PointList, 4, 2, 0..1, &[])).len(), 2);
+    }
 
     /// Every value of every converted format comes back from its widened form exactly.
     #[test]
