@@ -54,6 +54,7 @@ pub mod x87;
 
 pub mod area;
 pub mod claims;
+pub mod condition;
 pub mod cpuid;
 pub mod encoding;
 #[cfg(feature = "translate")]
@@ -65,6 +66,7 @@ mod vex;
 #[cfg(feature = "translate")]
 mod wide;
 
+pub use condition::{Condition, Test};
 pub use offer::{FULL_SPEED, Offer, Refused, V3};
 
 #[cfg(feature = "translate")]
@@ -75,7 +77,7 @@ pub use descriptors::{
     USER32_CS,
 };
 #[cfg(feature = "translate")]
-pub use flags::{Condition, Flag, Flags, Shape, Test};
+pub use flags::{Flag, Flags, Shape};
 #[cfg(feature = "translate")]
 pub use float::reciprocal;
 #[cfg(feature = "translate")]
