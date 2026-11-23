@@ -1664,6 +1664,85 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
     assert!(failures.is_empty(), "differ: {failures:?}");
 }
 
+/// A position declared at the centroid in a program run once a pixel (`ps_position_centroid`), drawn
+/// through the WebGPU back end at one and four samples against real Direct3D 11, fxc's build and
+/// dxc's: at the edges of a primitive, where some samples are uncovered, the position is Direct3D's
+/// centroid, and its steep waves show a place a sixteenth of a pixel off.
+#[test]
+fn centroid_positions_match_direct3d() {
+    let mut gpu = webgpu();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let grid = grid();
+    let builds = [
+        (
+            "dxbc",
+            [
+                bytecode("vs_evaluate.dxbc"),
+                bytecode("ps_position_centroid.dxbc"),
+            ],
+        ),
+        (
+            "dxil",
+            [
+                bytecode("vs_evaluate.dxil"),
+                bytecode("ps_position_centroid.dxil"),
+            ],
+        ),
+    ];
+    let mut results = Vec::new();
+    for samples in [1u8, LAYER_SAMPLES as u8] {
+        let (reference, _) = direct3d_11(
+            &d3d,
+            "vs_evaluate",
+            "ps_position_centroid",
+            Format::Rgba8Unorm,
+            [1.0, 0.75, 0.5, 1.5],
+            true,
+            &Reference {
+                samples: samples.into(),
+                ..Default::default()
+            },
+        );
+        for (route, code) in &builds {
+            let mut ours_draw = grid_draw(code, *route == "dxil", &grid);
+            ours_draw.setup.samples = samples.into();
+            ours_draw.setup.ps_key.samples = samples;
+            let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
+            results.push(compare(
+                format!("centroid position {route} {samples} samples webgpu against direct3d 11"),
+                &reference,
+                &texels,
+                Format::Rgba8Unorm,
+                (
+                    SIZE as usize * SIZE as usize,
+                    (FILTER_ALLOWANCE * f32::from(u8::MAX)).ceil() as u64,
+                ),
+            ));
+        }
+    }
+    let mut failures = Vec::new();
+    for r in &results {
+        eprintln!(
+            "{}: {} of {} texels differ, largest difference {} (allowed {} by {})",
+            r.name,
+            r.count,
+            SIZE * SIZE,
+            r.largest,
+            r.allowed.0,
+            r.allowed.1
+        );
+        if r.count > r.allowed.0 || r.largest > r.allowed.1 {
+            failures.push(r.name.clone());
+        }
+    }
+    assert!(failures.is_empty(), "differ: {failures:?}");
+}
+
 /// An input evaluated at the sample being run (`ps_eval_exact`, Direct3D 12's
 /// shader_eval_attribute) is exactly the value interpolated there, as on Direct3D 11 at four
 /// samples: the program scales any difference so that the smallest shows, and every texel must match,

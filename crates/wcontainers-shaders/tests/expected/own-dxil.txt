@@ -125,6 +125,8 @@ ps_negate.dxil	ok ; glsl compiles
 ps_numbered.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_offset.dxil	ok ; glsl compiles
 ps_pack.dxil	ok ; glsl compiles
+ps_position_centroid.dxil	unsupported SampleCount
+ps_position_centroid_sampled.dxil	unsupported SampleCount
 ps_primid.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_primitive.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_pull.dxil	ok ; glsl compiles

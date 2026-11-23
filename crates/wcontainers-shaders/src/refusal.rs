@@ -8,6 +8,9 @@ pub const BUILT_IN: &str = "BuiltIn";
 pub const BUILT_IN_ARRAY: &str = "BuiltInArray";
 pub const CALCULATE_LEVEL_OF_DETAIL: &str = "CalculateLevelOfDetail";
 pub const CALCULATE_LEVEL_OF_DETAIL_CUBE: &str = "CalculateLevelOfDetailCube";
+/// A centroid position in a pixel program run per sample into several samples: Direct3D gives the
+/// centroid of the whole pixel's coverage, of which a program run per sample sees its own sample only.
+pub const CENTROID_POSITION_PER_SAMPLE: &str = "CentroidPositionPerSample";
 pub const CLEAR_DIMENSION: &str = "ClearDimension";
 pub const CLIP_DISTANCE: &str = "ClipDistance";
 pub const CLIP_DISTANCE_PER_SAMPLE: &str = "ClipDistancePerSample";

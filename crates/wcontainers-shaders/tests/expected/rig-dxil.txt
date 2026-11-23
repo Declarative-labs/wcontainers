@@ -16,8 +16,8 @@ d3d12.ps_root_srv.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("web
 d3d12.ps_static.dxil	ok ; glsl compiles
 d3d12.ps_table.dxil	ok ; glsl compiles
 depth.ps_depth.dxil	ok ; glsl compiles
-depth.ps_greater.dxil	ok ; glsl compiles
-depth.ps_less.dxil	ok ; glsl compiles
+depth.ps_greater.dxil	unsupported SampleCount
+depth.ps_less.dxil	unsupported SampleCount
 draws.ps.dxil	ok ; glsl compiles
 draws.vs.dxil	ok ; glsl compiles
 formats.ps_float.dxil	ok ; glsl compiles

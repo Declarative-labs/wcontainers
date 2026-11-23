@@ -306,6 +306,7 @@ pub(crate) fn lower(
     let tessellation = tessellation::prepare(&mut spirv, dxil)?;
     let selected = selected::prepare(&mut spirv)?;
     let mut declared = images::prepare(&mut spirv);
+    let position = evaluate::position_sampling(&spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         strict_capabilities: false,
@@ -341,7 +342,7 @@ pub(crate) fn lower(
     declared_sizes(dxil, &resources, &mut module)?;
     let images = images::globals(&module, &declared);
     crate::lower::derivatives_anywhere(&mut module);
-    let added = evaluate::inputs(&mut module, variant.samples)?;
+    let added = evaluate::inputs(&mut module, variant.samples, position)?;
     let ep = module
         .entry_points
         .first()

@@ -428,7 +428,7 @@ hlsl+eval-attrib-13-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID'
 hlsl+eval-attrib-14-ps.dxil	unsupported SampleCount
 hlsl+eval-attrib-15-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-2-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
-hlsl+eval-attrib-3-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-3-ps.dxil	unsupported SampleCount
 hlsl+eval-attrib-4-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-5-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-6-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier

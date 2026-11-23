@@ -213,6 +213,10 @@ for %%e in (ps_msloop ps_msswap) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_eval_exact -Gis -Fo vs_eval_exact.dxil evaluate.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_eval_exact /Fo ps_eval_exact.dxbc evaluate.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_eval_exact -Gis -Fo ps_eval_exact.dxil evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_position_centroid /Fo ps_position_centroid.dxbc evaluate.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_position_centroid -Gis -Fo ps_position_centroid.dxil evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_position_centroid_sampled /Fo ps_position_centroid_sampled.dxbc evaluate.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_position_centroid_sampled -Gis -Fo ps_position_centroid_sampled.dxil evaluate.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_line /Fo vs_line.dxbc lines.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_line -Gis -Fo vs_line.dxil lines.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_line /Fo ps_line.dxbc lines.hlsl || exit /b 1

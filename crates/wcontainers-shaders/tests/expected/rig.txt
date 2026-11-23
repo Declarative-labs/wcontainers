@@ -17,8 +17,8 @@ compute.ps_overlap.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_
 constants.ps_slots.dxbc	ok ; glsl compiles
 constants.ps_window.dxbc	ok ; glsl compiles
 depth.ps_depth.dxbc	ok ; glsl compiles
-depth.ps_greater.dxbc	ok ; glsl compiles
-depth.ps_less.dxbc	ok ; glsl compiles
+depth.ps_greater.dxbc	unsupported SampleCount
+depth.ps_less.dxbc	unsupported SampleCount
 draws.ps.dxbc	ok ; glsl compiles
 draws.vs.dxbc	ok ; glsl compiles
 dynamic.ps_tint.dxbc	ok ; glsl compiles

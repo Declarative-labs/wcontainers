@@ -2027,3 +2027,64 @@ fn inputs_evaluated_elsewhere_convert_on_both_routes() {
         assert_eq!((per_sample(&dxbc), per_sample(&dxil)), (2, 2));
     }
 }
+
+/// A position declared at the centroid: in a program run once a pixel into four samples both routes
+/// move it by its slopes to Direct3D's centroid (from the coverage), into one sample neither moves
+/// it; in a program run per sample both refuse it by name at four samples, and without a sample
+/// count both refuse it as needing one.
+#[test]
+fn centroid_positions_move_or_are_refused_by_name_on_both_routes() {
+    let moved = |c: &wcontainers_shaders::Converted| {
+        let text = wgsl(c);
+        text.contains("dpdx(") && text.contains("sample_mask")
+    };
+    for (samples, expected) in [(1u8, false), (4, true)] {
+        let key = VariantKey {
+            samples,
+            ..Default::default()
+        };
+        let [dxbc, dxil] = both(&own_pair("ps_position_centroid"), &key);
+        assert_eq!((moved(&dxbc), moved(&dxil)), (expected, expected));
+        // The coverage the move reads is left out of the reflection.
+        assert_eq!(dxbc.reflection.inputs.len(), dxil.reflection.inputs.len());
+    }
+    // Without the targets' sample count the centroid is not known.
+    for code in [
+        own_pair("ps_position_centroid"),
+        own_pair("ps_position_centroid_sampled"),
+    ] {
+        let key = VariantKey::default();
+        let refused = Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::SAMPLE_COUNT,
+        ));
+        assert_eq!(
+            convert(Source::Dxbc(&code[0]), &key, None).map(|_| ()),
+            refused
+        );
+        assert_eq!(
+            convert(Source::Dxil(&code[1]), &key, None).map(|_| ()),
+            refused
+        );
+    }
+    let code = own_pair("ps_position_centroid_sampled");
+    let key = VariantKey {
+        samples: 4,
+        ..Default::default()
+    };
+    let refused = Err(ConvertError::Unsupported(
+        wcontainers_shaders::refusal::CENTROID_POSITION_PER_SAMPLE,
+    ));
+    assert_eq!(
+        convert(Source::Dxbc(&code[0]), &key, None).map(|_| ()),
+        refused
+    );
+    assert_eq!(
+        convert(Source::Dxil(&code[1]), &key, None).map(|_| ()),
+        refused
+    );
+    let key = VariantKey {
+        samples: 1,
+        ..Default::default()
+    };
+    both(&code, &key);
+}
