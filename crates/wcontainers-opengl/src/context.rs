@@ -76,7 +76,7 @@ pub struct Context<B: Backend> {
     /// that a finished context has every answer.
     pub unread: Vec<*mut pipe_query>,
     /// The count of primitives streamed that is running.
-    pub counting: Option<*mut pipe_query>,
+    pub counting: Vec<*mut pipe_query>,
     pub streams: stream::Bound<B>,
 }
 
@@ -121,7 +121,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         queries: query::Sets::default(),
         running: None,
         unread: Vec::new(),
-        counting: None,
+        counting: Vec::new(),
         streams: stream::Bound::default(),
     });
     let base = &mut context.base;

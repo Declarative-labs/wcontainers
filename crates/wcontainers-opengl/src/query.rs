@@ -1,6 +1,6 @@
 //! Occlusion queries: whether any sample passed, from the pass tracker's queries, one an
 //! interface query a pass the guest query ran in; counts of the primitives stream output
-//! wrote, from the stage helper's statistics; and timestamps and times elapsed, from the
+//! wrote or made, from the stage helper's statistics or counted on the host; and timestamps and times elapsed, from the
 //! interface's timestamps.
 
 use std::ffi::c_uint;
@@ -164,16 +164,20 @@ pub unsafe extern "C" fn get_timestamp<B: Backend>(pipe: *mut pipe_context) -> u
 /// Streamed draws whose counts a count keeps on the device before it reads them back and sums
 /// them.
 const EMITTED_SLOTS: u64 = 1024;
-/// The stage helper's statistics word of stream 0's primitives written.
+/// The stage helper's statistics words of stream 0's primitives written and made.
 const WRITTEN_WORD: u64 = STREAM_BUFFERS as u64;
+const MADE_WORD: u64 = WRITTEN_WORD + 1;
 
-/// Primitives written to stream output while the count ran: each streamed draw's, copied from the
-/// stage helper's statistics into a slot, read back and summed when asked for (or when the slots
-/// are full).
+/// Primitives written to stream output, or made, while the count ran: each streamed draw's,
+/// copied from the stage helper's statistics into a slot, read back and summed when asked for (or
+/// when the slots are full); and for a count of those made, the primitives of each draw the stage
+/// helper did not run, counted on the host.
 pub struct Emitted<B: Backend> {
     slots: B::Buffer,
     used: u64,
     sum: u64,
+    /// The statistics word copied: `WRITTEN_WORD` or `MADE_WORD`.
+    word: u64,
 }
 
 impl<B: Backend> Emitted<B> {
@@ -206,28 +210,88 @@ impl<B: Backend> Emitted<B> {
 /// After a streamed draw: the running count takes its primitives written from `statistics`, the
 /// stage helper's block (outside a pass).
 pub fn count_emitted<B: Backend>(
-    counting: Option<*mut pipe_query>,
+    counting: &[*mut pipe_query],
     backend: &mut B,
     statistics: &B::Buffer,
 ) -> Result<(), String> {
-    let Some(query) = counting else {
-        return Ok(());
-    };
-    // SAFETY: a running count lives until it ends.
-    let Some(emitted) = (unsafe { of::<B>(query) }).emitted.as_mut() else {
-        return refused(format_args!("a count that is not one"));
-    };
-    if emitted.used == EMITTED_SLOTS {
-        emitted.gather(backend)?;
+    for &query in counting {
+        // SAFETY: a running count lives until it ends.
+        let Some(emitted) = (unsafe { of::<B>(query) }).emitted.as_mut() else {
+            return refused(format_args!("a count that is not one"));
+        };
+        if emitted.used == EMITTED_SLOTS {
+            emitted.gather(backend)?;
+        }
+        backend.copy_buffer(
+            statistics,
+            emitted.word * STORAGE_WORD,
+            &emitted.slots,
+            emitted.used * STORAGE_WORD,
+            STORAGE_WORD,
+        );
+        emitted.used += 1;
     }
-    backend.copy_buffer(
-        statistics,
-        WRITTEN_WORD * STORAGE_WORD,
-        &emitted.slots,
-        emitted.used * STORAGE_WORD,
-        STORAGE_WORD,
-    );
-    emitted.used += 1;
+    Ok(())
+}
+
+/// The primitives `count` vertices of `mode` make, ignoring restart.
+fn primitives(mode: mesa_prim, count: u32) -> u32 {
+    /// Vertices a primitive of each kind of list takes.
+    const LINE: u32 = 2;
+    const TRIANGLE: u32 = 3;
+    const LINE_ADJACENCY: u32 = 4;
+    const TRIANGLE_ADJACENCY: u32 = 6;
+    let past = |first: u32| count.saturating_sub(first - 1);
+    match mode {
+        MESA_PRIM_POINTS => count,
+        MESA_PRIM_LINES => count / LINE,
+        MESA_PRIM_LINE_LOOP if count >= LINE => count,
+        MESA_PRIM_LINE_STRIP => past(LINE),
+        MESA_PRIM_TRIANGLES => count / TRIANGLE,
+        MESA_PRIM_TRIANGLE_STRIP | MESA_PRIM_TRIANGLE_FAN => past(TRIANGLE),
+        MESA_PRIM_LINES_ADJACENCY => count / LINE_ADJACENCY,
+        MESA_PRIM_LINE_STRIP_ADJACENCY => past(LINE_ADJACENCY),
+        MESA_PRIM_TRIANGLES_ADJACENCY => count / TRIANGLE_ADJACENCY,
+        MESA_PRIM_TRIANGLE_STRIP_ADJACENCY => past(TRIANGLE_ADJACENCY) / LINE,
+        _ => 0,
+    }
+}
+
+/// After a draw the stage helper did not run: each running count of primitives made takes the
+/// draw's, counted on the host from its ranges. A draw restarting its strips, whose count needs
+/// its indices read, and one through a geometry program without stream output, whose count the
+/// stage helper does not keep, are refused by name.
+pub fn count_drawn<B: Backend>(
+    counting: &[*mut pipe_query],
+    info: &pipe_draw_info,
+    draws: &[pipe_draw_start_count_bias],
+    geometry: bool,
+) -> Result<(), String> {
+    for &query in counting {
+        // SAFETY: a running count lives until it ends.
+        let Some(emitted) = (unsafe { of::<B>(query) }).emitted.as_mut() else {
+            continue;
+        };
+        if emitted.word != MADE_WORD {
+            continue;
+        }
+        if geometry {
+            return refused(format_args!(
+                "a count of primitives made by a geometry program without stream output"
+            ));
+        }
+        if info.primitive_restart() && info.index_size > 0 {
+            return refused(format_args!(
+                "a count of primitives made by a draw with primitive restart"
+            ));
+        }
+        let mode = mesa_prim::from(info.mode);
+        let made: u64 = draws
+            .iter()
+            .map(|d| u64::from(primitives(mode, d.count)))
+            .sum();
+        emitted.sum += made * u64::from(info.instance_count);
+    }
     Ok(())
 }
 
@@ -250,7 +314,7 @@ pub unsafe extern "C" fn create_query<B: Backend>(
     let query = |emitted| made(emitted, None);
     match kind as pipe_query_type {
         PIPE_QUERY_OCCLUSION_PREDICATE | PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE => query(None),
-        PIPE_QUERY_PRIMITIVES_EMITTED => {
+        PIPE_QUERY_PRIMITIVES_EMITTED | PIPE_QUERY_PRIMITIVES_GENERATED => {
             // SAFETY: Mesa passes this driver's context.
             let context = unsafe { Context::<B>::of(pipe) };
             let slots = context
@@ -262,10 +326,16 @@ pub unsafe extern "C" fn create_query<B: Backend>(
                     intent: MapIntent::Rarely,
                 })
                 .unwrap_or_else(|e| refuse(format!("a count of primitives: {e:?}")));
+            let word = if kind as pipe_query_type == PIPE_QUERY_PRIMITIVES_GENERATED {
+                MADE_WORD
+            } else {
+                WRITTEN_WORD
+            };
             query(Some(Emitted {
                 slots,
                 used: 0,
                 sum: 0,
+                word,
             }))
         }
         PIPE_QUERY_TIMESTAMP | PIPE_QUERY_TIME_ELAPSED => {
@@ -307,6 +377,7 @@ pub unsafe extern "C" fn destroy_query<B: Backend>(
     // SAFETY: Mesa passes this driver's context.
     let context = unsafe { Context::<B>::of(pipe) };
     context.unread.retain(|&q| q != query);
+    context.counting.retain(|&q| q != query);
     // SAFETY: Mesa destroys a query it made once.
     let query = unsafe { Box::from_raw(query.cast::<Query<B>>()) };
     if let Some(emitted) = query.emitted {
@@ -325,7 +396,7 @@ pub unsafe extern "C" fn begin_query<B: Backend>(
     let (context, query) = unsafe { (Context::<B>::of(pipe), of::<B>(query)) };
     if let Some(emitted) = &mut query.emitted {
         (emitted.used, emitted.sum) = (0, 0);
-        context.counting = Some(std::ptr::from_mut(query).cast());
+        context.counting.push(std::ptr::from_mut(query).cast());
         return true;
     }
     if let Some(timer) = &mut query.timer {
@@ -371,7 +442,8 @@ pub unsafe extern "C" fn end_query<B: Backend>(
     // SAFETY: as above.
     let (context, query) = unsafe { (Context::<B>::of(pipe), of::<B>(query)) };
     if query.emitted.is_some() {
-        context.counting = None;
+        let ended: *mut pipe_query = std::ptr::from_mut(query).cast();
+        context.counting.retain(|&q| q != ended);
         return true;
     }
     if let Some(timer) = &mut query.timer {

@@ -1464,6 +1464,9 @@ fn draw<B: Backend>(
             None => return Ok(()),
         }
     };
+    if !context.streams.active() {
+        query::count_drawn::<B>(&context.counting, info, draws, !gs.is_null())?;
+    }
     let topology = match &made {
         Some(m) => m.out.topology,
         None => api_topology.ok_or("a primitive the screen does not report")?,
@@ -2013,7 +2016,7 @@ fn run_stages<B: Backend>(
             .filled
             .as_ref()
             .ok_or("stream output's block")?;
-        query::count_emitted(context.counting, backend, statistics)?;
+        query::count_emitted(&context.counting, backend, statistics)?;
     }
     let made = match (out, &staged.layout) {
         (Some(out), Some(layout)) => Some(Made {
