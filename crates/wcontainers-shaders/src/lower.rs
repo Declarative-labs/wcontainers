@@ -1179,22 +1179,22 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// A pixel program's clip distance inputs (input `i` among them): one array argument of every
-    /// declaration's distances in order, as the vertex program writes them, each declaration given
-    /// its part. Only the first declaration makes it.
-    fn clip_distance_input(
+    /// A pixel program's clip or cull distance inputs (built-in `b`, input `i` among them): one array
+    /// argument of every declaration's distances in order, as the vertex program writes them, each
+    /// declaration given its part. Only the first declaration makes it.
+    fn distance_input(
         &mut self,
         f: &mut Function,
         body: &mut Block,
         e: &mut Emit,
         i: usize,
+        b: u64,
     ) -> Result<()> {
         let input = |c: u16| matches!(c, code::DCL_INPUT | code::DCL_INPUT_BUILT_IN);
         let clips: Vec<usize> = (0..self.io.len())
             .filter(|&j| {
                 let (other, ref io) = self.io[j];
-                io.builtin == Some(builtin::CLIP_DISTANCE)
-                    && self.ir.op(other).is_ok_and(|o| input(o.code))
+                io.builtin == Some(b) && self.ir.op(other).is_ok_and(|o| input(o.code))
             })
             .collect();
         if clips[0] != i {
@@ -1225,10 +1225,14 @@ impl<'a> Lowering<'a> {
             size: ArraySize::Constant(NonZeroU32::new(total).unwrap()),
             stride: core::mem::size_of::<f32>() as u32,
         });
+        let distances = match b {
+            builtin::CLIP_DISTANCE => naga::BuiltIn::ClipDistances,
+            _ => naga::BuiltIn::CullDistance,
+        };
         f.arguments.push(FunctionArgument {
-            name: Some(format!("b{}", builtin::CLIP_DISTANCE)),
+            name: Some(format!("b{b}")),
             ty: array,
-            binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances)),
+            binding: Some(naga::Binding::BuiltIn(distances)),
         });
         let argument = (f.arguments.len() - 1) as u32;
         let a = e.add(f, body, Expression::FunctionArgument(argument));
@@ -1253,8 +1257,7 @@ impl<'a> Lowering<'a> {
             };
             let p = e.add(f, body, Expression::GlobalVariable(var));
             e.stmt(f, body, Statement::Store { pointer: p, value });
-            let system = system_value(builtin::CLIP_DISTANCE);
-            self.reflect_value(id, true, None, 0, ty.members[0], modes, system);
+            self.reflect_value(id, true, None, 0, ty.members[0], modes, system_value(b));
         }
         Ok(())
     }
@@ -1323,6 +1326,11 @@ impl<'a> Lowering<'a> {
                     .contains(wcontainers_gpu::VariantFlags::CLIP_DISTANCE)
                     && self.variant.linked.clip_distances > 0
             }
+            // Read from the values the vertex program passes them in.
+            (SourceStage::Pixel, true, builtin::CULL_DISTANCE) => self
+                .variant
+                .flags
+                .contains(wcontainers_gpu::VariantFlags::CULL_DISTANCE_LINKED),
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
@@ -1504,8 +1512,8 @@ impl<'a> Lowering<'a> {
                 self.reflect_value(id, true, Some(loc), comp, member, modes, None);
             } else {
                 let b = builtin.unwrap();
-                if b == builtin::CLIP_DISTANCE {
-                    self.clip_distance_input(&mut f, &mut body, &mut e, i)?;
+                if matches!(b, builtin::CLIP_DISTANCE | builtin::CULL_DISTANCE) {
+                    self.distance_input(&mut f, &mut body, &mut e, i, b)?;
                     continue;
                 }
                 let member = member.ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?;

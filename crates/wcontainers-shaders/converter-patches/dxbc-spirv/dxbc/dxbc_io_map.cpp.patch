@@ -1,6 +1,37 @@
 --- a/dxbc/dxbc_io_map.cpp
 +++ b/dxbc/dxbc_io_map.cpp
-@@ -1457,7 +1457,7 @@
+@@ -1026,9 +1026,19 @@
+ 
+   /* Create mapping entries. We actually need to create one entry for each
+    * array element since the load/store logic may otherwise assume vectors. */
+-  uint32_t elementIndex = util::popcnt(util::bextract(elementMask, 0u, elementShift));
+-
+   for (auto component : componentMask) {
++    /* The array element of a component is its place among the signature's components, so that a
++     * declaration of some components only (fxc declares those a pixel shader reads) finds each. */
++    uint32_t componentShift = elementShift;
++
++    for (auto e = entries; e != signature->end(); e++) {
++      if ((e->getRegisterIndex() == int32_t(regIndex)) && (e->getComponentMask() & component))
++        componentShift = 4u * e->getSemanticIndex();
++    }
++
++    uint32_t elementIndex = util::popcnt(util::bextract(elementMask, 0u,
++      componentShift + util::tzcnt(uint8_t(component))));
++
+     auto& mapping = m_variables.emplace_back();
+     mapping.regType = regType;
+     mapping.regIndex = regIndex;
+@@ -1037,7 +1047,7 @@
+     mapping.componentMask = component;
+     mapping.baseType = builder.getOp(def).getType();
+     mapping.baseDef = def;
+-    mapping.baseIndex = elementIndex++;
++    mapping.baseIndex = elementIndex;
+   }
+ 
+   return true;
+@@ -1457,7 +1467,7 @@
    auto varBaseType = varType.getBaseType(0u);
  
    if (varBaseType.isVector() && component) {

@@ -963,6 +963,92 @@ fn clip_distances_a_pixel_program_reads_come_from_the_linked_values() {
     }
 }
 
+/// Cull distances a pixel program reads, on both routes (`vs_cull_read`'s four over two registers, the
+/// second shared with clip distances; `ps_cull_read` reading three of them): refused by name without
+/// `CULL_DISTANCE_LINKED`; with it the vertex program keeps its built-in and passes the four after
+/// its clip distances' slot, and the pixel program reads them from there; a geometry program is
+/// refused it by name.
+#[test]
+fn cull_distances_a_pixel_program_reads_come_from_the_linked_values() {
+    let (vs, ps) = (own_pair("vs_cull_read"), own_pair("ps_cull_read"));
+    let gs = own_pair("gs_distances");
+    let location = 2;
+    let key = VariantKey {
+        flags: VariantFlags::CULL_DISTANCE_LINKED | VariantFlags::CLIP_DISTANCE,
+        linked: LinkedValues {
+            location,
+            clip_distances: 2,
+        },
+        samples: 1,
+        ..Default::default()
+    };
+    let plain = VariantKey {
+        samples: 1,
+        ..Default::default()
+    };
+    fn on(route: usize, code: &[Vec<u8>; 2]) -> Source<'_> {
+        match route {
+            0 => Source::Dxbc(&code[0]),
+            _ => Source::Dxil(&code[1]),
+        }
+    }
+    for route in 0..2 {
+        assert_eq!(
+            convert(on(route, &ps), &plain, None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::CULL_DISTANCE
+            ))
+        );
+        let c = convert(on(route, &ps), &key, None).unwrap();
+        let text = wgsl(&c);
+        assert!(!text.contains("cull_distance"), "{text}");
+        assert!(
+            text.contains(&format!("@location({})", location + 1)),
+            "{text}"
+        );
+        assert!(
+            !text.contains(&format!("@location({})", location + 2)),
+            "{text}"
+        );
+
+        let v = convert(on(route, &vs), &key, None).unwrap();
+        let m = &v.modules[0].module;
+        let result = m.entry_points[0].function.result.as_ref().unwrap();
+        let naga::TypeInner::Struct { members, .. } = &m.types[result.ty].inner else {
+            panic!("{result:?}")
+        };
+        let bindings: Vec<_> = members.iter().filter_map(|m| m.binding.clone()).collect();
+        let at = |l: u32| {
+            bindings
+                .iter()
+                .any(|b| matches!(b, naga::Binding::Location { location, .. } if *location == l))
+        };
+        assert!(
+            at(location) && at(location + 1) && !at(location + 2),
+            "{bindings:?}"
+        );
+        assert!(
+            bindings.contains(&naga::Binding::BuiltIn(naga::BuiltIn::CullDistance)),
+            "{bindings:?}"
+        );
+        assert!(
+            !bindings.contains(&naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances)),
+            "{bindings:?}"
+        );
+
+        let geometry = VariantKey {
+            flags: VariantFlags::CULL_DISTANCE_LINKED,
+            ..Default::default()
+        };
+        assert_eq!(
+            convert(on(route, &gs), &geometry, None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::GEOMETRY_VARIANT
+            ))
+        );
+    }
+}
+
 /// Mirror-once addressing in the program: the sampler's state from the helper block picks the axes to
 /// fold, and the implicit level becomes the unfolded coordinate's gradients; gathers, comparisons and
 /// texel offsets are refused by name.

@@ -98,6 +98,7 @@ ps_compare.dxil	ok ; glsl compiles
 ps_component.dxil	ok ; glsl compiles
 ps_contend.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ps_cull.dxil	ok ; glsl compiles
+ps_cull_read.dxil	unsupported CullDistance
 ps_deriv.dxil	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
 ps_dual.dxil	ok ; glsl compiles
 ps_early.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
@@ -157,6 +158,7 @@ vs_carry.dxil	ok ; glsl compiles
 vs_clip.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_clip_six.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_cull.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_cull_read.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_deep.dxil	ok ; glsl compiles
 vs_early.dxil	ok ; glsl compiles
 vs_eval_exact.dxil	ok ; glsl compiles

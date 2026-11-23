@@ -315,7 +315,8 @@ const ONE_ENTRY_POINT: &str = "a module of one entry point named by ENTRY_POINT"
 fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
-        | VariantFlags::CLIP_DEPTH_REWRITE;
+        | VariantFlags::CLIP_DEPTH_REWRITE
+        | VariantFlags::CULL_DISTANCE_LINKED;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()
         || variant.draw_base != DrawBaseSource::None

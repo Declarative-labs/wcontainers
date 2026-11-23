@@ -121,7 +121,8 @@ pub(crate) fn apply(
             let distances = flags.contains(VariantFlags::CLIP_DISTANCE);
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let pulls = !variant.pulled.is_empty();
-            if adjust || flip || clip || distances || clamp || pulls {
+            let culls = flags.contains(VariantFlags::CULL_DISTANCE_LINKED);
+            if adjust || flip || clip || distances || clamp || pulls || culls {
                 let viewport = adjust.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::ViewportAdjust, vec4)
@@ -129,7 +130,7 @@ pub(crate) fn apply(
                 let mut w = Wrapped::new(module);
                 pull::pulled(module, &mut w, &variant.pulled, reflection)?;
                 let z = position(&mut w, viewport, flip, clip, clamp);
-                if distances || clamp {
+                if distances || clamp || culls {
                     linked_out(module, &mut w, variant, distances, z)?;
                 }
                 w.finish(module);
@@ -150,9 +151,11 @@ pub(crate) fn apply(
                 return Err(ConvertError::Malformed(TWO_LINE_RULES.into()));
             }
             let primitive = flags.contains(VariantFlags::PRIMITIVE_ID_FROM_STAGE);
+            let culls = flags.contains(VariantFlags::CULL_DISTANCE_LINKED);
             let targets = targets::needed(module, &variant.targets_in_shader)?;
             let wraps = [
                 counting, mask, dual, bias, distances, clamp, early, line, diamond, primitive,
+                culls,
             ];
             if wraps.into_iter().any(|on| on) || targets {
                 let bias = bias.then(|| {
@@ -193,6 +196,10 @@ pub(crate) fn apply(
                     if let StageExtras::Pixel { discards, .. } = &mut reflection.extras {
                         *discards = true;
                     }
+                }
+                if culls {
+                    let at = crate::stage::cull_distance_location(variant);
+                    cull_distance_reads(module, &mut w, at)?;
                 }
                 if early {
                     early::early_tests(
@@ -879,7 +886,46 @@ fn linked_out(
         ));
     }
     values.extend(z);
-    let vec4 = vector(module, 4, Scalar::F32);
+    slots_out(module, w, &values, linked.location, LINKED_OUTPUTS);
+    // Cull distances keep their built-in, by which the stage helper culls, and are passed on too.
+    let culls = variant.flags.contains(VariantFlags::CULL_DISTANCE_LINKED);
+    if culls && let Some(at) = w.output(|b| *b == Binding::BuiltIn(BuiltIn::CullDistance)) {
+        let (ty, value) = (w.outputs[at].ty, w.outputs[at].value);
+        let n = distance_count(module, ty)?;
+        let culled: Vec<_> = (0..n)
+            .map(|i| index(&mut w.f, &mut w.body, value, i as u32))
+            .collect();
+        let at = crate::stage::cull_distance_location(variant);
+        slots_out(module, w, &culled, at, CULLED_OUTPUTS);
+    }
+    Ok(())
+}
+
+/// The names of a vertex program's added outputs: its linked values, and its cull distances passed on.
+const LINKED_OUTPUTS: &str = "linked";
+const CULLED_OUTPUTS: &str = "culled";
+
+/// The count of a sized array of distances of type `ty`.
+fn distance_count(module: &Module, ty: Handle<Type>) -> Result<usize> {
+    match module.types[ty].inner {
+        TypeInner::Array {
+            size: ArraySize::Constant(n),
+            ..
+        } => Ok(n.get() as usize),
+        _ => Err(ConvertError::Malformed(CLIP_DISTANCES_UNSIZED.into())),
+    }
+}
+
+/// Outputs of `values` four a location from `location`, padded with zeros, named `name` and their
+/// place.
+fn slots_out(
+    module: &mut Module,
+    w: &mut Wrapped,
+    values: &[Handle<Expression>],
+    location: u32,
+    name: &str,
+) {
+    let vec4 = vector(module, crate::build::VEC4 as u8, Scalar::F32);
     let zero = f32_lit(&mut w.f, 0.0);
     let per_slot = crate::build::VEC4 as usize;
     for (k, chunk) in values.chunks(per_slot).enumerate() {
@@ -894,14 +940,13 @@ fn linked_out(
             },
         );
         w.outputs.push(Output {
-            name: Some(format!("linked{k}")),
+            name: Some(format!("{name}{k}")),
             ty: vec4,
-            binding: linked_binding(linked.location + k as u32),
+            binding: linked_binding(location + k as u32),
             value,
         });
         w.changed = true;
     }
-    Ok(())
 }
 
 /// The pixel program's added values, read as the vertex program writes them: its clip distances
@@ -958,6 +1003,40 @@ fn clip_distance_reads(module: &Module, w: &mut Wrapped, d: &[Handle<Expression>
         ));
     }
     let components = d[..n].to_vec();
+    let value = push(
+        &mut w.f,
+        &mut w.prologue,
+        Expression::Compose { ty, components },
+    );
+    w.replace(argument, value);
+    Ok(())
+}
+
+/// A pixel program reading its cull distances takes them from the values the vertex program passes
+/// them in from `location`, four a location, as Direct3D interpolates them.
+fn cull_distance_reads(module: &mut Module, w: &mut Wrapped, location: u32) -> Result<()> {
+    let read = w.f.arguments.iter().enumerate().find_map(|(i, a)| {
+        (a.binding == Some(Binding::BuiltIn(BuiltIn::CullDistance))).then_some((i as u32, a.ty))
+    });
+    let Some((argument, ty)) = read else {
+        return Ok(());
+    };
+    let n = distance_count(module, ty)?;
+    let vec4 = vector(module, crate::build::VEC4 as u8, Scalar::F32);
+    let per_slot = crate::build::VEC4 as usize;
+    let mut components = Vec::with_capacity(n);
+    for k in 0..n.div_ceil(per_slot) as u32 {
+        let at = location + k;
+        let v = w.input(
+            module,
+            |b| matches!(b, Binding::Location { location: l, .. } if *l == at),
+            linked_binding(at),
+            vec4,
+        );
+        for i in 0..per_slot.min(n - components.len()) {
+            components.push(index(&mut w.f, &mut w.prologue, v, i as u32));
+        }
+    }
     let value = push(
         &mut w.f,
         &mut w.prologue,

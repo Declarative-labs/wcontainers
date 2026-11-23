@@ -270,6 +270,35 @@ CullOut vs_cull(float3 position : POSITION, float4 colour : COLOR0, uint vertex 
     return o;
 }
 
+struct CullReadOut {
+    float4 position : SV_Position;
+    nointerpolation uint4 ids : TEXCOORD0;
+    float3 cull : SV_CullDistance0;
+    float2 clip : SV_ClipDistance0;
+    float more : SV_CullDistance1;
+};
+
+// vs_cull's distances with a fourth cull distance, which drops nothing, sharing a register with two
+// clip distances, as vkd3d's clip-cull-distance tests pack them.
+CullReadOut vs_cull_read(float3 position : POSITION, float4 colour : COLOR0,
+                         uint vertex : SV_VertexID, uint instance : SV_InstanceID) {
+    CullOut c = vs_cull(position, colour, vertex, instance);
+    CullReadOut o;
+    o.position = c.position;
+    o.ids = c.ids;
+    o.cull = c.cull;
+    o.clip = float2(c.clip, 1.0);
+    o.more = 2.0 + position.x - position.y;
+    return o;
+}
+
+// vs_cull_read's cull distances read as interpolated inputs (the first register's first and third,
+// and the second register's), each its own share of the colour.
+float4 ps_cull_read(CullReadOut i) : SV_Target0 {
+    return float4(saturate(i.cull.x * 0.5 + 0.25), saturate(i.cull.z * 0.25 + 0.5),
+                  saturate(i.more * 0.25), 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
+}
+
 // vs_cull's clip and cull distances read by a geometry shader: each triangle passed on with the cull
 // distances it read, which drop what vs_cull's would, coloured by every distance read, so a distance
 // read from the wrong place shows in the colour or in what is dropped.

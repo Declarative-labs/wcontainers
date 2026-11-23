@@ -617,8 +617,14 @@ fn unconverted(module: &Module, variant: &VariantKey) -> Result<(), ConvertError
         return Err(ConvertError::Unsupported(crate::refusal::PRIMITIVE_ID));
     }
     // Cull distances are drawn through the stage helper from a vertex or domain program only (both
-    // vertex programs here), and a pixel program reads clip distances from the linked values alone.
+    // vertex programs here), and a pixel program reads clip and cull distances from the linked values
+    // alone.
+    let culls = ep.stage == naga::ShaderStage::Fragment
+        && variant
+            .flags
+            .contains(wcontainers_gpu::VariantFlags::CULL_DISTANCE_LINKED);
     if ep.stage != naga::ShaderStage::Vertex
+        && !culls
         && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
     {
         return Err(ConvertError::Unsupported(crate::refusal::CULL_DISTANCE));

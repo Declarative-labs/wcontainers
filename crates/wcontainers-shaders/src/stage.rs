@@ -1147,6 +1147,15 @@ pub fn primitive_id_location(pixel: &VariantKey) -> u32 {
     line_coverage_location(pixel) + u32::from(pixel.flags.intersects(line))
 }
 
+/// Where a vertex or domain program made with `VariantFlags::CULL_DISTANCE_LINKED` writes its cull
+/// distances and its pixel program reads them, four a location: after the primitive's number.
+pub(crate) fn cull_distance_location(variant: &VariantKey) -> u32 {
+    let numbered = variant
+        .flags
+        .contains(VariantFlags::PRIMITIVE_ID_FROM_STAGE);
+    primitive_id_location(variant) + u32::from(numbered)
+}
+
 /// A vertex program drawn through the stage helper so that its pixel program reads its primitive's
 /// number from it ([`wcontainers_gpu::SlowPath::PrimitiveIdAsGeometry`]).
 pub struct PrimitivePrograms {

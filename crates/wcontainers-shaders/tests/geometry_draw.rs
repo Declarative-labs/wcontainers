@@ -25,7 +25,7 @@ use wcontainers_shaders::stage::{
     ReplayDraw, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw, StageError, StageIndex,
     Stages, StreamOutput, StreamOutputEntry, StreamTargets,
 };
-use wcontainers_shaders::{Converted, Source, convert};
+use wcontainers_shaders::{ConvertError, Converted, Source, convert, refusal};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -295,7 +295,7 @@ const CASES: [Case; 22] = [
 
 /// Vertex shaders writing cull distances, drawn without a geometry shader: the stage helper's cull
 /// route.
-const CULLED: [Case; 8] = [
+const CULLED: [Case; 10] = [
     Case {
         vs: "vs_cull",
         gs: "",
@@ -384,9 +384,31 @@ const CULLED: [Case; 8] = [
         indexed: Some(0),
         route: Route::Dxbc,
     },
+    Case {
+        vs: "vs_cull_read",
+        gs: "",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_cull_read",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 16,
+        first: 1,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(1),
+        route: Route::Dxbc,
+    },
 ];
 
-/// The cull cases as fxc and as dxc build `vs_cull`.
+/// The cull cases as fxc and as dxc build `vs_cull` and `vs_cull_read`.
 fn culled_by_both_builds() -> Vec<Case> {
     let dxil = CULLED.map(|c| Case {
         route: Route::Dxil,
@@ -435,7 +457,7 @@ fn compared_clipped(case: &Case, reference: &[u8], picture: &[u8]) -> (usize, u3
     // Direct3D clips the line and rasterises what is left by its diamond rule: a line's clipped end
     // may differ by a pixel (Known gaps). Those texels are listed apart; any other difference
     // counts.
-    let (ends, largest) = if case.vs == "vs_cull" && lines(case.topology) {
+    let (ends, largest) = if clipped_in_pixels(case) && lines(case.topology) {
         let mut ends = 0;
         let mut largest = 0;
         for (i, (a, b)) in reference.chunks(4).zip(picture.chunks(4)).enumerate() {
@@ -461,12 +483,18 @@ fn compared_clipped(case: &Case, reference: &[u8], picture: &[u8]) -> (usize, u3
     // Clipped in the pixel program, attributes are interpolated over the whole triangle, which
     // rounds apart from Direct3D's over the clipped one by a step or two; a pixel drawn on one side
     // only differs by far more.
-    let allowed = if case.gs == "gs_clip" || case.vs == "vs_cull" {
+    let allowed = if case.gs == "gs_clip" || clipped_in_pixels(case) {
         2
     } else {
         0
     };
     (count, ends, largest, allowed)
+}
+
+/// Whether the case's vertex shader writes `vs_cull`'s clip distance, which the pixel program clips
+/// by.
+fn clipped_in_pixels(case: &Case) -> bool {
+    matches!(case.vs, "vs_cull" | "vs_cull_read")
 }
 
 fn lines(t: InputTopology) -> bool {
@@ -772,8 +800,9 @@ fn declaration(gs: &str) -> StreamOutput {
 
 /// The pixel shader of a case: `ps_numbered` behind a geometry shader writing its primitives' numbers.
 fn ps_of(case: &Case) -> &'static str {
-    match case.gs {
-        "gs_numbered" => "ps_numbered",
+    match (case.gs, case.vs) {
+        ("gs_numbered", _) => "ps_numbered",
+        ("", "vs_cull_read") => "ps_cull_read",
         _ => "ps_geometry",
     }
 }
@@ -810,8 +839,48 @@ fn linked(
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
     let ext = case.route.extension();
+    let vs_code = bytecode(&format!("{}.{ext}", case.vs));
+    let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     let ps_code = bytecode(&format!("{}.{ext}", ps_of(case)));
-    let ps = convert(case.route.source(&ps_code), &VariantKey::default(), None).unwrap();
+    // Cull distances the pixel program reads, passed on by the vertex program past its values; a
+    // front learns it from the refusal of the plain conversion.
+    let past_vertex_values = vs
+        .reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system.is_none())
+        .map(|v| v.location + 1)
+        .max()
+        .unwrap_or(0);
+    let (ps, culls) = match convert(case.route.source(&ps_code), &VariantKey::default(), None) {
+        Err(ConvertError::Unsupported(refusal::CULL_DISTANCE)) => {
+            // dxc's build declares every distance of its signature, so it takes the clip distances
+            // too.
+            let clips: u32 = vs
+                .reflection
+                .outputs
+                .iter()
+                .filter(|v| v.system == Some(SystemValue::ClipDistance))
+                .map(|v| v.mask.count_ones())
+                .sum();
+            let clip = match clips {
+                0 => VariantFlags::empty(),
+                _ => VariantFlags::CLIP_DISTANCE,
+            };
+            let key = VariantKey {
+                flags: VariantFlags::CULL_DISTANCE_LINKED | clip,
+                linked: LinkedValues {
+                    location: past_vertex_values,
+                    clip_distances: clips as u8,
+                },
+                samples: 1,
+                ..Default::default()
+            };
+            let ps = convert(case.route.source(&ps_code), &key, None).unwrap();
+            (ps, VariantFlags::CULL_DISTANCE_LINKED)
+        }
+        ps => (ps.unwrap(), VariantFlags::empty()),
+    };
     let gs_key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -829,8 +898,6 @@ fn linked(
         None => convert(gs_source(case, &gs_code), key, None).unwrap(),
     };
     let gs = (!case.gs.is_empty()).then(|| gs_converted(&gs_key));
-    let vs_code = bytecode(&format!("{}.{ext}", case.vs));
-    let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
     // without them (wgpu's Direct3D 12 path), linked past every value either program passes;
     // counted from the reflection as a front counts them.
@@ -859,7 +926,7 @@ fn linked(
         true => VariantFlags::PRIMITIVE_ID_FROM_STAGE,
         false => VariantFlags::empty(),
     };
-    let (vs, gs, ps) = if (clip | clamp | numbered).is_empty() {
+    let (vs, gs, ps) = if (clip | clamp | numbered | culls).is_empty() {
         (vs, gs, ps)
     } else {
         let location = last_stage
@@ -876,7 +943,7 @@ fn linked(
             clip_distances: clips as u8,
         };
         let key = |base: &VariantKey, samples| VariantKey {
-            flags: base.flags | clip | clamp | numbered,
+            flags: base.flags | clip | clamp | numbered | culls,
             linked,
             samples,
             ..base.clone()
@@ -3295,7 +3362,7 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
             let name = format!(
                 "seed {seed} {} {:?} {:?} {} from {} x{}{}",
                 match (case.gs, case.vs) {
-                    ("", "vs_cull") => "vs_cull",
+                    ("", vs @ ("vs_cull" | "vs_cull_read")) => vs,
                     ("", _) => "vertex",
                     (gs, _) => gs,
                 },
