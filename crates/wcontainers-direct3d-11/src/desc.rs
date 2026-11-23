@@ -47,25 +47,19 @@ pub mod clear {
 }
 
 /// `D3D11_FORMAT_SUPPORT` bits.
-pub mod support {
-    pub use wcontainers_directx_graphics_infrastructure::support1::*;
-    pub const CPU_LOCKABLE: u32 = 0x20000;
-    pub const MIP_AUTOGEN: u32 = 0x2000;
-}
+pub use wcontainers_directx_graphics_infrastructure::support1 as support;
 
 /// `D3D11_FORMAT_SUPPORT2` bits.
 pub use wcontainers_directx_graphics_infrastructure::support2;
-/// `D3D11_FORMAT_SUPPORT2_SHAREABLE`, which the infrastructure crate's list lacks.
-pub const SUPPORT2_SHAREABLE: u32 = 0x400;
+/// `D3D11_FORMAT_SUPPORT2_SHAREABLE`.
+pub use wcontainers_directx_graphics_infrastructure::support2::SHAREABLE as SUPPORT2_SHAREABLE;
 
 /// `D3D_FEATURE_LEVEL`.
 pub mod level {
+    pub use wcontainers_directx_graphics_infrastructure::required::level::*;
     pub const L9_1: u32 = 0x9100;
     pub const L9_2: u32 = 0x9200;
     pub const L9_3: u32 = 0x9300;
-    pub const L10_0: u32 = 0xa000;
-    pub const L10_1: u32 = 0xa100;
-    pub const L11_0: u32 = 0xb000;
     pub const L11_1: u32 = 0xb100;
 }
 
