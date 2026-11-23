@@ -356,12 +356,20 @@ fn packed_targets_drawn_blended_and_resolved_as_direct3d_does() {
     case("packed_targets");
 }
 
-/// Blends in one pass read what earlier draws left in `B5G5R5A1_UNORM` and `B5G6R5_UNORM`
-/// targets as the format holds it: the 1-bit alpha as a blend factor, and small increments
-/// rounded at each draw, as on the RTX 3080.
+/// Blends in one pass read what earlier draws and earlier primitives of the same draw left in
+/// `B5G5R5A1_UNORM` and `B5G6R5_UNORM` targets as the format holds it: the 1-bit alpha as a blend
+/// factor, and small increments rounded at each draw and each primitive (lists, instances, strips
+/// with culled odd triangles and a restart), as on the RTX 3080.
 #[test]
 fn packed_targets_read_by_blends_as_direct3d_reads_them() {
     case("packed_blend_reads");
+}
+
+/// Sample masks leaving out sample 0 of 4- and 8-sample targets write the samples they keep, and
+/// a mask without bit 0 drops a draw into a target of one sample, as on the RTX 3080.
+#[test]
+fn sample_masks_without_sample_0_as_direct3d_applies_them() {
+    case("sample_masks");
 }
 
 /// 32 input slots of one element each, 15, 30 and 31 values passed from the vertex to the pixel

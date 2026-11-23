@@ -2608,6 +2608,146 @@ fn main() -> windows::core::Result<()> {
                     packed_codes(five_alpha, r)
                 });
             }
+            // The same within one draw: each primitive's blend reads what the one before it left.
+            // Ten triangles of a list, ten instances, and strips whose odd triangles the default
+            // raster block culls, one restarting at a cut index.
+            let repeated = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                    uint k = id % 3;
+                    float2 uv = float2((k << 1) & 2, k & 2);
+                    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+                }");
+            let strip: [u16; 10] = [0, 1, 2, 3, 4, 5, u16::MAX, 1, 2, 3];
+            let index_desc = D3D11_BUFFER_DESC {
+                ByteWidth: size_of_val(&strip) as u32,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+                ..Default::default()
+            };
+            let index_data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: strip.as_ptr().cast(),
+                ..Default::default()
+            };
+            let mut indices = None;
+            unsafe { device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))? };
+            for (name, format, program) in [
+                ("B5G6R5_UNORM", DXGI_FORMAT_B5G6R5_UNORM, &six),
+                ("B5G5R5A1_UNORM", DXGI_FORMAT_B5G5R5A1_UNORM, &five),
+            ] {
+                for how in ["list", "instances", "strip", "indexed strip"] {
+                    let t = target(format)?;
+                    let rt = rtv(&t);
+                    unsafe {
+                        context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                        context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                        context.OMSetBlendState(add.as_ref(), None, u32::MAX);
+                        context.PSSetShader(program.as_ref(), None);
+                        context.VSSetShader(repeated.as_ref(), None);
+                        match how {
+                            "list" => context.Draw(30, 0),
+                            "instances" => context.DrawInstanced(3, 10, 0, 0),
+                            "strip" => {
+                                context
+                                    .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                                context.Draw(6, 0);
+                            }
+                            _ => {
+                                context.IASetIndexBuffer(indices.as_ref(), DXGI_FORMAT_R16_UINT, 0);
+                                context
+                                    .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                                context.DrawIndexed(strip.len() as u32, 0, 0);
+                                context.IASetIndexBuffer(None, DXGI_FORMAT_R16_UINT, 0);
+                            }
+                        }
+                        context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                        context.VSSetShader(vs(FULL).as_ref(), None);
+                        context.OMSetBlendState(None, None, u32::MAX);
+                        context.OMSetRenderTargets(None, None);
+                    }
+                    let five_alpha = format == DXGI_FORMAT_B5G5R5A1_UNORM;
+                    print_rows(
+                        &format!("rounded {name} added in one draw, {how}"),
+                        &t,
+                        2,
+                        &|r| packed_codes(five_alpha, r),
+                    );
+                }
+            }
+            // Four half-transparent white triangles over black in one draw: the 1-bit alpha each
+            // blend leaves is what the next one reads.
+            let over = blend(D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA)?;
+            let half = ps("float4 main(float4 p : SV_Position) : SV_Target {
+                    return float4(1, 1, 1, 0.5 + (p.x - 0.5) / 64.0);
+                }");
+            let t = target(DXGI_FORMAT_B5G5R5A1_UNORM)?;
+            let rt = rtv(&t);
+            unsafe {
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.OMSetBlendState(over.as_ref(), None, u32::MAX);
+                context.PSSetShader(half.as_ref(), None);
+                context.VSSetShader(repeated.as_ref(), None);
+                context.Draw(12, 0);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                context.OMSetBlendState(None, None, u32::MAX);
+                context.OMSetRenderTargets(None, None);
+            }
+            print_rows("rounded B5G5R5A1_UNORM over in one draw", &t, 2, &|r| {
+                packed_codes(true, r)
+            });
+        }
+        "sample_masks" => {
+            // A white draw under masks with and without sample 0, resolved: Direct3D uses the
+            // mask's bits up to the sample count, and bit 0 alone without multisampling.
+            let white = ps("float4 main() : SV_Target { return float4(1, 1, 1, 1); }");
+            let (w, h) = (4, 1);
+            unsafe {
+                viewport(w, h);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                context.PSSetShader(white.as_ref(), None);
+            }
+            for (samples, mask) in [
+                (4, 0x1),
+                (4, 0x2),
+                (4, 0xe),
+                (4, 0x3c),
+                (8, 0x2),
+                (8, 0xf0),
+                (1, 0x2),
+                (1, 0x3),
+            ] {
+                let tex = |samples, bind| {
+                    make(
+                        &Tex {
+                            w,
+                            h,
+                            format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                            samples,
+                            bind,
+                        },
+                        None,
+                    )
+                };
+                let t = tex(samples, D3D11_BIND_RENDER_TARGET)?;
+                let rt = rtv(&t);
+                unsafe {
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.OMSetBlendState(None, None, mask);
+                    context.Draw(3, 0);
+                    context.OMSetBlendState(None, None, u32::MAX);
+                    context.OMSetRenderTargets(None, None);
+                }
+                let what = format!("rounded {samples} samples under mask {mask:#x}");
+                if samples == 1 {
+                    print(&what, &t, 4);
+                    continue;
+                }
+                let resolved = tex(1, D3D11_BIND_SHADER_RESOURCE)?;
+                unsafe {
+                    context.ResolveSubresource(&resolved, 0, &t, 0, DXGI_FORMAT_R8G8B8A8_UNORM)
+                };
+                print(&what, &resolved, 4);
+            }
         }
         "stage_registers" => {
             // Direct3D 11's 32 input slots, each element in its own (a position in slot 0 and 31
@@ -4452,14 +4592,15 @@ fn main() -> windows::core::Result<()> {
 }
 
 /// Each 16-bit packed texel's channel codes, red first, as bytes: implementations round to a 5-
-/// or 6-bit channel differently within the specification's 0.6 of a step.
+/// or 6-bit channel differently within the specification's 0.6 of a step. A 1-bit alpha is 00 or
+/// ff, so comparisons allowing a code's difference still compare it exactly.
 #[cfg(windows)]
 fn packed_codes(five_alpha: bool, row: &[u8]) -> String {
     row.chunks(2)
         .flat_map(|t| {
             let w = u16::from_le_bytes([t[0], t[1]]);
             let fields = if five_alpha {
-                vec![(w >> 10) & 31, (w >> 5) & 31, w & 31, w >> 15]
+                vec![(w >> 10) & 31, (w >> 5) & 31, w & 31, (w >> 15) * 0xff]
             } else {
                 vec![w >> 11, (w >> 5) & 63, w & 31]
             };
