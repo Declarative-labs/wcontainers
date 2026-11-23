@@ -390,6 +390,9 @@ impl HostCode {
     }
 }
 
+/// The most bytes a patch changes: one word, which a store or the `int3` protocol writes whole.
+pub const PATCH_BYTES: usize = size_of::<u64>();
+
 /// A change to code other threads may be running, written by the way's protocol (x86 by the `int3` protocol,
 /// ARM64 in one store).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -397,7 +400,7 @@ pub struct Patch {
     /// Offset of the changed instruction's first byte in the code.
     pub at: u32,
     /// The instruction's bytes after the change, the first `length` of them.
-    pub bytes: [u8; 8],
+    pub bytes: [u8; PATCH_BYTES],
     pub length: u8,
 }
 
