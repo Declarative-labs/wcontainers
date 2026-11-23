@@ -79,6 +79,13 @@ unixsock 4, deadlines, cputime, options, memory 2, sysfs 4, processors pass; bac
 rootbackend 1 of 3, inet 23 of 26, clocks 0 of 2, timers 4 of 5, terminal 9 of 10, priorities,
 schedattr, procstatus 4 of 5, procwrite 3 of 5, sysvshm 1 of 2: every failure on the ARM list.
 
+The whole suite at a9f8631e (ARM64, 11:02 to 12:30 UTC, load 2 to 13, 8 test threads; scratch
+kernel/kf5/whole.sh, log kf5/attach1.log, job kernel/20261123-110052-548543): clippy with warnings
+denied status 0, fmt no diff; 394 passed, 35 failed, 8 ignored; the 35 are exactly the ARM list
+(kf5/fails5.txt is the same as kc4/fails4.txt); the four more passing are dentries'. The
+workspace's `cargo check --all-targets` in the same job stopped on wasmedge-sys's build script
+(the wasmedge engine track's crate), not on this track's.
+
 Verdicts changed on purpose: new are dentries' four; inotify's ignored test now differs only in
 its renamed part.
 
