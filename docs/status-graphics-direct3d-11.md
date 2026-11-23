@@ -976,7 +976,8 @@ tracks' jobs queued.
 - Wine d3d11: 152 of 166 pass. The 14 failures are the same tests as at run 5, all in the Gap
   list. d3d10core: 110 of 111 (test_desktop_window).
 - Scenes through the library: 137 pass, 0 fail, 2 absent. Through the WebGL 2 build: 95 pass, 17
-  fail, 30 absent, as before.
+  fail, 30 absent, as before. Wine's d3d10core through the WebGL 2 build: 97 of 111 pass. The 14
+  that fail are the same tests as at run 5, all listed under the Gap list's WebGL 2 item.
 - Programs: the eleven pass as before. atg-simplemsaa_pc frame 10: 8 pixels beyond (largest 11), 4
   beyond their tiles' allowance, as before. atg-simplecomputepc: 154,515 beyond in each frame, as
   before. bgfx: five of six pass or run to their end, and bgfx-26-occlusion fails on its memory
@@ -986,6 +987,11 @@ tracks' jobs queued.
   Load times, 20 runs each, `gpu-job --alone`, 18:06, given as min / median / max: the system's
   d3d11.dll 1,122 / 1,185 / 1,425 us; ours on WebGPU 1,575 / 1,688 / 2,585 us; ours on WebGL 2
   1,059 / 1,137 / 1,910 us; the Direct3D 12 module 1,586 / 1,691 / 2,679 us.
+- Building ahead (r7-bar-warm, 18:34 to 18:44; two warm runs of five programs): Godot 3D built its
+  61 recorded combinations at start and drew all 61 by the end. It built up to 124 more ahead and
+  drew none of them, and built 26 at their first draw. The other four programs built their
+  recorded combinations at start and drew them. All ten runs pass against real Direct3D. This is
+  the same as agents run 3; the miss is still the tuple (item 5 of What comes next).
 
 G4h run 6 (2026-11-22, Pacific). Logs in scratch logs/r6*; the desktop (i9-9900K, RTX 3080),
 library tests through the queue, not alone, other tracks' jobs queued.
