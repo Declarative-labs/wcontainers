@@ -23,6 +23,8 @@ pub const T: Register = Register::R11;
 pub const U: Register = Register::R15;
 /// Their numbers, in the register area's order.
 pub const WITHHELD: [u8; crate::area::WITHHELD] = [R10, R11, R15];
+const T_NUMBER: u8 = WITHHELD[1];
+const U_NUMBER: u8 = WITHHELD[2];
 const T_LOW: Register = Register::R11D;
 const U_LOW: Register = Register::R15D;
 
@@ -30,7 +32,10 @@ const U_LOW: Register = Register::R15D;
 const WORD: usize = wcontainers_abi::WORD as usize;
 /// The registers a stand-in may be, in the order they are taken: every general register but rsp and the
 /// withheld ones.
-const STAND_INS: [u8; 12] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14];
+fn stand_ins() -> impl Iterator<Item = u8> {
+    (crate::operand::RAX..=crate::operand::R15).filter(|n| *n != RSP && !WITHHELD.contains(n))
+}
+
 /// Where `mov r64, imm64`'s immediate starts: after its REX prefix and opcode.
 const IMM64_AT: usize = 2;
 /// The bytes of a rel32 displacement.
@@ -157,10 +162,7 @@ fn stand_in(i: &Iced) -> (Iced, Vec<(u8, u8)>) {
         .iter()
         .filter_map(|u| general(u.register()).map(|g| g.number))
         .collect();
-    let mut free: Vec<u8> = STAND_INS
-        .into_iter()
-        .filter(|n| !used.contains(n))
-        .collect();
+    let mut free: Vec<u8> = stand_ins().filter(|n| !used.contains(n)).collect();
     let mut swaps: Vec<(u8, u8)> = Vec::new();
     // A stand-in for the base is never rbp, whose accesses take the stack segment's fault.
     let mut swapped = |r: Register, base: bool, swaps: &mut Vec<(u8, u8)>| -> Register {
@@ -557,8 +559,7 @@ fn on_legacy(way: Way, code: &mut HostCode, access: &Iced) -> (Iced, u8) {
         .iter()
         .filter_map(|u| general(u.register()).map(|g| g.number))
         .collect();
-    let legacy = STAND_INS
-        .into_iter()
+    let legacy = stand_ins()
         .find(|n| *n < R8 && *n != RBP && !used.contains(n))
         .expect("a byte instruction leaves a legacy register free");
     put(code, &store_area(way, STAND_IN_VALUES, full(legacy)));
@@ -682,7 +683,7 @@ fn x87_control_check(way: Way, code: &mut HostCode) {
         code,
         &Iced::with2(Code::Mov_r64_rm64, U, rcx).expect("rcx kept"),
     );
-    code.relocate(crate::operand::RCX, Held::Register(R15));
+    code.relocate(crate::operand::RCX, Held::Register(U_NUMBER));
     put(
         code,
         &Iced::with2(Code::Mov_r32_rm32, Register::ECX, T_LOW).expect("the test's value"),
@@ -901,11 +902,11 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
                     code,
                     &Iced::with1(Code::Push_r64, full(RAX)).expect("a push"),
                 );
-                code.after(Resume::Through(Held::Register(R11)));
+                code.after(Resume::Through(Held::Register(T_NUMBER)));
                 put(code, &load_area(way, full(RAX), own));
                 code.home(RAX);
             } else {
-                code.after(Resume::Through(Held::Register(R11)));
+                code.after(Resume::Through(Held::Register(T_NUMBER)));
             }
             second_level(code);
         }
@@ -924,7 +925,10 @@ fn transfer(way: Way, code: &mut HostCode, i: &Instruction, address: u64, next: 
             )
             .expect("the pop");
             let at = code.offset() as u64;
-            code.commit(&bytes_of(&lea, at), Resume::Through(Held::Register(R11)));
+            code.commit(
+                &bytes_of(&lea, at),
+                Resume::Through(Held::Register(T_NUMBER)),
+            );
             second_level(code);
         }
         _ if ins.is_jcc_short_or_near() => {

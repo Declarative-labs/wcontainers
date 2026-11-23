@@ -7,9 +7,9 @@
 //! signal, as on the reference.
 
 use super::native::{
-    ALTERNATE_STACK, ALTERNATE_STACK_BYTES, GENERAL_REGISTERS, LOAD, LOWER_REGIONS, PAGE, PROLOGUE,
-    REGION_BYTES, SECOND_LEVEL, STOP_SIGNALS, copy, general_register, map, protect, restorer,
-    system_call,
+    ALTERNATE_STACK, ALTERNATE_STACK_BYTES, FRAME_GENERAL, GENERAL_REGISTERS, LOAD, LOWER_REGIONS,
+    PAGE, PROLOGUE, REGION_BYTES, SECOND_LEVEL, STOP_SIGNALS, assembled, copy, general_register,
+    map, number, protect, restorer, system_call,
 };
 use super::*;
 use crate::programs::{Blob, Ran, STACK_TOP};
@@ -17,8 +17,8 @@ use crate::progress::{Counted, Position};
 use crate::reference::{BlobRequest, Reference};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
-    AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r10, r11, r12, r13, r14, r15, rax, rbx,
-    rcx, rdi, rdx, rsi, rsp,
+    AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r10, r11, r12, r13, r14, rax, rbx, rcx,
+    rdi, rdx, rsi, rsp,
 };
 use linux_raw_sys::general::{SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, sigaltstack};
 use std::collections::BTreeMap;
@@ -29,7 +29,7 @@ use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::{
     ENTRIES, FIRST_LEVEL, FIXED, FixedPart, RegisterArea, WITHHELD_VALUES,
 };
-use wcontainers_x86::carry::{WITHHELD, retarget};
+use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, retarget};
 use wcontainers_x86::native::{Target, Way};
 
 /// The blob is loaded at `LOAD`, far from the program and its stack; its parts follow at fixed offsets.
@@ -63,6 +63,7 @@ struct Scratch {
     rsi: u64,
     rdx: u64,
     rcx: u64,
+    r11: u64,
     /// The guest's rcx while its call site is found.
     dispatch: u64,
     /// The word below sp, while the flags are pushed there.
@@ -697,6 +698,7 @@ fn keep_record(
         (core::mem::offset_of!(Scratch, rsi), rsi),
         (core::mem::offset_of!(Scratch, rdx), rdx),
         (core::mem::offset_of!(Scratch, rcx), rcx),
+        (core::mem::offset_of!(Scratch, r11), r11),
     ];
     for (field, r) in kept {
         a.mov(word(field), r)?;
@@ -740,12 +742,10 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
     let gs_word = |offset: u64| qword_ptr(offset).gs();
     let withheld = |number: u8| {
-        let k = WITHHELD
-            .iter()
-            .position(|&w| w == number)
-            .expect("withheld");
-        (WITHHELD_VALUES + k * WORD as usize) as u64
+        let k = WITHHELD.iter().position(|&w| w == number)?;
+        Some((WITHHELD_VALUES + k * WORD as usize) as u64)
     };
+    let (count, t) = (assembled(COUNT), assembled(T));
     let mut entry_labels: Vec<CodeLabel> =
         InsideCall::ALL.iter().map(|_| a.create_label()).collect();
     let mut copies = Vec::new();
@@ -760,7 +760,7 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
         let mut hit = a.create_label();
         let mut next = a.create_label();
         a.mov(rcx, site.t.wrapping_neg())?;
-        a.lea(rcx, qword_ptr(rcx + r11))?;
+        a.lea(rcx, qword_ptr(rcx + t))?;
         a.jrcxz(hit)?;
         a.jmp(next)?;
         a.set_label(&mut hit)?;
@@ -769,20 +769,25 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
         a.set_label(&mut next)?;
     }
     let code = rcx_code(&mut a, InsideCall::Answer)?;
-    record_and_end(&mut a, area, Said::OtherCall, code, r11)?;
+    record_and_end(&mut a, area, Said::OtherCall, code, t)?;
     let scratch_word = |field: usize| gs_word(scratch(field));
     for (k, (site, label)) in laid.sites.iter().zip(&mut site_labels).enumerate() {
         a.set_label(label)?;
         let k = Word::Constant(i32::try_from(k).expect("a site's number"));
         match &site.answer {
             Answer::SystemCall => {
-                keep_record(&mut a, area, Said::SystemCall, k, Word::Register(r10))?;
-                // The guest's own call, its r10 from the area; then its r11 is the flags, its rcx the next pc.
-                a.mov(scratch_word(core::mem::offset_of!(Scratch, count)), r10)?;
-                a.mov(r10, gs_word(withheld(wcontainers_x86::R10)))?;
+                keep_record(&mut a, area, Said::SystemCall, k, Word::Register(count))?;
+                // The guest's own call, its r10 from the area where withheld; then its r11 is the flags, its
+                // rcx the next pc.
+                a.mov(scratch_word(core::mem::offset_of!(Scratch, count)), count)?;
+                if let Some(slot) = withheld(wcontainers_x86::R10) {
+                    a.mov(r10, gs_word(slot))?;
+                }
                 a.syscall()?;
-                a.mov(gs_word(withheld(wcontainers_x86::R11)), r11)?;
-                a.mov(r10, scratch_word(core::mem::offset_of!(Scratch, count)))?;
+                if let Some(slot) = withheld(wcontainers_x86::R11) {
+                    a.mov(gs_word(slot), r11)?;
+                }
+                a.mov(count, scratch_word(core::mem::offset_of!(Scratch, count)))?;
                 a.mov(rcx, site.next)?;
             }
             Answer::String { bytes, .. } => {
@@ -807,19 +812,19 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
                 )?;
             }
         }
-        a.mov(r11, site.t)?;
-        a.jmp(r11)?;
+        a.mov(t, site.t)?;
+        a.jmp(t)?;
     }
     let exit = InsideCall::Exit.code() as usize;
     a.set_label(&mut entry_labels[exit])?;
-    record_and_end(&mut a, area, Said::ExitMiss, r11, r11)?;
+    record_and_end(&mut a, area, Said::ExitMiss, t, t)?;
     for call in InsideCall::ALL {
         if matches!(call, InsideCall::Answer | InsideCall::Exit) {
             continue;
         }
         a.set_label(&mut entry_labels[call.code() as usize])?;
         let code = rcx_code(&mut a, call)?;
-        record_and_end(&mut a, area, Said::OtherCall, code, r11)?;
+        record_and_end(&mut a, area, Said::OtherCall, code, t)?;
     }
     let result = a.assemble_options(
         at,
@@ -863,7 +868,10 @@ fn handler(laid: &Laid, copies: &[u64], area: u64) -> Result<Vec<u8>, IcedError>
     let mut own = a.create_label();
     let mut guest = a.create_label();
     a.mov(r12, qword_ptr(rdx + frame(libc::REG_RIP)))?;
-    a.mov(r13, qword_ptr(rdx + frame(libc::REG_R11)))?;
+    a.mov(
+        r13,
+        qword_ptr(rdx + frame(FRAME_GENERAL[usize::from(number(T))])),
+    )?;
     a.mov(r14, qword_ptr(rsi + info_address))?;
     a.test(r12, r12)?;
     a.jz(lookup)?;
@@ -996,19 +1004,20 @@ fn prologue(blob: &Blob, laid: &Laid, at: &Places) -> Result<Vec<u8>, IcedError>
         )?;
     }
     // The flags (the word below sp kept), then every other register as it was.
-    a.mov(r15, qword_ptr(rsp - WORD as i32))?;
+    let (count, t, u) = (assembled(COUNT), assembled(T), assembled(U));
+    a.mov(u, qword_ptr(rsp - WORD as i32))?;
     a.push(qword_ptr(flags))?;
     a.popfq()?;
-    a.mov(qword_ptr(rsp - WORD as i32), r15)?;
+    a.mov(qword_ptr(rsp - WORD as i32), u)?;
     for (n, &label) in saved.iter().enumerate() {
         if n == RSP || WITHHELD.contains(&(n as u8)) {
             continue;
         }
         a.mov(general_register(n), qword_ptr(label))?;
     }
-    a.mov(r10, 0u64)?;
-    a.mov(r15, 0u64)?;
-    a.mov(r11, laid.entry)?;
-    a.jmp(r11)?;
+    a.mov(count, 0u64)?;
+    a.mov(u, 0u64)?;
+    a.mov(t, laid.entry)?;
+    a.jmp(t)?;
     a.assemble(PROLOGUE)
 }

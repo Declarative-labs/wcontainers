@@ -24,7 +24,7 @@ use wcontainers_guest_cpu::{Guest, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::Fxsave;
 use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, RegisterArea};
-use wcontainers_x86::carry::{T, U, WITHHELD};
+use wcontainers_x86::carry::{COUNT, T, U, WITHHELD};
 use wcontainers_x86::cpuid::{AVX_STATE_BYTES, AVX_STATE_OFFSET, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -112,7 +112,7 @@ struct Record {
 }
 
 /// The frame's index of each general register, in encoding order.
-const FRAME_GENERAL: [libc::c_int; GENERAL_REGISTERS] = [
+pub(super) const FRAME_GENERAL: [libc::c_int; GENERAL_REGISTERS] = [
     libc::REG_RAX,
     libc::REG_RCX,
     libc::REG_RDX,
@@ -130,6 +130,18 @@ const FRAME_GENERAL: [libc::c_int; GENERAL_REGISTERS] = [
     libc::REG_R14,
     libc::REG_R15,
 ];
+
+/// A withheld register as the assembler names it.
+pub(super) fn assembled(r: Register) -> AsmRegister64 {
+    iced_x86::code_asm::get_gpr64(r).expect("a 64-bit register")
+}
+
+/// A 64-bit register's number.
+pub(super) fn number(r: Register) -> u8 {
+    wcontainers_x86::general_register(r)
+        .expect("a general register")
+        .number
+}
 
 pub(super) fn general_register(number: usize) -> AsmRegister64 {
     [
@@ -315,7 +327,7 @@ pub fn run(
         let kind = InsideCall::from_code(((rip - ENTRY_TRAPS) / ENTRY_STRIDE) as u16)
             .ok_or("an entry no call has")?;
         // The call's return point is in t; its jump through the area is the span's last instruction.
-        let t = host.general[usize::from(wcontainers_x86::R11)];
+        let t = host.general[usize::from(number(T))];
         let span =
             in_piece(t.wrapping_sub(1)).ok_or_else(|| format!("a call returning to {t:#x}"))?;
         let ended = match kind {
@@ -361,8 +373,7 @@ pub fn run(
             <X86_64 as Guest>::decode(case.code.code()).ok_or("no instruction to count")?;
         let event = wcontainers_guest_cpu::counted(CODE, &<X86_64 as Guest>::flow(&instruction));
         let count_at = |host: &HostState, span: &Span| -> Result<(), String> {
-            let count =
-                host.general[usize::from(wcontainers_x86::R10)].wrapping_sub(span.lead.into());
+            let count = host.general[usize::from(number(COUNT))].wrapping_sub(span.lead.into());
             let done = u64::from(event && span.side == Side::After);
             if count == done {
                 Ok(())
@@ -840,29 +851,27 @@ fn prologue(case: &Case, stepping: bool) -> Result<Vec<u8>, IcedError> {
     a.mov(rbx, BLOCK)?;
     a.push(qword_ptr(rbx + FLAGS_AT as i32))?;
     a.popfq()?;
-    a.mov(r11, BLOCK + GENERAL_AT)?;
+    let (count, t, u) = (assembled(COUNT), assembled(T), assembled(U));
+    a.mov(t, BLOCK + GENERAL_AT)?;
     let rsp_number = RSP;
     for n in 0..GENERAL_REGISTERS {
         if n == rsp_number || WITHHELD.contains(&(n as u8)) {
             continue;
         }
-        a.mov(
-            general_register(n),
-            qword_ptr(r11 + (n as u64 * WORD) as i32),
-        )?;
+        a.mov(general_register(n), qword_ptr(t + (n as u64 * WORD) as i32))?;
     }
-    a.mov(rsp, qword_ptr(r11 + (rsp_number as u64 * WORD) as i32))?;
-    a.mov(r10, 0u64)?;
-    a.mov(r15, 0u64)?;
-    a.mov(r11, PIECE)?;
-    a.jmp(r11)?;
+    a.mov(rsp, qword_ptr(t + (rsp_number as u64 * WORD) as i32))?;
+    a.mov(count, 0u64)?;
+    a.mov(u, 0u64)?;
+    a.mov(t, PIECE)?;
+    a.jmp(t)?;
     a.assemble(PROLOGUE)
 }
 
 /// `jmp t`.
 fn resume() -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
-    a.jmp(r11)?;
+    a.jmp(assembled(T))?;
     a.assemble(RESUME)
 }
 
