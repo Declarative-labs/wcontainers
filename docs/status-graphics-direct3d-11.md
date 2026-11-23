@@ -423,14 +423,14 @@ and logs/g4h4-t2-*), each the highest level met, on that back end only:
   typed_storage_stores_without_texture_formats_tier1 tests. Their routes serve no level a browser
   without those features meets. The three format support comparisons without features check that
   no device above 10_0 is made and compare at 10_0 (G4h run 9; 9_3 before).
-- So one item of G4's pass bar no longer holds: "a compute shader storing to `R11G11B10_FLOAT`
-  and `R16G16_UNORM` typed views on a device made without texture-formats-tier1" (plan section 12).
-  Typed storage views are shader model 5's, 11_0 only, and a device without texture-formats-tier1
-  cannot truthfully be 11_0 (the item above: no 4-sample `R32G32B32A32_FLOAT` targets in core
-  WebGPU, no 8 samples anywhere in WebGPU). The owner's ruling (report no level whose requirements
-  are not met) and this bar item cannot both hold; the route itself (`StorageFormatThroughBuffer`,
-  `NormAsInteger`) is built and was proven against the RTX 3080 before G4h. Asked of the
-  orchestrator (For the owner).
+- Absent on that back end by the feature level rule (the orchestrator's ruling of 2026-11-23,
+  superseding the G4 bar item "a compute shader storing to `R11G11B10_FLOAT` and `R16G16_UNORM`
+  typed views on a device made without texture-formats-tier1"): typed storage views are shader
+  model 5's, 11_0 only, and a device without texture-formats-tier1 is truthfully 10_0 (above), so
+  it has none. The two tests, both `typed_storage_stores_without_texture_formats_tier1` ones, stay
+  known failures named for that cause; the item no longer counts against the bar. The route itself
+  (`StorageFormatThroughBuffer`, `NormAsInteger`) is built and was proven against the RTX 3080
+  before G4h.
 - Blending into the 8-bit signed and 16-bit normalised formats where the back end does not draw
   into them is part of the second item (`BlendInShader`, the shaders crate's `combine`, Asked).
 
@@ -1105,13 +1105,6 @@ listed case of section 12 has its test against real Direct3D.
   which need a partial sample mask WebGL 2 has no route for). Programs requiring a higher level
   then refuse to start there, as on hardware without the level. Natively on the RTX 3080 the
   device is 11_0.
-- For the orchestrator, a ruling needed: G4's pass bar names "a compute shader storing to
-  `R11G11B10_FLOAT` and `R16G16_UNORM` typed views on a device made without
-  texture-formats-tier1". Under the ruling on levels that device is not 11_0 (Gap list), so it has
-  no typed storage views to store to; the two tests stay known failures, and the store route
-  (`StorageFormatThroughBuffer`) is reached on no configuration a test runs. The owner's ruling and
-  this item cannot both hold; the track does not count it either way (G4h run 10, the ninth
-  check): rule it superseded, or name what should run in its place.
 - atg-simplecomputepc (Gap list): its one difference, inside the Mandelbrot set, comes from
   `frac(1200 / 300)`, which the specification's 2.5-ULP division lets be 3.9999998 or 4.0000001,
   giving opposite ends of its colour map. The RTX 3080 gives 3.9999998, as ours does, when the

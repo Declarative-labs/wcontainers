@@ -887,7 +887,7 @@ fn a_compute_shader_samples_under_minimum_level_clamps_as_direct3d_does() {
 /// WebGPU cannot store into are stored through a buffer of their texels.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "no 11_0 device without texture-formats-tier1: the level's format requirements are not met (Gap list)"]
+#[ignore = "typed storage views absent by the feature level rule: without texture-formats-tier1 the device is truthfully 10_0, which has none (Gap list)"]
 fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
     let tier1 = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         .as_str()
@@ -902,7 +902,7 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
 /// (`NormAsInteger`) and stored through a buffer.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "no 11_0 device without texture-formats-tier1 or 16-bit norm: the level's format requirements are not met (Gap list)"]
+#[ignore = "typed storage views absent by the feature level rule: without texture-formats-tier1 or 16-bit norm the device is truthfully 10_0, which has none (Gap list)"]
 fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does() {
     let off = [
         wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
