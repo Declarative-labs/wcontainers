@@ -222,8 +222,9 @@ pub mod reason {
     /// elsewhere. Detail: the address.
     pub const ADDRESS_ABOVE_SPACE: &str = "address above the address space";
     /// A container's address space asked for wider than the reference's 48 bit one (ARM64's 52
-    /// bit addresses are not built): it gets the reference's. Detail: the size asked for.
-    pub const ADDRESS_SPACE_NARROWED: &str = "address space narrowed to 48 bits";
+    /// bit addresses are not built), or not a whole number of pages: it gets the reference's, or
+    /// the whole pages below what was asked. Detail: the size asked for.
+    pub const ADDRESS_SPACE_NARROWED: &str = "address space narrowed";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes

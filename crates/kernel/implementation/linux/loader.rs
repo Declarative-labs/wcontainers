@@ -643,7 +643,8 @@ fn place<S: crate::System>(
         Some((found, _, segments)) => segment_tails(found, segments)?,
         None => Vec::new(),
     };
-    if map.ceiling < map.end {
+    // The container's first program is checked in any space: one too small for it fails the start.
+    if map.ceiling < map.end || kernel.init.is_none() {
         fits_below_ceiling(
             &map,
             (&header, &segments, bias),

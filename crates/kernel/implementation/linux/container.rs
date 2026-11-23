@@ -998,16 +998,18 @@ impl Kernel {
         cx.random(&mut self.boot_id);
         cx.random(&mut self.files.generation_key);
         self.machine.memory_bytes = start.memory_bytes;
-        if start.address_space_bytes > crate::ARM64_ADDRESS_SPACE_BYTES {
+        let space = crate::memory::page_down(
+            start
+                .address_space_bytes
+                .min(crate::ARM64_ADDRESS_SPACE_BYTES),
+        );
+        if space != start.address_space_bytes {
             self.counters.count(
                 cx.host,
                 crate::counters::reason::ADDRESS_SPACE_NARROWED,
                 start.address_space_bytes,
             );
         }
-        let space = start
-            .address_space_bytes
-            .min(crate::ARM64_ADDRESS_SPACE_BYTES);
         self.machine.address_space_bytes = space;
         self.ceiling = start
             .ceiling
