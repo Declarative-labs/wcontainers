@@ -8,6 +8,43 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, third run: the kernel's runners, and the second check's findings
+
+- [blocking] The owner's runner interface (2b546ee0, merged at 1750855e) is implemented
+  (ff435062, pushed at once): `Kernel::new(config, parallelism)` starts the container as before
+  and returns `parallelism` runners (`KernelRunner`, sharing the kernel's `Arc`, `Send` by an
+  `unsafe impl` with the same bounds and reason as the kernel's `Sync`); `Runner::run` panics as
+  not built, as `Kernel::run` did (For the owner). The whole workspace's `cargo check
+  --all-targets` passes on the ARM64 machine (01:39 UTC, load 17); clippy on the kernel, its suite,
+  the stand-in, the runtime's single kernel and the test policy gives nothing in this track's
+  files; kernel unit tests 18, kernel suite 16, round_trips 6 pass.
+- [blocking] The restart-code line of the first run's section is corrected: ERESTARTNOHAND is
+  514, named, and comes back `WellKnown`; 515 is ENOIOCTLCMD.
+- A guest's connect to `AF_UNSPEC` on a TCP connection to the outside now resets it at once
+  through the system's `disconnect` (outside.rs `disconnect`, flushed at once; a socket given back
+  is released), and the guest's socket keeps the reset pending as Linux does (a read then gives
+  ECONNRESET, inside the container too, where it gave ENOTCONN). The stand-in's test host now
+  resets on `disconnect` and on `TcpClose::Abort` (socket2 0.6.5, MIT OR Apache-2.0, for the
+  linger; no unsafe code). New test outside `a_disconnected_connection_resets_its_outside_end`
+  (guest/disconnectout.c, compared with Docker): before the fix ours read ENOTCONN and the server
+  heard nothing, Docker's ECONNRESET and a reset; now both match. Measured on the ARM64 machine
+  (load 15 to 21): outside 8 passed, inet 23 passed and 3 failed (the ARM list: proc_net,
+  route_questions_and_rules, socket_edges; the first 20 differing lines of the last are Unix
+  sockets' urgent data and listens),
+  netprograms 3, sigio 2, pollmask 1, epoll 1 passed.
+- The suite's check that another process's thread is not suspended through a handle stays in the
+  stand-in's round_trips (`a_handle_takes_no_thread_of_another_process`): the linter's suite shape
+  gives each check one value of one trait of the interface (RULES.md, `conformance_not_run`), and
+  a `Process` handle reaches only its own process, so no suite function can both take through a
+  handle and then ask the kernel. A pair of the kernel and a closure would fit the check's
+  suggestion but not that shape.
+- Recorded For the owner: the lock spins without bound (no way to park a host thread in a
+  `no_std` kernel); 515 to 4095 come back `Ok` as 41 and 58 do. Carried: the FUSE notice wait (next
+  work), the bind departure (For the orchestrator). The single-kernel runtime's `disconnect`
+  (another track's file) still closes in order rather than resetting.
+- The whole suite and the whole LTP comparison at ba9f009e: started on the ARM64 machine at 01:54
+  UTC (scratch kernel/kc3/whole.sh, job kernel/20261123-015423-2251934).
+
 ## KC, second run: the independent check's findings
 
 - [blocking] `Kernel: Sync` no longer rests on a condition callers cannot see (7e2b6df8,
@@ -90,8 +127,11 @@ crates/runtime/implementation/single-kernel.
   asked for through the parent's handle, is still taken by the kernel afterwards.
 - `SystemCallError`: a backend's unnamed error (134 to 511) is now `Err(Unknown(..))`; a known one
   `Err(WellKnown(..))`, the restart codes (ERESTARTSYS, ERESTARTNOINTR, ERESTART_RESTARTBLOCK)
-  included, as before KC. ERESTARTNOHAND (515), which the interface's `Errno` does not name, is
-  `Ok` of the raw value. (Corrected in the second run; the first run said restart codes stay `Ok`.)
+  included, as before KC: all four restart codes, ERESTARTSYS (512), ERESTARTNOINTR (513),
+  ERESTARTNOHAND (514) and ERESTART_RESTARTBLOCK (516), are named by the interface's `Errno` and
+  come back `WellKnown`; 515 (ENOIOCTLCMD), which `Errno` does not name, is `Ok` of the raw value.
+  (Corrected in the third run; the first run said restart codes stay `Ok`, the second gave
+  ERESTARTNOHAND as an unnamed 515.)
 - `FuseServer::receive_notice`: the test host and the runtime answer `NotSupported` (they still
   hand notices as the abi's `Event::BackendNotice`); the policy refuses it, counted, as every
   other outside request; the kernel's own test server never sends one. The kernel does not yet
@@ -164,7 +204,20 @@ crates/runtime/implementation/single-kernel.
   to 511, and Linux leaves 41 and 58 unnamed below 134. Such an answer cannot be `WellKnown` (no
   `Errno` names it) nor `Unknown`, so the embedder's response hook sees it as `Ok` of the raw
   value. Example: a backend answering -41 to a read: the hook gets `Ok(18446744073709551575)`; the
-  guest still gets -41.
+  guest still gets -41. The same holds for 515 to 4095 (515 is ENOIOCTLCMD, which `Errno` does not
+  name; 512, 513, 514 and 516 are named and come back `WellKnown`): the hook gets `Ok` of the raw
+  value, and the guest the error.
+- KC, third run: `Runner::run(&mut self, executor)` is not built, for the reason the entry on
+  `Kernel::run` below gives (no executor call runs a thread; the kernel reads registers from its
+  own executor when it suspends or copies). `Kernel::new` makes `parallelism` runners, each
+  panicking as not built; the kernel runs one thread at a time, within any parallelism.
+- KC, third run: the kernel's lock (`spin::Mutex`, executing.rs) spins without bound, and a
+  process handle holds it while it lasts, so a second host thread calling `suspend_tasks` or
+  `copy_process_context` while a handle or a `with_parts` drive is alive spins a whole core until
+  it ends. The kernel is `no_std`, and neither the kernel nor the executor interface gives it a
+  way to park a host thread. Example: an embedder that holds a process handle on one thread while
+  a watchdog thread suspends a task. A wait the host provides (or a runner that owns its share of
+  the kernel) would settle it; until then the critical sections are each one interface call.
 - KC, second run: the system's `async fn`s carry no `Send` bound, so a kernel that is `Sync` (and
   so keeps and polls a system's waiting calls on whichever host thread calls it) cannot ask for
   it in types. This kernel asks it of whoever starts it: `KernelWithExecutor::start` and
@@ -513,6 +566,10 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KC, third run: the kernel builds again against the owner's runner interface (2b546ee0), and every
+finding of KC's second check is fixed or recorded (see "KC, third run"). KC goes back to its
+independent check once the whole suite and LTP comparison at ba9f009e are read.
 
 KC, second run: every finding of KC's independent check is fixed or recorded (see "KC, second
 run"); `Kernel: Sync` now holds because everything sharing the kernel's records is touched under
@@ -4858,10 +4915,14 @@ Everything a reviewer should know about what is not compared, in one place.
   agents): `git diff origin/main --` of every interface.rs and the kernel's data files shows only
   crates/abi/interface.rs (this track's) and crates/instruction-input-domain/interface.rs (the
   owner's 78fc0da9, not yet merged into agents). Not built and recorded For the owner:
-  `Kernel::run` (panics as not built). Places to break for the check: executing.rs
+  `Runner::run` (panics as not built; it was `Kernel::run` before 2b546ee0). From the third run
+  the whole suite and LTP comparison are scratch kernel/kc3/whole.sh, comparing against
+  ours-20260930-0ce16ef9.tsv (KC's first run). Places to break for the check: executing.rs
   `suspend_threads` (pass `None` to `take_tasks` through `Kernel::suspend_tasks` instead),
   system.rs `response_of` (map every error to `WellKnown`), executing.rs `Held`'s drop (drop the
-  value without the lock: round_trips `copies_are_made_and_let_go_of_on_several_threads` aborts).
+  value without the lock: round_trips `copies_are_made_and_let_go_of_on_several_threads` aborts),
+  inet.rs `disconnect_tcp` (leave out its `outside::disconnect`: outside
+  `a_disconnected_connection_resets_its_outside_end` fails, the server hearing nothing).
   outside.rs `local_end_error`'s release of a socket given back is never reached (the kernel never
   passes `TcpLocalEnd::Bound`; Departures, KC), so breaking it shows nothing.
 
@@ -6356,9 +6417,10 @@ All on this shared Mac; noisy, not benchmarks.
   listen asks the exit node for the guest's port (`LocalPort::Requested`), as a published port
   does. Binding at the system at every bind would claim an exit-node port for each client that
   binds before it connects, which no container on Docker does. So connect and listen pass
-  `TcpLocalEnd::Unbound`; `disconnect` and the release of a socket given back are not reached
-  (outside.rs `local_end_error` keeps the release for when they are). Asked of the orchestrator
-  under "For the orchestrator".
+  `TcpLocalEnd::Unbound`; the release of a socket given back in a connect's or listen's error is
+  not reached (outside.rs `local_end_error` keeps it for when it is). A guest's connect to
+  `AF_UNSPEC` does reach the system's `disconnect` (KC, third run), and a socket it gives back is
+  released. Asked of the orchestrator under "For the orchestrator".
 
 - KA, second and fifteenth runs: a waiting call is not always dropped and asked again at a
   restore, as the brief says. A restore on the same system (the same `Arc`, as the stand-in's
