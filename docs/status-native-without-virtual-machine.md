@@ -5,16 +5,49 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
 ## Where things stand
 
-- W0 (the plan for both forms): written in run 1, revised in run 2 for the first independent check, revised in
-  run 3 (2026-11-23) for the second check's eleven findings; it waits for its next check. How run 3 answered them:
+- W0 (the plan for both forms): written in run 1, revised in run 2 for the first independent check, in run 3 for
+  the second check's eleven findings, and in run 4 (2026-11-23) for the third check's twelve; it waits for its next
+  check. How run 4 answered them:
+  - Forged mapping commands in P (blocking): everything a stub obeys (the `Resume`, the answer word, queued
+    commands, placement requests) is now in a per-thread control page mapped read-only in the stub, which its
+    filter cannot make writable; the register page (request word, exit, registers) stays guest-writable and is
+    validated against the embedder's own records. The filter now also pins the memory memfd's `mmap` offset to the
+    address. The claim for an escaped stub is now exact: it can still write pages it lends to fork children before
+    they copy them, and shared blocks past others' protections; closing that (a sealed file per fork) is the
+    owner's decision 12 (plan 3.7, 9, 12; W1 test of A, B, C added).
+  - Placement (blocking): re-measured with guest work between calls (w0/run4/place.c). A new rule: runners take
+    the least-held CPU from one table per embedder process (so containers spread), sample their CPU's share every
+    10 ms from CPU clocks (1.000 free, 0.50 to 0.56 with one other program), and move under 0.75 to a CPU not
+    marked contended in the last second. Measured: one move, then the free CPU's speed (13.37 to 13.39 against
+    27.8 µs pinned on the busy CPU, Graviton4); with every CPU busy, two moves a run, 1.4 to 1.8% dearer than
+    staying. The busy crossover now compares P against I's work slowed the same way: 69,000 to 70,000 entries per
+    second on Graviton4, 38,000 to 66,000 on the Xeon (plan 4.3, 7, 11). Stub threads pin themselves on a request,
+    so no reported thread id is ever used for pinning.
+  - The yield-then-futex wait: considered and rejected with the third check's figures (20 to 22% cheaper idle,
+    3 ms per round trip on a shared CPU) (plan 4.3).
+  - x86-64 handlers get `SA_RESTORER` (plan 3.6); the stop signal counts from libc's `SIGRTMIN()` (plan 3.7);
+    thread ids are used only in `tgkill` with the zygote's process id (plan 4.1).
+  - W1 drives the kernel through `with_parts` with `next` and `exit` as Unicorn does, until the owner's interface
+    item 1 exists (plan 4.6, 13).
+  - The workload split's figures come from the re-run's correction (plan 7); P's speculation line is now only
+    between guest code: our kernel is shared by every container of an embedder process in both forms (plan 3.7, 7,
+    9).
+  - Base-only access forms in I (exclusives, acquire/release, atomics, structures) cost one more instruction, not
+    in f (plan 3.2, 7).
+  - Page size: the 2026-11-18 ruling is followed by split host pages, built at a new W4 (plan 6, 13; decision 13).
+  - Windows of the transition: a resume's queued commands run with the stop held off (two `rt_sigprocmask` only on
+    resumes that carry commands); the queue's order against a fork's protection holds in W1 and W2 by one thread at
+    a time, and needs a socket-byte witness with parallel threads (plan 3.6, 4.2).
+  - The ARM64 runner thread's SVE state: measured dropped at a system call on Graviton4 (p0 and FFR zero after
+    `getppid`), checked by the start-up probe, `smstop za` on SME hosts (plan 3.8).
+  How run 3 answered the second check:
   - The "unpinned stall" was a lost-wakeup hang in run 2's probe (the guest's futex wait re-read the word instead
     of passing the value it compared; its zygote test had the same fault). Re-measured with a fixed probe
     (w0/run3/slot.c), idle and with spinning programs on the CPUs used. Unpinned does not stall when idle (1 of
     504,000 round trips over 1 ms), but one CPU still halves the round trip, and on busy CPUs one CPU holds a
     3.6 to 3.9 µs median (Graviton4) while two CPUs or the scheduler's own placement wait about 2 ms per round trip.
-    So the placement rule stands with new backing, the "move to another CPU" rule is gone (nothing measured needs
-    it), and "P is for hosts with idle cores" is withdrawn (plan 4.3, 7, 11). The channel's waits now say they
-    pass the compared value.
+    So one CPU stands (run 4 adds the rule for choosing and leaving a contended one, above). The waits now say
+    they pass the compared value.
   - P's slot tables (2^46 bytes each, only three fit in the embedder): every embedder view of a stub's memfds is
     now a 2 MiB window of a bounded cache (16,384 windows, least recently used evicted), measured at 8.5 / 4.8 to
     5.2 µs to map, touch and unmap (plan 4.2, 3.5). This also answers the minor point on large guest
@@ -51,11 +84,15 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - After the check: W1 (form P on ARM64 Linux), plan section 13. It needs the translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter first (below, "Asked of other tracks"); until they exist,
   W1 can build everything of plan sections 3 and 4 that does not run translated code (layout and reservations,
-  memfds and the window cache, the zygote and stubs, the channel, placement and runners, copy-on-write and written
-  marks, stops, the seccomp filter) and test it with hand-written ARM64 pieces.
+  memfds and the window cache, the zygote and stubs, the control and register pages, placement and runners,
+  copy-on-write and written marks, stops, the seccomp filter) and test it with hand-written ARM64 pieces. It drives
+  the kernel through `with_parts` (plan 4.6) and needs none of the owner's interface items.
 
 ## How to run the measurements
 
+- Scratch w0/run4/: `run4.sh <tag>` in /work/nwvm-w0r4 (sent as a tar through `arm-run --ssh` / `x86-run --ssh`,
+  started detached); builds place.c (and sve.c on ARM64) with gcc and writes <tag>-place.out. `./place fixed
+  <kcpu> <gcpu> <work> <calls>`, `./place alone <cpu> <work> <calls>`, `./place rule <cpu,cpu,...> <work> <calls>`.
 - Scratch w0/run3/: `run3.sh <tag>` in /work/nwvm-w0r3 on a rented machine (sent as a tar through `arm-run --ssh` /
   `x86-run --ssh`); builds slot.c with gcc and writes <tag>-slot.out. `./slot futex <per batch> <batches> <cpu_k>
   <cpu_g> <spin cpus or ->` (-1: unpinned), `./slot sigmask`, `./slot window`.
@@ -76,8 +113,15 @@ X32-e +21.8%, X32-p +21.4%, X32-c +21.7% wall, so f = 0.214. Run 3 (w0/run3/; Gr
 to 4.8 / 4.2 to 4.5 µs, unpinned 4.5 to 4.9 / 4.4 to 4.9 µs with every run finished; busy one CPU median 3.7 to
 3.9 / 2.7 to 3.1 µs, mean 6.0 to 7.0 / 4.7 to 5.7 µs; busy two CPUs about 2 ms on both; rt_sigprocmask 125 /
 87 to 89 ns; 2 MiB window map, touch, unmap 8.5 to 8.6 / 4.8 to 5.2 µs. Crossover with one-CPU placement:
-90,000 to 94,000 kernel entries per second on Graviton4 idle, 31,000 to 36,000 on a busy CPU. Run 1's outputs and
-run 2's unpinned "did not finish" runs give no figure.
+90,000 to 94,000 kernel entries per second on Graviton4 idle. Run 3's busy crossover (31,000 to 36,000) is
+withdrawn: it left out that I's work slows on a busy CPU too. Run 4 (w0/run4/; 2026-11-23 11:52 UTC, Graviton4 at
+load 7.4 to 8.2, Xeon at 2.7 to 10.4): with 10.8 µs of work between calls c = 2.60 to 2.63 µs on a free CPU
+(Graviton4), c_busy 6.11 to 6.23 µs beyond the work alone on a CPU shared with a spinner (work alone slowed 2.00
+times); Xeon c 2.9 to 4.5 µs (clock speed varies), c_busy 4.3 to 5.1 µs; CPU share 1.000 free, 0.505 to 0.559
+contended; the placement rule's one move 21 to 22 / 118 to 137 µs, then 13.37 to 13.39 / 18.10 to 18.29 µs per
+call; SVE p0 and FFR zero after `getppid`. Crossover with work between calls 81,000 to 82,000 (Graviton4, free),
+69,000 to 70,000 (every CPU contended); Xeon 25,000 to 52,000 and 38,000 to 66,000. Run 1's outputs and run 2's
+unpinned "did not finish" runs give no figure.
 
 ## Asked of other tracks
 
@@ -124,13 +168,21 @@ run 2's unpinned "did not finish" runs give no figure.
   - per-thread watches under P, by a process per guest thread;
   - I's runner threads holding off the embedder's SIGCANCEL and SIGSETXID while they run;
   - I's 4 GiB per guest process, against larger windows at one more instruction per access;
-  - I's guests sharing one process with no line between them against branch target injection and cache timing.
+  - I's guests sharing one process with no line between them against branch target injection and cache timing;
+  - P's defence in depth behind translation: an escaped stub can write pages it lends to fork children before they
+    copy them, and shared blocks; close it with a sealed file per fork, or accept;
+  - hosts with pages larger than 4 KiB: the ruling of 2026-11-18 followed by split host pages, built at W4 after
+    both forms work on 4 KiB hosts.
 
 ## Departures from the plan
 
 - The brief's "Linux hosts on ARM64 and x86-64 first" is built in two steps: ARM64 at W1 and W2, x86-64 at W3,
   because x86's native output (the x86 track's XN1, XN2) does not exist yet and both forms run only translated code.
   x86's side of both forms is decided now (plan 3.10, from docs/x86-native-output.md).
+- The owner's 2026-11-18 ruling that a back end gives the guest 4 KiB pages on whatever the host has is followed
+  (plan section 6, split host pages), but built last, at W4: until then both forms refuse to start on a host whose
+  pages are larger than 4 KiB (Apple silicon, 64 KiB-page ARM64 kernels), named. Cloud ARM64 Linux machines run
+  4 KiB pages by default, so W1 to W3 cover the case the ruling of 2026-11-23 is about first.
 
 ## Unsafe code
 
