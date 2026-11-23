@@ -5,6 +5,7 @@ use core::hint::black_box;
 
 use js_sys::WebAssembly::Memory;
 use js_sys::{Function, Reflect, Uint8Array};
+use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::{console_log, wasm_bindgen_test};
 use wasm_encoder::{
@@ -261,6 +262,51 @@ fn tables<E: WebAssemblyEngine<HostContext = i32> + FunctionTypeBinder<(), ()>>(
     );
 }
 
+#[wasm_bindgen(inline_js = r#"
+export function newMemory(shared) {
+  return new WebAssembly.Memory({ initial: 1, maximum: 1, shared });
+}
+export function copyOut(guest, offset, own, address, length) {
+  new Uint8Array(own.buffer, address, length).set(new Uint8Array(guest.buffer, offset, length));
+}
+export function copyIn(guest, offset, own, address, length) {
+  new Uint8Array(guest.buffer, offset, length).set(new Uint8Array(own.buffer, address, length));
+}
+"#)]
+extern "C" {
+    /// Returns a memory of one page, shared or not.
+    #[wasm_bindgen(js_name = newMemory)]
+    fn new_memory(shared: bool) -> Memory;
+    /// Copies from the guest memory into our own through typed-array views, as hand-written glue would.
+    #[wasm_bindgen(js_name = copyOut)]
+    fn copy_out(guest: &Memory, offset: u32, own: &JsValue, address: u32, length: u32);
+    /// Copies from our own memory into the guest memory through typed-array views.
+    #[wasm_bindgen(js_name = copyIn)]
+    fn copy_in(guest: &Memory, offset: u32, own: &JsValue, address: u32, length: u32);
+}
+
+/// Takes the figures of copying through typed-array views made by hand-written glue, which the engine does not use.
+fn glue_views() {
+    let own = wasm_bindgen::memory();
+    let mut buffer = vec![u8::MAX; LARGE];
+    for shared in [false, true] {
+        let memory = new_memory(shared);
+        for size in [SMALL, LARGE] {
+            let label = format!("{size} bytes of a memory shared {shared}");
+            let address = buffer.as_mut_ptr() as usize as u32;
+            report(
+                &format!("glue views: read {label}"),
+                time(COPIES, || copy_out(&memory, 0, &own, address, size as u32)),
+            );
+            report(
+                &format!("glue views: write {label}"),
+                time(COPIES, || copy_in(&memory, 0, &own, address, size as u32)),
+            );
+        }
+    }
+    black_box(&mut buffer);
+}
+
 /// Takes the figures through js-sys's generic objects, which the engine does not use, to compare its route with.
 fn generic_objects() {
     let mut engine = engine();
@@ -330,4 +376,5 @@ fn figures() {
     copies(engine());
     tables(engine());
     generic_objects();
+    glue_views();
 }

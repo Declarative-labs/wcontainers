@@ -91,10 +91,6 @@ extern "C" {
     pub fn new_i32_global(mutable: bool, value: i32) -> Result<Global, JsValue>;
     #[wasm_bindgen(js_name = newI64Global, catch)]
     pub fn new_i64_global(mutable: bool, value: i64) -> Result<Global, JsValue>;
-    #[wasm_bindgen(js_name = newF32Global, catch)]
-    pub fn new_f32_global(mutable: bool, value: f32) -> Result<Global, JsValue>;
-    #[wasm_bindgen(js_name = newF64Global, catch)]
-    pub fn new_f64_global(mutable: bool, value: f64) -> Result<Global, JsValue>;
     #[wasm_bindgen(js_name = newFunctionGlobal, catch)]
     pub fn new_function_global(mutable: bool, value: &JsValue) -> Result<Global, JsValue>;
     #[wasm_bindgen(js_name = numberValue)]

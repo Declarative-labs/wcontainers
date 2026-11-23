@@ -7,8 +7,8 @@ use core::mem::size_of;
 
 use wasm_encoder::{
     CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-    GlobalSection, GlobalType, ImportSection, InstructionSink, MemArg, MemArgTarget, MemoryType,
-    Module, RefType, TypeSection, ValType,
+    GlobalSection, GlobalType, Ieee32, Ieee64, ImportSection, InstructionSink, MemArg,
+    MemArgTarget, MemoryType, Module, RefType, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::memory::PAGE_SIZE;
 
@@ -250,14 +250,20 @@ pub fn caller(parameters: &[ValType], results: &[ValType]) -> Vec<u8> {
     assemble(&types, &imports, &functions, &exports, &[body])
 }
 
-/// A module that imports a function taking the index of a host function, and exports one of the given type that
-/// leaves its arguments in the slots, calls the import with the index, and returns the results left in the slots.
-pub fn host(parameters: &[ValType], results: &[ValType], host_function: u32) -> Vec<u8> {
+/// A module that imports a function taking an engine's number and the index of one of its host functions, and exports
+/// one of the given type that leaves its arguments in the slots, calls the import with both, and returns the results
+/// left in the slots.
+pub fn host(
+    parameters: &[ValType],
+    results: &[ValType],
+    engine: u64,
+    host_function: u32,
+) -> Vec<u8> {
     let mut types = TypeSection::new();
     types
         .ty()
         .function(parameters.iter().copied(), results.iter().copied());
-    types.ty().function([ValType::I32], []);
+    types.ty().function([ValType::I64, ValType::I32], []);
     let mut imports = ImportSection::new();
     imports.import(NAMESPACE, CALLEE, EntityType::Function(1));
     imports.import(NAMESPACE, SCRATCH_MEMORY, scratch_memory());
@@ -272,6 +278,7 @@ pub fn host(parameters: &[ValType], results: &[ValType], host_function: u32) -> 
         sink.local_get(index as u32);
         store(&mut sink, *value_type, index);
     }
+    sink.i64_const(engine.cast_signed());
     sink.i32_const(host_function.cast_signed());
     sink.call(0);
     for (index, value_type) in results.iter().enumerate() {
@@ -291,8 +298,15 @@ pub const GLOBAL_VALUE_TYPES: [ValType; 6] = [
     ValType::Ref(RefType::FUNCREF),
 ];
 
-/// A module that imports a global of the given type, so that it instantiates only with such a global; for a vector,
-/// it also exports `READ` and, when the global is mutable, `WRITE`, which move its value through the first slot.
+/// Answers whether a global of the value type is read and written through the first slot: a float, whose NaN's bits a
+/// JavaScript number does not keep, or a vector, which JavaScript cannot hold.
+pub fn global_through_slot(value_type: ValType) -> bool {
+    matches!(value_type, ValType::F32 | ValType::F64 | ValType::V128)
+}
+
+/// A module that imports a global of the given type, so that it instantiates only with such a global; for a type
+/// read through the slot, it also exports `READ` and, when the global is mutable, `WRITE`, which move its value
+/// through the first slot.
 pub fn global_access(value_type: ValType, mutable: bool) -> Vec<u8> {
     let mut types = TypeSection::new();
     let mut imports = ImportSection::new();
@@ -308,7 +322,7 @@ pub fn global_access(value_type: ValType, mutable: bool) -> Vec<u8> {
     let mut functions = FunctionSection::new();
     let mut exports = ExportSection::new();
     let mut bodies = Vec::new();
-    if value_type == ValType::V128 {
+    if global_through_slot(value_type) {
         types.ty().function(NO_VALUES, NO_VALUES);
         imports.import(NAMESPACE, SCRATCH_MEMORY, scratch_memory());
         let mut read = Function::new_with_locals_types(NO_VALUES);
@@ -372,16 +386,21 @@ pub fn memory_access(memory64: bool, shared: bool) -> Vec<u8> {
     assemble(&types, &imports, &functions, &exports, &bodies)
 }
 
-/// A module that defines and exports one vector global holding the value.
-pub fn vector_global(mutable: bool, value: u128) -> Vec<u8> {
+/// A module that defines and exports one global of a type read through the slot, holding the value of the bits.
+pub fn defined_global(value_type: ValType, mutable: bool, bits: u128) -> Vec<u8> {
+    let value = match value_type {
+        ValType::F32 => ConstExpr::f32_const(Ieee32::new(bits as u32)),
+        ValType::F64 => ConstExpr::f64_const(Ieee64::new(bits as u64)),
+        _ => ConstExpr::v128_const(bits.cast_signed()),
+    };
     let mut globals = GlobalSection::new();
     globals.global(
         GlobalType {
-            val_type: ValType::V128,
+            val_type: value_type,
             mutable,
             shared: false,
         },
-        &ConstExpr::v128_const(value.cast_signed()),
+        &value,
     );
     let mut exports = ExportSection::new();
     exports.export(GLOBAL, ExportKind::Global, 0);

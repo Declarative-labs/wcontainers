@@ -178,14 +178,6 @@ export function newI64Global(mutable, value) {
   return new WebAssembly.Global({ value: "i64", mutable }, value);
 }
 
-export function newF32Global(mutable, value) {
-  return new WebAssembly.Global({ value: "f32", mutable }, value);
-}
-
-export function newF64Global(mutable, value) {
-  return new WebAssembly.Global({ value: "f64", mutable }, value);
-}
-
 export function newFunctionGlobal(mutable, value) {
   return new WebAssembly.Global({ value: "anyfunc", mutable }, value);
 }

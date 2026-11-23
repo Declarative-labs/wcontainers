@@ -1,6 +1,6 @@
 //! Functions bound to Rust signatures: each call moves its values through the scratch slots and a small module.
 
-use core::cell::RefCell;
+use core::cell::Cell;
 use core::marker::PhantomData;
 
 use js_sys::Function;
@@ -23,14 +23,54 @@ pub struct BrowserFunction<Parameters, Results> {
     signature: PhantomData<fn(Parameters) -> Results>,
 }
 
-thread_local! {
-    /// The host functions of this thread's engines, by the index their host module passes.
-    static HOST_FUNCTIONS: RefCell<Vec<Box<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
+/// A host function as its engine keeps it: it takes its arguments from the slots and leaves its result there.
+pub type HostFunction = Box<dyn Fn()>;
+
+/// The number of the engine whose code runs on this thread, and its host functions by the index its host modules pass.
+#[derive(Default)]
+pub struct Running {
+    engine: u64,
+    functions: Vec<HostFunction>,
 }
 
-/// Runs the host function with the index, whose arguments are in the slots and which leaves its result there.
-extern "C" fn run_host_function(index: u32) {
-    HOST_FUNCTIONS.with_borrow(|functions| functions[index as usize]());
+impl Running {
+    pub fn new(engine: u64, functions: Vec<HostFunction>) -> Self {
+        Self { engine, functions }
+    }
+
+    /// Answers whether these are the host functions of the engine with the number.
+    pub fn is(&self, engine: u64) -> bool {
+        self.engine == engine
+    }
+
+    pub fn into_functions(self) -> Vec<HostFunction> {
+        self.functions
+    }
+}
+
+/// The number no engine has, which `Running` holds while no engine's code runs.
+const NO_ENGINE: u64 = u64::MIN;
+
+thread_local! {
+    /// The host functions of the engine whose code runs on this thread; a host function takes them while it runs.
+    static RUNNING: Cell<Running> = const { Cell::new(Running { engine: NO_ENGINE, functions: Vec::new() }) };
+}
+
+/// Gives the thread the host functions of the engine whose code is to run, returning those it held.
+pub fn run(running: Running) -> Running {
+    RUNNING.replace(running)
+}
+
+/// Runs the host function of the engine with the number and the index, whose arguments are in the slots and which
+/// leaves its result there.
+extern "C" fn run_host_function(engine: u64, index: u32) {
+    let running = RUNNING.take();
+    if !running.is(engine) {
+        RUNNING.set(running);
+        panic!("a host function runs only inside a call into its own engine's code");
+    }
+    running.functions[index as usize]();
+    RUNNING.set(running);
 }
 
 impl<HostContext> FunctionStore for BrowserEngine<HostContext> {
@@ -66,18 +106,22 @@ fn bind_caller(
     Ok(glue::instance_export(&instance, ENTRY).unchecked_into())
 }
 
-/// Returns the entry of a host module that runs the host function.
-fn bind_host(parameters: &[ValType], results: &[ValType], function: Box<dyn Fn()>) -> Function {
-    let index = HOST_FUNCTIONS.with_borrow_mut(|functions| {
-        functions.push(function);
-        functions.len() - 1
-    });
-    let module = glue::compile(&adapter::host(parameters, results, index as u32))
+/// Returns the entry of a host module that runs the host function, which the engine keeps from now on.
+fn bind_host<HostContext>(
+    engine: &mut BrowserEngine<HostContext>,
+    parameters: &[ValType],
+    results: &[ValType],
+    function: HostFunction,
+) -> Function {
+    let index = u32::try_from(engine.host_functions.len())
+        .expect("an engine has fewer host functions than a 32-bit index counts");
+    engine.host_functions.push(function);
+    let module = glue::compile(&adapter::host(parameters, results, engine.number, index))
         .expect("a host module is valid");
     let table: Table = wasm_bindgen::function_table().unchecked_into();
     let runner = glue::table_element(
         &table,
-        f64::from(run_host_function as extern "C" fn(u32) as usize as u32),
+        f64::from(run_host_function as extern "C" fn(u64, u32) as usize as u32),
     );
     let instance = glue::instantiate_with_two(
         &module,
@@ -131,7 +175,7 @@ macro_rules! binders {
                     function_types(&[$(value_type::<$parameter>()),*], result_types::<Results>())
                         .expect("a host function takes and returns value types");
                 let context = self.lent.clone();
-                bind_host(&parameters, &results, Box::new(move || {
+                bind_host(self, &parameters, &results, Box::new(move || {
                     let arguments = ($(from_slot::<$parameter>(slot($index)),)*);
                     let mut lent = context.take().expect("a host function runs inside a call into its engine's code");
                     let returned = function(&mut *lent, arguments);
@@ -152,9 +196,9 @@ macro_rules! binders {
                 ($($argument,)*): ($($parameter,)*),
             ) -> Result<Results, InvokeError<JsValue>> {
                 $(set_slot($index, to_slot($argument));)*
-                lend(engine);
+                let outer = lend(engine);
                 let returned = glue::call(&self.caller);
-                take_back(engine);
+                take_back(engine, outer);
                 finish(returned)
             }
         }

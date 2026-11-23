@@ -7,6 +7,7 @@ mod store;
 
 use core::cell::Cell;
 use core::convert::Infallible;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -14,13 +15,18 @@ use js_sys::WebAssembly::{Instance, Memory, Module};
 use wasm_bindgen::{JsCast, JsValue};
 use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
 
+use function::{HostFunction, Running};
+
 pub use function::BrowserFunction;
 pub use store::{BrowserGlobal, BrowserMemory};
 
-/// An engine of one thread: the host context, which it lends to its host functions while its code runs.
+/// An engine of one thread: the host context and the host functions, which it lends to the thread while its code runs.
 pub struct BrowserEngine<HostContext> {
     context: Option<Box<HostContext>>,
     lent: Rc<Cell<Option<Box<HostContext>>>>,
+    /// Tells this engine's host modules from those of other engines.
+    number: u64,
+    host_functions: Vec<HostFunction>,
 }
 
 /// A compiled module, which instantiates in any engine of a worker it was compiled in or posted to.
@@ -47,17 +53,25 @@ impl Drop for Registration {
     }
 }
 
-thread_local! {
-    /// Telling this worker's registrations from those of other workers, whose objects may be posted to it.
-    static WORKER: u64 = (js_sys::Math::random() * (1u64 << (f64::MANTISSA_DIGITS - u32::BITS)) as f64) as u64;
-    static REGISTERED: Cell<u32> = const { Cell::new(u32::MIN) };
+/// The last number given to an engine or a registration; in our own memory, so shared by every thread that shares it.
+static NUMBERED: AtomicU64 = AtomicU64::new(u64::MIN);
+
+/// Returns a number no engine or registration of any thread that shares our memory has had.
+fn new_number() -> u64 {
+    NUMBERED.fetch_add(1, Ordering::Relaxed) + 1
 }
 
-/// Returns a registration id no other worker's registration has, which a JavaScript number holds exactly.
+/// Returns a registration whose id no other has had, which a JavaScript number holds exactly.
 fn new_id(forget: fn(f64)) -> Registration {
-    let count = REGISTERED.with(|registered| registered.replace(registered.get().wrapping_add(1)));
-    let id = (WORKER.with(|worker| *worker) << u32::BITS | u64::from(count)) as f64;
-    Registration { id, forget }
+    let number = new_number();
+    assert!(
+        number < 1 << f64::MANTISSA_DIGITS,
+        "a JavaScript number holds every registration id exactly"
+    );
+    Registration {
+        id: number as f64,
+        forget,
+    }
 }
 
 /// Returns the object to post to another worker, where `receive_module` makes the module known, or nothing when
@@ -92,14 +106,26 @@ pub fn receive_shared_memory(posted: &Memory) -> Option<BrowserSharedMemory> {
     })
 }
 
-/// Lends the host context to the host functions for a call into the engine's code.
-fn lend<HostContext>(engine: &mut BrowserEngine<HostContext>) {
+/// Lends the host context and the host functions to the thread for a call into the engine's code, returning the host
+/// functions of the call it is made inside, which `take_back` gives back.
+fn lend<HostContext>(engine: &mut BrowserEngine<HostContext>) -> Running {
     engine.lent.set(engine.context.take());
+    function::run(Running::new(
+        engine.number,
+        core::mem::take(&mut engine.host_functions),
+    ))
 }
 
-/// Takes the host context back from the host functions after a call into the engine's code.
-fn take_back<HostContext>(engine: &mut BrowserEngine<HostContext>) {
+/// Takes the host context and the host functions back after a call into the engine's code; a host function that
+/// panicked kept them, and its panic goes on from here, as it would have if the call could unwind.
+fn take_back<HostContext>(engine: &mut BrowserEngine<HostContext>, outer: Running) {
+    let running = function::run(outer);
     engine.context = engine.lent.take();
+    assert!(
+        running.is(engine.number) && engine.context.is_some(),
+        "a host function panicked in a call into the engine's code"
+    );
+    engine.host_functions = running.into_functions();
 }
 
 impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
@@ -114,6 +140,8 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
         Ok(Self {
             context: Some(Box::new(host_context)),
             lent: Rc::default(),
+            number: new_number(),
+            host_functions: Vec::new(),
         })
     }
 
@@ -147,9 +175,9 @@ impl<HostContext> WebAssemblyEngine for BrowserEngine<HostContext> {
             };
             glue::add_import(&object, import.module_name, import.item_name, value);
         }
-        lend(self);
+        let outer = lend(self);
         let instance = glue::instantiate(&module, &object);
-        take_back(self);
+        take_back(self, outer);
         instance
     }
 

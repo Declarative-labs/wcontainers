@@ -16,6 +16,10 @@ name = "conformance"
 path = "conformance.rs"
 
 [[test]]
+name = "behaviour"
+path = "behaviour.rs"
+
+[[test]]
 name = "workers"
 path = "workers.rs"
 

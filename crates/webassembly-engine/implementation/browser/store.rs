@@ -241,19 +241,19 @@ impl<HostContext> TableStore for BrowserEngine<HostContext> {
     }
 }
 
-/// A global: the JavaScript API's object, the value type found for it, and for a vector its access module.
+/// A global: the JavaScript API's object, the value type found for it, and for a float or a vector its access module.
 #[derive(Clone)]
 pub struct BrowserGlobal {
     global: Global,
     /// Nothing for a reference type other than `funcref`, which `Value` does not hold.
     value_type: Option<ValType>,
     mutability: Mutability,
-    vector: Option<VectorAccess>,
+    through_slot: Option<SlotAccess>,
 }
 
-/// The exports that read a vector global into the first slot and write it from there, which JavaScript cannot.
+/// The exports that read a global into the first slot and write it from there, keeping bits JavaScript would not.
 #[derive(Clone)]
-struct VectorAccess {
+struct SlotAccess {
     read: Function,
     write: Option<Function>,
 }
@@ -270,7 +270,7 @@ thread_local! {
 
 /// Instantiates the access module with the global, or answers nothing when the global has another type.
 fn access(module: &Module, value_type: ValType, global: &Global) -> Option<Instance> {
-    if value_type == ValType::V128 {
+    if adapter::global_through_slot(value_type) {
         glue::instantiate_with_two(
             module,
             NAMESPACE,
@@ -318,10 +318,10 @@ pub fn global_of(global: Global) -> BrowserGlobal {
             global,
             value_type: None,
             mutability: Mutability::Constant,
-            vector: None,
+            through_slot: None,
         };
     };
-    let vector = (value_type == ValType::V128).then(|| VectorAccess {
+    let through_slot = adapter::global_through_slot(value_type).then(|| SlotAccess {
         read: glue::instance_export(&instance, READ).unchecked_into(),
         write: (mutability == Mutability::Variable)
             .then(|| glue::instance_export(&instance, WRITE).unchecked_into()),
@@ -330,8 +330,34 @@ pub fn global_of(global: Global) -> BrowserGlobal {
         global,
         value_type: Some(value_type),
         mutability,
-        vector,
+        through_slot,
     }
+}
+
+/// Moves the global's value into the first slot.
+fn read_through_slot(global: &BrowserGlobal) -> Result<u128, ReadGlobalError> {
+    let access = global.through_slot.as_ref().ok_or(ReadGlobalError)?;
+    glue::call(&access.read);
+    Ok(slot(0))
+}
+
+/// Sets the mutable global to the value of the bits through the first slot.
+fn write_through_slot(global: &BrowserGlobal, bits: u128) -> Result<(), WriteGlobalError> {
+    let write = global
+        .through_slot
+        .as_ref()
+        .and_then(|access| access.write.as_ref())
+        .ok_or(WriteGlobalError::Constant)?;
+    set_slot(0, bits);
+    glue::call(write);
+    Ok(())
+}
+
+/// Returns a new global of a type read through the slot, holding the value of the bits.
+fn defined_global(value_type: ValType, mutable: bool, bits: u128) -> Result<Global, JsValue> {
+    let module = glue::compile(&adapter::defined_global(value_type, mutable, bits))?;
+    let instance = glue::instantiate(&module, &glue::new_imports())?;
+    Ok(glue::instance_export(&instance, GLOBAL).unchecked_into())
 }
 
 impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
@@ -347,13 +373,9 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
         let global = match value {
             Value::I32(value) => glue::new_i32_global(mutable, value)?,
             Value::I64(value) => glue::new_i64_global(mutable, value)?,
-            Value::F32(value) => glue::new_f32_global(mutable, value)?,
-            Value::F64(value) => glue::new_f64_global(mutable, value)?,
-            Value::V128(value) => {
-                let module = glue::compile(&adapter::vector_global(mutable, value))?;
-                let instance = glue::instantiate(&module, &glue::new_imports())?;
-                glue::instance_export(&instance, GLOBAL).unchecked_into()
-            }
+            Value::F32(value) => defined_global(ValType::F32, mutable, value.to_bits().into())?,
+            Value::F64(value) => defined_global(ValType::F64, mutable, value.to_bits().into())?,
+            Value::V128(value) => defined_global(ValType::V128, mutable, value)?,
             Value::FunctionReference(function) => glue::new_function_global(
                 mutable,
                 function.as_ref().map_or(&JsValue::NULL, AsRef::as_ref),
@@ -367,13 +389,9 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
         Ok(match global.value_type.ok_or(ReadGlobalError)? {
             ValType::I32 => Value::I32(glue::number_value(object) as i32),
             ValType::I64 => Value::I64(glue::big_int_value(object)),
-            ValType::F32 => Value::F32(glue::number_value(object) as f32),
-            ValType::F64 => Value::F64(glue::number_value(object)),
-            ValType::V128 => {
-                let vector = global.vector.as_ref().ok_or(ReadGlobalError)?;
-                glue::call(&vector.read);
-                Value::V128(slot(0))
-            }
+            ValType::F32 => Value::F32(f32::from_bits(read_through_slot(global)? as u32)),
+            ValType::F64 => Value::F64(f64::from_bits(read_through_slot(global)? as u64)),
+            ValType::V128 => Value::V128(read_through_slot(global)?),
             ValType::Ref(_) => {
                 let element = glue::reference_value(object);
                 Value::FunctionReference((!element.is_null()).then(|| element.unchecked_into()))
@@ -396,18 +414,12 @@ impl<HostContext> GlobalStore for BrowserEngine<HostContext> {
             }
             (Some(ValType::I64), Value::I64(value)) => glue::set_big_int_value(object, value),
             (Some(ValType::F32), Value::F32(value)) => {
-                glue::set_number_value(object, f64::from(value))
+                write_through_slot(global, value.to_bits().into())?;
             }
-            (Some(ValType::F64), Value::F64(value)) => glue::set_number_value(object, value),
-            (Some(ValType::V128), Value::V128(value)) => {
-                let write = global
-                    .vector
-                    .as_ref()
-                    .and_then(|vector| vector.write.as_ref());
-                let write = write.ok_or(WriteGlobalError::Constant)?;
-                set_slot(0, value);
-                glue::call(write);
+            (Some(ValType::F64), Value::F64(value)) => {
+                write_through_slot(global, value.to_bits().into())?;
             }
+            (Some(ValType::V128), Value::V128(value)) => write_through_slot(global, value)?,
             (Some(ValType::Ref(_)), Value::FunctionReference(function)) => {
                 glue::set_reference_value(
                     object,
