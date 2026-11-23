@@ -86,6 +86,9 @@ runtime 13, and its 2 new network tests run on their own; arm64 9. All passed, a
 datagram wakes its wait once and later datagrams are not told until it is waited on again; a connection and its
 bytes wake the listener's and the stream's waits) pass on the code before the change too.
 
+The ban is on: with `pub fn ban_probe() { unsafe {} }` added to a copy on the ARM machine, arm64, the route
+resolver host and the tcp suite each fail with "usage of an `unsafe` block" (`-F unsafe-code`).
+
 ## How to run
 - Scripts in pyro-parked/wcontainers-scratch/no-unsafe, run as
   `cloud/arm-run <checkout> --name no-unsafe -- "$(cat <scratch>/<script>)"`:
