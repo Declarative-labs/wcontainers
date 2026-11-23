@@ -2686,6 +2686,28 @@ fn main() -> windows::core::Result<()> {
                     return c;
                 }",
             );
+            // First a draw with no input layout ever bound, the buffers and shader set.
+            let t = target()?;
+            let rt = rtv(&t);
+            unsafe {
+                viewport(w, h);
+                context.IASetVertexBuffers(
+                    0,
+                    SLOTS,
+                    Some(buffers.as_ptr()),
+                    Some(strides.as_ptr()),
+                    Some(offsets.as_ptr()),
+                );
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.VSSetShader(shader.as_ref(), None);
+                context.PSSetShader(passed.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+            }
+            let r = unsafe { device.GetDeviceRemovedReason() };
+            println!("no input layout: GetDeviceRemovedReason {:#010x}", code(r));
+            print("no input layout", &t, 16);
             let t = target()?;
             let rt = rtv(&t);
             unsafe {
@@ -2706,14 +2728,8 @@ fn main() -> windows::core::Result<()> {
                 context.OMSetRenderTargets(None, None);
             }
             print("32 slots", &t, 16);
-            let t = target()?;
-            let rt = rtv(&t);
             unsafe {
                 context.IASetInputLayout(None);
-                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
-                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
-                context.Draw(3, 0);
-                context.OMSetRenderTargets(None, None);
                 let none: [Option<ID3D11Buffer>; SLOTS as usize] = Default::default();
                 context.IASetVertexBuffers(
                     0,
@@ -2723,9 +2739,6 @@ fn main() -> windows::core::Result<()> {
                     Some(offsets.as_ptr()),
                 );
             }
-            let r = unsafe { device.GetDeviceRemovedReason() };
-            println!("no input layout: GetDeviceRemovedReason {:#010x}", code(r));
-            print("no input layout", &t, 16);
             for count in [15, 30, 31] {
                 let decl: String = (0..count)
                     .map(|i| format!("float4 v{i} : V{i}; "))

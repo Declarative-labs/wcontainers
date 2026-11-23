@@ -5174,9 +5174,11 @@ impl<B: Backend> Device<B> {
                         .as_ref()
                         .is_some_and(|l| l.elements.iter().any(|e| e.slot as usize == slot))
                 };
+                // Only the slots the back end fetches: those the vertex program fetches past its
+                // streams are bound as storage.
                 let vertex_buffers: [Option<VertexBinding<'_, B>>; VERTEX_SLOTS] =
                     std::array::from_fn(|slot| match (&vertex_handles[slot], &zero_stream) {
-                        (Some((b, offset)), _) => Some(VertexBinding {
+                        (Some((b, offset)), _) if read(slot) => Some(VertexBinding {
                             buffer: &b.handle,
                             offset: u64::from(*offset),
                         }),
