@@ -5337,6 +5337,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-webassembly-engine-wasmtime"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "wasm-encoder 0.263.0",
+ "wasmtime",
+ "wcontainers-webassembly-engine",
+ "wcontainers-webassembly-engine-conformance",
+]
+
+[[package]]
 name = "wcontainers-x86"
 version = "0.1.0"
 dependencies = [
