@@ -311,12 +311,11 @@ Next, in order (run 26):
 2. Layered geometry output (dEQP `geometry_shading.layered` and `instanced`, KHR `geometry_shader`
    layered cases, `texture_cube_map_array` with layers): the design is in the gap list; with it,
    clears of layered framebuffers on every layer.
-3. A texture bound as a writable and a read-only image in one dispatch (KHR
-   `advanced-copyImage-cs`); wide points (KHR-GL33 `restart_mode`, the NotSupported wide-point
-   groups); integer cube map arrays sampled with gradients.
-4. Still not traced: the run-time gather offsets at edges, `advanced-allMips-cs`,
-   `advanced-sync-imageAccess2`, `basic-glsl-misc-fs`, the storage coherence of
-   `synchronization` and `advanced-readWrite-case1-cs`.
+3. Wide points (KHR-GL33 `restart_mode`, the NotSupported wide-point groups); integer cube map
+   arrays sampled with gradients.
+4. Still not traced: the run-time gather offsets at edges, `advanced-copyImage-cs`,
+   `advanced-allMips-cs`, `advanced-sync-imageAccess2`, `basic-glsl-misc-fs`, the storage
+   coherence of `synchronization` and `advanced-readWrite-case1-cs`.
 5. This track's causes found and not built: an input read at the centroid and at an offset,
    storage blocks in tessellation programs (KHR-GLES32's 464 NotSupported).
 6. Built but not this track's to end: the point size between staged stages (shaders track,
@@ -375,10 +374,11 @@ Run 26's changes to the rows below (the groups run 25 left not yet read, read fr
   load at the nearest texel with the level the bridge computes from the gradients,
   `wc_nir_nearest_integer_textures`): this track's; the level's computation is not yet checked
   against the case.
-- KHR-GLES31 `shader_image_load_store.advanced-copyImage-cs`: one texture bound in one dispatch
-  as a writable image and as a read-only image; WebGPU's usage rules refuse a texture used both
-  ways in one dispatch, so the dispatch is dropped (the read returns zeros). This track's (bind
-  both through one writable view where the formats allow, or the read through a copy), not built.
+- KHR-GLES31 `shader_image_load_store.advanced-copyImage-cs`: a first dispatch copies an RGBA32F
+  texture through a read-only image into a second texture through a write-only image; a second
+  dispatch reads the second texture through a read-only image at another unit and gets zeros. Not
+  yet traced (the second texture is bound at both units throughout, written as one and read as
+  the other: if a dispatch binds both, WebGPU refuses a texture used both ways in one dispatch).
   `advanced-allMips-cs`: four levels of one RGBA32F texture as read-write images (bound through
   buffers of their texels, as WebGPU has no read-write RGBA32F); levels 4 and 3 read zero; not
   yet traced. `advanced-sync-imageAccess2`: not yet traced.
