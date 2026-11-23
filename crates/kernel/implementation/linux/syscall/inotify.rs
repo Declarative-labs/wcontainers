@@ -415,20 +415,26 @@ fn place_of(node: &Node) -> Option<(Node, Vec<u8>)> {
 
 /// An event about an open file: on its inode and the directory it was opened in.
 pub(crate) fn file_changed(kernel: &mut Kernel, file: &FileRef, mask: u32) {
-    let (node, dentry) = {
+    let (node, dentry, opened) = {
         let file = file.borrow();
         if file.anon.is_some() {
             return;
         }
-        (file.node.clone(), file.dentry.clone())
+        (file.node.clone(), file.dentry.clone(), file.id)
     };
     let parent = dentry.and_then(|(parent, name)| parent.upgrade().map(|parent| (parent, name)));
     // The name it was opened by is gone, and it was not moved to another (`d_unlinked`). A
-    // backend directory's names are the backend's: there a name goes only with a link of the
-    // inode, which an unlink through the kernel takes.
+    // backend directory's names are the backend's: there a name goes with an unlink or a
+    // replacing rename through the kernel, which notes it on the inode.
+    let removed_from_backend = parent.as_ref().is_some_and(|(parent, name)| {
+        crate::fs::backend::remote(parent).is_some()
+            && node
+                .borrow()
+                .name_removed_since(&Rc::downgrade(parent), name, opened)
+    });
     let names_it = parent.as_ref().is_some_and(|(parent, name)| {
         if crate::fs::backend::remote(parent).is_some() {
-            return node.borrow().nlink > 0;
+            return node.borrow().nlink > 0 && !removed_from_backend;
         }
         parent
             .borrow()
@@ -436,7 +442,9 @@ pub(crate) fn file_changed(kernel: &mut Kernel, file: &FileRef, mask: u32) {
             .and_then(|entries| entries.get(name))
             .is_some_and(|current| Rc::ptr_eq(&current, &node))
     });
-    let unlinked = node.borrow().nlink == 0 || (!names_it && place_of(&node).is_none());
+    let unlinked = node.borrow().nlink == 0
+        || removed_from_backend
+        || (!names_it && place_of(&node).is_none());
     // A file moved since it was opened is told of under its new name, as its dentry moved.
     match &parent {
         Some((parent, name)) if names_it || unlinked => {

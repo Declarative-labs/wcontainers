@@ -1050,6 +1050,7 @@ impl Client {
                 dnotify: Vec::new(),
                 leases: Vec::new(),
                 linkable: false,
+                removed_names: Vec::new(),
             }));
             self.state
                 .borrow_mut()

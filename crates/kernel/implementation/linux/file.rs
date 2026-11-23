@@ -133,6 +133,17 @@ impl OpenFile {
         self.flags & (O_TMPFILE & !O_DIRECTORY) != 0
     }
 
+    /// Whether its path is shown as deleted (`d_path` of an unlinked dentry): its inode has no
+    /// name left, or the name it was opened by was taken from it after the open.
+    pub fn shown_deleted(&self) -> bool {
+        let inode = self.node.borrow();
+        inode.shown_deleted()
+            || self
+                .dentry
+                .as_ref()
+                .is_some_and(|(directory, name)| inode.name_removed_since(directory, name, self.id))
+    }
+
     pub fn readable(&self) -> bool {
         self.flags & O_PATH == 0 && matches!(self.flags & O_ACCMODE, O_RDONLY | O_RDWR)
     }

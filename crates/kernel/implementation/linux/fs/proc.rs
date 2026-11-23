@@ -1677,7 +1677,7 @@ pub(crate) fn link_target(
                     walk.path_of(&file.node)
                         .unwrap_or_else(|| file.path.clone())
                 }
-                _ if inode.shown_deleted() || file.unnamed() => {
+                _ if file.shown_deleted() || file.unnamed() => {
                     let mut path = file.path.clone();
                     path.extend_from_slice(crate::fs::DELETED.as_bytes());
                     path
@@ -1834,10 +1834,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "meminfo" => {
-                    let total = machine.memory_bytes / 1024;
+                    use crate::linux_extra::KIB;
+                    let total = machine.memory_bytes / KIB;
                     let (in_use, shared) = source.memory_in_use;
-                    let free = total - in_use / 1024;
-                    let shared = shared / 1024;
+                    let free = total - in_use / KIB;
+                    let shared = shared / KIB;
                     let _ = write!(
                         out,
                         "MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\
@@ -2249,16 +2250,18 @@ fn process_file(
             };
             let _ = writeln!(out, "{shown}");
         }
-        // `proc_oom_score`: two thirds of 1000 plus the badness `oom_badness` gives per thousand
-        // pages of the machine, whose resident part is not tracked here (counted).
+        // `proc_oom_score`: two thirds of the score's whole range plus the badness `oom_badness`
+        // gives per that many pages of the machine, whose resident part is not tracked here
+        // (counted). The range is the adjustment's (`OOM_SCORE_ADJ_MAX`, a thousandth each).
         ProcessFile::OomScore => {
             let adj = i64::from(process.oom_score_adj);
             let points = if adj == i64::from(crate::linux_extra::OOM_SCORE_ADJ_MIN) {
                 0
             } else {
+                let range = i64::from(crate::linux_extra::OOM_SCORE_ADJ_MAX);
                 let pages = (source.machine.memory_bytes / PAGE_SIZE) as i64;
-                let badness = adj * (pages / 1000);
-                (1000 + badness * 1000 / pages) * 2 / 3
+                let badness = adj * (pages / range);
+                (range + badness * range / pages) * 2 / 3
             };
             let _ = writeln!(out, "{points}");
         }

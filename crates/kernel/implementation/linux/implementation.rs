@@ -141,10 +141,14 @@ pub(crate) struct Machine {
 }
 
 impl Machine {
-    /// `kernel.threads-max`: as many threads as a eighth of memory holds stacks of 16 KiB
-    /// (`set_max_threads`), at least 20.
+    /// `kernel.threads-max`: as many threads as an eighth of memory holds stacks of
+    /// `THREAD_SIZE` (`set_max_threads`), at least `MIN_THREADS` and at most `FUTEX_TID_MASK`.
     pub fn threads_max(&self) -> u64 {
-        (self.memory_bytes / (16 * 1024 * 8)).clamp(20, 0x3fff_ffff)
+        use crate::linux_extra::{MIN_THREADS, THREAD_SIZE};
+        (self.memory_bytes / (THREAD_SIZE * 8)).clamp(
+            MIN_THREADS,
+            u64::from(crate::linux::general::FUTEX_TID_MASK),
+        )
     }
 }
 
@@ -784,6 +788,11 @@ impl Kernel {
     /// where Linux shows its address, so nothing it sees depends on where the host put it.
     pub(crate) fn next_object(&mut self) -> u64 {
         self.last_object += 1;
+        self.last_object
+    }
+
+    /// The last number `next_object` gave.
+    pub(crate) fn last_object(&self) -> u64 {
         self.last_object
     }
 

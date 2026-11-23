@@ -1393,6 +1393,7 @@ pub(super) fn remove_from<S: crate::System>(
         crate::fs::backend::remove(directory, name, false)?;
         let mut inode = node.borrow_mut();
         inode.nlink = inode.nlink.saturating_sub(1);
+        inode.name_removed(directory, name, kernel.last_object());
         drop(inode);
         super::inotify::removed(kernel, directory, name, node);
         return Ok(());
@@ -1408,6 +1409,7 @@ pub(super) fn remove_from<S: crate::System>(
     give_back_link(&inode);
     inode.nlink -= 1;
     inode.ctime = now;
+    inode.name_removed(directory, name, kernel.last_object());
     drop(inode);
     super::inotify::removed(kernel, directory, name, node);
     Ok(())
@@ -1623,6 +1625,7 @@ fn rename<S: crate::System>(
                 } else {
                     inode.nlink.saturating_sub(1)
                 };
+                inode.name_removed(&to.directory, &to.name, kernel.last_object());
             }
         }
         super::inotify::renamed(
@@ -1701,6 +1704,7 @@ fn rename<S: crate::System>(
                 give_back_link(&inode);
                 inode.nlink -= 1;
                 inode.ctime = now;
+                inode.name_removed(&to.directory, &to.name, kernel.last_object());
             }
         }
         entries(&to.directory)(&mut |d| {

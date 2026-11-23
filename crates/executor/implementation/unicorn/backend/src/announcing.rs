@@ -1,7 +1,8 @@
 //! The passthrough file system announcing writes of many pages (BIG_WRITES and MAX_PAGES), which
 //! it serves but does not offer itself, and that a file's cached pages are dropped when its
-//! modification time changes (AUTO_INVAL_DATA, which libfuse's servers ask for by default); every
-//! other operation is passed through unchanged.
+//! modification time changes (AUTO_INVAL_DATA, which libfuse's servers ask for by default), and
+//! listing `.` and `..` first, as Linux's own file systems do (`dir_emit_dots`) and the passthrough
+//! does not; every other operation is passed through unchanged.
 
 use std::ffi::CStr;
 use std::io;
@@ -17,6 +18,66 @@ use fuse_backend_rs::api::filesystem::{
 use fuse_backend_rs::passthrough::PassthroughFs;
 
 pub struct Announcing(pub PassthroughFs);
+
+/// The position after `..`: the passthrough's own positions are shifted past it.
+const AFTER_DOTS: u64 = 2;
+
+/// The end of an ext4 listing (`EXT4_HTREE_EOF_64BIT`), which is kept as it is rather than shifted
+/// past what a position may be.
+const LISTING_END: u64 = i64::MAX as u64;
+
+/// A passthrough entry with its position shifted past the dots.
+fn after_dots(entry: DirEntry<'_>) -> DirEntry<'_> {
+    DirEntry {
+        offset: if entry.offset == LISTING_END {
+            LISTING_END
+        } else {
+            entry.offset + AFTER_DOTS
+        },
+        ..entry
+    }
+}
+
+impl Announcing {
+    /// Lists whichever of `.` (position 1) and `..` (position 2) come at or after `offset`, then
+    /// gives the passthrough's position to go on from, or none when the reply is full.
+    fn dots(
+        &self,
+        ctx: &Context,
+        inode: <PassthroughFs as FileSystem>::Inode,
+        offset: u64,
+        add_entry: &mut dyn FnMut(DirEntry) -> io::Result<usize>,
+    ) -> io::Result<Option<u64>> {
+        if offset > AFTER_DOTS {
+            return Ok(Some(if offset == LISTING_END {
+                LISTING_END
+            } else {
+                offset - AFTER_DOTS
+            }));
+        }
+        let directory = |ino, offset, name| DirEntry {
+            ino,
+            offset,
+            type_: u32::from(libc::DT_DIR),
+            name,
+        };
+        if offset == 0 {
+            let (own, _) = self.0.getattr(ctx, inode, None)?;
+            if add_entry(directory(own.st_ino, 1, b"."))? == 0 {
+                return Ok(None);
+            }
+        }
+        if offset < AFTER_DOTS {
+            // The passthrough's lookup of the root's `..` gives the root.
+            let parent = self.0.lookup(ctx, inode, c"..")?;
+            self.0.forget(ctx, parent.inode, 1);
+            if add_entry(directory(parent.attr.st_ino, AFTER_DOTS, b".."))? == 0 {
+                return Ok(None);
+            }
+        }
+        Ok(Some(0))
+    }
+}
 
 impl FileSystem for Announcing {
     type Inode = <PassthroughFs as FileSystem>::Inode;
@@ -298,7 +359,13 @@ impl FileSystem for Announcing {
         offset: u64,
         add_entry: &mut dyn FnMut(DirEntry) -> io::Result<usize>,
     ) -> io::Result<()> {
-        self.0.readdir(ctx, inode, handle, size, offset, add_entry)
+        let Some(from) = self.dots(ctx, inode, offset, &mut |entry| add_entry(entry))? else {
+            return Ok(());
+        };
+        self.0
+            .readdir(ctx, inode, handle, size, from, &mut |entry| {
+                add_entry(after_dots(entry))
+            })
     }
 
     fn readdirplus(
@@ -310,8 +377,17 @@ impl FileSystem for Announcing {
         offset: u64,
         add_entry: &mut dyn FnMut(DirEntry, Entry) -> io::Result<usize>,
     ) -> io::Result<()> {
+        // A dot's entry has no node, as Linux ignores it (`fuse_direntplus_link`).
+        let Some(from) = self.dots(ctx, inode, offset, &mut |entry| {
+            add_entry(entry, Entry::default())
+        })?
+        else {
+            return Ok(());
+        };
         self.0
-            .readdirplus(ctx, inode, handle, size, offset, add_entry)
+            .readdirplus(ctx, inode, handle, size, from, &mut |entry, attributes| {
+                add_entry(after_dots(entry), attributes)
+            })
     }
 
     fn fsyncdir(

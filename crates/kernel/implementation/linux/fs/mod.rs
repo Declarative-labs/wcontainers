@@ -353,6 +353,10 @@ pub(crate) struct Inode {
     /// Made by `O_TMPFILE` without `O_EXCL` and not linked yet, so a link may name it though it has
     /// no links (`I_LINKABLE`).
     pub linkable: bool,
+    /// Names taken from it while it kept other links: the directory, the name, and the kernel's
+    /// last object number then. A file opened by that name before shows it deleted (Linux's
+    /// unhashed dentry, `d_unlinked`).
+    pub removed_names: Vec<(Weak<RefCell<Inode>>, Vec<u8>, u64)>,
 }
 
 impl Drop for Inode {
@@ -1013,6 +1017,30 @@ impl Inode {
         self.nlink == 0 || self.is_secret()
     }
 
+    /// Notes that `name` in `directory` no longer leads here, as of the kernel's object number
+    /// `serial`; what was noted of a directory that is gone is dropped.
+    pub fn name_removed(&mut self, directory: &Node, name: &[u8], serial: u64) {
+        self.removed_names.retain(|(place, gone, _)| {
+            place.strong_count() > 0
+                && !(Weak::ptr_eq(place, &Rc::downgrade(directory)) && gone == name)
+        });
+        self.removed_names
+            .push((Rc::downgrade(directory), name.to_vec(), serial));
+    }
+
+    /// Whether `name` in `directory` was taken from it at or after the kernel's object number
+    /// `since`.
+    pub fn name_removed_since(
+        &self,
+        directory: &Weak<RefCell<Inode>>,
+        name: &[u8],
+        since: u64,
+    ) -> bool {
+        self.removed_names.iter().any(|(place, gone, serial)| {
+            *serial >= since && Weak::ptr_eq(place, directory) && gone == name
+        })
+    }
+
     /// Whether opening it with O_DIRECT is allowed (`FMODE_CAN_ODIRECT`): tmpfs's regular files
     /// and the backend's (`fuse_open`).
     pub fn takes_direct_io(&self) -> bool {
@@ -1252,6 +1280,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         dnotify: Vec::new(),
         leases: Vec::new(),
         linkable: false,
+        removed_names: Vec::new(),
     })))
 }
 
