@@ -291,8 +291,8 @@ fn repeat(x: u32, n: u32) -> u32 {
 /// The fragment program, entry point `quantise`, rounding each channel of a target of the packed
 /// `format`, read from a copy of it bound at binding 0 (multisampled: per sample), to its own bits
 /// and widening it back to 8 as [`widen`] does: `round(v * (2^n - 1))`, its bits repeated. The
-/// 8-bit value it starts from adds at most `(2^n - 1) / 510` of a step to the specification's
-/// rounding (0.56 of a step for 6 bits, inside its 0.6).
+/// 8-bit value it starts from adds at most `(2^n - 1) / 510` of a step to the half step of exact
+/// rounding: 0.56 of a step for 5 bits, inside the specification's 0.6, and 0.62 for 6 bits.
 pub(crate) fn quantise_program(format: Format, multisampled: bool) -> String {
     let (texture, sample, index) = QUANTISE_READS[usize::from(multisampled)];
     let [b, g, r, a] = fields(format);
