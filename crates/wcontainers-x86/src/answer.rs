@@ -1,15 +1,16 @@
 //! The inside's answers to instructions of the Kernel route (plan 3.5), in plain Rust over the thread's block, as
 //! their meanings give them.
 
-use crate::cpuid::{self, ECX, Registers};
+use crate::cpuid::{self, ECX, Registers, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
 use crate::user_segments::{
     CR0, DUMMY_GDT_BASE, DUMMY_IDT_BASE, DUMMY_TABLE_LIMIT, NO_LOCAL_TABLE, SEGMENTS,
-    SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
+    SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS, USER32_CS,
 };
-use crate::x87::{Code, EXCEPTIONS, Unit};
+use crate::x87::{Code, EXCEPTIONS, REGISTER_MASK, TOP_SHIFT, Unit};
 use crate::{
-    ALIGNMENT_CHECK, ARITHMETIC_FLAGS, DEFAULT32, DF, ID, NT, Offer, QUIET32, RAX, RBX, RCX, RDX,
-    RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
+    ALIGNMENT_CHECK, ARITHMETIC_FLAGS, DEFAULT32, DF, FCW_AT_START, Fxsave, ID, MXCSR_WRITABLE, NT,
+    Offer, QUIET32, RAX, RBX, RCX, RDX, RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
+    is_canonical,
 };
 use wcontainers_guest_cpu::position::{Base, Operand, Segment};
 use zerocopy::IntoBytes;
@@ -38,6 +39,38 @@ pub(crate) const POPPED_CONTROL: u64 = TF | DF | NT | ID;
 pub trait Memory {
     fn read(&mut self, at: u64, into: &mut [u8]) -> Result<(), u64>;
     fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), u64>;
+    /// Whether `bytes` bytes at `at` may be read, or written with `write`, without reaching them.
+    fn check(&mut self, at: u64, bytes: u64, write: bool) -> Result<(), u64>;
+}
+
+/// The XSAVE header's XSTATE_BV after the legacy area, and the header's words after it that the standard form
+/// of `xrstor` requires to be zero (XCOMP_BV and the next; Intel SDM Vol. 1 13.8.1).
+pub(crate) const XSTATE_BV: usize = size_of::<Fxsave>();
+pub(crate) const XSAVE_HEADER_ZERO: [usize; 2] = [
+    XSTATE_BV + size_of::<u64>(),
+    XSTATE_BV + 2 * size_of::<u64>(),
+];
+/// The alignment an XSAVE area needs, and the bytes `xsave` and `xrstor` reach: every component built here.
+pub(crate) const XSAVE_ALIGNMENT: u64 = 64;
+pub(crate) const XSTATE_BYTES: usize =
+    cpuid::xsave_bytes(XSAVE_X87 | XSAVE_SSE | XSAVE_AVX) as usize;
+/// The x87 header's bits an image keeps: all but the reserved byte after the abridged tag word.
+pub(crate) const HEADER_KEPT: u64 =
+    !((u8::MAX as u64) << (core::mem::offset_of!(Fxsave, reserved0) as u32 * u8::BITS));
+
+/// The clock `rdtsc` reads: nanoseconds, which the guest sees as a 1 GHz counter.
+pub trait Clock {
+    fn nanoseconds(&mut self) -> u64;
+}
+
+/// The slots of a far transfer's frame from its lowest, each of the operand size.
+#[derive(Clone, Copy)]
+pub(crate) enum FrameSlot {
+    Rip,
+    Cs,
+    Rflags,
+    Rsp,
+    Ss,
 }
 
 /// Where an operand of an answered instruction is.
@@ -147,6 +180,38 @@ pub enum Question {
         offset_bytes: u8,
         at: Operand,
     },
+    /// `rdtsc`, or `rdtscp` with `processor`.
+    TimeStamp {
+        processor: bool,
+    },
+    /// `wrfsbase` or `wrgsbase` from a general register.
+    WriteBase {
+        gs: bool,
+        from: Place,
+    },
+    /// `retf` with slots of `bytes` bytes, releasing `release` bytes more of the stack.
+    FarReturn {
+        bytes: u8,
+        release: u16,
+    },
+    /// `iret` with slots of `bytes` bytes.
+    InterruptReturn {
+        bytes: u8,
+    },
+    /// A far `jmp`, or with `call` a far `call`, through the pointer at `at` with an offset of `bytes` bytes;
+    /// `length` is the instruction's, the return address a call pushes being its end.
+    FarBranch {
+        call: bool,
+        bytes: u8,
+        at: Operand,
+        length: u8,
+    },
+    /// `xsave`, or `xrstor` with `restore`, of the area at `at`, its x87 pointers of 64 bits with `wide`.
+    XState {
+        restore: bool,
+        wide: bool,
+        at: Operand,
+    },
 }
 
 /// How an answered instruction stops instead of finishing.
@@ -157,6 +222,8 @@ pub enum Fault {
     FloatException(u16),
     /// The first address an access may not make, which the guest's `memory_fault` turns into its fault.
     Memory(u64),
+    /// General protection for a far transfer to Linux's 32-bit user code, which is not provided.
+    FarTransferTo32Bit,
 }
 
 /// What the inside reports of a finished answer, beside the guest's new state: the meaning's warnings.
@@ -164,22 +231,25 @@ pub enum Fault {
 pub struct Notes {
     /// `cpuid` read the features AVX is told by, while the process is told no AVX.
     pub avx_asked_and_told_no: bool,
-    /// `popf` set TF: single stepping starts after this instruction.
+    /// `popf` or `iret` set TF: single stepping starts after this instruction.
     pub trap_flag_set: bool,
-    /// `popf` asked for alignment checking, which is never held.
+    /// `popf` or `iret` asked for alignment checking, which is never held.
     pub alignment_check_not_provided: bool,
     /// A `mov` to ss: a trap is held back over the next instruction.
     pub step_held: bool,
+    /// A far transfer: rip is already its target, and the caller leaves it.
+    pub transferred: bool,
 }
 
 /// Answers `question` on `block` for a process told of `offer`'s features. On `Ok` the instruction has finished
-/// and the caller moves rip past it; on a fault nothing has changed. Rip is the instruction's own address.
+/// and the caller moves rip past it unless it `transferred`; on a fault nothing has changed but the slots a far
+/// `call` wrote before it, as on the CPU. Rip is the instruction's own address.
 pub fn answer(
     question: Question,
     block: &mut X86Block,
     offer: Offer,
     constants: &mut Consts,
-    memory: &mut impl Memory,
+    memory: &mut (impl Memory + Clock),
 ) -> Result<Notes, Fault> {
     let general = |n: u8| usize::from(n);
     let mut notes = Notes::default();
@@ -219,13 +289,8 @@ pub fn answer(
             memory
                 .read(from, &mut word[..usize::from(bytes)])
                 .map_err(Fault::Memory)?;
-            let value = u64::from_le_bytes(word);
             block.gpr[general(RSP)] = from.wrapping_add(bytes.into());
-            let written = POPPED_CONTROL & low_bits(u32::from(bytes) * u8::BITS);
-            block.rflags = (block.rflags & !written) | (value & written);
-            block.flags = (value & ARITHMETIC_FLAGS) as u32;
-            notes.trap_flag_set = value & TF != 0;
-            notes.alignment_check_not_provided = value & ALIGNMENT_CHECK != 0;
+            load_rflags(block, u64::from_le_bytes(word), bytes, &mut notes);
         }
         Question::Descriptor { read, operand } => descriptor(block, memory, read, operand)?,
         Question::SegmentRead { from, to } => {
@@ -267,22 +332,339 @@ pub fn answer(
             offset_bytes,
             at,
         } => {
-            let at = address(block, &at);
-            let mut offset = [0; size_of::<u64>()];
-            memory
-                .read(at, &mut offset[..usize::from(offset_bytes)])
-                .map_err(Fault::Memory)?;
-            let value = read_selector(memory, at.wrapping_add(offset_bytes.into()))?;
+            let (offset, value) = far_pointer(block, memory, at, offset_bytes)?;
             load_segment(block, to, value)?;
-            set_general(
-                block,
-                number,
-                offset_bytes * u8::BITS as u8,
-                u64::from_le_bytes(offset),
-            );
+            set_general(block, number, offset_bytes * u8::BITS as u8, offset);
         }
+        Question::TimeStamp { processor } => {
+            let ticks = memory.nanoseconds();
+            let half = u32::BITS as u8;
+            set_general(block, RAX, half, ticks);
+            set_general(block, RDX, half, ticks >> half);
+            if processor {
+                set_general(block, RCX, half, 0);
+            }
+        }
+        Question::WriteBase { gs, from } => {
+            let Place::General { number, bits } = from else {
+                return Err(Fault::GeneralProtection);
+            };
+            let value = block.gpr[usize::from(number)] & low_bits(bits.into());
+            canonical(value)?;
+            *if gs {
+                &mut block.gs_base
+            } else {
+                &mut block.fs_base
+            } = value;
+        }
+        Question::FarReturn { bytes, release } => {
+            let from = block.gpr[general(RSP)];
+            let slot = |slot: FrameSlot| frame_slot(from, slot, bytes);
+            let code = read_selector(memory, slot(FrameSlot::Cs))?;
+            let target = read_bytes(memory, slot(FrameSlot::Rip), bytes)?;
+            far_selector(code, false)?;
+            canonical(target)?;
+            block.gpr[general(RSP)] = from.wrapping_add(2 * u64::from(bytes) + u64::from(release));
+            block.rip = target;
+            notes.transferred = true;
+        }
+        Question::InterruptReturn { bytes } => {
+            if block.rflags & NT != 0 {
+                return Err(Fault::GeneralProtection);
+            }
+            let from = block.gpr[general(RSP)];
+            let slot = |slot: FrameSlot| frame_slot(from, slot, bytes);
+            let flags = read_bytes(memory, slot(FrameSlot::Rflags), bytes)?;
+            let code = read_selector(memory, slot(FrameSlot::Cs))?;
+            let target = read_bytes(memory, slot(FrameSlot::Rip), bytes)?;
+            far_selector(code, false)?;
+            let stack = read_selector(memory, slot(FrameSlot::Ss))?;
+            let pointer = read_bytes(memory, slot(FrameSlot::Rsp), bytes)?;
+            if stack != USER_DS {
+                return Err(Fault::GeneralProtection);
+            }
+            canonical(target)?;
+            load_rflags(block, flags, bytes, &mut notes);
+            block.gpr[general(RSP)] = pointer;
+            block.rip = target;
+            notes.transferred = true;
+        }
+        Question::FarBranch {
+            call,
+            bytes,
+            at,
+            length,
+        } => {
+            let (target, code) = far_pointer(block, memory, at, bytes)?;
+            far_selector(code, true)?;
+            if call {
+                // cs first, then the return address under it, each faulting by itself; the target's test after.
+                let stack = block.gpr[general(RSP)];
+                let below = |slot: FrameSlot| {
+                    stack.wrapping_sub((FrameSlot::Cs as u64 + 1 - slot as u64) * u64::from(bytes))
+                };
+                let back = block.rip.wrapping_add(length.into());
+                for (slot, value) in [(FrameSlot::Cs, u64::from(USER_CS)), (FrameSlot::Rip, back)] {
+                    memory
+                        .write(below(slot), &value.to_le_bytes()[..usize::from(bytes)])
+                        .map_err(Fault::Memory)?;
+                }
+                canonical(target)?;
+                block.gpr[general(RSP)] = below(FrameSlot::Rip);
+            } else {
+                canonical(target)?;
+            }
+            block.rip = target;
+            notes.transferred = true;
+        }
+        Question::XState { restore, wide, at } => xstate(block, memory, offer, restore, wide, at)?,
     }
     Ok(notes)
+}
+
+/// The image's offsets (Intel SDM Vol. 1 10.5.1, table 10-2), and the x87 header's bytes.
+const IMAGE_POINTER: usize = core::mem::offset_of!(Fxsave, fip);
+const IMAGE_DATA: usize = core::mem::offset_of!(Fxsave, fdp);
+const IMAGE_MXCSR: usize = core::mem::offset_of!(Fxsave, mxcsr);
+const IMAGE_MXCSR_MASK: usize = core::mem::offset_of!(Fxsave, mxcsr_mask);
+const IMAGE_REGISTERS: usize = core::mem::offset_of!(Fxsave, st);
+const IMAGE_XMM: usize = core::mem::offset_of!(Fxsave, xmm);
+pub(crate) const IMAGE_SLOT: usize = XMM_BYTES as usize;
+const MXCSR_BYTES: usize = size_of::<u32>();
+const HEADER: usize = IMAGE_POINTER;
+/// A register's 64-bit significand, and the sign and exponent above it, as the block keeps them.
+const SIGNIFICAND: usize = size_of::<u64>();
+const EXPONENT: usize = size_of::<u16>();
+const HIGH_KEPT: usize = size_of::<u32>();
+
+/// `xsave` and `xrstor` as `fpu::image` and `fpu::xstate_image` give them: a non-canonical first byte faults
+/// first, then a misaligned address, then a non-canonical last byte, then the last byte (wrapping within the
+/// address size, before the segment base), then the whole area; then the components RFBM (rax with XCR0) names.
+fn xstate(
+    block: &mut X86Block,
+    memory: &mut impl Memory,
+    offer: Offer,
+    restore: bool,
+    wide: bool,
+    operand: Operand,
+) -> Result<(), Fault> {
+    let bytes = XSTATE_BYTES as u64;
+    let at = address(block, &operand);
+    let mut reach = |at: u64, bytes: u64| memory.check(at, bytes, !restore).map_err(Fault::Memory);
+    if !is_canonical(at) {
+        reach(at, bytes)?;
+    }
+    if !at.is_multiple_of(XSAVE_ALIGNMENT) {
+        return Err(Fault::GeneralProtection);
+    }
+    if !is_canonical(at.wrapping_add(bytes - 1)) {
+        reach(at, bytes)?;
+    }
+    let base = match operand.segment {
+        Some(Segment::Fs) => block.fs_base,
+        Some(Segment::Gs) => block.gs_base,
+        None => 0,
+    };
+    let last = (at.wrapping_sub(base).wrapping_add(bytes - 1)
+        & low_bits(operand.address_bits.into()))
+    .wrapping_add(base);
+    reach(last, 1)?;
+    reach(at, bytes)?;
+    let mut area = [0; XSTATE_BYTES];
+    memory.read(at, &mut area).map_err(Fault::Memory)?;
+    let rfbm = block.gpr[usize::from(RAX)] & u64::from(cpuid::enabled_state(offer));
+    let named = |component: u32| rfbm & u64::from(component) != 0;
+    let word = |area: &[u8], at: usize| {
+        u64::from_le_bytes(area[at..][..size_of::<u64>()].try_into().expect("a word"))
+    };
+    let top = |block: &X86Block| usize::from(block.fxsave.fsw >> TOP_SHIFT);
+    // ST(k) is the physical register (k + TOP) mod 8.
+    let slot =
+        |n: usize, top: usize| IMAGE_REGISTERS + (n.wrapping_sub(top) & REGISTER_MASK) * IMAGE_SLOT;
+    let fxsave = &mut block.fxsave;
+    if !restore {
+        if named(XSAVE_X87) {
+            area[..HEADER].copy_from_slice(&fxsave.as_bytes()[..HEADER]);
+            for (offset, pointer) in [(IMAGE_POINTER, fxsave.fip), (IMAGE_DATA, fxsave.fdp)] {
+                let kept = if wide {
+                    pointer
+                } else {
+                    pointer & low_bits(u32::BITS)
+                };
+                area[offset..][..size_of::<u64>()].copy_from_slice(&kept.to_le_bytes());
+            }
+            let top = top(block);
+            for (n, register) in block.fxsave.st.iter().enumerate() {
+                let image = &mut area[slot(n, top)..][..IMAGE_SLOT];
+                image.fill(0);
+                image[..SIGNIFICAND + HIGH_KEPT]
+                    .copy_from_slice(&register[..SIGNIFICAND + HIGH_KEPT]);
+            }
+        }
+        let fxsave = &block.fxsave;
+        if named(XSAVE_SSE | XSAVE_AVX) {
+            area[IMAGE_MXCSR..][..MXCSR_BYTES].copy_from_slice(&fxsave.mxcsr.to_le_bytes());
+            area[IMAGE_MXCSR_MASK..][..MXCSR_BYTES].copy_from_slice(&MXCSR_WRITABLE.to_le_bytes());
+        }
+        let avx = cpuid::AVX_STATE_OFFSET as usize;
+        for (component, offset, registers) in [
+            (XSAVE_SSE, IMAGE_XMM, &fxsave.xmm),
+            (XSAVE_AVX, avx, &block.ymm_high),
+        ] {
+            if named(component) {
+                area[offset..][..registers.as_bytes().len()].copy_from_slice(registers.as_bytes());
+            }
+        }
+        let in_use = components_in_use(block);
+        let bv = (word(&area, XSTATE_BV) & !rfbm) | (in_use & rfbm);
+        area[XSTATE_BV..][..size_of::<u64>()].copy_from_slice(&bv.to_le_bytes());
+        return memory.write(at, &area).map_err(Fault::Memory);
+    }
+    // The checks, before anything changes.
+    let bv = word(&area, XSTATE_BV);
+    let mxcsr = u32::from_le_bytes(
+        area[IMAGE_MXCSR..][..MXCSR_BYTES]
+            .try_into()
+            .expect("a word"),
+    );
+    let header = (bv & !u64::from(cpuid::enabled_state(offer)))
+        | XSAVE_HEADER_ZERO
+            .iter()
+            .fold(0, |all, &at| all | word(&area, at));
+    if header != 0 || mxcsr & !MXCSR_WRITABLE != 0 && named(XSAVE_SSE | XSAVE_AVX) {
+        return Err(Fault::GeneralProtection);
+    }
+    let loaded = |component: u32| bv & u64::from(component) != 0;
+    if named(XSAVE_X87) {
+        let from = loaded(XSAVE_X87).then_some(&area);
+        let header = from.map_or(FCW_AT_START.into(), |area| word(area, 0) & HEADER_KEPT);
+        fxsave.as_mut_bytes()[..HEADER].copy_from_slice(&header.to_le_bytes());
+        let pointer_bytes = if wide {
+            size_of::<u64>()
+        } else {
+            size_of::<u32>()
+        };
+        for (offset, pointer) in [
+            (IMAGE_POINTER, &mut fxsave.fip),
+            (IMAGE_DATA, &mut fxsave.fdp),
+        ] {
+            let mut value = [0; size_of::<u64>()];
+            if let Some(area) = from {
+                value[..pointer_bytes].copy_from_slice(&area[offset..][..pointer_bytes]);
+            }
+            *pointer = u64::from_le_bytes(value);
+        }
+        // TOP as just restored places the registers.
+        let top = usize::from(fxsave.fsw >> TOP_SHIFT);
+        for (n, register) in fxsave.st.iter_mut().enumerate() {
+            register[..SIGNIFICAND + HIGH_KEPT].fill(0);
+            if let Some(area) = from {
+                register[..SIGNIFICAND + EXPONENT]
+                    .copy_from_slice(&area[slot(n, top)..][..SIGNIFICAND + EXPONENT]);
+            }
+        }
+    }
+    if named(XSAVE_SSE | XSAVE_AVX) {
+        fxsave.mxcsr = mxcsr;
+    }
+    let avx = cpuid::AVX_STATE_OFFSET as usize;
+    for (component, offset, registers) in [
+        (XSAVE_SSE, IMAGE_XMM, &mut block.fxsave.xmm),
+        (XSAVE_AVX, avx, &mut block.ymm_high),
+    ] {
+        if named(component) {
+            let into = registers.as_mut_bytes();
+            if loaded(component) {
+                into.copy_from_slice(&area[offset..][..into.len()]);
+            } else {
+                into.fill(0);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// XSTATE_BV's bits of the x87, SSE and AVX components not in their initial configuration (Intel SDM Vol. 1
+/// 13.6), as `fpu::components_in_use` gives them; MXCSR is in neither.
+fn components_in_use(block: &X86Block) -> u64 {
+    let fxsave = &block.fxsave;
+    let header = u64::from_le_bytes(fxsave.as_bytes()[..HEADER].try_into().expect("a word"));
+    let registers = fxsave
+        .st
+        .iter()
+        .any(|r| r[..SIGNIFICAND + HIGH_KEPT].iter().any(|&b| b != 0));
+    let x87 = header != u64::from(FCW_AT_START) || fxsave.fip != 0 || fxsave.fdp != 0 || registers;
+    let any = |registers: &[[u8; IMAGE_SLOT]]| registers.as_flattened().iter().any(|&b| b != 0);
+    [
+        (XSAVE_X87, x87),
+        (XSAVE_SSE, any(&fxsave.xmm)),
+        (XSAVE_AVX, any(&block.ymm_high)),
+    ]
+    .into_iter()
+    .filter(|&(_, used)| used)
+    .fold(0, |set, (component, _)| set | u64::from(component))
+}
+
+/// The rflags bits user mode may write, from `value` of `bytes` bytes, as `popf` and `iret` load them at CPL 3.
+fn load_rflags(block: &mut X86Block, value: u64, bytes: u8, notes: &mut Notes) {
+    let written = POPPED_CONTROL & low_bits(u32::from(bytes) * u8::BITS);
+    block.rflags = (block.rflags & !written) | (value & written);
+    block.flags = (value & ARITHMETIC_FLAGS) as u32;
+    notes.trap_flag_set = value & TF != 0;
+    notes.alignment_check_not_provided = value & ALIGNMENT_CHECK != 0;
+}
+
+/// General protection unless `target` is canonical, as for a branch to it.
+fn canonical(target: u64) -> Result<(), Fault> {
+    if is_canonical(target) {
+        Ok(())
+    } else {
+        Err(Fault::GeneralProtection)
+    }
+}
+
+/// The address of a slot of the frame at `from` whose slots are of `bytes` bytes.
+fn frame_slot(from: u64, slot: FrameSlot, bytes: u8) -> u64 {
+    from.wrapping_add(slot as u64 * u64::from(bytes))
+}
+
+/// `bytes` bytes at `at`, zero-extended.
+fn read_bytes(memory: &mut impl Memory, at: u64, bytes: u8) -> Result<u64, Fault> {
+    let mut word = [0; size_of::<u64>()];
+    memory
+        .read(at, &mut word[..usize::from(bytes)])
+        .map_err(Fault::Memory)?;
+    Ok(u64::from_le_bytes(word))
+}
+
+/// The offset of `offset_bytes` bytes at `at` and the selector after it, each read faulting by itself; the
+/// selector's address wraps by itself under an address-size prefix.
+fn far_pointer(
+    block: &X86Block,
+    memory: &mut impl Memory,
+    at: Operand,
+    offset_bytes: u8,
+) -> Result<(u64, u16), Fault> {
+    let offset = read_bytes(memory, address(block, &at), offset_bytes)?;
+    let after = Operand {
+        offset: at.offset.wrapping_add(offset_bytes.into()),
+        ..at
+    };
+    Ok((offset, read_selector(memory, address(block, &after))?))
+}
+
+/// General protection unless `value` names Linux's 64-bit user code, with any requested privilege level for a
+/// branch and level 3 exactly for a return, which never goes to a more privileged level.
+fn far_selector(value: u16, branch: bool) -> Result<(), Fault> {
+    let ignored = if branch { SELECTOR_PRIVILEGE } else { 0 };
+    let names = |selector: u16| value & !ignored == selector & !ignored;
+    if names(USER32_CS) {
+        return Err(Fault::FarTransferTo32Bit);
+    }
+    if !names(USER_CS) {
+        return Err(Fault::GeneralProtection);
+    }
+    Ok(())
 }
 
 /// The address of the first byte `operand` names, the instruction's own address in rip.

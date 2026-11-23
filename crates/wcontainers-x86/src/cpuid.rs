@@ -210,7 +210,7 @@ pub fn enabled_state(offer: Offer) -> u32 {
 }
 
 /// The bytes an XSAVE area of these state components takes.
-pub fn xsave_bytes(state: u32) -> u32 {
+pub const fn xsave_bytes(state: u32) -> u32 {
     if state & XSAVE_AVX != 0 {
         AVX_STATE_OFFSET + AVX_STATE_BYTES
     } else {

@@ -857,25 +857,17 @@ const IMAGE_MXCSR: u64 = core::mem::offset_of!(crate::Fxsave, mxcsr) as u64;
 const IMAGE_MXCSR_MASK: u64 = core::mem::offset_of!(crate::Fxsave, mxcsr_mask) as u64;
 const IMAGE_REGISTERS: u64 = core::mem::offset_of!(crate::Fxsave, st) as u64;
 const IMAGE_XMM: u64 = core::mem::offset_of!(crate::Fxsave, xmm) as u64;
-const IMAGE_SLOT: u64 = size_of::<[u8; 16]>() as u64;
-/// The reserved byte after the abridged tag word, which the image holds as zero.
-const HEADER_KEPT: i64 =
-    !((u8::MAX as i64) << (core::mem::offset_of!(crate::Fxsave, reserved0) as u32 * u8::BITS));
+const HEADER_KEPT: i64 = crate::answer::HEADER_KEPT as i64;
 
-/// The XSAVE header's XSTATE_BV after the legacy area, and the header's bytes after it that the standard form
-/// of `xrstor` requires to be zero (XCOMP_BV and the next eight; Intel SDM Vol. 1 13.8.1).
-const XSTATE_BV: u64 = size_of::<crate::Fxsave>() as u64;
+const XSTATE_BV: u64 = crate::answer::XSTATE_BV as u64;
 const XSAVE_HEADER_ZERO: [u64; 2] = [
-    XSTATE_BV + size_of::<u64>() as u64,
-    XSTATE_BV + 2 * size_of::<u64>() as u64,
+    crate::answer::XSAVE_HEADER_ZERO[0] as u64,
+    crate::answer::XSAVE_HEADER_ZERO[1] as u64,
 ];
-/// The alignment an XSAVE area needs.
-const XSAVE_ALIGNMENT: i64 = 64;
 
 /// The bytes of an `xsave` or `xrstor` area: the largest the state components built here take.
 pub(crate) fn xsave_area_bytes() -> u32 {
-    use crate::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
-    crate::cpuid::xsave_bytes(XSAVE_X87 | XSAVE_SSE | XSAVE_AVX)
+    crate::answer::XSTATE_BYTES as u32
 }
 
 /// Whether the instruction is `xsave` or `xrstor`.
@@ -924,7 +916,7 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     if xstate {
         e.sink()
             .local_get(at)
-            .i64_const(XSAVE_ALIGNMENT - 1)
+            .i64_const(crate::answer::XSAVE_ALIGNMENT as i64 - 1)
             .i64_and()
             .i64_const(0)
             .i64_ne()
@@ -976,14 +968,14 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             .local_set(value);
         store_at(e, at, IMAGE_MXCSR_MASK, size_of::<u32>() as u32, value);
         // The slot's bytes past the 80 bits are zero.
-        by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+        by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
             store_register(e, n, slot, IMAGE_REGISTERS, VALUE_LOW)
         });
         for x in 0..crate::guest::XMM_COUNT as u8 {
             e.get_vector(x);
             let v = e.local(ValType::V128);
             e.sink().local_set(v);
-            let offset = IMAGE_XMM + u64::from(x) * IMAGE_SLOT;
+            let offset = IMAGE_XMM + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
             e.sink()
                 .local_get(at)
                 .local_get(v)
@@ -1016,11 +1008,11 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     // MXCSR as restored decides the path; tracking stays as it was (plan 5.8).
     e.sink().local_get(mxcsr).i32_wrap_i64();
     e.set_control(Control::Mxcsr);
-    by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+    by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
         load_register(e, n, slot, IMAGE_REGISTERS)
     });
     for x in 0..crate::guest::XMM_COUNT as u8 {
-        let offset = IMAGE_XMM + u64::from(x) * IMAGE_SLOT;
+        let offset = IMAGE_XMM + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
         e.sink()
             .local_get(at)
             .v128_load(MemArg { offset, ..memory() });
@@ -1112,7 +1104,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
             e.sink().local_set(value);
             store_at(e, at, offset, VALUE_LOW, value);
         }
-        by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+        by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
             store_register(e, n, slot, IMAGE_REGISTERS, VALUE_LOW)
         });
         e.sink().end();
@@ -1139,7 +1131,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
                     .local_get(at)
                     .local_get(v)
                     .v128_store(MemArg {
-                        offset: offset + u64::from(x) * IMAGE_SLOT,
+                        offset: offset + u64::from(x) * crate::answer::IMAGE_SLOT as u64,
                         ..memory()
                     });
             }
@@ -1236,7 +1228,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
         );
         e.set_control(control);
     }
-    by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+    by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
         choose(
             e,
             x87,
@@ -1276,7 +1268,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
                 crate::operand::ymm_high(x),
             ),
         ] {
-            let offset = offset + u64::from(x) * IMAGE_SLOT;
+            let offset = offset + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
             choose(
                 e,
                 n,

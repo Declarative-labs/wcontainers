@@ -13,6 +13,7 @@ use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
 use crate::meaning::{is_string, written};
 use crate::operand::{RSP, W32, W64, general};
+use crate::segments::{is_far, operand_bytes};
 use crate::x87::{Code, Operation};
 use crate::{Offer, SegmentRegister, USER_END, X86_64, carry};
 
@@ -340,6 +341,35 @@ pub fn question(i: &Instruction) -> Option<Question> {
                 at: operand(i)?,
             }
         }
+        Rdtsc | Rdtscp => Question::TimeStamp {
+            processor: m == Rdtscp,
+        },
+        Wrfsbase | Wrgsbase => Question::WriteBase {
+            gs: m == Wrgsbase,
+            from: place(i, 0)?,
+        },
+        Retf => Question::FarReturn {
+            bytes: operand_bytes(i) as u8,
+            release: if ins.op_count() > 0 {
+                ins.immediate16()
+            } else {
+                0
+            },
+        },
+        Iret | Iretd | Iretq => Question::InterruptReturn {
+            bytes: operand_bytes(i) as u8,
+        },
+        Xsave | Xsave64 | Xrstor | Xrstor64 => Question::XState {
+            restore: matches!(m, Xrstor | Xrstor64),
+            wide: matches!(m, Xsave64 | Xrstor64),
+            at: operand(i)?,
+        },
+        Call | Jmp if is_far(i) => Question::FarBranch {
+            call: m == Call,
+            bytes: operand_bytes(i) as u8,
+            at: operand(i)?,
+            length: ins.len() as u8,
+        },
         _ => crate::fpu::transcendental_code(i).map(Question::X87)?,
     })
 }
