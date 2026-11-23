@@ -31,10 +31,9 @@ impl Host {
     }
 }
 
-/// The quiet bits, and x86's default not-a-number, negative and quiet.
-pub(crate) const QUIET32: u32 = 1 << (f32::MANTISSA_DIGITS - 2);
+pub(crate) use crate::{DEFAULT32, QUIET32};
+/// The quiet bit, and x86's default not-a-number, negative and quiet, of double precision.
 pub(crate) const QUIET64: u64 = 1 << (f64::MANTISSA_DIGITS - 2);
-pub(crate) const DEFAULT32: u32 = (-f32::INFINITY).to_bits() | QUIET32;
 pub(crate) const DEFAULT64: u64 = (-f64::INFINITY).to_bits() | QUIET64;
 /// Not-a-numbers with payloads: signaling and quiet, of either sign.
 const SIGNALING32: u32 = f32::INFINITY.to_bits() | 1;

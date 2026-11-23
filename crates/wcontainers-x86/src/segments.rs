@@ -3,10 +3,10 @@
 //! Linux's user segments as the reference shows them.
 
 use crate::decode::Instruction;
-use crate::descriptors::{SEGMENTS, SELECTOR_PRIVILEGE};
 use crate::guest::{Control, Reason, Trap};
 use crate::meaning::{canonical_target, checked, load_rflags, read, write};
 use crate::operand::*;
+use crate::user_segments::{SEGMENTS, SELECTOR_PRIVILEGE};
 use crate::{NT, SegmentRegister, USER_CS, USER_DS, USER32_CS, X86_64};
 use iced_x86::{Code, Mnemonic, OpKind, Register};
 use wasm_encoder::{BlockType, ValType};

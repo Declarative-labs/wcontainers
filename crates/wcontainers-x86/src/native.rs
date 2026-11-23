@@ -7,7 +7,7 @@ use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand, Segment};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
-use crate::answer::Question;
+use crate::answer::{DescriptorRead, Place, Question, Reciprocal, VectorEncoding};
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
@@ -171,47 +171,12 @@ impl Native for X86_64 {
         if ins.mnemonic() == Mnemonic::Syscall {
             return Stopping::Syscall;
         }
-        let width = if i.address32 { W32 } else { W64 };
-        let register = |r: Register| match r {
-            Register::None => Some(Base::Zero),
-            Register::RIP | Register::EIP => Some(Base::Pc),
-            r => general(r)
-                .filter(|g| g.width == width)
-                .map(|g| match g.number {
-                    RSP => Base::StackPointer,
-                    n => Base::Register(n),
-                }),
-        };
         let memory = ins.mnemonic() != Mnemonic::Lea
             && (0..ins.op_count()).any(|n| ins.op_kind(n) == OpKind::Memory);
-        let (Some(base), Some(index)) = (register(ins.memory_base()), register(ins.memory_index()))
-        else {
-            return Stopping::Plain;
-        };
-        if !memory {
-            return Stopping::Plain;
+        match operand(i) {
+            Some(operand) if memory => Stopping::Access(operand),
+            _ => Stopping::Plain,
         }
-        let offset = if i.address32 && base != Base::Pc {
-            i64::from(ins.memory_displacement32() as i32)
-        } else {
-            ins.memory_displacement64() as i64
-        };
-        Stopping::Access(Operand {
-            base,
-            offset,
-            index: (index != Base::Zero).then(|| Index {
-                register: index,
-                bits: width,
-                signed: false,
-                shift: ins.memory_index_scale().trailing_zeros() as u8,
-            }),
-            segment: match ins.memory_segment() {
-                Register::FS => Some(Segment::Fs),
-                Register::GS => Some(Segment::Gs),
-                _ => None,
-            },
-            address_bits: width,
-        })
     }
 
     fn movable() -> Range<u64> {
@@ -223,13 +188,131 @@ impl Native for X86_64 {
     }
 }
 
+/// How the instruction's memory operand forms its address, where its base and index are general registers or rip
+/// (a vector index has no such form), for an instruction decoded at address 0.
+fn operand(i: &Instruction) -> Option<Operand> {
+    let ins = &i.iced;
+    let width = if i.address32 { W32 } else { W64 };
+    let register = |r: Register| match r {
+        Register::None => Some(Base::Zero),
+        Register::RIP | Register::EIP => Some(Base::Pc),
+        r => general(r)
+            .filter(|g| g.width == width)
+            .map(|g| match g.number {
+                RSP => Base::StackPointer,
+                n => Base::Register(n),
+            }),
+    };
+    let base = register(ins.memory_base())?;
+    let index = register(ins.memory_index())?;
+    let offset = if i.address32 && base != Base::Pc {
+        i64::from(ins.memory_displacement32() as i32)
+    } else {
+        ins.memory_displacement64() as i64
+    };
+    Some(Operand {
+        base,
+        offset,
+        index: (index != Base::Zero).then(|| Index {
+            register: index,
+            bits: width,
+            signed: false,
+            shift: ins.memory_index_scale().trailing_zeros() as u8,
+        }),
+        segment: match ins.memory_segment() {
+            Register::FS => Some(Segment::Fs),
+            Register::GS => Some(Segment::Gs),
+            _ => None,
+        },
+        address_bits: width,
+    })
+}
+
+/// Operand `n` of the instruction as an answer reaches it.
+fn place(i: &Instruction, n: u32) -> Option<Place> {
+    let ins = &i.iced;
+    match ins.op_kind(n) {
+        OpKind::Memory => operand(i).map(Place::Memory),
+        OpKind::Register => {
+            let r = ins.op_register(n);
+            if r.is_xmm() || r.is_ymm() {
+                return Some(Place::Vector(r.number() as u8));
+            }
+            general(r).filter(|g| !g.high).map(|g| Place::General {
+                number: g.number,
+                bits: g.width,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// What the inside's `answer` is asked for an instruction of the Kernel route, where it answers it.
 pub fn question(i: &Instruction) -> Option<Question> {
-    match i.iced.mnemonic() {
-        Mnemonic::Cpuid => Some(Question::Cpuid),
-        Mnemonic::Xgetbv => Some(Question::Xgetbv),
-        _ => crate::fpu::transcendental_code(i).map(Question::X87),
-    }
+    use Mnemonic::*;
+    let ins = &i.iced;
+    let m = ins.mnemonic();
+    let vector = |n: u32| match place(i, n)? {
+        Place::Vector(v) => Some(v),
+        _ => None,
+    };
+    let general_destination = || match place(i, 0)? {
+        Place::General { number, bits } => Some((number, bits)),
+        _ => None,
+    };
+    Some(match m {
+        Cpuid => Question::Cpuid,
+        Xgetbv => Question::Xgetbv,
+        Rcpps | Rcpss | Rsqrtps | Rsqrtss | Vrcpps | Vrcpss | Vrsqrtps | Vrsqrtss => {
+            let scalar = matches!(m, Rcpss | Rsqrtss | Vrcpss | Vrsqrtss);
+            let encoded = matches!(m, Vrcpps | Vrcpss | Vrsqrtps | Vrsqrtss);
+            let destination = vector(0)?;
+            let (merged, source) = if encoded && scalar {
+                (vector(1)?, place(i, 2)?)
+            } else {
+                (destination, place(i, 1)?)
+            };
+            Question::Reciprocal(Reciprocal {
+                root: matches!(m, Rsqrtps | Rsqrtss | Vrsqrtps | Vrsqrtss),
+                scalar,
+                encoding: match (encoded, ins.op_register(0).is_ymm()) {
+                    (false, _) => VectorEncoding::Legacy,
+                    (true, false) => VectorEncoding::Vex128,
+                    (true, true) => VectorEncoding::Vex256,
+                },
+                destination,
+                merged,
+                source,
+            })
+        }
+        Popf | Popfq => Question::PopFlags {
+            bytes: crate::operand::stack_bytes(i) as u8,
+        },
+        Sldt | Str | Smsw | Sgdt | Sidt | Verr | Verw => Question::Descriptor {
+            read: match m {
+                Sldt => DescriptorRead::LocalTable,
+                Str => DescriptorRead::TaskRegister,
+                Smsw => DescriptorRead::MachineStatus,
+                Sgdt => DescriptorRead::GlobalTable,
+                Sidt => DescriptorRead::InterruptTable,
+                Verr => DescriptorRead::Readable,
+                _ => DescriptorRead::Writable,
+            },
+            operand: place(i, 0)?,
+        },
+        Lar | Lsl => {
+            let (number, bits) = general_destination()?;
+            Question::Descriptor {
+                read: if m == Lar {
+                    DescriptorRead::Rights { number, bits }
+                } else {
+                    DescriptorRead::Limit { number, bits }
+                },
+                operand: place(i, 1)?,
+            }
+        }
+        _ => crate::fpu::transcendental_code(i).map(Question::X87)?,
+    })
 }
 
 /// The route of one decoded instruction under `way`, for a process told of `offer`'s features.

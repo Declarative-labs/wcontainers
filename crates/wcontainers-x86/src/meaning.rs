@@ -6,7 +6,7 @@ use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
 use crate::guest::{Control, Hook, Reason, Trap};
 use crate::operand::*;
 use crate::strings::{BULK_STRING_BYTES, StringKind};
-use crate::{ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DF, ID, NT, TF, X86_64};
+use crate::{ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DF, TF, X86_64};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, ValType};
 use wcontainers_guest_cpu::{Access, Emitter, Target};
@@ -3519,9 +3519,7 @@ fn time_stamp<E: Emitter<X86_64> + ?Sized>(e: &mut E, processor: bool) {
     }
 }
 
-/// The bits outside the six flags that `popf` writes at CPL 3; it leaves IOPL, IF, RF, VIF and VIP, and AC
-/// is never held (section 5.1 of the plan).
-const POPPED_CONTROL: u64 = TF | DF | NT | ID;
+use crate::answer::POPPED_CONTROL;
 
 /// `popf`: the six flags and TF, DF, NT and ID from the stack, of them only the low 16 bits with 66.
 fn pop_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {

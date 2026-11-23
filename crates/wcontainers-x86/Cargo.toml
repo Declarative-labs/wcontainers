@@ -17,6 +17,8 @@ wasm-encoder = { version = "0.263.0", optional = true }
 rustc_apfloat = "0.2.3"
 # x87's square root and transcendental instructions (MIT).
 astro-float-num = { version = "0.3.7", default-features = false }
+# The reciprocal estimates' square root and rounding, correctly rounded as WebAssembly's (MIT).
+libm = "0.2.16"
 # Only for astro-float-num's lazy_static, which builds without std only with this feature.
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 

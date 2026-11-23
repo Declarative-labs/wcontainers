@@ -59,6 +59,7 @@ pub mod encoding;
 mod lanes;
 pub mod offer;
 pub mod strings;
+mod user_segments;
 #[cfg(feature = "translate")]
 mod vex;
 #[cfg(feature = "translate")]
@@ -69,11 +70,6 @@ pub use offer::{FULL_SPEED, Offer, Refused, V3};
 
 #[cfg(feature = "translate")]
 pub use decode::{Instruction, claim, decode, told_feature};
-#[cfg(feature = "translate")]
-pub use descriptors::{
-    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
-    USER32_CS,
-};
 #[cfg(feature = "translate")]
 pub use flags::{Flag, Flags, Shape};
 #[cfg(feature = "translate")]
@@ -86,6 +82,10 @@ pub use host::Host;
 pub use meaning::written;
 #[cfg(feature = "translate")]
 pub use operand::{General, general as general_register, size_of_memory as memory_size_bytes};
+pub use user_segments::{
+    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
+    USER32_CS,
+};
 
 /// The x86-64 guest, 64-bit user mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -315,6 +315,10 @@ pub const fn is_canonical(address: u64) -> bool {
 pub const BREAKPOINT_VECTOR: u8 = 3;
 pub const OVERFLOW_VECTOR: u8 = 4;
 pub const LINUX_32_BIT_SYSTEM_CALL: u8 = 0x80;
+
+/// The quiet bit, and x86's default not-a-number, negative and quiet, of single precision.
+pub(crate) const QUIET32: u32 = 1 << (f32::MANTISSA_DIGITS - 2);
+pub(crate) const DEFAULT32: u32 = (-f32::INFINITY).to_bits() | QUIET32;
 
 /// Bits user code always sees set in rflags: the reserved bit 1 and IF.
 pub const ALWAYS: u64 = 0x202;
