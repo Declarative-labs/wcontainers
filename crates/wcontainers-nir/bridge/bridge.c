@@ -692,6 +692,40 @@ known_at(nir_function_impl *impl, nir_intrinsic_instr *intr)
    return nir_intrinsic_load_barycentric_pixel;
 }
 
+/* Whether a read at a sample is at the program's own sample
+ * (interpolateAtSample(v, gl_SampleID)). */
+static bool
+at_own_sample(nir_intrinsic_instr *bary)
+{
+   if (bary->intrinsic != nir_intrinsic_load_barycentric_at_sample)
+      return false;
+   nir_intrinsic_instr *sample = nir_src_as_intrinsic(bary->src[0]);
+   return sample && sample->intrinsic == nir_intrinsic_load_sample_id;
+}
+
+/* Whether the program reads the slot `intr` reads anywhere but at its own sample. */
+static bool
+read_off_own_sample(nir_function_impl *impl, nir_intrinsic_instr *intr)
+{
+   const unsigned location = nir_intrinsic_io_semantics(intr).location;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *other = nir_instr_as_intrinsic(instr);
+         nir_intrinsic_instr *bary = barycentric_of(other);
+         if (!bary || nir_intrinsic_io_semantics(other).location != location)
+            continue;
+         if (!nir_src_is_const(other->src[1]) ||
+             nir_src_as_uint(other->src[1]) != nir_src_as_uint(intr->src[1]))
+            return true;
+         if (bary->intrinsic != nir_intrinsic_load_barycentric_sample && !at_own_sample(bary))
+            return true;
+      }
+   }
+   return false;
+}
+
 /* An input read at an offset or a sample (interpolateAtOffset, interpolateAtSample), which the
  * common form lacks, from its value where the program's other reads take it and that value's
  * slopes: an interpolated value is affine on the screen (over w where perspective-correct), so its
@@ -714,6 +748,15 @@ evaluate_elsewhere(nir_builder *b, nir_intrinsic_instr *intr, void *data)
                  bary->intrinsic != nir_intrinsic_load_barycentric_at_sample))
       return false;
    const enum glsl_interp_mode mode = nir_intrinsic_interp_mode(bary);
+   /* At its own sample, where the slot is read nowhere else, the value is the slot's own
+    * interpolation at the sample, which the host makes. */
+   if (at_own_sample(bary) && nir_src_is_const(intr->src[1]) &&
+       !read_off_own_sample(e->impl, intr)) {
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_src_rewrite(&intr->src[0],
+                      nir_load_barycentric(b, nir_intrinsic_load_barycentric_sample, mode));
+      return true;
+   }
    const nir_intrinsic_op from = known_at(e->impl, intr);
    const bool needs_samples = bary->intrinsic == nir_intrinsic_load_barycentric_at_sample ||
                               from == nir_intrinsic_load_barycentric_sample;

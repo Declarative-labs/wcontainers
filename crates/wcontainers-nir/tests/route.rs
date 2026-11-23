@@ -583,6 +583,37 @@ fn inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolat
     }
 }
 
+const AT_OWN_SAMPLE: &str = "#version 450
+layout(location = 0) in vec4 only_there;
+layout(location = 1) in vec4 also_here;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = interpolateAtSample(only_there, gl_SampleID)
+        + interpolateAtSample(also_here, gl_SampleID) + also_here;
+}
+";
+
+#[test]
+fn an_input_read_only_at_its_own_sample_is_interpolated_at_the_sample_by_the_host() {
+    let mut nir = Nir::from_glsl(&[(Stage::Fragment, AT_OWN_SAMPLE)])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .nir;
+    assert!(nir.interpolate_elsewhere(4));
+    nir.to_common_form(Stage::Fragment).unwrap();
+    let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
+    // The input read also at the pixel's centre is moved from there.
+    assert_eq!(
+        fragment_inputs(&module),
+        [
+            (0, Some(naga::Sampling::Sample)),
+            (1, Some(naga::Sampling::Center))
+        ]
+    );
+}
+
 const FORMATLESS: &str = "#version 450
 layout(local_size_x = 4) in;
 layout(rgba8, binding = 0) uniform writeonly image2D formatted;
