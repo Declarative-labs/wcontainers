@@ -459,15 +459,13 @@ impl ResourceDesc {
             NV12 | OPAQUE_420 => return Ok((Format::R8Unorm, true)),
             YUY2 => return Ok((Format::Rgba8Unorm, true)),
             // 2D textures held in its bits, copied and mapped with the R10G10B10A2 formats;
-            // Microsoft's 11_0 table gives it no view, target or storage use.
+            // Microsoft's 11_0 table gives it no view, target or storage use. Real Direct3D 12
+            // makes it allowing target and unordered access views, though none can be made.
             R10G10B10_XR_BIAS_A2_UNORM => {
-                if self.dimension != DIMENSION_TEXTURE2D
-                    || self.flags
-                        & (FLAG_RENDER_TARGET | FLAG_DEPTH_STENCIL | FLAG_UNORDERED_ACCESS)
-                        != 0
-                {
+                if self.dimension != DIMENSION_TEXTURE2D || self.flags & FLAG_DEPTH_STENCIL != 0 {
                     return Err(Error::Invalid(
-                        "an R10G10B10_XR_BIAS_A2_UNORM texture other than a 2D one without views",
+                        "an R10G10B10_XR_BIAS_A2_UNORM texture other than a 2D one, or allowing \
+                         depth-stencil views",
                     ));
                 }
                 return Ok((Format::Rgb10a2Unorm, false));
