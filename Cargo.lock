@@ -6093,6 +6093,8 @@ dependencies = [
 name = "wcontainers-webassembly-engine-wasmedge"
 version = "0.1.0"
 dependencies = [
+ "log",
+ "rustix",
  "tempfile",
  "thiserror 2.0.21",
  "wasm-encoder 0.263.0",
