@@ -90,7 +90,10 @@ vertex of each primitive a geometry or tessellation stage makes (`Stages::provok
 109, the section below): geometry shaders reading their vertices' clip and cull distances (the
 Direct3D 12 runner's `clip-cull-distance-1-16-gs`, both builds). Run 23 (run 110, the section
 below): pixel shaders reading cull distances (`VariantFlags::CULL_DISTANCE_LINKED`, an interface
-flag; the runner's `clip-cull-distance-1-6-ps` and `-1-8-ps`).
+flag; the runner's `clip-cull-distance-1-6-ps` and `-1-8-ps`). Run 24 (run 111, the section
+below): the Direct3D 12 runner's value items measured against real Direct3D 12 on the RTX 3080
+and WARP: minimum-precision constants of DXIL programs read 16 bits a component (a carried
+dxil-spirv patch), `frexp`, A34 found.
 Not complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
@@ -228,6 +231,75 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 24 (run 111): minimum-precision constants and `frexp` against real Direct3D 12 (the runner's value items)
+
+Logs and scripts in scratch `graphics-shaders/g6-r111` (the clone `tip` moved there from g6-r110;
+`arm1.log` to `arm3.log`, `gpu5.log` on, `pair.sh` runs the drawn test and then its mutant,
+`dump.log` is fxc's disassembly of `cs_min16`). Nothing built on the Mac (rustfmt of single
+files only).
+- Chosen: the Direct3D 12 front's runner items that are values without a refusal (its status,
+  "Asked of other tracks"): `min16float` constants of shader model 6 programs, 32-bit subnormals,
+  DXIL `frexp` of a NaN, the shader model 4.0 multisampled load in a loop.
+- Measured first (RTX 3080 and WARP through real Direct3D 12, new test below): a DXIL program
+  built with minimum precision and no 16-bit types (dxc's default) reads component c of a
+  `cbufferLoadLegacy` row as the 16 bits at byte 2c, a half or a 16-bit integer, on both devices
+  (vkd3d's minimum-precision test says the same of NVIDIA and WARP, and AMD otherwise).
+  dxil-spirv read the 32-bit word c, as a float or as an integer cut to 16 bits.
+- Built: a carried dxil-spirv patch (`converter-patches/dxil-spirv/opcodes/dxil/
+  dxil_resources.cpp.patch`): in that case the row is read as four words and each component is
+  unpacked from its half (`UnpackHalf2x16`) or shifted out; native 16-bit programs and every other
+  load are as before.
+- Tests: own `cs_min16` (`tests/own/precision.hlsl`, fxc `cs_5_0` and dxc `cs_6_0`: packed
+  vectors of `min16float`, `min16uint` and `min16int`, arrays of them read at a constant and at a
+  run-time index, widened into words) and `cs_frexp` (`tests/own/frexp.hlsl`, `frexp` of 64
+  constants: NaNs with payloads, infinities, zeros, subnormals, then seeded bits). New binary
+  `tests/precision_draw.rs` (Windows): real Direct3D 12 on the RTX 3080 and on WARP run each build
+  (root constant buffers of seeded bytes, a root storage view), ours runs it on wgpu's Direct3D 12
+  and Vulkan paths; every word must equal the RTX 3080's (a NaN as any NaN) but where a known
+  difference names it. Seeds `WCONTAINERS_PRECISION_SEED` (1) and `WCONTAINERS_PRECISION_CASES`
+  (4). Corpus records of the four new files added (`ok`).
+- Results, `minimum_precision_constants_read_as_direct3d_12_reads_them`, seeds 1 to 4 (gpu5.log,
+  before the known names were added): dxc's build equal to the RTX 3080 in all 32 words on both
+  paths, 8 comparisons; WARP equal to the RTX 3080 there. fxc's build: the 22 float and unsigned
+  words equal; the 10 words of a `min16int` made an `int` differ, as fxc writes that as `mov r,
+  cb {min16i as def32}` (dump.log) and both devices keep only the 16 bits below and sign-extend
+  them, where the DXBC route keeps the 32 (new gap A34, below; named in the test as known). WARP
+  also rounds `min16f as def32` to half precision, the RTX 3080 does not (ours keeps 32 bits, as
+  the RTX 3080; devices disagree, so nothing to build).
+- Mutant (gpu7-mutant.log, `pair.sh`): without the carried patch all 8 comparisons of dxc's
+  `cs_min16` fail (every float and integer word apart), so the test catches the old reading.
+- `frexp_gives_direct3d_12s_parts`, seeds 1 to 4 (gpu6.log): dxc's build equal to the RTX 3080 in
+  every word on both paths, NaNs with payloads included (the runner's frexp line 52, DXIL: its
+  "`x != 0` an unordered comparison" fix of run 98 holds), and WARP equal to the RTX 3080 there.
+  fxc's build differs only in rows of the constant buffer holding a NaN or an infinity: fxc picks
+  `operands[i / 4][i % 4]` as `dp4 r, cb0[row], icb[component]` (dump-frexp.log), and on both
+  devices a NaN or infinity elsewhere in the row makes the dot product a NaN (the RTX 3080's
+  0x7fffffff, so mantissa 0x3f7fffff and exponent 129; WARP's NaN has other bits), where
+  dxbc-spirv's arithmetic pass deliberately folds that pattern into the component alone (its
+  comment names a game that needs the fold). New gap A35, named in the test as known. Subnormal
+  operands (0x1, 0x0007ffff, 0x807fffff among them) gave the RTX 3080's parts on both builds; the
+  test names them as plan 4.12's listed loss should they differ, and none did.
+- Final run (gpu8.log, the clone at the worktree's state; RTX 3080, desktop shared, through the
+  queue): both tests pass, seeds 1 to 4, 16 comparisons each (2 builds, 2 wgpu paths, 4 seeds),
+  every one 0 words apart beyond the named ones: `cs_min16` 80 known words (fxc's build, A34),
+  `cs_frexp` 310 known words (fxc's build, A35), no subnormal word apart.
+- Settled without building: 32-bit subnormals not flushed are plan 4.12's listed loss ("Floating
+  point modes"; the runner's frexp line 57 is a shader model 4.0 pixel shader, not measured here,
+  where the compute build above gave the RTX 3080's parts for subnormals); the shader model 4.0 multisampled load in a loop (runner texture-load line 145):
+  the runner's shader as fxc compiles it (`hlsl+texture-load-6-ps.dxbc`) has the same code as own
+  `ps_msloop` (they differ in the hash, a register flag and the semantics' case), and texture-load's
+  view is a single-sampled 2D texture (`size (2d, 2, 2)`) read through a `Texture2DMS`
+  declaration, which the Direct3D 12 front lists as not to be matched and refuses by name since its
+  run 52 (its runner now stops at line 51). Nothing of this track's is left there.
+- Runs: ARM64 machine (load 11 to 27): rustfmt and clippy with warnings denied clean, every CPU
+  test binary with every corpus passed (arm2.log; the corpus test first failed only for the four
+  new files without records, arm1.log); the literal check names no line of this crate's new code
+  (arm4.log; it names `tests/variants.rs:1955`, a test literal "texture_2d<i32>" that another
+  track's uncommitted constant `SIGNED_BITS_TEXTURE` in crates/wcontainers-gpu-webgpu/src/fill.rs
+  now restates; not this run's to change). Desktop (RTX 3080, GPU jobs through the queue, 3 cargo
+  jobs): Windows clippy clean in each job. Three jobs were lost to this run's own `remote`
+  commands from the same clone (How to run).
 
 ## G6 run 23 (run 110): pixel shaders reading cull distances (the Direct3D 12 runner)
 
@@ -1860,6 +1932,15 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- Run 111 (gap A35): dxbc-spirv folds fxc's `dp4` pick of a vector component at a run-time index
+  into the component alone, on purpose (its comment names a game, Jump Space, that needs it to
+  avoid 0 times infinity); the RTX 3080 and WARP under real Direct3D 12 give a NaN there when
+  another component is a NaN or an infinity. Asked: follow the devices (a carried patch turning
+  the fold off) or keep the fold? Kept for now. Also new: a carried dxil-spirv patch for
+  minimum-precision constants (drawn equal to real Direct3D 12), and a new test binary against
+  real Direct3D 12 (`tests/precision_draw.rs`, 3 more unsafe blocks calling Direct3D 12, as the
+  other drawn tests do; the word `unsafe` now appears 94 times in src and tests).
+
 - Run 104: unsafe code in this crate, 91 lines left (from 96). Asked: the converters' C++ boundary
   (15 lines in src/dxbc.rs and src/dxil.rs: the calls into dxbc-spirv and dxil-spirv and the reads
   of the words and reasons they allocate) is inherent to calling C++; cxx, the binding generator
@@ -2952,6 +3033,23 @@ The gap list (every item of the pass bar not met):
   wait on A4's `combine` and the other items below, while these passes are proven by the drawn
   tests and the corpus records today. Waits: nobody. Takes: each pass on rspirv's `dr::Module`
   (load, edit, assemble), proven by every corpus record and written file staying byte-equal.
+- A34 (run 111). A DXBC `min16int` value outside 16 bits made a full integer: fxc writes the
+  conversion as an operand's `min16i as def32`, which the RTX 3080 and WARP both take as the 16
+  bits below sign-extended; the DXBC route keeps the 32 bits (dxbc-spirv's min16 lowering runs
+  with 16-bit integers off, `cpp/dxbc.cpp`). Not a single rule to copy: the same devices read a
+  `{min16u}` operand stored without conversion as all 32 bits, and arithmetic past 16 bits is not
+  measured. Shown by `minimum_precision_constants_read_as_direct3d_12_reads_them` (fxc's build,
+  named there as known). Waits: nobody (values inside 16 bits, as every runner file and program
+  in the corpora gives, read the same). Takes: measuring arithmetic and each conversion kind on
+  both devices, then sign-extending `min16i as def32` sources in the DXBC route if one rule fits.
+- A35 (run 111). A DXBC program picking a vector's component at a run-time index through fxc's
+  `dp4` with a row of an identity matrix gets a NaN on the RTX 3080 and WARP when another
+  component of the vector is a NaN or an infinity (0 times infinity); dxbc-spirv's arithmetic pass
+  (`selectFDot`) folds the pattern into the component alone, on purpose (its comment: a game
+  needs the fold to avoid that NaN), so ours gives the component. Shown by
+  `frexp_gives_direct3d_12s_parts` (fxc's build, named there as known). Waits: nobody. Takes: the
+  owner's word on whether to follow the devices (turn the fold off, a carried patch) against the
+  game upstream names; not changed here, as following it could break that game.
 - Also open but not on the pass bar's words, for the fronts' real programs (arrays of constant and
   structured buffers on the DXIL route convert since run 87, its section): `rewrite` refusing
   arrays of buffers (its input's binding arrays of blocks; `src/dxil/buffer_arrays.rs` would serve
@@ -2971,14 +3069,13 @@ The gap list (every item of the pass bar not met):
   pixel shader (a clip distance read converts with `CLIP_DISTANCE` since run 102, a cull distance
   read with `CULL_DISTANCE_LINKED` since run 110; a geometry shader reading either converts
   since run 109), a DXIL pixel shader's layer and
-  viewport index, and values that differ without a
-  refusal (`min16float` constants, subnormals not flushed; DXIL `frexp` of a NaN, whose `x != 0`
-  is dxc's unordered comparison, expected right on WebGPU since A26's run 98 but not run on the
-  runner; a centroid `SV_Position` in a program run per sample is refused by name since run 107,
-  `CentroidPositionPerSample`), and the shader model 4.0 multisampled load in a loop that its front reads at
-swapped coordinates (runner texture-load; this track's run 32 found fxc's build of that shader
-converts right, test `shader_model_4_multisampled_loads_keep_their_coordinates`, so the bytecode
-the runner compiles needs dumping by the front). Its list also names `TypedBufferFormatKind`, gone
+  viewport index, and values that differ without a refusal, all settled in run 111 (its section):
+  `min16float` constants of DXIL programs read 16 bits a component as both devices do (a carried
+  dxil-spirv patch, drawn equal to real Direct3D 12), DXIL `frexp` of a NaN equal to real
+  Direct3D 12, subnormals not flushed (plan 4.12's listed loss), the shader model 4.0
+  multisampled load in a loop (a single-sampled view read as multisampled, which the front lists
+  as not to be matched), a centroid `SV_Position` in a program run per sample refused by name
+  since run 107 (`CentroidPositionPerSample`). Its list also names `TypedBufferFormatKind`, gone
 since run 55 (A2), and `SwizzledDepth` (A4). The Direct3D 11 front's atg-simplecomputepc division (just below 4 where
   Direct3D gives 4; inferred there, its shader not in the games corpus) and Wine's
   test_atomic_instructions (its refusal of `AtomicExchangeLoop` is the front's to lift).
@@ -3041,7 +3138,8 @@ G6a run 5's tip):
    into a multisampled target (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP`
    (A5), stream output from a vertex shader writing cull distances on WebGL 2 (A5). A1, A13 and
    A16 closed in run 105; A14 in runs 89 and 96, A7's cull distances from geometry shaders in run
-   90, A20 in run 95.
+   90, A20 in run 95. The Direct3D 12 runner's value items settled in run 111; A34 and A35 found
+   there wait on nobody.
 2. A6's two Direct3D 12 rig scenes when the owner rules or the rig takes a line allowance.
    Unsafe code: the owner's ruling on the converters' boundary and the drawn tests' Direct3D calls
    (New for the owner, run 104); the fuzz test's bounded allocator through a vetted crate if one
@@ -3057,6 +3155,15 @@ G6a run 5's tip):
 
 ## Asked of other tracks
 
+- For the Direct3D 12 front (run 111, its runner's value items): `min16float`, `min16int` and
+  `min16uint` constants of shader model 6 programs built without 16-bit types are now read 16 bits
+  a component, as the RTX 3080 and WARP read them (runner arithmetic-float-uniform lines 359, 381,
+  408 and 430, minimum-precision line 216); nothing changes in the calls. DXIL `frexp` of a NaN
+  (frexp line 52) is equal to real Direct3D 12 here. Rerun those files. Subnormals not flushed
+  (frexp line 57, shader model 4.0) are plan 4.12's listed loss. texture-load line 145 reads a
+  single-sampled view through a `Texture2DMS` declaration, your "not to be matched"; the
+  shader's code is the same as this track's `ps_msloop`. So the "values" item of your "Asked of
+  other tracks" has nothing left for this track.
 - For the Direct3D 12 front (run 110, its runner): a pixel shader reading `SV_CullDistance`
   (`clip-cull-distance-1-6-ps`, both builds, and `-1-8-ps`) converts with
   `VariantFlags::CULL_DISTANCE_LINKED` and `linked` in its key and its vertex shader's ("How the
@@ -4685,6 +4792,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 111's scripts in scratch `graphics-shaders/g6-r111` are run 110's with its folder, plus
+  `arm-a-cmd.txt` (clippy and the corpus test with every corpus) and `pair.sh` (the drawn
+  precision test, then the same without the carried `dxil_resources.cpp` patch, through
+  `gpu.sh` and `gpu-noclippy.sh`). Never run `tools/graphics-rig/remote` (or `queue-check`, which
+  calls it) from the clone while a GPU job of that clone waits: the job then fails "holds tree
+  ..." or "holds a build of nothing" when it starts (three jobs lost this run). Commit the
+  clone's working state (local only) before `gpu.sh`; an uncommitted tree failed "holds tree"
+  once too.
 - Run 109's scripts in scratch `graphics-shaders/g6-r109` are run 108's with its folder, plus
   `early-cmd.txt` (clippy and three test binaries) and `mutant.sh`. New own shaders: a temporary
   `distances.cmd` in the clone as run 108's `provoking.cmd`.
@@ -5111,8 +5226,9 @@ were already there.
 - Run 100: the converters are no longer built exactly as upstream has them. `build.rs` applies
   each unified diff in `converter-patches/<converter>/<file>.patch` to that source (with the
   `diffy` crate) and compiles the result from the build directory; a patch that does not apply,
-  or names no compiled source, stops the build. Four dxbc-spirv files carry one today (A8, the
-  order of operands built inside one call's arguments). Each is small and meant for upstream; the
+  or names no compiled source, stops the build. Five dxbc-spirv files and three dxil-spirv files
+  carry one today (A8's order of operands among them; each is named in the section of the run
+  that made it, the latest run 111's minimum-precision constants). Each is small and meant for upstream; the
   submodules stay at their pinned upstream commits.
 - Run 95: an "interface:" commit (02049aeb) that also touches other tracks' crates, against
   section 12's rule that such a commit touches only the interface. In the shared worktree a new
