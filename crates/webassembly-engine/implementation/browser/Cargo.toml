@@ -16,6 +16,10 @@ name = "conformance"
 path = "conformance.rs"
 
 [[test]]
+name = "workers"
+path = "workers.rs"
+
+[[test]]
 name = "benchmark"
 path = "benchmark.rs"
 
@@ -29,6 +33,7 @@ wasm-encoder = "0.263.0"
 [dev-dependencies]
 wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
 wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
 
 [lints]
 workspace = true

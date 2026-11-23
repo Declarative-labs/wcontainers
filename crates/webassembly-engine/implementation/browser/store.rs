@@ -33,6 +33,11 @@ pub struct BrowserMemory {
     write: Function,
 }
 
+/// Answers whether the memory has the 64-bit address type.
+pub fn memory64(memory: &BrowserMemory) -> bool {
+    memory.memory64
+}
+
 /// Returns the object the JavaScript API knows the memory by.
 pub fn memory_object(memory: &BrowserMemory) -> &Memory {
     &memory.memory

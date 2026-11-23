@@ -10,7 +10,7 @@ use core::convert::Infallible;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use js_sys::WebAssembly::Instance;
+use js_sys::WebAssembly::{Instance, Memory, Module};
 use wasm_bindgen::{JsCast, JsValue};
 use wcontainers_webassembly_engine::{ExternalAddress, Import, WebAssemblyEngine};
 
@@ -58,6 +58,38 @@ fn new_id(forget: fn(f64)) -> Registration {
     let count = REGISTERED.with(|registered| registered.replace(registered.get().wrapping_add(1)));
     let id = (WORKER.with(|worker| *worker) << u32::BITS | u64::from(count)) as f64;
     Registration { id, forget }
+}
+
+/// Returns the object to post to another worker, where `receive_module` makes the module known, or nothing when
+/// this worker does not know the module.
+pub fn module_to_post(module: &BrowserModule) -> Option<Module> {
+    glue::registered_module(module.registration.id)
+}
+
+/// Makes a module another worker posted known to this worker's engines.
+pub fn receive_module(posted: &Module) -> BrowserModule {
+    let registration = new_id(glue::forget_module);
+    glue::register_module(registration.id, posted);
+    BrowserModule { registration }
+}
+
+/// Returns the object to post to another worker, where `receive_shared_memory` makes the memory known, or nothing
+/// when this worker does not know the memory.
+pub fn shared_memory_to_post(memory: &BrowserSharedMemory) -> Option<Memory> {
+    glue::registered_shared_memory(memory.registration.id)
+}
+
+/// Makes a shared memory another worker posted known to this worker's engines, or answers nothing when the memory is
+/// not shared.
+pub fn receive_shared_memory(posted: &Memory) -> Option<BrowserSharedMemory> {
+    glue::is_shared(posted).then(|| {
+        let registration = new_id(glue::forget_shared_memory);
+        glue::register_shared_memory(registration.id, posted);
+        BrowserSharedMemory {
+            registration: Arc::new(registration),
+            memory64: store::memory64(&store::memory_of(posted.clone(), None)),
+        }
+    })
 }
 
 /// Lends the host context to the host functions for a call into the engine's code.
