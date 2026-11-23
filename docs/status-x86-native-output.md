@@ -49,7 +49,10 @@ probes).
   the count, the count after each system call with the WebAssembly output's. Results below. The benchmark set's
   times against the host showed the withheld registers named by hot loops (matrix 6.2 times the host's): a guest
   instruction naming one now reads or writes its slot directly where the memory form acts the same (plan 3.4),
-  which native layer 1 checked (it found two classes where it does not, kept out and named in a test).
+  which native layer 1 checked (it found two classes where it does not, kept out and named in a test). Of the
+  bar: layers 1 (2008 forms, 1,000 a form), 2 (10,000 programs) and 3 (1,000 Csmith programs) pass natively against
+  the CPU, the count after every system call equal to the WebAssembly output's; speed fails (1.41 against 1.25,
+  matrix 3.8, search 2.0); the X9 programs, replay, register groups and hostile guests wait on an x86 executor.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -57,8 +60,8 @@ probes).
 ## Next, in order (XN1)
 
 1. Speed (the bar is 1.25 geometric mean, none above 1.6; now 1.41 uncounted, matrix 3.8, search 2.0, run 4 results):
-   the withheld registers by measurement over the benchmark set and Csmith (run 4's experiment over five sets, in
-   "Withheld sets" below, is the start); then what is left: returns and jumps through a register go through the
+   no fixed withheld set meets it (run 4's experiment over five sets, "Withheld sets" below), so a piece's own
+   homes for c, t and u (below), measured with native layers 1 to 3 checking it; then what is left: returns and jumps through a register go through the
    mirror's indirect jump where the host's `ret` is predicted by its return stack (fib 1.25, sort 1.24, interpret
    1.23), and the count's cost in interpret (1.65 counted).
 2. The replay check: `stop_check` in the trait, `InsideCall::Stop`, and `stop: Option<u64>` in
@@ -88,9 +91,8 @@ probes).
   `run_timed` and `compare` (above). The blob's routines: the entries for Exit and Answer and one for every other
   kind (which ends the run, named); a system call site found by its return point flag-free (`lea`, `jrcxz`), which
   records the site and the count on standard error, loads the guest's r10 from the area where it is withheld, makes
-  the call, stores r11 (the flags) there and gives rcx the next pc; a repeated string site, which records rcx
-  before, runs the guest's own bytes, and records rcx, rflags, rsi and rdi after (pushing the flags with the word
-  below sp kept); a fault in the pieces or a string's copy is the guest's (the default action put back, the
+  the call, stores r11 (the flags) there and gives rcx the next pc; a repeated string site, which records rcx, rsi and rdi before, runs the guest's own bytes, and records them after
+  (DF read from rdi's direction, a host process keeping TF off); a fault in the pieces or a string's copy is the guest's (the default action put back, the
   instruction run again, so the blob ends by the same signal), at host pc 0 a lookup miss (an empty second-level
   word, the target in t), anywhere else the blob's own (named). The blob starts the program with the registers
   and flags the reference gives a blob, read at its start. Tests: tests/layer2.rs
@@ -116,6 +118,16 @@ probes).
 - Native layer 3, 8 Csmith programs (seed 1), 8 at once (load 260 from other users at the start, 67 after): 0
   failing, 366 blob runs, 79,082 pieces.
 - Native layer 1 with the slot form: 2008 forms, 200 cases a form, seed 5150, 32 at once (load 9 to 13): 0 failing.
+- The bar's runs at commit 1876776c (with other tracks' edits in the tree), 15:51 to 16:08 UTC, load 1.8 before, up
+  to 20 during (this run's 32 jobs): native layer 2, seed 1, 10,000 cases, each at none, its bound and full,
+  uncounted and counted: 0 failing, 3,432 ending by SIGSEGV as on the CPU, 115,358 blob runs, 2,671,676 pieces, 129
+  s; native layer 3, 1,000 Csmith programs (seed 1): 852 compared the same way, 148 did not end in time on Linux, 0
+  failing, 251 s; native layer 1, 2008 forms, 1,000 cases a form, seed 5150: 0 failing, the same 2,594 known
+  failures as run 3, 601 s; the x86 and guest-cpu crates' tests: all pass.
+- The first 10,000-case run found 2 failures, both the blob's own: a repeated string's record pushed the flags
+  below an rsp at the stack's bottom (cases 1409, 9636); the record now reads DF from rdi's direction instead and
+  touches no stack, and both pass. That run took over an hour at load 0.5 because every guest fault started the
+  host's crash reporter (apport); the blob now makes itself non-dumpable (500 cases: 97 s before, 23 s after).
 - The benchmark set at full, best of 5 (bench-run4a.out and bench-run4b.out in scratch; load 1.5 to 5), times the
   host's plain run (uncounted, counted): before the slot form fib 1.24, 1.16; sieve 1.01, 0.98; hash 1.02, 1.01;
   sort 1.28, 1.27; interpret 1.23, 1.66; matrix 6.20, 6.20; walk 1.04, 1.07; search 4.13, 4.08; geometric mean
@@ -123,6 +135,24 @@ probes).
   matrix 3.83, 3.81; walk 1.06, 1.04; search 1.98, 2.10; geometric mean 1.408, 1.489. The bar (1.25, none above
   1.6) is not met. The blob times its run as the reference times a blob (from before the process is made to its
   end), so the prologue's few system calls and each guest system call's record are inside the time.
+
+## Withheld sets (XN1 run 4 experiment, scratch run9/sets.sh and sets.out)
+
+Each set (c, t, u) put into the rented machine's copy, checked by native layer 1 (30 cases a form, seed 5150) and
+layer 2 (32 cases), all 0 failing, then the benchmark set at full uncounted, best of 3 (load 1.3 to 3.1), times the
+host's: fib, sieve, hash, sort, interpret, matrix, walk, search; geometric mean (counted in brackets).
+- r10, r11, r15 (today's): 1.25, 1.01, 1.01, 1.23, 1.22, 3.82, 1.04, 1.86; 1.392 (1.476).
+- r13, r14, r15: 2.26, 1.00, 1.00, 1.42, 1.23, 1.06, 1.04, 1.04; 1.208 (1.188).
+- r12, r13, r15: 1.24, 1.01, 1.00, 1.50, 1.22, 2.85, 1.06, 1.05; 1.280 (1.313).
+- r12, r14, r15: 2.26, 1.01, 1.00, 1.45, 1.23, 2.82, 0.97, 1.05; 1.358 (1.404).
+- r8, r9, r15: 1.25, 2.78, 1.00, 1.29, 2.46, 3.20, 0.85, 0.78; 1.486 (1.573).
+No set meets the bar (1.25 and none above 1.6): every register is some workload's hot one (leaf loops take r8 to
+r11 first, recursion keeps r14 across its calls: fib's `push`/`pop` of the slot chain through memory). The set
+stays r10, r11, r15 until the X9 programs' dynamic count exists (Go keeps r14 for its goroutine, static counts put
+r12 and r13 above r10 and r11 over 13 files, plan 3.4): choosing by eight small kernels alone would be shaping the
+output around them. The way past it is a piece's own homes: where a piece names a withheld register, the piece
+keeps c, t and u in the registers it names least and that register's guest value in the area, swapped at its
+entry and exits (a loop inside the piece pays once); that is the next speed step.
 
 ## What XN1 run 3 changed
 
