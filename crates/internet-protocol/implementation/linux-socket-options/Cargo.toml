@@ -33,6 +33,8 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["gen
 libc = "0.2.191"
 # The filesystem user a socket is opened as, and the host's interfaces.
 nix = { version = "0.31.3", default-features = false, features = ["fs", "net", "user"] }
+# The uapi structures read from and written as bytes.
+zerocopy.workspace = true
 
 # TODO: remove this crate's 30 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
