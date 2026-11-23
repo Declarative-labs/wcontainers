@@ -432,7 +432,10 @@ Logs and scripts in scratch `graphics-shaders/g6-r113` (clone `tip`, `tip-arm`, 
   change: the records hold); the fuzz at seed 31337, 3,000 cases (arm1 to arm3, with the
   converter's checks: 9 ends, 23 before). Desktop (RTX 3080, one GPU job at a time, 3 cargo jobs):
   Windows clippy clean in each job; the drawn figures above. The literal check names no line of
-  this run (arm9.log; its one line of this crate is `tests/variants.rs:1955`, as in run 112). Two jobs failed at their start
+  this run (arm9.log; its one line of this crate is `tests/variants.rs:1955`, as in run 112). The
+  whole suite at the committed crate (22293b0b's, default seeds, one GPU job of about 13 minutes,
+  one test thread; gpu-suite.log): 28 test binaries and the doc tests, 219 passed, 0 failed, 5
+  ignored as before. Two jobs failed at their start
   ("holds tree ..., not the sent ...") because three jobs were queued at once from one clone (How
   to run).
 
