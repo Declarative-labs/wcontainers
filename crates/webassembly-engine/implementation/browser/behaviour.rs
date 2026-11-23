@@ -1,16 +1,22 @@
 //! What this engine does beyond the interface's suite: host functions live and die with their engine, an engine's
-//! code runs inside another's host function, a host function's panic goes on, floats keep their bits, and tables,
-//! globals and memories of the types the browser cannot describe are told apart.
+//! code runs inside another's host function, a host function outside its engine's code traps with no panic, an
+//! uncaught exception is no trap, floats keep their bits, and tables, globals and memories of the types
+//! the browser cannot describe are told apart.
 #![cfg(target_arch = "wasm32")]
+
+mod calling;
+mod names;
 
 use core::hint::black_box;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use calling::{NO_VALUES, new_engine, run_calling};
+use names::IMPORTS;
 use wasm_bindgen_test::wasm_bindgen_test as test;
 use wasm_encoder::{
     AbstractHeapType, CodeSection, ConstExpr, EntityType, ExportKind, ExportSection,
     FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, Module, RefType,
-    TableSection, TableType, TypeSection, ValType,
+    TableSection, TableType, TagKind, TagSection, TagType, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::function::{BoundFunction, FunctionTypeBinder, InvokeError};
 use wcontainers_webassembly_engine::global::{
@@ -24,62 +30,6 @@ use wcontainers_webassembly_engine::{
 use wcontainers_webassembly_engine_browser::{BrowserEngine, BrowserFunction};
 
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
-
-const NAMESPACE: &str = "env";
-const HOOK: &str = "hook";
-const RUN: &str = "run";
-const NO_VALUES: [ValType; 0] = [];
-
-/// A module that imports `hook` and exports `run`, which calls it.
-fn calling_module() -> Vec<u8> {
-    let mut types = TypeSection::new();
-    types.ty().function(NO_VALUES, NO_VALUES);
-    let mut imports = ImportSection::new();
-    imports.import(NAMESPACE, HOOK, EntityType::Function(0));
-    let mut functions = FunctionSection::new();
-    functions.function(0);
-    let mut exports = ExportSection::new();
-    exports.export(RUN, ExportKind::Func, 1);
-    let mut body = wasm_encoder::Function::new_with_locals_types(NO_VALUES);
-    body.instructions().call(0).end();
-    let mut code = CodeSection::new();
-    code.function(&body);
-    let mut module = Module::new();
-    module
-        .section(&types)
-        .section(&imports)
-        .section(&functions)
-        .section(&exports)
-        .section(&code);
-    module.finish()
-}
-
-fn new_engine<HostContext: 'static>(context: HostContext) -> BrowserEngine<HostContext> {
-    let Ok(engine) = BrowserEngine::new((), context);
-    engine
-}
-
-/// Instantiates the calling module with the hook and binds its `run`.
-fn run_calling<HostContext: 'static>(
-    engine: &mut BrowserEngine<HostContext>,
-    hook: js_sys::Function,
-) -> BrowserFunction<(), ()> {
-    let module = engine
-        .compile(&calling_module())
-        .expect("the module compiles");
-    let imports = [Import {
-        module_name: NAMESPACE,
-        item_name: HOOK,
-        address: ExternalAddress::Function(hook),
-    }];
-    let instance = engine
-        .instantiate(&module, &imports)
-        .expect("the module instantiates");
-    let Some(ExternalAddress::Function(run)) = engine.find_export(&instance, RUN) else {
-        panic!("the module exports run");
-    };
-    FunctionTypeBinder::<(), ()>::bind_engine_function(engine, run).expect("run has no values")
-}
 
 static DROPPED: AtomicUsize = AtomicUsize::new(usize::MIN);
 
@@ -119,12 +69,107 @@ fn a_host_function_of_another_engine_traps() {
         });
     let mut other = new_engine(i32::default());
     let run = run_calling(&mut other, hook);
+    assert!(!std::thread::panicking());
     assert!(matches!(
         run.invoke(&mut other, ()),
         Err(InvokeError::Trap(_))
     ));
+    assert!(!std::thread::panicking());
     assert_eq!(*owner.host_context(), i32::default());
     assert_eq!(*other.host_context(), i32::default());
+}
+
+#[test]
+fn a_host_function_of_a_dropped_engine_traps() {
+    let mut owner = new_engine(i32::default());
+    let hook =
+        FunctionTypeBinder::<(), ()>::bind_host_function(&mut owner, |context: &mut i32, ()| {
+            *context += 1
+        });
+    drop(owner);
+    let mut other = new_engine(i32::default());
+    let run = run_calling(&mut other, hook);
+    assert!(!std::thread::panicking());
+    assert!(matches!(
+        run.invoke(&mut other, ()),
+        Err(InvokeError::Trap(_))
+    ));
+    assert!(!std::thread::panicking());
+    assert_eq!(*other.host_context(), i32::default());
+}
+
+const TAG: &str = "tag";
+const THROW: &str = "throw";
+
+/// A module that exports a function that throws a tag the module defines, or imports when `imported`, and the tag.
+fn throwing_module(imported: bool) -> Vec<u8> {
+    let tag = TagType {
+        kind: TagKind::Exception,
+        func_type_idx: u32::MIN,
+    };
+    let mut types = TypeSection::new();
+    types.ty().function(NO_VALUES, NO_VALUES);
+    let mut imports = ImportSection::new();
+    let mut tags = TagSection::new();
+    if imported {
+        imports.import(IMPORTS, TAG, EntityType::Tag(tag));
+    } else {
+        tags.tag(tag);
+    }
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    let mut exports = ExportSection::new();
+    exports.export(THROW, ExportKind::Func, 0);
+    exports.export(TAG, ExportKind::Tag, 0);
+    let mut body = wasm_encoder::Function::new_with_locals_types(NO_VALUES);
+    body.instructions().throw(0).end();
+    let mut code = CodeSection::new();
+    code.function(&body);
+    let mut module = Module::new();
+    module
+        .section(&types)
+        .section(&imports)
+        .section(&functions)
+        .section(&tags)
+        .section(&exports)
+        .section(&code);
+    module.finish()
+}
+
+#[test]
+fn an_uncaught_exception_is_not_a_trap() {
+    let mut engine = new_engine(i32::default());
+    let defining = engine
+        .compile(&throwing_module(false))
+        .expect("the module compiles");
+    let defining = engine
+        .instantiate(&defining, &[])
+        .expect("the module instantiates");
+    let Some(ExternalAddress::Tag(tag)) = engine.find_export(&defining, TAG) else {
+        panic!("the tag is exported");
+    };
+    let importing = engine
+        .compile(&throwing_module(true))
+        .expect("the module compiles");
+    let importing = engine
+        .instantiate(
+            &importing,
+            &[Import {
+                module_name: IMPORTS,
+                item_name: TAG,
+                address: ExternalAddress::Tag(tag),
+            }],
+        )
+        .expect("the module instantiates with the tag");
+    for instance in [defining, importing] {
+        let Some(ExternalAddress::Function(throw)) = engine.find_export(&instance, THROW) else {
+            panic!("the function is exported");
+        };
+        let throw: BrowserFunction<(), ()> =
+            FunctionTypeBinder::<(), ()>::bind_engine_function(&mut engine, throw)
+                .expect("the function has the type");
+        assert_eq!(throw.invoke(&mut engine, ()), Err(InvokeError::Exception));
+    }
 }
 
 /// A host context holding a second engine and a function bound in it.
@@ -156,17 +201,6 @@ fn binds_and_calls_into_another_engine_inside_a_host_function() {
         assert_eq!(run.invoke(&mut outer, ()), Ok(()));
     }
     assert_eq!(*outer.host_context().inner.host_context(), 2);
-}
-
-#[test]
-#[should_panic(expected = "a host function panicked in a call into the engine's code")]
-fn a_panic_in_a_host_function_goes_on_from_the_call() {
-    let mut engine = new_engine(i32::default());
-    let hook = FunctionTypeBinder::<(), ()>::bind_host_function(&mut engine, |_: &mut i32, ()| {
-        panic!("the host function fails");
-    });
-    let run = run_calling(&mut engine, hook);
-    assert!(run.invoke(&mut engine, ()).is_err());
 }
 
 /// A quiet NaN and a signalling NaN of each width, each with a payload a JavaScript number would not keep.

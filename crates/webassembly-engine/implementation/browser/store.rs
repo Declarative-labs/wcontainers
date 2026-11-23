@@ -19,8 +19,8 @@ use wcontainers_webassembly_engine::table::{
 };
 
 use crate::adapter::{
-    self, GLOBAL, GLOBAL_VALUE_TYPES, GUEST_MEMORY, GUEST_OFFSET, LENGTH, NAMESPACE, OWN_ADDRESS,
-    READ, SCRATCH_MEMORY, TABLE, WRITE, set_slot, slot,
+    self, CopySlot, GLOBAL, GLOBAL_VALUE_TYPES, GUEST_MEMORY, NAMESPACE, READ, SCRATCH_MEMORY,
+    TABLE, WRITE, set_slot, slot,
 };
 use crate::{BrowserEngine, BrowserSharedMemory, glue, new_id};
 
@@ -77,7 +77,7 @@ pub fn memory_of(memory: Memory, memory64: Option<bool>) -> BrowserMemory {
         .find_map(|memory64| {
             memory_access(&memory, memory64, shared).map(|instance| (memory64, instance))
         })
-        .expect("a memory has a 32-bit or a 64-bit address type");
+        .expect("a memory has one of the address types its access module is made for");
     BrowserMemory {
         memory,
         memory64,
@@ -99,9 +99,9 @@ fn copy(
     if !memory.memory64 && offset > u64::from(u32::MAX) {
         return false;
     }
-    set_slot(GUEST_OFFSET, u128::from(offset));
-    set_slot(OWN_ADDRESS, own_address as u128);
-    set_slot(LENGTH, length as u128);
+    set_slot(CopySlot::GuestOffset as usize, u128::from(offset));
+    set_slot(CopySlot::OwnAddress as usize, own_address as u128);
+    set_slot(CopySlot::Length as usize, length as u128);
     glue::call(copier) || {
         glue::take_thrown();
         false

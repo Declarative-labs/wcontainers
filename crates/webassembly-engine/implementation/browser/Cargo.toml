@@ -20,6 +20,10 @@ name = "behaviour"
 path = "behaviour.rs"
 
 [[test]]
+name = "panic"
+path = "panic.rs"
+
+[[test]]
 name = "workers"
 path = "workers.rs"
 

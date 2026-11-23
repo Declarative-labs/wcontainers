@@ -1,10 +1,13 @@
 //! The figures of an engine, taken through the interface's traits alone, here for the browser's engine in a worker.
 #![cfg(target_arch = "wasm32")]
 
+mod names;
+
 use core::hint::black_box;
 
 use js_sys::WebAssembly::Memory;
 use js_sys::{Function, Reflect, Uint8Array};
+use names::{CALLBACK, IMPORTS};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::{console_log, wasm_bindgen_test};
@@ -22,8 +25,6 @@ use wcontainers_webassembly_engine_browser::BrowserEngine;
 
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
-const NAMESPACE: &str = "env";
-const HOOK: &str = "hook";
 const EMPTY: &str = "empty";
 const LOOP: &str = "loop";
 
@@ -36,14 +37,14 @@ const COPIES: u32 = 100_000;
 const SMALL: usize = 64;
 const LARGE: usize = 64 * 1024;
 
-/// A module that imports `hook`, and exports `empty`, which does nothing, and `loop`, which calls `hook` as many
+/// A module that imports `callback`, and exports `empty`, which does nothing, and `loop`, which calls `callback` as many
 /// times as its argument says.
 fn calling_module() -> Vec<u8> {
     let mut types = TypeSection::new();
     types.ty().function(NO_VALUES, NO_VALUES);
     types.ty().function([ValType::I32], []);
     let mut imports = ImportSection::new();
-    imports.import(NAMESPACE, HOOK, EntityType::Function(0));
+    imports.import(IMPORTS, CALLBACK, EntityType::Function(0));
     let mut functions = FunctionSection::new();
     functions.function(0).function(1);
     let mut exports = ExportSection::new();
@@ -149,8 +150,8 @@ where
             FunctionTypeBinder::<(), ()>::bind_host_function(&mut engine, |_: &mut i32, ()| {})
         };
         let imports = [Import {
-            module_name: NAMESPACE,
-            item_name: HOOK,
+            module_name: IMPORTS,
+            item_name: CALLBACK,
             address: ExternalAddress::Function(hook),
         }];
         if !touches {
@@ -321,8 +322,8 @@ fn generic_objects() {
         .expect("the module compiles");
     let hook = FunctionTypeBinder::<(), ()>::bind_host_function(&mut engine, |_: &mut i32, ()| {});
     let imports = [Import {
-        module_name: NAMESPACE,
-        item_name: HOOK,
+        module_name: IMPORTS,
+        item_name: CALLBACK,
         address: ExternalAddress::Function(hook),
     }];
     let instance = engine

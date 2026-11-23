@@ -1,8 +1,11 @@
 //! A module and a shared memory made by an engine in one worker, posted to another worker whose engine uses them.
 #![cfg(target_arch = "wasm32")]
 
+mod names;
+
 use js_sys::Promise;
 use js_sys::WebAssembly::{Memory, Module};
+use names::{CALLBACK, IMPORTS};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -58,15 +61,13 @@ extern "C" {
     fn store_in_another_worker(module: &Module, memory: &Memory) -> Promise;
 }
 
-const NAMESPACE: &str = "env";
-const MEMORY: &str = "memory";
-const HOOK: &str = "hook";
-const STORE: &str = "store";
+const SHARED_MEMORY: &str = "shared_memory";
+const KEEP: &str = "keep";
 
-/// The value the host function gives `store`, which writes it at the start of the memory.
+/// The value the host function gives `keep`, which writes it at the start of the memory.
 const STORED: i32 = i32::MAX;
 
-/// A module that imports a shared memory of one page and `hook`, and exports `store`, which writes what `hook`
+/// A module that imports a shared memory of one page and `callback`, and exports `keep`, which writes what `callback`
 /// returns at the start of the memory.
 fn storing_module() -> Vec<u8> {
     let mut types = TypeSection::new();
@@ -80,12 +81,12 @@ fn storing_module() -> Vec<u8> {
         shared: true,
         page_size_log2: None,
     };
-    imports.import(NAMESPACE, MEMORY, EntityType::Memory(memory));
-    imports.import(NAMESPACE, HOOK, EntityType::Function(1));
+    imports.import(IMPORTS, SHARED_MEMORY, EntityType::Memory(memory));
+    imports.import(IMPORTS, CALLBACK, EntityType::Function(1));
     let mut functions = FunctionSection::new();
     functions.function(0);
     let mut exports = ExportSection::new();
-    exports.export(STORE, ExportKind::Func, 1);
+    exports.export(KEEP, ExportKind::Func, 1);
     let mut body = wasm_encoder::Function::new_with_locals_types([] as [ValType; 0]);
     let argument = MemArg {
         offset: 0,
@@ -116,7 +117,7 @@ fn new_engine() -> BrowserEngine<i32> {
     engine
 }
 
-/// Instantiates the storing module with the memory and a host function that gives `STORED`, runs `store`, and returns
+/// Instantiates the storing module with the memory and a host function that gives `STORED`, runs `keep`, and returns
 /// the value at the start of the memory.
 fn store(engine: &mut BrowserEngine<i32>, module: &Module, memory: &BrowserMemory) -> i32 {
     let hook = FunctionTypeBinder::<(), i32>::bind_host_function(engine, |calls: &mut i32, ()| {
@@ -125,20 +126,20 @@ fn store(engine: &mut BrowserEngine<i32>, module: &Module, memory: &BrowserMemor
     });
     let imports = [
         Import {
-            module_name: NAMESPACE,
-            item_name: MEMORY,
+            module_name: IMPORTS,
+            item_name: SHARED_MEMORY,
             address: ExternalAddress::Memory(memory.clone()),
         },
         Import {
-            module_name: NAMESPACE,
-            item_name: HOOK,
+            module_name: IMPORTS,
+            item_name: CALLBACK,
             address: ExternalAddress::Function(hook),
         },
     ];
     let instance = engine
         .instantiate(&receive_module(module), &imports)
         .expect("the module instantiates");
-    let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, STORE) else {
+    let Some(ExternalAddress::Function(function)) = engine.find_export(&instance, KEEP) else {
         panic!("the module exports store");
     };
     FunctionTypeBinder::<(), ()>::bind_engine_function(engine, function)

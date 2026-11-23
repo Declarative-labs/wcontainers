@@ -13,7 +13,7 @@ use wcontainers_webassembly_engine::function::{
 };
 
 use crate::adapter::{
-    self, CALLEE, ENTRY, NAMESPACE, SCRATCH_MEMORY, from_slot, result_types, set_slot, slot,
+    self, CALLEE, ENTRY, NAMESPACE, SCRATCH_MEMORY, from_slot, result_types, set_slots, slots,
     to_slot, value_type,
 };
 use crate::{BrowserEngine, glue};
@@ -59,7 +59,7 @@ fn keep(function: HostFunction) -> u32 {
         None => {
             functions.entries.push(Some(function));
             u32::try_from(functions.entries.len() - 1)
-                .expect("a thread has fewer host functions than a 32-bit index counts")
+                .expect("a thread keeps fewer host functions than their index type counts")
         }
     })
 }
@@ -77,16 +77,40 @@ pub fn forget(indices: &[u32]) {
 }
 
 /// Runs the host function with the index, which belongs to the engine with the number, whose arguments are in the
-/// slots and which leaves its result there.
-extern "C" fn run_host_function(engine: u64, index: u32) {
-    assert!(
-        RUNNING.get() == engine,
-        "a host function runs only inside a call into its own engine's code"
-    );
+/// slots and which leaves its result there, answering whether it ran: only inside a call into its engine's code, so
+/// that its host module traps otherwise.
+extern "C" fn run_host_function(engine: u64, index: u32) -> bool {
+    if RUNNING.get() != engine {
+        return false;
+    }
     let function = HOST_FUNCTIONS
         .with_borrow(|functions| functions.entries[index as usize].clone())
         .expect("a host function lives as long as its engine");
     function();
+    true
+}
+
+/// Returns the value types of a host function's signature.
+fn host_function_types(
+    parameters: &[Option<ValType>],
+    results: Option<Vec<ValType>>,
+) -> (Vec<ValType>, Vec<ValType>) {
+    function_types(parameters, results).expect("a host function takes and returns value types")
+}
+
+/// Runs a host function with the host context, which is where its engine's host functions take it from while the
+/// engine's code runs.
+#[inline(always)]
+fn with_context<HostContext, Returned>(
+    context: &Cell<Option<Box<HostContext>>>,
+    function: impl FnOnce(&mut HostContext) -> Returned,
+) -> Returned {
+    let mut lent = context
+        .take()
+        .expect("a host function runs inside a call into its engine's code");
+    let returned = function(&mut lent);
+    context.set(Some(lent));
+    returned
 }
 
 impl<HostContext> FunctionStore for BrowserEngine<HostContext> {
@@ -136,7 +160,7 @@ fn bind_host<HostContext>(
     let table: Table = wasm_bindgen::function_table().unchecked_into();
     let runner = glue::table_element(
         &table,
-        f64::from(run_host_function as extern "C" fn(u64, u32) as usize as u32),
+        f64::from(run_host_function as extern "C" fn(u64, u32) -> bool as usize as u32),
         false,
     );
     let instance = glue::instantiate_with_two(
@@ -158,7 +182,8 @@ fn finish<HostContext, Results: 'static>(
     returned: bool,
 ) -> Result<Results, InvokeError<JsValue>> {
     if returned {
-        Ok(from_slot(slot(0)))
+        let [result] = slots();
+        Ok(from_slot(result))
     } else {
         engine.check_context_returned();
         let thrown = glue::take_thrown();
@@ -171,7 +196,7 @@ fn finish<HostContext, Results: 'static>(
 }
 
 macro_rules! binders {
-    ($(($($parameter:ident $argument:ident $index:tt)*))*) => {$(
+    ($(($($parameter:ident $argument:ident)*))*) => {$(
         impl<HostContext: 'static, $($parameter: 'static,)* Results: 'static>
             FunctionTypeBinder<($($parameter,)*), Results> for BrowserEngine<HostContext>
         {
@@ -192,15 +217,13 @@ macro_rules! binders {
                 function: impl Fn(&mut HostContext, ($($parameter,)*)) -> Results + Send + Sync + 'static,
             ) -> Function {
                 let (parameters, results) =
-                    function_types(&[$(value_type::<$parameter>()),*], result_types::<Results>())
-                        .expect("a host function takes and returns value types");
+                    host_function_types(&[$(value_type::<$parameter>()),*], result_types::<Results>());
                 let context = self.lent.clone();
                 bind_host(self, &parameters, &results, Rc::new(move || {
-                    let arguments = ($(from_slot::<$parameter>(slot($index)),)*);
-                    let mut lent = context.take().expect("a host function runs inside a call into its engine's code");
-                    let returned = function(&mut *lent, arguments);
-                    context.set(Some(lent));
-                    set_slot(0, to_slot(returned));
+                    let [$($argument),*] = slots();
+                    let arguments = ($(from_slot::<$parameter>($argument),)*);
+                    let returned = with_context(&context, |context| function(context, arguments));
+                    set_slots([to_slot(returned)]);
                 }))
             }
         }
@@ -215,7 +238,7 @@ macro_rules! binders {
                 engine: &mut BrowserEngine<HostContext>,
                 ($($argument,)*): ($($parameter,)*),
             ) -> Result<Results, InvokeError<JsValue>> {
-                $(set_slot($index, to_slot($argument));)*
+                set_slots([$(to_slot($argument)),*]);
                 let returned = engine.run(|| glue::call(&self.caller));
                 finish(engine, returned)
             }
@@ -225,20 +248,20 @@ macro_rules! binders {
 
 binders! {
     ()
-    (A a 0)
-    (A a 0 B b 1)
-    (A a 0 B b 1 C c 2)
-    (A a 0 B b 1 C c 2 D d 3)
-    (A a 0 B b 1 C c 2 D d 3 E e 4)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9 K k 10)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9 K k 10 L l 11)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9 K k 10 L l 11 M m 12)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9 K k 10 L l 11 M m 12 N n 13)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9 K k 10 L l 11 M m 12 N n 13 O o 14)
-    (A a 0 B b 1 C c 2 D d 3 E e 4 F f 5 G g 6 H h 7 I i 8 J j 9 K k 10 L l 11 M m 12 N n 13 O o 14 P p 15)
+    (A a)
+    (A a B b)
+    (A a B b C c)
+    (A a B b C c D d)
+    (A a B b C c D d E e)
+    (A a B b C c D d E e F f)
+    (A a B b C c D d E e F f G g)
+    (A a B b C c D d E e F f G g H h)
+    (A a B b C c D d E e F f G g H h I i)
+    (A a B b C c D d E e F f G g H h I i J j)
+    (A a B b C c D d E e F f G g H h I i J j K k)
+    (A a B b C c D d E e F f G g H h I i J j K k L l)
+    (A a B b C c D d E e F f G g H h I i J j K k L l M m)
+    (A a B b C c D d E e F f G g H h I i J j K k L l M m N n)
+    (A a B b C c D d E e F f G g H h I i J j K k L l M m N n O o)
+    (A a B b C c D d E e F f G g H h I i J j K k L l M m N n O o P p)
 }

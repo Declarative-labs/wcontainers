@@ -6,9 +6,9 @@ use core::cell::Cell;
 use core::mem::size_of;
 
 use wasm_encoder::{
-    CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-    GlobalSection, GlobalType, Ieee32, Ieee64, ImportSection, InstructionSink, MemArg,
-    MemArgTarget, MemoryType, Module, RefType, TableType, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function,
+    FunctionSection, GlobalSection, GlobalType, Ieee32, Ieee64, ImportSection, InstructionSink,
+    MemArg, MemArgTarget, MemoryType, Module, RefType, TableType, TypeSection, ValType,
 };
 use wcontainers_webassembly_engine::memory::PAGE_SIZE;
 
@@ -49,10 +49,24 @@ pub fn slot(index: usize) -> u128 {
     SCRATCH.with(|scratch| scratch[index].get())
 }
 
+/// Returns the values of the first slots.
+#[inline(always)]
+pub fn slots<const COUNT: usize>() -> [u128; COUNT] {
+    core::array::from_fn(slot)
+}
+
 /// Sets the slot's value.
 #[inline(always)]
 pub fn set_slot(index: usize, value: u128) {
     SCRATCH.with(|scratch| scratch[index].set(value));
+}
+
+/// Sets the first slots to the values, in order.
+#[inline(always)]
+pub fn set_slots<const COUNT: usize>(values: [u128; COUNT]) {
+    for (index, value) in values.into_iter().enumerate() {
+        set_slot(index, value);
+    }
 }
 
 /// Returns where this thread's slots start in our own memory.
@@ -254,8 +268,8 @@ pub fn caller(parameters: &[ValType], results: &[ValType]) -> Vec<u8> {
 }
 
 /// A module that imports a function taking an engine's number and the index of one of its host functions, and exports
-/// one of the given type that leaves its arguments in the slots, calls the import with both, and returns the results
-/// left in the slots.
+/// one of the given type that leaves its arguments in the slots, calls the import with both, traps when it answers that
+/// the host function did not run, and returns the results left in the slots.
 pub fn host(
     parameters: &[ValType],
     results: &[ValType],
@@ -266,7 +280,9 @@ pub fn host(
     types
         .ty()
         .function(parameters.iter().copied(), results.iter().copied());
-    types.ty().function([ValType::I64, ValType::I32], []);
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32], [ValType::I32]);
     let mut imports = ImportSection::new();
     imports.import(NAMESPACE, CALLEE, EntityType::Function(1));
     imports.import(NAMESPACE, SCRATCH_MEMORY, scratch_memory());
@@ -284,6 +300,10 @@ pub fn host(
     sink.i64_const(engine.cast_signed());
     sink.i32_const(host_function.cast_signed());
     sink.call(0);
+    sink.i32_eqz();
+    sink.if_(BlockType::Empty);
+    sink.unreachable();
+    sink.end();
     for (index, value_type) in results.iter().enumerate() {
         load(&mut sink, *value_type, index);
     }
@@ -375,10 +395,12 @@ pub fn global_access(value_type: ValType, mutable: bool) -> Vec<u8> {
     assemble(&types, &imports, &functions, &exports, &bodies)
 }
 
-/// The slots of a copy between a guest memory and our own.
-pub const GUEST_OFFSET: usize = 0;
-pub const OWN_ADDRESS: usize = 1;
-pub const LENGTH: usize = 2;
+/// The slots of a copy between a guest memory and our own, in order.
+pub enum CopySlot {
+    GuestOffset,
+    OwnAddress,
+    Length,
+}
 
 /// A module that imports a guest memory of the address type and sharing, and exports `READ`, which copies from it
 /// into our own memory, and `WRITE`, which copies back: the slots hold the guest offset, our address and the length.
@@ -398,12 +420,12 @@ pub fn memory_access(memory64: bool, shared: bool) -> Vec<u8> {
         let mut sink = body.instructions();
         for memory in [into, from] {
             if memory == guest {
-                load(&mut sink, guest_offset, GUEST_OFFSET);
+                load(&mut sink, guest_offset, CopySlot::GuestOffset as usize);
             } else {
-                load(&mut sink, ValType::I32, OWN_ADDRESS);
+                load(&mut sink, ValType::I32, CopySlot::OwnAddress as usize);
             }
         }
-        load(&mut sink, ValType::I32, LENGTH);
+        load(&mut sink, ValType::I32, CopySlot::Length as usize);
         sink.memory_copy(into, from);
         sink.end();
         functions.function(0);
