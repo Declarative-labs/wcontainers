@@ -53,6 +53,8 @@ pub(crate) struct Built<B: Backend> {
     /// The bindings of the textures the program reads as 2D arrays (an integer cube map it
     /// samples is one of its faces).
     layered: Vec<u32>,
+    /// The kind of value each texture binding samples.
+    sampled_kinds: Vec<(u32, naga::ScalarKind)>,
     /// A vertex program converted for the stage helper: its module, with its outputs.
     converted: Option<Converted>,
     /// An evaluation program's tessellator, which its control program is converted with.
@@ -593,6 +595,7 @@ fn convert<B: Backend>(
     });
     let uniform_sizes = uniform_sizes(&module.module, set);
     let layered = layered_textures(&module.module);
+    let sampled = sampled_kinds(&module.module);
     let flat_inputs = flat_inputs(&module.module);
     let inputs = input_interpolation(&module.module);
     let pulled = bindings
@@ -615,6 +618,7 @@ fn convert<B: Backend>(
         helper_size,
         pulled,
         layered,
+        sampled_kinds: sampled,
         converted,
         tessellator: None,
     })
@@ -664,6 +668,7 @@ fn convert_geometry<B: Backend>(
         helper_size: converted.reflection.helper_size,
         pulled: Vec::new(),
         layered: layered_textures(&compute.module),
+        sampled_kinds: sampled_kinds(&compute.module),
         converted: Some(converted),
         tessellator: None,
     })
@@ -703,6 +708,7 @@ fn convert_control<B: Backend>(
         helper_size: converted.reflection.helper_size,
         pulled: Vec::new(),
         layered: layered_textures(&compute.module),
+        sampled_kinds: sampled_kinds(&compute.module),
         converted: Some(converted),
         tessellator: None,
     })
@@ -758,6 +764,7 @@ fn convert_evaluation<B: Backend>(
         helper_size: converted.reflection.helper_size,
         pulled: Vec::new(),
         layered: layered_textures(&drawn.module),
+        sampled_kinds: sampled_kinds(&drawn.module),
         converted: Some(converted),
         tessellator: Some(tessellator),
     })
@@ -779,6 +786,21 @@ fn layered_textures(module: &naga::Module) -> Vec<u32> {
             )
         })
         .filter_map(|(_, g)| Some(g.binding.as_ref()?.binding))
+        .collect()
+}
+
+/// The kind of value each sampled texture binding of a module reads.
+fn sampled_kinds(module: &naga::Module) -> Vec<(u32, naga::ScalarKind)> {
+    module
+        .global_variables
+        .iter()
+        .filter_map(|(_, g)| match module.types[g.ty].inner {
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Sampled { kind, .. },
+                ..
+            } => Some((g.binding.as_ref()?.binding, kind)),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1204,6 +1226,7 @@ pub(crate) fn binding_sets<B: Backend>(
             })
             .map(|b| b.binding)
             .collect();
+        let stand_ins = stand_ins(backend, bound, built, made)?;
         let first_beside = made.samplers.len();
         for _ in &beside_texels {
             let sampler = backend
@@ -1338,6 +1361,13 @@ pub(crate) fn binding_sets<B: Backend>(
                         .as_ref()
                         .ok_or("a fetched target without its copy")?;
                     BindingResource::Texture(view)
+                }
+                SlotKind::Texture if stand_ins.iter().any(|&(at, _)| at == b.binding) => {
+                    let &(_, index) = stand_ins
+                        .iter()
+                        .find(|&&(at, _)| at == b.binding)
+                        .ok_or("a stand-in texture not made")?;
+                    BindingResource::Texture(made.stand_in_view(index))
                 }
                 SlotKind::Texture => {
                     let view = bound.views[b.register as usize];
@@ -1505,6 +1535,37 @@ fn bound_image<B: Backend>(
         .get(unit as usize)
         .filter(|image| !image.resource.is_null())
         .ok_or("an image the program reads is not bound")
+}
+
+/// The stand-ins made for the views bound where a stage's program samples another kind of value
+/// than theirs ([`Images::stand_in`]), by binding.
+fn stand_ins<B: Backend>(
+    backend: &mut B,
+    bound: &state::StageState<B>,
+    built: &Built<B>,
+    made: &mut Images<B>,
+) -> Result<Vec<(u32, usize)>, String> {
+    let mut stand_ins = Vec::new();
+    for b in built
+        .bindings
+        .iter()
+        .filter(|b| b.added.is_none() && b.kind == SlotKind::Texture && b.register != FETCHED_UNIT)
+    {
+        let Some(&(_, kind)) = built.sampled_kinds.iter().find(|&&(at, _)| at == b.binding) else {
+            continue;
+        };
+        let view = bound.views[b.register as usize];
+        if view.is_null() {
+            continue;
+        }
+        // SAFETY: the slot holds a reference on a live view of this driver.
+        let view = unsafe { View::<B>::of(view) };
+        if view.sampled != kind {
+            let faces = built.layered.contains(&b.binding);
+            stand_ins.push((b.binding, made.stand_in(backend, view, kind, faces)?));
+        }
+    }
+    Ok(stand_ins)
 }
 
 /// Closes the open pass where binding the resources of `built`'s stages copies texels

@@ -4,9 +4,10 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Features, Format, FormatKind,
-    MapIntent, Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    Backend, BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, Features, Format,
+    FormatKind, MapIntent, Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    WriteMode,
 };
 
 use naga::VectorSize;
@@ -37,6 +38,11 @@ pub struct View<B: Backend> {
     /// For a view in another format than its texture's that the back end cannot view it in, the
     /// texture of the view's format its levels and layers are copied into, which `view` views.
     twin: Option<ViewTwin<B>>,
+    /// The kind of value programs sample from it.
+    pub sampled: naga::ScalarKind,
+    /// Its dimension and samples, which a stand-in of another kind takes ([`Images::stand_in`]).
+    dimension: ViewDimension,
+    samples: u32,
 }
 
 /// A texture in a sampler view's format, of its levels and layers, copied from the view's texture
@@ -411,6 +417,8 @@ pub struct Images<B: Backend> {
     /// A copy of the first target and its view, which a fragment program that fetches its
     /// target's texels reads at [`FETCHED_UNIT`].
     pub fetched: Option<(B::Texture, B::TextureView)>,
+    /// Textures read in place of views of another kind of value than the program samples.
+    stand_ins: Vec<(B::Texture, B::TextureView)>,
 }
 
 /// The texture unit a fragment program reads its first target's copy at: one Mesa never binds
@@ -426,6 +434,7 @@ impl<B: Backend> Default for Images<B> {
             buffers: Vec::new(),
             samplers: Vec::new(),
             fetched: None,
+            stand_ins: Vec::new(),
         }
     }
 }
@@ -508,6 +517,108 @@ impl<B: Backend> Images<B> {
         Ok(())
     }
 
+    /// What a program sampling `view` as `kind`, another kind of value than the view's, reads
+    /// instead: a texture of one texel of `kind`, of the view's dimension (a cube's as a 2D array
+    /// of its faces where `faces`) and samples, holding an incomplete texture's value (0, 0, 0, 1),
+    /// or zeros where multisampled. OpenGL leaves what such a program reads undefined; the host
+    /// refuses the binding. Its index for [`Images::stand_in_view`].
+    pub fn stand_in(
+        &mut self,
+        backend: &mut B,
+        view: &View<B>,
+        kind: naga::ScalarKind,
+        faces: bool,
+    ) -> Result<usize, String> {
+        let (format, one) = match kind {
+            naga::ScalarKind::Sint => (Format::Rgba8Sint, 1),
+            naga::ScalarKind::Uint => (Format::Rgba8Uint, 1),
+            _ => (Format::Rgba8Unorm, u8::MAX),
+        };
+        let cube = matches!(
+            view.dimension,
+            ViewDimension::Cube | ViewDimension::CubeArray
+        );
+        let dimension = if cube && faces {
+            ViewDimension::D2Array
+        } else {
+            view.dimension
+        };
+        let layers = if cube { CUBE_FACES } else { 1 };
+        let multisampled = view.samples > 1;
+        let texture = backend
+            .create_texture(&TextureDesc {
+                dimension: if dimension == ViewDimension::D3 {
+                    TextureDimension::D3
+                } else {
+                    TextureDimension::D2
+                },
+                format,
+                width: 1,
+                height: 1,
+                depth_or_layers: layers,
+                mip_levels: 1,
+                samples: view.samples,
+                // A multisampled texture is made only as a target (WebGPU's rule).
+                usage: if multisampled {
+                    TextureUsage::SAMPLE | TextureUsage::RENDER
+                } else {
+                    TextureUsage::SAMPLE | TextureUsage::COPY_DST
+                },
+                cube: cube && !faces,
+                reinterpret: false,
+            })
+            .map_err(|e| format!("a stand-in texture: {e:?}"))?;
+        if !multisampled {
+            let texel = [0, 0, 0, one];
+            for layer in 0..layers {
+                backend.write_texture(
+                    &TextureRegion {
+                        texture: &texture,
+                        mip: 0,
+                        layer,
+                        origin: Origin { x: 0, y: 0, z: 0 },
+                        stencil: false,
+                    },
+                    Extent {
+                        width: 1,
+                        height: 1,
+                        depth_or_layers: 1,
+                    },
+                    &texel,
+                    texel.len() as u32,
+                    1,
+                    WriteMode::Ordered,
+                );
+            }
+        }
+        let viewed = backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: layers,
+                stencil: false,
+            },
+        );
+        let viewed = match viewed {
+            Ok(viewed) => viewed,
+            Err(e) => {
+                backend.destroy(Object::Texture(texture));
+                return Err(format!("a stand-in texture's view: {e:?}"));
+            }
+        };
+        self.stand_ins.push((texture, viewed));
+        Ok(self.stand_ins.len() - 1)
+    }
+
+    /// The view of the stand-in [`Images::stand_in`] made at `index`.
+    pub fn stand_in_view(&self, index: usize) -> &B::TextureView {
+        &self.stand_ins[index].1
+    }
+
     /// Whether [`Images::finish`] copies anything back into a texture (outside a pass).
     pub fn copies_back(&self) -> bool {
         self.texels.iter().any(|t| t.writable) || self.twins.iter().any(|t| t.writable)
@@ -538,6 +649,10 @@ impl<B: Backend> Images<B> {
         }
         for sampler in self.samplers {
             backend.destroy(Object::Sampler(sampler));
+        }
+        for (texture, view) in self.stand_ins {
+            backend.destroy(Object::TextureView(view));
+            backend.destroy(Object::Texture(texture));
         }
         for twin in self.twins {
             if twin.writable {
@@ -712,6 +827,19 @@ pub fn image_view<B: Backend>(
     Ok(images.views.len() - 1)
 }
 
+/// The interface's dimension of a Gallium sampler view's target; with `cube_faces`, a cube map's or
+/// cube map array's as a 2D array of its faces.
+fn view_dimension(target: pipe_texture_target, cube_faces: bool) -> ViewDimension {
+    match target {
+        PIPE_TEXTURE_3D => ViewDimension::D3,
+        PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY if cube_faces => ViewDimension::D2Array,
+        PIPE_TEXTURE_CUBE => ViewDimension::Cube,
+        PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
+        PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
+        _ => ViewDimension::D2,
+    }
+}
+
 /// What a Gallium sampler view of a texture sees: its format (a stencil view's, read as
 /// unsigned integers), its dimension (with `cube_faces`, a cube map's or cube map array's as a 2D array of its
 /// faces), its levels and its layers.
@@ -738,14 +866,7 @@ impl Seen {
         // SAFETY: the view of a texture holds its texture range.
         let range = unsafe { view.u.tex };
         // SAFETY: a live view.
-        let dimension = match unsafe { wc_sampler_view_target(view) } {
-            PIPE_TEXTURE_3D => ViewDimension::D3,
-            PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY if cube_faces => ViewDimension::D2Array,
-            PIPE_TEXTURE_CUBE => ViewDimension::Cube,
-            PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
-            PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
-            _ => ViewDimension::D2,
-        };
+        let dimension = view_dimension(unsafe { wc_sampler_view_target(view) }, cube_faces);
         let three_d = desc.dimension == TextureDimension::D3;
         Ok(Self {
             format,
@@ -964,11 +1085,15 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
             )
         });
     let components = format.map_or(0, Format::components);
+    let sampled = match format.map(Format::kind) {
+        Some(FormatKind::Sint) => naga::ScalarKind::Sint,
+        _ if integer => naga::ScalarKind::Uint,
+        _ => naga::ScalarKind::Float,
+    };
     // SAFETY: a live view.
-    let cube = matches!(
-        unsafe { wc_sampler_view_target(&base) },
-        PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY
-    );
+    let target = unsafe { wc_sampler_view_target(&base) };
+    let cube = matches!(target, PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY);
+    let samples = resource.texture().map_or(1, |(_, desc)| desc.samples);
     let faces = (integer && cube)
         .then(|| texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), true));
     Box::into_raw(Box::new(View::<B> {
@@ -980,6 +1105,9 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         faces,
         texels,
         twin,
+        sampled,
+        dimension: view_dimension(target, false),
+        samples,
     }))
     .cast()
 }
