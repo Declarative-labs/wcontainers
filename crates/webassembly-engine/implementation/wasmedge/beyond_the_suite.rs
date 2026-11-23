@@ -961,3 +961,114 @@ fn a_function_another_engine_value_made_is_refused_when_bound() {
     let foreign = function(&mut first, &made_by_first, "one");
     let _ = <Engine as FunctionTypeBinder<(), i32>>::bind_engine_function(&mut second, foreign);
 }
+
+/// Holds typed references to functions that return an i32, whose type is not at index 0, and exports a function of
+/// that type and one of another.
+const HOLDS_A_TYPE_AT_INDEX_ONE: &str = r#"(module
+    (type $padding (func (param i64)))
+    (type $answers (func (result i32)))
+    (table (export "answers") 1 (ref null $answers))
+    (global (export "answer") (mut (ref null $answers)) (ref.null $answers))
+    (func (export "seven") (type $answers) (i32.const 7))
+    (func (export "eight") (result i64) (i64.const 8)))"#;
+
+/// Declares the two function types in the other order, and tests what its plain table holds against each.
+const TESTS_BOTH_TYPES: &str = r#"(module
+    (type $wide (func (result i64)))
+    (type $answers (func (result i32)))
+    (table (export "any") 1 funcref)
+    (table (export "answers") 1 (ref null $answers))
+    (table (export "wide") 1 (ref null $wide))
+    (global (export "wide_cell") (mut (ref null $wide)) (ref.null $wide))
+    (func (export "is_an_answer") (result i32) (ref.test (ref $answers) (table.get 0 (i32.const 0))))
+    (func (export "is_wide") (result i32) (ref.test (ref $wide) (table.get 0 (i32.const 0))))
+    (func (export "call_answer") (result i32) (call_ref $answers (ref.as_non_null (table.get 1 (i32.const 0))))))"#;
+
+#[test]
+fn a_reference_read_from_a_typed_slot_carries_the_functions_type_and_no_other() {
+    let config = Config::default();
+    let mut engine = engine(config.clone());
+    let holding = instantiate(&mut engine, HOLDS_A_TYPE_AT_INDEX_ONE, &[]);
+    let seven = function(&mut engine, &holding, "seven");
+    let answers = table(&mut engine, &holding, "answers");
+    let answer = global(&mut engine, &holding, "answer");
+    assert_eq!(engine.write_table(&answers, 0, Some(&seven)), Ok(()));
+    assert_eq!(
+        engine.write_global(&answer, Value::FunctionReference(Some(seven))),
+        Ok(())
+    );
+    let held = engine.slow_path_count(SlowPath::ReferenceHeld);
+    let from_table = engine
+        .read_table(&answers, 0)
+        .expect("the element is inside")
+        .expect("the element refers to a function");
+    let Ok(Value::FunctionReference(Some(from_global))) = engine.read_global(&answer) else {
+        panic!("the global holds a function");
+    };
+    assert_eq!(engine.slow_path_count(SlowPath::ReferenceHeld), held + 2);
+    let testing = instantiate(&mut engine, TESTS_BOTH_TYPES, &[]);
+    let any = table(&mut engine, &testing, "any");
+    let typed = table(&mut engine, &testing, "answers");
+    let wide = table(&mut engine, &testing, "wide");
+    let wide_cell = global(&mut engine, &testing, "wide_cell");
+    let checks = ["is_an_answer", "is_wide", "call_answer"].map(|name| {
+        let address = function(&mut engine, &testing, name);
+        bind::<(), i32>(&mut engine, address)
+    });
+    for read in [&from_table, &from_global] {
+        assert_eq!(engine.write_table(&any, 0, Some(read)), Ok(()));
+        assert_eq!(engine.write_table(&typed, 0, Some(read)), Ok(()));
+        let [is_an_answer, is_wide, call_answer] = &checks;
+        assert_eq!(is_an_answer.invoke(&mut engine, ()).ok(), Some(1));
+        assert_eq!(is_wide.invoke(&mut engine, ()).ok(), Some(0));
+        assert_eq!(call_answer.invoke(&mut engine, ()).ok(), Some(7));
+        assert_eq!(
+            engine.write_table(&wide, 0, Some(read)),
+            Err(WriteTableError::ReferenceTypeMismatch)
+        );
+        assert_eq!(
+            engine.write_global(&wide_cell, Value::FunctionReference(Some(read.clone()))),
+            Err(WriteGlobalError::ValueTypeMismatch)
+        );
+        let importing = compile(&engine, CALLS_AN_IMPORT);
+        let importer = engine
+            .instantiate(
+                &importing,
+                &[import("routine", ExternalAddress::Function(read.clone()))],
+            )
+            .expect("the function is imported with its own type");
+        let address = function(&mut engine, &importer, "caller");
+        let call = bind::<(), i32>(&mut engine, address);
+        assert_eq!(call.invoke(&mut engine, ()).ok(), Some(7));
+        let of_another_type = compile(
+            &engine,
+            r#"(module (import "host" "routine" (func (result i64))))"#,
+        );
+        // The function is exported, so it is linked by name, and WasmEdge refuses the link.
+        assert!(
+            engine
+                .instantiate(
+                    &of_another_type,
+                    &[import("routine", ExternalAddress::Function(read.clone()))]
+                )
+                .is_err()
+        );
+    }
+    // Another engine value refuses what this one read.
+    let mut other = Engine::new(config, i32::default()).expect("the engine is made");
+    let importing = compile(&other, CALLS_AN_IMPORT);
+    assert!(matches!(
+        other.instantiate(
+            &importing,
+            &[import("routine", ExternalAddress::Function(from_table))]
+        ),
+        Err(InstantiateError::ForeignAddress { .. })
+    ));
+}
+
+#[test]
+fn the_crate_builds_no_engine_value_from_raw_bits() {
+    // The bindings turn any raw value into a reference without a check; a reference made so could be forged.
+    let source = include_str!("implementation.rs");
+    assert!(!source.contains("WasmEdge_Value"));
+}

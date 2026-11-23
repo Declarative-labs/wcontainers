@@ -221,6 +221,9 @@ where
             (memory (export "unshared") 1)
             (global (export "variable") (mut i32) (i32.const 0))
             (table (export "typed") 1 (ref null $answers))
+            (table (export "plain") 1 funcref)
+            (global (export "typed_cell") (mut (ref null $answers)) (ref.null $answers))
+            (global (export "plain_cell") (mut funcref) (ref.null func))
             (func (export "forty_two") (type $answers) (i32.const 3)))"#,
     )
     .expect("the text is a module");
@@ -273,6 +276,39 @@ where
         .ok()
         .flatten()
         .expect("the table holds the function");
+    let Some(ExternalAddress::Table(plain)) = engine.find_export(&instance, "plain") else {
+        panic!("plain is exported");
+    };
+    engine
+        .write_table(&plain, 0, Some(&function))
+        .expect("writes");
+    for (what, table) in [
+        ("read a function from a typed table", &table),
+        ("read a function from a plain table", &plain),
+    ] {
+        report(what, 1_000_000, || {
+            black_box(
+                engine
+                    .read_table(table, black_box(0))
+                    .expect("reads")
+                    .expect("the table holds the function"),
+            );
+        });
+    }
+    for (what, name) in [
+        ("read a function from a typed global", "typed_cell"),
+        ("read a function from a plain global", "plain_cell"),
+    ] {
+        let Some(ExternalAddress::Global(cell)) = engine.find_export(&instance, name) else {
+            panic!("{name} is exported");
+        };
+        engine
+            .write_global(&cell, Value::FunctionReference(Some(function.clone())))
+            .expect("writes");
+        report(what, 1_000_000, || {
+            black_box(engine.read_global(&cell).expect("reads"));
+        });
+    }
     report(
         "write a function read from a table into a typed table",
         1_000_000,
@@ -316,9 +352,70 @@ where
     }
 }
 
+/// The words of a host context of 4 KiB, to show what a call costs per byte of the context.
+const LARGE_CONTEXT_WORDS: usize = 512;
+type LargeContext = [u64; LARGE_CONTEXT_WORDS];
+
+/// Times a call into a module and calls of a host function with a host context of 4 KiB.
+pub fn measure_large_context<T>(config: T::Config)
+where
+    T: WebAssemblyEngine<HostContext = LargeContext>
+        + FunctionTypeBinder<(), ()>
+        + FunctionTypeBinder<(i32,), ()>,
+{
+    let mut engine = T::new(config, [0; LARGE_CONTEXT_WORDS])
+        .ok()
+        .expect("the engine is made");
+    let module = engine.compile(&bench_module()).ok().expect("compiles");
+    let hook = <T as FunctionTypeBinder<(), ()>>::bind_host_function(
+        &mut engine,
+        |context: &mut LargeContext, ()| context[0] += 1,
+    );
+    let imports = [Import {
+        module_name: "host",
+        item_name: "upcall",
+        address: ExternalAddress::Function(hook),
+    }];
+    let instance = engine
+        .instantiate(&module, &imports)
+        .ok()
+        .expect("instantiates");
+    let Some(ExternalAddress::Function(empty)) = engine.find_export(&instance, "empty") else {
+        panic!("empty is exported");
+    };
+    let Some(ExternalAddress::Function(repeat)) = engine.find_export(&instance, "repeat") else {
+        panic!("repeat is exported");
+    };
+    let empty =
+        <T as FunctionTypeBinder<(), ()>>::bind_engine_function(&mut engine, empty).expect("binds");
+    let repeat = <T as FunctionTypeBinder<(i32,), ()>>::bind_engine_function(&mut engine, repeat)
+        .expect("binds");
+    report(
+        "an empty call into the module, with a 4 KiB host context",
+        1_000_000,
+        || {
+            empty.invoke(&mut engine, ()).ok().expect("returns");
+        },
+    );
+    report(
+        "1000 calls of an empty host function from the module, with a 4 KiB host context",
+        1_000,
+        || {
+            repeat
+                .invoke(&mut engine, (black_box(1_000),))
+                .ok()
+                .expect("returns");
+        },
+    );
+    assert!(engine.host_context()[0] > 0);
+}
+
 fn main() {
     measure::<wcontainers_webassembly_engine_wasmedge::WasmEdgeEngine<u64>>(Default::default());
     measure_helpers::<wcontainers_webassembly_engine_wasmedge::WasmEdgeEngine<u64>>(
+        Default::default(),
+    );
+    measure_large_context::<wcontainers_webassembly_engine_wasmedge::WasmEdgeEngine<LargeContext>>(
         Default::default(),
     );
 }

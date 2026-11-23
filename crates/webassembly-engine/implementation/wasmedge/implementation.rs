@@ -183,6 +183,7 @@ const HELPED: &str = "helped";
 /// The names of the items the modules of this crate export.
 const COPIED_BYTES: &str = "copied_bytes";
 const RETYPED_FUNCTION: &str = "retyped_function";
+const HELD_FUNCTION: &str = "held_function";
 const DEFINED_TABLE: &str = "defined_table";
 const DEFINED_MEMORY: &str = "defined_memory";
 const DEFINED_GLOBAL: &str = "defined_global";
@@ -221,6 +222,9 @@ const FUNCTION_RETYPED: &str = "function reference read from a module's table to
 /// The reason [`SlowPath::FunctionNotRetyped`] shows.
 const FUNCTION_NOT_RETYPED: &str = "function reference written carrying only funcref, as no module \
     describes its type, so a guest's cast to its type fails";
+/// The reason [`SlowPath::ReferenceHeld`] shows.
+const REFERENCE_HELD: &str = "function reference read from a slot of a typed reference type stored in a \
+    funcref table of a module and read back, as WasmEdge refuses the slot's type as a funcref parameter";
 /// The reason [`SlowPath::ImportsForwarded`] shows.
 const IMPORTS_FORWARDED: &str =
     "imports linked through a module that imports and exports them, as WasmEdge links by name only";
@@ -241,6 +245,7 @@ pub enum SlowPath {
     FunctionNotRetyped,
     ImportsForwarded,
     FunctionPassedOn,
+    ReferenceHeld,
 }
 
 impl SlowPath {
@@ -255,6 +260,7 @@ impl SlowPath {
         SlowPath::FunctionNotRetyped,
         SlowPath::ImportsForwarded,
         SlowPath::FunctionPassedOn,
+        SlowPath::ReferenceHeld,
     ];
 
     pub fn reason(self) -> &'static str {
@@ -268,6 +274,7 @@ impl SlowPath {
             SlowPath::FunctionNotRetyped => FUNCTION_NOT_RETYPED,
             SlowPath::ImportsForwarded => IMPORTS_FORWARDED,
             SlowPath::FunctionPassedOn => FUNCTION_PASSED_ON,
+            SlowPath::ReferenceHeld => REFERENCE_HELD,
         }
     }
 }
@@ -705,6 +712,44 @@ fn retyper_module(types: &TypeSection, function_type: u32) -> Vec<u8> {
     module.finish()
 }
 
+/// A module that exports a funcref table of one element and `set_item`, which stores a reference of the type there,
+/// given among the types of the slot's module. Read back from that table, the reference is of the outer type
+/// `funcref` and still carries the function's own type.
+fn holder_module(
+    mut types: TypeSection,
+    first_type: u32,
+    reference: wasm_encoder::RefType,
+) -> Vec<u8> {
+    use wasm_encoder::{Function, TableSection};
+    types
+        .ty()
+        .function([wasm_encoder::ValType::Ref(reference)], []);
+    let mut functions = FunctionSection::new();
+    functions.function(first_type);
+    let mut tables = TableSection::new();
+    tables.table(one_element(wasm_encoder::RefType::FUNCREF));
+    let mut exports = ExportSection::new();
+    exports
+        .export(SET_ITEM, ExportKind::Func, 0)
+        .export(HELD_FUNCTION, ExportKind::Table, 0);
+    let mut set = Function::new([]);
+    set.instructions()
+        .i32_const(0)
+        .local_get(0)
+        .table_set(0)
+        .end();
+    let mut code = CodeSection::new();
+    code.function(&set);
+    let mut module = wasm_encoder::Module::new();
+    module
+        .section(&types)
+        .section(&functions)
+        .section(&tables)
+        .section(&exports)
+        .section(&code);
+    module.finish()
+}
+
 /// The type of a 32-bit table of one element.
 fn one_element(element_type: wasm_encoder::RefType) -> wasm_encoder::TableType {
     wasm_encoder::TableType {
@@ -894,13 +939,16 @@ pub struct WasmEdgeEngine<HostContext: 'static> {
     config: Config,
     /// Borrowed at run time only by the methods the interface gives `&self` that call into a helper.
     executor: RefCell<Executor>,
-    /// The host context, always here except while a call lends it to the host functions.
-    context: Option<HostContext>,
+    /// The host context, always here except while a call lends it to the host functions. It is boxed so that
+    /// lending it moves a pointer, whatever its size.
+    context: Option<Box<HostContext>>,
     /// Where host functions find the host context during a call.
-    lent: Rc<Cell<Option<HostContext>>>,
+    lent: Rc<Cell<Option<Box<HostContext>>>>,
     owners: Vec<Owner>,
     /// The helper instance linked to each item that has one.
     helped: Vec<(Export, usize)>,
+    /// Each holder made so far, by the helper module it is an instance of.
+    holders: Vec<(Arc<wasmedge_sys::Module>, Holder)>,
     /// A null reference to a function, which the bindings make only by reading an empty table.
     null_function: WasmValue,
     graveyard: Rc<Graveyard>,
@@ -994,6 +1042,16 @@ impl Copier {
 pub struct TableAddress {
     export: Export,
     writer: Option<TableWriter>,
+    /// Missing when the elements are of the type `funcref`.
+    holder: Option<Holder>,
+}
+
+/// The helper instance that holds a reference read from a slot of a typed reference type, so that it is read back
+/// of the outer type `funcref`.
+#[derive(Clone, Copy)]
+struct Holder {
+    instance: usize,
+    set: WasmValue,
 }
 
 #[derive(Clone, Copy)]
@@ -1012,6 +1070,8 @@ pub struct GlobalAddress {
     slot: Slot,
     mutable: bool,
     setter: Option<WasmValue>,
+    /// Present when the global holds references of a type other than `funcref`.
+    holder: Option<Holder>,
 }
 
 /// What a global holds, as far as the interface's values tell.
@@ -1422,8 +1482,10 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
             return Some(TableAddress {
                 export,
                 writer: None,
+                holder: None,
             });
         }
+        let holder = self.holder(table_type.element_type, description)?;
         let (types, first_type) = description.helper_types(Some(table_type.element_type));
         let instance =
             self.helper_instance(&export, table_writer_module(types, first_type, table_type))?;
@@ -1435,6 +1497,7 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         Some(TableAddress {
             export,
             writer: Some(writer),
+            holder,
         })
     }
 
@@ -1464,11 +1527,18 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         } else {
             None
         };
+        let holder = match (slot, global_type.val_type) {
+            (Slot::Function { .. }, wasm_encoder::ValType::Ref(reference)) => {
+                self.holder(reference, description)?
+            }
+            _ => None,
+        };
         Some(GlobalAddress {
             export,
             slot,
             mutable: global_type.mutable,
             setter,
+            holder,
         })
     }
 
@@ -1510,14 +1580,55 @@ impl<HostContext: 'static> WasmEdgeEngine<HostContext> {
         retyper.get_table(RETYPED_FUNCTION).ok()?.get_data(0).ok()
     }
 
-    /// The reference read from a slot, as the host passes it on: of the outer type `funcref`, with its bits, which
-    /// carry the function's own type, unchanged. The outer type WasmEdge gives a reference read from a typed slot
-    /// names a type index of the slot's module, and WasmEdge refuses such a value as a `funcref` parameter.
-    fn passable(&self, reference: WasmValue) -> WasmValue {
-        WasmValue::from(wasmedge_sys::ffi::WasmEdge_Value {
-            Value: reference.as_raw().Value,
-            Type: self.null_function.as_raw().Type,
-        })
+    /// The holder of references read from slots of the reference type, made the first time any slot of a module
+    /// with these types asks for it; nothing for `funcref`, whose references need none. Answers `None` when the
+    /// holder cannot be made.
+    fn holder(
+        &mut self,
+        reference: wasm_encoder::RefType,
+        description: &Description,
+    ) -> Option<Option<Holder>> {
+        if reference == wasm_encoder::RefType::FUNCREF {
+            return Some(None);
+        }
+        let (types, first_type) = description.helper_types(Some(reference));
+        let module = self
+            .config
+            .helper(holder_module(types, first_type, reference))?;
+        if let Some((_, holder)) = self
+            .holders
+            .iter()
+            .find(|(loaded, _)| Arc::ptr_eq(loaded, &module.loaded))
+        {
+            return Some(Some(*holder));
+        }
+        let instance = self.link(&module, &[]).ok()?;
+        let holder = Holder {
+            instance,
+            set: self.exported_function(instance, SET_ITEM)?,
+        };
+        self.holders.push((Arc::clone(&module.loaded), holder));
+        Some(Some(holder))
+    }
+
+    /// The reference read from a slot, as the host passes it on: of the outer type `funcref`, carrying the
+    /// function's own type. The outer type WasmEdge gives a reference read from a typed slot names a type index of
+    /// the slot's module, and WasmEdge refuses such a value as a `funcref` parameter; so the slot's holder, whose
+    /// parameter is of the slot's own type, stores it in a funcref table, from which it is read back.
+    fn passable(&self, reference: WasmValue, holder: Option<Holder>) -> WasmValue {
+        let Some(holder) = holder else {
+            return reference;
+        };
+        self.slow_paths.took(SlowPath::ReferenceHeld);
+        Self::call_helper(&mut self.executor.borrow_mut(), holder.set, [reference])
+            .expect("a holder takes every reference its slot holds");
+        let Owner::Instance(instance, _) = &self.owners[holder.instance] else {
+            panic!("a holder is an instance of this engine value alone");
+        };
+        instance
+            .get_table(HELD_FUNCTION)
+            .and_then(|table| table.get_data(0))
+            .expect("a holder's table holds what it stored")
     }
 
     /// An export that passes calls on to a function no instance exports, with the type the importing module declares
@@ -1651,10 +1762,11 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
             identity: Identity::new(),
             config,
             executor: RefCell::new(executor),
-            context: Some(host_context),
+            context: Some(Box::new(host_context)),
             lent: Rc::default(),
             owners: Vec::new(),
             helped: Vec::new(),
+            holders: Vec::new(),
             null_function,
             graveyard: Rc::new(Graveyard(RefCell::default())),
             slow_paths: SlowPaths(Default::default()),
@@ -1748,7 +1860,7 @@ impl<HostContext: 'static> WebAssemblyEngine for WasmEdgeEngine<HostContext> {
 
     fn host_context(&mut self) -> &mut HostContext {
         self.context
-            .as_mut()
+            .as_deref_mut()
             .expect("the host context is lent only during a call")
     }
 }
@@ -1800,7 +1912,7 @@ impl From<Received> for i128 {
 /// The data of a host function's module: the function, and where it finds the host context.
 struct HostFunction<HostContext, F> {
     function: F,
-    context: Rc<Cell<Option<HostContext>>>,
+    context: Rc<Cell<Option<Box<HostContext>>>>,
 }
 
 fn next(values: &mut std::vec::IntoIter<WasmValue>) -> Received {
@@ -1907,7 +2019,7 @@ macro_rules! bind_function_type {
                         .context
                         .take()
                         .ok_or(CoreError::Execution(CoreExecutionError::HostFuncFailed))?;
-                    let results = (data.function)(&mut context, parameters);
+                    let results = (data.function)(&mut *context, parameters);
                     data.context.set(Some(context));
                     Ok(unpack!($shape results $($value)*))
                 }
@@ -2279,7 +2391,8 @@ impl<HostContext: 'static> TableStore for WasmEdgeEngine<HostContext> {
         if table.writer.is_none() {
             return Err(ReadTableError::ElementNotFunction);
         }
-        Ok((!element.is_null_ref()).then(|| self.function_address(self.passable(element), None)))
+        Ok((!element.is_null_ref())
+            .then(|| self.function_address(self.passable(element, table.holder), None)))
     }
 
     fn write_table(
@@ -2377,6 +2490,7 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
             slot,
             mutable,
             setter: None,
+            holder: None,
         })
     }
 
@@ -2398,7 +2512,8 @@ impl<HostContext: 'static> GlobalStore for WasmEdgeEngine<HostContext> {
             Slot::F64 => Value::F64(value.to_f64()),
             Slot::V128 => Value::V128(value.to_v128().cast_unsigned()),
             Slot::Function { .. } => Value::FunctionReference(
-                (!value.is_null_ref()).then(|| self.function_address(self.passable(value), None)),
+                (!value.is_null_ref())
+                    .then(|| self.function_address(self.passable(value, global.holder), None)),
             ),
             Slot::Other => return Err(ReadGlobalError),
         })
