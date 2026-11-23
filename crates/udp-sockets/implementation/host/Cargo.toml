@@ -40,8 +40,10 @@ wcontainers-kernel = { path = "../../../kernel" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The network namespace of each test.
+nix = { version = "0.31.3", default-features = false, features = ["sched"] }
+# The largest buffer size a test asks for.
 libc = "0.2.191"
 
-# TODO: remove this crate's 11 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 9 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
