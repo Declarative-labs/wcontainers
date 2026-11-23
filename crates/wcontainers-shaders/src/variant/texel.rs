@@ -81,8 +81,9 @@ pub(crate) enum TexelPlace {
     Image(u32),
 }
 
-/// A format's kind, components and element size.
-pub(crate) type Layout = (Kind, Vec<Component>, u32);
+/// A format's kind, components, element size, and the channel of its first component (alpha for
+/// `A8Unorm`, whose other channels read zero; red for the rest).
+pub(crate) type Layout = (Kind, Vec<Component>, u32, u32);
 
 /// One typed buffer: its words, the bound view's format, and the functions made for it so far.
 pub(crate) struct TexelBuffer {
@@ -93,6 +94,8 @@ pub(crate) struct TexelBuffer {
     declared: ScalarKind,
     components: Vec<Component>,
     size: u32,
+    /// The channel of the first component.
+    first: u32,
     /// The scalar of atomic words, where the words are atomic.
     atomic: Option<Scalar>,
     place: TexelPlace,
@@ -110,10 +113,15 @@ pub(crate) struct TexelBuffer {
 impl TexelBuffer {
     /// The bound view's format.
     pub(crate) fn layout(format: Format) -> Result<Layout> {
+        if format == Format::A8Unorm {
+            let alpha = (0, 0, u8::BITS);
+            return Ok((Kind::Unorm, vec![alpha], format.block().2, ALPHA));
+        }
         let v = vertex_format(format).ok_or(ConvertError::Unsupported(
             crate::refusal::TYPED_BUFFER_FORMAT_ABSENT,
         ))?;
-        Ok(layout(v))
+        let (kind, components, size) = layout(v);
+        Ok((kind, components, size, 0))
     }
 
     /// The scalar kind the view's format reads as, which a texture holding it is sampled as.
@@ -140,7 +148,7 @@ impl TexelBuffer {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn declared(
         var: Handle<GlobalVariable>,
-        (kind, components, size): Layout,
+        (kind, components, size, first): Layout,
         declared: ScalarKind,
         atomic: Option<Scalar>,
         place: TexelPlace,
@@ -155,6 +163,7 @@ impl TexelBuffer {
             declared,
             components,
             size,
+            first,
             atomic,
             place,
             stage,
@@ -394,7 +403,9 @@ impl TexelBuffer {
         let moved = b.mul(index, size);
         let address = b.add(offset, moved);
         let words = b.global(self.var);
-        let mut values = Vec::new();
+        let mut values: Vec<Expr> = (0..self.first)
+            .map(|_| b.expr(Expression::Literal(literal(natural, 0))))
+            .collect();
         for &(byte, shift, bits) in &self.components {
             let at = b.u32(byte);
             let a = b.add(address, at);
@@ -434,7 +445,7 @@ impl TexelBuffer {
     fn past_length(&self, b: &mut Builder, ty: Handle<Type>, natural: Scalar) -> Expr {
         let zeros = (0..VEC4)
             .map(|i| {
-                let missing = i as usize >= self.components.len();
+                let missing = i >= self.first + self.components.len() as u32;
                 b.expr(Expression::Literal(literal(
                     natural,
                     (missing && i == ALPHA) as u32,
@@ -504,7 +515,7 @@ impl TexelBuffer {
         let count = self.size.div_ceil(WORD);
         let mut parts: Vec<Option<Expr>> = vec![None; count as usize];
         for (c, &(byte, shift, bits)) in self.components.iter().enumerate() {
-            let v = b.field(value, c as u32);
+            let v = b.field(value, self.first + c as u32);
             let kind = self.kind;
             let mut raw = b.raw(|f, body| encode(f, body, kind, v, bits));
             let at = ((byte % WORD) << BYTE_SHIFT) + shift;

@@ -2179,11 +2179,12 @@ fn through_views(gpu: &Gpu, seed: u64) -> Vec<Through> {
     .collect()
 }
 
-/// Each texture's texels after real Direct3D 11 runs `cs_through`, layer after layer.
-fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
-    let shader = gpu.cs(&bytecode("cs_through.dxbc")).unwrap();
+/// Each texture's texels after real Direct3D 11 runs `shader` (`cs_through` or `cs_alpha`), layer
+/// after layer.
+fn direct3d_through(gpu: &Gpu, views: &[Through], shader: &str) -> Vec<Vec<u8>> {
+    let shader = gpu.cs(&bytecode(&format!("{shader}.dxbc"))).unwrap();
     let mut resources: Vec<ID3D11Resource> = Vec::new();
-    let mut uavs = vec![None; 3];
+    let mut uavs = vec![None; views[0].slot as usize];
     for t in views {
         let [w, h, l] = t.size;
         let row = w * t.format.block().2;
@@ -2283,7 +2284,13 @@ fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
 /// are 3 texels longer and layers one row taller than the view, the padding seeded too; from fxc's
 /// DXBC or dxc's DXIL, whose slots are the views' places among the program's (Direct3D 12's
 /// numbering).
-fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64, dxil: bool) -> Vec<Vec<u8>> {
+fn ours_through<B: Backend>(
+    b: &mut B,
+    views: &[Through],
+    shader: &str,
+    seed: u64,
+    dxil: bool,
+) -> Vec<Vec<u8>> {
     let slot = |t: &Through| match dxil {
         true => views.iter().filter(|v| v.slot < t.slot).count() as u32,
         false => t.slot,
@@ -2294,9 +2301,18 @@ fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64, dxil: bool)
         ..Default::default()
     };
     let c = match dxil {
-        true => convert(Source::Dxil(&bytecode("cs_through.dxil")), &key, None).unwrap(),
-        false => convert(Source::Dxbc(&bytecode("cs_through.dxbc")), &key, None).unwrap(),
-    };
+        true => convert(
+            Source::Dxil(&bytecode(&format!("{shader}.dxil"))),
+            &key,
+            None,
+        ),
+        false => convert(
+            Source::Dxbc(&bytecode(&format!("{shader}.dxbc"))),
+            &key,
+            None,
+        ),
+    }
+    .unwrap();
     let mut next = rng(seed ^ 0x5eed);
     let layout = |t: &Through| (t.size[0] + 3, t.size[1] + 1);
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
@@ -2425,34 +2441,99 @@ fn storage_textures_through_buffers_match_direct3d() {
     let mut failures = Vec::new();
     for seed in seed..seed + seeds {
         let views = through_views(&gpu, seed);
-        let reference = direct3d_through(&gpu, &views);
-        for dxil in [false, true] {
-            let made = ours_through(&mut backend, &views, seed, dxil);
-            let build = if dxil { "dxil" } else { "dxbc" };
-            for ((a, o), t) in reference.iter().zip(&made).zip(&views) {
-                let size = t.format.block().2 as usize;
-                let mut apart = 0;
-                for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
-                    if x != y {
-                        apart += 1;
-                        if apart <= 6 {
-                            eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
-                        }
-                    }
-                }
-                eprintln!(
-                    "seed {seed} {build} u{} {:?}: {apart} texels apart",
-                    t.slot, t.format
-                );
-                if apart > 0 {
-                    failures.push(format!("seed {seed} {build} u{}", t.slot));
-                }
-            }
-        }
+        let reference = direct3d_through(&gpu, &views, "cs_through");
+        through_alike(
+            &mut backend,
+            seed,
+            &views,
+            &reference,
+            "cs_through",
+            &mut failures,
+        );
     }
     eprintln!("{seeds} seeds, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// `shader` on `views` through ours, both builds, each texture's texels compared with `reference`.
+fn through_alike<B: Backend>(
+    backend: &mut B,
+    seed: u64,
+    views: &[Through],
+    reference: &[Vec<u8>],
+    shader: &str,
+    failures: &mut Vec<String>,
+) {
+    for dxil in [false, true] {
+        let made = ours_through(backend, views, shader, seed, dxil);
+        let build = if dxil { "dxil" } else { "dxbc" };
+        for ((a, o), t) in reference.iter().zip(&made).zip(views) {
+            let size = t.format.block().2 as usize;
+            let mut apart = 0;
+            for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
+                if x != y {
+                    apart += 1;
+                    if apart <= 6 {
+                        eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
+                    }
+                }
+            }
+            eprintln!(
+                "seed {seed} {build} {shader} u{} {:?}: {apart} texels apart",
+                t.slot, t.format
+            );
+            if apart > 0 {
+                failures.push(format!("seed {seed} {build} {shader} u{}", t.slot));
+            }
+        }
+    }
+}
+
+/// `cs_alpha` loading and storing an `A8_UNORM` storage texture read through a buffer of its
+/// one-byte texels, against Direct3D 11's typed loads and stores of the format: loads give
+/// (0, 0, 0, a), stores keep the value's alpha.
+#[test]
+fn a8_storage_textures_load_and_store_through_buffers_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let mut next = rng(seed);
+        let size = [ALPHA_SIDE, ALPHA_SIDE, 1];
+        let views = [Through {
+            slot: 0,
+            volume: false,
+            size,
+            format: Format::A8Unorm,
+            texels: (0..ALPHA_SIDE * ALPHA_SIDE).map(|_| next() as u8).collect(),
+        }];
+        let reference = direct3d_through(&gpu, &views, "cs_alpha");
+        through_alike(
+            &mut backend,
+            seed,
+            &views,
+            &reference,
+            "cs_alpha",
+            &mut failures,
+        );
+    }
+    eprintln!("{seeds} seeds, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The side of `cs_alpha`'s texture, which its dispatch of two by two groups covers.
+const ALPHA_SIDE: u32 = 16;
 
 /// `cs_one_d`'s textures: register, whether an unordered access view, format, layers (none for a
 /// texture that is not an array), and whether seeded.

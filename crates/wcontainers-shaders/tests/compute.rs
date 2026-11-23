@@ -330,7 +330,7 @@ fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
         }
         assert_eq!(stores, 1, "{file}");
         reads_back(&file, &c.modules[0]);
-        // Through a buffer the format has no layout.
+        // Through a buffer of its one-byte texels, laid out as the helper constants say.
         let through = VariantKey {
             texels_through_buffer: 1,
             ..key.clone()
@@ -339,15 +339,16 @@ fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
             true => Source::Dxil(&bytes),
             false => Source::Dxbc(&bytes),
         };
+        let c = convert(source, &through, None)
+            .unwrap_or_else(|e| panic!("{file} through a buffer: {e}"));
         assert!(
-            matches!(
-                convert(source, &through, None),
-                Err(ConvertError::Unsupported(
-                    wcontainers_shaders::refusal::STORAGE_FORMAT_ABSENT
-                ))
-            ),
+            c.reflection
+                .helpers
+                .iter()
+                .any(|h| matches!(h.value, HelperValue::TexelLayout { slot: 0 })),
             "{file}"
         );
+        reads_back(&file, &c.modules[0]);
     }
 }
 

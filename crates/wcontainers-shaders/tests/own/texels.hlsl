@@ -88,6 +88,17 @@ void cs_through(uint3 id : SV_DispatchThreadID) {
     volume[uint3(id.x, id.y, id.x % 3)] = uint4(id.x, id.y, vd, 300 - id.x * 37);
 }
 
+// A storage texture loaded and stored whole (tests bind an `A8_UNORM` view, which loads give as
+// (0, 0, 0, a)); the stored alpha depends on every component loaded, and no code it gives lies
+// halfway between two.
+RWTexture2D<unorm float4> alpha : register(u0);
+
+[numthreads(8, 8, 1)]
+void cs_alpha(uint3 id : SV_DispatchThreadID) {
+    float4 v = alpha[id.xy];
+    alpha[id.xy] = float4(v.w, v.x, v.y, v.w * 0.75 + 0.125 + (v.x + v.y + v.z) * 0.5);
+}
+
 // A vertex shader reading a typed buffer per vertex and instance, with the draw's bases.
 float4 vs_texels(uint v : SV_VertexID, uint n : SV_InstanceID) : SV_Position {
     return floats[v] + floats[n].yxwz;
