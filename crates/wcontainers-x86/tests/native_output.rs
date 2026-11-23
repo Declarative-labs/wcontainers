@@ -395,6 +395,60 @@ fn the_area_segment_is_rebuilt_and_fs_is_copied() {
     }
 }
 
+/// What native layer 1 found against the CPU: a rebuilt `gs:` access and a stand-in base never take rsp or rbp as
+/// base (the stack segment's fault, #SS, where the guest's access takes #GP), a `pop` based on rsp forms its
+/// address after the pop, a float status operand on `gs:` is rebuilt like any other, and a bit test's register
+/// offset on `gs:` under 0x67 is answered by the inside.
+#[test]
+fn what_layer_1_found_on_the_cpu() {
+    let on_stack = |r: Register| matches!(r, Register::RSP | Register::RBP);
+    for way in WAYS {
+        // add gs:[rsp+43h], ax; rcr qword ptr gs:[rbp], cl; pop word ptr gs:[rsp+rdx*2]; cmpxchg8b [r15]
+        for hex in [
+            "65 66 01 44 24 43",
+            "65 48 d3 5c 65 00",
+            "65 66 8f 04 54",
+            "41 0f c7 0c e7",
+        ] {
+            let code = decoded(hex, way);
+            let access = code
+                .iter()
+                .find(|i| !matches!(i.mnemonic(), Mnemonic::Mov | Mnemonic::Lea))
+                .expect("the access");
+            assert!(
+                !on_stack(access.memory_base()),
+                "{hex} in {way:?}: {access:?}"
+            );
+        }
+        let pop = decoded("65 66 8f 04 54", way);
+        let lea = pop
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Lea)
+            .expect("t plus rsp");
+        assert_eq!(
+            (lea.memory_base(), lea.memory_displacement64()),
+            (Register::RSP, 2),
+            "the operand after the pop of two bytes"
+        );
+        // ldmxcsr gs:[r12*4-48h]: on the guest's base, never the hardware's gs.
+        let code = decoded("65 42 0f ae 14 a5 b8 ff ff ff", way);
+        let load = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Ldmxcsr)
+            .expect("the load");
+        assert_eq!(load.memory_segment(), Register::DS, "{load:?}");
+        // bts gs:[edx], rdx under 0x67
+        let piece = translate(&bytes("65 67 48 0f ab 14 a2"), AT, way, false).expect("a piece");
+        assert!(
+            !host(&piece.bytes)
+                .iter()
+                .any(|(_, i)| i.mnemonic() == Mnemonic::Bts),
+            "answered by the inside:\n{}",
+            listing(&piece.bytes)
+        );
+    }
+}
+
 /// A RIP-relative load is made on the guest address built in t, an address place.
 #[test]
 fn a_rip_relative_load_is_rebased() {
