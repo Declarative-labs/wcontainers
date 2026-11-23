@@ -875,11 +875,11 @@ fn tags_link_between_modules_as_the_tag_they_are() {
 /// Exports a function that returns one, and a memory.
 const ANSWERS_ONE: &str = r#"(module
     (memory (export "bytes") 1)
-    (func (export "answer") (result i32) (i32.const 1)))"#;
+    (func (export "one") (result i32) (i32.const 1)))"#;
 
 /// Imports a function and a memory.
 const IMPORTS_AN_ANSWER: &str = r#"(module
-    (import "host" "answer" (func (result i32)))
+    (import "host" "one" (func (result i32)))
     (import "host" "bytes" (memory 1)))"#;
 
 #[test]
@@ -896,14 +896,14 @@ fn an_address_another_engine_value_made_is_refused_at_instantiation() {
         .instantiate(&answers, &[])
         .expect("the module instantiates");
     let importer = compile(&second, IMPORTS_AN_ANSWER);
-    let foreign = function(&mut first, &made_by_first, "answer");
+    let foreign = function(&mut first, &made_by_first, "one");
     let own_memory = second
         .find_export(&made_by_second, "bytes")
         .expect("the memory");
     let refused = second.instantiate(
         &importer,
         &[
-            import("answer", ExternalAddress::Function(foreign)),
+            import("one", ExternalAddress::Function(foreign)),
             import("bytes", own_memory),
         ],
     );
@@ -914,11 +914,11 @@ fn an_address_another_engine_value_made_is_refused_at_instantiation() {
     let foreign_memory = first
         .find_export(&made_by_first, "bytes")
         .expect("the memory");
-    let own_answer = function(&mut second, &made_by_second, "answer");
+    let own_answer = function(&mut second, &made_by_second, "one");
     let refused = second.instantiate(
         &importer,
         &[
-            import("answer", ExternalAddress::Function(own_answer)),
+            import("one", ExternalAddress::Function(own_answer)),
             import("bytes", foreign_memory),
         ],
     );
@@ -958,6 +958,6 @@ fn a_function_another_engine_value_made_is_refused_when_bound() {
     second
         .instantiate(&answers, &[])
         .expect("the module instantiates");
-    let foreign = function(&mut first, &made_by_first, "answer");
+    let foreign = function(&mut first, &made_by_first, "one");
     let _ = <Engine as FunctionTypeBinder<(), i32>>::bind_engine_function(&mut second, foreign);
 }
