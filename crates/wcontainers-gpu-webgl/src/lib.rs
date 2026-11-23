@@ -4761,12 +4761,12 @@ impl Backend for Gl {
         }
         self.slow.hit(SlowPath::PatternClearCopied);
         // A multiple of every pattern length (1 to 16 bytes); `size` is whole patterns.
-        const BLOCK: usize = 256;
-        let mut block = [0u8; BLOCK];
+        const PATTERN_SPAN: usize = 256;
+        let mut block = [0u8; PATTERN_SPAN];
         for (b, p) in block.iter_mut().zip(pattern.iter().cycle()) {
             *b = *p;
         }
-        let first = size.min(BLOCK as u64);
+        let first = size.min(PATTERN_SPAN as u64);
         self.write_buffer(buffer, offset, &block[..first as usize], WriteMode::Ordered);
         let gl = &self.gl;
         for raw in [buffer.data, buffer.index].into_iter().flatten() {
