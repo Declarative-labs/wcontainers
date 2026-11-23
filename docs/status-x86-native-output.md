@@ -1,17 +1,40 @@
 # x86-64 native output: status
 
 Plan: docs/x86-native-output.md. Brief: pyro-parked/wcontainers-scratch/orchestrator/relaunch-agents/
-x86-native-output.js. Scratch: pyro-parked/wcontainers-scratch/x86-native-output (probes/, results/, and check-xn0/,
-the independent check's probes and outputs).
+x86-native-output.js. Scratch: pyro-parked/wcontainers-scratch/x86-native-output (probes/, results/, and check-xn0/
+and check-xn0b/, the two independent checks' probes and outputs).
 
 ## Where things stand
 
-- XN0 (the plan, checked before anything is built): run 1 (2026-11-23) wrote the plan. The independent check found
-  seven blocking and eleven minor problems; run 2 (2026-11-23) fixed every one in the plan (list below) and measured
-  what the fixes lean on. Ready for a second check. Nothing is built; no code of this track exists yet.
-- XN1 and XN2: not started.
+- XN0 (the plan, checked before anything is built): done. Run 1 (2026-11-23) wrote the plan; the first independent
+  check found seven blocking and eleven minor problems, which run 2 fixed. Run 3 (2026-11-23) made the second
+  check (probes in scratch check-xn0b/): three blocking and ten minor problems, all fixed in the plan (list below)
+  and measured where measurable. The run-3 fixes have not had a third check. Nothing is built; no code of this
+  track exists yet.
+- XN1 and XN2: not started. XN1 starts with the reconciliation points under Coordination.
 
-## What run 2 changed, finding by finding
+## What run 3 changed (second check), finding by finding
+
+- P resumed through `rt_sigreturn` (blocking): a sibling thread can rewrite the frame's rip on the alternate stack;
+  measured 198,432 of 200,000 signals returned to the sibling's address. Now P's handler resumes by its own jump
+  (mask by `rt_sigprocmask`, vector state by `XRSTOR` from its copy, since a handler starts with the vector state
+  reset); measured working and cheaper, 925 against 1,089 ns a round trip (plan 3.7).
+- Guest TF in P (blocking): the silent resume mid-sequence would take t and u from that editable frame, and a
+  chosen u sends the second-level `jmp` anywhere. P now keeps the hardware TF clear and runs a stepping thread on
+  stepping pieces (the request's `step`; plan 3.6, 9).
+- The machine's per-processor areas (blocking): mapped at distinct addresses in a process's tables, a thread of
+  process A could write the register area of a thread of process B on another processor. Now one virtual address
+  mapped per processor through its own top-level entry (plan 2).
+- Minor: I's host signal handler starts with FS on the thread area (measured), so it sets the host's FS first
+  (plan 3.7); `wrfsbase` is not copied in P on a 5-level host, which accepted 2^47, 2^50 and 0xff00000000000000
+  (measured, plan 3.1); the reserved-NOP space (`rdsspq` and the rest) is Nothing, never Copy; strings and `xlat`
+  on the area's segment go to the inside; `jrcxz` is rel8, so the replay check's layout is given, and the check
+  sits before its run's count add; way I's `call r/m` takes stand-ins, `pushf` rebases rsp, `push m`/`pop m` go
+  through t; the stub moves t (r11) and c (r10) before a host `syscall`; host requirements named (BMI2, FSGSBASE,
+  XSAVEC); a sibling's store into another thread's register area named for P (plan 5); the vDSO clock's cost and
+  I's first-level remap with busy runners given to XN1 and XN2 as measurements; sigreturn's other cs values.
+
+## What run 2 changed (first check), finding by finding
 
 - Top-bits bound wrapped (blocking): replaced. The first level is indexed by bits 32..63 (2^32 words, 32 GiB reserved
   per thread area, 256 KiB mapped), so every target at or above 2^47 faults on the first-level read with t intact;
@@ -65,6 +88,14 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   `fnsave` (107), `vmaskmovps` xmm and ymm (15, 31), `vpmaskmovq` ymm (31), `maskmovdqu` (15); loads changed no
   register (45, 93). Partial: `enter 0,3` (6, 14, 22 of 8, 16, 24 bytes), `fstp m80` (8 bytes before the fault, 2 of 9
   offsets), `fbstp` (1 byte, 2 of 9).
+- Run 3, signals (check-xn0b/psig.c, psig.out; load 0.17, `gcc -O2 -mavx2 -mfsgsbase -fno-stack-protector`,
+  main thread on processor 5, sibling on 6): a sibling storing one address into the frame's rip slot in a loop
+  diverted 198,432 of 200,000 `rt_sigreturn`s; ymm7 (all ones before) read zero at handler entry and all ones after
+  `rt_sigreturn`; resuming by jump (`rt_sigprocmask`, `XRSTOR` with the frame's xfeatures) kept ymm7 and handled all
+  200,000; a `tgkill` to itself and back, 3 rounds of 200,000: 1,088 to 1,089 ns with `rt_sigreturn`, 923 to 927 ns
+  by jump; the FS base at handler entry is the one set before the signal.
+- Run 3, FS bases (check-xn0b/wrfs.c, wrfs.out; load 0.05): `wrfsbase` accepts 2^46, 2^47, 2^50,
+  0xff00000000000000, 0xffff800000000000, 0xfff0000000000000 and faults on 2^56 and 2^57 (5-level canonical).
 - Taken from cloud/x86/x86-machine.md, not measured by this track: XSAVE 11,008 bytes, a signal frame's xstate_bv
   0x207, UMIP emulating sldt, str and smsw, split-lock detection.
 
@@ -80,6 +111,9 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 - The XSAVE family goes to the inside (native.md copied it between two float calls): the host's XCR0 sizes the image.
 - Three withheld registers, not two (the mirror needs a second scratch).
 - The replay check is `jrcxz` with rcx borrowed into t (native.md left x86's form open, "chosen at N9").
+- Guest single step in P by stepping pieces with the hardware TF clear (native.md 3.4 steps in hardware, which P
+  cannot resume from safely); the machine and I keep native.md's form.
+- `wrfsbase` routed to the inside in P on a 5-level host (copied elsewhere in the machine and P).
 
 ## Coordination with other tracks (read theirs at the start of every run)
 
@@ -94,10 +128,17 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   - Calls into the inside in P and I: `lea t, [rip]; jmp seg:[entry + 8*kind]`, nothing pushed; its stub keeps t in a
     register, as its 3.7 requires; resuming at t is safe because t never sat in guest-writable memory.
   - Signals: resumption at a guest boundary through the lookup, as its 3.3; the rep-string twin is entered that way.
+    P's handler never returns by `rt_sigreturn` (its 3.7 says so; the plan's 3.7 has the measurement and the
+    jump-out it measured); t and u from a frame copy are never used, so P has no hardware single step (stepping
+    pieces instead). In I the handler sets the host's FS base before any Rust code and the area's again before
+    guest code; its 3.8 swaps FS at entry and exit only.
+  - The stub's routines: t is r11 and c is r10, which a host `syscall` overwrites or takes as an argument.
   - Links in P: the embedder writes the code; a stub thread runs `membarrier(PRIVATE_EXPEDITED_SYNC_CORE)` in the
     stub's process at the embedder's request, once per batch.
   - P on a 4-level host: about 3,000 guest threads per process (32 GiB of first level each).
   - What each way must give: plan section 2 (read-only part of the area, no host address in guest-writable memory).
+- KVM back end (the floor): the thread areas at one virtual address mapped per virtual processor through its own
+  top-level entry, so no thread reaches another processor's register area (plan 2); guest page tables 4-level.
 - kernel: `rt_sigreturn` with cs 0x23 refused by name ("32-bit code segment in sigreturn, not provided", SIGSEGV);
   the kernel's writes into translated pages drop them (plan 3.7).
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
@@ -127,8 +168,11 @@ No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT
   from guest-writable memory (plan 3.6); the guest cannot set or read the thread area's segment base (plan 3.1, the
   routing test); prefetches are never copied; strings in I are bounded at their start (plan 4); `xsave` never runs
   with the guest's mask on the host's XCR0; 32-bit code is never entered, sigreturn included; the inside's Rust in I
-  cannot clear the guest's ymm upper halves (XSAVEC). Points it hands to P: writable pages of the guest's host
-  process, the signal frame included, are the guest's.
+  cannot clear the guest's ymm upper halves (XSAVEC); P never resumes through a signal frame a sibling can edit
+  (measured: 198,432 of 200,000 diverted when it does) and has no hardware single step; the machine maps each
+  processor's area only for that processor; I's handler restores the host's FS before Rust code. Points it hands to
+  P: writable pages of the guest's host process, the signal frame and other threads' register areas included, are
+  the guest's.
 - Tests for these: plan section 7 (shapes, way I, routing).
 
 ## How to run the probes
@@ -136,4 +180,5 @@ No dependency added. XN1 adds iced-x86's `encoder` feature (iced-x86 1.22.0, MIT
 `tar cf - <probes> | orchestrator/cloud/x86-run --ssh 'mkdir -p /work/probes/xno && cd /work/probes/xno && tar xf -
 && gcc -O2 -o mirror3 mirror3.c mirror3.S && taskset -c 5 ./mirror3 30 21'`; the same for returns (`returns.c
 returns.S`, `./returns 30 21`) and the partial probes (`gcc -O2 -mavx2`, no arguments); `python3 -I shapes86.py <ELF
-files>`.
+files>`. Run 3's: `gcc -O2 -mavx2 -mfsgsbase -fno-stack-protector -pthread -o psig psig.c && ./psig 200000` and
+`gcc -O2 -mfsgsbase -o wrfs wrfs.c && ./wrfs`, in /work/probes/xn0b.

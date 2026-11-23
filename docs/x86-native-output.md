@@ -1,6 +1,6 @@
 # x86-64 native output: plan
 
-Status: plan (XN0, run 2, 2026-11-23), revised after its independent check. What the translator's native output
+Status: plan (XN0, run 3, 2026-11-23), revised after its two independent checks. What the translator's native output
 (docs/native.md section 3, built for ARM64) becomes for x86-64 guests on x86-64 hosts, in the three ways of running
 natively: inside a virtual machine (KVM, docs/native.md section 5, "the machine"), each guest process as a host
 process ("P"), and the kernel in process with inline memory checks ("I"; both from the owner's ruling of
@@ -34,8 +34,9 @@ execute-only), load given beside each.
 The native output takes a `Way` (section 9) from the executor that translates; it is part of the translation's
 cache key. Four things depend on it, and nothing else:
 - the thread area's segment: GS in the machine and P, FS in I;
-- where the guest's FS base lives: in the hardware in the machine and P (so a guest `fs:` operand, `rdfsbase` and
-  `wrfsbase` are copied), in the register area in I (every guest access is rewritten there anyway);
+- where the guest's FS base lives: in the hardware in the machine and P (so a guest `fs:` operand and `rdfsbase`
+  are copied, and `wrfsbase` where the host's canonical rule is the guest's, section 3.1), in the register area in
+  I (every guest access is rewritten there anyway);
 - the access form: none (machine, P), wrapping or exact (I; chosen by the in-process executor's
   `TranslatorConfig`, the owner's `Executor::TranslatorConfig` as it stands);
 - the call into the inside (section 3.6).
@@ -46,7 +47,9 @@ The thread area is reached at `seg:[field]`, `field` a field offset of one `#[re
 core (no literal; a disp32), the segment base being the area itself, set by the way for each host thread. Machine:
 one area per virtual processor, its first level pointed at the running process's by the floor at a process switch.
 I: one area per runner, the running process's first level mapped into it (one `mmap` of that process's memfd range,
-0.9 µs on the Xeon by the P/I plan's W0 probe) when the runner switches to a thread of another process; FS is
+0.9 µs on the Xeon by the P/I plan's W0 probe, which did not have other runners busy: such an `mmap` changes the
+one host process's page tables and so flushes the other runners' TLBs, which XN2 measures with every runner busy)
+when the runner switches to a thread of another process; FS is
 written with `wrfsbase` at every entry into guest code and the host's value put back at every exit, as the P/I
 plan's 3.8 does, and GS with the process's window base (`arch_prctl` where the host lacks user FSGSBASE, a counted
 slow path). P: one area per guest thread, set once. Where an area serves many guest threads (machine, I), the
@@ -59,8 +62,14 @@ registers. It holds:
   goes.
 What each way must give (recorded for the other tracks in docs/status-x86-native-output.md): the read-only part
 really read-only to guest code; no host address translated code or the inside jumps to, returns to or resumes at
-may ever sit in memory the guest can write. In P every writable page of the guest's host process is writable by the
-guest and its sibling threads; so is a signal frame on its alternate stack.
+may ever sit in memory the guest can write; and an area's writable part reachable only by guest threads of the
+process whose thread it holds. In P every writable page of the guest's host process is writable by the guest and
+its sibling threads; so is a signal frame on its alternate stack (section 3.7). In the machine the areas sit at one
+virtual address mapped per virtual processor (each has its own top-level table entry for it, the rest of its
+top-level table copied from the running process's), so a guest thread reaches only the area of the processor it
+runs on, which holds its own words: with one area per processor mapped at distinct addresses in a process's
+tables, a thread of process A on processor 1 could still write processor 2's register area after processor 2 has
+switched to a thread of process B.
 
 ## 3. Each mechanism of docs/native.md section 3, in x86-64 form
 
@@ -69,13 +78,18 @@ guest and its sibling threads; so is a signal frame on its alternate stack.
 Copied as its bytes: an instruction whose host execution does exactly what its meaning does for every input, with
 no RIP-relative operand, naming no withheld register, with no operand or effect on the thread area's segment, and
 (way I) touching no memory. In practice: integer, SSE, x87 arithmetic and moves, `lock`ed and plain memory forms in
-the machine and P, `fs:` operands, `rdfsbase` and `wrfsbase` in the machine and P, `pushf` (the hardware's TF, AC,
-DF, NT, ID are kept equal to the guest's, section 3.5), `pause`, the fences, `movbe`, `adx`, `cmpxchg16b`,
-`clflush`, and the AVX setting's VEX forms when the container's setting claims them. The offer is the translator's:
-a form outside it is not decoded and takes the Trap route (illegal instruction), whatever the host has (this host
+the machine and P, `fs:` operands and `rdfsbase` in the machine and P, `wrfsbase` in the machine (the floor runs the
+guest on 4-level tables) and in P on a 4-level host only (on a 5-level host the hardware takes a base the guest's
+4-level rule refuses: on this host `wrfsbase` of 2^47, 2^50, 0xff00000000000000 and 0xfff0000000000000 succeeded,
+check-xn0b/wrfs.out, where the meaning gives general protection; there it goes to the inside), `pushf` (the
+hardware's TF, AC, DF, NT, ID are kept equal to the guest's, section 3.5; AC is always clear, the meaning refusing
+it, "alignment checking asked for, not provided"), `pause`, the fences, `movbe`, `adx`, `cmpxchg16b`, `clflush`,
+and the AVX setting's VEX forms when the container's setting claims them. The offer is the translator's: a form
+outside it is not decoded and takes the Trap route (illegal instruction), whatever the host has (this host
 runs AVX-512, AMX, `umwait`, `serialize`, `enqcmd`, `wrpkru`; none is decoded, x86-machine.md). A host lacking an
-offered feature (user FSGSBASE included, in the machine and P) refuses the native way at the probe ("back end
-refused by the probe"); nothing is emulated. Protection keys are relied on nowhere: nothing in this plan needs
+offered feature, or one the carrying code uses (BMI2 for the lookup's `rorx`, section 3.3; user FSGSBASE in the
+machine and P; XSAVEC in I), refuses the native way at the probe ("back end refused by the probe"); nothing is
+emulated. Protection keys are relied on nowhere: nothing in this plan needs
 them, and `rdpkru`/`wrpkru` are outside the offer.
 
 Never copied, by route:
@@ -89,12 +103,14 @@ Never copied, by route:
   ignore the prefix; the emitter computes the target as the meaning does.
 - Area: the guest's own use of the thread area's segment: `gs:` operands, `rdgsbase`, `wrgsbase` (and in I `fs:`,
   `rdfsbase`, `wrfsbase`). An operand becomes `mov t, seg:[guest base]` and the access on `[t + base + index*scale +
-  disp]` (`lea t, [t + base]` first when it has both a base and an index); `rd*base r` is `mov r, seg:[guest base]`
-  (the 32-bit form `mov r32`, as `rdfsbase r32` zero-extends); `wr*base` goes to the inside (Kernel), which refuses a
-  non-canonical base with general protection as the meaning does, since its canonical check would write flags
-  inline. A copied `wrgsbase` would let the guest choose where the lookup reads its first level, and a copied
-  `rdgsbase` or `rdfsbase` (in I) would hand it a host address: the static routing test (section 7) fails if any of
-  them is routed Copy in the way concerned.
+  disp]` (`lea t, [t + base]` first when it has both a base and an index); a string instruction or `xlat` on the
+  area's segment (in I, on any segment override) goes to the inside (Kernel, counted), since its address is
+  implicit in rsi or rbx and cannot take t (0.00 `gs:` per 1000 instructions, results/shapes86.out); `rd*base r`
+  is `mov r, seg:[guest base]` (the 32-bit form `mov r32`, as `rdfsbase r32` zero-extends); `wr*base` goes to
+  the inside (Kernel), which refuses a non-canonical base with general protection as the meaning does, since its
+  canonical check would write flags inline. A copied `wrgsbase` would let the guest choose where the lookup reads
+  its first level, and a copied `rdgsbase` or `rdfsbase` (in I) would hand it a host address: the static routing
+  test (section 7) fails if any of them is routed Copy in the way concerned.
 - Kernel (section 3.5): `syscall`; `cpuid`; `rdtsc`, `rdtscp`, `rdpid`; `xgetbv`; segment register reads and writes
   and far transfers (`mov` from and to a segment register, `push` and `pop` of `fs` and `gs`, `lss`, `lfs`, `lgs`, far
   `call`/`jmp`/`retf`, `iretq`; a read gives the meaning's selector, never the host's or the floor's); `popf`; the
@@ -110,8 +126,11 @@ Never copied, by route:
 - Trap: `int3`, `int1`, `int n`, `ud2`, `hlt`, `in`/`out`, `cli`/`sti`, `swapgs` and every privileged form, and every
   form outside the offer. `int 0x80` and `sysenter` are the meaning's general protection with x86's reason "32-bit
   system call from 64-bit code, not provided" (x86 plan section 5.2).
-- Nothing: the forms the meaning makes do nothing (`nop` of every length, `endbr64`, the prefetch hints).
-  Prefetches are never copied, so way I cannot be made to touch host memory outside the window with them.
+- Nothing: the forms the meaning makes do nothing (`nop` of every length, the prefetch hints, and the whole
+  reserved-NOP space, which the decoder reads as `Reservednop` (x86/decode.rs, `FORCE_RESERVED_NOP`): `endbr64`,
+  `rdsspq`, `incsspq` and the other shadow-stack forms). Prefetches are never copied, so way I cannot be made to
+  touch host memory outside the window with them; `rdsspq` is never copied, since on a host thread with a user
+  shadow stack it would hand the guest a host address. The routing test fails if any of these is routed Copy.
 - Undefined results (flags after `mul`, shifts, `bsf` and the rest; a `bsf` destination of zero): which behaviour
   the guest sees is the instruction design's (docs/status-instruction-design.md, a precise instruction set per
   container), not this plan's. The native route of such a form is Copy where the host's measured set gives the
@@ -132,8 +151,9 @@ Never copied, by route:
   straddles records it, so the write lock of both pages drops it (as the WebAssembly output locks
   `NEXT_PAGE_WRITE`, x86 plan section 5.7); a fetch from a next page that cannot run code is the meaning's fault
   there, which the inside reports as the WebAssembly output does.
-- Branches the emitter writes are rel32 (`jmp`, `jcc`, 5 and 6 bytes), never relaxed to rel8, so every exit has one
-  length and a link is one patch. A linkable exit's `jmp rel32` sits inside one aligned 8-byte word (the emitter
+- Exits the emitter writes are rel32 (`jmp`, `jcc`, 5 and 6 bytes), never relaxed to rel8, so every exit has one
+  length and a link is one patch (only branches inside one instruction's carrying code, such as the replay check's
+  `jrcxz`, are short). A linkable exit's `jmp rel32` sits inside one aligned 8-byte word (the emitter
   pads with a multi-byte `nop`), so linking and unlinking are one atomic 8-byte store. Both the old and the new
   bytes are correct to run (an unlinked exit enters the inside, which finds the piece and goes on), so a thread
   that runs the old bytes is right; what the store needs is the Intel SDM's cross-modifying rule (volume 3, 9.1.3):
@@ -254,11 +274,13 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
     address from the span and r11 with the guest rflags, as the reference does; r11 is t, a scratch).
   - P and I: `lea t, [rip]` (the host address of the next instruction) and `jmp qword ptr seg:[entry + 8*kind]`.
     Nothing is pushed: no host address goes to any stack. The routine at the entry keeps t in a register (P: the
-    stub's assembly, which waits in the host kernel with its state in registers, as the P/I plan's 3.7 requires) or
+    stub's assembly, which waits in the host kernel with its state in registers, as the P/I plan's 3.7 requires;
+    t is r11 and c is r10 in the first guess, and a host `syscall` overwrites r11 and takes its fourth argument in
+    r10, so the stub moves both to registers the host kernel keeps before it waits) or
     in the inside's own memory (I, out of every guest's reach), and resumes by jumping to it, or through the lookup
     at a guest pc when the kernel changed where the guest goes (a signal, `rt_sigreturn`, `execve`); t is never read
-    back from memory a guest can write. In I the routine switches to the inside's stack (the area's read-only part names
-    it) before any Rust code runs.
+    back from memory a guest can write. In I the routine switches to the inside's stack (the area's read-only part
+    names it) before any Rust code runs.
   - What is saved: the inside's routine saves the general registers and rflags (then `cld`); the register groups
     follow the native brief's last section, per way: in the machine the floor is built for `x86_64-unknown-none`
     (no SSE or AVX in its code) and saves groups only at guest thread switches; in P the stub's routines use no
@@ -295,9 +317,15 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   events are its elements, which both outputs know (rcx before less rcx after), `lea c, [c + t]` plus a flag-free
   subtraction natively, and which make every element boundary a distinct position on both outputs. Until ruled,
   XN1 builds the pass count from one shared function of the x86 core that the meaning's constants feed.
-- TF: as docs/native.md 3.4 (routed `popf`/`iretq`, hardware TF equal to the guest's, steps resolved through the
-  map). In P and I every host instruction of the call into the inside steps too until the inside clears TF: the
-  handler resumes those silently ("single step through host instructions").
+- TF: in the machine and I as docs/native.md 3.4 (routed `popf`/`iretq`, hardware TF equal to the guest's, steps
+  resolved through the map); every host instruction of the carrying code steps too, and the handler resumes those
+  silently at the host instruction ("single step through host instructions"), which is safe there because the
+  frame it resumes from is out of every guest's reach. Not in P: a silent resume in the middle of a sequence takes
+  t and u from a frame a sibling thread can edit (section 3.7), and a u it chose would make the second-level `jmp`
+  go anywhere. In P the hardware TF stays clear, and a guest thread whose TF is set runs stepping pieces, one guest
+  instruction each with every exit to the inside and the inside's call kind Step after it, which raises the
+  meaning's debug trap (the request's `step`, section 9; counted "guest single step"); `pushf` in them goes to the
+  inside, since the hardware's TF is not the guest's there.
 
 ### 3.7 Stops, replay, self-modifying code, signals
 
@@ -305,20 +333,37 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   since the guest's rsp is the guest's). A stop at any host instruction resolves by the position map, exactly as on
   ARM64 (docs/native.md section 4). The handler copies the frame once; the interrupted rip it holds is only looked
   up in the position map (a value the map does not know ends the thread as corrupted, counted), and the thread
-  resumes at a guest instruction boundary through the lookup, never at a host address read from the frame. A stop
-  inside a `rep` string instruction: the hardware leaves rip on the instruction with rsi, rdi and rcx advanced, which
-  is a guest instruction boundary with the instruction's progress in its registers; the thread resumes there in the
-  instruction's twin, a piece holding that one instruction followed by a call into the inside, so the instruction
-  ends and the stop is taken at its end ("stop deferred to the end of a string instruction"). This replaces
-  docs/native.md section 4's DR0 breakpoint, which P and I cannot set without `perf_event_open` (refused here at
-  `perf_event_paranoid` 4, costs-cloud.json).
+  resumes at a guest instruction boundary through the lookup, never at a host address read from the frame.
+  - P never resumes through `rt_sigreturn`: the host kernel reads the frame's rip back from the alternate stack,
+    which sibling threads can write. Measured (check-xn0b/psig.c, psig.out; load 0.17): with a sibling thread
+    storing one address into the frame's rip slot in a loop, 198,432 of 200,000 signals returned by `rt_sigreturn`
+    to that address. The handler resumes by its own jump instead: the interrupted mask from its copy by
+    `rt_sigprocmask`, the vector state by `XRSTOR` from its copy (the host kernel starts a handler with the vector
+    state reset: ymm7 read zero at entry, set before the signal), the general registers, and a jump to the lookup
+    entry. Measured: works, ymm7 kept, 925 ns a signal round trip against 1,089 ns with `rt_sigreturn` (`tgkill`
+    to itself, 3 rounds of 200,000, one pinned processor). A frame whose vector image a sibling made invalid
+    faults that `XRSTOR`, which ends the thread as corrupted, counted. Guest values in the copy may have been
+    edited by a sibling, which changes only that guest's registers; t and u from the copy are never used.
+  - I: the host kernel starts a handler with the interrupted FS base (measured: the value set before the signal),
+    which during guest code is the thread area, not the runner's thread-local storage. The handler's first
+    instructions, before any Rust code, set the host's FS base from the runner's record, found by the alternate
+    stack's address (as the P/I plan's handler finds its pages), and FS is set to the area again before guest code
+    resumes, since the frame does not hold the FS base.
+- A stop inside a `rep` string instruction: the hardware leaves rip on the instruction with rsi, rdi and rcx
+  advanced, which is a guest instruction boundary with the instruction's progress in its registers; the thread
+  resumes there in the instruction's twin, a piece holding that one instruction followed by a call into the
+  inside, so the instruction ends and the stop is taken at its end ("stop deferred to the end of a string
+  instruction"). This replaces docs/native.md section 4's DR0 breakpoint, which P and I cannot set without
+  `perf_event_open` (refused here at `perf_event_paranoid` 4, costs-cloud.json).
 - Replay to a logged position (docs/native.md 5.7): to stop a thread at (count N, guest pc P), its stop word in the
   area's read-only part becomes N (every other thread's holds a value no count reaches), and the inside asks for P's
   piece again with a stop point at P (the request's `stop` of section 9, part of the cache key). The new piece is
   loaded into the target thread's process only (its mirror entries and links pointed at it); the process's other
   threads run it too, and the check being against the running thread's own stop word is what makes only the target
-  stop, as on ARM64. Before P's instruction the check, flag-free, with rcx borrowed into t, which is free at an
-  instruction boundary:
+  stop, as on ARM64. The stop point starts a run, and the check is placed before that run's count add, so c holds
+  the count before P's instruction. The check, flag-free, with rcx borrowed into t, which is free at an
+  instruction boundary (`jrcxz` has only an 8-bit displacement, so the stop's call sits right after it, the one
+  short branch the emitter writes):
   ```
   mov t, rcx
   mov rcx, seg:[stop]
@@ -326,9 +371,10 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
   lea rcx, [rcx + c + 1]      ; rcx = c - stop word
   jrcxz 1f                    ; equal: the stop
   mov rcx, t
-  <P's instruction> ...
+  jmp 2f
   1: mov rcx, t
      <call into the inside, kind Stop>
+  2: <the run's count add, then P's instruction> ...
   ```
   The position map holds "rcx in t" over the check. A replay target at a `rep` string instruction with N inside its
   passes: in the replay piece that instruction goes to the inside, which runs it pass by pass with the meaning's
@@ -358,15 +404,18 @@ the meaning and Rust logic here, the differential test (section 7) proves them e
 - vsyscall and vDSO: our kernel gives an x86-64 vDSO, guest code translated like any other (its `rdtsc` is the
   Kernel route); the legacy vsyscall page is not provided (x86 plan: as under `vsyscall=none`), so a call or jump to
   0xffffffffff600000 is a page fault at that address with rip there (section 3.3), as Linux gives under
-  `vsyscall=none`. The host's own vDSO, vvar and vsyscall pages (here vvar and vdso at the top of the 47-bit space,
-  vsyscall execute-only) are P's: they sit in the guest's host process above the guest's ceiling 2^44, out of the
-  guest's mappings; a guest read there succeeds where Linux faults, which P names or prevents (P's plan).
+  `vsyscall=none`. Each vDSO clock read is one call into the inside for its `rdtsc`, where Linux runs it in the
+  process; in P the stub answers it in its process only if the clock's answer is pure there. Not measured: XN1
+  records the cost of `clock_gettime` through the vDSO in P and the machine beside the speed bar. The host's own
+  vDSO, vvar and vsyscall pages (here vvar and vdso at the top of the 47-bit space, vsyscall execute-only) are
+  P's: they sit in the guest's host process above the guest's ceiling 2^44, out of the guest's mappings; a guest
+  read there succeeds where Linux faults, which P names or prevents (P's plan).
 - 32-bit code is never run: the decoder is 64-bit only; far transfers and `iretq` are answered and refuse 0x23 by
   name; `int 0x80` and `sysenter` are the meaning's general protection; a 32-bit ELF is the kernel's refusal; and
   `rt_sigreturn` with the frame's cs edited to 0x23 (which on Linux switches the thread into compatibility mode) is
-  refused by our kernel's sigreturn with SIGSEGV, named "32-bit code segment in sigreturn, not provided" (the
-  kernel's code, shared with the WebAssembly output: asked of the kernel track, since x86/lib.rs keeps no cs in the
-  block today).
+  refused by our kernel's sigreturn with SIGSEGV, named "32-bit code segment in sigreturn, not provided"; any other
+  cs but 0x33 is the SIGSEGV Linux gives when its return to user mode faults (the kernel's code, shared with the
+  WebAssembly output: asked of the kernel track, since x86/lib.rs keeps no cs in the block today).
 
 ## 4. The three memory-access forms (way I only changes them)
 
@@ -396,6 +445,13 @@ window needs the bound in a register, measured at XN2 if asked).
   page (the largest, the guest's XSAVE image of 832 bytes, is the inside's), so one page catches a run over the top.
 - Implicit accesses: `push`, `pop`, `call`, `ret`, `enter`, `leave` become explicit accesses through `access` on rsp
   (`mov gs:[esp - 8], src` then `lea rsp, [rsp - 8]`, the store the commit point and the `lea` its fix-up, section 9).
+  The source must be a register: `push m` and `pop m` go through t; a `call` pushes its return address from a
+  register too (the machine's and P's `push qword ptr [rip + d]` has no store form), and in `call r/m` t holds the
+  target and u the first level, so the return address takes a stand-in (one guest register saved to the register
+  area and put back, docs/native.md 3.3), and in the exact form the check of rsp - 8 takes one more (two stores and
+  two loads a `call r/m` more than the machine's sequence); `pushf` cannot be re-encoded, so rsp is rebased around it
+  (after the start probe on rsp - 8, `mov t, fs:[base]; lea rsp, [rsp + t]`, `pushf`, `mov t, fs:[negated base];
+  lea rsp, [rsp + t]`, the map holding `Held::Rebased` for rsp), as strings rebase rdi.
   `xlat` is re-encoded on `gs:`. The AVX2 gathers in the exact form go to the inside (rare; their lanes cannot be
   bounded by one probe), counted.
 - Strings and `maskmovdqu`: their start is bounded first, then rdi is rebased. For each of rdi and rsi the instruction
@@ -421,7 +477,9 @@ window needs the bound in a register, measured at XN2 if asked).
 
 - Way I, wrapping: the modulo landing above (section 4).
 - P: the host pages in the guest's host process (section 3.7) and the read-only thread area: a guest read there
-  succeeds where Linux faults, unless P keeps the guest away from them (P's plan decides and counts). P on a 4-level
+  succeeds where Linux faults, unless P keeps the guest away from them (P's plan decides and counts). A guest store
+  into a sibling thread's register area changes that thread's values of the withheld registers, where Linux lets
+  no thread write another's registers (it changes nothing outside the guest's own process). P on a 4-level
   host: at most about 3,000 guest threads per process (section 3.3).
 - P and I on a host with split-lock detection: a split locked access is slowed (or fatal) where the reference runs
   it.
@@ -445,7 +503,8 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
 - Routing, static, per way: every decoded x86 form through the recording emitter, with this plan's classes (section
   3.1; docs/native.md 3.4's class "held by the hardware as presented" does not hold the thread area's segment or its
   base instructions here): a form added to the x86 crate is routed or the test fails, and the area segment's
-  operands, `rdgsbase`, `wrgsbase` (and in I `rdfsbase`, `wrfsbase`, `fs:`) routed Copy fail it.
+  operands, `rdgsbase`, `wrgsbase` (and in I `rdfsbase`, `wrfsbase`, `fs:`, and in P on a 5-level host
+  `wrfsbase`) routed Copy fail it.
 - Routing, differential: every decoded form run natively as routed and through the WebAssembly output from the same
   seeded state (all 64 bits of every register, every register collision, each access placed across a page with
   either page refusing, after seeded float flags with tracking on and off, TF and AC in the values popf takes),
@@ -464,11 +523,20 @@ Each is `Cpu::address_space` of that way; a request above it fails, counted, as 
   0xfff0000000401000, 2^63 and -1, with signal, si_code, address, rip and rsp compared; a stop inside `rep movsb`,
   `rep stosq` and `repe cmpsb`; an instruction straddling into a page that cannot run code; a 66-prefixed `jmp`,
   `call` and `ret`; `xsave` with edx:eax all ones beside a guest buffer of the offered size; `wrfsbase`,
-  `wrgsbase`, `rdgsbase` and `mov r, gs` (each way); `enter 0, 3` and `fstp m80` across a page that refuses writes.
+  `wrgsbase`, `rdgsbase` and `mov r, gs` (each way); `enter 0, 3` and `fstp m80` across a page that refuses writes;
+  `rdsspq` and `incsspq` (the reserved-NOP results); `rep movsb` and `xlat` with a `gs:` override; `popf` setting
+  TF followed by a `ret` and a `jmp r` (each way, P on stepping pieces).
+- Hostile guest, per way: in P a sibling thread storing into the running thread's alternate signal stack and
+  register area in a loop while the thread takes stops, faults and calls into the inside (as check-xn0b/psig.c),
+  no host instruction run but translated code, the stub and the lookup's targets; in the machine a thread of one
+  process storing into every address of our area while a thread of another process runs on another processor,
+  the other's registers unchanged; in I a stop taken in guest code with the handler's Rust code reading its
+  thread-local storage.
 - Way I: no access outside the window succeeds in either form, through every operand shape: one byte past a
   mapping, 2^32 - 1 with 8 bytes, a SIB with a large index, `fs:` with a negative offset, a downward and an upward
   string with a large rcx, a string and `maskmovdqu` with rdi and rsi at 2^32, 2^32 + 2^35, 2^40 and -1, a push at
-  the bottom of the stack, `enter` with a deep level; and the ymm upper halves kept across a call into the inside.
+  the bottom of the stack, `enter` with a deep level, `call r/m` and `pushf` with rsp at 2^32 and at the window's
+  first byte; and the ymm upper halves kept across a call into the inside.
 
 ## 8. Milestones and pass bars
 
@@ -497,7 +565,7 @@ does not apply to it:
 pub trait Native: Guest {
     /// How translated code reaches guest memory, the thread area and the inside; part of the cache key.
     type Way: Copy + Eq + core::hash::Hash + Serialize;
-    /// Forms whose host execution gives the container's chosen behaviour, found by the probe.
+    /// Forms whose host execution gives the container's chosen behaviour, found by the probe (paging depth included).
     type HostMatches;
     fn route(way: &Self::Way, i: &Self::Instruction, host: &Self::HostMatches) -> Route;
     /// As today, with the way and the rest of the straight-line part after it (flag liveness).
@@ -515,7 +583,9 @@ pub trait Native: Guest {
 }
 ```
 The translation request gains the stop point of docs/native.md 5.7, part of the cache key: `stop: Option<u64>`, the
-guest pc before whose instruction `stop_check` goes. In gcpu/position.rs: `Operand` gains `segment: Option<Segment>`
+guest pc before whose instruction `stop_check` goes; and, for P's guest single step (section 3.6), `step: bool`,
+also in the cache key: every instruction its own piece, every exit to the inside, `call(way, code, Step)` after
+each. In gcpu/position.rs: `Operand` gains `segment: Option<Segment>`
 (`Fs`, `Gs`) and `address_bits: u8` (32 or 64); `DirectExit::retarget` and `BranchTable::retarget` hold the branch's
 displacement as `{ at: u8, bits: u8 }` in bytes, not ARM64's instruction field; `Fixup` gains `Offset { register:
 u8, by: i32 }` (rsp after a split push); `Held` gains `Rebased(u8)` (rdi holding the guest value plus B) and
