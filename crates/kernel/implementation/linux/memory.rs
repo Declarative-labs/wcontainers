@@ -114,6 +114,9 @@ impl LayoutRandomization {
 /// range below is full. They are the ceilings of a 32 bit memory and of a browser's 64 bit one.
 pub const PLACEMENT_TIERS: [u64; 2] = [1 << 32, 1 << 34];
 
+/// The size of a PMD's huge page, which anonymous mappings of whole ones are aligned to.
+const PMD_SIZE: u64 = crate::hugetlb::DEFAULT_SIZE * crate::hugetlb::KIB;
+
 /// The top of the lowest range placement fills, which the stack and the mmap base are placed
 /// under: the lowest tier, or the executor's ceiling where that is lower.
 pub(crate) fn first_tier_top(ceiling: u64) -> u64 {
@@ -1054,6 +1057,35 @@ impl AddressMap {
     /// Free space as [`AddressMap::find_free`] finds it with `taken` in use too: where the loader
     /// will place a new program's parts.
     pub fn find_free_beside(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
+        let found = self.search(length, taken);
+        if found.is_none() && self.ceiling < self.end {
+            self.note(|notes| notes.outgrown.set(Some(length)));
+        }
+        found
+    }
+
+    /// Free space as [`AddressMap::find_free`] finds it for anonymous private memory placed with
+    /// no hint: a length of whole PMDs starts on a PMD's boundary, as Linux places it for its
+    /// transparent huge pages (`__thp_get_unmapped_area` with the top-down search: the space for
+    /// one PMD more, and the boundary in it, or one PMD higher when the space starts on one).
+    pub fn find_free_anonymous(&self, length: u64) -> Option<u64> {
+        if length.is_multiple_of(PMD_SIZE)
+            && let Some(start) = length
+                .checked_add(PMD_SIZE)
+                .and_then(|padded| self.search(padded, &[]))
+        {
+            let to_boundary = start.wrapping_neg() & (PMD_SIZE - 1);
+            return Some(if to_boundary == 0 {
+                start + PMD_SIZE
+            } else {
+                start + to_boundary
+            });
+        }
+        self.find_free(length)
+    }
+
+    /// The search of [`AddressMap::find_free_beside`], noting nothing when it finds no space.
+    fn search(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
         let mut ranges = alloc::vec![(LOWEST_ADDRESS, self.mmap_base)];
         let mut floor = first_tier_top(self.ceiling);
         for tier in PLACEMENT_TIERS.into_iter().chain([self.end]) {
@@ -1072,9 +1104,6 @@ impl AddressMap {
             if let Some(start) = self.find_free_between(floor, top, length, taken) {
                 return Some(start);
             }
-        }
-        if self.ceiling < self.end {
-            self.note(|notes| notes.outgrown.set(Some(length)));
         }
         None
     }
@@ -1799,21 +1828,56 @@ mod tests {
         while placed.len() < count
             && let Some(start) = map.find_free(length)
         {
-            let mapping = Mapping {
-                start,
-                end: start + length,
-                permissions: Permissions::READ,
-                allowed: Permissions::all(),
-                shared: false,
-                locked: Lock::None,
-                grows_down: false,
-                on_fork: OnFork::default(),
-                backing: Backing::Anonymous,
-            };
-            map.mappings.insert(start, mapping);
+            place(map, start, length);
             placed.push(start);
         }
         placed
+    }
+
+    #[test]
+    fn anonymous_memory_of_whole_pmds_starts_on_a_boundary() {
+        let notes = Rc::new(MapNotes::default());
+        let mut map = AddressMap::new(PLACEMENT_TIERS[1], PLACEMENT_TIERS[1], notes);
+        // Below an odd page, as below a vDSO.
+        let odd = map.find_free(PAGE_SIZE).expect("space");
+        place(&mut map, odd, PAGE_SIZE);
+        // Each goes below the one before (what an alignment leaves above it is too small for the
+        // next); the last follows one that starts on a boundary, so the space below ends on one.
+        let mut top = odd;
+        for (length, aligned) in [
+            (PMD_SIZE, true),
+            (PMD_SIZE + PAGE_SIZE, false),
+            (2 * PMD_SIZE, true),
+            (PMD_SIZE, true),
+        ] {
+            let start = map.find_free_anonymous(length).expect("space");
+            // The highest start below what is mapped, on a boundary for whole PMDs.
+            let highest = top - length;
+            let expected = if aligned {
+                highest & !(PMD_SIZE - 1)
+            } else {
+                highest
+            };
+            assert_eq!(start, expected, "{length:#x}");
+            place(&mut map, start, length);
+            top = start;
+        }
+    }
+
+    /// Maps `length` bytes of anonymous memory at `start`.
+    fn place(map: &mut AddressMap, start: u64, length: u64) {
+        let mapping = Mapping {
+            start,
+            end: start + length,
+            permissions: Permissions::READ,
+            allowed: Permissions::all(),
+            shared: false,
+            locked: Lock::None,
+            grows_down: false,
+            on_fork: OnFork::default(),
+            backing: Backing::Anonymous,
+        };
+        map.mappings.insert(start, mapping);
     }
 
     #[test]

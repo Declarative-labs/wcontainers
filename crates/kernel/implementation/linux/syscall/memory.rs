@@ -232,7 +232,12 @@ pub(super) fn do_mmap<S: crate::System>(
             hint
         } else {
             hint_above = hint != 0 && above;
-            map.find_free(length).ok_or(Errno::ENOMEM)?
+            if hint == 0 && file.is_none() && flags & MAP_SHARED == 0 {
+                map.find_free_anonymous(length)
+            } else {
+                map.find_free(length)
+            }
+            .ok_or(Errno::ENOMEM)?
         }
     };
     if flags & MAP_FIXED_NOREPLACE != 0
@@ -1295,7 +1300,17 @@ fn remap_at<S: crate::System>(
     if request.flags & MREMAP_MAYMOVE == 0 {
         return Err(Errno::ENOMEM);
     }
-    let destination = map.find_free(new_length).ok_or(Errno::ENOMEM)?;
+    // `get_unmapped_area` with no hint, for the mapping's file or anonymous memory.
+    let anonymous = matches!(
+        mapping.backing,
+        Backing::Anonymous | Backing::Heap | Backing::Stack | Backing::Droppable
+    );
+    let destination = if anonymous && !mapping.shared {
+        map.find_free_anonymous(new_length)
+    } else {
+        map.find_free(new_length)
+    }
+    .ok_or(Errno::ENOMEM)?;
     drop(map);
     move_range(cx, kernel, tid, mapping, request, destination)
 }
