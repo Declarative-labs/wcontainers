@@ -267,12 +267,80 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
         return;
     }
     let blitter = context.blitter;
+    let mut info = *info;
+    if info.mask & PIPE_MASK_S != 0 {
+        stencil_by_bits(context, &info);
+        info.mask &= !PIPE_MASK_S;
+        if info.mask == 0 {
+            return;
+        }
+    }
     // SAFETY: the blitter was made on this context.
-    if !unsafe { util_blitter_is_blit_supported(blitter, info) } {
+    if !unsafe { util_blitter_is_blit_supported(blitter, &info) } {
         refuse(format_args!("a blit Gallium's blitter does not make"));
     }
     // SAFETY: as above; the blitter is used by this context's thread only.
     save(context, unsafe { &mut *blitter });
     // SAFETY: as above; every state the blitter changes is saved.
-    unsafe { util_blitter_blit(blitter, info, std::ptr::null_mut()) };
+    unsafe { util_blitter_blit(blitter, &info, std::ptr::null_mut()) };
+}
+
+/// A blit's stencil, which no program writes on the host (no stencil export): the destination's
+/// stencil cleared within the blit, then each bit of it set by a draw keeping the fragments whose
+/// source has it (Gallium's blitter, `util_blitter_stencil_fallback`).
+fn stencil_by_bits<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) {
+    let blitter = context.blitter;
+    let (src, dst) = (&info.src, &info.dst);
+    let mut surface = pipe_surface::default();
+    // SAFETY: the blit's destination is a live texture of this driver; the template is filled.
+    unsafe {
+        util_blitter_default_dst_texture(&mut surface, dst.resource, dst.level, dst.box_.z as u32)
+    };
+    let b = &dst.box_;
+    let (mut x0, mut y0, mut x1, mut y1) = (b.x, b.y, b.x + b.width, b.y + b.height);
+    if info.scissor_enable {
+        let s = &info.scissor;
+        x0 = x0.max(s.minx as i32);
+        y0 = y0.max(s.miny as i32);
+        x1 = x1.min(s.maxx as i32);
+        y1 = y1.min(s.maxy as i32);
+    }
+    if x1 > x0 && y1 > y0 {
+        // SAFETY: as above; the blitter is used by this context's thread only.
+        save(context, unsafe { &mut *blitter });
+        // SAFETY: as above; every state the blitter changes is saved.
+        unsafe {
+            util_blitter_clear_depth_stencil(
+                blitter,
+                &mut surface,
+                PIPE_CLEAR_STENCIL,
+                0.0,
+                0,
+                x0 as u32,
+                y0 as u32,
+                (x1 - x0) as u32,
+                (y1 - y0) as u32,
+            )
+        };
+    }
+    let scissor = if info.scissor_enable {
+        &info.scissor as *const pipe_scissor_state
+    } else {
+        std::ptr::null()
+    };
+    // SAFETY: as above.
+    save(context, unsafe { &mut *blitter });
+    // SAFETY: as above; both resources are live textures of this driver.
+    unsafe {
+        util_blitter_stencil_fallback(
+            blitter,
+            dst.resource,
+            dst.level,
+            &dst.box_,
+            src.resource,
+            src.level,
+            &src.box_,
+            scissor,
+        )
+    };
 }

@@ -23,7 +23,7 @@ const BINDINGS: &str = "gallium.rs";
 /// driver calls.
 const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context|u_transfer_vtbl";
 const ALLOWED_FUNCTIONS: &str = "u_init_pipe_screen_caps|u_upload_create_default|u_upload_destroy|\
-     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported)|\
+     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported|stencil_fallback|clear_depth_stencil|default_dst_texture)|\
      wc_sampler_view_.*|tgsi_to_nir|u_index_(translator|generator)|util_prim_restart_convert_to_direct|\
      u_default_get_sample_position|u_default_texture_subdata|\
      u_transfer_helper_(create|destroy|transfer_map|transfer_unmap|transfer_flush_region)";
