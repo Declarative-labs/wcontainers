@@ -5092,6 +5092,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-executor-arm64-stop",
  "wcontainers-guest-cpu",
+ "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
  "zerocopy",
 ]
