@@ -50,6 +50,6 @@ windows = { version = "0.62.2", features = [
 name = "wasm_imports"
 crate-type = ["cdylib"]
 
-# Not under the workspace's ban on unsafe code: it calls C++ libraries.
+# TODO: remove this crate's 95 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

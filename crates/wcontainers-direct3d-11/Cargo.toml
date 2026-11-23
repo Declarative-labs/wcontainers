@@ -18,6 +18,6 @@ blake3 = { version = "1", default-features = false }
 naga = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 
-# Not under the workspace's ban on unsafe code: it implements Windows COM interfaces, which are raw pointers.
+# TODO: remove this crate's 10 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

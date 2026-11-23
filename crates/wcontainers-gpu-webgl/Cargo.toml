@@ -73,6 +73,6 @@ name = "replay"
 crate-type = ["cdylib"]
 required-features = ["trace"]
 
-# Not under the workspace's ban on unsafe code: it calls the graphics driver.
+# TODO: remove this crate's 167 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
