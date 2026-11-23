@@ -100,9 +100,11 @@ fn picture(device: &mut Device<WebGpu>, scene: &triangle::Scene) -> Vec<u8> {
     device.queue_signal(queue, fence, 1).unwrap();
     assert!(device.wait(fence, 1));
     assert_eq!(device.backend().status(), DeviceStatus::Ok);
-    let mapped = device.map(scene.readback).unwrap();
     // The readback heap's bytes, finished into its memory when the fence was reached.
-    let bytes = unsafe { std::slice::from_raw_parts(mapped, scene.total as usize) };
+    let bytes: Vec<u8> = device.map(scene.readback).unwrap()[..scene.total as usize]
+        .iter()
+        .map(std::cell::Cell::get)
+        .collect();
     let f = scene.footprint;
     let row = (f.width * 4) as usize;
     (0..f.height as usize)
@@ -527,8 +529,7 @@ fn clamp_scene(
         .unwrap();
     let address = device.address(vertex_buffer);
     let mapped = device.map(vertex_buffer).unwrap();
-    // The upload heap's memory stays where it is for the resource's life.
-    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped, data.len()) };
+    mapped.iter().zip(&data).for_each(|(c, b)| c.set(*b));
     let view = |resource, format| TargetView {
         resource,
         format,

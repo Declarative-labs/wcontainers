@@ -781,20 +781,22 @@ impl<B: Backend> Device<B> {
                 host: Some(host), ..
             },
             ..
-        }) = self.resources.get_mut(id.0 as usize)
+        }) = self.resources.get(id.0 as usize)
         else {
             return Err(Error::Invalid("an upload buffer without its memory"));
         };
         self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
-        let held = host.bytes();
+        let held = host.cells();
         let (start, end) = (
             offset as usize,
             (end.min(width) as usize).max(offset as usize),
         );
-        let mut bytes = held
+        let mut bytes: Vec<u8> = held
             .get(start..end.min(held.len()))
             .unwrap_or_default()
-            .to_vec();
+            .iter()
+            .map(Cell::get)
+            .collect();
         bytes.resize(size.next_multiple_of(CONSTANT_REGISTER) as usize, 0);
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut at = [0];
@@ -1437,19 +1439,22 @@ impl<B: Backend> Device<B> {
                     host: Some(host),
                 },
             ..
-        }) = self.resources.get_mut(id.0 as usize)
+        }) = self.resources.get(id.0 as usize)
         else {
             return Ok(());
         };
         self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
-        let bytes = host.bytes();
+        let cells = host.cells();
         let mut from = 0;
-        for (start, end) in skip.into_iter().chain([(bytes.len(), bytes.len())]) {
+        for (start, end) in skip.into_iter().chain([(cells.len(), cells.len())]) {
             if start > from {
+                self.staging.clear();
+                self.staging
+                    .extend(cells[from..start].iter().map(Cell::get));
                 self.backend.write_buffer(
                     buffer,
                     from as u64,
-                    &bytes[from..start],
+                    &self.staging,
                     WriteMode::NoOverwrite,
                 );
             }

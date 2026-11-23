@@ -668,7 +668,8 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
         .unwrap();
     let x = device.create_placed(shared, 0, &buffer(2 * page)).unwrap();
     let y = device.create_placed(shared, page, &buffer(page)).unwrap();
-    let (px, py) = (device.map(x).unwrap(), device.map(y).unwrap());
+    let px = device.map(x).unwrap().as_ptr();
+    let py = device.map(y).unwrap().as_ptr();
     assert_eq!(py as usize - px as usize, page as usize);
     device.destroy_resource(b);
     device.destroy_resource(a);
@@ -701,8 +702,8 @@ fn shared_buffers_take_the_program_bytes_and_give_back_the_gpu_ones() {
     let shared = device.create_committed(HeapType::Shared, &buffer).unwrap();
     let other = device.create_committed(HeapType::Default, &buffer).unwrap();
     let memory = device.map(shared).unwrap();
-    // SAFETY: the 64 bytes `Map` gave.
-    unsafe { std::slice::from_raw_parts_mut(memory, 64).fill(7) };
+    memory[..64].iter().for_each(|c| c.set(7));
+    let memory = memory.as_ptr();
     let copy = |dst, dst_offset, src, size| Command::CopyBuffer {
         dst,
         dst_offset,
@@ -742,7 +743,7 @@ fn shared_buffers_take_the_program_bytes_and_give_back_the_gpu_ones() {
     // Once the work is done and the program maps the buffer, its memory holds the GPU's bytes.
     device.backend().finish();
     let start = device.backend().calls.len();
-    assert_eq!(device.map(shared).unwrap(), memory);
+    assert_eq!(device.map(shared).unwrap().as_ptr(), memory);
     assert_eq!(device.backend().named("finish_read").len(), 1);
     assert!(device.backend().calls[start..][0].ends_with(" 16"));
     let calls = run(&mut device, copy(other, 0, shared, 64));

@@ -1,7 +1,7 @@
 //! The Direct3D 12 device on one back end: its objects, the one queue order every guest queue shares,
 //! the replay of command lists, and fences.
 
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -22,6 +22,7 @@ use wcontainers_gpu::{
     VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
+use zerocopy::FromZeros;
 
 use crate::Error;
 use crate::address::AddressMap;
@@ -104,7 +105,8 @@ const READBACK_BUFFER: BufferUsage = BufferUsage::COPY_DST.union(BufferUsage::RE
 const SHARED_BUFFER: BufferUsage = UPLOAD_BUFFER.union(BufferUsage::READ_BACK);
 
 /// Guest-visible memory of an upload, readback or shared heap, shared by the buffers placed in it.
-type HostMemory = Rc<UnsafeCell<Box<[u8]>>>;
+/// Cells, because the program writes it through `Map`'s pointer while the device holds it.
+type HostMemory = Rc<Box<[Cell<u8>]>>;
 
 /// The bytes `Map` hands out for an upload, readback or shared buffer: its own memory, or its part
 /// of its heap's, which overlapping placed buffers share as the memory they alias.
@@ -117,22 +119,18 @@ struct Host {
 impl Host {
     fn new(len: usize) -> Self {
         Host {
-            memory: Rc::new(UnsafeCell::new(vec![0; len].into_boxed_slice())),
+            // Zeroed by the allocator, so pages the program never touches stay untouched.
+            memory: Rc::new(
+                <[Cell<u8>]>::new_box_zeroed_with_elems(len).expect("memory for a mapped heap"),
+            ),
             offset: 0,
             len,
         }
     }
 
-    fn ptr(&self) -> *mut u8 {
-        // SAFETY: `offset` lies inside the memory, as `create_placed` checked.
-        unsafe { (*self.memory.get()).as_mut_ptr().add(self.offset) }
-    }
-
-    /// The bytes. The program writes them through `Map`'s pointer, never while work reading them is
-    /// being submitted, and no other reference to them lives across a call of the device.
-    fn bytes(&mut self) -> &mut [u8] {
-        // SAFETY: as above; `len` bytes from `offset` lie inside the memory.
-        unsafe { std::slice::from_raw_parts_mut(self.ptr(), self.len) }
+    /// The bytes; `offset` and `len` lie inside the memory, as `create_placed` checked.
+    fn cells(&self) -> &[Cell<u8>] {
+        &self.memory[self.offset..][..self.len]
     }
 }
 
@@ -346,7 +344,8 @@ enum Work {
 
 /// A descriptor heap: the slots CPU handles point into, and the first GPU handle.
 struct Heap {
-    slots: Box<[Descriptor]>,
+    /// Cells, because the program writes them through its CPU handles while the device holds them.
+    slots: Box<[Cell<Descriptor>]>,
     gpu: u64,
 }
 
@@ -379,6 +378,8 @@ pub struct Device<B: Backend> {
     samplers: HashMap<SamplerDesc, B::Sampler>,
     /// Upload buffers already written to the GPU in this `ExecuteCommandLists`.
     uploaded: Vec<ResourceId>,
+    /// The bytes of an upload or read back on their way between the GPU and mapped memory.
+    staging: Vec<u8>,
     layouts: HashMap<VertexLayoutDesc, B::VertexLayout>,
     reads: Vec<PendingRead<B>>,
     /// Events to set when fences reach values.
@@ -455,6 +456,7 @@ impl<B: Backend> Device<B> {
             handles: AddressMap::new(HANDLE_BASE),
             samplers: HashMap::new(),
             uploaded: Vec::new(),
+            staging: Vec::new(),
             layouts: HashMap::new(),
             reads: Vec::new(),
             waiters: Vec::new(),
@@ -966,7 +968,7 @@ impl<B: Backend> Device<B> {
     /// `Map` of an upload or readback buffer: the bytes the program reads and writes, which stay
     /// where they are for the resource's life. Before handing out readback memory, read backs whose
     /// work is done are finished into it.
-    pub fn map(&mut self, id: ResourceId) -> Result<*mut u8, Error> {
+    pub fn map(&mut self, id: ResourceId) -> Result<&[Cell<u8>], Error> {
         self.finish_reads(false);
         match self
             .resources
@@ -975,7 +977,7 @@ impl<B: Backend> Device<B> {
         {
             Some(Storage::Buffer {
                 host: Some(host), ..
-            }) => Ok(host.ptr()),
+            }) => Ok(host.cells()),
             Some(_) => Err(Error::Invalid("only upload and readback buffers map")),
             None => Err(Error::Invalid("no such resource")),
         }
@@ -1032,8 +1034,8 @@ impl<B: Backend> Device<B> {
         let gpu = self
             .handles
             .insert(u64::from(count) * crate::address::DESCRIPTOR_SIZE, id);
-        let mut slots = vec![Descriptor::Empty; count as usize].into_boxed_slice();
-        let cpu = slots.as_mut_ptr();
+        let slots: Box<[Cell<Descriptor>]> = (0..count).map(|_| Cell::default()).collect();
+        let cpu = slots.as_ptr().cast::<Descriptor>().cast_mut();
         self.heaps.insert(Heap { slots, gpu });
         (id, cpu, gpu)
     }
@@ -1052,9 +1054,7 @@ impl<B: Backend> Device<B> {
             .ok_or(Error::Invalid("a GPU descriptor handle of no heap"))?;
         let heap = &self.heaps[heap.0 as usize];
         let index = (offset / crate::address::DESCRIPTOR_SIZE) as usize;
-        // SAFETY: a slot of a live heap. The program writes slots through its CPU handles; it may
-        // not change a descriptor while work that reads it is being submitted.
-        Ok(unsafe { std::ptr::read_volatile(&heap.slots[index]) })
+        Ok(heap.slots[index].get())
     }
 
     // ---- Root signatures and pipelines ----
@@ -2265,10 +2265,13 @@ impl<B: Backend> Device<B> {
                 host: Some(host), ..
             },
             ..
-        }) = self.resources.get_mut(r.resource.0 as usize)
+        }) = self.resources.get(r.resource.0 as usize)
         {
-            self.backend
-                .finish_read(r.readback, &mut host.bytes()[r.offset..r.offset + r.size]);
+            self.staging.clear();
+            self.staging.resize(r.size, 0);
+            self.backend.finish_read(r.readback, &mut self.staging);
+            let cells = &host.cells()[r.offset..r.offset + r.size];
+            cells.iter().zip(&self.staging).for_each(|(c, b)| c.set(*b));
         }
     }
 

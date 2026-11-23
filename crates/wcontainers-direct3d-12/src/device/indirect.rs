@@ -77,9 +77,10 @@ impl<B: Backend> Device<B> {
                 host: Some(host), ..
             },
             ..
-        }) = self.resources.get_mut(id.0 as usize)
+        }) = self.resources.get(id.0 as usize)
         {
-            return Ok(host.bytes()[offset as usize..(offset + size) as usize].to_vec());
+            let cells = &host.cells()[offset as usize..(offset + size) as usize];
+            return Ok(cells.iter().map(Cell::get).collect());
         }
         // A shared buffer's bytes reach the GPU before the work reading them.
         self.upload(id)?;

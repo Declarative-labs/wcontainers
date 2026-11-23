@@ -1635,7 +1635,7 @@ impl Device {
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_placed(memory, offset, &front)?;
             let host = if kind != HeapType::Default && front.dimension == DIMENSION_BUFFER {
-                d.map(id)? as usize
+                d.map(id)?.as_ptr() as usize
             } else {
                 0
             };
@@ -1696,7 +1696,7 @@ impl Device {
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;
             let host = if kind != HeapType::Default && front.dimension == DIMENSION_BUFFER {
-                d.map(id)? as usize
+                d.map(id)?.as_ptr() as usize
             } else {
                 0
             };

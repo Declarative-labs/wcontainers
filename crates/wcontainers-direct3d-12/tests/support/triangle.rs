@@ -161,8 +161,7 @@ pub fn record_with<B: Backend>(
     let address = device.address(vertices);
     assert_ne!(address, 0);
     let mapped = device.map(vertices).unwrap();
-    // The upload heap's memory stays where it is for the resource's life.
-    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped, data.len()) };
+    mapped.iter().zip(data.iter()).for_each(|(c, b)| c.set(*b));
 
     let rtv = Descriptor::RenderTarget(TargetView {
         resource: target,
