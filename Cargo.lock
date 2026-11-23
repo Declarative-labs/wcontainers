@@ -4981,6 +4981,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-arm64-stop"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-guest-cpu",
+]
+
+[[package]]
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
@@ -5056,6 +5065,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-clock",
+ "wcontainers-executor-arm64-stop",
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
@@ -5080,6 +5090,9 @@ dependencies = [
  "rustix",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-executor-arm64-stop",
+ "wcontainers-guest-cpu",
+ "wcontainers-translator",
  "zerocopy",
 ]
 
