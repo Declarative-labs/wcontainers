@@ -75,6 +75,8 @@ pub enum StopReason {
     Suspended,
     Idle { until: Option<Duration> },
     Finished(ProcessEnd),
+    /// A host thread ended inside a run, so the kernel can no longer be run.
+    Panicked,
 }
 
 /// The way a container's first process ended: its [wait status](https://man7.org/linux/man-pages/man2/wait.2.html#:~:text=If%20wstatus%20is%20not%20NULL), or the error that kept its program from starting.
