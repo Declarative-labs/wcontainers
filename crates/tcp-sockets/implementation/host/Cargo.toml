@@ -37,11 +37,18 @@ netlink-packet-core = "0.9.0"
 
 [dev-dependencies]
 wcontainers-tcp-sockets-conformance = { path = "../../conformance" }
+# Counts the allocations of the waiting thread in the allocation test (MIT or Apache-2.0).
+allocation-counter = "0.8.1"
 
 [[test]]
 name = "conformance"
 path = "conformance.rs"
 
-# TODO: remove this crate's 23 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+[[test]]
+name = "allocations"
+path = "tests/allocations.rs"
+harness = false
+
+# TODO: remove this crate's 6 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

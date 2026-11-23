@@ -288,10 +288,7 @@ const RECORDED_EXTENSION_HEADERS: usize = 4;
 /// https://github.com/torvalds/linux/blob/v6.18/net/ipv6/datagram.c
 const RECORDED_INTEGERS: usize = 3;
 
-const fn space(length: usize) -> usize {
-    // SAFETY: CMSG_SPACE only computes a length.
-    unsafe { libc::CMSG_SPACE(length as u32) as usize }
-}
+use options::control_space as space;
 
 /// Room for every record of the last packet: its packet information, integer records and extension headers at their largest.
 const LAST_HEADER_ROOM: usize = space(size_of::<uapi::in6_pktinfo>())
@@ -847,6 +844,9 @@ pub(super) fn repair_state(socket: BorrowedFd<'_>) -> Result<TcpRepairState, Hos
     })
 }
 
+/// The size of one `tcp_repair_opt`, a code and a value.
+const REPAIR_OPTION_SIZE: usize = size_of::<uapi::tcp_repair_opt>();
+
 /// Writes repair options through `TCP_REPAIR_OPTIONS`, a few at a time on the stack.
 pub(super) fn set_repair_options(
     socket: BorrowedFd<'_>,
@@ -856,8 +856,13 @@ pub(super) fn set_repair_options(
         KIND_MAXIMUM_SEGMENT_SIZE, KIND_SELECTIVE_ACK_PERMITTED, KIND_TIMESTAMP, KIND_WINDOW_SCALE,
     };
     for chunk in repair.chunks(REPAIR_OPTIONS_AT_ONCE) {
-        let mut written = [zeroed::<uapi::tcp_repair_opt>(); REPAIR_OPTIONS_AT_ONCE];
-        for (to, option) in written.iter_mut().zip(chunk) {
+        let mut written = [u8::MIN; REPAIR_OPTION_SIZE * REPAIR_OPTIONS_AT_ONCE];
+        for (to, option) in written
+            .as_chunks_mut::<REPAIR_OPTION_SIZE>()
+            .0
+            .iter_mut()
+            .zip(chunk)
+        {
             let (kind, value) = match *option {
                 TcpRepairOption::MaximumSegmentSize(size) => {
                     (KIND_MAXIMUM_SEGMENT_SIZE, u32::from(size.0))
@@ -871,14 +876,13 @@ pub(super) fn set_repair_options(
                 }
                 TcpRepairOption::Timestamps => (KIND_TIMESTAMP, NO_OPTION_VALUE),
             };
-            to.opt_code = u32::from(kind);
-            to.opt_val = value;
+            let code = std::mem::offset_of!(uapi::tcp_repair_opt, opt_code);
+            let at = std::mem::offset_of!(uapi::tcp_repair_opt, opt_val);
+            to[code..code + size_of::<u32>()].copy_from_slice(&u32::from(kind).to_ne_bytes());
+            to[at..at + size_of::<u32>()].copy_from_slice(&value.to_ne_bytes());
         }
-        let used = &written[..chunk.len()];
-        // SAFETY: the options are plain data, given as their bytes.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(used.as_ptr().cast::<u8>(), size_of_val(used)) };
-        options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_OPTIONS, bytes)?;
+        let used = &written[..chunk.len() * REPAIR_OPTION_SIZE];
+        options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_OPTIONS, used)?;
     }
     Ok(())
 }
@@ -1152,36 +1156,13 @@ pub(super) fn last_received_header<'a>(
 
 /// Gives the bytes of each IPv6 extension header among control messages, in the order Linux wrote them.
 fn extension_headers(control: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut header = zeroed::<libc::msghdr>();
-    header.msg_control = control.as_ptr().cast_mut().cast();
-    header.msg_controllen = control.len() as _;
-    // SAFETY: the walk stays within `control`, whose messages the kernel wrote.
-    let mut message = unsafe { libc::CMSG_FIRSTHDR(&header) };
-    std::iter::from_fn(move || {
-        while !message.is_null() {
-            // SAFETY: `message` points at a complete control message header inside `control`.
-            let (level, kind, data) = unsafe {
-                let start = libc::CMSG_DATA(message);
-                let length =
-                    (*message).cmsg_len as usize - start.offset_from(message.cast()) as usize;
-                (
-                    (*message).cmsg_level as u32,
-                    (*message).cmsg_type as u32,
-                    std::slice::from_raw_parts(start, length),
-                )
-            };
-            // SAFETY: as above.
-            message = unsafe { libc::CMSG_NXTHDR(&header, message) };
-            if level == uapi::SOL_IPV6
-                && matches!(
-                    kind,
-                    uapi::IPV6_HOPOPTS | uapi::IPV6_DSTOPTS | uapi::IPV6_RTHDR
-                )
-            {
-                return Some(data);
-            }
-        }
-        None
+    options::ControlMessages::new(control).filter_map(|(level, kind, data)| {
+        (level as u32 == uapi::SOL_IPV6
+            && matches!(
+                kind as u32,
+                uapi::IPV6_HOPOPTS | uapi::IPV6_DSTOPTS | uapi::IPV6_RTHDR
+            ))
+        .then_some(data)
     })
 }
 
