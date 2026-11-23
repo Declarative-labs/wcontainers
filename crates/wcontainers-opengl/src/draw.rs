@@ -1599,10 +1599,18 @@ fn draw<B: Backend>(
     let programs = &mut context.programs;
     // The fragment program first: the last stage's outputs are interpolated as its inputs.
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    let inputs = programs
-        .built_for(backend, unsafe { &*fs }, &fragment)?
-        .inputs
-        .clone();
+    let built_fragment = programs.built_for(backend, unsafe { &*fs }, &fragment)?;
+    let inputs = built_fragment.inputs.clone();
+    // The stage helper's primitives are listed turned where the draw takes flat values it reads
+    // from the other vertex.
+    let staged_provoking = Provoking {
+        api: raster.provoking,
+        host: if built_fragment.flat_inputs {
+            raster.host_provoking
+        } else {
+            raster.provoking
+        },
+    };
     let (pulled, paths) = pulled_inputs(elements, &bound.vertex_buffers);
     let vertex = Variant {
         transform,
@@ -1693,7 +1701,16 @@ fn draw<B: Backend>(
                 gs.as_ref().map(|g| (g, &geometry)),
             )
         };
-        match run_tessellated(context, backend, stages, geometry_stage, elements, info, d)? {
+        let made = run_tessellated(
+            context,
+            backend,
+            stages,
+            geometry_stage,
+            elements,
+            (info, d),
+            staged_provoking,
+        )?;
+        match made {
             Some(made) => Some(made),
             None => return Ok(()),
         }
@@ -1705,7 +1722,15 @@ fn draw<B: Backend>(
             for d in draws {
                 // SAFETY: as above.
                 let vertex_stage = (unsafe { &*vs }, &vertex);
-                run_stages(context, backend, vertex_stage, None, elements, info, d)?;
+                run_stages(
+                    context,
+                    backend,
+                    vertex_stage,
+                    None,
+                    elements,
+                    (info, d),
+                    staged_provoking,
+                )?;
             }
         }
         None
@@ -1721,8 +1746,8 @@ fn draw<B: Backend>(
             vertex_stage,
             Some(geometry_stage),
             elements,
-            info,
-            d,
+            (info, d),
+            staged_provoking,
         )?;
         match made {
             Some(made) => Some(made),
@@ -1745,16 +1770,12 @@ fn draw<B: Backend>(
         &programs.built[&(first as ShaderId, first_variant.clone())],
         &programs.built[&(fs as ShaderId, fragment.clone())],
     ];
-    // Flat values from the vertex OpenGL names where the host takes the other: indices rewritten.
+    // Flat values from the vertex OpenGL names where the host takes the other: indices rewritten
+    // (the stage helper turned what it made already).
     let flat_from_other = raster.provoking != raster.host_provoking
         && built[1].flat_inputs
-        && topology != Topology::PointList;
-    if flat_from_other && made.is_some() {
-        return refused(format_args!(
-            "flat values from the last vertex of a geometry or tessellation stage's primitives \
-             (not built)"
-        ));
-    }
+        && topology != Topology::PointList
+        && made.is_none();
     let provoking = flat_from_other.then_some(Provoking {
         api: raster.provoking,
         host: raster.host_provoking,
@@ -2134,15 +2155,16 @@ fn helper_indices<B: Backend>(
 /// One range of a draw run by the stage helper outside the pass: the vertex program, then the
 /// geometry program where one is given (`GeometryAsCompute`), the last of them streamed to the
 /// bound targets where stream output is active (`StreamOutAsCompute`). What a geometry program
-/// made, to draw; `None` without one, or where it made no primitive.
+/// made, to draw, its flat values from `provoking.host`; `None` without one, or where it made no
+/// primitive.
 fn run_stages<B: Backend>(
     context: &mut Context<B>,
     backend: &mut B,
     (vs, vertex): (&Shader, &Variant),
     geometry: Option<(&Shader, &Variant)>,
     elements: &state::Elements<B>,
-    info: &pipe_draw_info,
-    d: &pipe_draw_start_count_bias,
+    (info, d): (&pipe_draw_info, &pipe_draw_start_count_bias),
+    provoking: Provoking,
 ) -> Result<Option<Made<B>>, String> {
     let declared = geometry
         .map_or(&vs.streamed, |(gs, _)| &gs.streamed)
@@ -2164,9 +2186,7 @@ fn run_stages<B: Backend>(
     if indices::trimmed(mode, d.count) == 0 {
         return Ok(None);
     }
-    // SAFETY: a bound rasterizer state lives until Mesa unbinds and deletes it.
-    let provoking = unsafe { &*context.bound.raster }.provoking;
-    let host_indices = helper_indices(&mut context.tracker, backend, info, d, provoking)?;
+    let host_indices = helper_indices(&mut context.tracker, backend, info, d, provoking.api)?;
     let (topology, range_count) = match &host_indices {
         HelperIndices::Nothing => return Ok(None),
         HelperIndices::Own => (stage_topology(mode).ok_or("a fan or loop")?, d.count),
@@ -2317,6 +2337,12 @@ fn run_stages<B: Backend>(
     } else {
         None
     };
+    if geometry.is_some() {
+        staged
+            .stages
+            .provoking(backend, provoking.api, provoking.host)
+            .map_err(|e| format!("the stage helper: {e:?}"))?;
+    }
     let ran = staged.stages.run(
         backend,
         &StageDraw {
@@ -2355,16 +2381,17 @@ fn run_stages<B: Backend>(
 /// (`TessellationAsCompute`): the vertex program, the control program and the tessellator, then
 /// the evaluation program and the geometry program where one is given as compute work too, the
 /// last of them streamed to the bound targets where stream output is active. What the evaluation
-/// or geometry program draws; `None` where the range holds no whole patch. The control program's
-/// variant is completed here with its evaluation program's tessellator.
+/// or geometry program draws, its flat values from `provoking.host`; `None` where the range holds
+/// no whole patch. The control program's variant is completed here with its evaluation program's
+/// tessellator.
 fn run_tessellated<B: Backend>(
     context: &mut Context<B>,
     backend: &mut B,
     [(vs, vertex), (tcs, control), (tes, evaluation)]: [(&Shader, &Variant); 3],
     geometry: Option<(&Shader, &Variant)>,
     elements: &state::Elements<B>,
-    info: &pipe_draw_info,
-    d: &pipe_draw_start_count_bias,
+    (info, d): (&pipe_draw_info, &pipe_draw_start_count_bias),
+    provoking: Provoking,
 ) -> Result<Option<Made<B>>, String> {
     let points = context.bound.patch_vertices;
     if points == 0 || d.count < u32::from(points) {
@@ -2524,6 +2551,10 @@ fn run_tessellated<B: Backend>(
         .tessellated
         .get_mut(&key)
         .ok_or("the stage helper")?;
+    staged
+        .stages
+        .provoking(backend, provoking.api, provoking.host)
+        .map_err(|e| format!("the stage helper: {e:?}"))?;
     context
         .tracker
         .close(backend)

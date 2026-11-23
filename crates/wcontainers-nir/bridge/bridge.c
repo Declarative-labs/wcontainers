@@ -20,9 +20,11 @@
  * drivers report the same, so the NIR they hand over has this shape). */
 static const struct nir_shader_compiler_options compiler_options = {
    /* A convergent value stays interpolated: the host may lack flat values from OpenGL's last
-    * vertex, and interpolating one value gives that value. */
+    * vertex, and interpolating one value gives that value. The position is the common form's
+    * built-in, never a slot the linker may pack other values into. */
    .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit |
-                 nir_io_always_interpolate_convergent_fs_inputs,
+                 nir_io_always_interpolate_convergent_fs_inputs |
+                 nir_io_dont_use_pos_for_non_fs_varyings,
    .lower_scmp = true,
    .lower_fdph = true,
    .lower_flrp32 = true,
