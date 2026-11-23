@@ -8,6 +8,56 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, second run: the independent check's findings
+
+- [blocking] `Kernel: Sync` no longer rests on a condition callers cannot see (7e2b6df8,
+  0f3cd949). The kernel's state stays `Rc` and `RefCell` inside, behind one `spin::Mutex`, now in
+  an `Arc` with what it hands out: the interface's `ProcessContext` and `SuspendedTask` are
+  `Held<..>` (executing.rs), which share the kernel's records and are dropped under its lock, or,
+  while that lock is held (a process handle holds it while it lasts), queued and dropped by the
+  lock's next holder. Every interface call collects what it hands out under the lock, runs the
+  caller's iterator of tasks before taking it, takes back only what this kernel handed out (the
+  rest is handed back), and swaps a resumed context's execution configuration under it. `Sync`
+  is now bounded by `C: Send` (with its translator settings), `State: Send`, `S: Send` and the
+  system's TCP, UDP and stream handles `Send`; the one thing types cannot say, that the system's
+  waiting calls may be polled on another host thread, is the condition of the now `unsafe`
+  `KernelWithExecutor::start` and `KernelConfig::new` (For the owner). The stand-in's executor is
+  `Send` by an `unsafe impl` with its reason (standin.rs), and driver.rs fails to build unless
+  each of the test host's waiting calls is `Send`. `parts` is now `with_parts(closure)`, under
+  the lock.
+- The check's race (4 threads copying the first process's context and dropping it) is now the
+  stand-in's round_trips `copies_are_made_and_let_go_of_on_several_threads` (4 threads, 200000
+  rounds each): it passes (5.0 s, ARM64, load 7). With `Held`'s drop made to drop without the
+  lock it aborted 2 times of 3 (SIGTRAP, SIGABRT; the third passed). Also new:
+  `a_copy_let_go_of_under_a_handle_is_dropped_later`.
+- The suite's `threads_of_another_process_are_not_taken` now says only what it checks: a handle
+  reaches only its own process, so whether another process's thread stayed on the kernel cannot be
+  seen through the interface; the stand-in's round_trips test still checks it.
+  `tasks_of_several_processes_are_taken_at_once` no longer asks for an order. Two comments that
+  said the suite's process had not run are fixed; `PROBED` is private.
+- outside.rs: the doc comments of `local_end_error` and `refusal` are each above their own
+  function again. The bind departure is now under Departures (KC) and asked of the orchestrator;
+  the release of a bound socket given back is therefore not reached.
+- The status's restart-code line and the LTP comparison's basis are corrected in the first run's
+  section below; the executor interface (bb91b32c) is recorded as merged and implemented;
+  `UnknownErrno` not taking 41 and 58 is For the owner; the owner's 2026-11-22 answers on
+  `FallbackObserver` and `ProcessTracer` are scheduled in "Where things stand". The FUSE notice
+  wait and `Kernel::run` stay as disclosed (next work; For the owner).
+- tests/outside.rs `TOLD_AFTER_RESET` carries a `standalone 300` mark (a pause, not a task id),
+  which settles that line of the For-the-orchestrator item of KA's sixteenth run.
+- Measured on the ARM64 machine (96 cores) at 7e2b6df8: clippy on the kernel, its suite, the
+  stand-in, the runtime's single kernel and the test policy reports nothing in this track's
+  files (the interface's two and tcp-sockets' one are not this track's); the whole workspace's
+  `cargo check --all-targets` gives no error or warning line (load 5.6); kernel unit tests 18,
+  kernel suite 16, round_trips 6, all pass (load 5 to 6). Interface files: against origin/main
+  only crates/abi/interface.rs (this track's) and crates/instruction-input-domain/interface.rs
+  (the owner's, not yet merged into agents) differ; no commit of this run touches one.
+- The whole suite of this track's crates at 0f3cd949 (ARM64, 23:51 to 01:21 UTC, load 3 to 18,
+  8 test threads; log scratch kernel/kc2/log): 385 passed, 35 failed, exactly the known ARM list
+  (k6c14/fail14.txt; kernel/kc2/fails2.txt). The LTP comparison was not run again: this run
+  changed only the kernel interface's wrapper (executing.rs), which the LTP runner does not use,
+  and a comment in outside.rs, so its verdicts stand as in the first run.
+
 ## KC, first run: the kernel builds against the owner's interfaces of 2026-11-22
 
 - Built and pushed at once (0ce16ef9, lock file 503fbebb): wcontainers-kernel-linux, the kernel
@@ -25,6 +75,7 @@ crates/runtime/implementation/single-kernel.
   thread at a time. Nothing checks that condition: the state is `Rc` and `RefCell` throughout, the
   stand-in's executor (Unicorn) is not `Send`, and the system's stored waiting calls need not be
   `Send` (For the owner). Making the state shareable is the owner's "start on that", not done here.
+  (The independent check found this unsound; the second run replaced it, see there.)
 - `Kernel::run` is not built: it panics as "not built". The executor interface has no call that
   runs a thread, so this kernel is still driven through its own `next`, `exit` and `event` on the
   executor it holds (For the owner). `type Fallback` is the abi's `Warning<'static>` (what the
@@ -38,7 +89,9 @@ crates/runtime/implementation/single-kernel.
   stand-in's round_trips.rs adds `a_handle_takes_no_thread_of_another_process`: the child's thread,
   asked for through the parent's handle, is still taken by the kernel afterwards.
 - `SystemCallError`: a backend's unnamed error (134 to 511) is now `Err(Unknown(..))`; a known one
-  `Err(WellKnown(..))`; restart codes stay `Ok` of the raw value, as before.
+  `Err(WellKnown(..))`, the restart codes (ERESTARTSYS, ERESTARTNOINTR, ERESTART_RESTARTBLOCK)
+  included, as before KC. ERESTARTNOHAND (515), which the interface's `Errno` does not name, is
+  `Ok` of the raw value. (Corrected in the second run; the first run said restart codes stay `Ok`.)
 - `FuseServer::receive_notice`: the test host and the runtime answer `NotSupported` (they still
   hand notices as the abi's `Event::BackendNotice`); the policy refuses it, counted, as every
   other outside request; the kernel's own test server never sends one. The kernel does not yet
@@ -60,13 +113,17 @@ crates/runtime/implementation/single-kernel.
   backend file twice (8 threads); its failing output was cut by the job's filter, so which side
   differed is not known.
 - The whole LTP comparison at 0ce16ef9 (same job, 21:17 to 22:46 UTC, load 10 to 18, LTP_JOBS 8,
-  LTP_LIMIT 900; verdicts in ltp/ours-20260930-0ce16ef9.tsv): 4167 of 4226 match the reference,
-  59 differ (at 91d85e31, the K6c bar: 4154 of 4211). Against 91d85e31's own verdicts 5 differ:
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-0ce16ef9.tsv): by distinct test name 4152 of 4211
+  match the reference and 59 differ, against 4154 of 4211 at 91d85e31, the K6c bar (by line, with
+  15 scsi_debug names listed twice: 4167 of 4226 against 4169). So two more differ from the
+  reference than at the bar, getrusage04 and ADSP072, both explained here. Against 91d85e31's own
+  verdicts 5 differ:
   fcntl12, fcntl12_64 and fork09 now time out where they failed or broke (all three are the test
   harness's open-file limit, under "Waiting for the owner", and differ from the reference both
   times); getrusage04 failed, then passed alone 3 times of 3 (its timing, as noted at 18eda16f);
   ADSP072 timed out at 900 s (852 s at 91d85e31) and passed alone with a 3600 s limit in 886 s
-  (load 7 to 9). So the verdicts are no worse than before the merges.
+  (load 7 to 9). So the verdicts are no worse than before the merges once those two timings are
+  counted as passing, as their reruns showed.
 - The ARM64 machine's disk was full (5 GB free at 21:48 UTC) while the LTP comparison ran: this
   track removed its old measurement build (kernel-kd, 18 GB), its incremental caches and build
   outputs older than five hours from /work/target/kernel (140 GB); 135 GB were free after.
@@ -103,12 +160,20 @@ crates/runtime/implementation/single-kernel.
 
 ## For the owner
 
-- KC: `Kernel: Sync` cannot be met soundly by this kernel yet, and the interfaces leave part of it
-  unexpressed. The system's `async fn`s carry no `Send` bound, so a kernel that stores a system's
-  waiting call and lets another host thread poll it cannot know it may. Example: a browser system
-  whose `send_request` future holds a JavaScript value polled from a worker other than the one
-  that made it. This kernel asserts `Sync` with an `unsafe impl` on the condition that it stays on
-  one host thread at a time (executing.rs).
+- KC, second run: `UnknownErrno` takes 134 to 511, but a FUSE server may answer any error from 1
+  to 511, and Linux leaves 41 and 58 unnamed below 134. Such an answer cannot be `WellKnown` (no
+  `Errno` names it) nor `Unknown`, so the embedder's response hook sees it as `Ok` of the raw
+  value. Example: a backend answering -41 to a read: the hook gets `Ok(18446744073709551575)`; the
+  guest still gets -41.
+- KC, second run: the system's `async fn`s carry no `Send` bound, so a kernel that is `Sync` (and
+  so keeps and polls a system's waiting calls on whichever host thread calls it) cannot ask for
+  it in types. This kernel asks it of whoever starts it: `KernelWithExecutor::start` and
+  `KernelConfig::new` are `unsafe`, with that condition, and the stand-in checks its own waits at
+  build time. A `Send` bound on those futures in the interface would make both safe.
+
+- KC (first run; the second run's entry above replaces it): the system's `async fn`s carry no
+  `Send` bound. Example: a browser system whose `send_request` future holds a JavaScript value
+  polled from a worker other than the one that made it.
 - KC: `Kernel::run(&self, executor)` cannot be built: the executor interface has no call that
   runs a thread, and `suspend_tasks`, `suspend_process` and `copy_process_context` are given no
   executor, though each reads the threads' registers from it. Example: `suspend_tasks(&[task])`
@@ -297,6 +362,12 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KC: should a guest's TCP `bind` bind at the system (networking-fixes/tcp/for-implementers.md),
+  though the container has its own network namespace and its connects leave through the exit
+  node's NAT? Example: a client that binds port 5000 and connects to a server outside would then
+  hold port 5000 of the exit node, which on Docker it does not. Until a ruling, the kernel binds
+  inside the container and asks the system only at listen (Departures, KC).
+
 - KA, sixteenth run: three test literals in this track's embedders became `restated` findings when
   other tracks named the same value (docs/literals.md rule 8), and none is the named fact:
   hardware-virtualization-inside container.rs `"/bin"` (the stand-in's `IMAGE_BINARIES`, which that
@@ -443,6 +514,11 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KC, second run: every finding of KC's independent check is fixed or recorded (see "KC, second
+run"); `Kernel: Sync` now holds because everything sharing the kernel's records is touched under
+its lock, with the system's waits the stated condition of an `unsafe` start. KC goes back to its
+independent check.
+
 KC, first run: the kernel, its suite, the stand-in, the runtime's single kernel and the test
 policy build against the owner's interfaces of 2026-11-22, and the whole workspace's `cargo check
 --all-targets` passes on the ARM64 machine. The kernel suite passes (16, two new checks of
@@ -450,9 +526,15 @@ threads across processes), the whole suite fails only the ARM list (and one back
 then passed five times), and the whole LTP comparison is no worse than at K6c's bar. No interface
 file was edited. Not built, For the owner: `Kernel::run` (no executor call runs a thread) and a
 state truly shareable between host threads (`Sync` is asserted). KC goes to its independent check.
-Next, in order: a wait on `FuseServer::receive_notice` in the kernel instead of the abi's
-`Event::BackendNotice`; main's executor interface (bb91b32c: `Executor::Architecture` and
-`execute_single_instruction`) when it is merged into agents. See "KC, first run".
+Next, in order (after KC's second check): a wait on `FuseServer::receive_notice` in the kernel
+instead of the abi's `Event::BackendNotice`, with the held answers of the test harness kept to the
+notice rule; the kernel's fallbacks as a real enum (`Kernel::Fallback`, one variant per slow path
+it counts and warns of today) reported through `FallbackObserver`, and the kernel's hooks as the
+interface's `ProcessTracer`, both answered by the owner on 2026-11-22 (interface-changes.md) and
+ruled out of KA only; the kernel's state made shareable between host threads (the owner's "start
+on that"; the second run put everything handed out under the kernel's lock). The executor
+interface of bb91b32c is merged and implemented (dfbae092, 9465a86a, a6cf3a3b, 82f86e61). See "KC,
+second run".
 
 KA, sixteenth run: every finding of KA's second independent check is fixed or answered: an
 outside connection shut for reading still queues and reads what its peer sends (a test that failed
@@ -4772,13 +4854,16 @@ Everything a reviewer should know about what is not compared, in one place.
   runs it on the stand-in), with the stand-in's `--test round_trips` (4). The whole suite and the
   whole LTP comparison are one command: scratch kernel/kc/whole.sh (log beside it); the LTP
   verdicts compare against ltp/reference-20260930.tsv and against ours-20260930-91d85e31.tsv, the
-  last whole run at K6c's bar. Interface files: `git diff main --` of every interface.rs and the
-  kernel's data files shows only abi, executor, instruction-set and processor-architecture, which
-  main changed after the last merge into agents (bb91b32c and two before it), none by this track.
-  Not built and recorded For the owner: `Kernel::run` (panics as not built), shareable state
-  behind the asserted `Sync`. Places to break for the check: executing.rs `suspend_threads` (pass
-  `None` to `take_tasks` through `Kernel::suspend_tasks` instead), system.rs `response_of` (map
-  every error to `WellKnown`), outside.rs `local_end_error`.
+  last whole run at K6c's bar. Interface files: compare with origin/main (local main follows
+  agents): `git diff origin/main --` of every interface.rs and the kernel's data files shows only
+  crates/abi/interface.rs (this track's) and crates/instruction-input-domain/interface.rs (the
+  owner's 78fc0da9, not yet merged into agents). Not built and recorded For the owner:
+  `Kernel::run` (panics as not built). Places to break for the check: executing.rs
+  `suspend_threads` (pass `None` to `take_tasks` through `Kernel::suspend_tasks` instead),
+  system.rs `response_of` (map every error to `WellKnown`), executing.rs `Held`'s drop (drop the
+  value without the lock: round_trips `copies_are_made_and_let_go_of_on_several_threads` aborts).
+  outside.rs `local_end_error`'s release of a socket given back is never reached (the kernel never
+  passes `TcpLocalEnd::Bound`; Departures, KC), so breaking it shows nothing.
 
 - KA (by the orchestrator's rulings of 2026-11-22): the hooks as `ProcessTracer` and warnings
   through `FallbackObserver` are the owner's interface questions and are not part of KA; the
@@ -6261,6 +6346,19 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- KC: a guest's TCP `bind` does not bind at the system, though networking-fixes/tcp/
+  for-implementers.md asks the guest kernel to (bind at `bind`, then hand `Bound(it)` to connect
+  or listen, with `disconnect` and the releases of round-2-tcp-bound-socket). This kernel keeps a
+  network namespace of its own for the container: a guest's bind takes a port in that namespace
+  (and fails with EADDRINUSE there, as Linux does), a connect leaves through the exit node with the
+  port the exit node chooses (`LocalPort::ChosenByExitNode`, as Docker's NAT does), and only a
+  listen asks the exit node for the guest's port (`LocalPort::Requested`), as a published port
+  does. Binding at the system at every bind would claim an exit-node port for each client that
+  binds before it connects, which no container on Docker does. So connect and listen pass
+  `TcpLocalEnd::Unbound`; `disconnect` and the release of a socket given back are not reached
+  (outside.rs `local_end_error` keeps the release for when they are). Asked of the orchestrator
+  under "For the orchestrator".
 
 - KA, second and fifteenth runs: a waiting call is not always dropped and asked again at a
   restore, as the brief says. A restore on the same system (the same `Arc`, as the stand-in's
