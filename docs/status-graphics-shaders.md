@@ -93,8 +93,9 @@ below): pixel shaders reading cull distances (`VariantFlags::CULL_DISTANCE_LINKE
 flag; the runner's `clip-cull-distance-1-6-ps` and `-1-8-ps`). Run 24 (run 111, the section
 below): the Direct3D 12 runner's value items measured against real Direct3D 12 on the RTX 3080
 and WARP: minimum-precision constants of DXIL programs read 16 bits a component (a carried
-dxil-spirv patch), `frexp`, A34 found.
-Not complete: the gap list below.
+dxil-spirv patch), `frexp`, A34 found. Run 112 (round 7, the section below): the carried SPIR-V
+reader's last panic of the fuzz checks made an error, and G6 reported complete for its independent
+check with the gap list of the next section.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -109,6 +110,117 @@ line it asked for in variant/texel.rs `vertex_format`, with variant/decoded.rs k
 out of the integer twins as BGRA is (targets and storage clears of it stay refused as before).
 Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
 96's section).
+
+## G6 reported complete for its independent check (round 7, run 112): the gap list
+
+G6 is reported complete in run 112 on the crate as it stands, as round 7 of 2026-11-23 asks, with
+every item still open below under its cause and its owner. The pass bar item by item, with its
+figures, is the section "G6: the pass bar item by item" further down; the gap numbers (A1 to A35)
+are its entries, which hold each item's measurements. Bar items 1 (corpus), 2 (Chrome), 5
+(built-in programs) and 6 (the cache) are met. Items 3 (variant fields and flags) and 4 (geometry,
+tessellation and stream output against real Direct3D) are met but for the items below. Run 112
+itself: the carried SPIR-V reader's panic on a sample through no sampler (A11's last part, naga's
+`front/spv/image.rs`) is now an error (its section below); nothing else changed.
+
+Absent on a back end by the plan (reported as the guest expects, nothing to build):
+- Tessellation on WebGL 2 (plan section 7). Vertex shaders writing storage on WebGL 2
+  (`VERTEX_STORAGE_WRITE`, feature level 10_0, plan 4.11). Multisampled `combine` into integer
+  twins (plan 4.12, "Multisampling of these formats is reported absent on such adapters"; A4).
+- In shaders: 64-bit floats and integers (`Float64` 42 and `Int64` 35 records,
+  `Type64BitInteger`), 16-bit integers (`Int16Storage`, `Int16StageValue`, `Int16Bitcast`),
+  rasterizer ordered views (12 records), stencil reference (7), layer and viewport index written
+  by a vertex shader (5 and 2), `SV_InnerCoverage`, multisampled storage textures, subgroups
+  outside pixel and compute programs and subgroup barriers, sparse feedback (tiled resources:
+  `SparseFeedback` 3, the reader's sparse fetches 3), a SPIR-V source (A27's first group).
+- Float contraction a program forbids (`-Gis`, `precise`): WGSL cannot say it (A21); what remains
+  is 1 to 8 units in the last place, inside the allowance the tests state.
+
+The owner's ruling (asked under "New for the owner"; today's behaviour kept):
+- A35: dxbc-spirv's deliberate fold of fxc's `dp4` pick of a component, where both real devices
+  give a NaN.
+- Unsafe code, 94 lines with the word: the converters' C++ boundary (src/dxbc.rs 7, src/dxil.rs
+  8), the drawn tests' calls into real Direct3D 11 and 12 (74), the fuzz test's bounded allocator
+  (5). src has added none since run 104.
+- A6: the Direct3D 12 rig's raster-fill and tessellation scenes differ only in cells drawn as
+  lines (wgpu's Vulkan path's line rule, plan 15.1's listed loss; the topology scene, which runs
+  none of this track's stages, fails the same way). Takes the owner's ruling or a line allowance in
+  the rig's comparison (the rig track's); nothing of the converter.
+- A18: the filter test's second comparison (against WebGPU's own sampler) has no level-of-detail
+  allowance where its main comparison has one (4 of 4,096 texels at one seed, texels at a level
+  decision). Takes the ruling that the main comparison's allowance applies to it too.
+
+An interface decision (the interface track's, or the owner's):
+- A4 `PROVOKING_LAST` (`ProvokingRewrite`): no rewrite of the programs alone gives a flat input
+  the last vertex's value; both fronts route it themselves, and `Stages::provoking` serves the
+  stage routes. Takes dropping the flag from the interface.
+- A4 `storage_packed` (`StoragePacked`): separate guest buffers become one GPU buffer only if the
+  front keeps them in one arena, and the binding of the packed buffer is not named.
+- Comparison filtering with a border colour: needs the comparison in `SamplerState`.
+- A cube array view on WebGL 2: no interface feature names it (the corpus test names it itself,
+  `CUBE_ARRAY_VIEW`, 5 shaders).
+
+Another track (each asked under "Asked of other tracks"; at run 112 the WebGL 2 track's status
+file names none of its items below, so its agreement is not yet recorded there):
+- The WebGL 2 track: A31 (`gathers_by_samples` floors the footprint at full precision where
+  Direct3D rounds to 1/256 of a texel: 6 and 7 of 4,096 texels); own `ps_cases` (a `continue` in a
+  `switch`, which ANGLE's HLSL refuses); vertex shaders writing cull distances, written as one
+  array assignment that Chrome refuses for a type error; 13 Godot DXIL pixel shaders ending at its
+  "sampled through two samplers (not built)" (they also need `FRAGMENT_STORAGE_WRITE`); arrays of
+  arrays in GLSL ES 3.00 (the stage helper's `GeometryReplayArrayOfArrays`, dxc's
+  `gs_rows_lines`); its public list of declarable features and `SAMPLE_QUALIFIER_EXTENSION`, which
+  the corpus test copies (the one hole of item 2).
+- The Direct3D 11 front: A19 (halves toward zero are its measurement; no drawn test here writes an
+  exact half). Its status still lists as waiting on this track items delivered here: `combine` for
+  single-sample targets (run 80), the replay's later streams (run 83), aliased lines into
+  multisampled targets (run 103), the YUY2 view size (answered by WARP's, run 102).
+- The NIR track: its status still lists `sampled_pairs`, `clip_unpositioned` and the draw bases in
+  `rewrite`, and `capabilities` adding immediates, delivered here in run 88 and G6a run 6. A25
+  (`ResourceArrayPair`, independent picks from a texture array and a sampler array) waits on a
+  program of its route B refused so (none named).
+- dxil-spirv and dxbc-spirv upstream, or a patch this track carries: A11, signed but malformed
+  DXIL ending the process inside dxil-spirv's bitcode reader (14 to 41 cases in each check's
+  thousands), and DXBC register indices past `dcl_temps` sizing dxbc-spirv's lists unchecked.
+
+A measurement on another device (no device at hand settles it):
+- A4 `swizzled` on depth: plain comparisons through green, blue or alpha and some comparison
+  gathers are refused by name, as the RTX 3080, WARP and vkd3d's tests disagree (the Direct3D 12
+  runner's gather-cmp 3 to 7). By the orchestrator's rule of 2026-11-22 either real answer would
+  pass, so adopting the RTX 3080's is this track's when a front needs it.
+- A22: Direct3D 12 on the RTX 3080 writes zeros for the position in the output of several
+  streams; ours equals Direct3D 11 (WARP's Direct3D 12 not drawn). A15: the RTX 3080 counts some
+  primitives of a stream with no buffer as written, ours none (WARP not drawn).
+
+Differences of the kind the orchestrator's rule of 2026-11-22 covers (edge texels and last places;
+WARP's figure at the same seeds not measured):
+- A10: clip distances through the stage helper, a few edge texels of clipped triangles at some
+  seeds (1 to 20 of 300 to 1,800 drawn) and a few texels of culled lines. A12: clamped depth
+  behind a geometry stage, 10 to 59 units in the last place at some seeds (allowance 4). A21: one
+  colour texel apart by 1 (dxc's build of `gs_instances`, one seed).
+
+This track's own open parts (no front, corpus file or real program waits on one; each is refused
+by name or not drawn, and its entry below says what it takes):
+- A4: a logic operation into a multisampled target (`LogicOpInShader`); root constants as
+  immediates (`RootSignatureLayout`; the Direct3D 12 front binds them as a uniform buffer).
+- A5 on WebGL 2: strips with adjacency into the replay, records wider than the capture targets,
+  layered geometry (not drawn there), stream output from a vertex shader writing cull distances;
+  on both line routes the near-plane cut under `VIEWPORT_DEPTH_FLIP` (not tested).
+- A7: a pixel shader reading `SV_PrimitiveID` behind a geometry shader that does not write it (not
+  measured on real Direct3D), stream output from a domain shader writing cull distances, a geometry
+  shader writing them on the replay route. A9: storage-writing vertex shaders with adjacency. A13:
+  a patch list into the replay on WebGL 2.
+- A24 and A27: refusals by name of forms no file of any corpus meets (listed there by kind).
+- A26: a negated unordered comparison as a branch's condition on WebGL 2 (not drawn). A30: the
+  check's `sqrt` form of `saturate` of a NaN (not yet in `ps_compare`). A32: the cause of the DXIL
+  `f32tof16` overflow difference between the back ends. A34: `min16i as def32` sign extension (no
+  one rule found on both devices yet).
+- A33: the DXIL passes' hand-walked SPIR-V moved onto rspirv (no behaviour change).
+- A29: three drawn binaries need `--test-threads 1` on the desktop (ANGLE asserts with contexts in
+  several threads); the tests' WebGL 2 use is not serialised yet.
+- "Also open" (end of the gap list): `rewrite` refusing arrays of buffers; `SampleClamp` of a
+  comparison, a depth texture or a cube; `globallycoherent` views; `AtomicSignedness` over a typed
+  view; early tests on 24-bit depth (not measured); the NIR track's finding of naga's reader on a
+  decorated row-major array of matrices (not needed by its route B); `GeometryReplay` has no
+  provoking-vertex choice.
 
 ## For the NIR track: geometry, hull and domain programs from a naga module (`wcontainers_shaders::staged`)
 
@@ -231,6 +343,32 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   takes through `convert`, both routes, and the refusals by name. Drawn: `typed_buffers_match_direct3d`
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
+
+## G6 run 25 (run 112, round 7 run 1): the gap list, and the reader's last fuzz panic
+
+Logs and scripts in scratch `graphics-shaders/g6-r112` (the clone `tip` moved there from g6-r111;
+`arm1.log` to `arm5.log`, `gpu-suite.log`). Nothing built on the Mac (rustfmt of single files
+only).
+- Chosen as the one small item of this track's own (A11's last part): the carried SPIR-V reader
+  unwrapped its sampling table at a sample's sampler operand (`front/spv/image.rs`, the panic G6a's
+  second check met at seed 2718, case 3700); a sampler operand that is no tracked sampler is now
+  `Error::InvalidImageExpression` ("naga as carried").
+- Test: `a_sample_through_no_sampler_is_an_error_of_the_reader` (tests/fuzz.rs), a hand-assembled
+  fragment program sampling a texture through a storage texture in the sampler's place. With the
+  change undone in the copy it fails at the reader's panic (arm2.log, MUTANT).
+- The gap list written (the section "G6 reported complete" above) and G6 reported complete for its
+  independent check.
+- Unsafe: 94 lines with the word (src 15, tests 79), unchanged by this run; the root list and this
+  crate's manifest said 91 (run 104's count, before run 111's three Direct3D 12 calls) and now say
+  94 (commit 3af4e021 for the root list).
+- Runs, ARM64 machine (load 5 to 16): rustfmt and clippy with warnings denied clean; every CPU test
+  binary with every corpus but the mutation run: 13 binaries, 149 passed, 0 failed (arm2.log); the
+  literal check names no line of this run's code (arm5.log; its one line of this crate is run 111's
+  `tests/variants.rs:1955`, another track's uncommitted constant). The first form of the test wrote
+  the entry point's name as a literal, which the check named; it now takes `ENTRY_POINT`.
+- The whole suite on the desktop at 4280d337 (the clone at the committed tip; RTX 3080, one GPU job
+  of about 13 minutes through the queue, one test thread, 3 cargo jobs; gpu-suite.log): Windows
+  clippy clean; 27 test binaries and the doc tests, 218 passed, 0 failed, 5 ignored as before.
 
 ## G6 run 24 (run 111): minimum-precision constants and `frexp` against real Direct3D 12 (the runner's value items)
 
@@ -1932,6 +2070,13 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- Run 112: G6 reported complete for its independent check with the gap list of its own section
+  ("G6 reported complete"). Still asked of the owner: A35 (keep dxbc-spirv's `dp4` fold, or follow
+  the devices), the unsafe code at the converters' C++ boundary (run 104's entry), A6's line cells
+  and A18's allowance. The word `unsafe` appears 94 times in this crate (src 15, tests 79); the
+  root Cargo.toml's list said 91 from run 104, before run 111's three calls into real Direct3D 12
+  in `tests/precision_draw.rs`, and now says 94. No interface change.
+
 - Run 111 (gap A35): dxbc-spirv folds fxc's `dp4` pick of a vector component at a run-time index
   into the component alone, on purpose (its comment names a game, Jump Space, that needs it to
   avoid 0 times infinity); the RTX 3080 and WARP under real Direct3D 12 give a NaN there when
@@ -2615,8 +2760,10 @@ The gap list (every item of the pass bar not met):
   (third_party/naga/src/front/spv/image.rs:775, an `Option::unwrap` of `None`). Natively
   `contained` turns it into `Malformed` ("the conversion panicked"), so the test passes that case;
   in WebAssembly, where a panic aborts, it would end the instance, as A16's validator panics do.
-  Cause: the reader looks up its own tables by ids it does not check there. Waits: nobody. Takes:
-  the reader's lookups checked (a carried patch, then upstream).
+  Cause: the reader looked up its sampling table by a sampler operand it did not check. Fixed in
+  run 112 (a carried naga change, "naga as carried"; test
+  `a_sample_through_no_sampler_is_an_error_of_the_reader`, tests/fuzz.rs, which fails with the
+  change undone).
 - A12. `DEPTH_CLAMP` behind a geometry stage (`depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`)
   is within four units in the last place of Direct3D 11's depth at the default seeds 1 to 4 (16
   comparisons), but not at all seeds. The test prints, for each case, the texels Direct3D clamped
@@ -3123,6 +3270,9 @@ G6a run 5's tip):
 
 ## Next
 
+0. G6 is reported complete for its independent check (run 112, round 7). After the check, the gap
+   list of "G6 reported complete" in the order the fronts need it; items waiting on another track
+   or a ruling are not worked until those come. The order below holds for this track's own parts.
 1. G6's gap list in the order the fronts need it (A17 closed in run 103: the Direct3D 11 front can
    now use `LINE_DIAMOND` and lift its known failure; A28's second part closed as measured in run
    102; a cull distance read by a pixel shader done in run 110, `CULL_DISTANCE_LINKED`, the
@@ -4789,8 +4939,16 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   a global expression (access, splat, swizzle, unary, binary, select, relational, math, as), the
   types of global expressions after the last type, and a global expression of any other kind
   refused as `ConstExpressionError::NonConstOrOverride`. For upstream as it stands.
+- SPIR-V reader (run 112, `front/spv/image.rs`), a sample whose sampler operand is a global naga
+  does not track for sampling (no sampler or sampled image) is refused as
+  `Error::InvalidImageExpression` where it unwrapped `None` and panicked. For upstream as it stands.
 
 ## How to run
+
+- Run 112's scripts in scratch `graphics-shaders/g6-r112`: `cpu-cmd.txt` (rustfmt and clippy,
+  the new reader test, every CPU test binary with every corpus but the mutation run, then the same
+  reader test with the change undone in the copy) through `arm-run <worktree> --name
+  graphics-shaders --jobs 12 -- "$(cat cpu-cmd.txt)"`.
 
 - Run 111's scripts in scratch `graphics-shaders/g6-r111` are run 110's with its folder, plus
   `arm-a-cmd.txt` (clippy and the corpus test with every corpus) and `pair.sh` (the drawn
