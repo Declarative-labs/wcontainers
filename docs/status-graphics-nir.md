@@ -1054,6 +1054,12 @@ G9 run 10 and `git show 69b40d21:docs/status-graphics-nir.md` G9 run 11.
 
 ## Departures from the plan
 
+- G9 run 17: a tessellation program's read of a control point at a constant index past the
+  draw's input patch reads zero (route B, `missing_point_reads_zero`). OpenGL leaves the value
+  undefined; the stage helper holds only the patch's own points, so the read cannot reach a
+  real point, and without this the module is invalid. Fragment programs get storage buffers
+  (the plan's screen gave them compute programs only), as `ARB_shader_storage_buffer_object`
+  needs them and Mesa answers the tessellation stages' storage queries only with it.
 - G9 run 16: every conformance list runs with `--deqp-terminate-on-device-lost=disable`, not
   the mustpass configuration alone. With glcts's default (on), its desktop packages call
   `glGetGraphicsResetStatus` after every case although they load it only from `GL_KHR_robustness`
