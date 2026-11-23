@@ -526,8 +526,9 @@ and 120 compared with real Direct3D 12's at 8 of 255.
    clone only) for test file runs.
 2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
-   capture), Godot's 3D platformer's one pixel (trace which draw writes it, on real, WARP and ours),
-   the other refusals of the gap list.
+   capture), Godot's 3D platformer's one pixel (trace which draw writes it, on real and ours; Godot
+   offers no WARP adapter choice the rig uses), the raster-fill and tessellation scenes' scattered
+   pixels (compare with WARP's pictures), the other refusals of the gap list.
 3. Feature level 11_1 (Departures names what it lacks) and the 11_1 format table in `required`.
 4. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
    run36/dx12-path.patch; it broke three things, each another track's).
