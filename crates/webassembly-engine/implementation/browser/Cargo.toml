@@ -29,7 +29,8 @@ path = "benchmark.rs"
 
 [dependencies]
 wcontainers-webassembly-engine = { path = "../.." }
-js-sys = "0.3.107"
+# Without its default features, which bring futures-util and `eval` we do not use.
+js-sys = { version = "0.3.107", default-features = false }
 wasm-bindgen = "=0.2.130"
 # Writes the small modules that move a call's values through our own memory.
 wasm-encoder = "0.263.0"
