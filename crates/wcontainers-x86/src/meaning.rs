@@ -1019,7 +1019,7 @@ fn syscall<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 }
 
 impl StringKind {
-    pub(crate) fn of(m: Mnemonic) -> Self {
+    pub fn of(m: Mnemonic) -> Self {
         use Mnemonic::*;
         match m {
             Movsb | Movsw | Movsd | Movsq => StringKind::Move,

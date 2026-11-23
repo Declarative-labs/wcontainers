@@ -2,11 +2,11 @@
 //! encoder (docs/x86-native-output.md sections 3 and 4), for the machine and a host process.
 
 use iced_x86::{
-    Code, ConditionCode, Encoder, Instruction as Iced, InstructionInfoFactory, MemoryOperand,
-    Mnemonic, OpKind, Register,
+    Code, ConditionCode, DecoderOptions, Encoder, Instruction as Iced, InstructionInfoFactory,
+    MemoryOperand, Mnemonic, OpKind, Register,
 };
 use wcontainers_guest_cpu::position::{AddressPlace, DirectExit, Fixup, Held, Holds, Resume};
-use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, Route};
+use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, Patch, Route};
 
 use crate::USER_END;
 use crate::area::{
@@ -697,33 +697,51 @@ pub fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Resume>) 
 
 /// Points direct exit `exit` of `code` at host offset `to`.
 pub fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {
+    let distance = to as i64 - i64::from(exit.start);
+    let Some(patch) = retarget(&code.bytes, exit, distance) else {
+        return false;
+    };
+    code.patch(
+        usize::try_from(patch.at).expect("a host offset fits usize"),
+        patch.written(),
+    );
+    true
+}
+
+/// The change that points direct exit `exit` of `code` at the host code `distance` bytes from the exit's first
+/// byte: its branch's new rel32, or where it has none a `jmp rel32` over its first instruction (a settling add
+/// is longer: the rest becomes `nop`s); none where a rel32 cannot reach.
+pub fn retarget(code: &[u8], exit: &DirectExit, distance: i64) -> Option<Patch> {
     let at = usize::try_from(exit.start).expect("a host offset fits usize");
-    match exit.retarget {
+    let mut bytes = [0; 8];
+    let (at, length) = match exit.retarget {
         None => {
-            // A settling add is longer than the jump written over it: the rest becomes `nop`s.
-            let mut decoder = iced_x86::Decoder::new(
-                crate::MODE_BITS,
-                &code.bytes[at..],
-                iced_x86::DecoderOptions::NONE,
-            );
-            let over = decoder.decode().len();
-            let mut bytes = jump(at, to);
+            let over = iced_x86::Decoder::new(crate::MODE_BITS, &code[at..], DecoderOptions::NONE)
+                .decode()
+                .len();
+            let rel = i32::try_from(distance - jump_length() as i64).ok()?;
+            let mut written = jump(0, 0);
+            written[jump_length() - REL32..].copy_from_slice(&rel.to_le_bytes());
             let nop = bytes_of(&Iced::with(Code::Nopd), 0);
-            while bytes.len() < over {
-                bytes.extend_from_slice(&nop);
+            while written.len() < over {
+                written.extend_from_slice(&nop);
             }
-            code.patch(at, &bytes);
+            bytes[..written.len()].copy_from_slice(&written);
+            (at, written.len())
         }
         Some(field) => {
-            let field = at + usize::try_from(field).expect("a byte offset");
-            let end = field + REL32;
-            let Ok(rel) = i32::try_from(to as i64 - end as i64) else {
-                return false;
-            };
-            code.patch(field, &rel.to_le_bytes());
+            let field = usize::try_from(field).expect("a byte offset");
+            let end = i64::try_from(field + REL32).expect("small");
+            let rel = i32::try_from(distance - end).ok()?;
+            bytes[..REL32].copy_from_slice(&rel.to_le_bytes());
+            (at + field, REL32)
         }
-    }
-    true
+    };
+    Some(Patch {
+        at: u32::try_from(at).expect("host code fits in u32 offsets"),
+        bytes,
+        length: u8::try_from(length).expect("a patch is short"),
+    })
 }
 
 /// Writes the count's add of `events` events.
