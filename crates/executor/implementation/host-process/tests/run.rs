@@ -59,6 +59,8 @@ struct Seen {
     warnings: Vec<String>,
     /// The turn each carry asks for.
     turn: Option<Turn>,
+    /// Leave at every system call, not only at exit.
+    leave_at_calls: bool,
 }
 
 impl Seen {
@@ -68,6 +70,7 @@ impl Seen {
             exits: Vec::new(),
             warnings: Vec::new(),
             turn: None,
+            leave_at_calls: false,
         }
     }
 }
@@ -80,7 +83,7 @@ impl Answer for Seen {
         cpu.registers(self.thread, &mut registers);
         self.exits[last].1 = registers;
         match exit {
-            Exit::Syscall(call) if call.number.0 == u64::from(EXIT) => {
+            Exit::Syscall(call) if call.number.0 == u64::from(EXIT) || self.leave_at_calls => {
                 Carry::Leave(Leaving::Finished)
             }
             Exit::Syscall(_) => Carry::On {
@@ -314,4 +317,117 @@ fn a_counted_turn_of_a_loop_without_exits_ends_by_a_stop_and_goes_on() {
         );
         last = registers.x[0];
     }
+}
+
+/// The general registers a thread stores, x0 to x30, and where its vector registers go after them.
+const GENERAL_REGISTERS: u8 = 31;
+const VECTORS: u8 = 32;
+const VECTOR_BYTES: u64 = 16;
+const VECTORS_AT: u64 = (GENERAL_REGISTERS as u64 * WORD).next_multiple_of(VECTOR_BYTES);
+
+/// Stores every general register but x2 and every vector register at x2, then exits.
+fn storing_program() -> Vec<u32> {
+    let mut words: Vec<u32> = (0..GENERAL_REGISTERS)
+        .map(|r| encode::load_store(form::STR, r, 2, u64::from(r) * WORD, WORD).expect("str"))
+        .collect();
+    words.extend((0..VECTORS).map(|v| {
+        encode::load_store(
+            form::STR_Q,
+            v,
+            2,
+            VECTORS_AT + u64::from(v) * VECTOR_BYTES,
+            VECTOR_BYTES,
+        )
+        .expect("str q")
+    }));
+    words.extend(syscall(EXIT));
+    words
+}
+
+/// Where the second thread's program and data start, after the first's.
+const SECOND_CODE: u64 = CODE + PAGE / 2;
+const SECOND_DATA: u64 = DATA + PAGE / 2;
+
+/// brief-native.md's register isolation on translated code: a thread that holds its own values in every register is
+/// stopped at a system call; a new thread of the same process then reads zeros in every register but those it was
+/// given; then the first goes on and finds exactly its own.
+#[test]
+fn a_new_thread_reads_zeros_and_a_thread_resumed_reads_its_own_registers() {
+    let mut cpu = executor();
+    // The first thread: getpid, then the storing program.
+    let mut first_words = syscall(GETPID).to_vec();
+    first_words.extend(storing_program());
+    let mut words = storing_program();
+    words.resize((PAGE / 2 / INSTRUCTION as u64) as usize, 0);
+    words.extend(first_words);
+    let (memory, second) = guest(&mut cpu, &words);
+    let first = cpu.thread_new(memory).expect("thread");
+    let mut own = RegisterBlock::ZERO;
+    for (n, x) in own.x.iter_mut().enumerate() {
+        *x = 0x1111_0000 + n as u64;
+    }
+    own.x[2] = SECOND_DATA;
+    own.x[SYSCALL_NUMBER] = 0;
+    for (n, v) in own.v.iter_mut().enumerate() {
+        *v = [0x2222_0000 + n as u64, 0x3333_0000 + n as u64];
+    }
+    own.tpidr_el0 = 0x4444;
+    own.pc = SECOND_CODE;
+    cpu.set_registers(first, &own);
+    let mut seen = Seen::new(first);
+    seen.leave_at_calls = true;
+    let Ok(()) = cpu.run(first, Resume::FromRegisters, TURN, &mut seen);
+    assert!(
+        matches!(seen.exits.last(), Some((Exit::Syscall(call), _, _)) if call.number.0 == u64::from(GETPID)),
+        "{:?}",
+        seen.exits
+    );
+    // The new thread, given only its pc and x2.
+    run_to_exit(&mut cpu, second);
+    for r in (0..GENERAL_REGISTERS).filter(|&r| r != 2) {
+        assert_eq!(
+            read_word(&mut cpu, memory, DATA + u64::from(r) * WORD),
+            0,
+            "x{r} of a new thread"
+        );
+    }
+    for v in 0..VECTORS {
+        for half in 0..2 {
+            let at = DATA + VECTORS_AT + u64::from(v) * VECTOR_BYTES + half * WORD;
+            assert_eq!(read_word(&mut cpu, memory, at), 0, "v{v} of a new thread");
+        }
+    }
+    // The first thread goes on from its system call with its own registers.
+    let mut seen = Seen::new(first);
+    let Ok(()) = cpu.run(first, Resume::Return(RETURNED), TURN, &mut seen);
+    assert!(
+        matches!(seen.exits.last(), Some((Exit::Syscall(call), _, _)) if call.number.0 == u64::from(EXIT)),
+        "{:?}",
+        seen.exits
+    );
+    for r in (0..GENERAL_REGISTERS).filter(|&r| r != 2 && usize::from(r) != SYSCALL_NUMBER) {
+        let expected = if r == 0 {
+            RETURNED
+        } else {
+            own.x[usize::from(r)]
+        };
+        assert_eq!(
+            read_word(&mut cpu, memory, SECOND_DATA + u64::from(r) * WORD),
+            expected,
+            "x{r}"
+        );
+    }
+    for v in 0..VECTORS {
+        for half in 0..2 {
+            let at = SECOND_DATA + VECTORS_AT + u64::from(v) * VECTOR_BYTES + half * WORD;
+            assert_eq!(
+                read_word(&mut cpu, memory, at),
+                own.v[usize::from(v)][half as usize],
+                "v{v}"
+            );
+        }
+    }
+    let mut after = RegisterBlock::ZERO;
+    cpu.registers(first, &mut after);
+    assert_eq!(after.tpidr_el0, own.tpidr_el0, "the thread pointer kept");
 }
