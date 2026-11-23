@@ -5422,6 +5422,7 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-encoder 0.263.0",
  "wcontainers-webassembly-engine",
