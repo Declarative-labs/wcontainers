@@ -1,5 +1,6 @@
 //! Reading, writing and moving around in open files, and what descriptors refer to.
 
+use crate::linux_extra::NANOSECONDS_PER_MILLISECOND;
 use alloc::vec;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
@@ -3377,7 +3378,7 @@ pub(super) fn start_wait<S: crate::System>(
             0
         } else {
             // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
-            const MAX_SLACK: u64 = 100_000_000;
+            const MAX_SLACK: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
             let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
             (duration / divisor).min(MAX_SLACK).max(thread.timer_slack)
         };

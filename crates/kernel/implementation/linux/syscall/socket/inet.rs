@@ -3,6 +3,11 @@
 //! two sockets joined as local streams are, and a UDP datagram goes straight to the socket bound
 //! to its destination.
 
+use crate::linux_extra::{
+    INITIAL_JIFFIES_BEFORE_ZERO, MICROSECONDS_PER_SECOND, MILLISECONDS_PER_SECOND,
+    NANOSECONDS_PER_JIFFY, NANOSECONDS_PER_MICROSECOND, NANOSECONDS_PER_MILLISECOND, TCP_RTO_MAX,
+    TCP_RTO_MIN, TCP_TIMEOUT_INIT,
+};
 use alloc::collections::VecDeque;
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
@@ -545,10 +550,9 @@ fn tcp_info<S: crate::System>(
     let state = tcp_state(&own);
     let family = own.family;
     let now = kernel.entry_now;
-    // `tcp_jiffies32` in milliseconds (HZ is 1000 on the reference, measured), which starts
-    // five minutes before zero (`INITIAL_JIFFIES`).
-    let jiffies = (now / 1_000_000).wrapping_sub(300_000) as u32;
-    let since = |at: u64| (now.saturating_sub(at) / 1_000_000) as u32;
+    // `tcp_jiffies32`, which starts before zero (`INITIAL_JIFFIES`).
+    let jiffies = (now / NANOSECONDS_PER_JIFFY).wrapping_sub(INITIAL_JIFFIES_BEFORE_ZERO) as u32;
+    let since = |at: u64| (now.saturating_sub(at) / NANOSECONDS_PER_JIFFY) as u32;
     let mut out = Vec::with_capacity(TCP_INFO_SIZE);
     let u32s = |out: &mut Vec<u8>, values: &[u32]| {
         for value in values {
@@ -577,7 +581,10 @@ fn tcp_info<S: crate::System>(
         // sent its SYN.
         let syn_sent = state == crate::linux_extra::TCP_SYN_SENT;
         out.extend_from_slice(&[state, 0, 0, 0, 0, 0, 0, 1]);
-        u32s(&mut out, &[1_000_000, 0]);
+        u32s(
+            &mut out,
+            &[(TCP_TIMEOUT_INIT / NANOSECONDS_PER_MICROSECOND) as u32, 0],
+        );
         if syn_sent {
             u32s(&mut out, &[TCP_MSS_SYN_SENT, 88]);
         } else {
@@ -687,7 +694,7 @@ fn tcp_info<S: crate::System>(
         ],
     );
     let delivery = if traffic.data_segs_out > 0 {
-        u64::from(mss) * 1_000_000 / u64::from(MODEL_RTT)
+        u64::from(mss) * MICROSECONDS_PER_SECOND / u64::from(MODEL_RTT)
     } else {
         0
     };
@@ -1767,7 +1774,7 @@ fn arrived<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, embry
         let now = kernel.entry_now;
         let sent = !embryo.borrow().queue.is_empty() || inet_ref(embryo).done;
         let next = if sent {
-            now + 200_000_000
+            now + TCP_RTO_MIN
         } else {
             now + deferred_request(&embryo.borrow(), now).map_or(0, |(left, _)| left)
         };
@@ -1834,7 +1841,7 @@ pub(super) fn deferred_request(socket: &Socket, now: u64) -> Option<(u64, u64)> 
     let (mut fires, mut at, mut timeout) = (0u64, NANOSECONDS_PER_SECOND, NANOSECONDS_PER_SECOND);
     while at <= elapsed {
         fires += 1;
-        timeout = (timeout * 2).min(120_000_000_000);
+        timeout = (timeout * 2).min(TCP_RTO_MAX);
         at += timeout;
     }
     Some((at - elapsed, fires))
@@ -4387,18 +4394,20 @@ pub(super) fn set_option<S: crate::System>(
                 }
                 // Retransmission's bounds: nothing is lost between the container's own sockets.
                 TCP_RTO_MAX_MS => {
-                    if !(1000..=120_000).contains(&value) {
+                    let most = TCP_RTO_MAX / NANOSECONDS_PER_MILLISECOND;
+                    if !(MILLISECONDS_PER_SECOND..=most).contains(&(value as u64)) {
                         return Some(Err(Errno::EINVAL));
                     }
                     store(socket, value)
                 }
-                // Whole jiffies (HZ 1000) of at least two and at most TCP_RTO_MIN.
+                // Whole jiffies of at least two and at most TCP_RTO_MIN (`usecs_to_jiffies`).
                 TCP_RTO_MIN_US => {
-                    let jiffies = (i64::from(value) + 999).div_euclid(1000);
+                    let per_jiffy = (NANOSECONDS_PER_JIFFY / NANOSECONDS_PER_MICROSECOND) as i64;
+                    let jiffies = (i64::from(value) + per_jiffy - 1).div_euclid(per_jiffy);
                     if !(2..=200).contains(&jiffies) {
                         return Some(Err(Errno::EINVAL));
                     }
-                    store(socket, (jiffies * 1000) as i32)
+                    store(socket, (jiffies * per_jiffy) as i32)
                 }
                 TCP_KEEPIDLE | TCP_KEEPINTVL => {
                     if !(1..=32767).contains(&value) {
@@ -4814,14 +4823,14 @@ pub(super) fn get_option<S: crate::System>(
             TCP_REPAIR_WINDOW if room != 20 => Some(Err(Errno::EINVAL)),
             TCP_REPAIR_WINDOW | TCP_AO_REPAIR => Some(Err(Errno::EPERM)),
             // `tcp_clock_ms`: the monotonic clock in milliseconds, with no offset here.
-            TCP_TIMESTAMP => int((kernel.entry_now / 1_000_000) as u32 as i32),
+            TCP_TIMESTAMP => int((kernel.entry_now / NANOSECONDS_PER_MILLISECOND) as u32 as i32),
             // Cubic keeps no information to give, and no SYN is saved, no upper layer protocol
             // set and no fast open key made: nothing.
             TCP_CC_INFO | TCP_SAVED_SYN | TCP_ULP | TCP_FASTOPEN_KEY => Some(Ok(Vec::new())),
             TCP_SAVE_SYN | TCP_TX_DELAY => kept(0),
             TCP_ZEROCOPY_RECEIVE if room < 16 => Some(Err(Errno::EINVAL)),
-            TCP_RTO_MAX_MS => kept(120_000),
-            TCP_RTO_MIN_US => kept(200_000),
+            TCP_RTO_MAX_MS => kept((TCP_RTO_MAX / NANOSECONDS_PER_MILLISECOND) as i32),
+            TCP_RTO_MIN_US => kept((TCP_RTO_MIN / NANOSECONDS_PER_MICROSECOND) as i32),
             _ => not_built(kernel, cx),
         },
         SOL_UDP if protocol == Protocol::Udp => {

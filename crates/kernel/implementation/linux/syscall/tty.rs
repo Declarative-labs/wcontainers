@@ -3,9 +3,11 @@
 //! line discipline's waits, job control checks, the requests, controlling terminals, and what a
 //! side's last close does.
 
+use crate::linux_extra::DECISECONDS_PER_SECOND;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use wcontainers_abi::Permissions;
 
@@ -366,7 +368,7 @@ fn read_into<S: crate::System>(
     }
     // Non-canonical reads wait for `VMIN` bytes, or with no minimum for `VTIME` tenths of a
     // second at most; with both, `VTIME` is the longest gap between bytes.
-    let tenths = u64::from(vtime) * 100_000_000;
+    let tenths = u64::from(vtime) * (NANOSECONDS_PER_SECOND / DECISECONDS_PER_SECOND);
     let minimum = if canonical {
         1
     } else {

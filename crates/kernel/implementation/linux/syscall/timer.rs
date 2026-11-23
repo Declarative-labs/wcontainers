@@ -5,6 +5,7 @@
 //! "wake me at this time" comes from; one on a CPU clock is looked at whenever a thread of its
 //! process comes back from running, and the running thread's turn ends when it is due.
 
+use crate::linux_extra::{MICROSECONDS_PER_SECOND, NANOSECONDS_PER_MICROSECOND};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::rc::{Rc, Weak};
 use core::cell::RefCell;
@@ -1069,7 +1070,7 @@ fn interval_value(kernel: &Kernel, pid: Pid, which: u32) -> (u64, u64) {
     // the CPU ones (`itimer_get_remtime`, `get_cpu_itimer`).
     let left = match expires.checked_sub(clock_now).filter(|left| *left > 0) {
         Some(left) => left,
-        None if which == ITIMER_REAL => 1000,
+        None if which == ITIMER_REAL => NANOSECONDS_PER_MICROSECOND,
         None => 4_000_000,
     };
     (left, timer.interval)
@@ -1084,7 +1085,7 @@ fn write_itimerval<S: crate::System>(
 ) -> Result<(), Errno> {
     let timeval = |nanoseconds: u64| __kernel_old_timeval {
         tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     };
     let out = __kernel_old_itimerval {
         it_interval: timeval(interval),
@@ -1119,12 +1120,12 @@ pub(super) fn setitimer<S: crate::System>(
     if new != 0 {
         let given: __kernel_old_itimerval = guest(kernel, cx, tid).read_value(new)?;
         let micro = |time: __kernel_old_timeval| {
-            if time.tv_sec < 0 || !(0..1_000_000).contains(&time.tv_usec) {
+            if time.tv_sec < 0 || !(0..MICROSECONDS_PER_SECOND as i64).contains(&time.tv_usec) {
                 return Err(Errno::EINVAL);
             }
             Ok((time.tv_sec as u64)
                 .saturating_mul(NANOSECONDS_PER_SECOND)
-                .saturating_add(time.tv_usec as u64 * 1000))
+                .saturating_add(time.tv_usec as u64 * NANOSECONDS_PER_MICROSECOND))
         };
         value = micro(given.it_value)?;
         interval = micro(given.it_interval)?;

@@ -4,6 +4,7 @@
 //! the ready items whose file is ready now, keeps level-triggered ones listed, and drops
 //! edge-triggered ones until their next event.
 
+use crate::linux_extra::NANOSECONDS_PER_MILLISECOND;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
@@ -515,7 +516,7 @@ pub(super) fn epoll_pwait<S: crate::System>(
         // A negative timeout waits for ever, zero not at all.
         let duration = match timeout as i32 {
             ..0 => None,
-            milliseconds => Some(milliseconds as u64 * 1_000_000),
+            milliseconds => Some(milliseconds as u64 * NANOSECONDS_PER_MILLISECOND),
         };
         if let Err(error) = super::io::start_wait(kernel, cx, tid, duration, mask, mask_size) {
             return Err(error).into();

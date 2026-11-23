@@ -443,7 +443,7 @@ const PROC_FIELDS_CORE: u64 = 6;
 fn timeval(nanoseconds: u64) -> [i64; 2] {
     [
         (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     ]
 }
 

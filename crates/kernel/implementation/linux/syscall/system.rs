@@ -1,5 +1,8 @@
 //! Calls about the machine: its name, its memory, randomness and its processors.
 
+use crate::linux_extra::{
+    NANOSECONDS_PER_JIFFY, NANOSECONDS_PER_MICROSECOND, NANOSECONDS_PER_MILLISECOND,
+};
 use alloc::vec;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
@@ -354,10 +357,10 @@ fn same_owner(kernel: &Kernel, tid: Tid, target: &Task) -> bool {
 /// The time slice Linux's fair scheduler gives a thread by default (`sysctl_sched_base_slice`): 0.7 ms
 /// scaled by the logarithm of the CPU count, which is one here.
 const BASE_SLICE: u64 = 700_000;
-/// The length of a scheduler tick (`TICK_NSEC`); the reference's kernel ticks 1000 times a second.
-const TICK: u64 = 1_000_000;
+/// The length of a scheduler tick (`TICK_NSEC`).
+const TICK: u64 = NANOSECONDS_PER_JIFFY;
 /// A round-robin thread's time slice (`RR_TIMESLICE`).
-const ROUND_ROBIN_SLICE: u64 = 100_000_000;
+const ROUND_ROBIN_SLICE: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
 
 /// What a call asks the scheduler for, as Linux's `sched_attr`; no policy keeps the current one.
 struct Request {
@@ -381,8 +384,8 @@ fn is_real_time(policy: u32) -> bool {
 /// Linux's `__checkparam_dl`: deadline parameters that make sense.
 fn deadline_valid(request: &Request) -> bool {
     /// `sysctl_sched_dl_period_min` and `_max`, in nanoseconds.
-    const PERIOD_MIN: u64 = 100_000;
-    const PERIOD_MAX: u64 = (1 << 22) * 1000;
+    const PERIOD_MIN: u64 = 100 * NANOSECONDS_PER_MICROSECOND;
+    const PERIOD_MAX: u64 = (1 << 22) * NANOSECONDS_PER_MICROSECOND;
     if request.flags & crate::linux_extra::SCHED_FLAG_SUGOV != 0 {
         return true;
     }
@@ -474,7 +477,10 @@ fn change_schedule(
         schedule.slice = if request.runtime == 0 {
             0
         } else {
-            request.runtime.clamp(100_000, 100_000_000)
+            request.runtime.clamp(
+                NANOSECONDS_PER_MILLISECOND / 10,
+                100 * NANOSECONDS_PER_MILLISECOND,
+            )
         };
     }
     if policy == SCHED_DEADLINE {

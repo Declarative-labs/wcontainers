@@ -12,6 +12,7 @@ mod resolver;
 
 pub(crate) use inet::Ports;
 
+use crate::linux_extra::{MICROSECONDS_PER_SECOND, NANOSECONDS_PER_MICROSECOND};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
@@ -3172,7 +3173,7 @@ pub(super) fn recvmsg<S: crate::System>(
         let part = if ns {
             i64::from(time.nanoseconds)
         } else {
-            i64::from(time.nanoseconds / 1000)
+            i64::from(time.nanoseconds / NANOSECONDS_PER_MICROSECOND as u32)
         };
         let mut data = time.seconds.to_le_bytes().to_vec();
         data.extend_from_slice(&part.to_le_bytes());
@@ -3606,7 +3607,7 @@ pub(super) fn setsockopt<S: crate::System>(
             }
             let seconds = i64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
             let micros = i64::from_le_bytes(bytes[8..16].try_into().expect("8 bytes"));
-            if !(0..1_000_000).contains(&micros) {
+            if !(0..MICROSECONDS_PER_SECOND as i64).contains(&micros) {
                 return Err(Errno::EDOM);
             }
             let nanoseconds = if seconds < 0 {
@@ -3614,7 +3615,7 @@ pub(super) fn setsockopt<S: crate::System>(
             } else {
                 (seconds as u64)
                     .saturating_mul(NANOSECONDS_PER_SECOND)
-                    .saturating_add(micros as u64 * 1000)
+                    .saturating_add(micros as u64 * NANOSECONDS_PER_MICROSECOND)
             };
             if matches!(name, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) {
                 own.receive_timeout = nanoseconds;
@@ -4040,7 +4041,8 @@ pub(super) fn getsockopt<S: crate::System>(
                     .to_le_bytes()
                     .to_vec();
                 bytes.extend_from_slice(
-                    &(nanoseconds % NANOSECONDS_PER_SECOND / 1000).to_le_bytes(),
+                    &(nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND)
+                        .to_le_bytes(),
                 );
                 bytes
             }

@@ -8,6 +8,7 @@ use crate::linux_extra::{
     NTP_PHASE_LIMIT, NTP_TIME_CONSTANT, NTP_TOLERANCE, STA_UNSYNC, TIME_ERROR, USER_TICK_USEC,
     kernel_timex,
 };
+use crate::linux_extra::{NANOSECONDS_PER_JIFFY, NANOSECONDS_PER_MICROSECOND};
 use crate::process::{Channel, Pid, Restart, Tid};
 use crate::{Context, Errno, Kernel};
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
@@ -40,7 +41,7 @@ pub(crate) fn process_times(kernel: &Kernel, pid: Pid) -> (u64, u64) {
 pub(super) fn timeval(nanoseconds: u64) -> __kernel_old_timeval {
     __kernel_old_timeval {
         tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     }
 }
 
@@ -139,9 +140,9 @@ pub(super) fn clock_getres<S: crate::System>(
     tid: Tid,
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
-    // The coarse clocks and the CPU clocks of profiling and user time tick with the scheduler (1000
-    // times a second in the reference, measured); the others are as fine as the host's.
-    let tick = 1_000_000;
+    // The coarse clocks and the CPU clocks of profiling and user time tick with the scheduler;
+    // the others are as fine as the host's.
+    let tick = NANOSECONDS_PER_JIFFY;
     let signed = id as i32;
     let resolution = if signed < 0 {
         if is_clock_device(signed) || cpu_clock_target(kernel, tid, signed, false).is_none() {
@@ -181,7 +182,7 @@ pub(super) fn gettimeofday<S: crate::System>(
         )?;
         guest.put(
             out + core::mem::offset_of!(__kernel_old_timeval, tv_usec) as u64,
-            &(now % NANOSECONDS_PER_SECOND / 1000).to_le_bytes(),
+            &(now % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND).to_le_bytes(),
         )?;
     }
     if zone != 0 {
@@ -554,7 +555,7 @@ fn adjust<S: crate::System>(
         precision: 1,
         tolerance: NTP_TOLERANCE,
         time_sec: (now / NANOSECONDS_PER_SECOND) as i64,
-        time_usec: (now % NANOSECONDS_PER_SECOND / 1000) as i64,
+        time_usec: (now % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
         tick: USER_TICK_USEC,
         ppsfreq: 0,
         jitter: 0,

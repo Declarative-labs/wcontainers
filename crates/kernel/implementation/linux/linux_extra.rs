@@ -904,5 +904,41 @@ pub(crate) const NTP_TOLERANCE: i64 = 32_768_000;
 pub(crate) const USER_HZ: u64 = 100;
 pub(crate) const NANOSECONDS_PER_TICK: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / USER_HZ;
 
+/// Nanoseconds per millisecond and per microsecond (`NSEC_PER_MSEC`, `NSEC_PER_USEC`), and
+/// microseconds and milliseconds per second (`USEC_PER_SEC`, `MSEC_PER_SEC`).
+pub(crate) const NANOSECONDS_PER_MILLISECOND: u64 =
+    core::time::Duration::from_millis(1).as_nanos() as u64;
+pub(crate) const NANOSECONDS_PER_MICROSECOND: u64 =
+    core::time::Duration::from_micros(1).as_nanos() as u64;
+pub(crate) const MICROSECONDS_PER_SECOND: u64 =
+    core::time::Duration::from_secs(1).as_micros() as u64;
+pub(crate) const MILLISECONDS_PER_SECOND: u64 =
+    core::time::Duration::from_secs(1).as_millis() as u64;
+
+/// The kernel's own ticks a second (`HZ`; 1000 on the reference, measured), which jiffies count,
+/// and the length of one (`TICK_NSEC`).
+pub(crate) const HZ: u64 = 1000;
+pub(crate) const NANOSECONDS_PER_JIFFY: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / HZ;
+
+/// How long before zero the jiffies counter starts (`INITIAL_JIFFIES`, five minutes).
+pub(crate) const INITIAL_JIFFIES_BEFORE_ZERO: u64 = 300 * HZ;
+
+/// TCP's first retransmission timeout and its bounds (`TCP_TIMEOUT_INIT`, `TCP_RTO_MIN`,
+/// `TCP_RTO_MAX`), in nanoseconds.
+pub(crate) const TCP_TIMEOUT_INIT: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND;
+pub(crate) const TCP_RTO_MIN: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / 5;
+pub(crate) const TCP_RTO_MAX: u64 = 120 * wcontainers_abi::NANOSECONDS_PER_SECOND;
+
+/// Bytes per KiB, the unit /proc's memory sizes count in.
+pub(crate) const KIB: u64 = 1 << 10;
+
+/// A thread's kernel stack (`THREAD_SIZE`) and the fewest and most threads `set_max_threads`
+/// allows.
+pub(crate) const THREAD_SIZE: u64 = 16 * KIB;
+pub(crate) const MIN_THREADS: u64 = 20;
+
+/// The tenths of a second a terminal's `VTIME` counts in.
+pub(crate) const DECISECONDS_PER_SECOND: u64 = 10;
+
 /// The most one read or write moves (`MAX_RW_COUNT`).
 pub const MAX_RW_COUNT: u64 = 0x7fff_f000;
