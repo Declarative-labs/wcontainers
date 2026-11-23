@@ -295,12 +295,24 @@ pub enum Base {
 }
 
 /// How a load or store forms the address of its first byte: the base, plus the offset, plus the index
-/// register's low `bits` bits extended (signed or not) and shifted left.
+/// register's low `bits` bits extended (signed or not) and shifted left, at the address's width, plus the
+/// segment's base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Operand {
     pub base: Base,
     pub offset: i64,
     pub index: Option<Index>,
+    /// The segment whose base the sum is added to, where it has one (x86's `fs:` and `gs:`).
+    pub segment: Option<Segment>,
+    /// The sum is taken modulo 2 to this power, before any segment base is added (x86's 0x67: 32).
+    pub address_bits: u8,
+}
+
+/// A segment register whose base an address is formed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Segment {
+    Fs,
+    Gs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

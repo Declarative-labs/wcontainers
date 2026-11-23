@@ -315,6 +315,8 @@ impl Native for Arm64 {
                 base,
                 offset,
                 index,
+                segment: None,
+                address_bits: u64::BITS as u8,
             });
         }
         match *i {
