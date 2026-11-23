@@ -22670,7 +22670,6 @@ restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	PRESENT_
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	USAGE_UNORDERED_ACCESS	0x400
 restated	crates/wcontainers-direct3d-12/src/device.rs	int	tests::storage_clears_of_textures_take_the_stored_bits_as_values	0x200
 restated	crates/wcontainers-direct3d-12/src/device.rs	int	tests::storage_clears_pack_each_format	0x0000_ffff
-restated	crates/wcontainers-direct3d-12/src/features.rs	int	FEATURE_LEVEL_11_0	0xb000
 restated	crates/wcontainers-direct3d-12/src/features.rs	int	LEVEL_11_0_TEXTURE_3D	2048
 restated	crates/wcontainers-direct3d-12/src/features.rs	int	LEVEL_11_0_TEXTURE_LAYERS	2048
 restated	crates/wcontainers-direct3d-12/src/resource.rs	int	HEAP_FLAG_SHADER_ATOMICS	0x400
@@ -22683,7 +22682,6 @@ restated	crates/wcontainers-direct3d-12/tests/device.rs	int	the_triangle_scene_r
 restated	crates/wcontainers-direct3d-12/tests/device.rs	int	the_triangle_scene_replays	256
 restated	crates/wcontainers-direct3d-12/tests/front.rs	int	no_device_without_compute_11_0_sizes_or_d32_s8_targets	256
 restated	crates/wcontainers-direct3d-12/tests/front.rs	int	root_signatures_binding_a_register_twice_for_a_stage_are_refused	0x1000
-restated	crates/wcontainers-direct3d-12/tests/front.rs	int	webgpu_reports_11_0_and_tier_1	0xb000
 restated	crates/wcontainers-direct3d-12/tests/support/triangle.rs	int	record	256
 restated	crates/wcontainers-directx-graphics-infrastructure/tests/support/record.rs	int	webgpu_like_caps	1024
 restated	crates/wcontainers-directx-graphics-infrastructure/tests/support/record.rs	int	webgpu_like_caps	1024
