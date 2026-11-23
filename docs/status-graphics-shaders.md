@@ -202,8 +202,10 @@ of 581 GB, other tracks' build folders); this run's CPU checks ran on the rented
   denied clean (gpu4.log). On the RTX 3080: all six `stage_draw` tests pass (gpu4.log; the
   antialiased, primitive, storage and geometry routes share the changed `drawn` and line
   program), and `geometry`'s two line route tests (gpu5.log). Not run: the corpus and Chrome (no
-  converted shader's WGSL changes: the new code runs only under the new flag), the WebAssembly
-  build (no C++ changed), the whole GPU suite.
+  converted shader's WGSL changes: the new code runs only under the new flag) and the WebAssembly
+  build (no C++ changed). The whole suite on the desktop at the committed tree (gpu6.log, one GPU
+  job, one test thread, 17 minutes): 26 binaries, 205 passed, 0 failed, 6 ignored (the known
+  failures, as before).
 
 ## G6 run 15 (run 102): YUY2 view sizes measured (A28), `A8Unorm` clears, clip distances read by pixel shaders
 
