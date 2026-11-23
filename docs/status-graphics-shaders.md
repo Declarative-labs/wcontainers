@@ -216,6 +216,10 @@ straight from the shared worktree (`x86-run <worktree> --name g6shaders -- "$(ca
   apart; the module form's stores of u0 were within Direct3D's conversion tolerance of real's in
   0 to 6 components a seed, as the converted builds' are (the test's rule). Windows clippy with
   warnings denied clean. `tests/typed.rs` passes there too.
+- The whole suite on the desktop at the committed tree c6ec9b38 (gpu2.log, one GPU job, one test
+  thread, 12 minutes): 27 binaries, 207 passed, 0 failed, 6 ignored (the known failures, as
+  before). The CPU checks again at that tree on the x86-64 machine (x86-4.log): fmt, clippy and
+  every CPU binary clean, the literal check without a line of this crate.
 - Checks (x86-64 machine, load 0.3 to 1.2): `cargo fmt --check` clean, clippy with warnings denied
   clean, every CPU test binary passes (`typed` 2 new), the literal check prints no line of this
   crate (its one finding, a scalar width written as 4, was taken from naga's scalars). WebAssembly
