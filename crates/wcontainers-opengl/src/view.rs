@@ -192,6 +192,9 @@ struct Twin<B: Backend> {
 pub struct Images<B: Backend> {
     pub views: Vec<B::TextureView>,
     twins: Vec<Twin<B>>,
+    /// Samplers bound beside texel buffers, which programs load and never sample: Gallium binds
+    /// none there, the converted program declares one.
+    pub samplers: Vec<B::Sampler>,
 }
 
 impl<B: Backend> Default for Images<B> {
@@ -199,6 +202,7 @@ impl<B: Backend> Default for Images<B> {
         Images {
             views: Vec::new(),
             twins: Vec::new(),
+            samplers: Vec::new(),
         }
     }
 }
@@ -208,6 +212,9 @@ impl<B: Backend> Images<B> {
     pub fn finish(self, backend: &mut B) {
         for view in self.views {
             backend.destroy(Object::TextureView(view));
+        }
+        for sampler in self.samplers {
+            backend.destroy(Object::Sampler(sampler));
         }
         for twin in self.twins {
             if twin.writable {

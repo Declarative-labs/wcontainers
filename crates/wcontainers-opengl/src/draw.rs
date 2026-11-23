@@ -6,14 +6,14 @@ use std::collections::hash_map::Entry;
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferDesc,
-    BufferRange, BufferUsage, CullMode, DrawCall, DrawRange, FanOrLoop, Features, FormatKind,
-    FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource,
-    Interpolation, MAX_BINDING_SETS, MapIntent, Object, PassTracker, Program, ProvokingVertex,
-    RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind, STORAGE_WORD, ScissorRect,
-    ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageSet, StepMode,
-    Topology, VariantKey, VertexBinding, VertexFormat, Viewport, WriteMode, cut_scissors,
-    helper_binding,
+    AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
+    BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DrawCall, DrawRange, FanOrLoop,
+    Features, Filter, FormatKind, FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding,
+    IndexFormat, IndexSource, Interpolation, MAX_BINDING_SETS, MapIntent, Object, PassTracker,
+    Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
+    STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
+    SourceStage, StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding,
+    VertexFormat, Viewport, WriteMode, cut_scissors, helper_binding,
 };
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
@@ -907,6 +907,18 @@ fn helper_block<B: Backend>(
     Ok(block)
 }
 
+/// The sampler bound beside a texel buffer: programs load texel buffers and never sample them.
+const TEXEL_SAMPLER: SamplerDesc = SamplerDesc {
+    min: Filter::Nearest,
+    mag: Filter::Nearest,
+    mip: Filter::Nearest,
+    address: [AddressMode::Clamp; 3],
+    lod_range: [0, 0],
+    anisotropy: 1,
+    compare: None,
+    border: BorderColor::TransparentBlack,
+};
+
 /// Binds every resource the programs read, one set a stage, as the route's reflection numbers
 /// them, with the streams the vertex program fetches itself and its helper constants; the vertex
 /// program's visible to `vertex_visible`. What images are bound through goes to `made`, to
@@ -965,6 +977,26 @@ pub(crate) fn binding_sets<B: Backend>(
         let bound = stages.get(stage);
         let visible = visibility(stage);
         let images = image_views(backend, bound, built, made)?;
+        // A sampler beside each texel buffer, where Gallium binds none.
+        let beside_texels: Vec<u32> = built
+            .bindings
+            .iter()
+            .filter(|b| b.added.is_none() && b.kind == SlotKind::Sampler)
+            .filter(|b| bound.samplers[b.register as usize].is_null())
+            .filter(|b| {
+                let view = bound.views[b.register as usize];
+                // SAFETY: the slot holds a reference on a live view of this driver.
+                !view.is_null() && unsafe { View::<B>::of(view) }.texels.is_some()
+            })
+            .map(|b| b.binding)
+            .collect();
+        let first_beside = made.samplers.len();
+        for _ in &beside_texels {
+            let sampler = backend
+                .create_sampler(&TEXEL_SAMPLER)
+                .map_err(|e| format!("a texel buffer's sampler: {e:?}"))?;
+            made.samplers.push(sampler);
+        }
         // Uniform blocks the program reads that the frontend handed as bytes go through the
         // ring first, each grown to the block's declared size.
         let mut copies: Vec<Vec<u8>> = Vec::new();
@@ -1083,11 +1115,14 @@ pub(crate) fn binding_sets<B: Backend>(
                 }
                 SlotKind::Sampler => {
                     let sampler = bound.samplers[b.register as usize];
-                    if sampler.is_null() {
+                    if let Some(i) = beside_texels.iter().position(|&at| at == b.binding) {
+                        BindingResource::Sampler(&made.samplers[first_beside + i])
+                    } else if sampler.is_null() {
                         return refused(format_args!("a sampler the program reads is not bound"));
+                    } else {
+                        // SAFETY: a bound sampler lives until Mesa unbinds and deletes it.
+                        BindingResource::Sampler(unsafe { &(*sampler).sampler })
                     }
-                    // SAFETY: a bound sampler lives until Mesa unbinds and deletes it.
-                    BindingResource::Sampler(unsafe { &(*sampler).sampler })
                 }
                 SlotKind::Storage if b.register >= PIPE_MAX_SHADER_IMAGES => {
                     storage_buffer(bound, b.register - PIPE_MAX_SHADER_IMAGES, largest_storage)?
