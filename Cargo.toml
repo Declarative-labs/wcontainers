@@ -51,7 +51,6 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/wcontainers-translator-test (16)
 #   crates/wcontainers-direct3d-11 (10)
 #   crates/internet-protocol/implementation/linux-socket-options (2)
-#   crates/runtime/implementation/single-kernel (2)
 #   crates/route-resolver/conformance (2)
 #   crates/tcp-sockets/implementation/host (1)
 #   crates/icmp-sockets/conformance (1)
