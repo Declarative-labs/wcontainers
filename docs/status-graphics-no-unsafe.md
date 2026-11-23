@@ -61,6 +61,33 @@ safe library does it, what removing it would cost.
    is unknown. Both contain unsafe code for the owner to vet. Asked together with 1: allow the
    reference crates' Win32 calls, or these two imports?
 
+## Run 7 (2026-11-23 early)
+
+- Still no ruling (graphics brief; the orchestrator's open-with-owner notes do not list these five).
+  Counts unchanged: direct3d-12 495, graphics-test 342, graphics-test-forward 197, gpu-webgl 167,
+  gpu-webgpu 30.
+- Literal check on a clean clone of `agents` (a git bundle sent to the rented ARM machine, both
+  submodules checked out; scratch bin/literals-clone.sh, logs/lit-run7/lit.txt). The two
+  "restated" findings of these crates were real and are gone:
+  - gpu-webgl's buffer clear constant `BLOCK` (256) shared the word with the kernel's `ECHO_BLOCK`;
+    renamed `PATTERN_SPAN` (a8db8bb9).
+  - direct3d-12 tests/declared.rs wrote `> 300` containers, equal to the gpu-test suite's `ROWS`.
+    The guard is now "every corpus folder holds containers"; the count is already checked against
+    declared.expected's lines (576822bf).
+  After them no finding of the check names these five crates. The check still fails on the clean
+  clone with 8,725 new findings of other crates: 8,255 in the shaders crate's two submodules
+  (dxil-spirv 4,247, dxbc-spirv 4,008, their scripts), then executor 157, webassembly-engine 122,
+  processor-architecture 93 and smaller ones. Not this track's.
+- declared.rs passes again. declared.expected recorded again (`WC_RECORD_DECLARED=1`, rented ARM
+  machine): 171 lines added for the 57 containers the shaders track added since, none changed or
+  removed (diff checked), and every added container is committed. So the front's answers for the
+  old containers did not move. The DXIL lines give dense slots (vs_store_drawn's u2 is slot 1
+  beside u1), as `Places` numbers them for the converter; not a fault.
+- Checks (rented ARM machine, 96 cores, load 10.7 at the start, 17.1 at the end;
+  logs/check-run7.log): clippy `--all-targets -D warnings` of direct3d-12 and gpu-webgl clean, and of
+  gpu-webgl's library for wasm32; declared passes (logs/run7-verify.log). Not run on Windows: the
+  changes are a renamed constant and a test of files, nothing that differs there.
+
 ## Run 6 (2026-11-22 night)
 
 - Still no ruling (graphics brief, open-with-owner notes). The orchestrator's list of rulings the
@@ -259,7 +286,10 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
    (browser/suite.mjs) already runs the crate's checks in Chrome.
 4. If ruling 5 allows winit and a capture crate: tests/host of gpu-webgpu on them, checked against
    today's PrintWindow and ScreenCaptureKit reading.
-5. Removing the extra upload pass needs a fast path in crates/wcontainers-gpu (the front filling
+5. declared.expected must be recorded again each time the shaders track or the rig adds containers
+   (the test fails at the first new one). Record it on any machine, then check with `diff` that
+   lines were only added before committing.
+6. Removing the extra upload pass needs a fast path in crates/wcontainers-gpu (the front filling
    the back end's staging bytes, wgpu's `Queue::write_buffer_with`); not this track's crate.
 
 ## How to run
