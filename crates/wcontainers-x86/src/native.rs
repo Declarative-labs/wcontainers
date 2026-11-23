@@ -412,7 +412,7 @@ fn has_memory_operand(i: &Instruction) -> bool {
 }
 
 /// The forms whose results or flags Intel leaves undefined and the meaning fixes to the reference CPU's.
-fn undefined_result(m: Mnemonic) -> bool {
+pub(crate) fn undefined_result(m: Mnemonic) -> bool {
     use Mnemonic::*;
     matches!(
         m,

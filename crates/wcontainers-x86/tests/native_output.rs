@@ -9,9 +9,13 @@ use iced_x86::{
 use wcontainers_guest_cpu::position::Side;
 use wcontainers_guest_cpu::{HostCode, Native, Route};
 use wcontainers_translator::{LookAhead, translate_native_for};
-use wcontainers_x86::carry::{COUNT, T, U, names_withheld};
+use wcontainers_x86::area::WITHHELD_VALUES;
+use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, names_withheld};
 use wcontainers_x86::native::{HostMatches, Target, Way};
-use wcontainers_x86::{Offer, V3, X86_64, decode};
+use wcontainers_x86::{Offer, V3, X86_64, decode, general_register};
+
+/// Bytes of a word of the thread area.
+const WORD: usize = wcontainers_abi::WORD as usize;
 
 /// The ways this output is built for so far: no memory check.
 const WAYS: [Way; 2] = [Way::Machine, Way::Process];
@@ -174,7 +178,7 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
             let same = host_i.code() == i.iced.code()
                 && !names_withheld(&host_i)
                 && host_i.memory_size() == i.iced.memory_size();
-            if !same {
+            if !same && !on_slot(&i.iced, &host_i, way) {
                 return Some(format!("stand-in form of {own:02x?} is {host_i:?}"));
             }
         } else if piece.bytes.get(last..last + own.len()) != Some(own) {
@@ -182,6 +186,42 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
         }
     }
     None
+}
+
+/// Whether `host` is `guest` with the one withheld register it names read or written in that register's slot of
+/// the area, every other operand as the guest names it.
+fn on_slot(guest: &Iced, host: &Iced, way: Way) -> bool {
+    let named: Vec<u32> = (0..guest.op_count())
+        .filter(|&n| {
+            guest.op_kind(n) == OpKind::Register && names_withheld(&only(guest.op_register(n)))
+        })
+        .collect();
+    let &[n] = named.as_slice() else {
+        return false;
+    };
+    let Some(k) = general_register(guest.op_register(n))
+        .and_then(|g| WITHHELD.iter().position(|&w| w == g.number))
+    else {
+        return false;
+    };
+    let others_same = (0..guest.op_count()).filter(|&m| m != n).all(|m| {
+        guest.op_kind(m) == host.op_kind(m)
+            && (guest.op_kind(m) != OpKind::Register || guest.op_register(m) == host.op_register(m))
+    });
+    host.mnemonic() == guest.mnemonic()
+        && !names_withheld(host)
+        && host.op_count() == guest.op_count()
+        && host.op_kind(n) == OpKind::Memory
+        && host.memory_segment() == way.area_segment()
+        && host.memory_base() == Register::None
+        && host.memory_index() == Register::None
+        && host.memory_displacement64() == (WITHHELD_VALUES + k * WORD) as u64
+        && others_same
+}
+
+/// `mov rax, r` of register `r`, to ask whether it is withheld.
+fn only(r: Register) -> Iced {
+    Iced::with2(Code::Mov_r64_rm64, Register::RAX, r).unwrap_or_default()
 }
 
 /// Bytes shaped like an instruction: some legacy prefixes, maybe a REX, an opcode map, then random bytes.
@@ -370,6 +410,65 @@ fn a_withheld_register_takes_a_stand_in() {
             "two stand-ins saved, loaded, stored back and restored:\n{}",
             listing(&piece.bytes)
         );
+    }
+}
+
+/// A guest instruction naming one withheld register as a whole operand reads or writes its slot of the area,
+/// unless the memory form would act otherwise.
+#[test]
+fn a_withheld_operand_is_its_slot() {
+    let slot = |k: usize| (WITHHELD_VALUES + k * WORD) as u64;
+    for way in WAYS {
+        // mov r9d, r11d: the load form, from t's slot.
+        let code = decoded("45 89 d9", way);
+        let mov = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Mov)
+            .expect("the move");
+        assert_eq!(mov.code(), Code::Mov_r32_rm32);
+        assert_eq!(
+            (mov.op0_register(), mov.memory_displacement64()),
+            (Register::R9D, slot(1))
+        );
+        // mov r10, rax: the store, a whole register written.
+        let code = decoded("49 89 c2", way);
+        let mov = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Mov)
+            .expect("the move");
+        assert_eq!(
+            (mov.code(), mov.memory_displacement64()),
+            (Code::Mov_rm64_r64, slot(0))
+        );
+        // push r15: from u's slot.
+        let code = decoded("41 57", way);
+        let push = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Push)
+            .expect("the push");
+        assert_eq!(
+            (push.code(), push.memory_displacement64()),
+            (Code::Push_rm64, slot(2))
+        );
+        // Stand-ins: mov r10d, r8d zero-extends into the register only; bt r11, rax reaches past it in memory; rol
+        // r15, 0xeb leaves OF as Intel leaves it undefined, unlike the register form on the reference (native
+        // layer 1); pextrb r10d, xmm6, 0xea writes one byte of memory but the whole register.
+        for hex in [
+            "45 89 c2",
+            "49 0f a3 c3",
+            "49 c1 c7 eb",
+            "66 49 0f 3a 14 f2 ea",
+        ] {
+            let code = decoded(hex, way);
+            let on_area = code
+                .iter()
+                .filter(|i| i.mnemonic() == Mnemonic::Mov && i.memory_segment() == Register::GS)
+                .count();
+            assert_eq!(
+                on_area, 4,
+                "{hex}: one stand-in saved, loaded, stored back and restored"
+            );
+        }
     }
 }
 

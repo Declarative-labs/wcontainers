@@ -215,6 +215,110 @@ fn stand_ins_out(way: Way, code: &mut HostCode, swaps: &[(u8, u8)]) {
     }
 }
 
+/// The instruction with the one withheld register it names, as a whole operand and nothing else, read or written
+/// in its slot of the register area instead (section 3.4): one host instruction, no stand-in. None where its form
+/// takes no memory there, the instruction has a memory operand already, or the memory form would act otherwise: a
+/// 32-bit write (which zero-extends only in a register), memory of another size than the register, a bit test
+/// with a register offset (which reaches past its operand in memory), `xchg` (which locks memory), or a result
+/// Intel leaves undefined, which the probe found the host to match for the register form only.
+fn on_slot(way: Way, i: &Iced) -> Option<Iced> {
+    use iced_x86::{OpAccess, OpCodeOperandKind as Kind};
+    if has_memory_operand(i)
+        || crate::native::undefined_result(i.mnemonic())
+        || matches!(
+            i.mnemonic(),
+            Mnemonic::Xchg | Mnemonic::Bt | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc
+        )
+    {
+        return None;
+    }
+    let withheld = |r: Register| general(r).filter(|g| WITHHELD.contains(&g.number));
+    let named: Vec<u32> = (0..i.op_count())
+        .filter(|&n| i.op_kind(n) == OpKind::Register && withheld(i.op_register(n)).is_some())
+        .collect();
+    let &[n] = named.as_slice() else {
+        return None;
+    };
+    let g = withheld(i.op_register(n))?;
+    let mut info = InstructionInfoFactory::new();
+    let uses: Vec<OpAccess> = info
+        .info(i)
+        .used_registers()
+        .iter()
+        .filter(|u| general(u.register()).is_some_and(|u| u.number == g.number))
+        .map(|u| u.access())
+        .collect();
+    let &[access] = uses.as_slice() else {
+        return None;
+    };
+    let writes = !matches!(access, OpAccess::Read | OpAccess::CondRead);
+    if writes && g.width == crate::operand::W32 {
+        return None;
+    }
+    // Register-only operands and the operands that may be memory, by width.
+    let pairs = [
+        (Kind::r8_reg, Kind::r8_or_mem),
+        (Kind::r16_reg, Kind::r16_or_mem),
+        (Kind::r32_reg, Kind::r32_or_mem),
+        (Kind::r64_reg, Kind::r64_or_mem),
+        (Kind::r8_opcode, Kind::r8_or_mem),
+        (Kind::r16_opcode, Kind::r16_or_mem),
+        (Kind::r32_opcode, Kind::r32_or_mem),
+        (Kind::r64_opcode, Kind::r64_or_mem),
+    ];
+    let may_be_memory = |k: Kind| pairs.iter().any(|&(_, m)| m == k);
+    let info = i.code().op_code();
+    let kinds: Vec<Kind> = (0..info.op_count()).map(|k| info.op_kind(k)).collect();
+    let code = if may_be_memory(kinds[n as usize]) {
+        i.code()
+    } else {
+        // The same operation with the operand register-only here taking memory, and the other register operand,
+        // if it took memory, register-only: `mov r/m32, r32` for `mov r32, r/m32`.
+        let flipped: Vec<Kind> = kinds
+            .iter()
+            .enumerate()
+            .map(|(k, &kind)| {
+                pairs
+                    .iter()
+                    .find_map(|&(register, memory)| {
+                        if k == n as usize && kind == register {
+                            Some(memory)
+                        } else if k != n as usize && kind == memory {
+                            Some(register)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(kind)
+            })
+            .collect();
+        Code::values().find(|c| {
+            let o = c.op_code();
+            c.mnemonic() == i.mnemonic()
+                && o.encoding() == info.encoding()
+                && o.operand_size() == info.operand_size()
+                && o.mode64()
+                && (0..o.op_count())
+                    .map(|k| o.op_kind(k))
+                    .eq(flipped.iter().copied())
+        })?
+    };
+    let mut out = *i;
+    out.set_code(code);
+    out.set_op_kind(n, OpKind::Memory);
+    let slot = on_area(way, withheld_slot(g.number), 0);
+    out.set_memory_base(Register::None);
+    out.set_memory_index(Register::None);
+    out.set_memory_index_scale(1);
+    out.set_memory_displacement64(slot.displacement as u64);
+    out.set_memory_displ_size(slot.displ_size);
+    out.set_segment_prefix(slot.segment_prefix);
+    let mut encoder = Encoder::new(crate::MODE_BITS);
+    encoder.encode(&out, 0).ok()?;
+    let register_bytes = usize::from(g.width) / u8::BITS as usize;
+    (out.memory_size().size() == register_bytes).then_some(out)
+}
+
 /// How the access of a rewritten instruction reaches its operand.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reach {
@@ -389,6 +493,14 @@ fn rewritten(
     reach: Reach,
 ) {
     let next = Resume::At(address.wrapping_add(i.iced.len() as u64));
+    if reach == Reach::Plain
+        && let Some(on) = on_slot(way, guest)
+    {
+        code.slow(NativeReason::WithheldRegisterNamed);
+        let at = code.offset() as u64;
+        code.commit(&bytes_of(&on, at), next);
+        return;
+    }
     let (ins, swaps) = stand_in(guest);
     if !swaps.is_empty() {
         code.slow(NativeReason::WithheldRegisterNamed);
