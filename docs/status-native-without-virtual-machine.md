@@ -495,23 +495,65 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     caused here: the machine way's code is unchanged and the native test's 32,562 cases agree. busybox and speed
     were not run.
   - No new unsafe code (the entries' change is in the zygote's assembly; the stop crate has none).
-- Not built yet (W1's bar is not met): loading pieces into the code area with their slots (the slot table's
-  page-by-page mapping, a command the filter allows in [2^46, 2^47)), exits linked between pieces, resolution of
-  stops and faults in the executor, and so the `Executor` trait, the suites, the kernel test programs, the
-  register-isolation tests on translated code and the speed figures.
+- W1 round 3, run 2 (2026-11-23, 21:55 UTC on), translated guest programs under form P:
+  - The slot table (layout.rs, filter.rs): [2^46, 2^47), one 4 KiB page at a time. A slot page's bytes are the
+    next free page of the code area's memfd past the code area (128 MiB of them, `SLOT_PAGES_SIZE`); the stub maps it
+    by `Command::MapSlots` (received like a shared block, `PROT_EXEC` alone). The filter allows exactly that: one
+    page of fd 0, execute-only, shared and fixed, its address in the table, its offset in the slot pages. A page is
+    never given to another slot page, so a mapping in the stub is never stale; when all are in use the process is
+    ended, counted "slot pages exhausted". The ARM64 stub's stop and fault handlers take a pc in the table as
+    translated code's (an empty slot's `udf` or an unmapped page: the stop crate's "landed there").
+  - Faults in translated code report the frame's `esr_context` (the handler walks the frame's records, register
+    page word `EXIT_SYNDROME`, `Stub::fault_syndrome`), so a write is told from a read; where the frame has none
+    (gVisor) write is taken from the page's permissions, counted "fault without syndrome".
+  - The loader and run loop (native.rs, ARM64): guest code is translated for `Way::Process` in the embedder
+    (`translate_native_for`, look-ahead full, exact count), kept by guest address and bytes for every memory of
+    the executor, placed in the memory's code area, its slot filled, its exits and table entries linked both ways,
+    as the VM inside does. Every exit is resolved with the stop crate: calls at the `blr` (block pc less 4), faults
+    by their syndrome, stops as `Interrupted`. A jump's last target and an announcement of changed code are
+    resolved at the call's word in line (found from the out-of-line call's closing `b`), not at its `blr`. Pages
+    translated code came from lose write in the view; the first write, the kernel's `write`, `zero`, a shared map
+    or unmap over them, and permissions without execute drop their pieces. `Cpu::registers` and `set_registers`
+    on ARM64 are the guest's own state (vectors, FPSR, FPCR, `TPIDR_EL0` included); the register page holds the
+    hardware's only while code runs.
+  - The kernel's loop drives it through the runtime's `Execution` (execution.rs, the one module that implements an
+    executor trait). A counted turn ends at the first exit at or after its count, or when a slice of one nanosecond
+    per unit of its limit sends the stop (a host process cannot be stopped at an exact count): counted "turn limit
+    passed". The trait of crates/executor/interface.rs on this branch is the single-instruction one; it is not
+    implemented yet (Next).
+  - tests/run.rs (4): a loop, a call and a return, a store and a load, getpid's return and exit through
+    `Execution::run`, every register and the memory checked; a fork child storing to a page lent by its parent
+    (its own copy; the parent's unchanged until it runs); 50 calls through a register (slots, then last targets);
+    a loop with no exits ended 20 times by its slice and going on each time.
+  - tests/kernel.rs (7), the kernel test programs in the kernel's loop with the seeded test policy, under form P and
+    under the WebAssembly output (wasmtime's `CpuSide`), the same seed (`WCHP_KERNEL_SEED`, `WCHP_KERNEL_SEEDS`,
+    1 seed run): hello (its output and status equal), getppid with 10,000 calls, forks (fork, exec itself,
+    SIGUSR1, SIGTERM: equal, and its own lines and exit 3), mappings, jumptables: equal status and output. blocks and
+    code: equal status; their output differs exactly where the VM form's kernel test records the WebAssembly side's
+    known faults (a zeroed block's fault at the block's start; a function's old code run after its second line is
+    rewritten, form P printing the Linux answer "7 8" against "7 7"). Not compared against the Docker reference
+    here (the VM test does that through the Unicorn crate's reference).
+  - Found by these tests: a last target made at the `blr` wrote its words over the out-of-line code (returns looped
+    forever); an announcement resolved at the out-of-line `ldr` re-ran the announcing instruction forever.
+  - Verdicts (Graviton4, 22:47 UTC, load 18 to 25): kernel 7 of 7, run 4 of 4, every other test binary as before;
+    clippy with warnings denied clean on both machines; the Xeon builds and passes every binary (the new tests build
+    none there). Final three-round verdicts with /dev/kvm denied: below.
+  - No new unsafe code (the code area's one write is the same, moved into `write_file`).
+- Not built yet (W1's bar is not met): the trait of crates/executor/interface.rs (single instruction) and the
+  executor conformance suite; busybox's text and files commands; the run inside Docker's profile and under gVisor
+  with translated code; the register-isolation tests on translated code; placement's remaining items; the copy unit
+  on translated code; the speed figures.
 
 ## Next
 
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
-- Next, in this order: the slot table (a memfd per memory, mapped page by page read-execute in [2^46, 2^47) by a
-  command the filter allows; a jump to an unmapped page of it is a fault the floor treats as an empty slot), a
-  loader of pieces into the code area with their slots filled and exits linked (the VM form's
-  hardware-virtualization-inside/native.rs does this for the mirror; it is not in this track's paths, so either
-  reuse it through a crate split asked of its owner or write the P loader in host-process), resolution of every
-  exit with `wcontainers-executor-arm64-stop` and `Way::Process` (calls at block pc less 4, stops and faults from
-  `Interrupted`, faults as `Taken::Access`), and `Cpu::registers` from the resolved guest state instead of the
-  block. Then the `Executor` trait (in one module, waiting on the owner's new interface), the suites with equal
-  verdicts, the register-isolation tests on translated code and the speed figures.
+- Next, in this order: the kernel test with busybox's text and files commands (the VM form's tests/busybox.rs);
+  the same tests inside Docker's default profile and under gVisor (run 10's sandbox scripts); the executor trait
+  of crates/executor/interface.rs (one instruction: translate it alone, run it in a stub, read the memory it
+  changed) and the executor conformance suite, in execution.rs's module; the register-isolation tests of
+  brief-native.md on translated threads; the speed figures (getppid round trip against the futex slot, a
+  memory-heavy program against wasmtime and the VM executor, the workload pairs); the copy unit on translated
+  stores; placement's getppid item.
 - The process way's translations are never moved (`Translation::moved`): `Native::movable` is the machine way's
   range; `wcontainers_arm64::carry::movable(Way::Process)` is the process way's, for a P loader that keeps
   translations.
@@ -649,6 +691,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   and `interrupted(way, ..)`; `Taken` says what the exception was. The inside's `stop` module re-exports it and keeps
   `resolve(piece, exception, ..)` and `interrupted(piece, ..)` as before, reading the syndrome into `Taken`; its
   callers did not change. It depends on the abi, arm64 (without translate) and guest-cpu only.
+- Round 3 run 2: host-process loads pieces itself (native.rs), as the VM inside's native.rs does, since P's
+  translator runs in the embedder and needs no link. In the process way a call's `blr` is out of line, so the
+  stop crate's `Resolved::LastTarget { call }` and `Resolved::CodeChanged { then }` name the out-of-line `blr` and
+  the `ldr` after it; host-process takes them to the call's word in line. If the stop crate is to answer in line
+  itself it needs the piece's host words; not changed there.
 - Still asked of the native (VM) track, not done here: `translation` and the loading of pieces with their slots
   (hardware-virtualization-inside/native.rs) and the monitor's kept translations (hardware-virtualization/
   translate.rs) usable from a crate without the VM's dependencies, so P loads pieces the same way.
@@ -698,6 +745,15 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 round 3 run 2: slot pages are pages of the code area's memfd past the code area, given out in order and never
+  reused, not a memfd of their own: the embedder writes them through the code area's own mapping (and its cache
+  maintenance), and a stub's mapping of a slot page can never show another page's slots. A counted turn is not
+  stopped at its exact count (plan 4.6 assumed the VM form's stepping, which a host process has no way to do): it
+  ends at the first exit past the count or by a slice, counted. Translations are kept in the executor by address
+  and bytes (the process way's code depends on nothing else), so a fork child loads its parent's without
+  translating again. Code a program writes is caught as plan 3.4 says for private pages; a shared block's page
+  written by another process is not yet write-protected there (only the announcement and `code_changed` drop it).
 
 - W1 round 3 run 1: the ways are named `Machine` and `Process`, as the x86 native output names its own, not `Vm`
   and `HostProcess`. A process-way call is one in-line branch to out-of-line code with an absolute `blr` to the
@@ -800,6 +856,11 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since round 3 run 2, ARM64 only: wcontainers-translator (`native`), wcontainers-guest-cpu,
+wcontainers-executor-arm64-stop and wcontainers-runtime-single-kernel (without `std`), all this workspace's; for the
+kernel test only, this workspace's kernel, seeded policy, system, clock, random source, readiness, wasmtime executor
+and translator test crates, and zig's C compiler from the Nix shell as a tool (the VM form's tests use it alike).
 
 host-process, Linux only: nix 0.31.4 (MIT; `process` and `time` only) for a stub's process CPU clock, which rustix
 lacks for another process; rangemap 1.8.0 (MIT OR Apache-2.0) for permissions, page states and shared ranges by
