@@ -5,6 +5,43 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 26 (2026-11-23, round 4's fourth run). Built this run, each linted with warnings denied
+with and without Mesa and the nir crate's route tests passed on the x86-64 machine (19 of 19):
+- Multisampled array textures (2a05247e). ES 3.2 requires them (`TexStorage3DMultisample`,
+  `OES_texture_storage_multisample_2d_array`); the host's multisampled textures are single 2D
+  layers, so the screen reported no sample counts for `PIPE_TEXTURE_2D_ARRAY` and Mesa refused
+  every such texture: dEQP-GLES31 `state_query.texture_level`, `internal_format` and `texture` of
+  `texture_2d_multisample_array` (89) and `texture.multisample.negative` (10) failed, and
+  `texture.multisample.*_2d_array` and KHR `texture_storage_multisample` were NotSupported. Now,
+  as plan 4.2 says a front holds one: the resource is a 2D multisampled resource of the driver a
+  layer (`Storage::Layers`); targets, the fetched target, blits and copies address the layer's own
+  resource (a blit or copy of several layers is one a layer); a sampler view holds a view a layer,
+  and programs are converted with `VariantKey::texture_layers` (by the bound views' layer counts)
+  and read each layer at the binding `AddedBinding::TextureLayer` names (the shaders crate's split;
+  more layers than the stage's texture bindings are refused by name there).
+- Writes to a framebuffer's target close the pass first (2f4fc80f). A clear waits in the pass
+  tracker as the next pass's load operation, and st/mesa sets a new framebuffer only at the next
+  draw, so a texture write after a clear of the bound target landed before the clear, which then
+  overwrote it. Read from dEQP-GLES31 `copy_image.mixed.viewclass_128_bits_mixed.*_to_renderbuffer`
+  (240 failures; run 25's reading, "ASTC against 128-bit formats", was wrong: every failure is a
+  copy from a compressed texture into a renderbuffer cleared just before, the second of the case's
+  two passes, the first of which reads the renderbuffer back between and passes).
+- Blits seen in three 32-bit channels (st/mesa's canonical `R32G32B32_UINT` of its copies between
+  GL's RGB32 formats, whose textures it holds in four channels where the host has none of three)
+  copy the four-channel texels (0a8c3ed1; dEQP-GLES31 `copy_image.non_compressed.viewclass_96_bits`
+  32 crashes, "a blit Gallium's blitter does not make").
+- Unsafe code: wcontainers-opengl 365 (eight more: a layer's resource, making and releasing the
+  layers, a blit and a copy a layer, the views' layer counts and bindings), wcontainers-nir 108;
+  the root list carries both (fb3eaf0f). No dependency or licence was added.
+
+Run 26's group run (2a05247e's driver, the multisampled arrays only; desktop, RTX 3080, one GPU
+job, 8 glcts at once; scratch `results/g9r26/a`, log `logs/g9r26/a.log`), dEQP-GLES31
+`state_query`, `texture.multisample`, `geometry_shading.layered`, `android_extension_pack`, KHR-GLES31
+`texture_storage_multisample` and `sample_variables`, dEQP-GLES3 `fbo.msaa` and `fbo.blit`, against
+run 25's run B: 2,427 of 2,447 run pass; 101 failures and 31 NotSupported cases pass; the 20 that
+fail are all `geometry_shading.layered` (layered geometry output, below), 5 of them the
+multisampled array cases that were NotSupported. No case that passed fails.
+
 G9 run 25 (2026-11-23, round 4's third run). Built this run, each linted with warnings denied and
 the nir crate's route tests passed on the x86-64 machine (19 of 19); results on the rig below:
 - Maps of multisampled textures go through Mesa's transfer helper (`u_transfer_helper`, MIT,
@@ -268,19 +305,27 @@ The suite of both crates at 7e686f27 (x86-64 machine, load 21 to 25): fmt clean;
 warnings denied clean with and without Mesa; with Mesa 30 tests pass and 2 are ignored (route 17,
 glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none build that need it.
 
-Next, in order (run 25):
-1. The groups that run 25's ES 3.2 contexts brought in, not yet read: dEQP-GLES31
-   `state_query.texture_level` and `internal_format` of `texture_2d_multisample_array` (81),
-   `state_query.texture` 8, `texture.multisample.negative.*` 10 (llvmpipe passes them: this
-   driver's caps or behavior; start from what the screen reports for 2D multisample arrays).
-2. Still not read: KHR-GL33 `primitive_restart.restart_mode` (no refusal since run 25),
-   gpu_shader5's `texture_gather_offset_color_*`, `texture_cube_map_array` sampling,
-   shader_image_load_store `misc-fs` and `advanced-*`, dEQP synchronization 10.
-3. Built but not this track's to end: the point size between staged stages (shaders track,
+Next, in order (run 26):
+1. The independent check of G9's first part, against run 26's whole run below (a sample of each
+   list on the rig, the NotSupported groups, the RTX 3080's own OpenGL on today's failing groups).
+2. Layered geometry output (dEQP `geometry_shading.layered` and `instanced`, KHR `geometry_shader`
+   layered cases, `texture_cube_map_array` with layers): the design is in the gap list; with it,
+   clears of layered framebuffers on every layer.
+3. A texture bound as a writable and a read-only image in one dispatch (KHR
+   `advanced-copyImage-cs`); wide points (KHR-GL33 `restart_mode`, the NotSupported wide-point
+   groups); integer cube map arrays sampled with gradients.
+4. Still not traced: the run-time gather offsets at edges, `advanced-allMips-cs`,
+   `advanced-sync-imageAccess2`, `basic-glsl-misc-fs`, the storage coherence of
+   `synchronization` and `advanced-readWrite-case1-cs`.
+5. This track's causes found and not built: an input read at the centroid and at an offset,
+   storage blocks in tessellation programs (KHR-GLES32's 464 NotSupported).
+6. Built but not this track's to end: the point size between staged stages (shaders track,
    asked), the stencil blit's slow path name (interface track, asked).
-4. This track's causes found and not built: layered geometry output, an input read at the
-   centroid and at an offset, storage blocks in tessellation programs, ASTC against 128-bit
-   `copy_image`, the 96-bit `copy_image` blits (64 refusals: not yet traced past the blit).
+7. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) after the check.
+
+Run 25's list, kept for its readings: its items 1 and the 96-bit blits are done in run 26; its
+item 2 is read in run 26's gap list rows; "ASTC against 128-bit `copy_image`" was a misreading
+(the waiting clear above).
 
 Run 24's list, kept for its readings (items done in run 25 are marked in the gap list):
 1. The groups still not yet read: KHR sample_variables' map of a multisampled texture
@@ -299,6 +344,52 @@ Run 24's list, kept for its readings (items done in run 25 are marked in the gap
    3D texture).
 
 ## Gap list (G9's first part, at e742e0be)
+
+Run 26's changes to the rows below (the groups run 25 left not yet read, read from run 25's kept
+`.qpa` files, copied to scratch `results/g9r25/qpa`):
+- Done in run 26: dEQP-GLES31 `state_query` of `texture_2d_multisample_array` 89 and
+  `texture.multisample.negative` 10 (multisampled arrays), `copy_image.mixed
+  .viewclass_128_bits_mixed` 240 (a write after a waiting clear; not ASTC), `copy_image
+  .non_compressed.viewclass_96_bits` 32 (blits in three 32-bit channels).
+- dEQP-GLES31 `geometry_shading.layered` 20 (5 more with multisampled arrays) and the other
+  layered rows below: layered geometry output, this track's, not built. What it takes, as the
+  Direct3D 11 front does it (`draw_runs`, `SlowPath::LayerSplit`): the stage helper's records
+  already end with the layer slot (`Stages::selects`); the driver must draw the output once a
+  layer of a layered framebuffer (surfaces with more than one layer, which `target` now reads as
+  their first only), with the pass-through's run helpers (`stage::PASSTHROUGH_HELPERS`) bound in
+  the vertex stage's helper block, the fragment program's `gl_Layer` from `HelperValue::Layer`,
+  and clears of a layered framebuffer clearing every layer (today only the first).
+- KHR-GL33 `primitive_restart.restart_mode`: only its POINTS draw fails; it draws points of size
+  4 (`glPointSize(4)`) and checks spots at their centres. The screen reports a largest point size
+  of 1 (WebGPU's points are one pixel, `Features::POINT_SIZE` absent), which OpenGL allows; the
+  case assumes 4. Wide points (points drawn as quads by the stage helper, as Mesa's d3d12 driver
+  draws them) are this track's, not built; the same absence makes 40 dEQP-GLES31
+  `primitive_bounding_box.wide_points` and 12 dEQP-GLES2 and -GLES3 `clipping.point` cases
+  NotSupported (run 25's run B).
+- KHR-GLES31 and -GLES32 `gpu_shader5.texture_gather_offset_color_clamp_to_edge` and
+  `_clamp_to_border`: the gathers at offsets known only at run time, which the shaders crate's
+  rewrite moves into the coordinates (e717de15); the log shows the gathered texels at the edges
+  of a 64-texel texture; not yet traced to the texel that differs.
+- KHR-GLES31 and -GLES32 `texture_cube_map_array.sampling`: all 144 errors are `textureGrad` of
+  `RGBA32I`, `RGBA32UI` and `STENCIL_INDEX8` cube map arrays (integer textures, which programs
+  load at the nearest texel with the level the bridge computes from the gradients,
+  `wc_nir_nearest_integer_textures`): this track's; the level's computation is not yet checked
+  against the case.
+- KHR-GLES31 `shader_image_load_store.advanced-copyImage-cs`: one texture bound in one dispatch
+  as a writable image and as a read-only image; WebGPU's usage rules refuse a texture used both
+  ways in one dispatch, so the dispatch is dropped (the read returns zeros). This track's (bind
+  both through one writable view where the formats allow, or the read through a copy), not built.
+  `advanced-allMips-cs`: four levels of one RGBA32F texture as read-write images (bound through
+  buffers of their texels, as WebGPU has no read-write RGBA32F); levels 4 and 3 read zero; not
+  yet traced. `advanced-sync-imageAccess2`: not yet traced.
+- KHR-GLES31 `shader_storage_buffer_object.advanced-readWrite-case1-cs` and dEQP-GLES31
+  `synchronization` 10: values written by other invocations of a workgroup (after
+  `groupMemoryBarrier(); barrier()`) or through a second binding of the same buffer read zero or
+  stale; the route makes a memory barrier then a control barrier on shared memory, which the
+  host's compiler may not order for storage; not yet traced (this track's route or the host's
+  compiler).
+- KHR-GLES31 `shader_image_load_store.basic-glsl-misc-fs`: "Uses operations forbidden at this
+  stage" from the host's validator for a fragment program; not yet traced to the operation.
 
 Run 25's changes to the rows below, read from run B's case notes (`logs/g9r25/reasons-b.txt`):
 - Done in run 25: KHR `sample_variables` 38 (maps of multisampled textures), KHR
@@ -435,7 +526,7 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 
 ## For the owner
 
-- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (357 uses, counted on 2026-11-23 as the
+- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (365 uses, counted on 2026-11-23 as the
   root list counts them: every `unsafe` word outside comments) and wcontainers-nir (108) stay on
   the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
   driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
@@ -480,6 +571,11 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 26: `scripts/g9r26-run.sh <log> [<lists> [<regexes>]]` is run 24's one-command run under
+  its name (no lists: every list, one GPU job of about 40 minutes after the queue's wait);
+  `scripts/g9r25-lint.sh` and `scripts/g9r25-table.py <run> <base>` as below. A case's `.qpa` is
+  overwritten by the next run of its list: copy the ones to read to scratch `results/<run>/qpa`
+  first (scp from `C:/wc/graphics-nir/cts/results/wcontainers/<list>/<case>.qpa`).
 - G9 run 25: the whole run is still `scripts/g9r24-run.sh <log>` (one GPU job, about 40
   minutes); `scripts/g9r25-lint.sh [<test args>]` formats, lints both crates with warnings denied
   with and without Mesa and runs the nir crate's route test on the x86-64 machine (its SSH
