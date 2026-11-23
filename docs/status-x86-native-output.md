@@ -100,12 +100,14 @@ probes).
 ## XN1 run 3 results (rented x86 machine, Xeon 8488C, 5-level paging)
 
 - Native layer 1, 2008 forms (every form layer 1 has), 1,000 cases a form, seed 5150, 32 at once, uncounted and
-  counted (before the stepping check), load 0.3 before: 0 failing, 511.5 s; 2,594 known failures (91 forms with
+  counted (before the stepping check), load 0.3 before: 0 failing, 511.5 s; 2,594 known failures (91 form lines with
   the 5-level class, 11 with the meaning class: sldt, smsw, str (the host kernel's UMIP emulation), wrfsbase and
   wrgsbase; 11 transcendental forms as WebAssembly's). Ended (uncounted run): exit 1,416,015, fault 437,876,
   answered 88,693, trap 62,329, first-level miss 2,495, second-level miss 592.
-- With the stepping check: 64 cases a form, seed 5150 (before it, all five defects fixed): 0 failing, 28 s; 8 cases,
-  0 failing. RESULT OF THE 1,000-CASE STEPPING RUN: see the line added below when it ended.
+- With the stepping check (commit a4551138), 2008 forms, 1,000 cases a form, seed 5150, 32 at once, load 25 to 34
+  during it (this run's own jobs and other users): 0 failing, 511.3 s, the same 2,594 known failures and endings;
+  no case had TF or AC set, so none was left unrun. Also seed 7, 8 cases a form: 0 failing. The x86 crate's and
+  guest-cpu's tests and the translator's native lib tests in the same job: all pass.
 - clippy with warnings denied on wcontainers-x86 and wcontainers-translator-test (all targets, `--no-deps`):
   clean. x86 crate's native tests: routes 2, output 18, carry 2: pass.
 
