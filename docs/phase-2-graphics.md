@@ -2390,8 +2390,12 @@ met:
   and G3 compare); read backs of every format natively or from the host copy (`HostCopyKept`).
 
 Direct3D 11:
-- **WebGPU: feature level 11_0, when the adapter has 16384-texel 2D textures, 2048 3D extent and 2048
-  array layers, and depth32float-stencil8** (this Mac's Chrome has; WebGPU's defaults do not). An adapter
+- **WebGPU: the highest feature level whose every requirement the device meets: its sizes and stage
+  limits below and every row of Microsoft's format tables (4.12).** Natively (wgpu on Direct3D 12 with the
+  adapter's formats) that is 11_0; a browser's WebGPU meets 10_0 at most, since 10_1 and 11_0 require
+  8-sample targets (`B5G6R5_UNORM` at 10_1, 47 formats at 11_0) and 11_0 4-sample `R32G32B32A32_FLOAT`
+  targets, which it lacks. 11_0 needs 16384-texel 2D textures, 2048 3D extent and 2048
+  array layers, and depth32float-stencil8 (this Mac's Chrome has; WebGPU's defaults do not). An adapter
   without depth32float-stencil8 reports 9_3 whatever its sizes (9_3 has no `D32_FLOAT_S8X24_UINT`
   target). An adapter short of the sizes reports
   10_1 if it meets 10_1's sizes, with compute reported present at 10_1
@@ -2418,7 +2422,7 @@ Direct3D 11:
   instance step rates, fat targets, layered drawing, exact occlusion counts (4.12), typed storage
   stores without `texture-formats-tier1` (`StorageFormatThroughBuffer`), `SV_VertexID` and
   `SV_InstanceID` with non-zero bases (`DrawBaseInHelpers`, `DrawBaseFromArguments`), alpha-antialiased
-  lines (`AntialiasedLinesAsQuads`). Multisampling: 4 samples where WebGPU allows, reported per format
+  lines (`AntialiasedLinesAsQuads`). Multisampling: the counts the adapter allows, reported per format
   (4.12). Typed UAV loads of more formats follow `FormatCaps` storage read.
 - **WebGL 2: feature level 10_0**, when the device has 8 color targets, 8192-texel 2D and cube
   textures, 2048 3D extent and 512 array layers, and EXT_color_buffer_float (GLES 3.0 guarantees only
