@@ -89,6 +89,9 @@ probes).
   is written through `carry::access`; section 7's shapes that need no executor and the rep string count test are
   tests; a jump where nothing is mapped ends as the guest's fault in the native program harness (the two Csmith
   programs). Finding by finding under "Round 3 run 2".
+  Round 3 run 3 (after the tenth check): the inside's answers for a direct transfer past user space
+  (`Question::NearBranch`), a far target through a register or the stack (`answer::near_transfer`) and the Trap
+  route (`native::trap`), each checked by native layer 1 against the CPU; finding by finding below.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -99,12 +102,18 @@ The bar as it stands: native layers 1, 2 and 3 pass against the CPU on the rente
 uncounted, the count after each system call equal to the WebAssembly output's (figures under "Round 3 run 2
 results"); speed meets the bar uncounted (geometric mean 1.145 against the host in run 5, 1.110 in the ninth check's
 own measurement). Section 7's shapes that run without an executor are tests now (round 3 run 2, below); the rest
-are listed here with why. Every Kernel-routed form in the machine and P now has an answer: a question for
-`answer`, or (a repeated string under the count) the inside's run of it on the hardware with `string_passes`; the
-only exceptions are item 2's. Not built or not run:
+are listed here with why. Every call into the inside in the machine and P now has an answer built by this track
+(round 3 run 3): a Kernel-routed form a question for `answer` (or, a repeated string under the count, the inside's
+run of it on the hardware with `string_passes`); a direct `jmp`, `call`, `jcc`, `loop` or `jrcxz` to a target at
+or above 2^47 `Question::NearBranch`; a first-level fault of a jump, call or return through a register or memory
+`answer::near_transfer` with the kind `native::far_transfer` gives; the Trap route the trap `native::trap` gives.
+Native layer 1 fails a call without one, and checks each against the CPU (and the trap and the Kernel answers also
+against the meaning). The only exceptions are `syscall` (the executor's system call) and item 2's. Not built or not
+run:
 
 1. Needs an x86 executor that runs a translation. Owner: the native-without-virtual-machine track (its x86 floor,
-   or P's executor, crates/executor/implementation/host-process, which has no translation runner yet). Cause: the
+   or P's executor, crates/executor/implementation/host-process, whose translation runner is ARM64's alone: its
+   code-change and fault paths are `cfg(target_arch = "aarch64")`, executor.rs `forget_changed_code`). Cause: the
    blobs of the test crate answer only system calls and repeated strings, from the guest's registers, in one
    thread, with no signal delivery to the guest and no control of the guest's page permissions.
    - The X9 real-program set natively (threads, signals, `execve`, our kernel) with the WebAssembly verdicts.
@@ -119,6 +128,12 @@ only exceptions are item 2's. Not built or not run:
      into a page that cannot run code (the blob maps the guest image readable and writable only, so there is no
      page that the CPU's run and ours both see as not executable), `popf` setting TF before a `ret` and a `jmp r`,
      and a thread with TF running `rep movsb` and ten one-byte instructions (both on stepping pieces, item 3).
+   - The machine way (Way::Machine): its pieces (the floor's interrupt gates for calls, the copied `syscall`) have
+     only the static tests (tests/native_output.rs, native_routes.rs); every native run of the test crate is way P.
+   - A 4-level CPU as the reference: the rented Xeon has 5-level paging, so the 66 shapes of transfers to 2^47 up
+     to 2^56 and base writes there are known failures (the 5-level reference) and have never been compared with a
+     4-level CPU; the i7-8750H (4-level) is reachable only from the Mac. Owner: whoever provides a 4-level x86
+     reference to the rented machines.
    - The start-up probe that fills `HostMatches` (paging depth, partial writes, undefined results) and the floor's
      entry rule for MXCSR (plan 3.5).
    - The inside's side of the `X87Control` call and of the `x87_unmasked` mode (the call is emitted after every
@@ -168,10 +183,65 @@ only exceptions are item 2's. Not built or not run:
    bytes, so it is the CPU's unless the instruction also names a withheld register (then iced re-encodes it with
    one prefix, as the meaning reads it). And the native layer 2 harness past about 10,000 programs in one process
    (the ninth check: "state memory: mmap failed to reserve 0x104000000 bytes", runner.rs 455/461/1850, the
-   WebAssembly runner's reservation, made by the WebAssembly runs that test compares the count with): the cause
-   is not found yet (a reservation kept past its run, or the machine's map limit); seen only by the native test,
-   since no other test runs that many programs in one process. Owner: this track, with the shared runner's
-   owner; 10,000 at a seed is the recorded bar meanwhile.
+   WebAssembly runner's reservation, made by the WebAssembly runs that test compares the count with): the cause is
+   address space (the tenth check's arithmetic): each run reserves 0x104000000 bytes, an mmap without a high hint
+   gets at most 2^47, which holds about 31,500 such reservations, about 10,500 programs at three runs each, where
+   the failures start; so the runner's reservations outlive their runs (what keeps them is not found: the state
+   memory is a wasmtime SharedMemory held in the store's data). Seen only by the native test, since no other test
+   runs that many programs in one process. Owner: the shared runner's owner (crates/wcontainers-translator-test
+   runner.rs), with this track; 10,000 at a seed is the recorded bar meanwhile, nothing above it is tested.
+
+## Round 3 run 3: the tenth check's findings, finding by finding
+
+- [blocking] a direct `jmp`, `call`, `jcc`, `loop` or `jrcxz` whose target is at or above 2^47 called the inside
+  with no question. Now `native::question` gives `Question::NearBranch { transfer, when, offset }` for every direct
+  transfer (`answer::NearTransfer`: jump, or call with its length; `answer::Taken`: always, a `jcc`'s condition by
+  the core's `Condition::holds`, a loop's count of rcx or ecx and its ZF, or `jrcxz`/`jecxz`), and `answer`
+  answers it: taken, `answer::near_transfer` (below); not taken, the next instruction with a loop's count written.
+  carry.rs has one arm for every direct transfer past user space (`far_direct`: the call, then the next
+  instruction's span), and a loop copy leaves its homes around it. Tests: tests/native_far.rs (from code at
+  2^47 - 0x40: rel32 and rel8 jumps, a call, a `jcc`, `loop`, `loope`, `jecxz` to non-canonical targets are general
+  protection with the registers unchanged; not taken goes on with the count; from code near zero `loopne` and a
+  call to the upper half are made), the routing sweep's new `every_call_into_the_inside_has_a_question` (every
+  Kernel route but `syscall`, and every direct transfer, has a question, machine and P, the hosts whose undefined
+  results match), and the shapes test's new cases against the CPU: `jmp`, `call` (with a stack and without one),
+  `49 e8`, `66 e9`, `66 e8`, and all sixteen `jcc` with no flags and all six, plain, `3e` and `66`, each to
+  2^64 - 4096 and to the farthest rel32 from CODE (both wrap into the upper half).
+- [minor] Trap and FarTarget had no answer of this track: built. `native::far_transfer` gives the kind of a jump
+  or call through a register or memory, or a return; `answer::near_transfer(kind, t, block, memory)` answers the
+  first-level fault. The reference decides the order: its `call rax` to 2^63 is general protection with the
+  return address already written below rsp (the shapes test found it, 18 cases), as the meaning writes it, so
+  `near_transfer` writes a call's slot first, then tests the target (plan 3.3 corrected: it said the reference
+  tests the target before it pushes). `native::trap(i, offer)` gives the Trap route's trap as the meaning's `emit`
+  raises it. Native layer 1 now returns the inside's outcome for every answered case and FarTarget (no longer the
+  meaning's): an answer unlike the meaning's fails unless it is a far transfer, which is then judged against the
+  CPU alone and counted; at a Trap call the trap's stop and rip (after the instruction for `int3`, `int1`, `int 4`)
+  must be the meaning's; a difference from the CPU is a known failure only where our outcome is the meaning's.
+  This found that 20 string forms' counted runs (the inside's run on the hardware) had been known failures under
+  the meaning's name: the run's outcome was not read as the reference's through its signal frame (RF); it is now,
+  and they pass with no known failure.
+- [minor] the unreproduced Copy failure: rerun below with every non-Transfer, non-Kernel failure printed.
+- [minor] the mmap failures past 10,000 programs: the cause recorded in gap item 6 (address space), owner the
+  shared runner's.
+- [minor] the literal check: carry.rs's `WORD` is `AREA_WORD` (public; tests/native_output.rs imports it), `REL32`
+  public (the shapes test imports it), the strings with numbers reworded, the report separator named
+  (`FIELDS_APART`); none of this track's lines remain (results below).
+- [minor] gap item 1's wording: host-process's runner is ARM64's alone (corrected); the machine way's static-only
+  tests and the 5-level-only shapes are on the gap list (item 1).
+- [minor] `rdpid`: out of `answered`, routed Trap explicitly (never offered; the meaning has none), plan 3.1 and
+  3.5 corrected.
+- [no defect] the emitted code read for the brief: recorded in the check's own log (scratch check-xn1b/d1.log).
+
+## Round 3 run 3 results (rented x86 machine, Xeon 8488C, 5-level paging, 2026-11-23; logs scratch xn1r12/)
+
+- 23:29 UTC, load 1 to 10: clippy with warnings denied, `--no-deps`, wcontainers-x86 and -translator-test, all
+  targets: clean. `cargo test -q -p wcontainers-x86`: every test passes (native_far 4, native_routes 3).
+- The shapes test: 320 as the CPU, 66 known (the 5-level reference), 2 known (`wrfsbase`, `wrgsbase` of 2^47,
+  answered by the meaning).
+- Native layer 1, seed 8086, 60 a form (23:32, load 4 to 10): 0 failing, 118 known; ended: Answered(Answer) 5,008,
+  Answered(Trap) 3,749, Exit 84,856, FarTarget 160, Fault 26,680, Lookup 27; the inside's answer checked in
+  10,216 runs, its trap the meaning's in 7,498, a far transfer unlike the meaning 0.
+- The five string forms at 300 a form, counted (23:33): 0 failing, 0 known (1,006 runs on the hardware).
 
 ## Round 3 run 2: the ninth check's findings, finding by finding
 
@@ -190,7 +260,9 @@ only exceptions are item 2's. Not built or not run:
   the Area route (the CPU's own access), and `stos`, `scas` with a `gs:` prefix are copied (es:rdi ignores it).
   A rep string under the count is the inside's run of it on the hardware with `string_passes` (as the program
   blobs do), so native layer 1 now counts those runs apart ("run by the inside on the hardware") and fails any
-  other call into the inside whose instruction `native::question` does not answer (`syscall` excepted).
+  other call into the inside whose instruction `native::question` does not answer (`syscall` excepted). The tenth
+  check found this incomplete: a direct transfer past user space called the inside with no question; fixed in
+  round 3 run 3 (below).
 - [blocking] section 7's shapes and the rep string test: new tests, tests/layer1.rs
   `the_shapes_of_the_plan_match_the_cpu_natively_x86_64` (ret, jmp r and call r, plain and 66-prefixed, to 2^47,
   2^48, each of bits 48 to 63 over a valid target, 0xfff0000000401000, 2^63, -1; 66-prefixed direct jmp and call;

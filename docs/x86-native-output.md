@@ -223,7 +223,8 @@ Never copied, by route:
     the guest's is in the block.
 - Trap: `int3`, `int1`, `int n`, `ud2`, `hlt`, `in`/`out`, `cli`/`sti`, `swapgs` and every privileged form, and every
   form outside the offer. `int 0x80` and `sysenter` are the meaning's general protection with x86's reason "32-bit
-  system call from 64-bit code, not provided" (x86 plan section 5.2).
+  system call from 64-bit code, not provided" (x86 plan section 5.2). The inside raises the trap `native::trap`
+  gives (the meaning's `emit` in plain Rust; native layer 1 checks it equal to the meaning's at every Trap call).
 - Nothing: the forms the meaning makes do nothing (`nop` of every length, the prefetch hints, and the whole
   reserved-NOP space, which the decoder reads as `Reservednop` (x86/decode.rs, `FORCE_RESERVED_NOP`): `endbr64`,
   `rdsspq`, `incsspq` and the other shadow-stack forms). Prefetches are never copied, so way I cannot be made to
