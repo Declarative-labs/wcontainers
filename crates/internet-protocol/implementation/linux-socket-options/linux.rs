@@ -8,6 +8,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
+use nix::unistd::{Uid, setfsuid};
 use rustix::io::Errno;
 use rustix::net::{Protocol, SocketType};
 use socket2::{Domain, SockAddr, Socket};
@@ -479,6 +480,10 @@ pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMPING_TIMES: usize = 3;
 
+/// The places of the software and hardware times among them; the one between is deprecated.
+const SOFTWARE_TIME: usize = 0;
+const HARDWARE_TIME: usize = 2;
+
 /// The room for the control messages of one receive: timestamps, an extended error, packet information, statistics.
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
@@ -594,10 +599,25 @@ impl<'a> Iterator for ControlMessages<'a> {
     }
 }
 
-fn timespec(time: &libc::timespec) -> Option<Duration> {
-    let seconds = u64::try_from(time.tv_sec).ok()?;
-    let nanoseconds = u32::try_from(time.tv_nsec).ok()?;
-    let duration = Duration::new(seconds, nanoseconds);
+/// Reads the `timespec` at an index of the data, absent when it is zero.
+fn timespec(data: &[u8], index: usize) -> Option<Duration> {
+    let at = index * size_of::<libc::timespec>();
+    let seconds = at + std::mem::offset_of!(libc::timespec, tv_sec);
+    let nanoseconds = at + std::mem::offset_of!(libc::timespec, tv_nsec);
+    let seconds = libc::time_t::from_ne_bytes(
+        data.get(seconds..seconds + size_of::<libc::time_t>())?
+            .try_into()
+            .ok()?,
+    );
+    let nanoseconds = libc::c_long::from_ne_bytes(
+        data.get(nanoseconds..nanoseconds + size_of::<libc::c_long>())?
+            .try_into()
+            .ok()?,
+    );
+    let duration = Duration::new(
+        u64::try_from(seconds).ok()?,
+        u32::try_from(nanoseconds).ok()?,
+    );
     (!duration.is_zero()).then_some(duration)
 }
 
@@ -606,14 +626,7 @@ pub fn timestamps(data: &[u8]) -> (Option<Duration>, Option<Duration>) {
     if data.len() < size_of::<[libc::timespec; TIMESTAMPING_TIMES]>() {
         return (None, None);
     }
-    // SAFETY: the data holds the three timespecs of scm_timestamping, read unaligned.
-    let times = unsafe {
-        data.as_ptr()
-            .cast::<[libc::timespec; TIMESTAMPING_TIMES]>()
-            .read_unaligned()
-    };
-    let [software, _, hardware] = times;
-    (timespec(&software), timespec(&hardware))
+    (timespec(data, SOFTWARE_TIME), timespec(data, HARDWARE_TIME))
 }
 
 pub fn family_of(address: &BindAddress) -> IpVersion {
@@ -647,23 +660,18 @@ pub fn open_socket(
             .map_err(|error| io_host_error(&error))
     };
     // An invalid id changes nothing and answers the thread's filesystem user.
-    // SAFETY: setfsuid only changes this thread's filesystem user, which is restored before returning.
-    let previous = unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t;
-    if previous == owner.0 {
+    let unchanged = Uid::from_raw(libc::uid_t::MAX);
+    let previous = setfsuid(unchanged);
+    if previous.as_raw() == owner.0 {
         return open();
     }
-    // SAFETY: as above.
-    let acting = unsafe {
-        libc::setfsuid(owner.0);
-        libc::setfsuid(libc::uid_t::MAX) as libc::uid_t
-    };
-    let socket = if acting == owner.0 {
+    setfsuid(Uid::from_raw(owner.0));
+    let socket = if setfsuid(unchanged).as_raw() == owner.0 {
         open()
     } else {
         Err(HostError::Errno(libc::EPERM))
     };
-    // SAFETY: as above.
-    unsafe { libc::setfsuid(previous) };
+    setfsuid(previous);
     socket
 }
 

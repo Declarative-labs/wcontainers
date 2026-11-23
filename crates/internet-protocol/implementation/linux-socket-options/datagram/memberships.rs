@@ -13,7 +13,7 @@ use wcontainers_internet_protocol::{
 };
 
 use crate::datagram::addresses::{in6_addr, storage, zeroed};
-use crate::{io_host_error, last_host_error, set_bytes, set_option};
+use crate::{io_host_error, set_bytes, set_option};
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
 #[derive(Default)]
@@ -54,26 +54,15 @@ fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
     let mut request = zeroed::<uapi::group_req>();
     request.gr_group = storage(group);
     set_option(probe.as_fd(), level, uapi::MCAST_JOIN_GROUP, &request)?;
-    // SAFETY: if_nameindex gives an array ended by an entry of index 0, or null, freed below.
-    let interfaces = unsafe { libc::if_nameindex() };
-    if interfaces.is_null() {
-        return Err(last_host_error());
-    }
-    let mut chosen = Err(HostError::Errno(libc::EADDRNOTAVAIL));
-    // SAFETY: the array is read up to its ending entry and freed once.
-    unsafe {
-        let mut entry = interfaces;
-        while (*entry).if_index != u32::MIN {
-            request.gr_interface = (*entry).if_index;
-            if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
-                chosen = Ok((*entry).if_index);
-                break;
-            }
-            entry = entry.add(1);
+    let interfaces =
+        nix::net::if_::if_nameindex().map_err(|error| HostError::Errno(error as i32))?;
+    for interface in &interfaces {
+        request.gr_interface = interface.index();
+        if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
+            return Ok(interface.index());
         }
-        libc::if_freenameindex(interfaces);
     }
-    chosen
+    Err(HostError::Errno(libc::EADDRNOTAVAIL))
 }
 
 /// Joins a group and writes its whole source filter, or leaves it. Linux writes a filter only for a membership
