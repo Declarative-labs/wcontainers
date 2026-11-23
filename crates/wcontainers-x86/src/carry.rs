@@ -260,27 +260,29 @@ pub struct Homes {
 }
 
 impl Homes {
-    /// Each withheld register named by the part with a register the part never uses, most named first.
+    /// Each withheld register the part names with a register the part never uses (never rbp, whose accesses take
+    /// the stack segment's fault), or none where too few are free: no stand-in is then needed in the loop.
     pub fn of(part: &[(u64, Instruction)]) -> Self {
         let mut info = InstructionInfoFactory::new();
         let mut used = [false; crate::operand::R15 as usize + 1];
-        let mut named = [0usize; crate::operand::R15 as usize + 1];
         for (_, i) in part {
             for u in info.info(&i.iced).used_registers() {
                 if let Some(g) = general(u.register()) {
                     used[usize::from(g.number)] = true;
-                    named[usize::from(g.number)] += 1;
                 }
             }
         }
-        let mut wanted: Vec<u8> = WITHHELD
+        let wanted: Vec<u8> = WITHHELD
             .iter()
             .copied()
             .filter(|&w| used[usize::from(w)])
             .collect();
-        wanted.sort_by_key(|&w| core::cmp::Reverse(named[usize::from(w)]));
-        // Never one of the first eight, which the address of an instruction naming a high byte may take.
-        let free = stand_ins().filter(|&n| n >= R8 && !used[usize::from(n)]);
+        let free: Vec<u8> = stand_ins()
+            .filter(|&n| n != RBP && !used[usize::from(n)])
+            .collect();
+        if free.len() < wanted.len() {
+            return Self::default();
+        }
         Self {
             pairs: wanted.into_iter().zip(free).collect(),
         }
@@ -748,11 +750,13 @@ pub fn carry(
     let m = i.iced.mnemonic();
     let repeated =
         crate::meaning::is_string(i) && (i.iced.has_rep_prefix() || i.iced.has_repne_prefix());
+    // A rebuilt operand of an instruction naming a high byte takes its address in one of the first eight.
     let stays = matches!(
         route,
         Route::Copy | Route::Rebase | Route::Nothing | Route::Transfer
     ) && !repeated
-        && m != Mnemonic::Fldcw;
+        && m != Mnemonic::Fldcw
+        && !(route == Route::Rebase && names_high_byte(&i.iced));
     if !stays {
         // The inside reads and writes the guest's registers where they are between loops.
         homes.leave(way, code);
