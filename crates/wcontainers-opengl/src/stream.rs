@@ -194,6 +194,23 @@ impl<B: Backend> Bound<B> {
         })
     }
 
+    /// Where the stage helper counts one draw's primitives while no target is bound: no buffer, and
+    /// the block (made at the first such draw).
+    pub fn counted(&mut self, backend: &mut B) -> Result<StreamTargets<'_, B>, String> {
+        if self.filled.is_none() {
+            self.filled = Some(block(backend)?);
+        }
+        let filled = self.filled.as_ref().ok_or("stream output's block")?;
+        Ok(StreamTargets {
+            buffers: [const { None }; STREAM_BUFFERS],
+            filled: BufferRange {
+                buffer: filled,
+                offset: 0,
+                size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
+            },
+        })
+    }
+
     /// Lets every target go, with the context.
     pub fn release(&mut self, screen: &crate::screen::Screen<B>) {
         for t in std::mem::replace(&mut self.targets, [std::ptr::null_mut(); STREAM_BUFFERS]) {
@@ -210,6 +227,17 @@ const COUNTER_USAGE: BufferUsage = BufferUsage::STORAGE
     .union(BufferUsage::COPY_SRC)
     .union(BufferUsage::COPY_DST)
     .union(BufferUsage::READ_BACK);
+
+/// The stage helper's block of filled sizes and statistics.
+fn block<B: Backend>(backend: &mut B) -> Result<B::Buffer, String> {
+    backend
+        .create_buffer(&BufferDesc {
+            size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
+            usage: COUNTER_USAGE,
+            intent: MapIntent::Rarely,
+        })
+        .map_err(|e| format!("stream output's block: {e:?}"))
+}
 
 /// `pipe_context::create_stream_output_target`.
 pub unsafe extern "C" fn create_stream_output_target<B: Backend>(
@@ -312,14 +340,7 @@ pub unsafe extern "C" fn set_stream_output_targets<B: Backend>(
     }
     let streams = &mut context.streams;
     if streams.filled.is_none() && !new.iter().all(|t| t.is_null()) {
-        let block = backend
-            .create_buffer(&BufferDesc {
-                size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
-                usage: COUNTER_USAGE,
-                intent: MapIntent::Rarely,
-            })
-            .unwrap_or_else(|e| refuse(format!("stream output's block: {e:?}")));
-        streams.filled = Some(block);
+        streams.filled = Some(block(backend).unwrap_or_else(|e| refuse(e)));
     }
     for (slot, old) in streams.targets.iter_mut().enumerate() {
         let word = slot as u64 * STORAGE_WORD;

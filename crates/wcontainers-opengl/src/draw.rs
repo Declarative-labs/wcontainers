@@ -20,7 +20,8 @@ use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
-    DomainSets, FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
+    Stages, StreamOutput,
 };
 
 use crate::context::Context;
@@ -61,9 +62,21 @@ pub(crate) struct Built<B: Backend> {
 /// A shader state as a map key: the address Mesa holds it at.
 pub(crate) type ShaderId = usize;
 
-/// A tessellated draw's stage helper by its vertex, control and evaluation programs and variants,
-/// and whether it streams.
-type TessellatedKey = ([(ShaderId, Variant); 3], bool);
+/// A tessellated draw's stage helper by its vertex, control, evaluation and geometry programs and
+/// variants (no geometry program: zero), and whether it has a stream stage.
+type TessellatedKey = ([(ShaderId, Variant); 4], bool);
+
+/// A vertex program's stage helper by it and the geometry program after it (none: zero), their
+/// variants, and whether the stream stage was added to count what the draw made.
+type StagedKey = (ShaderId, Variant, ShaderId, Variant, bool);
+
+/// The stream output declaration of a stage helper that only counts what a draw made.
+fn counted_only() -> StreamOutput {
+    StreamOutput {
+        entries: Vec::new(),
+        strides: [0; STREAM_BUFFERS],
+    }
+}
 
 /// What a program is converted for beside its NIR: the position's transform (vertex programs) and
 /// the swizzles of the views bound where it samples.
@@ -136,12 +149,9 @@ pub struct Programs<B: Backend> {
     /// Rasterizer blocks of a bound state with a sample mask of fewer than all samples.
     masked: HashMap<RasterDesc, B::Raster>,
     pub(crate) compute: HashMap<(ShaderId, Variant), B::Program>,
-    /// The stage helpers of vertex programs and the geometry programs after them (none: zero),
-    /// by both programs and variants.
-    staged: HashMap<(ShaderId, Variant, ShaderId, Variant), Staged<B>>,
-    /// The stage helpers of vertex programs and the control and evaluation programs after them.
-    /// The stage helpers of vertex programs and the control and evaluation programs after them,
-    /// and whether the evaluation program's output is streamed.
+    /// The stage helpers of vertex programs and the geometry programs after them.
+    staged: HashMap<StagedKey, Staged<B>>,
+    /// The stage helpers of vertex programs and the tessellation and geometry programs after them.
     tessellated: HashMap<TessellatedKey, Staged<B>>,
 }
 
@@ -466,8 +476,13 @@ fn convert<B: Backend>(
     variant: &Variant,
 ) -> Result<Built<B>, String> {
     let mut nir = shader.nir.try_clone().ok_or("out of memory")?;
-    if variant.transform != PositionTransform::default() {
-        nir.transform_position(variant.transform);
+    // A geometry program writes its records as written; its pass-through transforms the position.
+    let transform = match shader.stage {
+        Stage::Geometry => streamed_transform(variant.transform),
+        _ => variant.transform,
+    };
+    if transform != PositionTransform::default() {
+        nir.transform_position(transform);
     }
     if !variant.nearest.is_empty() {
         nir.nearest_integer_textures(&variant.nearest);
@@ -475,7 +490,15 @@ fn convert<B: Backend>(
     if !variant.swizzles.is_empty() {
         nir.swizzle_textures(&variant.swizzles);
     }
-    let key = nir.key().map_err(|e| e.to_string())?;
+    // The key of what is drawn: the pass-through's transform is the variant's.
+    let key = if transform == variant.transform {
+        nir.key()
+    } else {
+        let mut keyed = nir.try_clone().ok_or("out of memory")?;
+        keyed.transform_position(variant.transform);
+        keyed.key()
+    }
+    .map_err(|e| e.to_string())?;
     let stage = shader.stage.nir();
     let set = wcontainers_nir::bind::stage_set(stage.shader_stage());
     let bindings = nir.to_common_form(stage).map_err(|e| e.to_string())?;
@@ -594,8 +617,13 @@ fn convert_geometry<B: Backend>(
             "a geometry program's forms other than compute work and its pass-through"
         ));
     };
+    let mut drawn = passthrough.clone();
+    if variant.transform != streamed_transform(variant.transform) {
+        crate::position::transform(&mut drawn.module, variant.transform)?;
+        drawn.info = wcontainers_nir::spirv::validate(&drawn.module).map_err(|e| e.to_string())?;
+    }
     let shader = backend
-        .create_shader(passthrough)
+        .create_shader(&drawn)
         .map_err(|e| format!("{e:?}"))?;
     let set = wcontainers_nir::bind::stage_set(ShaderStage::Compute);
     Ok(Built {
@@ -1497,11 +1525,6 @@ fn draw<B: Backend>(
                 "an evaluation program without a control program (its default levels not built)"
             ));
         }
-        if !gs.is_null() {
-            return refused(format_args!(
-                "a geometry program behind tessellation (not built)"
-            ));
-        }
     }
     // Behind a geometry program or tessellation each range runs the stage helper and draws what
     // it made.
@@ -1607,14 +1630,23 @@ fn draw<B: Backend>(
         interpolation: inputs,
         ..Variant::default()
     };
-    // The evaluation program takes the position's transform and draws the tessellated points,
-    // for its control program's patches.
+    // The evaluation program draws the tessellated points with the position's transform, for its
+    // control program's patches; before a geometry program it only runs in the stage helper, its
+    // output as written.
     let evaluation = Variant {
-        transform,
+        transform: if gs.is_null() {
+            transform
+        } else {
+            streamed_transform(transform)
+        },
         swizzles: swizzles(context.stages.get(Stage::TessEvaluation)),
         nearest: nearest_samplers(context.stages.get(Stage::TessEvaluation)),
         border: border_in_program(context.stages.get(Stage::TessEvaluation)),
-        interpolation: geometry.interpolation.clone(),
+        interpolation: if gs.is_null() {
+            geometry.interpolation.clone()
+        } else {
+            Vec::new()
+        },
         // SAFETY: as above.
         points_in: if tessellated {
             unsafe { &*tcs }.nir.control_points_out()
@@ -1623,12 +1655,12 @@ fn draw<B: Backend>(
         },
         ..Variant::default()
     };
-    let (first, first_variant, first_stage) = if tessellated {
-        (tes, evaluation.clone(), Stage::TessEvaluation)
-    } else if gs.is_null() {
-        (vs, vertex.clone(), Stage::Vertex)
-    } else {
+    let (first, first_variant, first_stage) = if !gs.is_null() {
         (gs, geometry.clone(), Stage::Geometry)
+    } else if tessellated {
+        (tes, evaluation.clone(), Stage::TessEvaluation)
+    } else {
+        (vs, vertex.clone(), Stage::Vertex)
     };
     // SAFETY: as above.
     programs.built_for(backend, unsafe { &*first }, &first_variant)?;
@@ -1654,8 +1686,13 @@ fn draw<B: Backend>(
             ..Variant::default()
         };
         // SAFETY: as above.
-        let stages = unsafe { [(&*vs, &vertex), (&*tcs, &control), (&*tes, &evaluation)] };
-        match run_tessellated(context, backend, stages, elements, info, d)? {
+        let (stages, geometry_stage) = unsafe {
+            (
+                [(&*vs, &vertex), (&*tcs, &control), (&*tes, &evaluation)],
+                gs.as_ref().map(|g| (g, &geometry)),
+            )
+        };
+        match run_tessellated(context, backend, stages, geometry_stage, elements, info, d)? {
             Some(made) => Some(made),
             None => return Ok(()),
         }
@@ -1745,7 +1782,7 @@ fn draw<B: Backend>(
     // Behind tessellation the evaluation program draws, with its own resources.
     let both = [(first_stage, built[0]), (Stage::Fragment, built[1])];
     let (fetched, drawn) = match &made {
-        Some(_) if tessellated => (Vec::new(), &both[..]),
+        Some(_) if first_stage == Stage::TessEvaluation => (Vec::new(), &both[..]),
         Some(_) => (Vec::new(), &both[1..]),
         None => (
             fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?,
@@ -2113,6 +2150,14 @@ fn run_stages<B: Backend>(
     if geometry.is_none() && !streaming {
         return Ok(None);
     }
+    // Primitives a geometry program made are counted by the stream stage, run without buffers.
+    let counting = !streaming && !context.counting.is_empty();
+    let added = counting && declared.is_none();
+    let declared = if added {
+        Some(counted_only())
+    } else {
+        declared
+    };
     let mode = mesa_prim::from(info.mode);
     // A draw of no whole primitive records nothing, its statistics included.
     if indices::trimmed(mode, d.count) == 0 {
@@ -2173,6 +2218,7 @@ fn run_stages<B: Backend>(
         vertex_key.1.clone(),
         geometry_id,
         geometry_variant,
+        added,
     );
     if !programs.staged.contains_key(&key) {
         let vertex_forms = built_vertex
@@ -2265,6 +2311,8 @@ fn run_stages<B: Backend>(
     };
     let stream_output = if streaming {
         Some(context.streams.targets()?)
+    } else if counting {
+        Some(context.streams.counted(backend)?)
     } else {
         None
     };
@@ -2284,7 +2332,7 @@ fn run_stages<B: Backend>(
     }
     images.finish(backend);
     let out = ran.map_err(|e: StageError| format!("the stage helper: {e:?}"))?;
-    if streaming {
+    if streaming || counting {
         let statistics = context
             .streams
             .filled
@@ -2304,13 +2352,15 @@ fn run_stages<B: Backend>(
 
 /// One range of a draw through tessellation run by the stage helper outside the pass
 /// (`TessellationAsCompute`): the vertex program, the control program and the tessellator, then
-/// the evaluation program streamed to the bound targets where stream output is active. What
-/// the evaluation program draws; `None` where the range holds no whole patch. The control
-/// program's variant is completed here with its evaluation program's tessellator.
+/// the evaluation program and the geometry program where one is given as compute work too, the
+/// last of them streamed to the bound targets where stream output is active. What the evaluation
+/// or geometry program draws; `None` where the range holds no whole patch. The control program's
+/// variant is completed here with its evaluation program's tessellator.
 fn run_tessellated<B: Backend>(
     context: &mut Context<B>,
     backend: &mut B,
     [(vs, vertex), (tcs, control), (tes, evaluation)]: [(&Shader, &Variant); 3],
+    geometry: Option<(&Shader, &Variant)>,
     elements: &state::Elements<B>,
     info: &pipe_draw_info,
     d: &pipe_draw_start_count_bias,
@@ -2319,8 +2369,19 @@ fn run_tessellated<B: Backend>(
     if points == 0 || d.count < u32::from(points) {
         return Ok(None);
     }
-    let declared = tes.streamed.clone()?;
+    let declared = geometry
+        .map_or(&tes.streamed, |(gs, _)| &gs.streamed)
+        .clone()?;
     let streaming = context.streams.active() && declared.is_some();
+    // Primitives made are counted by the stream stage, run without buffers.
+    let counting = !streaming && !context.counting.is_empty();
+    let declared = match (streaming, counting) {
+        (true, _) => declared,
+        (false, true) => Some(declared.unwrap_or_else(counted_only)),
+        (false, false) => None,
+    };
+    // After the domain stage the helper runs a stage of its own.
+    let later = declared.is_some() || geometry.is_some();
     let indexed = info.index_size > 0;
     if indexed && (info.has_user_indices() || index_format(info.index_size) == IndexFormat::U8) {
         return refused(format_args!(
@@ -2339,20 +2400,34 @@ fn run_tessellated<B: Backend>(
         ..control.clone()
     };
     programs.built_for(backend, tcs, &control)?;
+    // The evaluation program's compute form, which a later stage or stream output reads, writes
+    // its output as written; its drawn form, which reads the patches and points, transforms it.
+    let computed = Variant {
+        transform: if later {
+            streamed_transform(evaluation.transform)
+        } else {
+            evaluation.transform
+        },
+        ..evaluation.clone()
+    };
+    programs.built_for(backend, tes, &computed)?;
     let id = |shader: &Shader| std::ptr::from_ref(shader) as ShaderId;
+    let geometry_key = geometry.map_or_else(Default::default, |(gs, v)| (id(gs), v.clone()));
     let key = (
         [
             (id(vs), streamed),
             (id(tcs), control),
-            (id(tes), evaluation.clone()),
+            (id(tes), computed),
+            geometry_key,
         ],
-        streaming,
+        declared.is_some(),
     );
     let [built_vertex, built_control, built_evaluation] =
-        key.0.each_ref().map(|k| &programs.built[k]);
-    if built_control.helper_size != 0 {
+        [&key.0[0], &key.0[1], &key.0[2]].map(|k| &programs.built[k]);
+    let built_geometry = geometry.map(|_| &programs.built[&key.0[3]]);
+    if built_control.helper_size != 0 || built_geometry.is_some_and(|g| g.helper_size != 0) {
         return refused(format_args!(
-            "helper constants in a control program (not built)"
+            "helper constants in a control or geometry program (not built)"
         ));
     }
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
@@ -2375,8 +2450,8 @@ fn run_tessellated<B: Backend>(
         StageSet::COMPUTE,
         &mut images,
     )?;
-    // The evaluation program runs as compute work too when its output is streamed.
-    let evaluation_sets = if streaming {
+    // The evaluation program runs as compute work too when a stage follows it.
+    let evaluation_sets = if later {
         binding_sets(
             backend,
             &context.stages,
@@ -2389,22 +2464,51 @@ fn run_tessellated<B: Backend>(
     } else {
         [const { None }; MAX_BINDING_SETS]
     };
+    let geometry_sets = match built_geometry {
+        Some(g) => binding_sets(
+            backend,
+            &context.stages,
+            &[(Stage::Geometry, g)],
+            &[],
+            info.start_instance,
+            StageSet::COMPUTE,
+            &mut images,
+        )?,
+        None => [const { None }; MAX_BINDING_SETS],
+    };
     if !programs.tessellated.contains_key(&key) {
+        let geometry_forms = match built_geometry {
+            Some(g) => Some(staged_forms(g)?),
+            None => None,
+        };
         let stages = Stages::tessellated_with(
             backend,
             staged_forms(built_vertex)?,
             staged_forms(built_control)?,
             staged_forms(built_evaluation)?,
-            None,
-            declared.as_ref().filter(|_| streaming),
+            geometry_forms,
+            declared.as_ref(),
         )
         .map_err(|e| format!("the stage helper: {e:?}"))?;
-        // The tessellated points are drawn without vertex streams.
-        let layout = backend
-            .create_vertex_layout(&VertexLayoutDesc {
+        if stages.selects() {
+            stages.destroy(backend);
+            return refused(format_args!(
+                "a geometry program writing a layer or viewport (not built)"
+            ));
+        }
+        // The tessellated points are drawn without vertex streams, a geometry program's output
+        // from its records.
+        let desc = match geometry {
+            Some(_) => stages
+                .vertex_layout()
+                .ok_or("a geometry stage without its records' layout")?,
+            None => VertexLayoutDesc {
                 streams: [None; MAX_VERTEX_STREAMS],
                 attributes: [None; MAX_VERTEX_STREAMS],
-            })
+            },
+        };
+        let layout = backend
+            .create_vertex_layout(&desc)
             .map_err(|e| format!("{e:?}"))?;
         programs.tessellated.insert(
             key.clone(),
@@ -2453,6 +2557,8 @@ fn run_tessellated<B: Backend>(
     };
     let stream_output = if streaming {
         Some(context.streams.targets()?)
+    } else if counting {
+        Some(context.streams.counted(backend)?)
     } else {
         None
     };
@@ -2464,10 +2570,10 @@ fn run_tessellated<B: Backend>(
         range,
         stream_output,
     };
-    let ran = if streaming {
+    let ran = if later {
         let later = DomainSets {
             domain_sets: std::array::from_fn(|set| evaluation_sets[set].as_ref()),
-            geometry_sets: [None; MAX_BINDING_SETS],
+            geometry_sets: std::array::from_fn(|set| geometry_sets[set].as_ref()),
         };
         staged.stages.run_after_domain(backend, &draw, &later)
     } else {
@@ -2477,13 +2583,14 @@ fn run_tessellated<B: Backend>(
         .into_iter()
         .chain(control_sets)
         .chain(evaluation_sets)
+        .chain(geometry_sets)
         .flatten()
     {
         backend.destroy(Object::BindingSet(set));
     }
     images.finish(backend);
     let out = ran.map_err(|e: StageError| format!("the stage helper: {e:?}"))?;
-    if streaming {
+    if streaming || counting {
         let statistics = context
             .streams
             .filled
@@ -2546,13 +2653,19 @@ fn streamed_variant<B: Backend>(
             .collect(),
         interpolation: Vec::new(),
         streamed: true,
-        transform: PositionTransform {
-            fixed_point_size: vertex.transform.fixed_point_size,
-            ..PositionTransform::default()
-        },
+        transform: streamed_transform(vertex.transform),
         ..vertex.clone()
     };
     (variant, locations)
+}
+
+/// The position's transform of a stage whose output a later stage reads or stream output takes
+/// as written: none, the point size kept.
+fn streamed_transform(drawn: PositionTransform) -> PositionTransform {
+    PositionTransform {
+        fixed_point_size: drawn.fixed_point_size,
+        ..PositionTransform::default()
+    }
 }
 
 /// The streams of the inputs at `pulled`, which the vertex program fetches itself.
