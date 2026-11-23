@@ -69,7 +69,10 @@ converters (`converter-patches/`), with which A8 closed: the native and WebAssem
 the same bytes for every shader; A1's cause read again (the program uses the type). Run 14 (run
 101, the section below): `A8Unorm` typed buffers and storage views read through a buffer (A28's
 first part, the Direct3D 11 front's typed loads of `A8_UNORM`), and A23 closed by a carried
-dxbc-spirv patch with a drawn test. Not complete: the gap list below.
+dxbc-spirv patch with a drawn test. Run 15 (run 102, the section below): A28's second part
+measured (WARP reports a YUY2 view's size as ours does, so nothing is built), the built-in
+storage clear of `A8Unorm`, and a pixel shader reading its clip distances on both routes. Not
+complete: the gap list below.
 
 For the Direct3D 11 track (its G4h ask, `B8G8R8X8_UNORM` vertex elements): done in run 95, commit
 02049aeb ("interface: a b8g8r8x8 vertex format ..."), both of its patches as written, in one
@@ -151,6 +154,59 @@ rewrites and the variant's as `rewrite` makes them; the modules carry `cache::re
   offset's own type (`int3(...)` for a 3D texture, was always `int2(...)`), so wgpu's Direct3D 12
   path takes 3D samples with offsets. Drawn: `volume_samples_with_offsets_read_the_texel_each_names`
   (tests/writer_draw.rs).
+
+## G6 run 15 (run 102): YUY2 view sizes measured (A28), `A8Unorm` clears, clip distances read by pixel shaders
+
+Logs and scripts in scratch `graphics-shaders/g6-r102` (the clone `tip` on branch `shaders-tip`,
+desktop copy `C:\wc\src\shaders-tip`). Nothing built on the Mac (rustfmt of single files only).
+- A28's second part, `GetDimensions` of a view of a YUY2 texture (the Direct3D 11 front's known
+  failure `yuy2_view_sizes_read_as_direct3d_reads_them`): measured with scratch `yuy2probe` (a
+  compute shader asking levels 0 to 2 of `R8G8B8A8_UNORM` and `_UINT` views of 8x4 and 6x2 YUY2
+  textures of one level). WARP reports the view's texels, width 4 and 3 (and zeros past the
+  view's level), which is what ours reports; the RTX 3080 reports the pixels, width 8 and 6 (and
+  sizes past the view's level). Logs `yuy2-hw.log` (through the GPU queue) and `yuy2-warp.log`.
+  Textures of YUY2 with more than one level are refused by both. So the two real
+  implementations differ, ours equals WARP exactly, and by the orchestrator's rule of 2026-11-22
+  (a result passes when no further from a real implementation than two real ones are from each
+  other) ours passes; no helper value is built (none would be the plan's primitive for one
+  device's choice). Answered for the Direct3D 11 front under "Asked of other tracks".
+- The built-in storage clear of `A8Unorm` (no longer `StorageFormatAbsent`): `storage_clear` takes
+  the format's storage form (`rgba8unorm`, as the back ends hold it), and `storage_clear_value`
+  puts the alpha value's code in alpha and zeros in the channels it lacks. Drawn in
+  `storage_clears_match_direct3d` (tests/clear_draw.rs, `A8Unorm` now among its formats), seed 1,
+  256 cases (`WCONTAINERS_CLEAR_CASES=256`): 0 failed; the 8 `A8Unorm` cases (2D, 2D array and 3D
+  views, integer and float clears) are 0 texels apart from WARP; the RTX 3080's Direct3D differs
+  in the integer ones as it does for B8G8R8A8 and the other packed formats (it reads the values as
+  floats; the float case is equal to it too) (gpu1.log).
+- A pixel shader reading `SV_ClipDistance` (the Direct3D 12 front's runner item; runner
+  `clip-cull-distance-2-2-ps`): converts on both routes with `VariantFlags::CLIP_DISTANCE` and
+  `linked` in its key, reading the distances from the linked values the vertex program passes (the
+  in-program clip, `SlowPath::ClipDistanceInShader`, which clips the same pixels). Without the
+  flag it stays `ClipDistance` (no back end reads the built-in in a pixel program), and reading
+  more than `linked.clip_distances` is `LinkedClipDistanceCount`. DXBC: `lower.rs`
+  `clip_distance_input` makes one array input of every declaration's distances in order;
+  DXIL: dxil-spirv's input of the built-in passes `unconverted` under the flag; both are then
+  replaced by `variant.rs` `clip_distance_reads`. New own `ps_clip_read` (variants.hlsl, fxc and
+  dxc builds) reads `vs_clip_six`'s six distances. Tests:
+  `clip_distances_a_pixel_program_reads_come_from_the_linked_values` (tests/variants.rs, any
+  machine) and a case of `variants_draw_as_the_native_feature_does` (tests/variant_draw.rs):
+  against real Direct3D 11 on the RTX 3080, both routes, WebGPU and WebGL 2, 6 of 4,096 texels one
+  code apart, the rest equal (gpu2.log). A pixel shader reading `SV_CullDistance` stays refused
+  `CullDistance`: `LinkedValues` carries no cull distances (an interface field; runner
+  `clip-cull-distance-1-6-ps` and `-1-8-ps`).
+- The corpus records do not change: the corpus converts each file under a plain key, under which
+  `clip-cull-distance-2-2-ps` stays `ClipDistance`. Measured on the laptop (`--test corpus`, every
+  corpus and glslang, load 0.1 to 1.8): 13 passed; against run 101's `out-r101` no WGSL or GLSL
+  file differs (`out-r102`; the own records gain `ps_clip_read`'s two lines). Not run: the
+  WebAssembly build (no C++ changed).
+- Checks at the tree committed (ARM64, arm4.log, load 13 to 17): `cargo fmt -p
+  wcontainers-shaders --check` clean, clippy with warnings denied clean, every CPU test binary
+  passed, the literal check prints no line of this crate (it named the new malformed case's text
+  first, arm3.log; named in 63ff04a1). Windows clippy with warnings denied clean (gpu1.log,
+  gpu2.log). On the RTX 3080 (one job, one test thread): `clear_draw` and `builtin` (gpu1.log),
+  `variants_draw_as_the_native_feature_does` (gpu2.log) passed. Not run: the whole GPU suite (the
+  changes touch the clear program and pixel inputs of clip distances, whose drawn tests ran, and
+  no corpus file's WGSL changed) and Chrome (no WGSL changed).
 
 ## G6 run 14 (run 101): `A8Unorm` through a buffer (A28), A23 closed
 
@@ -1683,7 +1739,7 @@ The pass bar, item by item:
    control points on the DXIL route (A13, A14: dxil-spirv's) and the written count of a stream
    with no buffer bound (A15).
 5. The built-in programs: the storage clear (`clear_draw`, every storage format and dimension
-   against WARP and the GPU's Direct3D 11), and since run 56 the pixel program of a pipeline
+   against WARP and the GPU's Direct3D 11; `A8Unorm` since run 102), and since run 56 the pixel program of a pipeline
    without a pixel shader (`builtin::pixel_program_for_variant`, `tests/builtin.rs` and the
    `variant_draw` cases above). Met. The fronts do not use them yet (theirs).
 6. The cache of section 8 (`tests/cache.rs`): one file that round-trips
@@ -2381,11 +2437,10 @@ The gap list (every item of the pass bar not met):
   (its section): `A8Unorm` has a texel layout of one byte read as (0, 0, 0, a) and written from
   the value's alpha, for storage views read through a buffer (the front's typed loads,
   `StorageReadWriteThroughBuffer`) and typed buffers; drawn as a storage texture loaded and
-  stored through a buffer (`cs_alpha`). (2) A helper value giving a program a view's width
-  other than its texture's (`GetDimensions` of a YUY2 view: Direct3D gives the texture's width in
-  pixels, ours the view's pixel pairs). Waits: the Direct3D 11 front. Takes: an interface helper
-  value (the interface track's) and `TEXTURE_INFO` reading it in place of the texture's width.
-  The second is not built.
+  stored through a buffer (`cs_alpha`). The built-in storage clear of it since run 102 (its
+  section). (2) `GetDimensions` of a YUY2 view: closed as measured in run 102 (its section).
+  The RTX 3080 reports the texture's width in pixels, WARP the view's texels (pixel pairs) as ours
+  does, so by the orchestrator's rule of 2026-11-22 ours passes and no helper value is built.
 - A29. Three drawn test binaries, `draw`, `geometry_draw` and `variant_draw`, crash on the desktop
   when their tests run in parallel threads (cargo's default): ANGLE asserts in its Direct3D 11
   state manager (`StateManager11.cpp:1201`, `mVertexArray11 == ...`, and `:2968`,
@@ -2470,8 +2525,10 @@ The gap list (every item of the pass bar not met):
   texel), early tests on 24-bit depth (not measured), comparison filtering
   with a border colour (needs the comparison in `SamplerState`); and dxil-spirv's crashes on signed
   but malformed DXIL (fuzz, Known gaps). The Direct3D 12 front's runner items besides (its status,
-  "Asked of other tracks"): `DepthGatherComponent`, `SparseFeedback`, a clip distance read by a
-  pixel shader, a DXIL pixel shader's layer and viewport index, and values that differ without a
+  "Asked of other tracks"): `DepthGatherComponent`, `SparseFeedback`, a cull distance read by a
+  pixel shader (a clip distance read converts with `CLIP_DISTANCE` since run 102; a cull distance
+  needs `LinkedValues` to carry them, an interface field), a DXIL pixel shader's layer and
+  viewport index, and values that differ without a
   refusal (a centroid `SV_Position` per sample, `min16float` constants, subnormals not flushed,
   DXIL `frexp` of a NaN), and the shader model 4.0 multisampled load in a loop that its front reads at
 swapped coordinates (runner texture-load; this track's run 32 found fxc's build of that shader
@@ -2515,14 +2572,17 @@ G6a run 5's tip):
   `AtomicSignedness` 1; `ResourceArray` 0 (own `cs_buffer_array.dxil` converts
   since run 87, recorded `UnboundedResourceArray` as the corpus has no ranges); a clip or cull distance read as an input
   (`ClipDistance` 4, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`, DXBC and,
-  since run 65, DXIL). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
+  since run 65, DXIL; since run 102 `clip-cull-distance-2-2-ps`'s two builds convert with
+  `CLIP_DISTANCE` and `linked`, a key the corpus does not give, so their records stay). A DXIL pixel shader's layer or viewport index (the reader's "unsupported
   builtin" 4) converts since run 66.
 
 ## Next
 
-1. G6's gap list in the order the fronts need it: A28's second part (with the interface track, a
-   view's width for YUY2) and A17's aliased lines into multisampled targets (the Direct3D 11
-   front's asks, both waiting on the interface track; A5's routes on WebGL 2 were finished in runs
+1. G6's gap list in the order the fronts need it: A17's aliased lines into multisampled targets
+   (the Direct3D 11 front's last ask of this track: a variant flag for the pixel program's
+   diamond-exit test, a stage helper route drawing each segment as a rectangle over the pixels it
+   may pick, and a drawn test into 4x targets; A28's second part closed as measured in run 102;
+   a cull distance read by a pixel shader needs `LinkedValues` to carry cull distances; A5's routes on WebGL 2 were finished in runs
    83 to 85, A4's multisampled integer twins are absent by plan 4.12, A9 closed in run 86), A7
    (its typed buffers in geometry shaders done in run 86; left: indirect draws through the stages,
    cull distances from domain shaders; a geometry shader's written primitive number done in run
@@ -2540,6 +2600,22 @@ G6a run 5's tip):
    cause), A31 when the WebGL 2 track has rounded its gathers, A22 on WARP.
 
 ## Asked of other tracks
+
+- For the Direct3D 11 front (run 102, its known failure `yuy2_view_sizes_read_as_direct3d_reads_them`
+  and its ask "a helper value giving a program a view's width other than its texture's"): WARP
+  reports a YUY2 texture's `R8G8B8A8_UNORM` and `_UINT` views as their texels (width 4 for an 8x4
+  texture, 3 for 6x2), which is what ours reports; the RTX 3080 reports the pixels (8 and 6). By
+  the orchestrator's rule of 2026-11-22 ours passes; nothing is built (this track's run 102
+  section, scratch g6-r102 `yuy2-warp.log` and `yuy2-hw.log`). Re-judging the test against WARP is
+  yours. The built-in storage clear also takes `A8Unorm` views now (`storage_clear(Format::A8Unorm,
+  ..)` and `storage_clear_value`), equal to WARP's `ClearUnorderedAccessView*`.
+- For the Direct3D 12 front (run 102, its runner's `clip-cull-distance-2-2-ps`): a pixel shader
+  reading `SV_ClipDistance` is refused `ClipDistance` under a key without the distances; convert
+  it and its vertex (or last vertex stage's) program with `VariantFlags::CLIP_DISTANCE` and the
+  same `linked` (`location` from the vertex program's outputs, as the pixel program cannot be
+  converted plain), as for a back end without clip distances, and count
+  `SlowPath::ClipDistanceInShader`; drawn equal to Direct3D 11 here. A pixel shader reading
+  `SV_CullDistance` (`-1-6-ps`, `-1-8-ps`) stays `CullDistance`.
 
 - For the Direct3D 11 front (run 101, its "`A8_UNORM` has no such buffer route (the shaders crate
   decodes no 8-bit alpha in a buffer)"): `A8Unorm` now has a texel layout, one byte a texel, read
@@ -2990,7 +3066,9 @@ let reflection = &converted.reflection;
   with `CLIP_DISTANCE`. With `DEPTH_CLAMP` write `DepthRange` as (near, far) f32 of the API's viewport;
   the raster block keeps depth clipping on (the program keeps z inside), and those draws lose early
   depth tests (the program writes depth). Check the vertex program's locations plus the added ones
-  against the back end's inter-stage limit.
+  against the back end's inter-stage limit. A pixel shader reading `SV_ClipDistance` converts only
+  so (since run 102; refused `ClipDistance` otherwise, `LinkedClipDistanceCount` where it reads more
+  than `clip_distances`): take `location` from the vertex program's outputs alone.
 - `CLIP_DISTANCE` behind the stage helper (built since runs 38 and 39; both fronts asked for it
   in their latest runs, from creation-time conversions): the stage helper's pass-throughs take
   the key of the conversion they come from, so the key must carry `CLIP_DISTANCE` and the pixel
@@ -4084,6 +4162,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 102's scripts in scratch `graphics-shaders/g6-r102` are run 101's with its folder;
+  `arm-sync.sh` now also makes `tip-arm` a git checkout (arm-run copies only checkouts), so the ARM
+  checks are `./arm-sync.sh && arm-run tip-arm --jobs 12 -- "$(cat arm-cmd.txt)"`. `yuy2probe` is
+  a standalone Rust program (windows crate only) built on the desktop in
+  `C:\wc\scratch-shaders\yuy2probe` with `cargo build --release`; run `yuy2probe.exe warp` there
+  directly (WARP needs no GPU) and the hardware run through `gpu-job` from the clone.
+  `compile-clip.cmd` compiles one own shader with fxc and dxc beside a copy of its .hlsl (and
+  own.hlsl) on the desktop.
 - Run 101's scripts in scratch `graphics-shaders/g6-r101` are run 100's with its folder, plus
   `make-patches.py` with dxbc_io_map.cpp's line. Make the clone with `git clone -b agents
   <worktree> tip`, then `git -C tip branch -m agents shaders-tip` BEFORE any rig command: the rig
