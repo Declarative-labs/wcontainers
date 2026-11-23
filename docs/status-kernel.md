@@ -8,6 +8,58 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KF, sixth run: the second check's findings
+
+Started about 16:00 UTC on 2026-11-23 at 9aa56cb0. Every build and test ran on the ARM64 machine;
+the Mac only edited, formatted single files and committed. Scratch kernel/kf6 (a1.sh to a3.sh,
+whole.sh, literals.sh, logs beside them).
+
+The check's findings:
+- `execCPUAffinity` was asked for and not built (7b992220): `StartOptions::cpu_affinity`, a mask
+  as `sched_setaffinity` takes it (its final set; runc sets it before the program), applied as the
+  first process's own `sched_setaffinity` at start; a mask of no processor online fails the start
+  with EINVAL. Each thread now keeps its affinity (`Thread::affinity`, none for every processor,
+  inherited by clone and kept for an ended leader); `sched_getaffinity` gives it,
+  `sched_setaffinity` sets it (the mask and the processors online; none of them is EINVAL), and
+  `getcpu` names the lowest processor of it. Until now `sched_setaffinity` answered 0 and kept
+  nothing. Tests: startoptions `a_processor_affinity_matches_reference` (guest affinity.c: the
+  reference sets the mask itself and runs itself again; ours starts with it on four processors;
+  the exit code holds the set, a child's set, sched_getcpu, a second set read back and an empty
+  mask refused) and `a_processor_affinity_of_no_processor_online_fails_the_start`. Both pass.
+- Placement compared with the reference (3285715e): new tests/placement.rs
+  `relative_placement_matches_reference` (guest placement.c, layout not random, seccomp off on
+  both sides: the stack's top to the vDSO's, the first mapping against the vDSO, gaps between
+  mappings, a hole refilled, hints below and on a mapping, 1 GiB, 3 MiB, 4 MiB and 2 MiB
+  mappings and where each starts in its PMD, shared anonymous memory, a hint that does not fit,
+  a mapping that grows down, two mremap moves). It found the finding below; it passes now.
+- No huge-page alignment: Linux places anonymous private memory of whole PMDs (2 MiB) asked for
+  with no hint on a PMD's boundary (`__get_unmapped_area` to `__thp_get_unmapped_area`: the
+  space for one PMD more, top-down, then its boundary, or one PMD higher where the space starts
+  on one). Now `AddressMap::find_free_anonymous` does the same for mmap (no file, not
+  MAP_SHARED, no hint) and for an mremap move of private anonymous memory. Shared anonymous
+  memory is not aligned (shmem's huge setting is never), as the reference shows; a private
+  mapping of `/dev/zero` (Linux aligns any length of at least a PMD there) is not. Unit test
+  `anonymous_memory_of_whole_pmds_starts_on_a_boundary`.
+- Placement under a ceiling below 4 GiB: see the decision under Departures (KF, sixth run).
+- The literal check: see below.
+- `MAX_ARG_STRLEN` is `wcontainers_abi::PAGE_SIZE * 32` (d3cda690).
+- A memory size other than the space's end: the stand-in's driver takes `Prepared::memory_bytes`
+  and `Prepared::address_space_bytes`; tests/machine.rs `the_memory_size_given_is_the_one_told`
+  (3 GiB on the 4 GiB stand-in: `/proc/meminfo`'s MemTotal and `free`'s sysinfo total).
+- A width past 2^48 is now counted and warned of, "address space narrowed to 48 bits" with the
+  size asked for as detail (55609a34); tests/machine.rs `placements_stay_under_each_address_width`
+  (widths 1 GiB, 2 GiB and 2^52: every mapping of `/proc/self/maps` under each, the warning only
+  for 2^52). Both pass.
+
+The literal check at the committed tip (kf6/literals.sh): of the check's list in this track's
+files, hardware-virtualization-inside's `PAIR` is now `SAVED_PAIR` (3dc17db7, a different fact
+from the x86 assembler's). The others are values other tracks named after these lines were
+written, and are For the orchestrator (KF, sixth run). The literal fix list: `SOMAXCONN`, the
+cap on a listen backlog and `/proc/sys/net/core/somaxconn`'s value, is named once in
+linux_extra.rs (89be397e, 2b12892c); the baseline went from 27628 to 27626 lines (f11d1234). The
+check at 2b12892c (kf6/lit4*) exits 1, on other tracks' files and the interfaces', and in this
+track's files only on the lines For the orchestrator names (the fifth run's four and the sixth's).
+
 ## KF, fifth run: the check's findings, and the literal fix list's time and size units
 
 Started about 10:30 UTC on 2026-11-23 at 4f59ef13's code (nothing to merge: main's last merge,
@@ -636,6 +688,20 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KF, sixth run: the literal check reports lines in this track's files that restate values other
+  tracks named after the lines were written, which rule 8 of docs/literals.md asks the namer to
+  settle; this track may not edit those crates. Coincidences of value, not the same facts: the
+  stand-in's backend.rs `FUSE_DEVICE_LINK` and tests/busybox.rs `du -s` against the ICMP suite's
+  `STATISTICS` ("-s"); tests/outside.rs's 1500-byte UDP buffer against its `NARROW_LINK_MTU`;
+  tests/startoptions.rs "40000" (an out-of-range msgmni) against the route resolver suite's
+  `SOURCE_PORT`, and "dev" (a mount) against the ICMP suite's `DEVICE`; the kernel's seccomp.rs
+  test values 258 and 1100 against the ICMP suite's `SEQUENCE` and `PACED_MESSAGE`. The same
+  facts in crates neither may import: the kernel's network.rs `MTU` and syscall/socket/inet.rs
+  `ROUTE_MTU` (65535) against the host route resolver's `IP_MAX_MTU`, and network.rs
+  `LOOPBACK_MTU` (65536) against the route resolver suite's `LOOPBACK_DEVICE_MTU`: one shared
+  home (an interface crate both use, or wcontainers-abi with the route resolver importing it)
+  needs a ruling. The four of the fifth run stay as they are.
+
 - KC, fourth run: the abi's `Event` lost its `BackendNotice` variant and with it its lifetime, so
   this track changed one line of the runtime track's crate to build (single-kernel net.rs,
   `fn event(&mut self, arrival: &Arrival) -> Option<Event>`) and corrected that crate's
@@ -750,7 +816,8 @@ side of each is worked around without changing the interface.
   know (the WebAssembly ceiling is the wasmtime crate's, from the translator's contract). A ruling
   or a shared constant in wcontainers-abi for that tier would settle it (Departures).
 
-- KF, fourth run: every start value the runtime asked for is now built, with these limits,
+- KF, fourth run (sixth run: execCPUAffinity, which the fourth run left out, is built too): every
+  start value the runtime asked for is now built, with these limits,
   each refused at start (counted, the start fails) where it is not built, so nothing pretends:
   - sysctls: the IPC namespace's (`kernel.msg*`, `kernel.sem`, `kernel.shm{max,all,mni}`,
     `fs.mqueue.*`) are state the IPC calls honour. Others fail the start, counted "sysctl not
@@ -5165,8 +5232,10 @@ Everything a reviewer should know about what is not compared, in one place.
   `sequences_replay_from_their_record` (`LAYER1_REPLAY_CASES`, `LAYER1_SEED`); the stand-in and
   the buffer CPU compare a digest of every guest memory. Placement: kernel unit test
   `placement_fills_the_lowest_tier_first_whatever_the_ceiling_and_width` (widths 2^36, 2^40,
-  2^48, ceilings 4 GiB, 16 GiB and the width); `Start::address_space_bytes`, `memory_bytes` and
-  the ceiling. The start values: tests/startoptions.rs (14, against `docker run` options). The
+  2^48, ceilings 4 GiB, 16 GiB and the width); compared with the reference: tests/placement.rs
+  (KF, sixth run, with the PMD alignment); the memory size and widths given: tests/machine.rs.
+  The start values: tests/startoptions.rs (16, against `docker run` options or the reference's
+  own call where Docker has none). The
   whole suite and LTP comparison: scratch kernel/kf5/whole.sh; the literal check at the committed
   tip: kernel/kf5/literals.sh. The lowest tier under the WebAssembly ceiling is For the
   orchestrator (KF, first run), not built.
@@ -6742,6 +6811,14 @@ All on this shared Mac; noisy, not benchmarks.
 - KF, second run: Docker has no option for the first process's umask, so startoptions' reference
   runs `umask` in its shell before the same commands; ours starts with the mask.
 
+- KF, sixth run: placement independent of the executor (the brief's ask of 2026-11-23) is taken
+  as the milestone after KF, not in KF. Why: it moves every address the stand-in's tests see
+  (the lowest tier's top must then be one value at or below every executor's ceiling, the
+  WebAssembly back end's about 0xFF00_0000 included), which is a change of its own with its own
+  whole-suite run, and the value needs the executors' lowest ceiling, which the kernel does not
+  know today. Until then, as KF built it: under a ceiling below 4 GiB the stack, the mmap base
+  and the range they are drawn from move down with it (the check measured 4, 3, 2 and 1 GiB);
+  at or above 4 GiB, and for widths 2^36, 2^40 and 2^48, placement does not change.
 - KF: the lowest placement tier is capped by the executor's ceiling (For the orchestrator), so
   placement depends on the ceiling below 4 GiB. The brief's ceiling "fails as out of memory,
   counted and warned" is the streams track's `PROCESS_OUTGROWN` counter and hook, kept as built.
@@ -7521,6 +7598,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KF, after its sixth run:
+1. The independent check (For the independent check, entry KF).
+2. The milestone after KF: placement independent of the executor (the brief's ask of
+   2026-11-23; Departures, KF, sixth run), then items 2 and 4 below.
 
 KF, after its fifth run:
 1. The independent check (For the independent check, entry KF).
