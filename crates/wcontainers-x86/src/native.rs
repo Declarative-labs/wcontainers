@@ -13,7 +13,7 @@ use crate::answer::{
 use crate::claims::{CLAIM_KERNEL, CLAIM_NEVER};
 use crate::decode::{Instruction, claim, told_feature};
 use crate::guest::{Control, Hook};
-use crate::meaning::{is_string, written};
+use crate::meaning::{ENTER_LEVELS, is_string, written};
 use crate::operand::{RSP, W32, W64, general};
 use crate::segments::{is_far, operand_bytes};
 use crate::x87::{Code, Operation};
@@ -371,6 +371,16 @@ pub fn question(i: &Instruction) -> Option<Question> {
             bytes: operand_bytes(i) as u8,
             at: operand(i)?,
             length: ins.len() as u8,
+        },
+        Enter => Question::Enter {
+            size: ins.immediate16(),
+            level: ins.immediate8_2nd() % ENTER_LEVELS,
+            bytes: crate::operand::stack_bytes(i) as u8,
+        },
+        Fst | Fstp | Fist | Fistp | Fisttp | Fbstp => Question::X87Store {
+            code: crate::fpu::store_code(i)?,
+            at: operand(i)?,
+            bytes: crate::operand::memory_bytes(i) as u8,
         },
         _ => crate::fpu::transcendental_code(i).map(Question::X87)?,
     })

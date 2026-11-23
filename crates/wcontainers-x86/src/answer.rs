@@ -7,12 +7,12 @@ use crate::user_segments::{
     SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS, USER32_CS,
 };
 use crate::x87::{
-    Code, ENVIRONMENT_16, ENVIRONMENT_32, ENVIRONMENT_32_BYTES, EXCEPTIONS, OPCODE_BITS,
-    REGISTER_MASK, TOP_SHIFT, Unit,
+    Code, ENVIRONMENT_16, ENVIRONMENT_32, ENVIRONMENT_32_BYTES, EXCEPTIONS, NOT_STORED,
+    OPCODE_BITS, REGISTER_MASK, STORED_STATUS_SHIFT, STORED_TAGS_SHIFT, TOP_SHIFT, Unit, VALUE_LOW,
 };
 use crate::{
     ALIGNMENT_CHECK, ARITHMETIC_FLAGS, DEFAULT32, DF, FCW_AT_START, Fxsave, ID, MXCSR_WRITABLE, NT,
-    Offer, QUIET32, RAX, RBX, RCX, RDX, RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
+    Offer, QUIET32, RAX, RBP, RBX, RCX, RDX, RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
     is_canonical,
 };
 use wcontainers_guest_cpu::position::{Base, Operand, Segment};
@@ -215,6 +215,18 @@ pub enum Question {
         wide: bool,
         at: Operand,
     },
+    /// `enter` of a frame of `size` bytes at nesting level `level` (already taken modulo 32), each push `bytes` long.
+    Enter {
+        size: u16,
+        level: u8,
+        bytes: u8,
+    },
+    /// A store of ST(0) to the `bytes` at `at`, run by the unit as its code says.
+    X87Store {
+        code: Code,
+        at: Operand,
+        bytes: u8,
+    },
 }
 
 /// How an answered instruction stops instead of finishing.
@@ -411,12 +423,55 @@ pub fn answer(
             block.gpr[general(RDX)] = 0;
         }
         Question::X87(code) => {
-            let area = &block.fxsave;
-            let raised = area.fsw & !area.fcw & EXCEPTIONS;
-            if raised != 0 {
-                return Err(Fault::FloatException(raised));
-            }
+            pending(block)?;
             Unit::new(block.fxsave.as_mut_bytes(), code, 0, constants).run(0, 0);
+            block.fxsave.fip = block.rip;
+        }
+        Question::X87Store { code, at, bytes } => {
+            pending(block)?;
+            let at = address(block, &at);
+            let [low, high] = Unit::new(block.fxsave.as_mut_bytes(), code, at, constants)
+                .run(0, 0)
+                .map(|result| result as u64);
+            if high & NOT_STORED == 0 {
+                let value = (u128::from(high as u16) << u64::BITS | u128::from(low)).to_le_bytes();
+                let bytes = usize::from(bytes);
+                // An 80-bit value goes in two parts, its first eight bytes written before the last two are reached.
+                let first = bytes.min(VALUE_LOW as usize);
+                memory.write(at, &value[..first]).map_err(Fault::Memory)?;
+                memory
+                    .write(at.wrapping_add(first as u64), &value[first..bytes])
+                    .map_err(Fault::Memory)?;
+                block.fxsave.fsw = (high >> STORED_STATUS_SHIFT) as u16;
+                block.fxsave.ftw = (high >> STORED_TAGS_SHIFT) as u8;
+            }
+            block.fxsave.fip = block.rip;
+        }
+        Question::Enter { size, level, bytes } => {
+            // Each push writes below the last and faults by itself; the registers change only at the end.
+            let width = u64::from(bytes);
+            let mut frame = block.gpr[general(RSP)];
+            let mut frame_pointer = block.gpr[general(RBP)];
+            let mut push = |memory: &mut _, value| {
+                frame = frame.wrapping_sub(width);
+                write_bytes(memory, frame, value, bytes).map(|()| frame)
+            };
+            let pushed = push(&mut *memory, frame_pointer)?;
+            if level > 0 {
+                for _ in 1..level {
+                    frame_pointer = frame_pointer.wrapping_sub(width);
+                    let copied = read_bytes(memory, frame_pointer, bytes)?;
+                    push(&mut *memory, copied)?;
+                }
+                push(&mut *memory, pushed)?;
+            }
+            // The CPU then checks a write at the final stack pointer (Intel SDM Vol. 2 ENTER).
+            let top = frame.wrapping_sub(size.into());
+            memory.check(top, width, true).map_err(Fault::Memory)?;
+            // A word-sized `enter` writes bp alone, over what the copies left in rbp.
+            block.gpr[general(RBP)] = frame_pointer;
+            set_general(block, RBP, bytes * u8::BITS as u8, pushed);
+            block.gpr[general(RSP)] = top;
         }
         Question::Reciprocal(form) => reciprocal(block, memory, form)?,
         Question::PopFlags { bytes } => {
@@ -771,6 +826,22 @@ fn read_bytes(memory: &mut impl Memory, at: u64, bytes: u8) -> Result<u64, Fault
         .read(at, &mut word[..usize::from(bytes)])
         .map_err(Fault::Memory)?;
     Ok(u64::from_le_bytes(word))
+}
+
+/// The low `bytes` bytes of `value` written at `at`.
+fn write_bytes(memory: &mut impl Memory, at: u64, value: u64, bytes: u8) -> Result<(), Fault> {
+    memory
+        .write(at, &value.to_le_bytes()[..usize::from(bytes)])
+        .map_err(Fault::Memory)
+}
+
+/// The floating point exception an x87 instruction that waits meets first, when a raised one is unmasked.
+fn pending(block: &X86Block) -> Result<(), Fault> {
+    let area = &block.fxsave;
+    match area.fsw & !area.fcw & EXCEPTIONS {
+        0 => Ok(()),
+        raised => Err(Fault::FloatException(raised)),
+    }
 }
 
 /// The offset of `offset_bytes` bytes at `at` and the selector after it, each read faulting by itself; the

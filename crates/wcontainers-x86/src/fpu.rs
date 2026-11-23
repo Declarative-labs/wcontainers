@@ -220,10 +220,7 @@ pub(crate) fn store_at<E: Emitter<X86_64> + ?Sized>(
     };
 }
 
-/// The bytes of a memory value the hook's first argument holds; the rest, up to an 80-bit value, go in the
-/// second.
-pub(crate) const VALUE_LOW: u32 = size_of::<u64>() as u32;
-pub(crate) const VALUE_HIGH: u32 = size_of::<u16>() as u32;
+pub(crate) use crate::x87::{STORED_STATUS_SHIFT, VALUE_HIGH, VALUE_LOW};
 
 /// Call the x87 hook with `code`, the values in these locals (or zeros) and the data address; its two
 /// results into fresh locals.
@@ -287,7 +284,7 @@ fn write<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, bytes: u32, low: u32, 
     }
     e.sink()
         .local_get(high)
-        .i64_const(u16::BITS.into())
+        .i64_const(STORED_STATUS_SHIFT.into())
         .i64_shr_u()
         .i32_wrap_i64();
     e.set_control(Control::X87StatusTag);
@@ -403,6 +400,21 @@ pub(crate) fn transcendental_code(i: &Instruction) -> Option<Code> {
     c.operation = operation;
     c.pops = u8::from(matches!(m, Fpatan | Fyl2x | Fyl2xp1));
     Some(c)
+}
+
+/// The unit's code of a store of ST(0) to memory.
+pub(crate) fn store_code(i: &Instruction) -> Option<Code> {
+    use Mnemonic::*;
+    let m = i.iced.mnemonic();
+    if !matches!(m, Fst | Fstp | Fist | Fistp | Fisttp | Fbstp) || format(i) == Format::Register {
+        return None;
+    }
+    Some(Code {
+        operation: Operation::Store,
+        pops: u8::from(!matches!(m, Fst | Fist)),
+        truncate: m == Fisttp,
+        ..code(i)
+    })
 }
 
 pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {

@@ -775,7 +775,7 @@ pub(crate) fn push_value<E: Emitter<X86_64> + ?Sized>(
 }
 
 /// `enter` takes its nesting level modulo this.
-const ENTER_LEVELS: u8 = 32;
+pub(crate) const ENTER_LEVELS: u8 = 32;
 
 /// `enter size, level`: push rbp, copy `level - 1` frame pointers down from the old frame and push the new
 /// frame's address, then rbp is the new frame and rsp moves down by `size`. Each access is checked just before

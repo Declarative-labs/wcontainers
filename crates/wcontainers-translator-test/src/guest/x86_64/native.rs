@@ -339,6 +339,11 @@ impl wcontainers_x86::answer::Memory for CaseMemory {
 
 /// The case's outcome by the inside's `answer`, where it answers the case's instruction.
 pub fn answered(case: &Case) -> Option<Outcome> {
+    answered_with_pointers(case).map(|(outcome, _)| outcome)
+}
+
+/// [`answered`], with the x87 pointers the block holds after the answer.
+pub fn answered_with_pointers(case: &Case) -> Option<(Outcome, Pointers)> {
     use wcontainers_guest_cpu::MemoryFault;
     use wcontainers_x86::answer::{Consts, Fault, answer};
     let code = case.code.code();
@@ -371,11 +376,15 @@ pub fn answered(case: &Case) -> Option<Outcome> {
         },
     };
     thread.copy_from_slice(block.as_bytes());
-    Some(Outcome {
-        stop,
-        state: X86_64::to_state(&thread),
-        changed: crate::layer1::changed(case, &memory.data),
-    })
+    let f = &block.fxsave;
+    Some((
+        Outcome {
+            stop,
+            state: X86_64::to_state(&thread),
+            changed: crate::layer1::changed(case, &memory.data),
+        },
+        (f.fip, f.fdp, f.fop),
+    ))
 }
 
 /// The Float status route's second call as the inside makes it, on the state and data a run reached it with: the

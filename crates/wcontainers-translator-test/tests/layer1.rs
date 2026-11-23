@@ -1179,6 +1179,200 @@ fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
     );
 }
 
+/// The inside's answers to `enter` and to every x87 store to memory, which hold the forms that leave part of their
+/// write behind a fault (docs/x86-native-output.md 3.6), equal the meaning's, the x87 pointers included: `enter`
+/// of both widths at the nesting levels that matter, its pushes, copies and final check meeting the data's ends;
+/// each store of numbers, NaNs, values out of range and an empty stack across the writable data's end, the data's
+/// end and the canonical range's, through 32-bit addresses, under four control words and with an exception
+/// pending. The partial forms also run natively for a host whose probe finds them different, through the inside.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64() {
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_translator_test::guest::x86_64::native::{
+        Ended, REFERENCE_HOST, answered_with_pointers, compare as natively,
+    };
+    use wcontainers_translator_test::guest::x86_64::{FCW, FS, FSW, FTW, R0, RSP, plain};
+    use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_x86::native::HostMatches;
+    use wcontainers_x86::x87::{
+        BIAS, BUSY, EXCEPTIONS, FIELD, INTEGER_BIT, INVALID, PRECISION_SHIFT, QUIET_BIT,
+        ROUNDING_SHIFT, SUMMARY, TOP_SHIFT,
+    };
+    use wcontainers_x86::{FCW_AT_START, RBP, RCX, USER_END, X86Block, X87_REGISTER_BITS};
+    use zerocopy::FromBytes;
+    let different = HostMatches {
+        partial_writes: false,
+        ..REFERENCE_HOST
+    };
+    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let (mut checked, mut same, mut known) = (0, 0, 0);
+    let mut check = |case: &Case, native: bool| {
+        let code = case.code.code();
+        let (answered, pointers) = answered_with_pointers(case)
+            .unwrap_or_else(|| panic!("{code:02x?}: an instruction the inside answers"));
+        let (meaning, machine) = translated_on::<X86_64>(case, |_| {});
+        let (block, _) = X86Block::read_from_prefix(machine.stopped_state()).expect("a block");
+        let f = &block.fxsave;
+        let theirs = (f.fip, f.fdp, f.fop);
+        assert!(
+            answered == meaning && pointers == theirs,
+            "{code:02x?} {:x?}: the answer {:?} {:x?} {:x?} {pointers:x?}, the meaning {:?} {:x?} {:x?} \
+             {theirs:x?}",
+            case.state.0,
+            answered.stop,
+            answered.state.0,
+            answered.changed,
+            meaning.stop,
+            meaning.state.0,
+            meaning.changed
+        );
+        checked += 1;
+        if native {
+            match natively(&mut reference, case, different) {
+                Ok((Agreement::Same, Ended::Answered(_))) => same += 1,
+                Ok((Agreement::KnownFailure(why), Ended::Answered(_))) => {
+                    known += 1;
+                    eprintln!("{code:02x?} natively: {why}");
+                }
+                other => panic!("{code:02x?} natively for a host that differs: {other:?}"),
+            }
+        }
+    };
+    // enter of 64 and 16 bits; the stack in the middle of the writable data, its pushes or its final check
+    // meeting the data's start, the copies meeting it, a read-only stack and one off the canonical range.
+    let middle = DATA + 2 * PAGE_SIZE;
+    let stacks = [
+        (middle, DATA + PAGE_SIZE + PAGE_SIZE / 2),
+        (DATA + 0x18, DATA + PAGE_SIZE),
+        (DATA + 2, DATA + PAGE_SIZE),
+        (middle, DATA + 0x10),
+        (DATA + DATA_WRITABLE + 8, DATA + PAGE_SIZE),
+        (USER_END + 0x10, DATA + PAGE_SIZE),
+    ];
+    for prefix in [&[][..], &[0x66]] {
+        for size in [0u16, 8, 0x18, PAGE_SIZE as u16, u16::MAX] {
+            for level in [0u8, 1, 2, 3, 4, 31, 32, 33, u8::MAX] {
+                let code = [prefix, &[0xc8], &size.to_le_bytes(), &[level]].concat();
+                for (rsp, rbp) in stacks {
+                    let mut case = plain(&code);
+                    case.state.0[RSP] = rsp.into();
+                    case.state.0[usize::from(RBP)] = rbp.into();
+                    check(&case, level % 32 != 0);
+                }
+            }
+        }
+    }
+    // The stores to [rcx]: fst and fstp of 32 and 64 bits, fstp of 80, fist, fistp and fisttp of 16, 32 and
+    // 64 bits, fbstp.
+    let stores: [[u8; 2]; 14] = [
+        [0xd9, 0x11],
+        [0xd9, 0x19],
+        [0xdd, 0x11],
+        [0xdd, 0x19],
+        [0xdb, 0x39],
+        [0xdf, 0x11],
+        [0xdf, 0x19],
+        [0xdb, 0x11],
+        [0xdb, 0x19],
+        [0xdf, 0x39],
+        [0xdf, 0x09],
+        [0xdb, 0x09],
+        [0xdd, 0x09],
+        [0xdf, 0x31],
+    ];
+    let partial = |form: [u8; 2]| matches!(form, [0xdb, 0x39] | [0xdf, 0x31]);
+    let value = |sign: bool, exponent: u16, significand: u64| {
+        u128::from(sign) << (X87_REGISTER_BITS - 1)
+            | u128::from(exponent) << u64::BITS
+            | u128::from(significand)
+    };
+    let bias = BIAS as u16;
+    let all = u16::MAX >> 1;
+    // ST(0) or none: one, a number with a fraction, a large negative one past 10^18, one past every format, a
+    // tiny one, the quiet and signalling NaNs, infinity and an unnormal.
+    let values = [
+        Some(value(false, bias, INTEGER_BIT)),
+        Some(value(false, bias + 16, 0xf120_c000_0000_0000)),
+        Some(value(true, bias + 62, u64::MAX - 0xf)),
+        Some(value(false, bias + 2 * f64::MAX_EXP as u16, INTEGER_BIT)),
+        Some(value(false, 1, INTEGER_BIT)),
+        Some(value(false, all, INTEGER_BIT | QUIET_BIT)),
+        Some(value(true, all, INTEGER_BIT | 1)),
+        Some(value(false, all, INTEGER_BIT)),
+        Some(value(false, bias, QUIET_BIT)),
+        None,
+    ];
+    // ST(0) is physical register 7, ST(1) register 0.
+    let top = 7u16;
+    let placed = |form: [u8; 2], prefix: &[u8], rcx: u64, fcw: u16, fsw: u16, st0: Option<u128>| {
+        let mut case = plain(&[prefix, &form].concat());
+        case.state.0[usize::from(RCX)] = rcx.into();
+        case.state.0[FCW] = fcw.into();
+        case.state.0[FSW] = (top << TOP_SHIFT | fsw).into();
+        case.state.0[R0] = value(false, bias + 3, INTEGER_BIT);
+        let mut tags = 1u8;
+        if let Some(st0) = st0 {
+            case.state.0[R0 + usize::from(top)] = st0;
+            tags |= 1 << top;
+        }
+        case.state.0[FTW] = tags.into();
+        case
+    };
+    let writable_end = DATA + DATA_WRITABLE;
+    let data_end = DATA + DATA_BYTES;
+    let places: Vec<u64> = [DATA + PAGE_SIZE, USER_END - 8]
+        .into_iter()
+        .chain((1..=10).map(|k| writable_end - k))
+        .chain([1, 2, 8, 9].map(|k| data_end - k))
+        .collect();
+    let fs_base = (DATA + PAGE_SIZE).wrapping_sub(0xffff_fff8);
+    // Rounding toward zero at single precision.
+    let truncating = FCW_AT_START & !(FIELD << PRECISION_SHIFT) | FIELD << ROUNDING_SHIFT;
+    for form in stores {
+        for st0 in values {
+            for &rcx in &places {
+                let native = partial(form) && rcx != USER_END - 8;
+                check(&placed(form, &[], rcx, FCW_AT_START, 0, st0), native);
+            }
+            // [ecx] with the upper half of rcx set, and fs:[ecx] whose last bytes pass 2^32.
+            let low = 1 << u32::BITS | (DATA + PAGE_SIZE);
+            check(
+                &placed(form, &[0x67], low, FCW_AT_START, 0, st0),
+                partial(form),
+            );
+            // That base is not canonical, which a thread of the reference cannot take.
+            let mut case = placed(form, &[0x64, 0x67], 0xffff_fff8, FCW_AT_START, 0, st0);
+            case.state.0[FS] = fs_base.into();
+            check(&case, false);
+            for fcw in [
+                FCW_AT_START & !EXCEPTIONS,
+                FCW_AT_START & !INVALID,
+                truncating,
+            ] {
+                check(
+                    &placed(form, &[], DATA + PAGE_SIZE, fcw, 0, st0),
+                    partial(form),
+                );
+            }
+        }
+        // An invalid operation raised and unmasked before: pending.
+        let pending = placed(
+            form,
+            &[],
+            DATA + PAGE_SIZE,
+            FCW_AT_START & !INVALID,
+            INVALID | SUMMARY | BUSY,
+            values[0],
+        );
+        check(&pending, partial(form));
+    }
+    eprintln!(
+        "the inside's enter and x87 stores equal to the meaning's in {checked} cases; natively through the \
+         inside equal to the CPU's in {same}, known failures {known}"
+    );
+}
+
 /// `Condition::holds`, by which the inside takes a `jcc` exit's `int3` hit (docs/x86-native-output.md 3.2), is the
 /// meaning's: `setcc al` under WebAssembly for each of the sixteen conditions on every combination of the five
 /// flags conditions read.

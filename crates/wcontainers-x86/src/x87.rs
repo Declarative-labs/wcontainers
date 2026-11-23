@@ -727,6 +727,13 @@ impl Code {
 /// The hook's second result when the value in the first must not be stored: an unmasked exception kept it
 /// from memory, which is not looked at.
 pub const NOT_STORED: u64 = 1 << (u64::BITS - 1);
+/// The bytes of a memory value the hook's first argument and result hold; the rest, up to an 80-bit value, go in
+/// the second.
+pub const VALUE_LOW: u32 = size_of::<u64>() as u32;
+pub const VALUE_HIGH: u32 = size_of::<u16>() as u32;
+/// Where a store's second result holds the status word, then the abridged tag word.
+pub const STORED_STATUS_SHIFT: u32 = u16::BITS;
+pub const STORED_TAGS_SHIFT: u32 = u32::BITS;
 /// The rflags bits `fcomi` and its kin set: unordered sets all three.
 const GREATER: u64 = 0;
 const LESS: u64 = crate::CF;
@@ -1208,8 +1215,8 @@ impl<'a> Unit<'a> {
         let after = (self.area.fsw, self.area.ftw);
         (self.area.fsw, self.area.ftw) = saved;
         let high = (stored >> u64::BITS) as u64 & u64::from(u16::MAX)
-            | u64::from(after.0) << u16::BITS
-            | u64::from(after.1) << u32::BITS;
+            | u64::from(after.0) << STORED_STATUS_SHIFT
+            | u64::from(after.1) << STORED_TAGS_SHIFT;
         [stored as u64 as i64, high as i64]
     }
 
