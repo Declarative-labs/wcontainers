@@ -102,16 +102,28 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     once and ended, and every stop sent landed once (Graviton4: 20,161 sent, 7,809 ended a turn, 709 in a publish,
     11,643 in the wait; Xeon: 23,268 = 8,552 + 1,114 + 13,602); a thread told to end under stops ends (no stop
     landed in its `exit` in either run).
-  - Verdicts: all 24 tests passed on Graviton4 (load 11 to 18) and the Xeon (load 32, another track's job),
-    clippy with warnings denied clean on both. Not yet with /dev/kvm denied for this run's tests.
+  - Faults: the stub installs one handler for SIGSEGV and SIGBUS (flags as the stop's) and unblocks both before its
+    filter (a fault while blocked kills outright); new threads inherit that. `Resume::Load` and `Resume::Store`
+    (one access each, address and value in the control page) stand in for guest code: a fault at either access is
+    the turn's `Fault` exit with the host's address, signal and code; a fault anywhere else in the stub is ours and
+    ends it (`ZygoteEnd::StubFault`, "stub fault"). tests/touch.rs (3): stores and loads at both edges of the guest
+    area, seen in the memfd; 100 rounds of an unmapped store and load (`SEGV_MAPERR`) and a store to a read-only
+    page (`SEGV_ACCERR`), the stub answering after; the escape attempts: the embedder's heap, stack and code
+    addresses are unmapped in the stub (load and store fault, the embedder's value unchanged), its control page and
+    the zygote's code are readable and refuse writes, and its register and signal-stack pages are writable (the
+    plan's section 12 item). Not tested: a fault of the stub's own (nothing provokes one without corrupting it).
+  - Verdicts (14:13 to 14:15 UTC): all 27 tests of the 8 test binaries passed 3 times with /dev/kvm denied on
+    Graviton4 (81 of 81, each binary's run first proving the device cannot be opened; load 14 to 16) and on the Xeon
+    (81 of 81; load 18 to 24, other tracks' jobs), clippy with warnings denied clean on both. The ended-thread checks first failed 2 of 3 runs on
+    each machine: the host lists a thread in /proc until it reaps it, a moment after clearing its exit-clear word;
+    the tests now wait up to 1 s for the list (the product never reads /proc).
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- W1, in this order, each tested on both rented machines with /dev/kvm denied: the fault handler (a fault exit
-  with its address, a hand-written touch standing in for guest code); copy-on-write and the adversarial fork tests
+- W1, in this order, each tested on both rented machines with /dev/kvm denied: copy-on-write and the adversarial fork tests
   (3.5); placement (4.3), its CPU table in `HostProcessHost`; the runner's resend of an ignored stop every 100 ms
   and the kill after 10 s (3.6). Hand-written ARM64 pieces
   stand in for translated code until the translator's form exists. Then the `Cpu` and `Executor` traits with the
@@ -124,9 +136,10 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 - W1's tests, on either rented machine: `arm-run <checkout> --name nwvm -- 'cargo test -p
   wcontainers-executor-host-process -j 12 -- --test-threads 3'` (or `x86-run`). With /dev/kvm denied: build with
   `--no-run`, then `sudo setpriv --reuid=$(id -u) --regid=$(id -g) --clear-groups -- <test binary> --test-threads 3`
-  for each test binary: scratch w1/run2/nokvm.sh does it all, each run first proving /dev/kvm cannot be opened
-  (send it inline as rt.sh is sent, then `bash nokvm.sh 3`). Knobs: `WCHP_TURNS`, `WCHP_SEED`, `WCHP_MEMORIES`,
-  `WCHP_TOUCHES`.
+  for each test binary: scratch w1/run3/nokvm.sh does it all, each run first proving /dev/kvm cannot be opened,
+  and exits 1 if any run failed (send it inline: `arm-run <checkout> --name nwvm -- "set -- 3; $(grep -v '^#!'
+  nokvm.sh)"`, or `x86-run`); outputs w1/run3/arm-nokvm.out and x86-nokvm.out. Knobs: `WCHP_TURNS`, `WCHP_SEED`, `WCHP_MEMORIES`,
+  `WCHP_TOUCHES`, `WCHP_STOPS`, `WCHP_ROUNDS`.
 - The fault-visibility runs: scratch keep-rseq.py and keep-rseq-x86.py patch the remote copy (at
   /work/nwvm-w1 on each machine), then the same test command; the next sync restores the tree.
 
@@ -298,6 +311,9 @@ build on ARM64, 22 on x86-64), 1 in its tests:
 - windows.rs: the reservation's `mmap` and `munmap`; mapping a window, or inaccessible memory, over one slot of
   it; the copy out of a window and the copy into one (raw copies, since a stub may touch the bytes meanwhile).
 - tests/zygote.rs: glibc's `__rseq_size`, to show the test has a registration to drop.
+- The stub's handlers live in the zygote's assembly (no new use): they read the interrupted pc, and for a fault the
+  signal's code and address, from the frame on the thread's own signal stack, which a guest thread of the same stub
+  could write; that reading only chooses among our own targets or is reported to the kernel as the guest's fault.
 Constants no crate defines, named with their source: glibc's rseq signatures (`RSEQ_SIG`), Linux's
 `RSEQ_FLAG_UNREGISTER` and the original 32-byte `struct rseq`, `CTR_EL0`'s fields.
 
