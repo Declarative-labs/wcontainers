@@ -28,6 +28,10 @@ G4h run 7 (2026-11-22, from about 17:10 Pacific):
   of the agents' folder held the GPU slot shared, and its `cargo test -p wcontainers-shaders
   --no-run` waited on a lock with no CPU used for 90 minutes. Each waited for the other. This run
   killed task 40 (`pueue kill`) and then that hung cargo process, and the queue moved (How to run).
+- atg-simplecomputepc: presenting after each dispatch does not change the RTX 3080's answer
+  either: the program's own fractal.cso still divides to just below 4 (What comes next, item 1).
+- Lint of both builds and the library suite at 317499e8, after this run's code change: clean, and
+  com 15 (1 ignored) and programs 65 (8 ignored) pass (logs/r7-head-*).
 - Literals: building ahead's tuple key and reported counts are a tuple and a named struct, and
   their three baseline lines are cut (d05bba20, 39658541). The check at 39658541 finds nothing in
   this track's crates.
@@ -591,10 +595,12 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 In order:
 1. atg-simplecomputepc: find what makes the RTX 3080 divide 1200 by 300 as 4 in the real program
    and as 3.9999998 in the same shader run alone (Gap list), if the orchestrator does not accept
-   it as a choice the specification leaves open. Not yet tried: the program presents between
-   dispatches and the replicas did not. A driver that recompiles a shader with its constant
-   buffer's values folded in would divide exactly, but that is a guess and was not measured. Run
-   the replica with a swap chain and a present after each dispatch.
+   it as a choice the specification leaves open. Run 7 tried presents. The program's own
+   fractal.cso was run 120 frames on the RTX 3080 (scratch g4h/presentprobe,
+   logs/r7-presentprobe.log), once with a flip-model swap chain presented after each dispatch and
+   once with a Flush instead. Both read the ramp's last texel at frames 1 to 120. On the rig's
+   hidden desktop those presents answer `DXGI_STATUS_OCCLUDED`, as the program's own presents do
+   there. So presenting is not what makes the program get 4.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
 3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
