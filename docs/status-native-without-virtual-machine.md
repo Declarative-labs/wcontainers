@@ -71,16 +71,14 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     killed by SIGKILL (it died with its zygote). tests/host.rs (1): four stubs end with their killed zygote, the
     next fork comes from a new zygote and answers, the count is 1, a live zygote is not replaced.
   - Verdicts: Graviton4, all 17 tests passed 3 times with /dev/kvm denied (load 9.9 to 22.7), clippy with warnings
-    denied clean. Xeon: the stub and zygote tests (13) passed with KVM readable at 13:37 UTC (load 0.2); the machine
-    stopped answering SSH at 13:39 UTC, so the KVM-denied runs and the window tests are not yet run there.
+    denied clean. Xeon: the same 17 passed 3 times with /dev/kvm denied at 13:47 UTC (load 0.2 to 0.4), clippy clean
+    (the machine did not answer SSH from 13:39 to 13:46 UTC).
 - Not built yet (W1's bar is not met): everything that runs guest code. The translator's `HostProcess` form and the
   `stop` crate with the slot table's base as a parameter do not exist (asked below), so no executor suite, kernel
   test program, register-isolation test or speed figure can run yet.
 
 ## Next
 
-- First: rerun on the Xeon, with /dev/kvm denied, everything run 2 built (the machine was unreachable at the end of
-  run 2): the command under "How to run".
 - W1, in this order, each tested on both rented machines with /dev/kvm denied: threads (a `Clone` command on the
   control page, the new thread's start on its own signal stack, `exit` through its exit-clear word, index reuse only
   after the word is zero, `THREADS_PER_PROCESS` + 1 refused), with `clone` and the thread's calls added to the
