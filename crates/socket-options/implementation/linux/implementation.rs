@@ -248,10 +248,12 @@ fn length_of(lent: &Lent<'_>) -> Result<socklen_t, Errno> {
 fn set_through(socket: RawFd, level: c_int, name: c_int, value: &Lent<'_>) -> Result<(), Errno> {
     let length = length_of(value)?;
     // SAFETY: the kernel is given one address, the start of `value`'s region of `length` bytes, which ends where the
-    // scratch file ends; from there the guard is mapped with no page behind it. So whatever the option means to
-    // whatever the descriptor is now, the kernel's reads and writes from that address reach only the scratch file,
-    // which no Rust reference covers, or fail with EFAULT. The bytes it reads hold no address: they are a listed
-    // option's value of its kind, or a request the primitive built.
+    // scratch file ends; from there the guard is mapped with no page behind it, and before it lie 4 GiB of the same
+    // file. So whatever the option means to whatever the descriptor is now, the kernel's reads and writes within 4 GiB
+    // of that address reach only the scratch file, which no Rust reference covers, or fail with EFAULT. The bytes it
+    // reads hold no address: they are a listed option's value of its kind, or a request the primitive built.
+    // Assumed, and not checked: every handler a swapped descriptor can reach at this level and name reads the kind the
+    // entry declares, not only the handler its `read_in` record names.
     let result = unsafe { foreign::setsockopt(socket, level, name, value.address(0), length) };
     answer(result).map(drop)
 }
@@ -279,6 +281,8 @@ fn get_through(socket: RawFd, level: c_int, name: c_int, into: &Lent<'_>) -> Res
 fn ioctl_through(socket: RawFd, request: u32, into: &Lent<'_>) -> Result<(), Errno> {
     // SAFETY: as in `set_through`: whatever the request number means to whatever the descriptor is now, the kernel's
     // reads and writes from the address reach only the four zeroed bytes of scratch or fail with EFAULT.
+    // Assumed, and not checked: every driver a swapped descriptor can reach treats the argument as user memory within
+    // 4 GiB of the address, or as a plain number.
     let result = unsafe { foreign::ioctl(socket, request as libc::Ioctl, into.address(0)) };
     answer(result).map(drop)
 }
