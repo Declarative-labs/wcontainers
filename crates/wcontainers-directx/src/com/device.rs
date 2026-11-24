@@ -343,10 +343,8 @@ where
     J: Interface + windows::core::Type<J, Default = Option<J>>,
 {
     if out.is_null() {
-        // SAFETY: `OutRef` is a transparent pointer; a null one asks for nothing back.
-        return make(unsafe {
-            std::mem::transmute::<*mut c_void, OutRef<I>>(std::ptr::null_mut())
-        });
+        // A null out reference asks for nothing back.
+        return make(OutRef::default());
     }
     let mut made: Option<I> = None;
     make(OutRef::from(&mut made))?;
