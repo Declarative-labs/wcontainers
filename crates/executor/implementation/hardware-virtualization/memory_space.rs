@@ -22,6 +22,7 @@ use wcontainers_executor_hardware_virtualization_inside::layout::{
 use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_processor_architecture_arm64::{Arm64, DataAccess, InstructionFetch};
 use wcontainers_volatile_bytes::VolatileBytes;
+use zerocopy::FromBytes;
 
 use crate::single_step::{CpuStopper, MEMORY_BYTES, to_page_entry, to_table_entry, to_unmapped_entry};
 use crate::{Memory, Result, Stopper};
@@ -109,11 +110,15 @@ impl Frames {
         u64::from_le_bytes(entry)
     }
 
+    /// Stores the entry with one aligned 8-byte atomic store, so that the virtual CPU's table walker, which may
+    /// read it at the same time, sees the old entry or the new one, never a mix; the release orders the stores to
+    /// a table before the entry that points to it.
     fn write_entry(&mut self, physical: u64, entry: u64) {
         let frame = to_frame(physical);
         let offset = physical - to_physical(frame);
-        self.bytes_mut(frame, offset, ENTRY_BYTES)
-            .copy_from_slice(&entry.to_le_bytes());
+        AtomicU64::mut_from_bytes(self.bytes_mut(frame, offset, ENTRY_BYTES))
+            .expect("an entry is 8 bytes at an 8-byte boundary")
+            .store(entry.to_le(), Ordering::Release);
     }
 
     fn fill_table(&mut self, table: u64, entry: u64) {
