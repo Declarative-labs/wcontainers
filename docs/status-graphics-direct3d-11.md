@@ -6,7 +6,7 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 run 1 (2026-11-23).
+(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23).
 
 ## Where things stand
 
@@ -18,18 +18,38 @@ video columns aside, Departures) it meets (4c9d43b2): the RTX 3080 device (WebGP
 Direct3D 12) is 11_0 with every requirement met and tested, the WebGL 2 build (ANGLE on the
 RTX 3080) is 10_0 since G4h run 5, and the WebGPU build without texture-formats-tier1 (a
 browser's) is 10_0 since G4h run 9. Still differing from real Direct3D: the Gap list's absent
-features. Both items the orchestrator ruled on 2026-11-23 are closed (G4h round 6 run 1, below).
+features. Of the orchestrator's two rulings of 2026-11-23, the bar item is closed (round 6 run
+1); atg-simplecomputepc is a real difference: the state that moves the RTX 3080 to the
+reference's answer is found and made a test, a known failure until the shaders crate's division
+gives what WARP and the RTX 3080 settle on (round 6 run 2, below; asked of the shaders track).
+
+G4h round 6 run 2 (2026-11-23, from about 14:20 Pacific), the sixth round's check:
+- atg-simplecomputepc bisected (Gap list, with every number): the program's calls traced, groups
+  of them dropped from frames 2 to 99 and replayed, and the isolated copy built up call by call
+  (scratch r6d). The RTX 3080 moves from ours' answer to the reference's only where each frame
+  draws twice after the dispatch: the result's sprite quad and then a second draw from another
+  texture (the program's text). With the program's sprite draws dropped from frames 1 to 99 it
+  gives ours' answer at frame 100, 3 of 3; with only one of them dropped, the reference's. Even
+  then it is the driver's choice, not repeatable: the same plan flipped at frame 31 in one
+  process and never in 40 frames in another. Run 1's reading (no state decides it, counted
+  passing) was wrong and is withdrawn: the program fails at frames 60 and 120.
+- The state as a test: own_cases `colour_map_frames` (30 frames of the dispatch, the quad of the
+  result and 100 quads from another texture) and programs.rs
+  `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it`, which holds
+  ours to WARP (both real implementations' settled answer; the RTX 3080's first frames give
+  either). Ours prints the map's last texel where WARP prints its first, at frames 1 and 30: a
+  known failure, ignored with that reason. The fix is the division's rounding in the shaders
+  crate's conversion (Asked of other tracks); nothing in this track's crates decides it.
+- Unsafe: the 15 `unsafe` uses own_cases.rs gained after the ban are gone (blocks merged, the
+  removed reason read through one closure; the new case adds none): the directx crate is back at
+  the root manifest's 1091 (c5be9197). The lifetimes test now writes its seeds and steps past the
+  harness's capture (f0fe1e5b), so a passing run's log records them ("lifetimes: seeds 1..9 of
+  300 steps each", logs/r6d-lib.log).
 
 G4h round 6 run 1 (2026-11-23, from about 08:50 Pacific), the orchestrator's two rulings:
-- atg-simplecomputepc explained: the RTX 3080 gives either of the specification's two allowed
-  results for the program's own calls. The real program on real Direct3D with frames 1 to 12
-  captured shows ours' picture in all twelve, and its frame 10 fails its own reference by 154,515
-  pixels, ours' count; with frames left uncaptured before it, the reference's. The program's calls
-  traced with apitrace and replayed on the RTX 3080 give both too, and ours' frame 10 equals the
-  replay's frame of that answer with 0 pixels beyond the tolerance. The constants, colour map,
-  sampler and shader bytes in the trace are the isolated copies' own, so no Direct3D state
-  decides it and there is no state to make a test of (Gap list, with every number). Counted
-  passing under the graphics bar.
+- atg-simplecomputepc read as explained and counted passing; the check showed that wrong (the
+  RTX 3080 settles on the reference's answer by frame 18 with every frame waited on), corrected in
+  run 2.
 - The bar item for compute stores to `R11G11B10_FLOAT` and `R16G16_UNORM` typed views without
   texture-formats-tier1 is superseded by the feature level rule: on the gap list as absent on that
   back end, its two tests known failures named for that cause (4a2a8e8d).
@@ -547,39 +567,43 @@ the bar's three, three differ from the rig's recorded frames:
   `IDXGIAdapter1` alone and reports memory sizes of zero, as no browser API reports memory (the
   infrastructure crate's rule). An absent feature, reported absent through `QueryInterface`; the
   occlusion queries themselves match. Found in main run 1; earlier runs thought it the counts.
-- atg-simplecomputepc: the RTX 3080 itself draws ours' picture for the program's own calls, so it
-  passes under the graphics bar (G4h round 6 run 1; the orchestrator's ruling counted it failing
-  until explained). Inside the Mandelbrot set the colour is `frac(1200 / 300)` sampled clamped from
-  its 8-texel map; the functional specification lets `div` be 2.5 ULP off, so 3.9999998 (the map's
-  last texel, 255, 255, 0: ours) and 4 (its first, 64, 0, 0: the reference) are both correct. What
-  the RTX 3080 gives depends on no Direct3D state: the program's calls traced with apitrace 14.0
-  (scratch r6c, logs/r6c-real.log) carry the constants (1280, 720, 300, 0; 4, 2.25, -0.65, 0),
-  colour map, sampler and shader bytes the isolated copies used, bit for bit. Measured on the RTX
-  3080, through the queue:
-  - The real program on real Direct3D with every frame 1 to 12 captured (each capture waits for
-    the GPU): frames 1 to 12 show the last texel, ours' answer, and frame 10 fails its own
-    reference by 154,515 pixels, ours' count; frames 30, 60, 61, 62 and 120, after frames not
-    waited on, show the first (r6c/dense.sh, logs/r6c-realdense.log).
-  - The trace replayed by d3dretrace: snapshots at every tenth frame, five replays, 50 of 50 the
-    first texel; snapshots at every frame 1 to 12, 12 of 12 the last; at frames 8 to 11, last,
-    first, first, last (r6c/replays.sh, logs/r6c-rep1-summary.txt, r6c-replay2.log).
-  - Ours' frame 10 against the replay's frame 10 with the last texel: 0 pixels beyond the tolerance,
-    largest difference 0; the two replays' frames 10 differ from each other by 154,515 pixels
-    (r6c/cmp.py).
-  - The isolated copy (r6c/scp3, the program's device, map, sampler and constants) gives the last
-    texel at every read from 0 to 9 s and after 115 dispatches: time and dispatch count alone do
-    not flip it.
-  So which of the two allowed answers the RTX 3080 gives changes from frame to frame and run to
-  run for the same calls, inside its driver: always ours' while the early frames are each waited
-  on, mostly the reference's once frames go by without a wait, but not by a fixed rule (the
-  replay's frame 8 gave ours' after seven frames not waited on); the program's reference frames are recorded with no capture before
-  frame 10 and show the first. WARP gives the first (1,889 pixels from the RTX 3080's reference, on
-  the set's edge). No Direct3D state of the program decides it, so there is no state for an
-  isolated test; own_cases `colour_map_edge` keeps the isolated dispatch, which equals the RTX
-  3080. Making ours give the first everywhere needs a correctly rounded division in every program
-  (the shaders crate's converter), a cost on every division that no real implementation requires;
-  not done. The rig still reports the program failing against its single recorded answer
-  (Asked of other tracks).
+- atg-simplecomputepc: FAILS, a real difference (the orchestrator's ruling of 2026-11-23): at the
+  rig's frames 60 and 120 every real run gives the colour map's first texel inside the Mandelbrot
+  set and ours its last, 154,515 pixels beyond in each frame (logs/r6c-o1.log). Inside the set the
+  colour is `frac(1200 / 300)` sampled clamped from its 8-texel map: a quotient of 4 gives the
+  first texel (64, 0, 0), 3.9999998 (within the functional specification's 2.5 ULP) the last
+  (255, 255, 0). WARP gives the first in every frame (1,889 pixels from the reference, on the
+  set's edge); the RTX 3080 gives the last in its first frames and the first from frame 18 on,
+  even with every frame captured and so waited on (the sixth check: 17 then 103 of 120). Ours
+  gives the last everywhere. The state that moves the RTX 3080, bisected in G4h round 6 run 2 on
+  the desktop (RTX 3080, driver 32.0.16.2101, through the queue):
+  - The program's calls (apitrace 14.0 trace of round 6 run 1), groups dropped from frames 2 to 99
+    with `apitrace trim`, replayed by d3dretrace three times each, snapshots at frames 10, 30, 60
+    and 100, frame 1 and the snapshot frames keeping every call: the whole trace F F F F; the
+    clear, the text draw, the result's sprite quad or both draws dropped: F at every snapshot of a
+    frame that drew the quad; the dispatch kept only in frames 1, 30, 60 and 100: L L L F
+    (logs/r6d-a-summary.txt). Both sprite draws dropped from frames 1 to 99 as well (the dispatch
+    kept in every frame), with or without the clear: L at frame 100, 3 of 3
+    (logs/r6d-b-summary.txt). So frame 1's two draws alone are enough for the later change.
+  - The isolated copy built up (r6d/scp5: the program's shader bytes, map, sampler and constants, a
+    window, a flip swap chain and Present(1, 0), the result read every frame): the dispatch alone,
+    with the clear, with the clear and the sprite quad of the result: L in all 40 frames; with a
+    second draw of 100 quads from another texture after the quad: L to frame 30, F from frame 31
+    (0.49 s); with that draw reading the result instead, or drawing one quad: F from frames 18
+    and 22; the second draw without the quad: L throughout (logs/r6d-probe-a.log). Later in the
+    same job the two-draw plan gave L in all 40 frames, and so did its forms without presents or
+    drawing into a texture (logs/r6d-probe-b.log): the driver's own choice, not a fixed rule.
+  So no Direct3D state ours mishandles decides it: the RTX 3080's driver changes its division's
+  rounding for this program once frames draw twice after the dispatch, and then gives what WARP
+  gives. The isolated case with that state is own_cases `colour_map_frames`; programs.rs
+  `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` compares ours
+  with WARP (deterministic, where the RTX 3080's first frames are not): WARP
+  `8180803e00000000000000000000803f` (64/255, 0, 0, 1), ours `0000803f0000803f000000000000803f`
+  (1, 1, 0, 1) at frames 1 and 30; the RTX 3080 without presents gave ours' in three runs
+  (logs/r6f-frames.log). A known failure until ours divides as WARP does: the shaders crate's
+  conversion of `div` refined once after the reciprocal (a fused multiply-add for the remainder
+  and one for the correction) gives exactly 4 here, at that cost on every division (Asked of other
+  tracks). Not done in this track's crates: the division is the converter's.
 - atg-simplemsaa_pc: frame 10 has 8 pixels beyond the channel tolerance (largest 11), 4 of them
   beyond their tiles' allowance; frames 60 and 120 pass. Real Direct3D's own two runs had 0 and 1
   such pixels in frame 10 (logs/q3j-sysruns.log). WARP, drawing the same program, has 25 such
@@ -729,6 +753,9 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   build and are marked `#[ignore]` with the reason (Gap list); run them with `--include-ignored`.
 - The six tests with WebGPU features off named in the Gap list's truthful-level item, marked
   `#[ignore]` with that reason.
+- `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (programs.rs):
+  ours' division gives the colour map's last texel where WARP gives its first (Gap list,
+  atg-simplecomputepc); marked `#[ignore]` with that reason.
 - On the WebGL 2 build only: the library tests asking for a device above 10_0 fail by refusing
   it; the bar's WebGL 2 run takes the 10_0 cases. Of those,
   `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` (an 11_0 device with a 10_1
@@ -741,8 +768,9 @@ In order:
    stage, as between vertex and pixel programs now (Departures). The tests that ask an 11_0 device
    with WebGPU features off could run their 10_0 parts on the 10_0 device without
    texture-formats-tier1 (shader model 4 forms of their cases).
-1. atg-simplecomputepc is explained (Gap list); nothing left of it for this track unless the rig
-   records both answers.
+1. atg-simplecomputepc: once the shaders crate refines its division (Asked), un-ignore
+   `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it`, run it and
+   the program through the rig.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
 3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
@@ -869,6 +897,10 @@ job on the desktop. Before a run, look at the queue with `ssh tom@192.168.2.183
 
 ## Tests
 
+At G4h round 6 run 2: programs.rs gains
+`colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (own_cases
+`colour_map_frames`, compared with WARP, a known failure); the program's compute shader is the
+constant `FRACTAL` shared with `colour_map_edge`.
 At G4h run 10: programs.rs gains `sample_masks_without_sample_0_as_direct3d_applies_them`
 (own_cases `sample_masks`), and own_cases `packed_blend_reads` also blends within one draw (a list
 of ten triangles, ten instances, strips with culled odd triangles, an indexed strip with a
@@ -1120,12 +1152,12 @@ listed case of section 12 has its test against real Direct3D.
   which need a partial sample mask WebGL 2 has no route for). Programs requiring a higher level
   then refuse to start there, as on hardware without the level. Natively on the RTX 3080 the
   device is 11_0.
-- atg-simplecomputepc is explained (Gap list): the real program on real Direct3D on the RTX 3080
-  draws ours' picture, pixel for pixel, in frames 1 to 12 when each is captured (waited on), and
-  the reference's in later frames after frames not waited on; the two allowed results of the
-  specification's 2.5-ULP division, and no Direct3D state of the program decides between them.
-  Counted passing under the graphics bar from G4h round 6 run 1; the rig's recorded frames hold only
-  one of the two, so its comparison still says FAIL.
+- atg-simplecomputepc fails (Gap list): ours computes `frac(1200 / 300)` as 0.9999998, within the
+  specification's 2.5-ULP division, where WARP and the RTX 3080 (once the program's frames have
+  drawn twice after its dispatch, by frame 18) give 0; the RTX 3080's driver gives ours' answer in
+  the first frames. Matching it costs every converted program two fused multiply-adds per division
+  (the shaders crate's choice, asked). If you would rather accept the specification's allowance
+  here, say so and the test's reason changes; until then it is a known failure.
 - Video is read as no part of a feature level (Departures): the tables' video columns are not
   required of ours, which serves no video device. If you read them as required, 10_0 and above
   need a video processor (`ID3D11VideoDevice`, `VideoProcessorBlt`) built first.
@@ -1446,10 +1478,12 @@ Earlier runs' measurements are in this file's git history.
 - NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/wcontainers-nir/src/lib.rs in place of
   its own copy; until then the literal check reports that copy as a redefinition (its one finding
   outside the shaders and OpenGL crates' new code that touches this track).
-- Rig track: atg-simplecomputepc's references hold one of the two answers the RTX 3080 gives for
-  that program (Gap list): with frames 1 to 12 captured, real Direct3D's own frame 10 fails its
-  reference by 154,515 pixels. A recording that also captures every early frame would hold the
-  other.
+- Shaders track: the conversion of DXBC `div` (and DXIL `fdiv`) giving what WARP and the RTX 3080
+  settle on: the quotient refined once after the reciprocal (`q = a * r; e = fma(-b, q, a);
+  q = fma(e, r, q)`), which gives 4 for 1200 / 300 where the plain division gives 3.9999998
+  (atg-simplecomputepc, Gap list). Test: programs.rs
+  `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (ignored
+  until then; run it with `--ignored`).
 - Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now
   (this track runs its scratch copy, How to run).
 - Rig track: a way to run Wine's dxgi file with its Direct3D 12 tests kept off the GPU; the scene
