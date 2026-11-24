@@ -900,6 +900,11 @@ window needs the bound in a register, measured at XN2 if asked).
   Measured earlier (stack exempt): X32 +11.0 to +15.2% wall (Granite Rapids), +10.0 to +25.4% cycles (Zen 4), +14
   to +32% on the laptop. Whether the cut (one prefix byte an access, no instruction) changes
   them is not measured; XN2's speed bar measures the cut form itself.
+- As built (XN2 run 1; the status file's "Departures from the plan (XN2)"): the exact form takes the flag-free
+  probe for every access, since a fault after the `cmp` would show the check's flags; it probes the last byte too
+  of the forms the CPU makes in parts (`fxsave`, `fxrstor`, `fnsave`, `frstor`, `fnstenv`, `fldenv`), whose parts
+  would otherwise wrap past 2^32 into the window; a push commits at rsp's move after its store, a pop at rsp's
+  move after its load into t; `pushf` and `enter` go to the inside in I.
 - Bit offsets: `bt`, `bts`, `btr` and `btc` on memory with a register bit offset reach A = t + (w/8) * (offset SAR
   log2 w), t the operand's address and w the operand size, anywhere within about 2^60 bytes of t (the check's
   btreach.c: `btsq %rcx, (%rax)` with rax a checked t and rcx 0x200000005 set a host byte 1 GiB away). Intel

@@ -15,9 +15,80 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   its cause and owner. Fifteen independent checks of XN1; XN2 run 1 answered the fifteenth's five minor findings
   in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
   "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
-- XN2 (way I, the checked forms): run 1 in progress, see "XN2" below. Before it, `carry::carry_plain` refused the
-  in-process way by an assertion for every instruction, memory or not (the fifteenth check: `add rax, rcx` refused
-  as `mov rax, [rcx]` was).
+- XN2 (way I, the checked forms): partly built (run 1), see "XN2" below. Before run 1, `carry::carry_plain`
+  refused the in-process way by an assertion for every instruction, memory or not (the fifteenth check: `add rax,
+  rcx` refused as `mov rax, [rcx]` was); that assertion is gone, and the one left refuses only a guest string in I.
+
+## XN2 (run 1, 2026-11-24)
+
+Built (crates/wcontainers-x86/src/carry/window.rs, reached only through `carry::access`, the one place):
+- Every guest access in I is on GS (the window's base B) at a 32-bit address, in both forms. Wrapping: the
+  instruction re-encoded with the address-size prefix and `gs:`, no instruction added. Exact: the flag-free probe
+  of plan 4 (`rorx u, x, 32; mov u32, u32; lea u, [u*8]; not u; mov u, gs:[u + 1 - 2 pages]`, `area::PROBE_PAGE`)
+  on the address the access reaches, then the cut access; x is the operand's base where it is the whole operand,
+  else t from one `lea` (or `mov t, imm64` for an absolute address). Under the guest's own 0x67 the address is
+  below 2^32 already: no probe, the cut access alone (the CPU wraps each part of it as the meaning does).
+- The stack: `push` as a store at `gs:[esp - n]` then `lea rsp, [rsp - n]`, the commit point (a stop between them
+  repeats the push: the same value at the same place); `pop`, `leave` and `ret` load into t from `gs:[esp]` or
+  `gs:[ebp]`, rsp's move the commit point, t then holding the popped register for the map; `push m` and `pop m`
+  through t (the popped value kept in the area word `kept_t` while t and u form and probe the destination, which an
+  rsp base forms after rsp moves, as the CPU does); the exact form probes rsp - n by a `lea` into u (so rsp below 8
+  faults), rsp or rbp itself for a read. A call through a register or memory pushes before the lookup's first
+  level in I, so the push's probe takes u and no second stand-in is needed.
+- `xlat` on `gs:[ebx + al]` (exact: probe on rbx + al; `67 d7` no probe, the wrapped address); `maskmovq`,
+  `maskmovdqu`, `vmaskmovdqu` on `gs:[edi]` (exact: probe on rdi, none under 0x67).
+- Bit tests with a register offset, exact form: A computed in u without a flag (64: `mov u32, 6; sarx u, r, u`; 32:
+  `sarx` and `movsxd`; 16: `movsx u, r16` with t borrowed as the count, t kept in `kept_t` when it holds the
+  operand's address), `lea u, [x + u*w/8]`, the probe on u, the access cut on t32 with its own offset register.
+  Under the guest's 0x67: none, or on a segment the base added after the wrapped sum, as the meaning adds it.
+- `fs:` and `gs:` operands: `lea t, [offset]` (32-bit under 0x67), `mov u, fs:[the guest's base word]` (new
+  `RegisterArea::fs_base` in I, `gs_base`), `lea t, [t + u]`, the probe on t in the exact form, the access on
+  `gs:[r11d]`; `rdfsbase` and `rdgsbase` read the words. The CPU's segment choice among several prefixes is iced's.
+- The x87 and FXSAVE images and environments (`fxsave`, `fxrstor`, `fnsave`, `frstor`, `fnstenv`, `fldenv`), which
+  the CPU makes in parts each at its own 32-bit address: the exact form also probes the last byte (the ninth
+  check's `fxsave64` at 0xffffffd6), except under the guest's 0x67, where the parts wrap as the meaning's do.
+- An instruction naming ah, ch, dh or bh whose address the exact form puts in t moves it into a free register of
+  the first eight (kept in the first stand-in slot); an absolute `mov` (moffs) takes its ModRM form.
+- Routes in I: `enter` and `pushf` go to the inside (Kernel; their questions exist), with the 0x67 strings,
+  segment-prefixed implicit forms and exact gathers as before.
+
+Tests (crates/wcontainers-x86/tests/native_window.rs, rented ARM64 machine, the x86 machine unreachable all run:
+SSH banner timeouts at 08:35 and 08:40 UTC): `every_guest_access_is_cut_to_the_window`, a seeded sweep of
+instruction mixes in both forms, counted and not, decoding every piece and failing any host access to memory that
+is not the area on FS, the lookup's second level, the probe, or a GS access at a 32-bit address (strings and direct
+branches are not made: strings are not built, and a branch can land on one inside another instruction); six shape
+tests (plain, stack and its map, implicit, bit tests including `67 64 0f a3 08`, segment operands, images in
+parts). Results (load 15 to 51): seed 0x5eed 20,000 cases, 79,388 pieces; seeds 0x2b17, 0x51 and 0xdecaf 400,000
+cases each, 1,589,408, 1,589,296 and 1,589,232 pieces: 0 outside. `cargo clippy --no-deps -p wcontainers-x86
+--all-targets -D warnings` clean; every test of the crate passes. The test crate was not rebuilt for x86-64 (its
+x86 parts build only there; `RegisterArea` gained two words at its end, built with `..Default`).
+
+Carried findings (the eighth and ninth checks), where each stands:
+- [blocking] a string with the guest's 0x67 in I: routed to the inside (Kernel) in both forms, never re-encoded;
+  the inside's run of it is the executor's (gap item 1's string run). Not yet tested by a run in I.
+- `maskmovq` in the window: built (above), shape test `implicit_operands_are_cut`.
+- The exact form's 0x67 segment operand: the base added after the wrap, then the probe (`a_segment_operand_*`, and
+  the bit test's case).
+- `67 d7`: the wrapped address, no probe (shape test).
+- Crossing offset 2^32 under 0x67 (`fxsave64`): see the images in parts above.
+None of these has yet run against the CPU in I: that needs the harness below.
+
+Not built yet, in order:
+1. Strings in I (`carry/window.rs` refuses them by an assertion): the probe of rsi and rdi, `mov esi, esi` and
+   `mov edi, edi`, rdi rebased by the window's base and back (plan 4). The map then needs plan 9's `Held::Rebased`
+   (shared crate wcontainers-guest-cpu); adding the variant breaks the exhaustive match in
+   crates/executor/implementation/arm64-stop/implementation.rs (`held`), another track's file, so it is to be
+   agreed through the coordination section first. The fixed part also needs B and -B (plan 4's `fs:[base]`).
+2. The in-process harness in the test crate: a blob with the window at B (guard page above and below, the probe's
+   page of zeros, 2^35 bytes reserved without access), the area on FS, guest data at B + its address; native layer
+   1 in I against the CPU (faults with exact registers, the guest's fault address from the meaning), and plan 7's
+   way I cases (one byte past a mapping, 2^32 - 1 with 8 bytes, a far SIB, `fs:` with a negative offset, the strings
+   with rcx large, rsi and rdi at 2^32, 2^32 + 2^35, 2^40 and -1, the bit-test offsets, a push at the stack's
+   bottom, `call r/m` with rsp at 2^32 and 0).
+3. The speculation test with these sequences (run8/specx3.c's gadgets made from the emitted code).
+4. Speed per workload, each form against the unchecked one (bar 1.10 wrapping, 1.35 exact), and the stack form
+   measured against rsp held as B + rsp (plan 4).
+5. Link, register-group and hostile-guest tests in I, and the X9 programs: an executor (gap item 1).
 
 ## What XN1 built
 
@@ -302,6 +373,13 @@ Fptan, Fsin, Fsincos, Fyl2x and Fyl2xp1. Cases with TF or AC set are not made (x
 - The slow path of a form routed for the host (round 3 run 4): tests/native_output.rs
   `a_form_routed_for_the_host_is_counted`.
 
+## How to run XN2's tests
+
+`orchestrator/cloud/arm-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
+native_window -- --nocapture'` (any Linux machine: the tests decode, they run no guest code); the sweep takes
+`X86_WINDOW_SEED` and `X86_WINDOW_CASES` (decimal, or hex with 0x for the seed); summary line "seed ...: N cases, N
+pieces, ... 0 outside".
+
 ## How to run XN1's tests
 
 `orchestrator/cloud/x86-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
@@ -377,6 +455,22 @@ way.
   (exact replay) the count's plain adds take interpret above 1.6 (1.658 in run 5, 1.645 in the fifteenth check's
   run: Xeon 8488C, cores 0-9, best of 5, load 18.6 falling to 6.5; geometric mean 1.214). Lowering it is gap item
   4's; the guest's own run, which replay does not ask for, is the one the bar was set for.
+
+## Departures from the plan (XN2)
+
+- The exact form uses the flag-free probe for every access, not `cmp t, fs:[limit]; jae out` where the flags are
+  dead: a fault taken after that `cmp` would show the guest the check's flags, not its own, and faults must carry
+  exact registers (plan 8). So no limit word exists; the ceiling is 2^32 by the probe itself. Its cost is XN2's
+  speed measurement to show.
+- A push is the store and then rsp's move as the commit point, a stop between them repeating the push; a pop,
+  `leave` and `ret` load into t and commit at rsp's move with t relocated. Plan 9's `Fixup::Offset` is not needed.
+- `pushf` and `enter` go to the inside in I (plan 4 builds `pushf` on the count stack): both are rare in compiled
+  code, and the inside's answers exist.
+- A call through a register or memory in I pushes before the lookup's first level, so the exact push's probe uses
+  u (plan 4 counted a second stand-in).
+- A 16-bit bit test borrows t as the count instead of a stand-in v; bit tests need no v in any width (the probe
+  runs in u in place).
+- The exact form also probes the last byte of the forms the CPU makes in parts (answering the ninth check).
 
 ## Measured (the plan's probes)
 
@@ -523,6 +617,15 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Coordination with other tracks (read theirs at the start of every run)
 
+- native-without-virtual-machine and the ARM64 native back end (asked in XN2 run 1): way I's strings on x86 need
+  plan 9's `Held::Rebased(u8)` in wcontainers-guest-cpu's `Held` (the guest's value is the host register less the
+  window's base B, rdi while a string runs). Adding it makes `held` in
+  crates/executor/implementation/arm64-stop/implementation.rs non-exhaustive; the proposed change there is one arm,
+  `Held::Rebased(_) => unreachable!(...)` (ARM64 rebases no register), or that track's own answer. Way I's area also
+  gains `RegisterArea::fs_base` (the guest's FS base) and `kept_t`, and reads the window's page of zeros at B - 2
+  pages (`area::PROBE_PAGE`); I's runner maps that page readable and the 2^35 bytes below it without access, as plan
+  4's guards say.
+
 - native-without-virtual-machine (docs/native-without-virtual-machine.md, the P/I plan, written the same day as
   this one). Asked of it, to reconcile before XN1 or its W1:
   - Way I's guarantee against speculation (its 3.2, 9 and W2's test, which its 3.10 takes for x86 "as it stands"):
@@ -661,8 +764,9 @@ Licences read from cargo tree on the rented machine.
 
 ## Security
 
-- Unsafe code: none in this track's code (carry.rs, native.rs, area.rs, strings.rs, answer.rs, x87.rs, fpu.rs,
-  transcendental.rs, the test crate's native.rs, native_programs.rs and the tests; grep finds no `unsafe`); the
+- Unsafe code: none in this track's code (carry.rs, carry/window.rs, native.rs, area.rs, strings.rs, answer.rs,
+  x87.rs, fpu.rs, transcendental.rs, the test crate's native.rs, native_programs.rs and the tests, native_window.rs
+  included; grep finds no `unsafe`, XN2 run 1); the
   translator and wcontainers-x86 keep the workspace ban; emitting code into a byte buffer needs none, and the test
   crate's blobs are machine code the reference runs. No marked exceptions. (The test crate's tests/reciprocals.rs
   and tests/test_guest.rs hold `unsafe` blocks; neither is this track's.) Imports to vet: none new (the list
@@ -670,8 +774,10 @@ Licences read from cargo tree on the rented machine.
 - `answer` writes only the guest's own block and reaches guest memory only through `answer::Memory`, each access all
   or nothing, so a fault leaves only the parts the reference leaves. The register area's home words and withheld
   slots hold only guest register values; no host address is ever kept there.
-- Hostile-guest tests: not run, they need an x86 executor (gap item 1). Round 3 run 7 changed only a test and the
-  record.
+- Hostile-guest tests: not run, they need an x86 executor (gap item 1). XN2 run 1 adds way I's static check that
+  every guest access either form emits is on GS at a 32-bit address (4.8 million pieces, 0 outside); no way I
+  access has yet run against the CPU (XN2's harness, item 2 of "Not built yet"). The register area's new words
+  hold the guest's FS base and a guest address t held (`kept_t`), never a host address.
 - Hostile-guest points the plan answers: every host address translated code jumps to is a word of our tables for any
   guest value (the mirror, plan 3.3, measured over 37 targets); no host return address is ever pushed or read back
   from guest-writable memory (plan 3.6); the guest cannot set or read the thread area's segment base (plan 3.1, the
