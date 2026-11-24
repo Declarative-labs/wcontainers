@@ -1,41 +1,51 @@
-# the tree of commit 80aff8a10; scripts: checks/native.sh, checks/miri.sh, checks/kani.sh
-x86-run: job gmc-x86/20261124-184518-1573492 (re-attach: x86-run --attach gmc-x86 20261124-184518-1573492; stop: x86-run --stop gmc-x86 20261124-184518-1573492)
-arm-run: job gmc-x86/20261124-184518-1573492 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 1.33 4.53 6.50, jobs 96
-arm-run: in /work/src/gmc-x86, build directory /work/target/gmc-x86
-arm-run: command: echo "# tree $(git rev-parse HEAD 2>/dev/null)"; bash crates/shared-memory/checks/native.sh; bash crates/shared-memory/checks/miri.sh; bash crates/shared-memory/checks/kani.sh
+# native.sh on the final tests (first part), then miri.sh and kani.sh from the run before the last two test fixes, which touched no code they run
+x86-run: attached to gmlibc/20261124-195556-2029429
+arm-run: job gmlibc/20261124-195556-2029429 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 0.71 7.97 9.31, jobs 96
+arm-run: in /work/src/gmlibc, build directory /work/target/gmlibc
+arm-run: command: bash crates/shared-memory/checks/native.sh
 arm-run: LIBCLANG_PATH=/nix/store/adr7l6vazpqqjy2wab0v27pzp17c4sq6-clang-21.1.8-lib/lib CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
-# tree 
-===== x86_64 native suites load 1.33 4.53 6.50
-     Running unittests interface.rs (/work/target/gmc-x86/debug/deps/wcontainers_shared_memory-7d197280d219720d)
-     Running attack/attacks.rs (/work/target/gmc-x86/debug/deps/attacks-b7dbc8f73ba49aef)
-     Running foreign_implementation/host/guard.rs (/work/target/gmc-x86/debug/deps/guard-c69a0bd05b31a39f)
+===== x86_64 native suites load 0.71 7.97 9.31
+     Running unittests interface.rs (/work/target/gmlibc/debug/deps/wcontainers_shared_memory-7d197280d219720d)
+     Running attack/attacks.rs (/work/target/gmlibc/debug/deps/attacks-b7dbc8f73ba49aef)
+     Running foreign_implementation/host/guard.rs (/work/target/gmlibc/debug/deps/guard-c69a0bd05b31a39f)
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running foreign_implementation/heap/conformance.rs (/work/target/gmc-x86/debug/deps/heap-c09aa7c8bc96abb5)
-     Running foreign_implementation/host/conformance.rs (/work/target/gmc-x86/debug/deps/host-9ca70ad7837a8ff9)
-test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
-     Running foreign_implementation/host/process.rs (/work/target/gmc-x86/debug/deps/process-a40772dda4839963)
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.06s
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
-     Running attack/refused.rs (/work/target/gmc-x86/debug/deps/refused-04bf9cf3b367d71c)
-     Running unittests conformance.rs (/work/target/gmc-x86/debug/deps/wcontainers_shared_memory_conformance-02689e6704e6b5eb)
--- the same suites optimized load 2.43 4.71 6.55
+     Running foreign_implementation/heap/conformance.rs (/work/target/gmlibc/debug/deps/heap-c09aa7c8bc96abb5)
+     Running foreign_implementation/host/conformance.rs (/work/target/gmlibc/debug/deps/host-9ca70ad7837a8ff9)
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+     Running foreign_implementation/host/process.rs (/work/target/gmlibc/debug/deps/process-a40772dda4839963)
+test the_other_process ... test the_other_process ... test the_other_process ... 
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.05s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.10s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running attack/refused.rs (/work/target/gmlibc/debug/deps/refused-04bf9cf3b367d71c)
+     Running unittests conformance.rs (/work/target/gmlibc/debug/deps/wcontainers_shared_memory_conformance-02689e6704e6b5eb)
+-- the same suites optimized load 2.42 8.21 9.38
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.06s
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.04s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 -- what the guard and process tests saw
-copied every length up to 257 bytes at both edges of 8192 bytes at 0x7778b5c7e000, after 1 tries
+copied every length up to 257 bytes, and longer ones up to all 8192, at both edges at 0x7841b4f5e000, after 1 tries
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.06s
-13146800 bytes read while another process wrote; 9163 bytes seen changed
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.04s
+13146800 bytes read while another process wrote; 9105 bytes seen changed
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.09s
+203947256 bytes copied in beside the bytes another process wrote
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
 -- clippy
--- the other architecture's assembly assembles; the floor's target and an architecture with no assembly build
+-- the other architecture's host build, the floor's target and a target with no C library build
 aarch64-unknown-linux-musl: status 0
 aarch64-unknown-none: status 0
 wasm32-unknown-unknown: status 0
-===== the listing of HostMapping's read, which copies out, optimized
-symbol: _RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read
+===== the listings of HostMapping's read and write and the region's copy, optimized
+--- symbol: _RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read
 _RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read:
 	movq	%rcx, %rax
 	addq	%rsi, %rax
@@ -43,20 +53,52 @@ _RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hos
 	cmpq	8(%rdi), %rax
 	seta	%al
 	orb	%r8b, %al
-	jne	.LBB11_2
+	jne	.LBB12_3
 	movq	(%rdi), %r8
+	testq	%rcx, %rcx
+	je	.LBB12_3
+	pushq	%rbx
 	addq	%rsi, %r8
+	movq	_RNvNtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation6region6MEMCPY(%rip), %r9
 	movq	%rdx, %rdi
 	movq	%r8, %rsi
-	#APP
-
-	rep		movsb	(%rsi), %es:(%rdi)
-
-	#NO_APP
-.LBB11_2:
+	movq	%rcx, %rdx
+	movl	%eax, %ebx
+	callq	*%r9
+	movl	%ebx, %eax
+	popq	%rbx
+.LBB12_3:
 	retq
-.Lfunc_end11:
-	.size	_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read, .Lfunc_end11-_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read
+.Lfunc_end12:
+	.size	_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read, .Lfunc_end12-_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory4read
+--- symbol: _RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory5write
+_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory5write:
+	movq	%rcx, %rax
+	addq	%rsi, %rax
+	setb	%r8b
+	cmpq	8(%rdi), %rax
+	seta	%al
+	orb	%r8b, %al
+	jne	.LBB16_3
+	movq	(%rdi), %rdi
+	testq	%rcx, %rcx
+	je	.LBB16_3
+	pushq	%rbx
+	addq	%rsi, %rdi
+	movq	_RNvNtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation6region6MEMCPY(%rip), %r8
+	movq	%rdx, %rsi
+	movq	%rcx, %rdx
+	movl	%eax, %ebx
+	callq	*%r8
+	movl	%ebx, %eax
+	popq	%rbx
+.LBB16_3:
+	retq
+.Lfunc_end16:
+	.size	_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory5write, .Lfunc_end16-_RNvXs_NtNtCs3sDG3ZVhqZj_25wcontainers_shared_memory22foreign_implementation4hostNtB4_11HostMappingNtB8_12SharedMemory5write
+--- symbol: none matching region4copy
+--- every line of the crate's listing that names memcpy
+1208:	.quad	memcpy
 ===== compile refusals
 -- outlives
 error[E0505]: cannot move out of `memory` because it is borrowed
@@ -74,168 +116,179 @@ error[E0277]: the trait bound `u8: wcontainers_shared_memory::Word` is not satis
 error[E0433]: cannot find `HeapMapping` in `wcontainers_shared_memory`
 -- redirect
 error[E0502]: cannot borrow `file` as mutable because it is also borrowed as immutable
-===== wrong change copy-reads-one-byte-past-the-end: > inout("rcx") length + 1 => _,
+===== wrong change copy-reads-one-byte-past-the-end: > memcpy(to.cast(), from.cast(), length + 1);
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test guard`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/guard-c69a0bd05b31a39f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
-===== wrong change copy-reads-one-byte-before-the-start: > inout("rsi") from.wrapping_sub(1) => _,
+===== wrong change copy-starts-one-byte-early: > memcpy(to.wrapping_sub(1).cast(), from.wrapping_sub(1).cast(), length);
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test guard`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/guard-c69a0bd05b31a39f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
-===== wrong change swap-is-a-load-and-a-store: > "mov {spare}, qword ptr [{word}]",
-> "mov qword ptr [{word}], {value}",
-> "mov {value}, {spare}",
+===== wrong change swap-is-a-load-and-a-store: > Ok(unsafe { let old = word.read_volatile(); word.write_volatile(value); old })
 anonymous::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
-thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (2173430) panicked at crates/shared-memory/conformance/conformance.rs:477:5:
-thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (2173452) panicked at crates/shared-memory/conformance/conformance.rs:477:5:
-test result: FAILED. 41 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (2620350) panicked at crates/shared-memory/conformance/conformance.rs:665:5:
+thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (2620375) panicked at crates/shared-memory/conformance/conformance.rs:665:5:
+test result: FAILED. 46 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
-===== wrong change compare-exchange-unlocked: > "cmpxchg dword ptr [{word}], {new:e}",
+===== wrong change compare-exchange-is-a-load-and-a-store: > let exchanged: Result<u32, u32> = unsafe {
+> let old = word.read_volatile();
+> if old == current { word.write_volatile(new); Ok(old) } else { Err(old) }
 anonymous::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
-thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (2473101) panicked at crates/shared-memory/conformance/conformance.rs:469:5:
-thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (2473125) panicked at crates/shared-memory/conformance/conformance.rs:469:5:
-test result: FAILED. 41 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (2915454) panicked at crates/shared-memory/conformance/conformance.rs:657:5:
+thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (2915483) panicked at crates/shared-memory/conformance/conformance.rs:657:5:
+test result: FAILED. 46 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 ===== wrong change range-one-byte-long: > if end > 1 + u64::try_from(length).map_err(|_| OutsideError)? {
 anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 anonymous::refuses_offsets_outside --- FAILED
-file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::refuses_offsets_outside --- FAILED
-file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
-thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (2770637) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:32:13:
-thread 'anonymous::refuses_offsets_outside' (2770648) panicked at crates/shared-memory/conformance/conformance.rs:259:9:
+..............error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+  process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-9ca70ad7837a8ff9 --quiet` (signal: 11, SIGSEGV: invalid memory reference)
 ===== wrong change misaligned-word-accepted: > if false && !index.is_multiple_of(size) {
-thread 'anonymous::refuses_offsets_outside' (3073270) panicked at crates/shared-memory/foreign_implementation/region/implementation.rs:86:35:
+thread 'anonymous::refuses_offsets_outside' (3211100) panicked at crates/shared-memory/foreign_implementation/region/implementation.rs:79:35:
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-9ca70ad7837a8ff9 --quiet` (signal: 6, SIGABRT: process abort signal)
 ===== wrong change part-past-its-memory: > if offsets.start > offsets.end || offsets.end > self.len() + 1 {
 anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 anonymous::parts_stay_inside --- FAILED
 file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
-file::parts_stay_inside --- FAILED
-file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3073728) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:41:5:
-thread 'anonymous::parts_stay_inside' (3073731) panicked at crates/shared-memory/conformance/conformance.rs:302:9:
+file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+file::parts_stay_inside --- FAILED
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3211982) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:41:5:
+thread 'anonymous::parts_stay_inside' (3211986) panicked at crates/shared-memory/conformance/conformance.rs:305:9:
 ===== wrong change length-rounded-to-a-page: > let region = unsafe { Region::new(base, map.len().next_multiple_of(4096)) };
+anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3508001) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:24:5:
+thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (3508040) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:333:13:
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3508034) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:24:5:
+test result: FAILED. 45 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
-  process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-9ca70ad7837a8ff9 --quiet` (signal: 11, SIGSEGV: invalid memory reference)
 ===== wrong change grow-seal-accepted: > if !fcntl_get_seals(file).is_ok_and(|seals| seals.intersects(SealFlags::SHRINK | SealFlags::GROW)) {
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-9ca70ad7837a8ff9 --quiet` (signal: 7, SIGBUS: access to undefined memory)
 ===== wrong change length-unchecked: > if false && offset
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
 file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3377573) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:245:9:
-thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (3377535) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:358:9:
-test result: FAILED. 41 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3803627) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:287:9:
+thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (3803580) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:400:9:
+test result: FAILED. 46 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 ===== wrong change size-read-before-the-seals: > size: u64,
 > let size = u64::try_from(fstat(file).map_err(io::Error::from)?.st_size)
 > .unwrap_or(u64::MIN);
 file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end --- FAILED
-thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (3377939) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:358:9:
-test result: FAILED. 42 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (3804009) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:400:9:
+test result: FAILED. 47 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 ===== wrong change huge-pages-allowed: > if false && fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32
 file::refuses_huge_pages --- FAILED
-thread 'file::refuses_huge_pages' (3390299) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:220:9:
-test result: FAILED. 42 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+thread 'file::refuses_huge_pages' (3846843) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:262:9:
+test result: FAILED. 47 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 ===== wrong change base-one-word-late: > let base = map.as_mut_ptr().wrapping_add(8);
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-9ca70ad7837a8ff9 --quiet` (signal: 11, SIGSEGV: invalid memory reference)
 ===== wrong change base-at-the-page-start: > let base = map.as_mut_ptr().wrapping_sub(map.as_ptr() as usize % 4096);
 file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
-thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (3687458) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:289:13:
-test result: FAILED. 42 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (4133290) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:331:13:
+test result: FAILED. 47 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
-done load 6.15 5.38 6.62
-===== miri 0.1.0 (20fe935d50 2026-11-23) load 6.15 5.38 6.62
+done load 7.65 8.30 9.30
+arm-run: exit 0 after 94 s, load 7.65 8.30 9.30
+===== miri 0.1.0 (20fe935d50 2026-11-23) load 8.56 5.61 6.57
 -- stacked borrows
      Running attack/attacks.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/2980e8729535e203/out/attacks-2980e8729535e203)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.91s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.87s
      Running foreign_implementation/heap/conformance.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/d1338908dd49aeea/out/heap-d1338908dd49aeea)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
-test counts_and_swaps_without_losing_a_value_across_threads ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test waits_until_woken ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test result: ok. 12 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 53.62s
+test copies_in_keeping_the_bytes_beside_them_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test counts_and_swaps_without_losing_a_value_across_threads ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test waits_until_woken ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test result: ok. 12 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 29.17s
      Running foreign_implementation/host/conformance.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/b0b4dced8ac4019d/out/host-b0b4dced8ac4019d)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
-test anonymous::counts_and_swaps_without_losing_a_value_across_threads ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test anonymous::keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test anonymous::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test anonymous::waits_until_woken ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test result: ok. 13 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 204.42s
-wall 116 s
+test anonymous::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::counts_and_swaps_without_losing_a_value_across_threads ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::waits_until_woken ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test result: ok. 13 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 106.75s
+wall 93 s
 -- -Zmiri-tree-borrows
      Running attack/attacks.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/2980e8729535e203/out/attacks-2980e8729535e203)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.95s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.97s
      Running foreign_implementation/heap/conformance.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/d1338908dd49aeea/out/heap-d1338908dd49aeea)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
-test counts_and_swaps_without_losing_a_value_across_threads ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test waits_until_woken ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test result: ok. 12 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 53.65s
+test copies_in_keeping_the_bytes_beside_them_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test counts_and_swaps_without_losing_a_value_across_threads ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test waits_until_woken ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test result: ok. 12 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 29.35s
      Running foreign_implementation/host/conformance.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/b0b4dced8ac4019d/out/host-b0b4dced8ac4019d)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
-test anonymous::counts_and_swaps_without_losing_a_value_across_threads ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test anonymous::keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test anonymous::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test anonymous::waits_until_woken ... ignored, the heap's bytes are a Rust allocation, where threads racing is a data race; native only
-test result: ok. 13 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 204.44s
-wall 122 s
+test anonymous::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::counts_and_swaps_without_losing_a_value_across_threads ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::keeps_the_bytes_beside_it_that_another_thread_writes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test anonymous::waits_until_woken ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
+test result: ok. 13 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 106.80s
+wall 100 s
 ===== wrong change heap-one-byte-long, heap suite and attacks under Miri: > let region = unsafe { Region::new(base, words.len() * size_of::<u64>() + 1) };
-test offsets_and_lengths_at_the_edges_and_at_overflow ... error: Undefined Behavior: memory access failed: attempting to access 1 byte, but got alloc55304+0x20 which is at or beyond the end of the allocation of size 32 bytes
+test offsets_and_lengths_at_the_edges_and_at_overflow ... error: Undefined Behavior: memory access failed: attempting to access 33 bytes, but got alloc55304 which is only 32 bytes from the end of the allocation
  = note: Undefined Behavior occurred here
  = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
 ===== wrong change range-one-byte-long, heap suite and attacks under Miri: > if end > 1 + u64::try_from(length).map_err(|_| OutsideError)? {
-test a_zero_length_region ... error: Undefined Behavior: memory access failed: attempting to access 1 byte, but got 0x8[noalloc] which is a dangling pointer (it has no provenance)
+test a_zero_length_region ... error: Undefined Behavior: pointer not dereferenceable: pointer must point to some allocation, but got 0x8[noalloc] which is a dangling pointer (it has no provenance)
  = note: Undefined Behavior occurred here
  = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
-done load 1.12 3.05 5.37
-kani CBMC 6.11.0, load 1.12 3.05 5.37
-one_word::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 1.59
-one_word::loads_stores_swaps_and_exchanges_only_8_byte_words_inside:  ** 0 of 790 failed (6 unreachable) ** 0 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 1.94
-one_word::loads_stores_swaps_and_exchanges_only_4_byte_words_inside:  ** 0 of 802 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 2.34
-one_word::reads_exactly_the_bytes_asked:  ** 0 of 631 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 2.47
-one_word::writes_exactly_the_bytes_given:  ** 0 of 725 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 2.71
-one_word::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 755 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 12 s, load 2.91
-one_word::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1030 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 64 s, load 3.80
-one_word::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 3 s, load 3.80
-two_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 1.59
-two_words::loads_stores_swaps_and_exchanges_only_8_byte_words_inside:  ** 0 of 790 failed (6 unreachable) ** 0 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 2.11
-two_words::loads_stores_swaps_and_exchanges_only_4_byte_words_inside:  ** 0 of 802 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 2.34
-two_words::reads_exactly_the_bytes_asked:  ** 0 of 631 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 2.59
-two_words::writes_exactly_the_bytes_given:  ** 0 of 725 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 2.81
-two_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 755 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 16 s, load 3.07
-two_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1030 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 79 s, load 3.66
-two_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 3.66
-three_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 1.59
-three_words::loads_stores_swaps_and_exchanges_only_8_byte_words_inside:  ** 0 of 790 failed (6 unreachable) ** 0 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 2.11
-three_words::loads_stores_swaps_and_exchanges_only_4_byte_words_inside:  ** 0 of 802 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 2.34
-three_words::reads_exactly_the_bytes_asked:  ** 0 of 631 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 12 s, load 2.71
-three_words::writes_exactly_the_bytes_given:  ** 0 of 725 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 13 s, load 2.91
-three_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 755 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 25 s, load 3.50
-three_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1030 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 115 s, load 2.84
-three_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 3 s, load 2.77
-four_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 1.59
-four_words::loads_stores_swaps_and_exchanges_only_8_byte_words_inside:  ** 0 of 790 failed (6 unreachable) ** 0 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 2.11
-four_words::loads_stores_swaps_and_exchanges_only_4_byte_words_inside:  ** 0 of 802 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 2.34
-four_words::reads_exactly_the_bytes_asked:  ** 0 of 631 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 18 s, load 2.81
-four_words::writes_exactly_the_bytes_given:  ** 0 of 725 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 18 s, load 3.31
-four_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 755 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 39 s, load 3.74
-four_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1030 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 140 s, load 1.97
-four_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 1.89
-all: 32 successful, 0 failed, covers unsatisfied in 4, wall 244 s
+done load 1.54 3.50 5.55
+kani CBMC 6.11.0, load 1.54 3.50 5.55
+one_word::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 2.22
+one_word::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 2.69
+one_word::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 6.52
+one_word::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 9.04
+one_word::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 9.04
+one_word::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 10.23
+one_word::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 13 s, load 13.72
+one_word::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 13.35
+two_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 2.22
+two_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 2.69
+two_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 6.52
+two_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 9.04
+two_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 9.04
+two_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 10.06
+two_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 13 s, load 13.35
+two_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 5 s, load 13.80
+three_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 2.22
+three_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 2.69
+three_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 6.52
+three_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 9.04
+three_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 10.23
+three_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 10.13
+three_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 15 s, load 13.80
+three_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 13.33
+four_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 2.22
+four_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 6.48
+four_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 6.52
+four_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 9.04
+four_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 10.23
+four_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 11 s, load 13.72
+four_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 21 s, load 13.31
+four_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 12.64
+all: 32 successful, 0 failed, covers unsatisfied in 0, wall 78 s
 ===== wrong change: a read one byte past the end accepted
 1
-two_words::reads_exactly_the_bytes_asked:  ** 2 of 632 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- FAILED  wall 5 s, load 1.82
+two_words::reads_exactly_the_bytes_asked:  ** 2 of 616 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- FAILED  wall 6 s, load 12.27
 done
-arm-run: exit 0 after 581 s, load 1.82 2.90 4.81
+arm-run: exit 0 after 375 s, load 12.27 6.74 6.53
