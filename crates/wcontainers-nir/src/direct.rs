@@ -238,6 +238,7 @@ struct FlatVar {
     stream: u32,
     blend_source: u32,
     patch: u32,
+    invariant: u32,
 }
 
 #[repr(C)]
@@ -1870,7 +1871,10 @@ impl Builder<'_> {
                     Self::location(var)
                 }
             }
-            FlatBuiltIn::Position => Binding::BuiltIn(BuiltIn::Position { invariant: false }),
+            // An invariant position is the writers' `@invariant` and HLSL's `precise`.
+            FlatBuiltIn::Position => Binding::BuiltIn(BuiltIn::Position {
+                invariant: var.mode == VarMode::Output && var.invariant != 0,
+            }),
             FlatBuiltIn::PointSize => Binding::BuiltIn(BuiltIn::PointSize),
             FlatBuiltIn::ClipDistance if self.stage == ShaderStage::Fragment => {
                 return Err(unsupported(format_args!(

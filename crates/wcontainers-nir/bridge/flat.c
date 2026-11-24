@@ -46,6 +46,9 @@ struct io_slot {
     * the first. */
    nir_intrinsic_op load;
    enum glsl_interp_mode interp;
+   /* An output every store to which is made exactly (`made_exactly`); false before the first. */
+   bool invariant;
+   unsigned stores;
    const char *refused;
 };
 
@@ -554,6 +557,26 @@ is_barycentric(nir_intrinsic_op op)
    }
 }
 
+/* Whether a value is made exactly: GLSL's linker marks every instruction an `invariant` or
+ * `precise` output is made from exact, and moves and vectors gather such values. */
+static bool
+made_exactly(const nir_def *def)
+{
+   nir_instr *instr = nir_def_instr(def);
+   if (instr->type != nir_instr_type_alu)
+      return false;
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   if (nir_alu_instr_is_exact(alu))
+      return true;
+   if (!nir_op_is_vec_or_mov(alu->op))
+      return false;
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+      if (made_exactly(alu->src[i].src.ssa))
+         return true;
+   }
+   return false;
+}
+
 /* Every slot the IO intrinsics reach, with the widest access, one kind (u32 where they disagree)
  * and a fragment input's one way of interpolation. */
 static bool
@@ -589,6 +612,11 @@ gather_slots(struct flattening *f, nir_function_impl *impl)
          if (s->stream != a.stream)
             s->refused = "a stage value written to two streams";
          s->components = MAX2(s->components, a.first + a.count);
+         if (a.store) {
+            bool exact = made_exactly(intr->src[0].ssa);
+            s->invariant = s->stores == 0 ? exact : s->invariant && exact;
+            s->stores++;
+         }
          if (a.output || f->nir->info.stage != MESA_SHADER_FRAGMENT)
             continue;
          nir_intrinsic_op load = nir_intrinsic_load_input;
@@ -683,6 +711,7 @@ add_slots(struct flattening *f)
       v.stream = s->stream;
       v.blend_source = s->blend_source;
       v.patch = s->patch;
+      v.invariant = s->invariant;
       v.centroid = s->load == nir_intrinsic_load_barycentric_centroid;
       v.sample = s->load == nir_intrinsic_load_barycentric_sample;
       GROW(f->out->vars, f->out->var_count, f->var_capacity);

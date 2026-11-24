@@ -157,6 +157,9 @@ struct wc_flat_var {
    /* One value for the patch: a control program's patch output, an evaluation program's patch
     * input. */
    uint32_t patch;
+   /* An output made exactly (GLSL's `invariant` or `precise`): every value stored to it comes
+    * from instructions the compiler may not reorder. */
+   uint32_t invariant;
 };
 
 enum wc_flat_kind {

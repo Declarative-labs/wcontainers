@@ -338,6 +338,57 @@ fn a_vertex_program_without_a_position_gets_one_outside_every_clip_volume() {
     )));
 }
 
+const POSITIONED: &str = "#version 450
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 moved;
+uniform mat4 transform;
+void main() {
+    gl_Position = transform * at + vec4(at.w * 0.5);
+    moved = at;
+}
+";
+
+const INVARIANT_POSITIONED: &str = "#version 450
+invariant gl_Position;
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 moved;
+uniform mat4 transform;
+void main() {
+    gl_Position = transform * at + vec4(at.w * 0.5);
+    moved = at;
+}
+";
+
+/// Whether a vertex program's position output is invariant in its module.
+fn invariant_position(vertex: &str) -> bool {
+    let mut stages = Nir::from_glsl(&[
+        (Stage::Vertex, vertex),
+        (Stage::Fragment, UNPOSITIONED_FRAGMENT),
+    ])
+    .unwrap();
+    let vertex = &mut stages[0].nir;
+    vertex.to_common_form(Stage::Vertex).unwrap();
+    let module = wcontainers_nir::direct::module(vertex).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
+    let result = module.entry_points[0].function.result.as_ref().unwrap();
+    let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+        panic!("the outputs are a structure");
+    };
+    members
+        .iter()
+        .find_map(|m| match m.binding {
+            Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { invariant })) => Some(invariant),
+            _ => None,
+        })
+        .expect("a position output")
+}
+
+#[test]
+fn an_invariant_position_is_invariant_in_the_module_and_no_other_is() {
+    assert!(invariant_position(INVARIANT_POSITIONED));
+    assert!(!invariant_position(POSITIONED));
+}
+
 const SUBROUTINES: &str = "#version 450
 subroutine vec4 Shade(vec4 c);
 subroutine(Shade) vec4 keep(vec4 c) { return c; }
