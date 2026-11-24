@@ -5,7 +5,9 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use wcontainers_executor_unicorn::driver::{FIRST_PROCESS, InterfaceRunner, program_on_runners};
+use wcontainers_executor_unicorn::driver::{
+    FIRST_PROCESS, InterfaceRunner, program_exit_code, program_on_runners,
+};
 use wcontainers_executor_unicorn::standin::{SPACE_32_BIT, StandIn};
 use wcontainers_kernel::{Kernel, ProcessEnd, Runner, StopReason};
 
@@ -45,6 +47,21 @@ fn a_program_with_the_c_library_runs_to_its_end_on_one_of_four_runners() {
     assert_eq!(
         run_to_end(&mut runners[0]),
         StopReason::Finished(ProcessEnd::Exited { code: told })
+    );
+}
+
+#[test]
+fn code_the_kernel_writes_over_code_that_ran_is_what_runs_next() {
+    let (_kernel, mut runners, _host) =
+        program_on_runners("codewrite", &[], &out(), NonZeroUsize::MIN);
+    assert_eq!(
+        run_to_end(&mut runners[0]),
+        StopReason::Finished(ProcessEnd::Exited { code: 2 })
+    );
+    assert_eq!(
+        program_exit_code("codewrite", &[], &out(), NonZeroUsize::MIN),
+        2,
+        "the same on the kernel's own driver"
     );
 }
 
