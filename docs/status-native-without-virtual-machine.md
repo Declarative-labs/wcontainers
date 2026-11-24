@@ -30,6 +30,10 @@ added (host-process's count in the root manifest is unchanged, 13).
   25.6 s then 0.87, 0.82, 0.79 s, 3.57 to 4.32 times the model. The busybox test's model takes the process
   creation it measures with our own stub's fork, so it hid this (1.02 to 1.03 times the model before the fix):
   a regression of our creation raises the model with it.
+- Then the frame probe's wait for a stop that ends its spinning turn went from 1 ms to 50 µs (a stop sent at once
+  is most often too early): a zygote's start on Graviton4 1.57, 1.54, 1.52 ms then 0.59, 0.57, 0.58 ms (compare2-arm.out,
+  alternating, 3 rounds of 100, load 12 to 14); zygote, stub, threads, stop, run, interrupt and the pages unit tests
+  pass and clippy is clean (test2-arm.out).
 - Verified: clippy with warnings denied clean on Graviton4 and the Xeon; on Graviton4 every test binary of the
   crate run by run 12's test.sh passes (test1-arm.out, load 21 to 26: pages, zygote, stub, files, host, threads,
   stop, touch, memory, slice, placement, embedder, floor, step, translated, run, kernel, busybox, interrupt, copy,
