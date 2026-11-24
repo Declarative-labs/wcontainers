@@ -18,7 +18,9 @@ chain, "Results of run 56") and the shader runner's failing files each sorted wi
 both its clip and its cull distances was converted with only the first refused one linked
 (clip-cull-distance-1; 38d99d9c). The use test now also samples, compares and gathers texels of
 varied components of the 42 formats `varied_texel` decodes, not only zeros ("Gap list",
-formats).
+formats). Milestone G5r's figures hold or are bettered on that fresh run (shader runner 219 of
+302, from 218); its three findings and the sixth check's are closed or recorded below; every
+remaining gap names its owner ("Gap list", "Shader runner", "Scenes").
 
 Run 55 (2026-11-23, milestone G5r, its third run): the sixth independent check (scratch
 icheck55) found finding 2 open again and the gap list naming wrong owners; both are closed below,
@@ -120,6 +122,14 @@ run56/) on code at 1d583db4; run 57's checks (run57/) on its own clone `tip2`, b
 - Microsoft's two samples equal (0 pixels beyond 8, 2.8 and 2.6 s); Godot's 2D platformer equal;
   Godot's 3D platformer the same one pixel (1 of 518,400 beyond 8, difference 48 at 921,317,
   frames 10, 60 and 120; 10.7 s) (run56/p1-*.log).
+- bgfx 37 (p1-bgfx37.log), 01-cubes, 26-occlusion, 35-dynamic and 38-bloom (b1-*.log): every
+  frame of both our runs within the allowance (735 to 1202 pixels beyond 8 of 20,480).
+- Scenes (scenes1.log): 110 pass, 5 fail, 1 absent, the same outputs as run 54 ("Scenes").
+- The use test and `thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12` again at
+  9d374918's tree, with both of run 57's commits (run56/gpu2.log): pass, 931 and 833 uses.
+- Every test of the infrastructure crate and this front on the desktop at the same tree, GPU tests
+  on Vulkan (run57/test1.log): all pass (unit 20, answers 2, cache 1, declared 1, device 19, front
+  15, gpu 4, registers 1, swapchain 11, infrastructure 1).
 - Lint with warnings denied (the rented ARM64 machine, the x86 one not answering; run57/arm-1.log
   to arm-4.log): the infrastructure crate, this front and the Direct3D 11 front clean; the tests
   without a GPU pass. Literal check (arm-5.log, the whole tree): no finding in this track's files;
@@ -570,7 +580,8 @@ run56/classify-runner1.txt), with its owner:
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
-Run 54 (run54/scenes3.log): 110 outputs pass, 5 fail, 1 absent (run 52: 95, 22 and 3; the
+Run 56 (run56/scenes1.log) the same as run 54, each failing output by the same counts. Run 54
+(run54/scenes3.log): 110 outputs pass, 5 fail, 1 absent (run 52: 95, 22 and 3; the
 geometry, stream output, tessellation and raster scenes now run, the shaders track's converter
 work, and `B5G6R5` targets are served). The failing outputs: topology (43 pixels beyond 1, all in
 line cells: the aliased line listed loss), samplers-filters (anisotropy cells) and
