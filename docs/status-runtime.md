@@ -5,6 +5,34 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections sa
 -kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
 and crates/executor/implementation/unicorn.
 
+## J5c, third run (2026-11-24, from 04:40 UTC): J5's bar on b315b6ad
+
+The second run's bar (on c07e21cd) was stopped at 04:41 in its bounded piece: since c07e21cd the kernel keeps
+guest memory on the executor's memory spaces (df746f1b), its runners run through `execute` (f6ddaeac), the
+stand-in changed (e343b0fc) and the wasmtime executor builds again (f400c234), so its results were no longer
+the tip's. Everything below is at b315b6ad (an export of the commit, so no other agent's uncommitted edits),
+ARM64 machine, 12 jobs and 12 test threads, Docker 29.9.3; scratch runtime/j5e (`all.sh` runs `bar.sh` piece
+by piece; arm-tree/ is the tip, arm-patched/ the tip with j5e/translator-pool.patch; v-*.txt the verdicts).
+- prep (load 20 to 29): fmt and clippy with warnings denied, all targets, on single-kernel and the runtime
+  suite: clean; `cargo check --all-targets` of the wasmtime executor and the stand-in with `runtime`: no
+  error; single-kernel's tests 15 passed.
+- The translator's process-wide pool is unchanged at the tip (crates/wcontainers-translator untouched since
+  69639b37): at full, saving, procsignals, outside, threads, backend, rootbackend and repeats each ran to the
+  900 s limit, each with the forked copy's thread in `in_worker_cross` under `translate_within` at 840 s;
+  counterclock passed (1 passed, 1 ignored) (load 13 to 69). The comparisons below are on the patched tip.
+- outside at full, patched: 10 runs of 8 pass (2.3 s to 10.7 s each, load 13).
+- Stand-in (5,114 s, load 2 to 6): 424 tests, 381 passed, 35 failed, 8 ignored; the 35 are exactly the ARM
+  list (j5c-check/standin-fails.txt).
+- Full (4,567 s, load 6 to 25): equal to the stand-in test by test but the known three (align's
+  `misaligned_stack_pointer_matches_reference` and sharedviews pass, counterclock across saves ignored),
+  layer1's `sequences_replay_from_their_record` (the stand-in's only), the address ceiling's three (java
+  `start_up_matches_reference` and `threads_and_collections_match_reference`: "Could not allocate compressed
+  class space: 1073741824 bytes", kernel warning "process outgrew the ceiling"; python
+  `system_test_modules_match_reference`: its one line `test_around_4GB ERROR`, theirs `ok`), and busybox
+  `files` (see follow-ups). cpulimit's wall clock test passed in the whole run this time.
+- Still running when this was written: LTP at full and on the stand-in, none, bounded, the runtimes at none,
+  the surface tests and the follow-ups.
+
 ## J5c, second run (2026-11-24, from 03:05 UTC): J5's bar again after the owner's interface changes
 
 Conforming (the owner's changes of 2026-11-23): this track's crates call no executor `execute` and carry no
