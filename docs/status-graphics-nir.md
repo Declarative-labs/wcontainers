@@ -249,23 +249,24 @@ the NotSupported groups case by case, and the RTX 3080's own OpenGL (`run-window
 system`) on the failing groups. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) follows that
 check.
 
-Next, in order (run 30):
-1. The independent check of G9's first part (not this track's to run).
-2. Wide points still drawn as one pixel: a geometry program emitting with counters, writing clip
-   distances or to several streams, and squares while streaming or counting primitives (each
-   refused by name); programs reading `gl_in[].gl_PointSize` (the shaders track's staged point
-   size).
-3. Storage blocks in evaluation programs (KHR-GLES32 `constant_expressions`, 232 NotSupported),
-   waiting on the shaders track's cull route for a domain program writing storage.
-4. Still not traced: the run-time gather offsets at texture edges, `advanced-copyImage-cs`,
-   `advanced-allMips-cs`, `advanced-sync-imageAccess2`, the storage coherence of
-   `synchronization` and `advanced-readWrite-case1-cs`.
-5. Waiting on other tracks: the 96-bit copies (WebGPU back end), naga's HLSL `sign`, the
-   multisampled array layer bindings and the stage helper's buffer sizing (shaders track), the
-   stencil blit's slow-path name (interface track).
-6. G9's second part (OpenGL 4.0, so that KHR-GL46 starts), after the check.
+Next, in order (run 31):
+1. The independent check of G9's first part against run 31's table (not this track's to run).
+2. This track's, built nowhere yet: forced early tests before storage writes in the program
+   (`VariantFlags::EARLY_TESTS`, 4 dEQP and 1 KHR case); programs of equal content sharing their
+   conversions and the stage helper's pipelines (KHR `vertex_ordering`'s 2 timeouts); wide points
+   from a geometry program emitting with counters, writing clip distances or to several streams,
+   and squares while streaming or counting primitives (each refused by name).
+3. Still not traced: the storage coherence family (read in run 31, not proven), `rasterization
+   .fbo.rbo_multisample_max` lines (read in run 31, not proven), the run-time gather offsets at
+   texture edges, `geometry_shading.vertex_transform_feedback` 2, and the single cases of
+   `logs/g9r30/groups.txt`.
+4. Waiting on other tracks: the 2D view of a 3D packed target and the 96-bit copies (WebGPU back
+   end); the pass-through's vertex inputs, the staged point size, storage in evaluation programs,
+   the multisampled array layer bindings and the stage helper's buffer sizing (shaders track);
+   the stencil blit's slow-path name (interface track).
+5. G9's second part (OpenGL 4.0, so that KHR-GL46 starts), after the check.
 
-## Gap list (G9's first part, at run 30's whole run)
+## Gap list (G9's first part, at run 30's whole run, with run 31's changes marked)
 
 Every failing case of run 30's whole run (651 Fail, Crash, Timeout and Flake over the eight lists)
 by group, with the driver's note printed while it ran (scratch `logs/g9r30/reasons.txt` has every
@@ -355,7 +356,12 @@ yet, which is this track's work. The earlier gap list, with its readings group b
   (a cache keyed by the route's key and variant, held while any shader state uses it) would remove
   most of it: this track, not built. Run 31 also stopped drawing points as squares where the
   rasterizer discards (458438c4), which this test does in point mode.
-- Not yet read (this track): dEQP-GLES3 `rasterization.fbo` 2, dEQP-GLES31
+- dEQP-GLES3 `rasterization.fbo.rbo_multisample_max` `lines` 2 (8 samples; 4 pass): 18 pixels
+  filled beside the line in each of 3 iterations, none missing. Read in run 31, not proven: wgpu's
+  Direct3D 12 back end sets `MultisampleEnable` for multisampled pipelines, under which Direct3D
+  draws lines as quadrilaterals wider than a pixel; more samples catch more of the wider edge.
+  This track to prove (the same scene on `-Driver system`), then the WebGPU back end track's.
+- Not yet read (this track): dEQP-GLES31
   `geometry_shading.vertex_transform_feedback` 2, KHR `gpu_shader5` `texture_gather_offset_color`
   2 (gathers at run-time offsets at a texture's edges), and the 51 single cases in
   `logs/g9r30/groups.txt` (among them KHR-GL33 `clip_distance` 2, KHR-GLES32 `texture_buffer` 1,
@@ -413,6 +419,12 @@ yet, which is this track's work. The earlier gap list, with its readings group b
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 31: `scripts/g9r31-run.sh` is run 30's under its name (run 31's runs did not set
+  `SHADERS_AT_HEAD`: the shaders crate built as the worktree held it); lint is still
+  `scripts/g9r30-lint.sh`. `scripts/x86-retry.sh <log> <command>` runs a command on the x86-64
+  machine again every two minutes while it does not answer (it was away several times on
+  2026-11-23 and 24). One case alone with a longer limit than deqp-runner's 60 s:
+  `run-case-windows.ps1 ... -Seconds 400` (KHR `vertex_ordering` passes in 61.8 s that way).
 - G9 run 30: `scripts/g9r30-run.sh <log> [<lists> [<regexes>]]` and `scripts/g9r30-lint.sh [<test
   args>]` are run 29's and run 25's, with `SHADERS_AT_HEAD=1` taking the shaders crate as committed
   (scratch `overlay/shaders-head.tar`, made with `git archive HEAD crates/wcontainers-shaders/Cargo.toml
