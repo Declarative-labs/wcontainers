@@ -39,7 +39,7 @@ tree's build). Graviton4.
   or one whose alignment a loop's test proved); a multi-byte one that may cross a page keeps `add t` and `[t, xzr,
   ext]`. `encode::register_offset_uxtw` makes the word from either register-offset form (the shifted one, whose
   option Arm's table fixes at LSL, through the extended form's fields; `field::S` and `form::LDR_64_REGISTER` are
-  new), with a unit test on both forms. Checked on Graviton4, 16:30 to 16:50 UTC, load 9 to 16 (fusion-arm.out,
+  new), with a unit test on both forms. Checked on Graviton4, 16:24 to 16:32 UTC, load 9 to 16 (fusion-arm.out,
   fusion-vm-arm.out, mutate-fusion-arm.out, on `tree`): clippy clean on the arm64, stop, host-process and VM crates;
   the arm64, translator, guest-cpu and stop crates' tests pass; in_process_way seeds 1 to 6 at 16 cases a form pass
   (5,389 to 5,579 stops resolved each); with the fused access indexed by xzr in the remote copy 11 forms fail (the
