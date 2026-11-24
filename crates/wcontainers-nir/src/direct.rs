@@ -2693,6 +2693,28 @@ impl Builder<'_> {
                 });
                 (e, ScalarKind::Float)
             }
+            // A value compared with itself (GLSL's `isnan`): the common form's NaN test, which every
+            // back end writes from the bits, where a comparison may be folded by a compiler that
+            // assumes no NaN.
+            Alu::Feq | Alu::Fneu
+                if i.src[0].def == i.src[1].def
+                    && i.src[0].swizzle[..n as usize] == i.src[1].swizzle[..n as usize] =>
+            {
+                let x = self.src(i, 0, n, ScalarKind::Float)?;
+                let nan = self.add(Expression::Relational {
+                    fun: RelationalFunction::IsNan,
+                    argument: x,
+                });
+                let e = if matches!(op, Alu::Fneu) {
+                    nan
+                } else {
+                    self.add(Expression::Unary {
+                        op: UnaryOperator::LogicalNot,
+                        expr: nan,
+                    })
+                };
+                (e, ScalarKind::Bool)
+            }
             _ => {
                 let (source_kind, form) = alu_form(op).ok_or_else(|| unsupported(name(i)))?;
                 let boolean = i.bits == BOOL_BITS
