@@ -1015,10 +1015,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
     `write_from` move the bytes through a heap buffer of their whole length (one more copy and one allocation per
     call). The view that would remove it is a slice of the stub's memfd where the window cache maps it in the
     embedder, in windows.rs under one more `#[expect(unsafe_code)]`:
-    `core::slice::from_raw_parts(slot.as_ptr().add(offset), length)` handed to `ByteSink::write` (and
-    `from_raw_parts_mut` to `ByteSource::read`), valid while the cache's lock keeps the window mapped. It is not sound
-    as Rust: the guest's other threads may write those bytes meanwhile, and a `&[u8]` promises they do not change. So
-    the buffer stays unless the sink and source take volatile access.
+    `core::slice::from_raw_parts(at as *const u8, length)` (the span `read` copies from today) handed to
+    `ByteSink::write` (and `from_raw_parts_mut` to `ByteSource::read`), valid while the cache's lock keeps the window
+    mapped. It is not sound as Rust: the guest's other threads may write those bytes meanwhile, and a `&[u8]` promises
+    they do not change. It would also split bytes that cross a 2 MiB window into several writes, which the contract's
+    one write forbids. So the buffer stays unless the sink and source take volatile access.
 - The executor conformance suite runs on form P and passes but for one test (round 4 run 1: 20 of 21), which cannot
   pass on it as it stands (plan 8): its one state generator,
   wcontainers-instruction-input-domain-arm64, places every state's instruction at 0x1000 (`CODE_ADDRESS`) and its
