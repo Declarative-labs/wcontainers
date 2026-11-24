@@ -240,6 +240,23 @@ fn dxil_naming_no_entry_point_is_refused() {
     }
 }
 
+/// Case 1626 of the seeded fuzz's default seed: a DXIL pixel input whose components pass its
+/// register's last, refused by a check where the register layout once indexed past four components.
+#[test]
+fn a_stage_value_past_its_register_is_refused() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders/dxil/tessellation.ps.dxil");
+    let mut b = std::fs::read(path).unwrap();
+    mutate(&mut b, "byte@2296=24");
+    sign(&mut b);
+    assert_eq!(
+        convert(Source::Dxil(&b), &VariantKey::default(), None).map(|_| ()),
+        Err(ConvertError::Malformed(
+            "a stage value past its register's last component".into()
+        ))
+    );
+}
+
 /// Every signed DXIL program that converts, with its input or its output signature counting more
 /// elements than its chunk holds: refused, where dxil-spirv's container parser allocated the count it
 /// read (tens of gigabytes) and ended the process or ran for minutes.

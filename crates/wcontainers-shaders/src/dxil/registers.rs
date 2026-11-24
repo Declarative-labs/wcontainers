@@ -82,6 +82,20 @@ fn element_of(module: &Module, ty: Handle<Type>) -> Result<(Handle<Type>, u32), 
     }
 }
 
+/// Refuses a value whose components from `component` pass its register's last.
+fn within_register(
+    module: &Module,
+    element: Handle<Type>,
+    component: u32,
+) -> Result<(), ConvertError> {
+    match component + shape(module, element).1 <= COMPONENTS {
+        true => Ok(()),
+        false => Err(ConvertError::Malformed(
+            "a stage value past its register's last component".into(),
+        )),
+    }
+}
+
 /// A scalar or vector type's scalar and width.
 fn shape(module: &Module, ty: Handle<Type>) -> (Scalar, u32) {
     match module.types[ty].inner {
@@ -179,6 +193,7 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         };
         let (register, component) = decode(*location);
         let (element, rows) = element_of(module, a.ty)?;
+        within_register(module, element, component)?;
         for row in 0..rows {
             placed.push(Placed {
                 output: false,
@@ -294,6 +309,7 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         };
         let (register, component) = decode(location);
         let (element, rows) = element_of(module, o.ty)?;
+        within_register(module, element, component)?;
         for row in 0..rows {
             placed.push(Placed {
                 output: true,
