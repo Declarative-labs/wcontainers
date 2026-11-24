@@ -8,6 +8,60 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, sixteenth run: the independent check's findings
+
+Started about 16:30 UTC on 2026-11-24 at 83aad908. Builds and tests on the rented machines only.
+Scratch kernel/kc16 (b.sh, t1.sh, whole.sh, logs beside them).
+
+- A refusal of the stand-in now fails its test (dd3f9fbd): a `StandIn` dropped with a refused
+  kernel request nothing took panics ("the stand-in refused the kernel's requests"), unless its
+  thread is panicking already; `refused()` became `take_refused()`, which the stand-in's own
+  refusal tests call, and a new test, `a_refusal_not_taken_fails_its_test`, checks the panic.
+  The check's break (36c9d5cf taken back: the start's `memory_drop` removed) now fails
+  `a_terminal_closed_before_the_start_finished` at standin.rs:207, and the streams binary 17 of
+  18 (t1.log, ARM64, 16:57 UTC, load 10 to 13).
+- `hear_now` (74e2ca54) had no effect on the stand-in, which is why no test failed without it:
+  the stand-in's wait on an outside socket answered only what its network had reported, and
+  the network is polled at the end of every system call, before the next one. A real host's
+  wait asks its socket when polled. Now (3eb5e088): the stand-in's socket waits ask the socket
+  when polled too (`Network::ready_now`, one zero-time poll of that socket; not in a run that
+  keeps or answers from a record, whose record holds only what it heard between turns), and a
+  new test, `a_look_hears_a_reset_the_system_has_not_told_yet` (outside, guest/toldreset.c),
+  has its server reset the connection at the start of the program's look (a hook on ppoll,
+  pselect6 and getsockopt), after every earlier call's end, once each by poll, select and
+  SO_ERROR; the reference's server resets it at once. At the tip it passes 3 of 3 and the
+  outside binary 9 of 9; with `hear_now` made a no-op (the check's break) it fails 5 of 5,
+  on a quiet machine (t1.log, 16:57 UTC, load 10 to 13). So the earlier load-only failure of
+  `a_full_connection_hears_a_reset` was not fixed by 74e2ca54 on the stand-in after all (its
+  wait could not answer at the look); what that test met under load is still not known. It
+  has passed every quiet run.
+- The stand-in is rustfmt-clean (166fb4cf: the check's ten hunks and the same in space.rs and
+  tests/guest_edges.rs); whole.sh's fmt check now covers the stand-in. Clippy over the kernel
+  and the stand-in, all targets, `--no-deps`, warnings denied: status 0 (c2.log).
+- The three causes the thirteenth run left open (limits, proc_attr, proc_mem) are filled in from
+  the check's log: machine differences, like the rest of the ARM list.
+- "For the owner": the items that still described the removed unsafe lines are cut to one line
+  that points at the fifteenth run's item.
+- Layer 1 at its default seed 0 fails on the ARM64 machine at a machine difference
+  (`sched_getaffinity` gives 16 bytes on its 96 cores, ours 8), so the default seed's
+  sequences past that point are not compared anywhere while the Mac's part is not run (by
+  ruling); seed 4711 with 96 cases matched (the check's run). Not changed: ours reports the
+  processor count it was started with, which is the machine difference.
+- Not changed, still open: the conformance suite can check only that another process's task is
+  not returned, not that it stays (no suite function reaches both a handle and its kernel; the
+  stand-in's round_trips test checks it; listed for the owner); the two unstable features (for
+  the owner); the speed cost of the atomic counts (below).
+- The whole workspace's check: at 3eb5e088 it failed in another track's crates for a few
+  minutes (wcontainers-arm64's carry.rs committed before its way.rs, which had that track's
+  uncommitted edit, so left alone); that track committed 6974c922, and at 4c35bb7c `cargo check
+  --keep-going --workspace --all-targets` is status 0 on ARM64 (a2.log, 17:25 UTC, load 9) and
+  on x86-64 (x2.log, 17:25 UTC, load 6).
+
+Not done, for KC (what comes next, in order):
+- The cost of the atomic counts and borrows (fifteenth run): perf on the x86-64 machine, then
+  fewer `Arc` clones and borrows on the call path, without unsafe code.
+- epoll_wait does not hear outside connections at once (fourteenth run).
+
 ## KC, fifteenth run: the kernel without unsafe
 
 Started about 12:50 UTC on 2026-11-24 at 353ba359. Builds and tests on the rented machines only.
@@ -76,7 +130,7 @@ Not done, for KC (what comes next, in order):
   (fewer `Arc` clones on the call path; borrows taken once per call).
 - The owner's answer on the two unstable features and the moved marked impl (For the owner).
 - epoll_wait does not hear outside connections at once (fourteenth run); a check that fails a
-  test when the stand-in refuses a kernel request (today only printed).
+  test when the stand-in refuses a kernel request (done in the sixteenth run).
 
 Started about 11:00 UTC on 2026-11-24 at 9bc830b2. Builds and tests on the ARM64 machine only.
 Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
@@ -209,7 +263,9 @@ x86.sh, whole.sh, t1.sh to t3.sh, ltp30.sh, logs beside them).
   - `coredump_filter_matches_reference`: 00000023 against 00000033 at start.
   - `file_capabilities_match_reference`: get file capabilities -1 EINVAL against 20 bytes.
   - `file_requests_match_reference`: WATCH_SIZE ENOTTY against ENODEV.
-  - `limits_match_reference`: the outcomes differ (the kept log shows only the start of both).
+  - `limits_match_reference`: the machine's own limits (from the check's suite.log, sixteenth
+    run): /proc/sys/kernel/keys/maxbytes 20000 and maxkeys 200 against ours 700000 and 10000
+    (Docker Desktop's), and the machine's /proc/cgroups also lists `misc` and `dmem`.
   - `listings_are_a_subset_of_the_reference`, `thread_listings_are_a_subset_of_the_reference`:
     link counts (/proc/net 6 against 7, task mem 20 against 21).
   - `making_pairs`: TIOCSTI errno 1 against 5.
@@ -218,8 +274,12 @@ x86.sh, whole.sh, t1.sh to t3.sh, ltp30.sh, logs beside them).
   - `partial_copies_match_reference`: sched_getaffinity into partly mapped buffers (ours 8,
     theirs fails each); `priorities_across_processes_match_reference`: getaffinity 8 against
     EINVAL.
-  - `proc_attr_matches_reference`, `proc_mem_matches_reference`: the outcomes of /proc/<pid>/attr
-    and mem differ (the kept log shows only the start of both).
+  - `proc_attr_matches_reference`: the machine has security modules on: it lists `smack` and
+    `apparmor` under /proc/<pid>/attr and reads `current` (28 bytes, errno 0, and a child reads
+    its parent's) where ours, with none, gives -1 EINVAL (from the check's suite.log).
+  - `proc_mem_matches_reference`: the machine's Yama ptrace restriction (Ubuntu's default): a
+    child's open of its parent's /proc/<pid>/mem is -1 EACCES (13) and its read -1 EBADF there,
+    where ours, as Docker Desktop's, reads the parent's memory.
   - `proc_net_matches_reference`: a listener's queue 0x380 against 0x3C0.
   - `proc_task_matches_reference`: a cwd link's offset 21 against 22.
   - `proc_writes_seeks_and_reads_match_reference`: a 4 MiB pread of ostype ENOMEM against 6.
@@ -1128,49 +1188,15 @@ its renamed part.
   way to park a host thread. Example: an embedder that holds a process handle on one thread while
   a watchdog thread suspends a task. A wait the host provides (or a runner that owns its share of
   the kernel) would settle it; until then the critical sections are each one interface call.
-- KC, second run: the system's `async fn`s carry no `Send` bound, so a kernel that is `Sync` (and
-  so keeps and polls a system's waiting calls on whichever host thread calls it) cannot ask for
-  it in types. This kernel asks it of whoever starts it: `KernelWithExecutor::start` and
-  `KernelConfig::new` are `unsafe`, with that condition, and the stand-in checks its own waits at
-  build time. A `Send` bound on those futures in the interface would make both safe.
-- KC, fourth run: the unsafe code this track wrote in KC, in the form of the owner's ruling of
-  2026-11-22, for him to rule on (the kernel stays on the root Cargo.toml's list until then).
-  Because `KernelConfig::new` is unsafe, no embedder can make this kernel through the interface's
-  `Kernel::new` without writing unsafe itself, and the runtime, once under `forbid(unsafe_code)`,
-  could not.
-  - executing.rs `unsafe impl Sync for KernelWithExecutor` and `unsafe impl Send for
-    KernelRunner`. The use: the interface asks `Kernel: Sync` and `Runner: Send`, and the kernel's
-    state is `Rc`, `RefCell` and `Cell` throughout, which are neither, so a lock around it
-    (`spin::Mutex`, which is `Sync` only for `Send` contents) does not make it so. Why no vetted
-    safe library does it: what would be needed is a lock that makes state that is not `Send`
-    shareable, which no sound library offers (`send_wrapper` checks the thread at run time and
-    panics, `fragile` likewise; neither lets a second thread in). What removing it costs: the
-    kernel's shared records made `Send` (`Rc` to `Arc`, `RefCell` and `Cell` to locks or
-    atomics: 552 mentions of `Rc`, `Weak`, `RefCell` and `Cell` in the crate, a count, not a
-    measure of work), with an atomic count on every clone and drop of a shared record (cost not
-    measured), which is the owner's parallel
-    design (each process's state behind its own lock) and so planned work; until then the
-    `unsafe impl`s say what the lock-plus-`Held` scheme guarantees.
-  - executing.rs `pub unsafe fn KernelConfig::new` and `pub unsafe fn KernelWithExecutor::start`
-    (and the `unsafe` block in `Kernel::new` that calls `start`). The use: their condition is
-    that each future the system's `async fn`s return may be polled and dropped on another host
-    thread. Why no vetted safe library does it: the condition is about the system interface's
-    anonymous future types, which only return-type notation (unstable Rust) can name in a bound;
-    `trait-variant` makes a `Send` variant of a trait, which would be the interface's change, not
-    a library the kernel can use on an interface it does not own. What removing it costs: a
-    `Send` bound on those futures in crates/system/interface.rs (the owner's file; then both
-    become safe at no run-time cost), or a trait of the kernel's own that every system implements
-    to return each future as `impl Future + Send` (one forwarding method per waiting call in
-    every system: the runtime, the test policy, the hardware embedders, the stand-in).
-  - The stand-in (an executor) now marks its two KC uses with `#[expect(unsafe_code, reason)]`:
-    standin.rs `unsafe impl Send for StandIn` and driver.rs's call of `KernelConfig::new`.
-  - KC, thirteenth run: asked to remove the two `unsafe impl`s in KC, I found no way without
-    unsafe code and left them (reasons in that run's section: `Rc`/`RefCell` state, futures of
-    `async fn`s that cannot be bounded `Send` on stable 1.99.0, a `MemorySpace` not bound `Send`).
-    Example: `Arc<Shared<C>>` holds `spin::Mutex<Inner<C>>`, `Sync` only if `Inner: Send`, and
-    `Inner` holds the kernel's `Rc<RefCell<Socket>>` records and the system's
-    `send_request` future. The tests' counting allocator is gone (allocation-counter); the crate
-    counts 331 uses.
+- KC, second and fourth runs (settled by the fifteenth run's item at the top of this list; kept
+  short for the record): the kernel's `unsafe impl Sync for KernelWithExecutor`, `unsafe impl Send
+  for KernelRunner`, `unsafe fn KernelConfig::new` and `unsafe fn KernelWithExecutor::start` are
+  gone, with no unsafe code in their place: the kernel's state is `Send` by its types, and the
+  `Send` of the system's waiting calls is asked through return type notation. The kernel is off
+  the root Cargo.toml's unsafe list and inherits the workspace's `forbid`. What stays open for
+  you is in that item: the two unstable features, the stand-in's marked `unsafe impl Send for
+  Memory`, and a `Send` bound on the system interface's futures, which would let the kernel drop
+  the return type notation.
 
 - KC (first run; the second run's entry above replaces it): the system's `async fn`s carry no
   `Send` bound. Example: a browser system whose `send_request` future holds a JavaScript value
