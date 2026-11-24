@@ -1372,7 +1372,21 @@ impl Cpu for StandIn {
         Ok(())
     }
 
+    /// The block's host memory is unmapped, so a memory that still shows it is refused: unicorn and
+    /// the stand-in's own copies would reach freed memory through it.
     fn shared_drop(&mut self, shared: SharedId) {
+        let Some(block) = self.blocks.get(&shared) else {
+            return;
+        };
+        let start = block.bytes.as_ptr().addr();
+        let held = start..start + block.bytes.len();
+        let shown = self.memories.values().any(|memory| {
+            memory
+                .shared
+                .values()
+                .any(|(_, base)| held.contains(&base.addr()))
+        });
+        assert!(!shown, "a block of shared pages is dropped while a memory still shows it");
         self.blocks.remove(&shared);
     }
 

@@ -191,3 +191,38 @@ fn unaligned_exclusive_is_reported_as_unsupported() {
         Err(Unsupported::AlignmentFault { pc: LOWEST_ADDRESS })
     );
 }
+
+/// A block a memory still shows is not freed under it. Before, the block's host memory was unmapped
+/// here and the read below reached it, which ended the test process with SIGSEGV.
+#[test]
+#[should_panic(expected = "a block of shared pages is dropped while a memory still shows it")]
+fn a_block_a_memory_shows_is_not_dropped() {
+    let mut cpu = StandIn::new();
+    let memory = cpu.memory_new().unwrap();
+    let block = cpu.shared_new(PAGE_SIZE).unwrap();
+    cpu.shared_write(block, 0, &[7]).unwrap();
+    cpu.shared_map(block, 0, memory, 0x20000, PAGE_SIZE).unwrap();
+    cpu.set_permissions(memory, 0x20000, PAGE_SIZE, Permissions::READ)
+        .unwrap();
+    cpu.shared_drop(block);
+    let mut byte = [0];
+    cpu.read(memory, 0x20000, &mut byte).unwrap();
+    assert_eq!(byte, [7], "the read reached the block");
+}
+
+/// Once no memory shows it, a block goes, and a memory that showed it keeps a copy of its bytes.
+#[test]
+fn a_block_no_memory_shows_is_dropped() {
+    let mut cpu = StandIn::new();
+    let memory = cpu.memory_new().unwrap();
+    let block = cpu.shared_new(2 * PAGE_SIZE).unwrap();
+    cpu.shared_write(block, PAGE_SIZE, &[9]).unwrap();
+    cpu.shared_map(block, PAGE_SIZE, memory, 0x20000, PAGE_SIZE)
+        .unwrap();
+    cpu.shared_unmap(memory, 0x20000, PAGE_SIZE).unwrap();
+    cpu.shared_drop(block);
+    let mut byte = [0];
+    cpu.read(memory, 0x20000, &mut byte).unwrap();
+    assert_eq!(byte, [9]);
+    assert!(cpu.shared_read(block, 0, &mut byte).is_err(), "the block is gone");
+}
