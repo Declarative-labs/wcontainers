@@ -40,7 +40,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 
 use super::{GUEST, HostProcessExecutor, data_extents, page_cover, pieces};
 use crate::host::HostProcessHost;
-use crate::stub::StopTarget;
+use crate::stub::{StopTarget, StopWhen};
 
 /// The bytes a copy between memories moves at a time.
 const COPY_CHUNK: usize = 1 << 20;
@@ -303,7 +303,11 @@ impl Execution for HostProcessExecutor {
         let (mut until, mut slice) = self.turn_end(thread, turn);
         loop {
             let before = self.guest_count(thread);
-            let exit = self.run_translated(thread, resume, until, slice, &mut || answer.clock(0));
+            let when = StopWhen {
+                slice,
+                wanted: None,
+            };
+            let exit = self.run_translated(thread, resume, until, when, &mut || answer.clock(0));
             for (reason, count, detail) in self.take_warnings() {
                 answer.warn(Warning {
                     reason,
@@ -638,8 +642,13 @@ impl Executor for HostProcess {
             .thread_new(space)
             .expect("the stub has its first host thread");
         executor.set_registers(thread, &to_register_block(processor));
-        let exit =
-            executor.run_translated(thread, Resume::FromRegisters, None, None, &mut monotonic);
+        let exit = executor.run_translated(
+            thread,
+            Resume::FromRegisters,
+            None,
+            StopWhen::default(),
+            &mut monotonic,
+        );
         executor.print_warnings();
         let mut registers = RegisterBlock::ZERO;
         executor.registers(thread, &mut registers);
@@ -676,7 +685,7 @@ fn lock(executor: &RefCell<HostProcessExecutor>) -> RefMut<'_, HostProcessExecut
 }
 
 /// Runs `processor` on a host thread of `memory`'s stub until a trap ends it; the executor is not held while a handler
-/// runs, and an interrupt asked for is taken before each entry and at each stop.
+/// runs, and an interrupt asked for is taken before each entry or stops the thread's turn.
 fn run_to_end(
     shared: &RefCell<HostProcessExecutor>,
     processor: Processor,
@@ -697,7 +706,11 @@ fn run_to_end(
         let exit = if before_entry {
             Exit::Stop
         } else {
-            let exit = executor.run_translated(thread, resume, None, None, &mut monotonic);
+            let when = StopWhen {
+                slice: None,
+                wanted: Some(&interruption.requested),
+            };
+            let exit = executor.run_translated(thread, resume, None, when, &mut monotonic);
             executor.print_warnings();
             if exit == Exit::Stop {
                 interruption.requested.store(false, Ordering::Release);
@@ -779,8 +792,8 @@ impl Interruption {
     }
 }
 
-/// Interrupts one execution of form P: the stop signal to its thread, and a request its run takes at the next stop or
-/// entry, where a stop sent while the thread is between turns lands in its wait.
+/// Interrupts one execution of form P: the stop signal to its thread, and a request its run takes before its next entry
+/// or sends the stop again for, once a stop sent while the thread was between turns has landed in its wait.
 pub struct HostProcessInterrupter {
     interruption: Arc<Interruption>,
 }

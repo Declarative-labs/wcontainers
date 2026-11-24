@@ -3,7 +3,7 @@
 use core::mem::offset_of;
 use std::io::IoSlice;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use linux_raw_sys::general as linux;
@@ -37,6 +37,15 @@ const LOOK_FOR_END: Duration = Duration::from_millis(100);
 /// How often a runner looks again whether a thread whose slice has passed has taken its turn yet, so the stop is not
 /// spent before the turn begins.
 const TAKEN_POLL: Duration = Duration::from_millis(1);
+
+/// When a turn's thread is stopped: once `slice` has passed, or as soon as `wanted` is set.
+#[derive(Clone, Copy, Default)]
+pub struct StopWhen<'wanted> {
+    /// How long the turn may run.
+    pub slice: Option<Duration>,
+    /// Set from another thread to have the turn stopped now.
+    pub wanted: Option<&'wanted AtomicBool>,
+}
 
 /// How long after its first stop a thread that has not come back has its stub killed: only a compromised stub can
 /// hold the stop off.
@@ -432,24 +441,41 @@ impl Stub {
         self.give(thread, commands, resume)
     }
 
-    /// Waits for the end of `turn`, sending the stop once `slice` has passed and the thread has taken the turn (or 100
-    /// ms after the slice at most), and again every 100 ms after; `None` if the thread has not come back
-    /// [`STOP_IGNORED`] after its first stop. Counts the stops sent in `stops`.
+    /// Waits for the end of `turn`, sending the stop once `when` says so and the thread has taken the turn (or 100 ms
+    /// after that at most), and again every 100 ms after; `None` if the thread has not come back [`STOP_IGNORED`]
+    /// after its first stop. Counts the stops sent in `stops`.
     pub fn wait_sliced(
         &self,
         thread: usize,
         turn: u32,
-        slice: Option<Duration>,
+        when: StopWhen<'_>,
         stops: &mut u64,
     ) -> Result<Option<TurnEnd>, Errno> {
-        let slice_end = slice.map(|slice| Instant::now() + slice);
+        let mut slice_end = when.slice.map(|slice| Instant::now() + slice);
         let mut stop_at = slice_end;
         let mut first_stop = None;
+        let mut wanted_seen = false;
         loop {
-            let limit = stop_at.map_or(LOOK_FOR_END, |at| {
-                at.saturating_duration_since(Instant::now())
-                    .min(LOOK_FOR_END)
-            });
+            if !wanted_seen
+                && when
+                    .wanted
+                    .is_some_and(|wanted| wanted.load(Ordering::Acquire))
+            {
+                wanted_seen = true;
+                let now = Instant::now();
+                if slice_end.is_none_or(|end| end > now) {
+                    slice_end = Some(now);
+                    stop_at = Some(now);
+                }
+            }
+            let limit = match stop_at {
+                Some(at) => at
+                    .saturating_duration_since(Instant::now())
+                    .min(LOOK_FOR_END),
+                // A stop wanted before the turn is taken lands in the wait: it is sent again once the turn is taken.
+                None if when.wanted.is_some() && self.taken(thread) != turn => TAKEN_POLL,
+                None => LOOK_FOR_END,
+            };
             if let Some(end) = self.wait_within(thread, turn, limit)? {
                 return Ok(Some(end));
             }

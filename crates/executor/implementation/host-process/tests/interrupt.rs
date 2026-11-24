@@ -1,5 +1,5 @@
 //! An execution's interrupter: an interrupt from another thread reaches a guest that never traps, answered continue it
-//! goes on where it was, answered terminate it ends there.
+//! goes on where it was, answered terminate it ends there, whenever it is sent.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 use std::pin::pin;
@@ -32,6 +32,10 @@ const CODE: u64 = 0x40_0000;
 const PAGE: u64 = 4096;
 /// How long the interrupting thread waits before each interrupt: long enough for the guest to be running.
 const PAUSE: Duration = Duration::from_millis(50);
+/// The largest step an add's twelve-bit immediate holds.
+const MOST_STEP: i64 = (1 << 12) - 1;
+/// How long an interrupt may take to reach the handler.
+const REACHED_WITHIN: Duration = Duration::from_secs(2);
 
 /// Answers interrupts continue until the last, which it answers terminate, telling the test of each.
 struct Interrupts {
@@ -60,10 +64,13 @@ impl TrapHandler for Interrupts {
     }
 }
 
-/// A guest that adds one to x0 for ever: an add and a branch back to it.
-fn spinning(executor: &HostProcess) -> (<HostProcess as Executor>::GuestMemory, Processor) {
+/// A guest that adds `step` to x0 for ever: an add and a branch back to it.
+fn spinning(
+    executor: &HostProcess,
+    step: i64,
+) -> (<HostProcess as Executor>::GuestMemory, Processor) {
     let memory = executor.create_guest_memory().expect("a memory");
-    let add = encode::add_immediate(0, 0, 1).expect("an add of one");
+    let add = encode::add_immediate(0, 0, step).expect("an add of a step");
     let back = encode::branch(false, -4).expect("a branch back");
     let code: Vec<u8> = [add, back].iter().flat_map(|w| w.to_le_bytes()).collect();
     assert_eq!(
@@ -95,44 +102,68 @@ fn run<F: Future>(future: F) -> F::Output {
 }
 
 fn interrupted(times: usize) {
-    let mut executor = executor();
-    let (memory, start) = spinning(&executor);
+    let pauses = vec![PAUSE; times];
+    let began = Instant::now();
+    let counted = interrupted_after(&mut executor(), 1, &pauses)
+        .expect("every interrupt reached the handler");
+    assert!(
+        counted > 0,
+        "the guest counted between its start and its last interrupt"
+    );
+    assert!(
+        began.elapsed() >= PAUSE * times as u32,
+        "the guest ran until its last interrupt"
+    );
+}
+
+/// Runs the guest spinning by `step`, sending one interrupt after each pause, the handler ending it at the last; the
+/// guest's x0 at its end, or the first interrupt that did not reach the handler within [`REACHED_WITHIN`] (a further
+/// one then frees it).
+fn interrupted_after(
+    executor: &mut HostProcess,
+    step: i64,
+    pauses: &[Duration],
+) -> Result<u64, usize> {
+    let times = pauses.len();
+    let (memory, start) = spinning(executor, step);
     let (told, heard) = mpsc::channel();
     let mut handler = Interrupts {
         terminate_at: times,
         seen: 0,
         told,
     };
-    let began = Instant::now();
     let (execution, interrupter) = executor.execute(start, &memory, &mut handler);
+    let pauses = pauses.to_vec();
     let interrupting = std::thread::spawn(move || {
-        for time in 1..=times {
-            std::thread::sleep(PAUSE);
+        let mut lost = None;
+        for (time, pause) in (1..=times).zip(pauses) {
+            let until = Instant::now() + pause;
+            while Instant::now() < until {
+                std::hint::spin_loop();
+            }
             interrupter.interrupt();
-            assert_eq!(
-                heard.recv_timeout(Duration::from_secs(5)),
-                Ok(time),
-                "interrupt {time} reached the handler"
-            );
+            while heard.recv_timeout(REACHED_WITHIN) != Ok(time) {
+                lost.get_or_insert(time);
+                interrupter.interrupt();
+            }
         }
+        lost
     });
     let stopped = run(execution);
-    interrupting.join().expect("the interrupting thread");
+    let lost = interrupting.join().expect("the interrupting thread");
     assert_eq!(handler.seen, times, "the interrupts the handler was given");
-    assert!(
-        began.elapsed() >= PAUSE * times as u32,
-        "the guest ran until its last interrupt"
-    );
     assert_eq!(stopped.exception, None, "an interrupt is no exception");
     assert!(
         [CODE, CODE + 4].contains(&stopped.program_counter),
         "stopped in the loop, at {:#x}",
         stopped.program_counter
     );
+    let counted = stopped.general_purpose_registers[0];
     assert!(
-        stopped.general_purpose_registers[0] > 0,
-        "the guest counted between its start and its last interrupt"
+        counted.is_multiple_of(step as u64),
+        "the guest's x0 is {counted}, which no number of adds of {step} make"
     );
+    lost.map_or(Ok(counted), Err)
 }
 
 #[test]
@@ -143,4 +174,38 @@ fn an_interrupt_answered_terminate_ends_a_guest_that_never_traps() {
 #[test]
 fn interrupts_answered_continue_go_on_and_the_last_ends_it() {
     interrupted(5);
+}
+
+/// One to three interrupts each after a seeded pause of 0 to 300 us, spun so that they reach the run at every early moment
+/// (the first piece translated or loaded, the thread between turns or not yet in its turn), the guest's step seeded so
+/// that its code is translated anew; every eighth case on a new executor. Knobs: `WCHP_SEED`, `WCHP_INTERRUPT_CASES`
+/// (default 400).
+#[test]
+fn an_interrupt_at_any_early_moment_reaches_the_handler() {
+    let seed = knob("WCHP_SEED", 1);
+    let cases = knob("WCHP_INTERRUPT_CASES", 400);
+    let mut random = fastrand::Rng::with_seed(seed);
+    let mut executor = executor();
+    let mut lost = Vec::new();
+    for case in 0..cases {
+        if case % 8 == 0 {
+            executor = self::executor();
+        }
+        let pauses: Vec<Duration> = (0..random.usize(1..=3))
+            .map(|_| Duration::from_micros(random.u64(0..=300)))
+            .collect();
+        let step = random.i64(1..=MOST_STEP);
+        if let Err(time) = interrupted_after(&mut executor, step, &pauses) {
+            lost.push((case, time, pauses));
+        }
+    }
+    println!("seed {seed}: {cases} cases, interrupts lost {lost:?}");
+    assert!(
+        lost.is_empty(),
+        "interrupts lost (case, which, pauses): {lost:?}"
+    );
+}
+
+fn knob(name: &str, default: u64) -> u64 {
+    std::env::var(name).map_or(default, |value| value.parse().expect(name))
 }

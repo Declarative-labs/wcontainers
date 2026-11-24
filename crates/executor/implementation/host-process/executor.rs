@@ -21,7 +21,7 @@ use crate::host::HostProcessHost;
 use crate::layout::{OUR_AREA, OWN_MAPPINGS};
 use crate::pages::control::MAX_COMMANDS;
 use crate::pages::{Command, Resume};
-use crate::stub::{Stub, TurnEnd};
+use crate::stub::{StopWhen, Stub, TurnEnd};
 use crate::view::View;
 use crate::windows::FileKey;
 
@@ -341,7 +341,14 @@ impl HostProcessExecutor {
                 value,
                 resume,
             };
-            let end = self.turn_with(thread, then, slice)?;
+            let end = self.turn_with(
+                thread,
+                then,
+                StopWhen {
+                    slice,
+                    wanted: None,
+                },
+            )?;
             return Ok(match end {
                 TurnEnd::Loaded { value } if resume == Resume::Load => Touched::Loaded(value),
                 TurnEnd::Done { .. } if resume == Resume::Store => Touched::Stored,
@@ -364,13 +371,13 @@ impl HostProcessExecutor {
         }
     }
 
-    /// Gives a thread a turn that applies its memory's queue and then does `then`, for at most `slice` before it is
-    /// stopped, its host thread placed on the runner's CPU first; how the turn ended.
+    /// Gives a thread a turn that applies its memory's queue and then does `then`, stopped as `when` says, its host
+    /// thread placed on the runner's CPU first; how the turn ended.
     fn turn_with(
         &mut self,
         thread: ThreadId,
         then: Then,
-        slice: Option<Duration>,
+        when: StopWhen<'_>,
     ) -> Result<TurnEnd, CpuError> {
         let Thread { memory, index, .. } = self.thread(thread);
         let cpu = self.place_runner();
@@ -380,7 +387,7 @@ impl HostProcessExecutor {
         let stub = self.memory(memory).stub.process();
         self.note_stub(stub);
         let started = Instant::now();
-        let end = self.run_turn(memory, index, &commands, &blocks, Some((then, slice)))?;
+        let end = self.run_turn(memory, index, &commands, &blocks, Some((then, when)))?;
         self.account(started.elapsed());
         if !matches!(end, TurnEnd::CommandRefused { .. } | TurnEnd::StubEnded) {
             self.threads[thread.0 as usize]
@@ -758,7 +765,7 @@ impl HostProcessExecutor {
         index: usize,
         commands: &[Command],
         blocks: &[Arc<OwnedFd>],
-        then: Option<(Then, Option<Duration>)>,
+        then: Option<(Then, StopWhen<'_>)>,
     ) -> Result<TurnEnd, CpuError> {
         let rounds = commands.len().div_ceil(MAX_COMMANDS).max(1);
         let mut blocks = blocks.iter();
@@ -781,9 +788,9 @@ impl HostProcessExecutor {
                 value: 0,
                 resume: Resume::Ping,
             };
-            let (then, slice) = match then {
+            let (then, when) = match then {
                 Some(then) if last => then,
-                _ => (ping, None),
+                _ => (ping, StopWhen::default()),
             };
             let turn = match then {
                 Then::Touch {
@@ -797,7 +804,7 @@ impl HostProcessExecutor {
             .map_err(host_error)?;
             let mut stops = 0;
             let waited = stub
-                .wait_sliced(index, turn, slice, &mut stops)
+                .wait_sliced(index, turn, when, &mut stops)
                 .map_err(host_error);
             if matches!(waited, Ok(None)) {
                 let _ = self.host.kill(stub);

@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
 
 use wcontainers_abi::{
     Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume,
@@ -34,7 +33,7 @@ use crate::layout::{
 };
 use crate::pages::Command;
 use crate::probe::{CTR_EL0_IMINLINE_SHIFT, CTR_EL0_LINE_MASK};
-use crate::stub::TurnEnd;
+use crate::stub::{StopWhen, TurnEnd};
 
 /// The way every piece here is translated for.
 const WAY: Way = Way::Process;
@@ -1030,14 +1029,14 @@ impl HostProcessExecutor {
     }
 
     /// Runs `thread` from `resume` to its next exit, or, from the first exit at or after the count `until`, to
-    /// [`Exit::Stop`]; `slice` bounds the time of each entry into translated code. `clock` reads the monotonic clock
+    /// [`Exit::Stop`]; `when` says when each entry into translated code is stopped. `clock` reads the monotonic clock
     /// for the guest's counter reads.
     pub(super) fn run_translated(
         &mut self,
         thread: ThreadId,
         resume: Resume,
         until: Option<u64>,
-        slice: Option<Duration>,
+        when: StopWhen<'_>,
         clock: &mut dyn FnMut() -> u64,
     ) -> Exit {
         let super::Thread { memory, index, .. } = self.thread(thread);
@@ -1065,7 +1064,7 @@ impl HostProcessExecutor {
             &mut t,
             interrupted.map(|at| (at.hardware, at.page)),
             until,
-            slice,
+            when,
             clock,
         );
         self.guests[thread.0 as usize] = Some(t);
@@ -1084,7 +1083,7 @@ impl HostProcessExecutor {
         t: &mut Guest,
         mut carried: Option<(Interrupted, RegisterPage)>,
         until: Option<u64>,
-        slice: Option<Duration>,
+        when: StopWhen<'_>,
         clock: &mut dyn FnMut() -> u64,
     ) -> Exit {
         let reached = |state: &GuestState| until.is_some_and(|until| state.count >= until);
@@ -1127,7 +1126,9 @@ impl HostProcessExecutor {
                     t.vectors_held = true;
                 }
                 stub.set_translated_page(index, &page);
-                let end = match self.turn_with(thread, Then::Enter(hardware.pc as usize), slice) {
+                let end = match self.turn_with(thread, Then::Enter(hardware.pc as usize), when) {
+                    // A stop before the code ran: the thread is where it was to enter.
+                    Ok(TurnEnd::Stopped { .. }) => TurnEnd::Interrupted { at: hardware.pc },
                     Ok(end) => end,
                     Err(_) => break Ended::Killed,
                 };
@@ -1170,8 +1171,6 @@ impl HostProcessExecutor {
                             None => break self.not_understood(memory, h.pc),
                         }
                     }
-                    // A stop before the code ran: the block was not touched.
-                    TurnEnd::Stopped { .. } => break Ended::TurnOver,
                     _ => break self.not_understood(memory, h.pc),
                 };
                 t.tpidr = tpidr;
