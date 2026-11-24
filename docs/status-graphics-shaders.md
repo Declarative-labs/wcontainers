@@ -122,6 +122,99 @@ changed src/lower.rs so a 32-bit float `div` is correctly rounded as WARP gives 
 refined once by its fused remainder), because atg-simplecomputepc's 1200 / 300 came out 3.9999998 where
 both real implementations give 4 (154,515 pixels from them; that track's status, Gap list).
 
+## G6w run 2: A41 closed, the Windows runs and the desktop timing
+
+G6w's bar as it stands at the end of run 2 (reported complete for its independent check):
+- The fuzz test is not ignored natively and passes at seeds 141421, 2236067 and 1732050 of 12,000
+  cases with zero process ends (ARM64, runs 1 and 2), and at 141421 on Windows (run 2).
+- Every corpus output is byte-equal between the linked C++ route and the module route (run 1:
+  8,295 of 8,304 files, the other 9 the converter-version files naming the sources' hash).
+- Unsafe: 94 lines to 75 (root Cargo.toml's list and the crate's manifest), the three listed
+  `transmute_copy` lines among those gone. What remains, by file and why:
+  - src/converters/linked.rs, 4: the crate's own wasm32 build links the converters into its own
+    module (no engine runs inside a module): the extern block, the entry's function type, its
+    call, and the copy-and-free of a buffer it returns. Natively this file is not built.
+  - tests (71: common/mod.rs 7, compute_draw.rs 17, geometry_draw.rs 11, draw.rs 9,
+    tessellation_draw.rs 6, shadow_draw.rs 4, stage_draw.rs 4, variant_draw.rs 4, clear_draw.rs 3,
+    precision_draw.rs 2, contention_draw.rs, early_draw.rs, filter_draw.rs and pull_draw.rs 1
+    each): calls into real Direct3D 11 and 12 through the `windows` crate, the references the drawn
+    tests compare with, Windows only. They lose their `unsafe` with P3's `direct3d` binding
+    (boundary-unsafe-primitives DESIGN.md section 4), not this track's.
+- clippy (native, wasm32 in run 1, Windows), rustfmt and the literal check with history clean for
+  this crate (the one line it makes in the opengl track's file below).
+- The four carried findings settled in run 1.
+
+- A41 closed (c4d8afa61, e352352c9): `dxil/registers.rs` refuses a stage value whose first
+  component plus its width passes its register's four (`within_register`, reason `PAST_REGISTER`,
+  `ConvertError::Malformed`) before laying it out, inputs and outputs alike, instead of a caught
+  panic. Unit test `a_value_past_its_registers_last_component_is_refused` (a WGSL pixel program
+  reading two components from component 2, laid out, and from component 3, refused). The fuzz case
+  that found it (seed 1, case 1626: `tessellation.ps.dxil byte@2296=24`) now gives "malformed: a
+  stage value past its register's last component" (ARM64, `a41.log`).
+- Literal check with history (ARM64, scratch `g6w-r2/lit3.log`, run 1's `check-lit.sh.txt`): no
+  line in this crate or naga. It had named run 1's unnamed `samples` argument (`0` in
+  `dxbc.rs` `to_ir`, "hidden, not fixed"): now `converters::NO_SAMPLES` at both calls that do not
+  read it, and its baseline line deleted (7c7a4443f).
+- ARM64 at the tip with these changes: rustfmt and clippy with warnings denied clean.
+- Fuzz, natively on the ARM64 machine at 7c7a4443f (`arm-cmd.sh`, the three seeds in parallel,
+  load 7.6 to 13.8 of 96 cores; `g6w-r2/arm1.log`, `arm1b.log`, per-seed logs in `fuzz-arm/`): zero
+  process ends, the test passes at each seed, with run 1's figures exactly (141421: 2,355
+  converted, 6,475 s; 2236067: 2,294, 5,339 s; 1732050: 2,344, 5,428 s). One caught panic of ours
+  at 2236067 (also in run 1's, not read then): case 6539, `gs_tess_point.dxbc flip@551.7,flip@144.1`,
+  an overflow in `lower/geometry.rs` `index_slot` (`2 * max` of a declared vertex count near
+  2^32): new gap A42, closed at once (6b00077ec). A geometry shader declaring more output vertices
+  than 1,024 or more instances than 32 (d3d11.h's limits) is refused as malformed when its
+  declaration is read; test `a_geometry_count_past_direct3d_s_limit_is_refused` (tests/fuzz.rs:
+  `gs_instances.dxbc` converts, and with either count set to 2^32-1 is refused by that reason);
+  the case now gives "malformed: a geometry shader declaring more than Direct3D allows" (ARM64;
+  the fuzz binary's 7 tests, geometry's 27 and staged's 3 pass, clippy and rustfmt clean).
+- Literal check after 6b00077ec: no line in this crate's files or naga, but the opengl track's
+  `GEOMETRY_OUTPUT_COMPONENTS = 1024` (crates/wcontainers-opengl/src/screen.rs:219, OpenGL ES's
+  least output components of a geometry program) is now named as restating this crate's
+  `MOST_OUTPUT_VERTICES` (Direct3D's most output vertices): two quantities that share a value; the
+  check compares values, so any constant of Direct3D's limit makes the line. Left so: neither
+  crate may import the other, and the limit is what keeps a guest's count from the helper's sizes.
+- Windows, the fuzz test natively at seed 141421, 12,000 cases in three parallel parts of 4,000
+  (`g6w-fuzz.ps1`, the desktop shared with the GPU queue's jobs; the external corpus is not on the
+  desktop, so the inputs are the rig's and this crate's own shaders; `fuzz-win.log`, at c4d8afa61):
+  zero process ends, each part passes (2,467 s, 1,842 s, 2,456 s); 2,562 converted; 1,014 runs
+  ended inside a converter and refused by name (dxil-spirv 815 traps and 9 past the memory bound;
+  dxbc-spirv 105 traps, 33 past the memory bound, 52 past the instruction bound). A case at the
+  instruction bound takes 117 to 198 s there (87 s on the ARM64 machine).
+- ARM64, the whole CPU suite at 7c7a4443f with every corpus and the ignored tests (`arm-cmd.sh`,
+  load 7.6 to 12 of 96 cores, `g6w-r2/arm1.log`): 28 binaries, 155 passed, 0 failed, 1,051 s; the
+  fuzz test at its default (seed 1, 2,000 cases) passes, its classes now without "the conversion
+  panicked".
+- Windows, the whole suite on the RTX 3080 at c4d8afa61 (one GPU job of 12 min, one test thread, 3
+  cargo jobs; the mutation run skipped there and run separately; `g6w-r2/suite.log`): Windows
+  clippy with warnings denied clean; 27 binaries, 219 passed, 5 failed, 4 ignored. The failures:
+  - `atomics_and_counters_match_direct3d` and `storage_views_at_any_first_element_match_direct3d`
+    (tests/compute_draw.rs): only `cs_divide` and `cs_escape`, only their DXBC builds, 50 to 94
+    words from real Direct3D 11 on the RTX 3080 at seeds 1 to 4; their DXIL builds 0 apart. Cause:
+    48f3959dd, the Direct3D 11 track's correctly rounded `div` (DXBC route only), which gives WARP's
+    quotient where the RTX 3080's Direct3D 11 gives its own; before it both builds gave the GPU's
+    bits (runs 41 and 44). Left failing; for the owner (New for the owner).
+  - `clamped_samples_match_direct3d` (case 1 Rgba8Unorm `bias`) and
+    `filtering_in_the_program_matches_direct3d` (case 3 R32Float `gradients`), filter_draw at its
+    default seed: 1 texel each, every route and back end alike.
+  - `variants_draw_as_the_native_feature_does`: `depth_clamp` on the DXIL route through WebGPU at
+    depth 0.1 to 0.45, 617 and 1,091 texels apart by up to 5 (2 allowed); the DXBC route passes.
+  The last two are not this milestone's: the three binaries at the pre-change tree (`g6w-r1/base`,
+  56fe9900f with the linked C++ route and before the `div` change; one GPU job, `base-tests.log`)
+  give the same two filter failures (the same cases, 1 texel each) and the same `depth_clamp`
+  failure, while compute_draw passes there (17 of 17). The last whole-suite run on the desktop
+  before them was run 111's (all passed); their cause between is not found yet (new gap A43).
+- Desktop timing (i9-9900K, Windows 10, `conversion_time` release, best of 3 per shader after one
+  more, over the rig's DXBC and DXIL and this crate's own shaders; each route one GPU job so no
+  other job of the queue ran beside it, the desktop's own load not taken; `time-desk-module.log`,
+  `time-desk-linked.log`), linked C++ (MSVC, the pre-change tree `g6w-r1/base`) then module:
+  - DXBC (239 converted): median 401 / 95th percentile 1,034 / worst 8,093 us, then 360 / 1,254 /
+    13,458 us (the worst `ds_values.dxbc` both times).
+  - DXIL (222 converted): 406 / 907 / 1,487 us, then 430 / 920 / 1,410 us.
+  - First conversion of the process: 1.4 ms, then 499 ms (the module's compile).
+  One run each, so the medians' order (the module's DXBC median below the linked one's) is within
+  what a second run could change; peak memory is not printed on Windows.
+
 ## G6w run 1: the converters natively as their own WebAssembly module
 
 G6 passed its independent check on 2026-11-24 (round 8, tip e881cbf5b). Milestone G6w: run the
@@ -219,6 +312,7 @@ per shader median / 95th percentile / worst):
 New gap A41 (this track's own, found by the fuzz test): a DXIL input signature element whose
 first component plus its component count passes 4 panics in `dxil/registers.rs` `components_of`;
 the panic is caught and the shader refused as malformed, but it should be refused by a check.
+Closed in G6w run 2 (refused by a check).
 
 The one cost a user would see: the corpora's slowest shader (one game's DXBC pixel shader) takes 48
 s instead of 16 s on the ARM64 machine (60 s instead of 25 s on the laptop) at its first
@@ -491,6 +585,16 @@ unharmful while a feature is declared absent; its entry says what it takes. None
 outside this track, so they fit none of round 7's other three owners; whether G6 closes with them
 as later work, or must take some first, is the owner's to say. A11 is the one with a security
 side, and stands first for that reason:
+- A43 (found in G6w run 2, cause not found): at the desktop's default seeds,
+  `clamped_samples_match_direct3d` (case 1 Rgba8Unorm `bias`) and
+  `filtering_in_the_program_matches_direct3d` (case 3 R32Float `gradients`) fail by 1 texel on
+  every route and back end, and `variants_draw_as_the_native_feature_does` fails `depth_clamp` on
+  the DXIL route through WebGPU (617 and 1,091 texels by up to 5 of 2 allowed). The same at the
+  pre-change tree 56fe9900f, so not the module route; all passed in run 111's whole suite. Takes:
+  the same binaries at e881cbf5b and at run 111's commit on the RTX 3080, then the change between
+  (this crate's, the WebGPU back end's, or the device's driver) named. No front waits on it.
+- A42 (closed in G6w run 2): a geometry shader declaring a vertex count near 2^32 overflowed the
+  stage helper's slot sizes (a caught panic); now refused past Direct3D's limits.
 - A11, closed natively in G6w run 1: the converters run as their own WebAssembly module under
   wasmtime, so each of the places below now traps inside the module and the shader is refused by
   name ("dxil-spirv stopped: wasm trap: ...: assertion ... failed at ..."), the three the seventh
@@ -2918,6 +3022,17 @@ Runs at a00ab267:
 
 ## New for the owner
 
+- G6w run 2, a conflict between two references for one division: 48f3959dd (the Direct3D 11
+  track's change in this crate, by the orchestrator's ruling) makes the DXBC route's 32-bit `div`
+  correctly rounded, as WARP gives it, for atg-simplecomputepc. This crate's own drawn tests compare
+  with real Direct3D 11 on the RTX 3080, which gives the device's own quotient: since that change
+  `cs_divide` and `cs_escape` (DXBC builds) are 50 to 94 words from it at seeds 1 to 4, where both
+  builds were 0 apart before; their DXIL builds, which the change does not reach, are still 0
+  apart. Direct3D 11 allows a division 2.5 units in the last place, so both devices are right.
+  Asked: which reference the converter follows (WARP's correctly rounded quotient, at its cost on
+  every division, or the device's), and whether these two tests then compare with the other
+  reference or allow both. Left failing until then; not changed by this track.
+
 - G6w run 1, the converters as WebAssembly: done and the default natively; the linked C++ route
   and its unsafe boundary are gone natively. One cost a user would see, measured: the corpora's
   slowest shader (`games/bf4b9f4770dfd7ca.dxbc`, a game's DXBC shader, already 16 s natively on the
@@ -4239,6 +4354,9 @@ G6a run 5's tip):
 
 ## Next
 
+00. G6w (the converters as their own WebAssembly module) is reported complete for its independent
+   check (G6w run 2). After it: A43 (the three drawn failures whose cause is not found), the
+   owner's word on the division's reference (New for the owner), then the list below.
 0. G6 is reported complete for its independent check (run 119, round 8). After the check, the gap
    list of "G6 reported complete" in the order the fronts need it; items waiting on another track
    or a ruling are not worked until those come. The order below holds for this track's own parts,
@@ -5939,6 +6057,16 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `Function::MissingIntReturnType` (moved back in G6w run 1). For upstream as it stands.
 
 ## How to run
+
+- G6w run 2 (scratch `graphics-shaders/g6w-r2`): `win-all.sh` runs, one after another, the whole
+  suite on the desktop as one GPU job (Windows clippy first; the mutation run skipped there), the
+  desktop timing of the module route (clone `g6w-r2/win`) and of the linked route (clone
+  `g6w-r1/base`) as GPU jobs, then the fuzz test natively on Windows at one seed of 12,000 cases in
+  three parallel parts (`win/g6w-fuzz.ps1 <seed>`, untracked in the clone and sent with its tree)
+  as a remote command. The clone `win` is on a branch of its own name (`phase-2-graphics-shaders`)
+  so that its copy on the desktop (`C:\wc\src\<branch>`) is not overwritten by other tracks
+  sending branch `agents` (run 1's job failed that way), with its `refs/remotes/origin/agents` at
+  GitHub's. ARM64: `arm-cmd.sh` as run 1's, from `g6w-r1/tip-arm` after `arm-sync.sh`.
 
 - G6w run 1 (scratch `graphics-shaders/g6w-r1`): `arm-cmd.sh` is the CPU suite (rustfmt, clippy, every
   test binary with every corpus, the fuzz test at its default 2,000 cases) and then the fuzz test
