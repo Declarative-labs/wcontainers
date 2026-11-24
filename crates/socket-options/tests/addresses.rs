@@ -1,6 +1,6 @@
 //! Checks, from the kernel's uapi headers as linux-raw-sys's bindgen renders them, that no value the primitive passes
 //! the kernel can hold an address it follows: every structure on the list is read field by field, and every value
-//! that is not a 4-byte integer or such a structure must be one this file names as reviewed.
+//! that is not a 4-byte integer must carry the kernel handler it was read against and what that handler reads.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,27 +19,6 @@ const NOT_ADDRESSES: &[(&str, &str, &str)] = &[
     ("tcp_ao_info_opt", "pkt_key_not_found", "a packet counter"),
     ("tcp_ao_info_opt", "pkt_ao_required", "a packet counter"),
     ("tcp_ao_info_opt", "pkt_dropped_icmp", "a packet counter"),
-];
-
-/// The options set with bytes the kernel parses, each read in the kernel's source for an address: none holds one.
-const REVIEWED_BYTES: &[PlainOption] = &[
-    // IP option bytes (ip_options_get, net/ipv4/ip_options.c).
-    PlainOption::IpOptions,
-    // IPv6 extension headers (ipv6_renew_options, net/ipv6/exthdrs.c).
-    PlainOption::Ipv6Hopopts,
-    PlainOption::Ipv6Rthdrdstopts,
-    PlainOption::Ipv6Rthdr,
-    PlainOption::Ipv6Dstopts,
-    // One or two 16-byte keys (do_tcp_setsockopt, net/ipv4/tcp.c).
-    PlainOption::TcpFastopenKey,
-    // An array of `tcp_repair_opt`, two `__u32` each (tcp_repair_options_est, net/ipv4/tcp.c).
-    PlainOption::TcpRepairOptions,
-];
-
-/// The options whose 64-bit value the kernel reads as a number.
-const REVIEWED_NUMBERS: &[PlainOption] = &[
-    // A rate in bytes a second (sk_setsockopt, net/core/sock.c).
-    PlainOption::SoMaxPacingRate,
 ];
 
 /// Field types of eight bytes or more, as bindgen names them: wide enough for an address.
@@ -152,7 +131,7 @@ fn no_listed_structure_holds_an_address() {
     let source = bindings();
     let (aggregates, aliases) = items(&source);
     let mut found = Vec::new();
-    let (mut structures, mut bytes, mut numbers, mut filled, mut ints) = (0, Vec::new(), Vec::new(), 0, 0);
+    let (mut structures, mut bytes, mut numbers, mut filled, mut ints) = (0, 0, 0, 0, 0);
     for &option in PlainOption::ALL {
         match option.value() {
             Value::Int => ints += 1,
@@ -161,8 +140,8 @@ fn no_listed_structure_holds_an_address() {
                 structures += 1;
                 wide_fields(name, &aggregates, &aliases, &mut found);
             }
-            Value::Bytes => bytes.push(option),
-            Value::Number64 => numbers.push(option),
+            Value::Bytes => bytes += 1,
+            Value::Number64 => numbers += 1,
         }
     }
     found.sort();
@@ -174,13 +153,43 @@ fn no_listed_structure_holds_an_address() {
         })
         .collect();
     eprintln!(
-        "{} options: {ints} 4-byte integers, {filled} only read, {structures} structures, {} byte strings and {} 64-bit \
-         numbers reviewed; wide fields found {found:?}",
+        "{} options: {ints} 4-byte integers, {filled} only read, {structures} structures, {bytes} byte strings and \
+         {numbers} 64-bit numbers; wide fields found {found:?}",
         PlainOption::ALL.len(),
-        bytes.len(),
-        numbers.len(),
     );
     assert!(unexplained.is_empty(), "fields wide enough for an address: {unexplained:?}");
-    assert_eq!(bytes, REVIEWED_BYTES, "a byte-string option not reviewed for addresses");
-    assert_eq!(numbers, REVIEWED_NUMBERS, "a 64-bit option not reviewed as a number");
+}
+
+/// The fault with the record of an entry whose value the kernel parses, or None for a whole one.
+fn fault(option: PlainOption) -> Option<String> {
+    let review = option.review()?;
+    let shape = review.kernel.starts_with('v')
+        && review.file.contains(".c")
+        && !review.function.is_empty()
+        && review.fact.ends_with(", follows no address");
+    let length = match option.value().exact_length() {
+        Some(length) => review.fact.starts_with(&format!("reads {length} bytes,")),
+        None => review.fact.starts_with("reads "),
+    };
+    (!shape || !length).then(|| format!("{option:?}: {review:?}"))
+}
+
+#[test]
+fn every_value_the_kernel_parses_names_where_it_was_read() {
+    let mut faults = Vec::new();
+    let mut records = 0;
+    for &option in PlainOption::ALL {
+        if matches!(option.value(), Value::Int | Value::Filled) {
+            continue;
+        }
+        match option.review() {
+            None => faults.push(format!("{option:?}: no record of the kernel handler it was read against")),
+            Some(_) => {
+                records += 1;
+                faults.extend(fault(option));
+            }
+        }
+    }
+    eprintln!("{records} entries carry the handler they were read against");
+    assert!(faults.is_empty(), "{faults:#?}");
 }
