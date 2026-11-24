@@ -296,7 +296,7 @@ fn compare_one(
                 Ok((Agreement::KnownFailure(FIVE_LEVEL_REFERENCE), ended))
             } else if way == Way::InProcess(Check::Wrapping) && beyond_the_window(theirs) {
                 Ok((Agreement::KnownFailure(WRAPPED_LANDING), ended))
-            } else if meaning_differs_named(case)
+            } else if (meaning_differs_named(case) || ended == Ended::Refused)
                 && answered.is_some_and(|answered| answered == translated::<X86_64>(case))
             {
                 eprintln!("{report}");
@@ -329,7 +329,8 @@ fn beyond_the_window(stop: Stop) -> bool {
 const FIVE_LEVEL_REFERENCE: &str = "the reference's 5-level paging: a page fault where a 4-level CPU, and the meaning, give general protection";
 
 /// An answer of the inside is the meaning's, the WebAssembly output's too: where it differs from the reference,
-/// so does that output's layer 1, which is where the difference is answered.
+/// so does that output's layer 1, which is where the difference is answered. So it is for the meaning's run after
+/// the in-process way's probe refuses an address.
 const MEANING_DIFFERS: &str = "answered by the meaning, which differs from the reference here as the WebAssembly output's layer 1 does";
 
 /// Whether the case's instruction is one whose meaning the x86 track records as differing from the reference

@@ -402,7 +402,6 @@ fn move_stack(code: &mut HostCode, base: u8, by: i64, resume: Option<Resume>) {
 }
 
 /// A push: the store below the guest's rsp, its commit point, then rsp moved, which a stop there makes as a fix-up.
-/// A withheld register's value comes from its slot through t.
 fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>, probed: bool) {
     let bytes = -i64::from(i.stack_pointer_increment());
     let word = bytes == i64::from(W64 / 8);
@@ -419,13 +418,7 @@ fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>, probe
                 explicit(form, code, &with_operand_of(read, i), None);
                 into
             } else {
-                let g = general(i.op0_register()).expect("a general register");
-                if WITHHELD.contains(&g.number) {
-                    put(code, &load_area(form.way, T, withheld_slot(g.number)));
-                    into
-                } else {
-                    i.op0_register()
-                }
+                i.op0_register()
             };
             let code_of = if word {
                 Code::Mov_rm64_r64
@@ -447,12 +440,20 @@ fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>, probe
         probe_stack(check_of(form), code, bytes);
     }
     finish(code, &store, resume);
-    let by = i32::try_from(-bytes).expect("a push's size");
-    code.fixup(Fixup::Offset { register: RSP, by });
+    move_stack_after(code, -bytes);
+}
+
+/// rsp moved by `by` bytes after a store that is its instruction's commit point, which a stop between them makes as a
+/// fix-up.
+fn move_stack_after(code: &mut HostCode, by: i64) {
+    code.fixup(Fixup::Offset {
+        register: RSP,
+        by: i32::try_from(by).expect("a stack access's size"),
+    });
     let lea = Iced::with2(
         Code::Lea_r64_m,
         full(RSP),
-        MemoryOperand::with_base_displ(full(RSP), -bytes),
+        MemoryOperand::with_base_displ(full(RSP), by),
     )
     .expect("the stack pointer's move");
     put(code, &lea);
@@ -467,7 +468,8 @@ fn check_of(form: Form) -> Check {
     }
 }
 
-/// A pop: the load into t, then rsp moved, its commit point, after which t holds the popped register.
+/// A pop: the load into t, then rsp moved, its commit point, after which t holds the popped register; a pop to memory
+/// commits at its store, rsp's move then a fix-up.
 fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     let bytes = i64::from(i.stack_pointer_increment());
     let word = bytes == i64::from(W64 / 8);
@@ -546,7 +548,7 @@ fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
                 store
             };
             if guest_segment(i).is_none() && (!form.exact || address32(i)) {
-                finish(code, &cut(&store(into)), None);
+                finish(code, &cut(&store(into)), resume);
             } else {
                 // The destination's address takes t and its probe u: the value waits in the area meanwhile.
                 put(code, &store_area(form.way, KEPT_T, full_of(into)));
@@ -555,9 +557,9 @@ fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
                     probe(code, x);
                 }
                 put(code, &load_area(form.way, U, KEPT_T));
-                finish(code, &at, None);
+                finish(code, &at, resume);
             }
-            move_stack(code, RSP, bytes, resume);
+            move_stack_after(code, bytes);
         }
     }
 }

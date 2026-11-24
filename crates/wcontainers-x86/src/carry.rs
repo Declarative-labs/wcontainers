@@ -612,9 +612,15 @@ fn rewritten(
     let stack = matches!(guest.mnemonic(), Mnemonic::Push | Mnemonic::Pop)
         && guest.op0_kind() == OpKind::Register;
     if stack && let Way::InProcess(_) = way {
-        // The window's push and pop take a withheld register's value from its slot and write it there.
+        // A withheld register's push is t's, loaded from its slot; the window's pop writes the slot itself.
         code.slow(NativeReason::WithheldRegisterNamed);
-        access(way, code, Written::Instruction(guest), Some(next));
+        let named = general(guest.op0_register()).expect("a general register");
+        let mut made = *guest;
+        if guest.mnemonic() == Mnemonic::Push {
+            put(code, &load_area(way, T, withheld_slot(named.number)));
+            made.set_op0_register(sized(T_NUMBER, named.width));
+        }
+        access(way, code, Written::Instruction(&made), Some(next));
         return;
     }
     if reach == Reach::Plain

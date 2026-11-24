@@ -489,6 +489,144 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
     assert_eq!(differing, 0, "forms differ from the CPU in process");
 }
 
+/// The in-process way's cases of docs/x86-native-output.md section 7 in both checked forms against the CPU: an
+/// access one byte past the data and across it, at 2^32 - 1 with 8 bytes and at 2^32, a far-reaching SIB form, an
+/// `fs:` operand with a negative offset, strings with a large count upward and downward and with rsi or rdi at
+/// 2^32, 2^32 + 2^35, 2^40 and -1, bit tests whose offset reaches below the data or past 2^32, a push at the
+/// stack's bottom and at rsp 0, `call r` with rsp at 2^32 and 0, and the guest's 0x67 forms (an operand, `stos`,
+/// a bit test, `xlat`) and `maskmovq`. Every case ends as the CPU's, or as a named known difference (the wrapping
+/// form's landing modulo 2^32 among them).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare_in_process};
+    use wcontainers_translator_test::guest::x86_64::{FS, RFLAGS, RSP, plain};
+    use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES};
+    use wcontainers_x86::native::Check;
+    use wcontainers_x86::{DF, RAX, RBX, RCX, RDI, RSI};
+    const WINDOW: u64 = 1 << u32::BITS;
+    let r = |n: u8| usize::from(n);
+    let with = |code: &[u8], registers: &[(usize, u64)]| {
+        let mut case = plain(code);
+        for &(field, value) in registers {
+            case.state.0[field] = value.into();
+        }
+        case
+    };
+    let end = DATA + DATA_BYTES;
+    let starts = [WINDOW, WINDOW + (1 << 35), 1 << 40, u64::MAX];
+    let mut cases = Vec::new();
+    // mov rax, [rbx]: past the data, across its end, across 2^32, at 2^32.
+    for at in [end, end - 1, WINDOW - 1, WINDOW, DATA] {
+        cases.push(with(&[0x48, 0x8b, 0x03], &[(r(RBX), at)]));
+    }
+    // mov rax, [rbx + rcx*8 + 10h]: an index that wraps the sum back into the data, and one that reaches 2^43 past it.
+    for index in [1 << 61, 1 << 40, (1 << 61) - 1] {
+        cases.push(with(
+            &[0x48, 0x8b, 0x44, 0xcb, 0x10],
+            &[(r(RBX), DATA), (r(RCX), index)],
+        ));
+    }
+    // mov rax, fs:[rbx] with a negative offset from the base.
+    for (base, offset) in [
+        (DATA + 0x100, -0x10i64),
+        (DATA, -0x10),
+        (WINDOW + 0x100, -0x200),
+    ] {
+        cases.push(with(
+            &[0x64, 0x48, 0x8b, 0x03],
+            &[(FS, base), (r(RBX), offset as u64)],
+        ));
+    }
+    // rep movsb and rep stosb with a large count, upward and (DF set) downward, from inside the data.
+    let down = |mut case: Case| {
+        case.state.0[RFLAGS] |= u128::from(DF);
+        case
+    };
+    for count in [1 << 20, 0x1800] {
+        cases.push(with(
+            &[0xf3, 0xa4],
+            &[(r(RSI), DATA), (r(RDI), DATA + 0x800), (r(RCX), count)],
+        ));
+        cases.push(down(with(
+            &[0xf3, 0xa4],
+            &[
+                (r(RSI), DATA + 0x800),
+                (r(RDI), DATA + 0x1000),
+                (r(RCX), count),
+            ],
+        )));
+        cases.push(with(
+            &[0xf3, 0xaa],
+            &[(r(RDI), DATA + 0x10), (r(RCX), count)],
+        ));
+        cases.push(down(with(
+            &[0xf3, 0xaa],
+            &[(r(RDI), DATA + 0x10), (r(RCX), count)],
+        )));
+        cases.push(down(with(
+            &[0xf3, 0xaa],
+            &[(r(RDI), 0x10), (r(RCX), count)],
+        )));
+    }
+    // movsb, lodsb and stosb with a start at or past 2^32.
+    for &at in &starts {
+        cases.push(with(&[0xa4], &[(r(RSI), at), (r(RDI), DATA)]));
+        cases.push(with(&[0xa4], &[(r(RSI), DATA), (r(RDI), at)]));
+        cases.push(with(&[0xac], &[(r(RSI), at)]));
+        cases.push(with(&[0xf3, 0xaa], &[(r(RDI), at), (r(RCX), 4)]));
+    }
+    // bt and bts [rax], rcx: below the data, past 2^32, the independent check's 0x200000005.
+    for offset in [(-64i64) as u64, 8 << u32::BITS, 0x2_0000_0005, 5] {
+        for code in [&[0x48, 0x0f, 0xa3, 0x08][..], &[0x48, 0x0f, 0xab, 0x08]] {
+            cases.push(with(code, &[(r(RAX), DATA), (r(RCX), offset)]));
+        }
+    }
+    // push rax at the data's bottom and at rsp 0; call rax with rsp at 2^32 and 0.
+    for rsp in [DATA, 0, 8, WINDOW] {
+        cases.push(with(&[0x50], &[(RSP, rsp)]));
+        cases.push(with(&[0xff, 0xd0], &[(RSP, rsp), (r(RAX), CODE)]));
+    }
+    // The guest's 0x67: mov rax, [ebx]; stosb; bt dword [eax], ecx; xlat.
+    cases.push(with(
+        &[0x67, 0x48, 0x8b, 0x03],
+        &[(r(RBX), 0xffff_ffff_0000_0010)],
+    ));
+    cases.push(with(&[0x67, 0x48, 0x8b, 0x03], &[(r(RBX), WINDOW + DATA)]));
+    cases.push(with(&[0x67, 0xaa], &[(r(RDI), WINDOW + DATA)]));
+    cases.push(with(
+        &[0x67, 0x0f, 0xa3, 0x08],
+        &[(r(RAX), 0xffff_fff0), (r(RCX), 0x100)],
+    ));
+    cases.push(with(&[0x67, 0xd7], &[(r(RBX), WINDOW + DATA)]));
+    // maskmovq mm0, mm1 at rdi in the data and past 2^32.
+    for at in [DATA, DATA + (1 << 40)] {
+        cases.push(with(&[0x0f, 0xf7, 0xc1], &[(r(RDI), at)]));
+    }
+    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let mut failures = Vec::new();
+    for (name, check) in [("wrapping", Check::Wrapping), ("exact", Check::Exact)] {
+        let (mut same, mut known, mut how) = (0, BTreeMap::<&str, u64>::new(), BTreeMap::new());
+        for case in &cases {
+            match compare_in_process(&mut reference, case, REFERENCE_HOST, check) {
+                Ok((agreement, ended)) => {
+                    *how.entry(format!("{ended:?}")).or_insert(0) += 1;
+                    match agreement {
+                        Agreement::Same => same += 1,
+                        Agreement::KnownFailure(why) => *known.entry(why).or_default() += 1,
+                    }
+                }
+                Err(report) => failures.push(format!("{name} {:02x?}: {report}", case.code.code())),
+            }
+        }
+        eprintln!(
+            "the window's cases, the {name} form: {same} as the CPU, known differences {known:?}, by how they \
+             ended {how:?}"
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// The inside's answer to `cpuid` and `xgetbv` (docs/x86-native-output.md 3.5) is the meaning's, for every leaf
 /// with each sub-leaf of its table and past it, for leaves above the highest, and for each register `xgetbv` names;
 /// the upper halves of the registers read are set, as the instructions read only the lower ones.
