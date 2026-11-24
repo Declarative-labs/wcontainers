@@ -4940,6 +4940,7 @@ dependencies = [
 name = "wcontainers-direct3d-12"
 version = "0.1.0"
 dependencies = [
+ "bcdec_rs",
  "blake3",
  "bytemuck",
  "half",
