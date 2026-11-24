@@ -11,7 +11,7 @@ the test binaries in `LIST`, a `name:filter` each; outputs *-arm.out, *-x86.out)
 revision 2 waits on the owner's seven decisions) and `page-table-split` holds only the interface commit (90e721511),
 so host-process's four page-table methods are unchanged.
 - Read: run 10's whole host-process run (cloud/logs/nwvm/20261124-211230-1570366.log, Graviton4, load 34 to 48): all
-  26 test binaries pass but the known `agrees_with_precise_instruction_set` (the input domain's page at 0x1000, For the
+  27 test binaries pass but the known `agrees_with_precise_instruction_set` (the input domain's page at 0x1000, For the
   owner); the copy test's panic line is its own expected panic.
 - Built, 166771b41, round 5's item 3 (plan 3.7 as corrected in run 10): every record the stub hands the host kernel
   only to read is on its thread's read-only control page: `control::IOVEC` (the receive's one byte on the register
@@ -26,7 +26,7 @@ so host-process's four page-table methods are unchanged.
   `every_thread_s_records_name_its_own_receive_byte_and_signal_stack`,
   `a_cpu_set_holds_its_cpu_alone_and_one_past_the_set_is_refused`. The race test with a sibling storing in a loop
   waits for parallel threads (plan 3.7).
-- Verified: Graviton4 (test1-arm.out, load 25 to 31): all 26 test binaries with the change, same verdicts as the run
+- Verified: Graviton4 (test1-arm.out, load 25 to 31): all 27 test binaries with the change, same verdicts as the run
   above; then clippy with warnings denied clean and the lib's pages tests, zygote, stub, threads, placement (test2).
   x86-64 (test3-x86.out, load 29 falling to 7): pages, zygote, stub, files, host, threads, stop, touch, memory,
   slice, placement, embedder and step pass (floor, interrupt, copy and forged hold no x86 tests); clippy there
