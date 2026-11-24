@@ -40,7 +40,17 @@ back; whole.sh the suite and LTP; logs beside them).
     it; a host generic over its hooks names the stream wait's `Send` (return type notation).
     The seeded test policy (5be7ad01) and the runtime's local kernel (1607abc4) ask the same
     bounds of their host and executor. All under "For the owner".
-  - Not measured yet: what the atomic borrows and counts cost a pipe round trip.
+  - What it costs, measured (speed.sh, x86-64 machine, 13:37 to 13:50 UTC, load 3 to 6; the
+    stand-in's waitcost test in the release profile, pinned to one core, before at e6cdb186 and
+    after at 3aa47f9a, alternately, three rounds each of median-of-5; speed2.log): a guest pipe
+    ping-pong costs 12391, 12631 and (first try, speed.log) 12432 to 12710 ns per repetition
+    before and 14493, 14542 and 14588 ns after, about 16 percent more; an outside socket read
+    17447 and 17520 ns before and 18322, 19594 and 19675 ns after, 5 to 12 percent more.
+    Allocations per repetition are unchanged (142 and 81, the whole test process). The times
+    include unicorn's emulation, so the kernel's own share grew by more than these fractions.
+    The cost is the atomic reference counts and borrows on x86-64 (a locked instruction each),
+    which the kernel's one lock already makes needless; on wasm32 without threads they are plain
+    loads and stores (not measured). Not yet cut: listed below.
 - Checks (ARM64, 13:14 to 13:21 UTC, load 9 to 23): the whole workspace's `cargo check
   --keep-going --workspace --all-targets` status 0, and on x86-64 status 0 (13:18 UTC, load 7);
   clippy over the kernel, stand-in, policy and runtime, all targets, warnings denied, status 0;
