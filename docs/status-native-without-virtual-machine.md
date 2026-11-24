@@ -658,6 +658,10 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     build against it (it calls `execute` as returning the state). The runs here overlay, in the remote copy only, the
     committed suite with each `execute` polled to its end, and leave out the tests that need what does not build
     (scratch w1/r3run4/fixes.sh, drop-unicorn.sh).
+  - The kernel test with only busybox's Unicorn left out (02:45 UTC, kernel-arm.out, /dev/kvm denied, load 8 to 10):
+    all 7 programs give the WebAssembly output's status and output under form P after this run's changes.
+  - Xeon (02:40 UTC, run2-x86.out, /dev/kvm denied, load 40 to 52 from other tracks): every binary that builds there
+    passed (59 tests; the ARM64-only ones build none), clippy with warnings denied clean on all targets.
   - getppid round trip after the vectors change (release, CPU 41, /dev/kvm denied, load 9 to 11, speed4-arm.out),
     3 rounds alternating with W0's futex slot: median of batch means 3,130, 2,976 and 3,001 ns against the slot's
     2,397, 2,427 and 2,397: 1.31, 1.23 and 1.25 times; per call median 3,024, 2,949, 2,934 ns against 2,325, 2,352,
