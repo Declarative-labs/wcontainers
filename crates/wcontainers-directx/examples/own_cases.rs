@@ -23,8 +23,9 @@
 //! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip),
 //! `format_support` (both words of every format's support), `ms_depth_read` (multisampled depth
 //! textures made for reading and their views), `slots` (a pixel shader reading 25 shader
-//! resource views, the last at t127, and the samplers s0 and s15) and `bgrx` (what a vertex
-//! shader reads from a `B8G8R8X8_UNORM` element). A second argument, `10_1` or `10_0`, asks for that feature level
+//! resource views, the last at t127, and the samplers s0 and s15), `bgrx` (what a vertex
+//! shader reads from a `B8G8R8X8_UNORM` element) and `divisions` (quotients of values read at run
+//! time). A second argument, `10_1` or `10_0`, asks for that feature level
 //! in place of 11_0. Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
@@ -1779,6 +1780,13 @@ fn main() -> windows::core::Result<()> {
                 &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS),
                 None,
             )?;
+            // Typed loads of the view, after the reads: each texel loaded whole, changed and stored.
+            let loaded = cs("RWTexture2D<unorm float4> a : register(u0);
+                [numthreads(4, 4, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float4 v = a[id.xy];
+                    a[id.xy] = float4(0.5, 0.5, 0.5, v.a * 0.5 + v.r + v.g * 0.25 + 0.125);
+                }");
             unsafe {
                 context.CSSetShader(shader.as_ref(), None);
                 context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
@@ -1788,17 +1796,8 @@ fn main() -> windows::core::Result<()> {
                 context.CSSetShaderResources(0, Some(&[srv(&a, DXGI_FORMAT_UNKNOWN)]));
                 context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
                 context.Dispatch(1, 1, 1);
-            }
-            print("A8_UNORM", &a, 1);
-            print("read", &o, 4);
-            // Typed loads of the view: each texel loaded whole, changed and stored.
-            let loaded = cs("RWTexture2D<unorm float4> a : register(u0);
-                [numthreads(4, 4, 1)]
-                void main(uint3 id : SV_DispatchThreadID) {
-                    float4 v = a[id.xy];
-                    a[id.xy] = float4(0.5, 0.5, 0.5, v.a * 0.5 + v.r + v.g * 0.25 + 0.125);
-                }");
-            unsafe {
+                print("A8_UNORM", &a, 1);
+                print("read", &o, 4);
                 context.CSSetShaderResources(0, Some(&[None]));
                 context.CSSetShader(loaded.as_ref(), None);
                 context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
@@ -1860,9 +1859,6 @@ fn main() -> windows::core::Result<()> {
                 unsafe { device.CreateSamplerState(&desc, Some(&mut s))? };
                 s
             };
-            // atg-simplecomputepc's iteration constant: a point inside the set loops four times
-            // it, 1200 times.
-            const INSIDE_LOOPS: f32 = 1200.0;
             let iterations = INSIDE_LOOPS / 4.0;
             let limits = constants([1280.0, 720.0, iterations, 0.0]);
             unsafe {
@@ -1934,6 +1930,81 @@ fn main() -> windows::core::Result<()> {
             }
             print("fractal", &block, 16);
         }
+        // Quotients of a numerator and a divisor read at run time: k * b / b for k 1 to 64 over
+        // six divisors (atg-simplecomputepc's among them), and zeros, infinities, NaNs, overflows
+        // and results below the normal range; each quotient's bits, a NaN as `nan`.
+        "divisions" => {
+            const MULTIPLES: u16 = 64;
+            let divisors = [3.0, 7.0, 10.0, INSIDE_LOOPS / 4.0, 301.0, 999.0];
+            let (inf, max, tiny) = (f32::INFINITY, f32::MAX, f32::MIN_POSITIVE);
+            let mut pairs: Vec<[f32; 2]> = divisors
+                .iter()
+                .flat_map(|&b| (1..=MULTIPLES).map(move |k| [f32::from(k) * b, b]))
+                .collect();
+            pairs.extend([
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [-1.0, 0.0],
+                [1.0, -0.0],
+                [inf, 2.0],
+                [-inf, 2.0],
+                [2.0, inf],
+                [2.0, -inf],
+                [inf, inf],
+                [f32::NAN, 1.0],
+                [1.0, f32::NAN],
+                [-0.0, 3.0],
+                [0.0, -3.0],
+                [max, 0.5],
+                [max, 3.0],
+                [tiny, 3.0],
+                [3.0, max],
+                [1.0, 3.0],
+                [-2.0, 3.0],
+            ]);
+            // Whole groups of the program's 64 threads, the rest dividing one by one.
+            let group = usize::from(MULTIPLES);
+            pairs.resize(pairs.len().div_ceil(group) * group, [1.0, 1.0]);
+            let rows = pairs.len() as u32;
+            let bytes: Vec<u8> = pairs
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let at = |format, bind| Tex {
+                w: 1,
+                h: rows,
+                format,
+                samples: 1,
+                bind,
+            };
+            let p = make(
+                &at(DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_SHADER_RESOURCE),
+                Some((&bytes, 8)),
+            )?;
+            let o = make(&at(DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS), None)?;
+            let program = cs("Texture2D<float2> p : register(t0);
+                RWTexture2D<uint> o : register(u0);
+                [numthreads(1, 64, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float2 v = p.Load(int3(id.xy, 0));
+                    o[id.xy] = asuint(v.x / v.y);
+                }");
+            unsafe {
+                context.CSSetShader(program.as_ref(), None);
+                context.CSSetShaderResources(0, Some(&[srv(&p, DXGI_FORMAT_UNKNOWN)]));
+                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
+                context.Dispatch(1, rows / u32::from(MULTIPLES), 1);
+            }
+            print_rows("divisions", &o, 4, &|row| {
+                let bits = u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+                if f32::from_bits(bits).is_nan() {
+                    "nan".to_string()
+                } else {
+                    format!("{bits:08x}")
+                }
+            });
+        }
         // atg-simplecomputepc's frames: its dispatch, then its sprite pass drawing the result and
         // a second draw of 100 quads from another texture, frame after frame; the colour inside
         // the set (its loop count 1200 over 300) at the first and the last frame.
@@ -1943,8 +2014,7 @@ fn main() -> windows::core::Result<()> {
             const GLYPHS: usize = 100;
             const QUAD_INDICES: u32 = 6;
             let (w, h) = (320u32, 180u32);
-            // atg-simplecomputepc's iteration count, its constant buffer's third value.
-            let iterations = 300.0;
+            let iterations = INSIDE_LOOPS / 4.0;
             let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
             let fractal = cs(FRACTAL);
             let bytes: Vec<u8> = COLOUR_MAP.iter().flat_map(|t| t.to_le_bytes()).collect();
@@ -4890,6 +4960,11 @@ fn main() -> windows::core::Result<()> {
     println!("GetDeviceRemovedReason {:#010x}", removed());
     Ok(())
 }
+
+/// atg-simplecomputepc's loop count of a point inside the set: four times its iteration constant,
+/// the third value of its constant buffer.
+#[cfg(windows)]
+const INSIDE_LOOPS: f32 = 1200.0;
 
 /// atg-simplecomputepc's colour map.
 #[cfg(windows)]

@@ -377,13 +377,74 @@ fn a8_storage_views_store_as_direct3d_does() {
     case("a8_storage");
 }
 
+/// Whether each 32-bit word of `got`'s hex value equals the word of `one` or of `other` in its
+/// place, the three lines' prefixes being equal.
+#[cfg(not(feature = "webgl"))]
+fn words_of_either(got: &str, one: &str, other: &str) -> bool {
+    let split = |l: &str| {
+        l.rsplit_once(' ')
+            .map(|(p, v)| (p.to_string(), v.to_string()))
+    };
+    let (Some((gp, gv)), Some((op, ov)), Some((tp, tv))) = (split(got), split(one), split(other))
+    else {
+        return false;
+    };
+    const WORD: usize = 8;
+    gp == op
+        && gp == tp
+        && gv.len() == ov.len()
+        && gv.len() == tv.len()
+        && gv.len() % WORD == 0
+        && (0..gv.len() / WORD).all(|i| {
+            let w = |v: &str| v[i * WORD..(i + 1) * WORD].to_string();
+            w(&gv) == w(&ov) || w(&gv) == w(&tv)
+        })
+}
+
+/// Runs one case of `own_cases` on the RTX 3080, on WARP and through ours, and holds each 32-bit
+/// word ours printed to what one of the two real implementations printed in its place: where the
+/// two differ within the specification's tolerance (a division's last bit), either answer passes.
+#[cfg(not(feature = "webgl"))]
+fn case_either_real(name: &str) {
+    let args = [name];
+    let (code, hardware) = run_with("own_cases", &place(&format!("{name}-system"), false), &args);
+    assert_eq!(code, 0, "{hardware}");
+    let (code, warp) = run_env(
+        "own_cases",
+        &place(&format!("{name}-warp"), false),
+        &args,
+        &[("OWN_CASES_DRIVER", "warp")],
+    );
+    assert_eq!(code, 0, "{warp}");
+    let (code, got) = run_with("own_cases", &place(&format!("{name}-ours"), true), &args);
+    assert_eq!(code, 0, "{got}");
+    for ((h, w), g) in hardware.lines().zip(warp.lines()).zip(got.lines()) {
+        assert!(
+            g == h || g == w || words_of_either(g, h, w),
+            "the first line that is neither real answer\nRTX 3080 {h}\nWARP     {w}\nours     {g}"
+        );
+    }
+    assert_eq!(hardware.lines().count(), got.lines().count());
+    assert_eq!(warp.lines().count(), got.lines().count());
+}
+
 /// A colour map sampled bilinearly and clamped at a coordinate just below 1 worked out by the
 /// program as atg-simplecomputepc does, and at fixed coordinates around its edges; and that
-/// program's own compute shader run as it runs it, inside the Mandelbrot set; as on the RTX 3080.
+/// program's own compute shader run as it runs it, inside the Mandelbrot set; as the RTX 3080 or
+/// WARP gives them (they differ by the last bit of 1200 / 300, Gap list).
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn colour_map_sampled_at_its_edges_as_direct3d_samples_it() {
-    case("colour_map_edge");
+    case_either_real("colour_map_edge");
+}
+
+/// Quotients of values read at run time, ordinary ones and zeros, infinities, NaNs, overflows and
+/// results below the normal range: each as the RTX 3080 or WARP gives it (the RTX 3080's
+/// division is 1 ULP short on some, WARP's correctly rounded; the specification allows 2.5 ULP).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn divisions_give_a_real_devices_quotient() {
+    case_either_real("divisions");
 }
 
 /// atg-simplecomputepc's dispatch over 30 frames, each also drawing the result and 100 quads from
@@ -393,7 +454,7 @@ fn colour_map_sampled_at_its_edges_as_direct3d_samples_it() {
 /// inside the program, after its driver changes its division (Gap list).
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "ours divides 1200 by 300 to 3.9999998, as the RTX 3080 does outside the program, where WARP gives the correctly rounded 4; which of the two to follow waits on the orchestrator's ruling (Gap list)"]
+#[ignore = "ours divides 1200 by 300 to 3.9999998 where WARP and the RTX 3080 inside the program give the correctly rounded 4; waits on the shaders crate's correctly rounded division (Asked of other tracks)"]
 fn colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it() {
     let args = ["colour_map_frames"];
     let warp = [("OWN_CASES_DRIVER", "warp")];
@@ -606,6 +667,10 @@ fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it()
 /// `support_differences` names. Direct3D fails the second query where a format has none of its
 /// bits, so it fails on ours where real Direct3D's word holds only bits ours lacks.
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
     format_support_compared("11_0", "ours", &[], &[]);
 }
@@ -628,8 +693,8 @@ fn format_support_at_level_10_0_as_direct3d_reports_it_but_the_named_shortfalls(
 }
 
 /// The same on devices of feature levels 9_1, 9_2 and 9_3, which report only what the 10Level9
-/// tables give; and what such devices make and refuse, line by line.
-#[cfg(not(feature = "webgl"))]
+/// tables give; and what such devices make and refuse, line by line. Also on the WebGL 2 build,
+/// whose device is 9_3.
 #[test]
 fn format_support_and_creations_below_10_0_as_direct3d_reports_them() {
     for level in ["9_1", "9_2", "9_3"] {
