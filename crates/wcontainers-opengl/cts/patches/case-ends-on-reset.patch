@@ -1,0 +1,43 @@
+For testing only: every WGL context of glcts asks after each iteration whether the implementation
+reset it, and a reset context ends its case, so that a call the driver refused fails the case that
+made it. The suite's desktop package already asks after each case; its ES packages do not.
+
+diff --git a/framework/platform/win32/tcuWGLContextFactory.cpp b/framework/platform/win32/tcuWGLContextFactory.cpp
+--- a/framework/platform/win32/tcuWGLContextFactory.cpp
++++ b/framework/platform/win32/tcuWGLContextFactory.cpp
+@@ -28,6 +28,7 @@
+ #include "tcuWin32Window.hpp"
+ #include "glwFunctions.hpp"
+ #include "glwInitFunctions.hpp"
++#include "glwEnums.hpp"
+ #include "deString.h"
+ 
+ using std::vector;
+@@ -125,8 +126,13 @@
+     if (nullptr != sharedContext)
+         sharedCtx = sharedContext->m_context;
+ 
+-    m_context =
+-        new wgl::Context(&wglCore, deviceCtx, sharedCtx, config.type, pixelFormat, config.resetNotificationStrategy);
++    // A context made without a stated reset strategy is made to lose itself on a reset, so that
++    // postIterate can ask whether the implementation reset it.
++    const glu::ResetNotificationStrategy resetStrategy =
++        config.resetNotificationStrategy == glu::RESET_NOTIFICATION_STRATEGY_NOT_SPECIFIED ?
++            glu::RESET_NOTIFICATION_STRATEGY_LOSE_CONTEXT_ON_RESET :
++            config.resetNotificationStrategy;
++    m_context = new wgl::Context(&wglCore, deviceCtx, sharedCtx, config.type, pixelFormat, resetStrategy);
+ 
+     try
+     {
+@@ -174,6 +180,11 @@
+ 
+ void WGLContext::postIterate(void)
+ {
++    // A context the implementation reports reset (a call it refused, or its device lost) did not do
++    // all of the case's work: the case ends as a resource error, which ends the run, as the
++    // desktop package's own check after each case does.
++    if (m_functions.getGraphicsResetStatus && m_functions.getGraphicsResetStatus() != GL_NO_ERROR)
++        throw ResourceError("The context was reset (glGetGraphicsResetStatus)");
+     m_context->swapBuffers();
+     m_window.processEvents();
+ }

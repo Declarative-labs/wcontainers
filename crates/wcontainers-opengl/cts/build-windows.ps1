@@ -13,11 +13,26 @@ $src = Join-Path $Cts 'src'
 $build = Join-Path $Cts 'build'
 $fetchedMark = Join-Path $src '.git\wcontainers-sources-fetched'
 
-$fresh = Get-PinnedSource (Read-PinField $pinFile 'url') (Read-PinField $pinFile 'tag') (Read-PinField $pinFile 'commit') $src
+$commit = Read-PinField $pinFile 'commit'
+$fresh = Get-PinnedSource (Read-PinField $pinFile 'url') (Read-PinField $pinFile 'tag') $commit $src
 if ($fresh -or -not (Test-Path $fetchedMark)) {
     if (Test-Path $build) { Remove-Item -Recurse -Force $build }
     & $Python (Join-Path $src 'external\fetch_sources.py'); Run 'fetch_sources.py'
     New-Item -ItemType File -Force -Path $fetchedMark | Out-Null
+}
+
+# The patches of patches/ (testing only), applied again from the pinned commit whenever they change;
+# the patches change tracked files only, so the fetched sources stay.
+$patches = @(Get-ChildItem (Join-Path $PSScriptRoot 'patches\*.patch') | Sort-Object Name)
+$applied = Join-Path $src '.git\wcontainers-patches'
+$wanted = ($patches | ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
+$had = if (Test-Path $applied) { Get-Content -Raw $applied } else { '' }
+if ($wanted -ne $had) {
+    & git -C $src checkout -q -f $commit; Run 'git checkout'
+    foreach ($patch in $patches) {
+        & git -C $src apply --ignore-whitespace $patch.FullName; Run "applying $($patch.Name)"
+    }
+    Set-Content -NoNewline -Path $applied -Value $wanted
 }
 
 Enter-VisualCpp
