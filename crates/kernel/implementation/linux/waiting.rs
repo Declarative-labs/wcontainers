@@ -248,9 +248,11 @@ pub(crate) mod tests {
     use super::*;
     use core::cell::Cell as Shared;
 
-    /// Allocations this thread has made so far.
-    pub(crate) fn allocations() -> u64 {
-        ALLOCATIONS.with(Shared::get)
+    extern crate std;
+
+    /// The allocations `run` makes on this thread.
+    pub(crate) fn allocations_of(run: impl FnOnce()) -> u64 {
+        allocation_counter::measure(run).count_total
     }
 
     /// What a test system's call waits behind: shut, it keeps the waker it was last polled with;
@@ -355,32 +357,6 @@ pub(crate) mod tests {
         }
     }
 
-    extern crate std;
-
-    /// Counts the allocations of the thread that makes them.
-    struct Counting;
-
-    std::thread_local! {
-        static ALLOCATIONS: Shared<u64> = const { Shared::new(0) };
-    }
-
-    // SAFETY: every call goes to the system allocator unchanged.
-    unsafe impl core::alloc::GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.alloc(layout) }
-        }
-
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: core::alloc::Layout) {
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.dealloc(pointer, layout) }
-        }
-    }
-
-    #[global_allocator]
-    static COUNTING: Counting = Counting;
-
     #[test]
     fn a_call_that_waits_allocates_nothing_once_its_cell_exists() {
         let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
@@ -394,10 +370,11 @@ pub(crate) mod tests {
             waiting.next_answer().expect("answered");
         };
         round(0);
-        let before = ALLOCATIONS.with(Shared::get);
-        for number in 1..100 {
-            round(number);
-        }
-        assert_eq!(ALLOCATIONS.with(Shared::get), before);
+        let counted = allocations_of(|| {
+            for number in 1..100 {
+                round(number);
+            }
+        });
+        assert_eq!(counted, 0);
     }
 }

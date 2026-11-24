@@ -1433,7 +1433,7 @@ pub(super) fn answered<S: crate::System>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::waiting::tests::{Door, allocations};
+    use crate::waiting::tests::{Door, allocations_of};
     use domain::base::iana::{Class, Rtype};
     use domain::base::{Message, MessageBuilder, Name};
 
@@ -1484,10 +1484,11 @@ mod tests {
         };
         // The first round makes the cell and the buffer.
         round(0);
-        let before = allocations();
-        for number in 1..100 {
-            round(number);
-        }
-        assert_eq!(allocations(), before);
+        let counted = allocations_of(|| {
+            for number in 1..100 {
+                round(number);
+            }
+        });
+        assert_eq!(counted, 0);
     }
 }

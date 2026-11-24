@@ -2588,7 +2588,7 @@ impl crate::Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::waiting::tests::{Door, allocations};
+    use crate::waiting::tests::{Door, allocations_of};
     use crate::waiting::{Waiting, waiting_call};
     use alloc::sync::Arc;
 
@@ -2677,11 +2677,12 @@ mod tests {
         // The first two rounds make the cell, a body and the buffer a body gives back.
         round(1);
         round(2);
-        let before = allocations();
-        for unique in 3..100 {
-            round(unique);
-        }
-        assert_eq!(allocations(), before);
+        let counted = allocations_of(|| {
+            for unique in 3..100 {
+                round(unique);
+            }
+        });
+        assert_eq!(counted, 0);
     }
 
     /// What a test backend was last told of the notice before.
@@ -2746,16 +2747,17 @@ mod tests {
         };
         // The first round makes the cell and the buffer.
         round(None);
-        let before = allocations();
-        let mut refused = false;
-        for _ in 1..100 {
-            round(Some(if refused {
-                Err(wcontainers_kernel::errno::Errno::EINVAL)
-            } else {
-                Ok(())
-            }));
-            refused = !refused;
-        }
-        assert_eq!(allocations(), before);
+        let counted = allocations_of(|| {
+            let mut refused = false;
+            for _ in 1..100 {
+                round(Some(if refused {
+                    Err(wcontainers_kernel::errno::Errno::EINVAL)
+                } else {
+                    Ok(())
+                }));
+                refused = !refused;
+            }
+        });
+        assert_eq!(counted, 0);
     }
 }

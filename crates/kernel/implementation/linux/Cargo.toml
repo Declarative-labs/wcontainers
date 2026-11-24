@@ -44,6 +44,8 @@ wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicor
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
+# Counts what a waiting call allocates, on the thread that waits (MIT OR Apache-2.0).
+allocation-counter = "0.8.1"
 
 [[test]]
 name = "conformance"
