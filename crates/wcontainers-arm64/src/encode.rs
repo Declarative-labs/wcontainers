@@ -110,6 +110,7 @@ mod name {
     pub const SYS: &str = "SYS_CR_systeminstrs";
     pub const ADRP: &str = "ADRP_only_pcreladdr";
     pub const ADR: &str = "ADR_only_pcreladdr";
+    pub const LDUR_32: &str = "LDUR_32_ldst_unscaled";
 }
 
 written_forms! {
@@ -165,6 +166,7 @@ written_forms! {
     SYS,
     ADRP,
     ADR,
+    LDUR_32,
 }
 
 /// Arm's names of the fields the encoder and its callers name.
@@ -192,6 +194,7 @@ mod field_name {
     pub const OPTION: &str = "option";
     pub const IMM3: &str = "imm3";
     pub const IMM7: &str = "imm7";
+    pub const IMM9: &str = "imm9";
     pub const O0: &str = "o0";
     pub const OP1: &str = "op1";
     pub const CRN: &str = "CRn";
@@ -249,6 +252,7 @@ written_fields! {
     OPTION,
     IMM3,
     IMM7,
+    IMM9,
     /// A system register move's register's low bit of op0.
     O0,
     OP1,
@@ -806,6 +810,15 @@ pub fn bfi(rd: Register, rn: Register, lsb: u32, bits: u32) -> u32 {
 
 static LOAD_PAIRS: LazyLock<Kind<4>> =
     LazyLock::new(|| Kind::of([field::RT, field::RT2, field::RN, field::IMM7]));
+
+static LDUR_32: LazyLock<Shape<3>> =
+    LazyLock::new(|| Shape::written(form::LDUR_32, [field::RT, field::RN, field::IMM9]));
+
+/// `ldur wt, [rn, #offset]`, the offset in bytes either way.
+pub fn load_unscaled_32(rt: Register, rn: Register, offset: i64) -> Result<u32, DoesNotFit> {
+    let [.., imm9] = LDUR_32.fields;
+    LDUR_32.word([rt.into(), rn.into(), signed(offset, 1, imm9.width)?])
+}
 
 /// `ldp rt, rt2, [rn]` of 32-bit or 64-bit registers, by form.
 pub fn load_pair(form: Form, rt: Register, rt2: Register, rn: Register) -> u32 {

@@ -24,7 +24,10 @@ use crate::mirror::{
 pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
-use crate::way::{PROCESS_ENTRIES, PROCESS_ENTRY_BYTES, Way};
+use crate::way::{
+    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, OUTSIDE, PROCESS_ENTRIES,
+    PROCESS_ENTRY_BYTES, PROCESS_REACH_BITS, PROCESS_SLOTS, WINDOW_BITS, Way,
+};
 use crate::{Arm64, FPCR_BITS, decode};
 use crate::{forms, habits};
 
@@ -48,7 +51,7 @@ pub fn call_word(call: InsideCall) -> u32 {
 /// calls the call's entry, and where the floor goes on after the call, takes x30 back and branches back. The
 /// entry's return address names the call, as the machine way's exception address does: the floor reports the call
 /// at the `blr`, and going on after it is going on at the next word.
-fn process_call(code: &mut HostCode, call: InsideCall) {
+fn process_call(code: &mut HostCode, call: InsideCall, entries: u64) {
     let from = code.offset();
     code.push(&encode::branch(false, 0).expect("a branch").to_le_bytes());
     let state = code.snapshot();
@@ -79,7 +82,7 @@ fn process_call(code: &mut HostCode, call: InsideCall) {
             other => other,
         };
         code.restore(now);
-        let entry = PROCESS_ENTRIES + u64::from(call.code()) * PROCESS_ENTRY_BYTES;
+        let entry = entries + u64::from(call.code()) * PROCESS_ENTRY_BYTES;
         for word in encode::move_address(LINK, entry) {
             code.push(&word.to_le_bytes());
         }
@@ -100,7 +103,8 @@ fn process_call(code: &mut HostCode, call: InsideCall) {
 pub(crate) fn call(way: Way, code: &mut HostCode, call: InsideCall) {
     match way {
         Way::Machine => code.push(&call_word(call).to_le_bytes()),
-        Way::Process => process_call(code, call),
+        Way::Process => process_call(code, call, PROCESS_ENTRIES),
+        Way::InProcess { .. } => process_call(code, call, IN_PROCESS_ENTRIES),
     }
 }
 
@@ -126,12 +130,12 @@ fn page_word(offset: usize, index: usize) -> u64 {
     (offset + index * size_of::<u64>()) as u64
 }
 
-fn withheld_slot(register: Register) -> u64 {
-    let index = WITHHELD.iter().position(|&w| w == register);
-    page_word(
-        offset_of!(RegisterPage, withheld),
-        index.expect("a withheld register"),
-    )
+fn withheld_slot(way: Way, register: Register) -> u64 {
+    let index = way.withheld().iter().position(|&w| w == register);
+    match index.expect("a withheld register") {
+        k if k < WITHHELD.len() => page_word(offset_of!(RegisterPage, withheld), k),
+        k => page_word(IN_PROCESS_WITHHELD_AT, k - WITHHELD.len()),
+    }
 }
 
 fn saved_slot(index: usize) -> u64 {
@@ -174,20 +178,20 @@ fn touched(i: &I) -> (Registers, Registers) {
 }
 
 /// A guest register the instruction does not touch and that is not withheld.
-fn free(avoid: Registers) -> Register {
+fn free(way: Way, avoid: Registers) -> Register {
     (0..ZERO)
-        .find(|&n| !WITHHELD.contains(&n) && !avoid.has_bit(bit(n)))
+        .find(|&n| !way.withheld().contains(&n) && !avoid.has_bit(bit(n)))
         .expect("an instruction touches few registers")
 }
 
 /// An even guest register that, with the next one, the instruction does not touch.
-fn free_pair(avoid: Registers) -> Register {
+fn free_pair(way: Way, avoid: Registers) -> Register {
     (0..ZERO)
         .step_by(2)
         .find(|&n| {
             [n, n + 1]
                 .iter()
-                .all(|&r| !WITHHELD.contains(&r) && !avoid.has_bit(bit(r)))
+                .all(|&r| !way.withheld().contains(&r) && !avoid.has_bit(bit(r)))
         })
         .expect("an instruction touches few registers")
 }
@@ -246,8 +250,16 @@ pub(crate) fn aligned_bases(part: &[(u64, I)]) -> AlignedBases {
 
 /// The test of `aligned`'s bases in t, ending in a branch taken when every one is aligned (pointed later), whose
 /// offset it gives; when one is not, the code goes on after it.
-pub(crate) fn test_aligned_bases(code: &mut HostCode, aligned: &AlignedBases) -> Option<usize> {
-    let (&(last, last_bytes), rest) = aligned.0.split_last()?;
+pub(crate) fn test_aligned_bases(
+    way: Way,
+    code: &mut HostCode,
+    aligned: &AlignedBases,
+) -> Option<usize> {
+    // A base the way withholds is named through a stand-in, which no test before the loop holds for.
+    let bases: Vec<(Register, u32)> = (aligned.0.iter().copied())
+        .filter(|(base, _)| !way.withheld().contains(base))
+        .collect();
+    let (&(last, last_bytes), rest) = bases.split_last()?;
     let test = |base: Register, bytes: u32| {
         encode::and_immediate(SCRATCH, base, u64::from(bytes) - 1)
             .expect("a power of two less one is a logical immediate")
@@ -427,9 +439,9 @@ impl Out<'_> {
 /// them itself, and the inside reads and writes them where they are.
 const OWN_WAY: [Route; 4] = [Route::Transfer, Route::Kernel, Route::Trap, Route::Nothing];
 
-/// Routes whose sequence needs t, which then cannot be a stand-in.
-fn uses_scratch(route: Route) -> bool {
-    !matches!(route, Route::Copy | Route::Constant)
+/// Routes whose sequence needs t, which then cannot be a stand-in: in process, every route's may.
+fn uses_scratch(way: Way, route: Route) -> bool {
+    matches!(way, Way::InProcess { .. }) || !matches!(route, Route::Copy | Route::Constant)
 }
 
 /// `word` with registers `from` named `to` instead (a pair moves by its first register's field, and any other
@@ -505,7 +517,8 @@ pub(crate) fn carry(
         address,
         aligned,
     };
-    if !WITHHELD.into_iter().any(named) || OWN_WAY.contains(&route) {
+    let withheld = way.withheld();
+    if !withheld.iter().any(|&w| named(w)) || OWN_WAY.contains(&route) {
         carry_route(&mut out, route, i, word);
         return;
     }
@@ -517,32 +530,32 @@ pub(crate) fn carry(
     {
         for first in [number(rs), number(rt)] {
             let pair = vec![first, first + 1];
-            if pair.iter().any(|r| WITHHELD.contains(r)) && !groups.contains(&pair) {
+            if pair.iter().any(|r| withheld.contains(r)) && !groups.contains(&pair) {
                 groups.push(pair);
             }
         }
     }
     // Each other withheld register named moves alone (a `casp`'s base among them).
-    for w in WITHHELD {
+    for &w in withheld {
         if named(w) && !groups.iter().any(|g| g.contains(&w)) {
             groups.push(vec![w]);
         }
     }
     let mut avoid = uses.union(defs);
-    let mut scratch_free = !uses_scratch(route);
+    let mut scratch_free = !uses_scratch(way, route);
     let mut stand_ins = Vec::new();
     let mut changed = word;
     // t stands in for the guest's own t first, so that no other register is moved onto a name it has.
     groups.sort_by_key(|g| !g.contains(&SCRATCH));
     for group in groups {
         let to: Vec<Register> = if group.len() > 1 {
-            let first = free_pair(avoid);
+            let first = free_pair(way, avoid);
             vec![first, first + 1]
         } else if scratch_free && (group[0] == SCRATCH || !named(SCRATCH)) {
             scratch_free = false;
             vec![SCRATCH]
         } else {
-            vec![free(avoid)]
+            vec![free(way, avoid)]
         };
         for &r in &to {
             avoid = avoid.union(only(r));
@@ -563,18 +576,25 @@ pub(crate) fn carry(
         }
     }
     for s in &stand_ins {
-        out.put(if WITHHELD.contains(&s.from) {
-            load_page(s.to, withheld_slot(s.from))
+        out.put(if withheld.contains(&s.from) {
+            load_page(s.to, withheld_slot(way, s.from))
         } else {
             encode::move_register(s.to, s.from)
         });
         out.code.relocate(s.from, Held::Register(s.to));
     }
+    // A stand-in's alignment is not what a test before the loop found.
+    let untested = AlignedBases(
+        (out.aligned.0.iter().copied())
+            .filter(|&(r, _)| !stand_ins.iter().any(|s| s.to == r))
+            .collect(),
+    );
+    out.aligned = &untested;
     carry_route(&mut out, route, &decode(changed), changed);
     for s in &stand_ins {
         if defs.has_bit(bit(s.from)) {
-            out.put(if WITHHELD.contains(&s.from) {
-                store_page(s.to, withheld_slot(s.from))
+            out.put(if withheld.contains(&s.from) {
+                store_page(s.to, withheld_slot(way, s.from))
             } else {
                 encode::move_register(s.from, s.to)
             });
@@ -591,6 +611,20 @@ pub(crate) fn carry(
 
 fn carry_route(out: &mut Out, route: Route, i: &I, word: u32) {
     let next = out.next();
+    if let Way::InProcess { .. } = out.way {
+        match (route, *i) {
+            (Route::Copy | Route::Split | Route::Aligned | Route::Collision, _)
+                if i.memory_access().is_some() =>
+            {
+                return access_in_process(out, route, i, word);
+            }
+            (Route::Copy, I::ZeroBlock { rn } | I::CleanCache { rn }) => {
+                return by_address_in_process(out, rn, word);
+            }
+            (Route::Copy, _) if stack_pointer_in_process(out, i, word) => return,
+            _ => {}
+        }
+    }
     match route {
         Route::Copy => match i.memory_access() {
             Some(m) => access(out, &m, one_element(i), None, &[], word),
@@ -630,19 +664,19 @@ fn carry_route(out: &mut Out, route: Route, i: &I, word: u32) {
     }
 }
 
-/// The address an access's first byte is at, built in t.
-fn first_byte(address: &Address) -> Vec<u32> {
+/// The address an access's first byte is at, built in `into`.
+fn first_byte(address: &Address, into: Register) -> Vec<u32> {
     match *address {
         Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
-            let mut words = encode::move_constant(SCRATCH, offset as u64);
+            let mut words = encode::move_constant(into, offset as u64);
             words.push(
-                encode::add_extended(false, SCRATCH, number(base), SCRATCH, false, u64::BITS, 0)
+                encode::add_extended(false, into, number(base), into, false, u64::BITS, 0)
                     .expect("registers fit"),
             );
             words
         }
         Address::PostIndex { base, .. } => {
-            vec![encode::add_immediate(SCRATCH, number(base), 0).expect("zero fits")]
+            vec![encode::add_immediate(into, number(base), 0).expect("zero fits")]
         }
         Address::Indexed {
             base,
@@ -652,7 +686,7 @@ fn first_byte(address: &Address) -> Vec<u32> {
         } => vec![
             encode::add_extended(
                 false,
-                SCRATCH,
+                into,
                 number(base),
                 number(index),
                 extend.signed,
@@ -665,15 +699,15 @@ fn first_byte(address: &Address) -> Vec<u32> {
     }
 }
 
-/// The first byte's offset in its page, built in t.
-fn page_offset(address: &Address) -> u32 {
+/// The first byte's offset in its page, built in `into`.
+fn page_offset(address: &Address, into: Register) -> u32 {
     let page = PAGE_SIZE as i64;
     match *address {
         Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
-            encode::add_immediate(SCRATCH, number(base), offset.rem_euclid(page))
+            encode::add_immediate(into, number(base), offset.rem_euclid(page))
                 .expect("an offset within a page fits")
         }
-        _ => first_byte(address)[0],
+        _ => first_byte(address, into)[0],
     }
 }
 
@@ -682,7 +716,7 @@ fn page_offset(address: &Address) -> u32 {
 /// three words: the access crosses when its first byte's page offset plus `bytes - 1` reaches the page, that is
 /// when the last byte's page offset is below `bytes - 1`, so the branch is taken when it is below `bytes` (a
 /// first byte at a page's start is probed too, harmlessly).
-fn page_test_words(address: &Address, bytes: u32) -> Vec<u32> {
+fn page_test_words(address: &Address, bytes: u32, into: Register) -> Vec<u32> {
     let last = i64::from(bytes) - 1;
     let page = PAGE_SIZE as i64;
     let offset = match *address {
@@ -692,17 +726,17 @@ fn page_test_words(address: &Address, bytes: u32) -> Vec<u32> {
     };
     match (offset, base_of(address)) {
         (Some(offset), Some(base)) if bytes.is_power_of_two() => vec![
-            encode::add_immediate(SCRATCH, number(base), (offset + last).rem_euclid(page))
+            encode::add_immediate(into, number(base), (offset + last).rem_euclid(page))
                 .expect("an offset within a page fits"),
-            encode::and_immediate(SCRATCH, SCRATCH, (PAGE_SIZE - 1) & !(u64::from(bytes) - 1))
+            encode::and_immediate(into, into, (PAGE_SIZE - 1) & !(u64::from(bytes) - 1))
                 .expect("the page offset's bits above the access's are contiguous"),
-            encode::compare_branch(false, SCRATCH, 0).expect("fits"),
+            encode::compare_branch(false, into, 0).expect("fits"),
         ],
         _ => vec![
-            page_offset(address),
-            encode::and_immediate(SCRATCH, SCRATCH, PAGE_SIZE - 1).expect("a page mask"),
-            encode::add_immediate(SCRATCH, SCRATCH, last).expect("an access is short"),
-            encode::test_branch_nonzero(SCRATCH, PAGE_SIZE.trailing_zeros(), 0).expect("fits"),
+            page_offset(address, into),
+            encode::and_immediate(into, into, PAGE_SIZE - 1).expect("a page mask"),
+            encode::add_immediate(into, into, last).expect("an access is short"),
+            encode::test_branch_nonzero(into, PAGE_SIZE.trailing_zeros(), 0).expect("fits"),
         ],
     }
 }
@@ -800,65 +834,394 @@ fn access(
     let tested_before =
         one_element && aligned_with_base(&m.address, m.bytes) && out.aligned.holds(base, m.bytes);
     if align.is_none() && m.bytes > 1 && may_cross_page(m) && !tested_before {
-        out.code.slow(page_test(m.bytes));
-        let test = page_test_words(&m.address, m.bytes);
-        let (crossing, before) = test.split_last().expect("a test ends in its branch");
-        let mut probes = Vec::new();
-        // The probes go through t, so the check SA0 makes of a stack pointer base comes before them.
-        if base == Reg::Sp {
-            let skip = 2 * INSTRUCTION as i64;
-            probes.extend([
-                encode::add_immediate(SCRATCH, number(base), 0).expect("zero fits"),
-                encode::and_immediate(SCRATCH, SCRATCH, STACK_ALIGNMENT - 1)
-                    .expect("a power of two less one is a logical immediate"),
-                encode::compare_branch(false, SCRATCH, skip).expect("fits"),
-                call_word(InsideCall::Misaligned),
-            ]);
-        }
-        probes.extend(first_byte(&m.address));
-        let last = i64::from(m.bytes) - 1;
-        if m.write {
-            probes.push(encode::load_add(form::LDADDB, ZERO, ZERO, SCRATCH));
-            probes.push(encode::add_immediate(SCRATCH, SCRATCH, last).expect("an access is short"));
-            probes.push(encode::load_add(form::LDADDB, ZERO, ZERO, SCRATCH));
-        } else {
-            probes.push(encode::load_store(form::LDRB, ZERO, SCRATCH, 0, 1).expect("fits"));
-            probes.push(
-                encode::load_store(form::LDRB, ZERO, SCRATCH, last as u64, 1)
-                    .expect("an access is short"),
-            );
-        }
-        if one_element && aligned_with_base(&m.address, m.bytes) {
-            out.put(
-                encode::and_immediate(SCRATCH, number(base), u64::from(m.bytes) - 1)
-                    .expect("a power of two less one is a logical immediate"),
-            );
-            let resume_at = out.code.offset() + INSTRUCTION as usize;
-            // Out of line: the exact test, whose branch skips the way back when the access crosses.
-            let skip = encode::retarget(*crossing, 2 * INSTRUCTION as i64).expect("fits");
-            out.tail(
-                encode::compare_branch(true, SCRATCH, 0).expect("fits"),
-                |t| {
-                    t.words.extend_from_slice(before);
-                    t.words.push(skip);
-                    t.back_from.push(t.words.len());
-                    t.words.push(encode::branch(false, 0).expect("fits"));
-                    t.words.extend(probes);
-                    t.back = Some(resume_at);
-                },
-            );
-        } else {
-            out.put_all(before);
-            let resume_at = out.code.offset() + INSTRUCTION as usize;
-            out.tail(*crossing, |t| {
-                t.words = probes;
-                t.back = Some(resume_at);
-            });
-        }
+        page_crossing(out, m, one_element, &m.address, SCRATCH);
     }
     out.put_all(prefix);
     let next = out.next();
     out.commit(word, next);
+}
+
+/// `add rd, base, wA, uxtw`: guest address `a` cut to the window, as its host address (in process).
+fn window_address(rd: Register, a: Register) -> u32 {
+    encode::add_extended(false, rd, BASE, a, false, u32::BITS, 0).expect("registers fit")
+}
+
+/// The mark read out of line where a guest address is outside its window (in process, [`OUTSIDE`]), then a word
+/// never reached.
+fn outside_words() -> Vec<u32> {
+    vec![
+        encode::eor_immediate(CHECK, BASE, OUTSIDE).expect("one bit is a logical immediate"),
+        encode::load_store(form::LDRB, ZERO, CHECK, 0, 1).expect("fits"),
+        encode::exception(form::UDF, 0),
+    ]
+}
+
+/// The window check of guest address `a` (in process, section 3.2): any bit of it from the window's top up to its
+/// top byte, which Linux's Top Byte Ignore leaves out, sends it to the mark. No flags are touched.
+fn window_check(out: &mut Out, a: Register) {
+    out.put(encode::ubfx(CHECK, a, WINDOW_BITS, TAG_LOW - WINDOW_BITS));
+    out.tail(encode::compare_branch(true, CHECK, 0).expect("fits"), |t| {
+        t.words = outside_words()
+    });
+}
+
+/// The check of a new stack pointer's guest value in u (rule d of section 3.2): every bit above the window,
+/// the top byte's too, sends it to the mark, where the floor takes it outside its window.
+fn stack_check(out: &mut Out) {
+    out.put(encode::ubfx(
+        SCRATCH,
+        CHECK,
+        WINDOW_BITS,
+        u64::BITS - WINDOW_BITS,
+    ));
+    out.tail(
+        encode::compare_branch(true, SCRATCH, 0).expect("fits"),
+        |t| t.words = outside_words(),
+    );
+}
+
+/// `sub rd, sp, base`: the guest's stack pointer (in process).
+fn guest_stack(rd: Register) -> u32 {
+    encode::add_extended(true, rd, ZERO, BASE, false, u64::BITS, 0).expect("registers fit")
+}
+
+/// The test of the stack pointer's alignment that SA0 makes of an access through it, where the access goes
+/// through another register.
+fn stack_alignment(out: &mut Out) {
+    out.put(encode::add_immediate(SCRATCH, ZERO, 0).expect("zero fits"));
+    out.put(
+        encode::and_immediate(SCRATCH, SCRATCH, STACK_ALIGNMENT - 1)
+            .expect("a power of two less one is a logical immediate"),
+    );
+    out.tail(
+        encode::compare_branch(true, SCRATCH, 0).expect("fits"),
+        |t| t.call = Some(InsideCall::Misaligned),
+    );
+}
+
+/// A guest access in process (section 3.2 item 1). An immediate or no offset from the stack pointer is the
+/// instruction itself (rules a and b); any other is checked and cut to the window.
+fn access_in_process(out: &mut Out, route: Route, i: &I, word: u32) {
+    let m = i.memory_access().expect("an access");
+    let align = (route == Route::Aligned).then_some(m.bytes);
+    let post = match *i {
+        I::SimdMemory {
+            post: Some(Reg::X(n)),
+            ..
+        } => Some(n),
+        _ => None,
+    };
+    // One register loaded twice gets the first element, as the meaning has it.
+    let word = match *i {
+        I::LoadPair { rt, rt2, .. } if rt == rt2 => {
+            encode::replace(word, field::RT2, ZERO.into()).expect("a register fits")
+        }
+        _ => word,
+    };
+    let rebuilt = |t: Register| -> (Vec<u32>, u32) {
+        let w = encode::replace(word, field::RN, t.into()).expect("a register fits");
+        match m.address {
+            Address::Indexed { .. } => (
+                Vec::new(),
+                encode::replace(w, field::RM, ZERO.into()).expect("fits"),
+            ),
+            _ => (Vec::new(), w),
+        }
+    };
+    let stack_immediate = matches!(
+        m.address,
+        Address::Offset { base: Reg::Sp, .. }
+            | Address::PreIndex { base: Reg::Sp, .. }
+            | Address::PostIndex { base: Reg::Sp, .. }
+    );
+    match *i {
+        I::LoadVectorPair {
+            bytes,
+            rt,
+            rt2,
+            address,
+            ..
+        } if rt == rt2 => {
+            if base_of(&address) == Some(Reg::Sp) {
+                return vector_pair_into_one(out, &m, bytes, rt);
+            }
+            let name = match bytes {
+                Q_BYTES => form::LDR_Q,
+                X_BYTES => form::LDR_D,
+                _ => form::LDR_S,
+            };
+            let at = match address {
+                Address::Offset { offset, .. } | Address::PreIndex { offset, .. } => offset,
+                _ => 0,
+            };
+            access_in_window(out, &m, false, None, None, |t| {
+                let first = encode::add_immediate(t, t, at).expect("a pair's offset fits");
+                let load = encode::load_store(name, rt, t, 0, 1).expect("fits");
+                (vec![first], load)
+            });
+        }
+        _ if stack_immediate && post.is_none() => {
+            access(out, &m, one_element(i), align, &[], word);
+        }
+        _ if base_of(&m.address) == Some(Reg::Sp) && post.is_some() => {
+            stack_post_register(out, &m, post.expect("a register"), word);
+        }
+        _ => access_in_window(out, &m, one_element(i), align, post, rebuilt),
+    }
+}
+
+/// An access checked and cut to the window: its address before its immediate (`a`) checked, then made the host's in
+/// t, from which `words` makes the access (its last word, the commit point). A written back base gets its new
+/// value from u after the access, which a fix-up gives it at a stop between the two.
+fn access_in_window(
+    out: &mut Out,
+    m: &MemoryAccess,
+    one_element: bool,
+    align: Option<u32>,
+    post: Option<Register>,
+    words: impl FnOnce(Register) -> (Vec<u32>, u32),
+) {
+    let base = base_of(&m.address).expect("a literal access is rebased");
+    if base == Reg::Sp {
+        stack_alignment(out);
+    }
+    let (a, offset) = match m.address {
+        Address::Indexed {
+            base,
+            index,
+            extend,
+            shift,
+        } => {
+            let from = if base == Reg::Sp {
+                out.put(guest_stack(SCRATCH));
+                SCRATCH
+            } else {
+                number(base)
+            };
+            out.put(
+                encode::add_extended(
+                    false,
+                    SCRATCH,
+                    from,
+                    number(index),
+                    extend.signed,
+                    extend.from_bits.into(),
+                    shift.into(),
+                )
+                .expect("a load's extend fits an add's"),
+            );
+            (SCRATCH, 0)
+        }
+        Address::Offset { offset, .. } | Address::PreIndex { offset, .. } => (number(base), offset),
+        Address::PostIndex { .. } => (number(base), 0),
+        Address::Literal { .. } => unreachable!("a literal access is rebased"),
+    };
+    if let Some(align) = align.filter(|&a| a > 1) {
+        out.put(
+            encode::and_immediate(CHECK, a, u64::from(align) - 1)
+                .expect("a power of two less one is a logical immediate"),
+        );
+        out.tail(encode::compare_branch(true, CHECK, 0).expect("fits"), |t| {
+            t.call = Some(InsideCall::Misaligned)
+        });
+    }
+    window_check(out, a);
+    out.put(window_address(SCRATCH, a));
+    let tested_before =
+        one_element && aligned_with_base(&m.address, m.bytes) && out.aligned.holds(base, m.bytes);
+    if align.is_none() && m.bytes > 1 && may_cross_page(m) && !tested_before {
+        let at = Address::Offset {
+            base: Reg::X(SCRATCH),
+            offset,
+        };
+        page_crossing(out, m, one_element, &at, CHECK);
+    }
+    let written_back = match (m.address, post) {
+        (_, Some(n)) => Some(
+            encode::add_extended(false, CHECK, number(base), n, false, u64::BITS, 0)
+                .expect("registers fit"),
+        ),
+        (Address::PreIndex { offset, .. } | Address::PostIndex { offset, .. }, None) => {
+            Some(encode::add_immediate(CHECK, number(base), offset).expect("a step fits"))
+        }
+        _ => None,
+    };
+    if let Some(w) = written_back {
+        out.put(w);
+    }
+    let (prefix, access) = words(SCRATCH);
+    out.put_all(&prefix);
+    let next = out.next();
+    out.commit(access, next);
+    if written_back.is_some() {
+        let base = number(base);
+        out.code.fixup(Fixup::Move {
+            register: base,
+            from: CHECK,
+        });
+        out.put(encode::move_register(base, CHECK));
+        out.code.fixed();
+    }
+}
+
+/// A structure access through the stack pointer post-indexed by register `n` (in process): the access at the stack
+/// pointer (rule a), and the stack pointer's write by rule d, made in u and given to it after the access.
+fn stack_post_register(out: &mut Out, m: &MemoryAccess, n: Register, word: u32) {
+    stack_alignment(out);
+    if m.bytes > 1 {
+        page_crossing(out, m, false, &m.address, CHECK);
+    }
+    out.put(guest_stack(CHECK));
+    out.put(
+        encode::add_extended(false, CHECK, CHECK, n, false, u64::BITS, 0).expect("registers fit"),
+    );
+    stack_check(out);
+    out.put(window_address(CHECK, CHECK));
+    out.put(encode::add_immediate(SCRATCH, ZERO, 0).expect("zero fits"));
+    let next = out.next();
+    out.commit(
+        encode::replace(word, field::RN, SCRATCH.into()).expect("a register fits"),
+        next,
+    );
+    out.code.fixup(Fixup::Move {
+        register: ZERO,
+        from: CHECK,
+    });
+    out.put(encode::add_immediate(ZERO, CHECK, 0).expect("zero fits"));
+    out.code.fixed();
+}
+
+/// The most an `add` or `sub` of the stack pointer by an immediate moves it with only a probe after it (rule c): the
+/// unmapped bytes below a window less the probe's page.
+const STACK_STEP: u64 = wcontainers_abi::LOWEST_ADDRESS - PAGE_SIZE;
+
+/// An instruction that reads or writes the stack pointer as a value, in process (section 3.2 item 1, rules c and
+/// d, and the read of the guest's stack pointer); false, with nothing written, for any other.
+fn stack_pointer_in_process(out: &mut Out, i: &I, word: u32) -> bool {
+    let next = out.next();
+    let (rd, rn, operand, width) = match *i {
+        I::AddSub {
+            rd,
+            rn,
+            operand,
+            width,
+            ..
+        } => (rd, rn, Some(operand), width),
+        I::Logical {
+            rd: Reg::Sp, width, ..
+        } => (Reg::Sp, Reg::Zero, None, width),
+        _ => return false,
+    };
+    if rd != Reg::Sp && rn != Reg::Sp {
+        return false;
+    }
+    let reads = |out: &mut Out, w: u32| {
+        if rn == Reg::Sp {
+            out.put(guest_stack(SCRATCH));
+            encode::replace(w, field::RN, SCRATCH.into()).expect("a register fits")
+        } else {
+            w
+        }
+    };
+    if rd != Reg::Sp {
+        let w = reads(out, word);
+        out.commit(w, next);
+        return true;
+    }
+    if let (Reg::Sp, Some(Operand::Imm(step)), Width::X64) = (rn, operand, width)
+        && step <= STACK_STEP
+    {
+        let I::AddSub { subtract, .. } = *i else {
+            unreachable!("only an add or sub moves the stack pointer by an immediate");
+        };
+        out.commit(word, next);
+        // The probe: the new frame's lowest word after a sub, the freed frame's last after an add.
+        out.put(if subtract {
+            encode::load_store(form::LDR_32, ZERO, ZERO, 0, 1).expect("fits")
+        } else {
+            let word_bytes = i64::from(W_BYTES);
+            encode::load_unscaled_32(ZERO, ZERO, -word_bytes).expect("fits")
+        });
+        return true;
+    }
+    let w = reads(out, word);
+    out.put(encode::replace(w, field::RD, CHECK.into()).expect("a register fits"));
+    stack_check(out);
+    out.commit(
+        encode::add_extended(false, ZERO, BASE, CHECK, false, u32::BITS, 0).expect("registers fit"),
+        next,
+    );
+    true
+}
+
+/// A cache or zeroing operation by guest address in process: checked and cut to the window as an access is.
+fn by_address_in_process(out: &mut Out, rn: Reg, word: u32) {
+    let a = number(rn);
+    window_check(out, a);
+    out.put(window_address(SCRATCH, a));
+    let next = out.next();
+    out.commit(
+        encode::replace(word, field::RT, SCRATCH.into()).expect("a register fits"),
+        next,
+    );
+}
+
+/// The page test in front of an access that may cross a page, built in `into`, and out of line the probes of its
+/// first and last bytes, which run before the access when it crosses (section 3.1). `at` is where the probes find
+/// the access: the guest's address in the other ways, the host's in the window in process.
+fn page_crossing(out: &mut Out, m: &MemoryAccess, one_element: bool, at: &Address, into: Register) {
+    let base = base_of(&m.address).expect("a literal access is rebased");
+    out.code.slow(page_test(m.bytes));
+    let test = page_test_words(at, m.bytes, into);
+    let (crossing, before) = test.split_last().expect("a test ends in its branch");
+    let mut probes = Vec::new();
+    // The probes go through t, so the check SA0 makes of a stack pointer base comes before them.
+    if base == Reg::Sp {
+        let skip = 2 * INSTRUCTION as i64;
+        probes.extend([
+            encode::add_immediate(into, number(base), 0).expect("zero fits"),
+            encode::and_immediate(into, into, STACK_ALIGNMENT - 1)
+                .expect("a power of two less one is a logical immediate"),
+            encode::compare_branch(false, into, skip).expect("fits"),
+            call_word(InsideCall::Misaligned),
+        ]);
+    }
+    probes.extend(first_byte(at, into));
+    let last = i64::from(m.bytes) - 1;
+    if m.write {
+        probes.push(encode::load_add(form::LDADDB, ZERO, ZERO, into));
+        probes.push(encode::add_immediate(into, into, last).expect("an access is short"));
+        probes.push(encode::load_add(form::LDADDB, ZERO, ZERO, into));
+    } else {
+        probes.push(encode::load_store(form::LDRB, ZERO, into, 0, 1).expect("fits"));
+        probes.push(
+            encode::load_store(form::LDRB, ZERO, into, last as u64, 1).expect("an access is short"),
+        );
+    }
+    if one_element && aligned_with_base(&m.address, m.bytes) {
+        out.put(
+            encode::and_immediate(into, number(base), u64::from(m.bytes) - 1)
+                .expect("a power of two less one is a logical immediate"),
+        );
+        let resume_at = out.code.offset() + INSTRUCTION as usize;
+        // Out of line: the exact test, whose branch skips the way back when the access crosses.
+        let skip = encode::retarget(*crossing, 2 * INSTRUCTION as i64).expect("fits");
+        out.tail(encode::compare_branch(true, into, 0).expect("fits"), |t| {
+            t.words.extend_from_slice(before);
+            t.words.push(skip);
+            t.back_from.push(t.words.len());
+            t.words.push(encode::branch(false, 0).expect("fits"));
+            t.words.extend(probes);
+            t.back = Some(resume_at);
+        });
+    } else {
+        out.put_all(before);
+        let resume_at = out.code.offset() + INSTRUCTION as usize;
+        out.tail(*crossing, |t| {
+            t.words = probes;
+            t.back = Some(resume_at);
+        });
+    }
 }
 
 /// A load or store whose register fields collide where Arm leaves the result open: the colliding transfer
@@ -936,7 +1299,7 @@ fn vector_pair_into_one(out: &mut Out, m: &MemoryAccess, bytes: u8, rt: u8) {
             call_word(InsideCall::Misaligned),
         ]);
     }
-    prefix.extend(first_byte(&Address::Offset { base, offset }));
+    prefix.extend(first_byte(&Address::Offset { base, offset }, SCRATCH));
     let name = match bytes {
         Q_BYTES => form::LDR_Q,
         X_BYTES => form::LDR_D,
@@ -997,12 +1360,21 @@ fn rebase(out: &mut Out, i: &I) {
         _ => unreachable!("only pc-relative forms are rebased"),
     };
     let target = at.wrapping_add_signed(offset);
+    let in_process = matches!(out.way, Way::InProcess { .. });
+    // In process a literal outside the window faults as the guest's load would; this is known here.
+    if in_process && target >> WINDOW_BITS != 0 {
+        out.put_all(&outside_words());
+        return;
+    }
     for (part, word) in address_words(SCRATCH, target, Holds::Address)
         .into_iter()
         .enumerate()
     {
         note_place(out.code, SCRATCH, target, Holds::Address, part);
         out.put(word);
+    }
+    if in_process {
+        out.put(window_address(SCRATCH, SCRATCH));
     }
     // Whether the access crosses a page is known here, from the guest address.
     let last = u64::from(bytes) - 1;
@@ -1156,10 +1528,10 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
         | I::TestBranch { offset, .. } => {
             let mut word = word;
             if let I::CompareBranch { rt, .. } | I::TestBranch { rt, .. } = *i
-                && WITHHELD.contains(&number(rt))
+                && out.way.withheld().contains(&number(rt))
             {
                 out.code.slow(NativeReason::WithheldRegisterNamed);
-                out.put(load_page(SCRATCH, withheld_slot(number(rt))));
+                out.put(load_page(SCRATCH, withheld_slot(out.way, number(rt))));
                 word = encode::replace(word, field::RT, SCRATCH.into()).expect("a register fits");
             }
             let taken = out.code.offset();
@@ -1195,9 +1567,10 @@ pub const LINK: Register = 30;
 /// A jump through a register to the entry slot of its target (section 3.2).
 fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     let n = number(rn);
-    let withheld = WITHHELD.contains(&n);
+    let way = out.way;
+    let withheld = way.withheld().contains(&n);
     let (source, held) = if withheld {
-        (SCRATCH, held_page(withheld_slot(n)))
+        (SCRATCH, held_page(withheld_slot(way, n)))
     } else {
         (n, Held::Register(n))
     };
@@ -1206,14 +1579,14 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     let linked_first = op == BranchRegister::Blr && !withheld && n != LINK;
     if withheld {
         out.code.slow(NativeReason::WithheldRegisterNamed);
-        out.put(load_page(SCRATCH, withheld_slot(n)));
+        out.put(load_page(SCRATCH, withheld_slot(way, n)));
     } else if op == BranchRegister::Ret {
         last_target(out, n);
     } else if linked_first {
         out.build_address(Reg::X(LINK), return_address, Resume::Through(held));
         last_target(out, n);
     }
-    let reach = out.way.reach_bits();
+    let reach = way.reach_bits();
     out.put(encode::ubfx(SCRATCH, source, reach, TAG_LOW - reach));
     out.tail(
         encode::compare_branch(true, SCRATCH, 0).expect("fits"),
@@ -1229,12 +1602,20 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         },
     );
     if withheld {
-        out.put(load_page(SCRATCH, withheld_slot(n)));
+        out.put(load_page(SCRATCH, withheld_slot(way, n)));
     }
+    // In process the slot is the host address's: the target cut to the window, plus the window's base.
+    let (source, reach, table) = match way {
+        Way::InProcess { .. } => {
+            out.put(window_address(SCRATCH, source));
+            (SCRATCH, PROCESS_REACH_BITS, PROCESS_SLOTS)
+        }
+        _ => (source, reach, way.slot_table()),
+    };
     out.put(encode::ubfiz(SCRATCH, source, SLOT_SHIFT, reach));
     out.put(encode::bfxil(SCRATCH, SCRATCH, SLOT_SHIFT, ALIGNMENT_BITS));
     out.put(
-        encode::eor_immediate(SCRATCH, SCRATCH, out.way.slot_table())
+        encode::eor_immediate(SCRATCH, SCRATCH, table)
             .expect("the slot table's base is a logical immediate"),
     );
     let slot = Resume::Slot(Held::Register(SCRATCH));
@@ -1258,7 +1639,11 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
 /// last written by `add xN, xB, xE` (shifted left or extended), xB holding a constant guest address (`adr`, or
 /// `adrp` and `add`), and xE, no other register, last written by a one-byte load into xE itself, with nothing
 /// after the add writing xE. Gives xN, xE and the table, whose start is where it is written.
-fn known_targets(before: &[(u64, I)], i: &I) -> Option<(Register, Register, BranchTable)> {
+fn known_targets(
+    way: Way,
+    before: &[(u64, I)],
+    i: &I,
+) -> Option<(Register, Register, BranchTable)> {
     let I::BranchRegister {
         op: BranchRegister::Br,
         rn: Reg::X(n),
@@ -1295,7 +1680,7 @@ fn known_targets(before: &[(u64, I)], i: &I) -> Option<(Register, Register, Bran
             .iter()
             .any(|(_, later)| touched(later).1.has_bit(bit(r)))
     };
-    if e == n || [n, e].iter().any(|r| WITHHELD.contains(r)) || written_after(add + 1, e) {
+    if e == n || [n, e].iter().any(|r| way.withheld().contains(r)) || written_after(add + 1, e) {
         return None;
     }
     let load = habits::last_def(before, index, add)?;
@@ -1347,7 +1732,7 @@ pub(crate) fn known_jump(
     address: u64,
     code: &mut HostCode,
 ) -> bool {
-    let Some((n, e, table)) = known_targets(before, i) else {
+    let Some((n, e, table)) = known_targets(way, before, i) else {
         return false;
     };
     // The table's branches are exits, which leave with the count the guest's.
@@ -1475,6 +1860,9 @@ fn monitor(field: usize) -> u64 {
 /// The exclusive monitor kept in the register page as the meanings keep it (section 3.4, Exclusive).
 fn exclusive(out: &mut Out, i: &I) {
     let next = out.next();
+    // In process the guest's addresses are kept and compared as they are, and the accesses go to their host
+    // addresses in u.
+    let in_process = matches!(out.way, Way::InProcess { .. });
     let bytes_at = monitor(offset_of!(RegisterPage, exclusive_bytes));
     let address_at = monitor(offset_of!(RegisterPage, exclusive_address));
     let low_at = monitor(offset_of!(RegisterPage, exclusive_low));
@@ -1493,7 +1881,11 @@ fn exclusive(out: &mut Out, i: &I) {
             // The access goes through t, so a stack pointer base gets the check SA0 would make, and `ubfx`,
             // which reads register 31 as zero, takes it from t.
             let untag = if rn == Reg::Sp {
-                let copy = encode::add_immediate(SCRATCH, number(rn), 0).expect("zero fits");
+                let copy = if in_process {
+                    guest_stack(SCRATCH)
+                } else {
+                    encode::add_immediate(SCRATCH, number(rn), 0).expect("zero fits")
+                };
                 out.put(copy);
                 out.put(
                     encode::and_immediate(SCRATCH, SCRATCH, STACK_ALIGNMENT - 1)
@@ -1522,7 +1914,25 @@ fn exclusive(out: &mut Out, i: &I) {
             } else {
                 encode::load_store(sized(total).0, number(rt), SCRATCH, 0, 1).expect("fits")
             };
-            access(out, &m, false, Some(total), &untag, load);
+            if in_process {
+                if rn != Reg::Sp && total > 1 {
+                    out.put(
+                        encode::and_immediate(CHECK, number(rn), u64::from(total) - 1)
+                            .expect("a power of two less one"),
+                    );
+                    out.tail(encode::compare_branch(true, CHECK, 0).expect("fits"), |t| {
+                        t.call = Some(InsideCall::Misaligned)
+                    });
+                }
+                out.put_all(&untag);
+                window_check(out, SCRATCH);
+                out.put(window_address(CHECK, SCRATCH));
+                let load = encode::replace(load, field::RN, CHECK.into()).expect("a register fits");
+                out.commit(load, next);
+            } else {
+                access(out, &m, false, Some(total), &untag, load);
+            }
+            let host = if in_process { CHECK } else { SCRATCH };
             let remember = |address| Fixup::Remember {
                 bytes,
                 pair,
@@ -1538,12 +1948,14 @@ fn exclusive(out: &mut Out, i: &I) {
                 total
             };
             let (load_name, ..) = sized(whole);
-            out.put(encode::load_store(load_name, SCRATCH, SCRATCH, 0, 1).expect("fits"));
+            out.put(encode::load_store(load_name, SCRATCH, host, 0, 1).expect("fits"));
             out.put(store_page(SCRATCH, low_at));
             if pair && bytes == X_BYTES {
-                out.put(load_page(SCRATCH, address_at));
+                if !in_process {
+                    out.put(load_page(SCRATCH, address_at));
+                }
                 out.put(
-                    encode::load_store(form::LDR, SCRATCH, SCRATCH, bytes.into(), bytes.into())
+                    encode::load_store(form::LDR, SCRATCH, host, bytes.into(), bytes.into())
                         .expect("fits"),
                 );
                 out.put(store_page(SCRATCH, high_at));
@@ -1563,13 +1975,12 @@ fn exclusive(out: &mut Out, i: &I) {
             rn,
         } => {
             let total = u32::from(bytes) * if pair { 2 } else { 1 };
-            let base = number(rn);
             let status = number(rs);
             let (uses, defs) = touched(i);
             let mut avoid = uses.union(defs);
             if rn != Reg::Sp && total > 1 {
                 out.put(
-                    encode::and_immediate(SCRATCH, base, u64::from(total) - 1)
+                    encode::and_immediate(SCRATCH, number(rn), u64::from(total) - 1)
                         .expect("a power of two less one"),
                 );
                 out.tail(
@@ -1577,6 +1988,19 @@ fn exclusive(out: &mut Out, i: &I) {
                     |t| t.call = Some(InsideCall::Misaligned),
                 );
             }
+            // The base as the guest's address, compared with the remembered one, and as the host's, accessed.
+            let (base, host) = match (in_process, rn) {
+                (false, _) => (number(rn), number(rn)),
+                (true, Reg::Sp) => {
+                    out.put(guest_stack(CHECK));
+                    (CHECK, number(rn))
+                }
+                (true, _) => {
+                    window_check(out, number(rn));
+                    out.put(window_address(CHECK, number(rn)));
+                    (number(rn), CHECK)
+                }
+            };
             // Remembered for this size and address?
             out.put(load_page(SCRATCH, bytes_at));
             out.put(encode::eor_immediate(SCRATCH, SCRATCH, total.into()).expect("a power of two"));
@@ -1602,9 +2026,9 @@ fn exclusive(out: &mut Out, i: &I) {
                 borrowed.push((r, slot));
             };
             let read = if pair && bytes == X_BYTES {
-                let expected = free_pair(avoid);
+                let expected = free_pair(out.way, avoid);
                 avoid = avoid.union(only(expected)).union(only(expected + 1));
-                let new = free_pair(avoid);
+                let new = free_pair(out.way, avoid);
                 for r in [expected, expected + 1, new, new + 1] {
                     borrow(out, r);
                 }
@@ -1613,7 +2037,7 @@ fn exclusive(out: &mut Out, i: &I) {
                 out.put(encode::move_register(new, number(rt)));
                 out.put(encode::move_register(new + 1, number(rt2)));
                 out.commit(
-                    encode::compare_swap_of(form::CASP, expected, new, base),
+                    encode::compare_swap_of(form::CASP, expected, new, host),
                     next,
                 );
                 [
@@ -1623,7 +2047,7 @@ fn exclusive(out: &mut Out, i: &I) {
             } else {
                 let (.., cas) = sized(total);
                 let new = if pair {
-                    let s = free(avoid);
+                    let s = free(out.way, avoid);
                     borrow(out, s);
                     out.put(encode::ubfx(s, number(rt), 0, u32::BITS));
                     out.put(encode::bfi(s, number(rt2), u32::BITS, u32::BITS));
@@ -1632,7 +2056,7 @@ fn exclusive(out: &mut Out, i: &I) {
                     number(rt)
                 };
                 out.put(load_page(SCRATCH, low_at));
-                out.commit(encode::compare_swap_of(cas, SCRATCH, new, base), next);
+                out.commit(encode::compare_swap_of(cas, SCRATCH, new, host), next);
                 [Some(Held::Register(SCRATCH)), None]
             };
             out.code.fixup(Fixup::Forget { status, read });
@@ -1677,7 +2101,7 @@ fn exclusive(out: &mut Out, i: &I) {
             out.land(wrong_size);
             out.land(wrong_address);
             let (_, add, _) = sized(total.min(X_BYTES.into()));
-            out.commit(encode::load_add(add, ZERO, ZERO, base), next);
+            out.commit(encode::load_add(add, ZERO, ZERO, host), next);
             out.code.fixup(Fixup::Forget {
                 status,
                 read: [None, None],
