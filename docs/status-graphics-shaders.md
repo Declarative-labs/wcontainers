@@ -138,9 +138,14 @@ Run 117, given those findings again, found each settled and changed nothing. Run
 findings of the check of run 117 (its section below). A33 is closed: the DXIL passes work on
 rspirv's module. The Direct3D 12 front's open items are each placed on this list
 (`CentroidPositionPerSample` added). A37 is new (`x - x` under `/Gis`, with A21). This track's
-own group is put to the owner's ruling on G6's scope.
+own group is put to the owner's ruling on G6's scope. Run 119 settled the findings of the check of
+run 118 (its section below): the literal check passes for this crate again, A11 is placed by
+backtrace (most of its process ends are in dxil-spirv's converter, not its reader), the NIR track's
+float `sign` is fixed in the carried naga's HLSL writer and its domain programs writing storage are
+on this list, the depth clamp case draws at two depth ranges (A38 new), and the filtering tests
+hold a third answer and the anisotropic known failure to the devices' own spread.
 The pass bar item by item, with its figures, is the section "G6: the pass bar item by item"
-further down; the gap numbers (A1 to A36) are its entries, which hold each item's measurements.
+further down; the gap numbers (A1 to A38) are its entries, which hold each item's measurements.
 Bar items 1 (corpus), 2 (Chrome), 5 (built-in programs) and 6 (the cache) are met. Items 3
 (variant fields and flags) and 4 (geometry, tessellation and stream output against real
 Direct3D) are met but for the items below.
@@ -376,16 +381,46 @@ unharmful while a feature is declared absent; its entry says what it takes. None
 outside this track, so they fit none of round 7's other three owners; whether G6 closes with them
 as later work, or must take some first, is the owner's to say. A11 is the one with a security
 side, and stands first for that reason:
-- A11: signed but malformed DXIL still ends the process in dxil-spirv's bitcode reader: 9 of
-  3,000 cases at seed 31337 after run 113's carried checks of the entry points (23 before); G6's
-  check of run 113 found 14 of 4,000 at seed 4242 (arm2.log there: `std::terminate` "without an
-  active exception" and SIGSEGV, every one a .dxil case, none DXBC), its check of run 115 30 of
-  8,000 at seed 27183, and its check of run 117 34 of 10,000 at seed 57721 (the same two kinds,
-  every one a .dxil case, none DXBC), its casts calling
-  `std::terminate` by design and types it did not find. Natively one guest shader can thus end the
-  host process (a hostile-guest exposure; in the browser the module traps instead). Takes a carried
-  patch of the reader (its casts are in a header) or upstream's. And DXBC register indices past
-  `dcl_temps` sizing dxbc-spirv's lists unchecked. `mutated_bytecode_converts_or_fails_without_ending_the_process`
+- A11: signed but malformed DXIL still ends the process inside dxil-spirv, natively; in the
+  browser the module traps instead. Not only in its bitcode reader: most ends come after the reader
+  accepted the module, in the converter. Measured in run 119 at G6's sixth check's seed 1618033
+  (12,000 cases, 30 ends, every one a .dxil case, none DXBC; gdb backtraces of all 30 on the ARM64
+  machine, g6-r119 arm2.log; 26 ended under gdb, 4 ran through under it, so their place is not
+  known). By place:
+  - The bitstream decoder (third_party/bc-decoder `llvm_decoder.cpp`, `ReadBlockContents`): 1
+    (case 4426, a write through a wild pointer in a list's growth).
+  - The module parser (`bc/module.cpp`: `parse_record`, `resolve_gep_element_type`,
+    `parse_function_record`): 5. Three read a type an index names that the parser did not find
+    (null; cases 5535, 8619, 10025), two are its `cast<>` of a value of another kind, which calls
+    `std::terminate` by design (`bc/cast.hpp`; cases 11131, 11441).
+  - The converter's metadata reads, after the module was accepted (`dxil_converter.cpp`:
+    `get_string_metadata`, `get_constant_metadata`, `get_shader_model`, called from
+    `emit_stage_input_variables`, `emit_stage_output_variables`, `emit_resources_global_mapping`):
+    12. A metadata operand of another kind than the converter expects (`cast<MDString>`,
+    `cast<ConstantAsMetadata>`, `std::terminate`), past a node's operands, or a constant of no type
+    (cases 3878, 5861, 6213, 6715, 7188, 7234, 7481, 8866, 10976, 11299, 11680, 11855).
+  - The converter's instruction emission, after the module was accepted (`convert_function`,
+    `emit_load_input_instruction`, `emit_create_handle`): 8. A block with no terminator read as a
+    null value (`isa<UnreachableInst>(nullptr)`, case 4295), an input load naming a signature element
+    with no SPIR-V variable (id 0 into `spv::Builder::getDerefTypeId` and `isArrayType`, cases 3620
+    and 6385), and a handle naming a resource the converter did not declare (`emit_create_handle`,
+    cases 5279, 7639, 7673, 8445, 10796).
+  What removing each kind would take (none built or run): the reader's two kinds, a carried patch
+  of `bc/module.cpp` and the decoder checking every type and value an index names and every
+  record's operand count, with checked casts (`dyn_cast` and a failure) in place of `cast<>` in
+  those files (the header stays); the metadata kind, checked reads in the converter's metadata
+  helpers that fail the conversion, as run 113's patch does for `get_entry_points`; the emission
+  kind, a check of every operand at each of dxil-spirv's opcode emitters (several hundred), or a
+  pass validating the module before conversion (every block terminated, every `dx.op` operand
+  inside the declared signatures and resource ranges). Such patches remove only the places found;
+  fuzzing finds more. The one change that removes every kind at once, the 4 unplaced ones too: run
+  the converters natively as their WebAssembly build inside wasmtime, so a fault is a trap reported
+  as an error (that build gives the same bytes as the native one since A8 closed in run 100; its
+  speed natively is not measured). Earlier figures: 9 of 3,000 cases at seed 31337 after run 113's
+  carried checks of the entry points (23 before); 14 of 4,000 at seed 4242, 30 of 8,000 at seed
+  27183, 34 of 10,000 at seed 57721 (G6's checks; every one a .dxil case). DXBC: register indices
+  past `dcl_temps` size dxbc-spirv's lists unchecked (an allocation, entry A11 below).
+  `mutated_bytecode_converts_or_fails_without_ending_the_process`
   stays failing (ignored by default, its ignore reason naming it a known failure since run 115, run
   by its own command). Mutated bytecode the converters accept can give IR the lowering refuses
   (`Malformed`) or a module naga's validation refuses (`Invalid`): refused, not converted. A DXBC
@@ -401,6 +436,47 @@ side, and stands first for that reason:
   conventions, as `provoking` is given); a geometry program writing as many locations as the device
   has attributes needs one attribute more for the position (takes a pass-through reading the
   records from storage by the vertex index).
+- The NIR track's G9 run 28 ask (its "Requests to other tracks", added 2026-11-23 18:56; not
+  started): a domain program writing storage with no geometry program or stream output after it
+  is drawn as the vertex program of the tessellated draw, and the WebGPU back end writes no storage
+  from a vertex program, so its stores are lost (the NIR driver reports no storage for evaluation
+  programs: 232 KHR-GLES32 `constant_expressions` cases NotSupported). Cause: `Stages::tessellated_with`
+  runs the domain program as compute only with a geometry stage or stream output after it, or when
+  it writes cull distances (`domain_cull_programs`). Takes that route for a domain program writing
+  storage too, as `stored_programs` gives a vertex program (record programs without the demand for
+  cull distances, under `SlowPath::VertexStorageAsCompute`), with a drawn test of a domain shader
+  writing a view against real Direct3D 11. Its other G9 run 28 ask, a float `sign` through naga's
+  HLSL writer, is done in run 119 ("For the NIR track" below).
+- A38 (run 119, G6's sixth check): `DEPTH_CLAMP` on the DXIL route through WebGPU at a depth range
+  of 0.1 to 0.45. Drawn on the RTX 3080 in run 119 (g6-r119 gpu1.log): 617 of 4,096 depth texels
+  differ from real Direct3D 11, largest 5 float steps (allowed 2), and 1,091, largest 5, through the
+  built-in pixel program; G6's sixth check's figures exactly. At 0.25 to 0.75 the same route gives
+  largest 2, and the DXBC route on both back ends and the DXIL route on WebGL 2 give largest 2 at
+  both ranges. `variants_draw_as_the_native_feature_does` fails for it (its only failure). Cause not
+  measured. Expected: the reference runs fxc's build of `vs_deep` on Direct3D 11 while the DXIL
+  route runs dxc's build, whose position arithmetic may round otherwise, and a float step near 0.1 is
+  a quarter of one near 0.4 or more; the DXIL route on WebGL 2 staying within 2 does not fit that
+  alone. Takes dxc's build drawn on real Direct3D 12 (the RTX 3080 and WARP) at that range, which
+  tells whether the steps are the compiler's or the route's.
+- A39 (run 119, the tightened rule of `filter_draw`): texels where the GPU and WARP differ and ours
+  lies further from both than they lie from each other, in cases with no anisotropy. Drawn in run
+  119 (gpu1.log): at seeds 8111 to 8130, `filtering_in_the_program_matches_direct3d` 8113 R16Unorm
+  `bias` (4 comparisons, 1 texel each), 8120 R32Float `bias` (8, 1 texel), 8123 R16Unorm `gradients`
+  (12, 1 texel), 8130 (A36, as before); at seeds 1 to 8, case 3 `gradients` (16, 1 texel each, every
+  format) and `clamped_samples_match_direct3d` case 1 Rgba8Unorm `bias` (4, 1 texel). Before run 119
+  these passed as "a third answer". Cause not measured; A36 (a point sample's texel picked at full
+  precision) is the one such cause found so far.
+- A40 (run 119, the anisotropic known failure named by its cause): the program's anisotropic
+  filtering (`filter_in_shader` with anisotropy above 1) lies past the allowance from both devices
+  also at texels where neither device's anisotropic answer differs from its own isotropic one, so
+  the footprint is not the cause there. Drawn in run 119 (gpu1.log): at seeds 8111 to 8130 the
+  anisotropic cases 8112, 8116, 8119 and 8125 fail with 1,303 to 3,641 such texels of 4,096 a
+  comparison in `clamped_samples_match_direct3d` and 10 to 386 in
+  `filtering_in_the_program_matches_direct3d`; at seeds 1 to 8 case 8 with 1,335 to 3,276 and up to
+  386. Where every failing texel is one where the footprint matters the failure stays known (34
+  comparisons at 8111 to 8130); the level-of-detail query passes the rule (16 and 4 known, 0
+  failed). Cause not found; takes reading the program's anisotropic taps against the devices'
+  isotropic answers at those texels.
 - The NIR track's G9 run 25 and 26 asks (its "Requests to other tracks"; not started): a staged
   built-in for the point size, passed between the stage helper's stages and from the vertex stage
   into them and dropped at the final draw (`staged::BuiltIn` has none, so a tessellation or
@@ -479,9 +555,9 @@ side, and stands first for that reason:
   and geometry records behind them, are sized for factor 64 on every patch (about 180 KB a patch,
   hundreds of MB for thousands of patches; takes sizing by counts read back); the stage helper's
   buffers grow and never shrink; anisotropic filtering in the program (`filter_in_shader`) is a
-  known failure of `filter_draw` (its footprint is the implementation's own: the RTX 3080 and WARP
-  differ by up to 0.14, ours lies up to 0.59 from the GPU; 36 and 12 known failures at the check's
-  seeds); a vertex shader's clip distances are not carried into the stage helper's records, so
+  known failure of `filter_draw` where the footprint matters (its footprint is the implementation's
+  own: the RTX 3080 and WARP differ by up to 0.14, ours lies up to 0.59 from the GPU), and fails
+  elsewhere (A40); a vertex shader's clip distances are not carried into the stage helper's records, so
   stream output straight from a vertex shader cannot stream them (the front refuses such a
   declaration); `DEPTH_BIAS` leaving a written depth unbiased is expected, not measured; WGSL's
   weak compare-exchange is exact where the browser writes it as a strong one, not tested apart;
@@ -611,6 +687,19 @@ buffers as the DXBC and DXIL routes make them (`variant::texel`), on `TexelBuffe
   and its two siblings (tests/compute_draw.rs) run the module beside fxc's and dxc's builds against
   real Direct3D 11 on the RTX 3080 (run 104's section).
 
+## For the NIR track: a float's `sign` through naga's HLSL writer (its G9 run 28 ask)
+
+Done in run 119, commit 4bb5b473c. The carried naga's HLSL writer wrote `MathFunction::Sign` as
+HLSL's `sign`, which gives an integer whatever its argument, so `asuint(sign(x))` of a float gave
+`0x00000001` for 1.0. It now writes a float `sign` in its argument's float type (`float(sign(x))`,
+`float2(sign(x))`, ...); an integer `sign` is written as before. Test: `a_floats_sign_is_a_float`
+(tests/writer_draw.rs, the RTX 3080): seeded floats (zeros and infinities of both signs, normal
+numbers; no subnormals or NaN, which the devices may flush or leave undefined) through scalar,
+two-, three- and four-component `sign` and an integer `sign`, each stored as its bits, on wgpu's
+Direct3D 12 path (naga's HLSL writer) and its Vulkan path. Drawn on the RTX 3080 in run 119
+(g6-r119 gpu1.log, seeds 1 to 4): 0 of 2,816 signs apart on each path and seed. @@UNDO@@ Its other G9 run 28 ask (domain
+programs writing storage) is on the gap list ("G6 reported complete", this track's own group).
+
 ## For the NIR track: forced early tests through `rewrite` (its G9 run 23 ask)
 
 Built in run 115 (commit "rewrite carries the early tests a fragment program forces in its pixel
@@ -672,6 +761,64 @@ Logs and scripts in scratch `graphics-shaders/g6-r116` (the clone `tip` moved th
   TriangleStrip, largest 7.2e-7 where WARP lies up to 2.0e-6 from the GPU: A12 under the
   orchestrator's rule). Anisotropic cases are the listed known failures (Known gaps).
 
+## G6 run 32 (run 119, round 8 run 1): the sixth check's findings
+
+Logs and scripts are in scratch `graphics-shaders/g6-r119` (`arm1.log` to `arm5.log`, `gpu1.log`;
+`quick-cmd.txt`, `gdb-cmd.txt`, `cpu-cmd.txt`, `lit2-cmd.txt`, `gpu.sh`, `gpu1-cmd.txt`; the GPU
+jobs run from the clone `g6-r116/tip`). Nothing was built on the Mac; it ran rustfmt of single
+files only. The check's own logs are in `graphics-shaders/check-g6-r12`.
+- Blocking, the literal check: settled (commits 963d3e322 and 9d374918d). "GLSL.std.450" is the
+  named constant `GLSL_STD_450` (dxil/widths.rs). `SIGNEDNESS` is defined once, in dxil/staged.rs
+  beside the other operand indices, and used by dxil.rs and dxil/images.rs. The storage image's
+  `Sampled` value is one module constant of images.rs; the reader test that repeated it moved from
+  tests/fuzz.rs into images.rs's unit tests, where it uses that constant. The five baseline lines
+  that matched nothing are deleted, and a sixth, naga's HLSL writer's `"sign"`, which the sign fix
+  below names. The check at the tip (ARM64 machine, the worktree copied into a fresh repository,
+  arm5.log, load 1.5): exit 1, and no line names this crate's own files or third_party/naga. Its
+  lines name the converters' submodule folders (4,250 dxil-spirv, 4,009 dxbc-spirv: plain files
+  in that copy, which has no submodules, so an artifact of the copy) and other tracks' crates
+  (crates/executor/implementation 2,415, crates/processor-architecture 94, and fewer). The run 118
+  sentence that said otherwise is corrected in its section.
+- Blocking, A11: rewritten by place. gdb backtraces of all 30 process ends at the check's seed
+  1618033 (arm2.log, 12,000 cases): 26 ended under gdb, 4 ran through under it. Of the 26: 1 in
+  the bitstream decoder, 5 in the module parser, 12 in the converter's metadata reads and 8 in its
+  instruction emission, the last 20 after the reader accepted the module. A11's item on the gap
+  list has each case by place and what removing each kind would take; the fuzz test's ignore
+  reason says the same (f87dd4939). No fix is claimed.
+- Blocking, the NIR track's G9 run 28 asks: the float `sign` is fixed in the carried naga's HLSL
+  writer (4bb5b473c, "For the NIR track" above, with its drawn test); the domain program writing
+  storage is on the gap list with its cause and what it takes (this track's own group).
+- Minor, `DEPTH_CLAMP` at one depth range: the test now draws at 0.25 to 0.75 and at 0.1 to 0.45
+  (db5f09eef). Drawn (gpu1.log): the check's figures exactly, so the test now fails for them (A38
+  on the gap list); every other route and back end is within 2 at both ranges.
+- Minor, `filter_draw`'s third answer: where the GPU and WARP differ, a texel of ours now passes
+  only when it lies no further from one of them than they lie from each other (before: any value).
+  Drawn at the check's seeds 8111 to 8130 and at 1 to 8 (gpu1.log): cases with no anisotropy now
+  fail by such texels, 1 a comparison (A39 on the gap list).
+- Minor, the anisotropic known failure: it now names its cause per texel. For each anisotropic
+  case both devices also draw the case without anisotropy, and a texel is the footprint's only
+  where a device's anisotropic and isotropic answers differ past the allowance; a failing texel
+  elsewhere fails the test, in all three places that excused anisotropic cases (the program's
+  filtering, WebGPU's own sampler, the level-of-detail query). Drawn (gpu1.log): most anisotropic
+  failures have texels where no device's footprint matters, so they now fail (A40 on the gap list);
+  34 comparisons stay known at 8111 to 8130, and the level-of-detail query passes (16 and 4 known).
+- Minor, owners' agreement: the orchestrator's to carry, as the finding says; unchanged here.
+- Unsafe: the count stays 94. None was added (the moved test has none) and none removed.
+- Runs: the whole CPU suite with every corpus, the mutation run left out (arm3.log, ARM64, load
+  about 3): rustfmt and clippy with warnings denied clean; every binary passes; the corpus test 13
+  in 209 s; the library tests 11 (the moved reader test among them), `--test fuzz` 4 passed. On
+  Windows, clippy with warnings denied of every target, the drawn tests included: clean (gpu1.log).
+  Drawn on the RTX 3080 through the GPU queue (gpu1.log, task 76, 23:08 to 23:38, the desktop
+  shared with other tracks' jobs): `writer_draw` 2 passed; `variant_draw` 6 passed and
+  `variants_draw_as_the_native_feature_does` failed for A38 only ("48 comparisons, 0 failed" for
+  the multisampled layers beside it); `filter_draw` at 8111, 20 cases: `clamped_samples` 270
+  comparisons 62 failed, `filtering_in_the_program` 3,430 comparisons 394 failed and 34 known, the
+  level-of-detail query 80 comparisons 0 failed and 16 known; at 1, 8 cases: 102 comparisons 16
+  failed, 1,358 comparisons 112 failed, 32 comparisons 0 failed and 4 known. Every failure is A18
+  (WebGPU's own sampler, as before), A36, A38, A39 or A40. No other drawn test was run: no other
+  drawn result can change (the modules this crate writes are unchanged but for a float `sign` on
+  wgpu's Direct3D 12 path).
+
 ## G6 run 31 (run 118, round 7 run 7): the fifth check's findings
 
 Logs and scripts are in scratch `graphics-shaders/g6-r118` (`arm1.log` to `arm4.log`,
@@ -705,7 +852,9 @@ single files and one `cargo metadata` for the lock file.
     every binary passes. The corpus test's 13 pass, so every record holds (arm2.log).
   - The baseline corpus run on run 116's tree: 13 passed (arm3.log).
   - Clippy and `--test fuzz` after the fuzz test's change: 5 passed, 1 ignored (arm4.log).
-  - The literal check prints no line of this crate; its findings name other crates.
+  - The literal check: wrong as written. It printed four new findings of this crate's and five
+    baseline lines that matched nothing (G6's sixth check, and this run's own arm2.log lines 22 to
+    29). Settled in run 119 (its section).
 - WebAssembly (laptop, `wasm32-wasip1` under wasmtime, load 0 to 5): the library tests, `--test
   variants` and `--test staged` all pass (10, 46 and 3), which includes the DXIL route's own
   shaders (wasm1.log). The whole corpus was not compared under WebAssembly this run.
@@ -857,7 +1006,7 @@ only).
   unwrapped its sampling table at a sample's sampler operand (`front/spv/image.rs`, the panic G6a's
   second check met at seed 2718, case 3700); a sampler operand that is no tracked sampler is now
   `Error::InvalidImageExpression` ("naga as carried").
-- Test: `a_sample_through_no_sampler_is_an_error_of_the_reader` (tests/fuzz.rs), a hand-assembled
+- Test: `a_sample_through_no_sampler_is_an_error_of_the_reader` (tests/fuzz.rs; src/dxil/images.rs since run 119), a hand-assembled
   fragment program sampling a texture through a storage texture in the sampler's place. With the
   change undone in the copy it fails at the reader's panic (arm2.log, MUTANT).
 - The gap list written (the section "G6 reported complete" above) and G6 reported complete for its
@@ -2577,9 +2726,13 @@ Runs at a00ab267:
 - Run 118, G6's scope: the gap list's group "The owner's ruling on G6's scope" holds this track's
   own open parts, about twenty, which no front, corpus file or real program waits on. Asked:
   does G6 close with them as later work, or must some come first? A11 is the security one:
-  natively, one malformed signed DXIL shader can still end the host process in dxil-spirv's
-  bitcode reader (34 of 10,000 fuzz cases at the check's seed 57721, every one DXIL); in the
-  browser the module traps instead. Its fix is a carried patch of the reader's casts.
+  natively, one malformed signed DXIL shader can still end the host process inside dxil-spirv (34
+  of 10,000 fuzz cases at the check's seed 57721, every one DXIL); in the browser the module traps
+  instead. Corrected in run 119: of the 26 ends placed by backtrace at seed 1618033, 6 are in the
+  bitcode reader and 20 in the converter after the reader accepted the module, so a patch of the
+  reader's casts alone would not remove them. Patches by place remove only the places found; running
+  the converters natively as their WebAssembly build inside wasmtime removes every kind (the gap
+  list's A11 item).
 - Run 118, A37: a program compiled IEEE-strict gets `x - x` = +0 for an infinite or NaN `x` here,
   where both real devices give a NaN. The same question as A21: list it as a loss beside 4.12's
   denormals?
@@ -3294,7 +3447,10 @@ The gap list (every item of the pass bar not met):
   2705 in `cast<ConstantAsMetadata>` (from `emit_stage_output_variables`), case 2830 in
   `cast<MDNode>` (from `emit_stage_input_variables`), all metadata the reader takes unchecked; Known
   gaps has the earlier counts). Causes:
-  - DXIL: dxil-spirv's bitcode reader faults or calls `std::terminate` on such input.
+  - DXIL: dxil-spirv faults or calls `std::terminate` on such input, in its bitcode reader and,
+    more often, in its converter after the reader accepted the module (metadata reads, instruction
+    emission): run 119's backtraces of all 30 ends at seed 1618033 are placed in the gap list's
+    A11 item ("G6 reported complete").
   - DXIL, run 113 (G6's check, seed 31337, 3,000 cases with the ARM64 machine's corpus: 23 ends,
     17 SIGSEGV and 6 `std::terminate`): 14 were a module naming no entry point (no
     `dx.entryPoints` node) read unchecked by dxil-spirv's converter (`get_entry_points`,
@@ -3304,12 +3460,11 @@ The gap list (every item of the pass bar not met):
     `dxil_naming_no_entry_point_is_refused` (tests/fuzz.rs, three of those cases replayed from the
     tree's own files; the fuzz now writes each mutation's value so a case replays without the
     corpus); with the patch undone it ends at SIGSEGV (g6-r113 arm6.log and arm10.log). Left at
-    that seed: 9 ends (g6-r113 arm3.log), all in the bitcode reader and the metadata reads after
-    it: 6 its type and metadata casts, which call `std::terminate` by design (`cast<FunctionType>` in `parse_record`,
-    `cast<MDNode>` in `emit_patch_variables`, `cast<ConstantAsMetadata>` in
-    `emit_stage_input_variables`), 3 a type it did not find (null) read in `parse_record`. Takes a
-    carried patch of the reader that turns each unchecked cast and lookup into a failure (its casts
-    are in a header, which the patch mechanism does not reach yet), or upstream's.
+    that seed: 9 ends (g6-r113 arm3.log): 6 casts, which call `std::terminate` by design (one in
+    the reader, `cast<FunctionType>` in `parse_record`; two in the converter's metadata reads,
+    `cast<MDNode>` in `emit_patch_variables` and `cast<ConstantAsMetadata>` in
+    `emit_stage_input_variables`), 3 a type the reader did not find (null) read in `parse_record`.
+    What each kind would take is in the gap list's A11 item.
   - DXBC, the third check's case: this crate's own lowering took a resource array's declared count
     unchecked and asked Rust for gigabytes for its register list. Fixed in G6a run 3: a declared or
     ranged count past the slots its kind binds is refused (`BindingsBeyondLimit`) and the register
@@ -3325,8 +3480,9 @@ The gap list (every item of the pass bar not met):
     (cpp/boundary.h; inferred, the message not printed). In WebAssembly,
     where the C++ has no exceptions, an allocation the module cannot make ends the instance.
   Only bytecode whose checksum matches reaches the converters, so these need a program that signs
-  malformed bytecode. Waits: nobody. Takes: on DXIL, the reader hardened upstream (not yet
-  reported), or the converters run where a fault cannot end the host; on DXBC, the register
+  malformed bytecode. Waits: nobody. Takes: on DXIL, dxil-spirv's reader and converter hardened
+  (the gap list's A11 item, by place), or the converters run where a fault cannot end the host; on
+  DXBC, the register
   indices checked against their declarations in dxbc-spirv (upstream, or a patch carried as naga's
   are); this crate cannot bound them without reading the bytecode itself.
   Also from that check (seed 2718, case 3700, `ps_textured.dxil` flipped at 1296 and 3357, a word
@@ -3336,7 +3492,7 @@ The gap list (every item of the pass bar not met):
   in WebAssembly, where a panic aborts, it would end the instance, as A16's validator panics do.
   Cause: the reader looked up its sampling table by a sampler operand it did not check. Fixed in
   run 112 (a carried naga change, "naga as carried"; test
-  `a_sample_through_no_sampler_is_an_error_of_the_reader`, tests/fuzz.rs, which fails with the
+  `a_sample_through_no_sampler_is_an_error_of_the_reader`, src/dxil/images.rs since run 119, which fails with the
   change undone).
 - A12. `DEPTH_CLAMP` behind a geometry stage (`depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`)
   is within four units in the last place of Direct3D 11's depth at the default seeds 1 to 4 (16
@@ -3870,12 +4026,13 @@ G6a run 5's tip):
 
 ## Next
 
-0. G6 is reported complete for its independent check (run 118, round 7). After the check, the gap
+0. G6 is reported complete for its independent check (run 119, round 8). After the check, the gap
    list of "G6 reported complete" in the order the fronts need it; items waiting on another track
    or a ruling are not worked until those come. The order below holds for this track's own parts,
    once the owner has ruled on G6's scope (New for the owner, run 118).
 1. This track's own open parts of the gap list ("G6 reported complete", its scope group), in the
-   order the fronts need them: the NIR track's G9 run 24 asks of the
+   order the fronts need them: the NIR track's G9 run 28 ask (a domain program writing storage, run
+   as compute), A38's cause, the NIR track's G9 run 24 asks of the
    stage helper (output sizing after tessellation, OpenGL's strip-with-adjacency order, records
    read from storage past the device's attributes), its G9 run 25 and 26 asks (a staged point size,
    binding only the layers a load reaches), A32's clamp and subnormal conversion, A36, A7's pixel shader reading `SV_PrimitiveID` behind a geometry shader
