@@ -51,6 +51,36 @@ at 458438c4's: dEQP-GLES31, KHR-GLES31, KHR-GLES32 groups `multisample_interpola
 `vertex_transform_feedback`, `point_mode`, `wide_points`: 11 Crash to Pass, the storage family's
 fails and flakes moved among its cases, nothing else changed.
 
+THE TABLE, run 31's whole run at c4b8743c's driver (every change above; the shaders crate as the
+worktree held it, which built; desktop, RTX 3080, one GPU job in the hazard group, 8 glcts at once,
+the job from 23:46 to 00:19 desktop time; scratch `results/g9r31/full/<list>/results.csv`, log
+`logs/g9r31/full.log`), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,009, Warn 6, Fail 22, Skip 128: 17,015 of 17,037, 99.87%.
+- dEQP-GLES3: 44,768; Pass 44,236, Warn 5, Fail 26, Crash 31, Skip 470: 44,241 of 44,298, 99.87%.
+- dEQP-GLES31: 37,802; Pass 36,563, Fail 26, Crash 96, Flake 5, Skip 1,112: 36,563 of 36,690,
+  99.65%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,264, Crash 6, Skip 228: 6,264 of 6,270, 99.90%.
+- KHR-GLES31: 4,101; Pass 3,706, Fail 14, Crash 45, Timeout 1, Skip 335: 3,706 of 3,766, 98.41%.
+- KHR-GLES32: 1,405; Pass 1,102, Fail 7, Crash 44, Timeout 1, Skip 251: 1,102 of 1,154, 95.49%.
+- KHR-GL33: 9,886; Pass 9,084, Fail 12, Crash 268, Skip 522: 9,084 of 9,364, 97.01%.
+- KHR-GL46 (19,714): no 4.6 context (G9's second part).
+- The bar's measure, every list that starts: 118,413 of 119,017 run, 99.49%, above the 92.9%
+  floor (run 30: 99.45%). With KHR-GLES32's 251 NotSupported counted as failed: 118,413 of
+  119,268, 99.28%.
+- Against run 30's whole run: 53 cases pass that did not: `sign` 30 (dEQP-GLES3
+  `builtin_functions` 18, dEQP-GLES31 12: the shaders track's change, not this run's),
+  `multisample_interpolation` 11, `early_fragment_tests` 2 (the forms whose tests match tests
+  after the program), `compute_shader.atomic-case2` and `-case3`, `shader_storage_buffer_object
+  .basic-atomic-case1-cs`, KHR `geometry_shader.limits.max_output_components` 2, and the storage
+  coherence family's flakes 5. Passed in run 30 and not now, 6: KHR-GL33
+  `transform_feedback.discard_geometry_test` (with `capture_geometry_interleaved_test` and
+  `query_geometry_interleaved_test`, which crashed before and now fail the same way): "geometry
+  shader uses too many output components (120 > 112)", the link refusing what the screen now
+  honestly reports (gap list); the other 5 are the storage coherence family moving among its cases
+  (`compute.basic.image_barrier_single`, `image_load_store` `coherent` 2,
+  `synchronization.inter_invocation` 2).
+
 G9 run 30 (2026-11-23, round 4's eighth run). Built this run, each linted with warnings denied
 with and without Mesa and the nir crate's route test passed (22) on the x86-64 machine:
 - Points of one pixel stay the back end's (51817d17): a vertex program whose every point size is
@@ -214,7 +244,7 @@ G9's FIRST PART IS COMPLETE for its independent check, stated in run 27 and unch
 list that starts runs whole at one driver, the bar's measure is above the 92.9% floor, and every
 failing group is in the gap list below with its cause and owner (those not yet traced named as
 such). No independent check has run yet. The table to check against is the newest whole run at
-the top of this file. The check asked for: a sample of each list on the rig against that table,
+the top of this file (run 31's). The check asked for: a sample of each list on the rig against that table,
 the NotSupported groups case by case, and the RTX 3080's own OpenGL (`run-windows.ps1 -Driver
 system`) on the failing groups. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) follows that
 check.
@@ -255,8 +285,17 @@ yet, which is this track's work. The earlier gap list, with its readings group b
   comparison sampler (`BorderInShaderOnComparison`, the shaders track's filter library).
 - dEQP-GLES2 and -GLES3 `shaders.invariance` 40: `invariant` has no WGSL or naga form, and the
   host's compiler reorders arithmetic (the shaders track's naga writers; absent on WebGPU).
-- dEQP-GLES3 `builtin_functions` 18 and dEQP-GLES31's 12: `sign`, which the carried naga's HLSL
-  writer returns as an integer (the shaders track; asked in run 28).
+- dEQP-GLES3 `builtin_functions` 18 and dEQP-GLES31's 12 (`sign`): all 30 pass in run 31's whole
+  run (the shaders track's change).
+- KHR-GL33 `transform_feedback` 3 (`discard_geometry_test`, `capture_geometry_interleaved_test`,
+  `query_geometry_interleaved_test`), since run 31: a geometry program passing 30 values is refused
+  at link ("120 > 112"). The stage helper's pass-through vertex program takes a geometry or
+  evaluation program's passed values as vertex inputs (30 on Direct3D 12 through wgpu, one for the
+  position, one kept for points' `gl_PointCoord`), so the screen reports 28 (run 30 reported 31,
+  which the link accepted and which lost the device wherever the output was drawn: the first case
+  passed only because it discards). OpenGL 3.2's least is 128 geometry output components and 128
+  fragment input components (32 values). Absent until the pass-through reads its records another
+  way (from storage, as pulled vertex input does): the shaders track, asked.
 - dEQP-GLES3 `texture_functions` 25: comparisons with a bias, gradients or a level other than 0,
   which the common form lacks (the shaders track's common form).
 - dEQP-GLES31 `primitive_bounding_box.lines` and `.triangles` 28: the stage helper sizes a
@@ -1125,6 +1164,16 @@ None.
 
 ## Requests to other tracks
 
+- Shaders track (G9 run 31): the stage helper's pass-through vertex program
+  (`stage::passthrough`) takes a geometry or evaluation program's every passed value as a vertex
+  input beside the position; the host has 30 (wgpu's Direct3D 12: 32 input slots less vertex and
+  instance index), so an OpenGL driver can report at most 29 passed values there (28 with points'
+  `gl_PointCoord`), under OpenGL 3.2's least of 32 (128 components) for geometry outputs and
+  fragment inputs. Asked: the pass-through reading its records from a storage binding by the
+  vertex index (as pulled vertex input reads streams) where the values pass the host's vertex
+  inputs, so that passed values are bounded by the inter-stage limit only. Read from KHR-GL33
+  `transform_feedback.discard_geometry_test` (30 values) and KHR `geometry_shader.limits
+  .max_output_components`, which lost the device at 31.
 - WebGPU back end track (G9 run 31): `fill.rs` `quantise` (`PackedTargetQuantised`) makes a view of
   dimension `D2` of the target texture also when it is 3D, then sets `depth_slice` on its
   attachment; WebGPU makes no 2D view of a 3D texture, so the device is lost. Read from dEQP-GLES3
