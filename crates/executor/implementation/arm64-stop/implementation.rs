@@ -1,7 +1,9 @@
 //! What an exception taken from the native output's ARM64 code comes to for the guest, in every way of running
 //! it (docs/native.md section 4, docs/native-without-virtual-machine.md section 3.3): the span holding the host
 //! instruction, the relocations put back, the fix-ups made, the count less its lead, and the calls into the
-//! inside answered.
+//! inside answered. In process (section 3.2 item 1) the guest's stack pointer is the host's less the window's base and
+//! the guest values of the way's two more withheld registers are the words just after the register page:
+//! [`in_process`] takes them.
 
 #![no_std]
 
@@ -16,6 +18,7 @@ use wcontainers_arm64::thread_state::{
     COUNT, Exclusive, FPCR_BITS, FPSR_BITS, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW,
     WITHHELD, untag_address,
 };
+use wcontainers_arm64::way::{BASE, IN_PROCESS_WITHHELD_AT};
 use wcontainers_guest_cpu::position::{
     Base, Fixup, Held, InsideCall, Operand, Relocated, Resume, Side, Span, Stopping, span_at,
 };
@@ -25,6 +28,15 @@ pub const GENERAL: usize = RegisterBlock::ZERO.x.len();
 
 /// The general register a system call's number is in (Linux's ARM64 calling convention).
 pub const SYSCALL_NUMBER: usize = 8;
+
+/// The in-process way's withheld registers past the other ways' three, whose guest values are just after the page.
+pub const AFTER_PAGE: usize = Way::InProcess { slot: 0 }.withheld().len() - WITHHELD.len();
+
+/// The guest values of the in-process way's withheld registers past the other ways' three, in the way's order.
+pub type AfterPage = [u64; AFTER_PAGE];
+
+/// What the ways whose withheld registers are all in the page keep after it: nothing.
+const NOTHING_AFTER: AfterPage = [0; AFTER_PAGE];
 
 /// The cumulative saturation bit of FPSR, the highest the CPU we present has.
 const QC: u32 = 1 << (u32::BITS - 1 - FPSR_BITS.leading_zeros());
@@ -179,46 +191,98 @@ pub struct Piece<'a> {
     pub spans: &'a [Span],
 }
 
-/// Writes a general register of the guest, wherever the guest's value is kept.
+/// Writes a general register of the guest, wherever the guest's value is kept, in the ways whose withheld registers
+/// are all in the page.
 pub fn set_register(register: u8, value: u64, hardware: &mut Interrupted, page: &mut RegisterPage) {
-    match WITHHELD.iter().position(|&w| w == register) {
-        Some(k) => page.withheld[k] = value,
+    let mut after = NOTHING_AFTER;
+    set_in(Way::Machine, register, value, hardware, page, &mut after);
+}
+
+fn set_in(
+    way: Way,
+    register: u8,
+    value: u64,
+    hardware: &mut Interrupted,
+    page: &mut RegisterPage,
+    after: &mut AfterPage,
+) {
+    match way.withheld().iter().position(|&w| w == register) {
+        Some(k) => *withheld_mut(k, page, after) = value,
         None => hardware.x[usize::from(register)] = value,
     }
 }
 
+/// The guest value of the way's `k`th withheld register.
+fn withheld(k: usize, page: &RegisterPage, after: &AfterPage) -> u64 {
+    match page.withheld.get(k) {
+        Some(&value) => value,
+        None => after[k - WITHHELD.len()],
+    }
+}
+
+fn withheld_mut<'a>(k: usize, page: &'a mut RegisterPage, after: &'a mut AfterPage) -> &'a mut u64 {
+    match page.withheld.get_mut(k) {
+        Some(value) => value,
+        None => &mut after[k - WITHHELD.len()],
+    }
+}
+
 /// A held guest value.
-fn held(h: Held, hardware: &Interrupted, page: &RegisterPage) -> u64 {
+fn held(h: Held, hardware: &Interrupted, page: &RegisterPage, after: &AfterPage) -> u64 {
     match h {
         Held::Register(r) => hardware.x[usize::from(r)],
-        Held::Page(offset) => page.word(offset),
+        Held::Page(offset) => match usize::from(offset).checked_sub(IN_PROCESS_WITHHELD_AT) {
+            Some(past) => after[past / size_of::<u64>()],
+            None => page.word(offset),
+        },
         Held::Rebased(_) => unreachable!("arm64 translated code rebases no register"),
     }
 }
 
-/// The guest's state at a stop at `span`, before its fix-ups.
+/// The guest's state at a stop at `span`, before its fix-ups, in the ways whose withheld registers are all in the
+/// page.
 pub fn guest_state(span: &Span, hardware: &Interrupted, page: &RegisterPage) -> GuestState {
-    state_of(&span.relocated, span.lead, span.guest, hardware, page)
+    state_at(Way::Machine, span, hardware, page, &NOTHING_AFTER)
+}
+
+fn state_at(
+    way: Way,
+    span: &Span,
+    hardware: &Interrupted,
+    page: &RegisterPage,
+    after: &AfterPage,
+) -> GuestState {
+    state_of(
+        way,
+        &span.relocated,
+        span.lead,
+        span.guest,
+        hardware,
+        page,
+        after,
+    )
 }
 
 /// The guest's state with these values relocated, the count this far ahead, at `pc`.
 fn state_of(
+    way: Way,
     relocated: &[Relocated],
     lead: u32,
     pc: u64,
     hardware: &Interrupted,
     page: &RegisterPage,
+    after: &AfterPage,
 ) -> GuestState {
     let mut x = hardware.x;
-    for (k, &r) in WITHHELD.iter().enumerate() {
-        x[usize::from(r)] = page.withheld[k];
+    for (k, &r) in way.withheld().iter().enumerate() {
+        x[usize::from(r)] = withheld(k, page, after);
     }
     for r in relocated {
-        x[usize::from(r.guest)] = held(r.held, hardware, page);
+        x[usize::from(r.guest)] = held(r.held, hardware, page, after);
     }
     GuestState {
         x,
-        sp: hardware.sp,
+        sp: hardware.sp.wrapping_sub(way.window_base()),
         pc,
         flags: hardware.state & condition_flags(),
         count: hardware.x[usize::from(COUNT)] - u64::from(lead),
@@ -227,11 +291,23 @@ fn state_of(
 }
 
 /// The hardware and the register page with a span's fix-ups made: they name host registers, so they come
-/// before the relocations are read. `memory` reads guest memory.
+/// before the relocations are read. `memory` reads guest memory. For the ways whose withheld registers are all in
+/// the page.
 pub fn fixed_up(
     span: &Span,
     h: &Interrupted,
     page: &RegisterPage,
+    float: &mut FloatStatus,
+    memory: &mut dyn FnMut(u64, &mut [u8]),
+) -> (Interrupted, RegisterPage) {
+    fixed_up_in(span, h, page, &NOTHING_AFTER, float, memory)
+}
+
+fn fixed_up_in(
+    span: &Span,
+    h: &Interrupted,
+    page: &RegisterPage,
+    after: &AfterPage,
     float: &mut FloatStatus,
     memory: &mut dyn FnMut(u64, &mut [u8]),
 ) -> (Interrupted, RegisterPage) {
@@ -254,7 +330,7 @@ pub fn fixed_up(
                     && read
                         .iter()
                         .zip(remembered)
-                        .all(|(r, m)| r.is_none_or(|r| held(r, h, page) == m));
+                        .all(|(r, m)| r.is_none_or(|r| held(r, h, page, after) == m));
                 hardware.x[usize::from(status)] = u64::from(!swapped);
                 fixed.exclusive_bytes = 0;
             }
@@ -263,7 +339,7 @@ pub fn fixed_up(
                 pair,
                 address,
             } => {
-                let at = held(address, h, page);
+                let at = held(address, h, page, after);
                 let word = size_of::<u64>();
                 let total = usize::from(bytes) * if pair { 2 } else { 1 };
                 let mut read = |offset: usize, length: usize| {
@@ -289,11 +365,17 @@ pub fn fixed_up(
 }
 
 /// Where the guest goes on after a span's commit point.
-fn resume_address(way: Way, span: &Span, hardware: &Interrupted, page: &RegisterPage) -> u64 {
+fn resume_address(
+    way: Way,
+    span: &Span,
+    hardware: &Interrupted,
+    page: &RegisterPage,
+    after: &AfterPage,
+) -> u64 {
     match span.resume {
         Resume::At(at) => at,
-        Resume::Through(h) => untag_address(held(h, hardware, page)),
-        Resume::Slot(h) => way.slot_target(held(h, hardware, page)),
+        Resume::Through(h) => untag_address(held(h, hardware, page, after)),
+        Resume::Slot(h) => way.slot_target(held(h, hardware, page, after)),
     }
 }
 
@@ -362,13 +444,31 @@ fn after_call(h: &Interrupted) -> Interrupted {
 
 /// What an exception `taken` from `piece`, run in `way`, comes to with the hardware `h` and the register page
 /// as it left them, its pc the host instruction that took it; none for one translated code never raises.
-/// `memory` reads guest memory (for a jump's fix-ups).
+/// `memory` reads guest memory (for a jump's fix-ups). In process, [`in_process::resolve`].
 pub fn resolve(
     way: Way,
     piece: &Piece<'_>,
     taken: Taken,
     h: &Interrupted,
     page: &RegisterPage,
+    float: &mut FloatStatus,
+    memory: &mut dyn FnMut(u64, &mut [u8]),
+) -> Option<Resolved> {
+    debug_assert!(!matches!(way, Way::InProcess { .. }), "in_process::resolve");
+    resolve_in(way, piece, taken, h, page, &NOTHING_AFTER, float, memory)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolve's, and the words after the page"
+)]
+fn resolve_in(
+    way: Way,
+    piece: &Piece<'_>,
+    taken: Taken,
+    h: &Interrupted,
+    page: &RegisterPage,
+    after: &AfterPage,
     float: &mut FloatStatus,
     memory: &mut dyn FnMut(u64, &mut [u8]),
 ) -> Option<Resolved> {
@@ -379,7 +479,7 @@ pub fn resolve(
         // relocated, the count's add behind it).
         float.enter(h.fpsr);
         let target = way.slot_target(h.pc);
-        let state = state_of(&[], 0, target, h, page);
+        let state = state_of(way, &[], 0, target, h, page, after);
         let stop = if taken == Taken::JumpAlignment {
             Stop::Alignment(target)
         } else {
@@ -419,10 +519,10 @@ pub fn resolve(
             _ => {}
         }
         float.enter(h.fpsr);
-        let mut state = guest_state(span, h, page);
+        let mut state = state_at(way, span, h, page, after);
         let stop = match call {
             InsideCall::Exit => {
-                let to = resume_address(way, span, h, page);
+                let to = resume_address(way, span, h, page, after);
                 state.pc = to;
                 Stop::Landed(to)
             }
@@ -454,9 +554,9 @@ pub fn resolve(
             },
             InsideCall::Misaligned => misaligned(operand(span)?, span.guest, &state.x, state.sp),
             InsideCall::Unreachable => {
-                let (fixed, fixed_page) = fixed_up(span, h, page, float, memory);
-                state = guest_state(span, &fixed, &fixed_page);
-                let to = resume_address(way, span, h, page);
+                let (fixed, fixed_page) = fixed_up_in(span, h, page, after, float, memory);
+                state = state_at(way, span, &fixed, &fixed_page, after);
+                let to = resume_address(way, span, h, page, after);
                 state.pc = to;
                 if to.is_multiple_of(size_of::<u32>() as u64) {
                     Stop::Landed(to)
@@ -473,7 +573,7 @@ pub fn resolve(
         return Some(Resolved::Stop(stop, state));
     }
     float.enter(h.fpsr);
-    let state = guest_state(span, h, page);
+    let state = state_at(way, span, h, page, after);
     if span.side != Side::Before {
         return None;
     }
@@ -490,7 +590,7 @@ pub fn resolve(
                 Stop::Alignment(first)
             } else {
                 Stop::MemoryFault {
-                    address: fault_address(first, fault),
+                    address: fault_address(first, fault.wrapping_sub(way.window_base())),
                     write,
                 }
             }
@@ -502,12 +602,29 @@ pub fn resolve(
 
 /// The guest's state at an interrupt that landed at the hardware's pc while `piece` ran: before a commit
 /// point the instruction has not happened, after it its fix-ups finish it. The thread takes the hardware's
-/// float status as at every entry. `memory` reads guest memory for the fix-ups.
+/// float status as at every entry. `memory` reads guest memory for the fix-ups. In process,
+/// [`in_process::interrupted`].
 pub fn interrupted(
     way: Way,
     piece: &Piece<'_>,
     h: &Interrupted,
     page: &RegisterPage,
+    float: &mut FloatStatus,
+    memory: &mut dyn FnMut(u64, &mut [u8]),
+) -> Option<GuestState> {
+    debug_assert!(
+        !matches!(way, Way::InProcess { .. }),
+        "in_process::interrupted"
+    );
+    interrupted_in(way, piece, h, page, &NOTHING_AFTER, float, memory)
+}
+
+fn interrupted_in(
+    way: Way,
+    piece: &Piece<'_>,
+    h: &Interrupted,
+    page: &RegisterPage,
+    after: &AfterPage,
     float: &mut FloatStatus,
     memory: &mut dyn FnMut(u64, &mut [u8]),
 ) -> Option<GuestState> {
@@ -521,42 +638,207 @@ pub fn interrupted(
         } else {
             h.pc
         };
-        return Some(state_of(&[], 0, way.slot_target(slot), h, page));
+        return Some(state_of(way, &[], 0, way.slot_target(slot), h, page, after));
     }
     let span = span_at(piece.spans, piece.length, offset as u32)?;
     if span.side == Side::Before {
-        return Some(guest_state(span, h, page));
+        return Some(state_at(way, span, h, page, after));
     }
-    let (fixed, fixed_page) = fixed_up(span, h, page, float, memory);
-    let mut state = guest_state(span, &fixed, &fixed_page);
-    state.pc = resume_address(way, span, h, page);
+    let (fixed, fixed_page) = fixed_up_in(span, h, page, after, float, memory);
+    let mut state = state_at(way, span, &fixed, &fixed_page, after);
+    state.pc = resume_address(way, span, h, page, after);
     Some(state)
 }
 
 /// The hardware and the register page a guest state goes on from, as the inside returns to it: the withheld
 /// registers' guest values in the page, the count in its register, the page's address `register_page` in
-/// its. The pc is left for the caller to set to the piece's host address.
+/// its. The pc is left for the caller to set to the piece's host address. In process, [`in_process::rejoin`].
 pub fn rejoin(
+    state: &GuestState,
+    page: RegisterPage,
+    float: &FloatStatus,
+    register_page: u64,
+) -> (Interrupted, RegisterPage) {
+    let (hardware, page, _) = rejoin_in(Way::Machine, state, page, float, register_page);
+    (hardware, page)
+}
+
+fn rejoin_in(
+    way: Way,
     state: &GuestState,
     mut page: RegisterPage,
     float: &FloatStatus,
     register_page: u64,
-) -> (Interrupted, RegisterPage) {
+) -> (Interrupted, RegisterPage, AfterPage) {
     page.set_exclusive(state.exclusive);
+    let mut after = NOTHING_AFTER;
     let mut x = state.x;
-    for (slot, &r) in page.withheld.iter_mut().zip(&WITHHELD) {
-        *slot = x[usize::from(r)];
+    for (k, &r) in way.withheld().iter().enumerate() {
+        *withheld_mut(k, &mut page, &mut after) = x[usize::from(r)];
         x[usize::from(r)] = 0;
     }
     x[usize::from(COUNT)] = state.count;
     x[usize::from(PAGE)] = register_page;
+    if let Way::InProcess { .. } = way {
+        x[usize::from(BASE)] = way.window_base();
+    }
     let hardware = Interrupted {
         x,
-        sp: state.sp,
+        sp: state.sp.wrapping_add(way.window_base()),
         pc: 0,
         state: state.flags,
         fpsr: float.fpsr,
         fpcr: float.fpcr,
     };
-    (hardware, page)
+    (hardware, page, after)
+}
+
+/// Resolution in the in-process way (docs/native-without-virtual-machine.md section 3.2 item 1): a thread's
+/// guest values of [`wcontainers_arm64::way::CHECK`] and [`BASE`] are the words after its register page, its
+/// guest stack pointer the host's less the window's base, and a read of the way's mark ([`OUTSIDE`]) is an
+/// access outside the window or a stack pointer leaving it.
+pub mod in_process {
+    use super::{
+        AfterPage, FloatStatus, GuestState, Interrupted, Piece, Resolved, Taken, access_first,
+        interrupted_in, operand, rejoin_in, resolve_in, set_in, state_at,
+    };
+    use wcontainers_arm64::Way;
+    use wcontainers_arm64::thread_state::{RegisterPage, TAG_LOW, untag_address};
+    use wcontainers_arm64::way::{OUTSIDE, WINDOW_BITS};
+    use wcontainers_guest_cpu::position::{Operand, Side, Stopping, span_at};
+
+    /// The most bytes a stack probe reads below the stack pointer (rule c's `ldur wzr, [sp, #-4]`).
+    const PROBE_BELOW: u64 = size_of::<u32>() as u64;
+
+    /// What an exception comes to in process.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Resolution {
+        /// As in every way.
+        Resolved(Resolved),
+        /// The access starts outside the window, at `address`, where the guest faults: nothing is mapped there.
+        /// Whether it is a write is the instruction's, which the floor reads (the mark is a read).
+        Outside { address: u64, state: GuestState },
+        /// The instruction at the state's pc writes a stack pointer outside the window: the floor runs it
+        /// displaced (rule e).
+        Displaced(GuestState),
+        /// A stack probe faulted, which is never the guest's fault: the instruction is done and the guest goes
+        /// on from this state, displaced where its stack pointer is outside the window (rule c).
+        Probed(GuestState),
+    }
+
+    /// Whether a guest address is outside the window, its top byte ignored as the window check ignores it.
+    pub fn outside(address: u64) -> bool {
+        (address & ((1 << TAG_LOW) - 1)) >> WINDOW_BITS != 0
+    }
+
+    /// [`super::resolve`] for slot `slot`'s window, with `after` the words after the register page.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "resolve's, and the words after the page"
+    )]
+    pub fn resolve(
+        slot: u16,
+        piece: &Piece<'_>,
+        taken: Taken,
+        h: &Interrupted,
+        page: &RegisterPage,
+        after: &AfterPage,
+        float: &mut FloatStatus,
+        memory: &mut dyn FnMut(u64, &mut [u8]),
+    ) -> Option<Resolution> {
+        let way = Way::InProcess { slot };
+        let offset = h.pc.wrapping_sub(piece.base);
+        if offset < piece.length as u64 {
+            let span = span_at(piece.spans, piece.length, offset as u32)?;
+            let mark = way.window_base() | OUTSIDE;
+            let probe = span.side != Side::Before && span.stopping == Stopping::Plain;
+            match taken {
+                Taken::Access { fault, .. } if fault == mark && span.side == Side::Before => {
+                    float.enter(h.fpsr);
+                    let state = state_at(way, span, h, page, after);
+                    let Some(at) = operand(span) else {
+                        return Some(Resolution::Displaced(state));
+                    };
+                    let first = access_first(at, span.guest, &state.x, state.sp);
+                    let checked = Operand { offset: 0, ..*at };
+                    let checked = access_first(&checked, span.guest, &state.x, state.sp);
+                    // A structure access post-indexed by a register checks only its new stack pointer.
+                    return Some(if outside(first) || outside(checked) {
+                        Resolution::Outside {
+                            address: untag_address(first),
+                            state,
+                        }
+                    } else {
+                        Resolution::Displaced(state)
+                    });
+                }
+                Taken::Access {
+                    fault,
+                    alignment: false,
+                    ..
+                } if probe && h.sp.wrapping_sub(fault) <= PROBE_BELOW => {
+                    return interrupted(slot, piece, h, page, after, float, memory)
+                        .map(Resolution::Probed);
+                }
+                Taken::StackAlignment if probe => {
+                    return interrupted(slot, piece, h, page, after, float, memory)
+                        .map(Resolution::Probed);
+                }
+                _ => {}
+            }
+        }
+        resolve_in(way, piece, taken, h, page, after, float, memory).map(Resolution::Resolved)
+    }
+
+    /// [`super::interrupted`] for slot `slot`'s window, with `after` the words after the register page.
+    pub fn interrupted(
+        slot: u16,
+        piece: &Piece<'_>,
+        h: &Interrupted,
+        page: &RegisterPage,
+        after: &AfterPage,
+        float: &mut FloatStatus,
+        memory: &mut dyn FnMut(u64, &mut [u8]),
+    ) -> Option<GuestState> {
+        interrupted_in(
+            Way::InProcess { slot },
+            piece,
+            h,
+            page,
+            after,
+            float,
+            memory,
+        )
+    }
+
+    /// [`super::rejoin`] for slot `slot`'s window, with the words to put after the register page. The guest's
+    /// stack pointer is inside its window: a displaced thread does not rejoin translated code.
+    pub fn rejoin(
+        slot: u16,
+        state: &GuestState,
+        page: RegisterPage,
+        float: &FloatStatus,
+        register_page: u64,
+    ) -> (Interrupted, RegisterPage, AfterPage) {
+        rejoin_in(Way::InProcess { slot }, state, page, float, register_page)
+    }
+
+    /// [`super::set_register`] for slot `slot`'s window, with `after` the words after the register page.
+    pub fn set_register(
+        slot: u16,
+        register: u8,
+        value: u64,
+        hardware: &mut Interrupted,
+        page: &mut RegisterPage,
+        after: &mut AfterPage,
+    ) {
+        set_in(
+            Way::InProcess { slot },
+            register,
+            value,
+            hardware,
+            page,
+            after,
+        );
+    }
 }
