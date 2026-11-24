@@ -112,6 +112,10 @@ fn mount(server: Arc<Server<Arc<Announcing>>>, at: &Path, command: &[String]) {
     run.args(&command[1..]).current_dir(at);
     // SAFETY: only sets the umask between fork and exec, a call that is async-signal-safe; the
     // closure allocates nothing and takes no lock, as the server's thread is running.
+    #[expect(
+        unsafe_code,
+        reason = "std's pre_exec runs the closure between fork and exec, where only async-signal-safe calls may be made; it calls only umask, which is, and allocates nothing"
+    )]
     unsafe {
         run.pre_exec(|| {
             // The server works with no umask; the command starts with Docker's.

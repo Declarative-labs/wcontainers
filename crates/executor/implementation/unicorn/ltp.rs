@@ -323,6 +323,10 @@ pub fn run_ours(
             let _ = std::fs::remove_file(result_path(&log));
             // SAFETY: this process has one thread; the child runs the test alone and ends with
             // `_exit`.
+            #[expect(
+                unsafe_code,
+                reason = "UNEXPLAINED: forks one child per test case on the claim that this process has one thread, which nothing checks; no primitive replaces it, step one re-runs the binary with Command instead"
+            )]
             match unsafe { libc::fork() } {
                 -1 => panic!("fork failed"),
                 0 => run_one(
@@ -456,7 +460,11 @@ fn run_one(
                     };
                     let _ = std::fs::write(result_path(&log), line.to_text());
                     // SAFETY: ends this process at once, its run abandoned.
-                    unsafe { libc::_exit(0) }
+                    #[expect(
+                        unsafe_code,
+                        reason = "ends the hung child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+                    )]
+                    unsafe { libc::_exit(0) };
                 }
             }
         });
@@ -502,7 +510,11 @@ fn run_one(
     };
     std::fs::write(result_path(log), line.to_text()).expect("the result");
     // SAFETY: ends the forked process without running the parent's exit handlers.
-    unsafe { libc::_exit(0) }
+    #[expect(
+        unsafe_code,
+        reason = "ends the forked child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+    )]
+    unsafe { libc::_exit(0) };
 }
 
 fn crash_line(test: &Test, seconds: f64) -> Line {

@@ -84,7 +84,8 @@ path = "conformance_run.rs"
 # instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
 runtime = ["dep:wcontainers-arm64"]
 
-# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
-# TODO: of this crate's 12 uses (counted on 2026-11-24), remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`; a reason
+# starting "UNSOUND:" or "UNEXPLAINED:" marks a use nobody has shown sound, and names what replaces it.
 [lints.rust]
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
