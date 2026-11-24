@@ -127,7 +127,7 @@ pub(crate) fn apply(
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::ViewportAdjust, vec4)
                 });
-                let mut w = Wrapped::new(module);
+                let mut w = Wrapped::new(module)?;
                 pull::pulled(module, &mut w, &variant.pulled, reflection)?;
                 let z = position(&mut w, viewport, flip, clip, clamp);
                 if distances || clamp || culls {
@@ -177,7 +177,7 @@ pub(crate) fn apply(
                     let u32_ty = scalar(module, Scalar::U32);
                     helper(module, reflection, stage, HelperValue::SampleMask, u32_ty)
                 });
-                let mut w = Wrapped::new(module);
+                let mut w = Wrapped::new(module)?;
                 let linked = if distances || clamp {
                     linked_in(module, &mut w, variant.linked, clamp)
                 } else {
@@ -503,7 +503,14 @@ pub(crate) struct Wrapped {
 }
 
 impl Wrapped {
-    pub(crate) fn new(module: &mut Module) -> Wrapped {
+    pub(crate) fn new(module: &mut Module) -> Result<Wrapped> {
+        if let Some(r) = &module.entry_points[0].function.result
+            && r.binding.is_none()
+            && let TypeInner::Struct { members, .. } = &module.types[r.ty].inner
+            && members.iter().any(|m| m.binding.is_none())
+        {
+            return Err(ConvertError::Malformed(UNBOUND_RESULT.into()));
+        }
         let mut inner = core::mem::take(&mut module.entry_points[0].function);
         let arguments = core::mem::take(&mut inner.arguments);
         inner.arguments = arguments
@@ -561,7 +568,7 @@ impl Wrapped {
                         outputs.push(Output {
                             name: m.name,
                             ty: m.ty,
-                            binding: m.binding.expect("entry point results are bound"),
+                            binding: m.binding.expect("every member is bound, checked above"),
                             value: v,
                         });
                     }
@@ -569,7 +576,7 @@ impl Wrapped {
                 _ => {}
             }
         }
-        Wrapped {
+        Ok(Wrapped {
             f,
             body,
             prologue: Block::new(),
@@ -578,7 +585,7 @@ impl Wrapped {
             original,
             changed: false,
             replaced: Vec::new(),
-        }
+        })
     }
 
     /// The entry point's argument bound at `location` and its type. An input inside a struct is
@@ -1228,6 +1235,8 @@ fn primitive_from_stage(module: &mut Module, w: &mut Wrapped, location: u32) -> 
 
 /// A pixel program keyed for both line routes (`LINE_COVERAGE` and `LINE_DIAMOND`).
 const TWO_LINE_RULES: &str = "a pixel program keyed for both line routes";
+/// Why a program is malformed: its entry point gives a struct with a member bound to no stage value.
+pub(crate) const UNBOUND_RESULT: &str = "an entry point result with a member bound to nothing";
 
 /// How far past a line along its minor axis, and past each of its ends, the stage helper's
 /// parallelogram reaches for the aliased line rule (`LINE_DIAMOND`), in pixels: the centre of every

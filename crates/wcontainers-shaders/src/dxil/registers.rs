@@ -183,7 +183,7 @@ fn registers(values: &[Value]) -> Vec<u32> {
 /// Rewrites the entry point's stage values as Direct3D's registers; returns each value as placed.
 pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> {
     let stage = module.entry_points[0].stage;
-    let mut w = Wrapped::new(module);
+    let mut w = Wrapped::new(module)?;
     let mut placed = Vec::new();
 
     // Inputs.
@@ -578,6 +578,31 @@ mod tests {
         assert_eq!(
             lay_out(&mut reading_from(COMPONENTS - WIDTH + 1)).map(|_| ()),
             Err(ConvertError::Malformed(PAST_REGISTER.into()))
+        );
+    }
+
+    /// A program giving a struct with a member bound to nothing is refused by name, where its
+    /// wrapper took the binding as given (a fuzz case of seed 662607).
+    #[test]
+    fn a_result_member_bound_to_nothing_is_refused() {
+        let text = alloc::format!(
+            "struct Out {{ @location(0) a: vec4f, @location({COMPONENTS}) b: vec4f }} \
+             @fragment fn {}() -> Out {{ return Out(vec4f(), vec4f()); }}",
+            crate::ENTRY_POINT
+        );
+        let mut module = naga::front::wgsl::parse_str(&text).unwrap();
+        assert_eq!(lay_out(&mut module.clone()).map(|_| ()), Ok(()));
+        let result = module.entry_points[0].function.result.as_mut().unwrap();
+        let mut unbound = module.types[result.ty].clone();
+        if let TypeInner::Struct { members, .. } = &mut unbound.inner {
+            members[1].binding = None;
+        }
+        result.ty = module.types.insert(unbound, naga::Span::UNDEFINED);
+        assert_eq!(
+            lay_out(&mut module).map(|_| ()),
+            Err(ConvertError::Malformed(
+                crate::variant::UNBOUND_RESULT.into()
+            ))
         );
     }
 }
