@@ -2,7 +2,6 @@ use core::ops::Range;
 
 use thiserror::Error;
 use vstd::prelude::*;
-#[cfg(verus_only)]
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::GhostVar;
 use wcontainers_abi::Permissions;
@@ -15,10 +14,16 @@ pub const PAGE_SIZE: u64 = 4096;
 
 // ---------------------------------------------------------------- the model
 
+/// The name of a frame: the token of the space that made it, and its number among that space's frames.
+pub ghost struct FrameName {
+    pub space: Loc,
+    pub number: int,
+}
+
 /// One page of a space, as the contract sees it.
 pub ghost struct Page {
     /// The frame that holds the page's bytes: pages that hold the same frame, in one space or two, share their bytes.
-    pub frame: int,
+    pub frame: FrameName,
     /// Whether the page was mapped from another space, so that an unmap ends it and a copy shares it.
     pub mapped: bool,
     /// What guest code may do on the page.
@@ -28,6 +33,8 @@ pub ghost struct Page {
 /// A space, as the contract sees it: each of its pages, by the page's first address.
 pub ghost struct Space {
     pub pages: spec_fn(u64) -> Page,
+    /// How many frame numbers the space has used: each frame it made has a number below this.
+    pub made: int,
 }
 
 impl Space {
@@ -39,6 +46,15 @@ impl Space {
 
 /// What a page allows when it allows nothing.
 pub uninterp spec fn nothing() -> Permissions;
+
+/// Whether guest code may read a page that allows these permissions.
+pub uninterp spec fn reads(allowed: Permissions) -> bool;
+
+/// Whether guest code may write a page that allows these permissions.
+pub uninterp spec fn writes(allowed: Permissions) -> bool;
+
+/// Whether guest code may run instructions from a page that allows these permissions.
+pub uninterp spec fn executes(allowed: Permissions) -> bool;
 
 /// Whether the address is the first of a page.
 pub open spec fn starts_page(address: u64) -> bool {
@@ -76,21 +92,21 @@ pub open spec fn source(start: u64, addresses: Range<u64>, other_start: u64) -> 
     (start - addresses.start + other_start) as u64
 }
 
-/// Whether the space holds the frame on one of its pages.
-pub open spec fn holds(space: Space, frame: int) -> bool {
-    exists|start: u64| starts_page(start) && #[trigger] space.page(start).frame == frame
-}
-
-/// Whether the frame is a new one: neither space held it.
-pub open spec fn new_frame(frame: int, this: Space, other: Space) -> bool {
-    !holds(this, frame) && !holds(other, frame)
+/// Whether the frame is one the space made in this change: named by its token, with a number it had not used before.
+pub open spec fn new_frame(frame: FrameName, token: Loc, before: Space, after: Space) -> bool {
+    frame.space == token && before.made <= frame.number < after.made
 }
 
 // ---------------------------------------------------------------- the rules
 
-/// A new space: no page is mapped, and no page allows anything.
-pub open spec fn new_space(space: Space) -> bool {
-    forall|start: u64| !(#[trigger] space.page(start)).mapped && space.page(start).allowed == nothing()
+/// A new space: each page holds a frame of its own, numbered by the page's address, is not mapped and allows nothing.
+pub open spec fn new_space(space: Space, token: Loc) -> bool {
+    &&& space.made == u64::MAX + 1
+    &&& forall|start: u64| #[trigger] space.page(start) == Page {
+            frame: FrameName { space: token, number: start as int },
+            mapped: false,
+            allowed: nothing(),
+        }
 }
 
 /// Every page outside the addresses is as it was.
@@ -101,6 +117,7 @@ pub open spec fn unchanged_outside(before: Space, after: Space, addresses: Range
 /// Each page among the addresses allows what was set, and keeps its frame and mapping.
 pub open spec fn permissions_set(before: Space, after: Space, addresses: Range<u64>, allowed: Permissions) -> bool {
     &&& unchanged_outside(before, after, addresses)
+    &&& after.made == before.made
     &&& forall|start: u64| page_among(start, addresses) ==>
             #[trigger] after.page(start) == Page { allowed, ..before.page(start) }
 }
@@ -108,6 +125,7 @@ pub open spec fn permissions_set(before: Space, after: Space, addresses: Range<u
 /// Each page among the addresses holds the frame of its source page in the other space, and keeps what it allows.
 pub open spec fn mapped(before: Space, after: Space, other: Space, addresses: Range<u64>, other_start: u64) -> bool {
     &&& unchanged_outside(before, after, addresses)
+    &&& after.made == before.made
     &&& forall|start: u64| #![trigger after.page(start)] page_among(start, addresses) ==> {
             let from = other.page(source(start, addresses, other_start));
             after.page(start) == Page { frame: from.frame, mapped: true, ..before.page(start) }
@@ -115,14 +133,15 @@ pub open spec fn mapped(before: Space, after: Space, other: Space, addresses: Ra
 }
 
 /// Each mapped page among the addresses holds a new frame of its own and is no longer mapped; every other page is as it was.
-pub open spec fn unmapped(before: Space, after: Space, addresses: Range<u64>) -> bool {
+pub open spec fn unmapped(before: Space, after: Space, addresses: Range<u64>, token: Loc) -> bool {
+    &&& before.made <= after.made
     &&& forall|start: u64| #![trigger after.page(start)] !(page_among(start, addresses) && before.page(start).mapped) ==>
             after.page(start) == before.page(start)
     &&& forall|start: u64| #![trigger after.page(start)] page_among(start, addresses) && before.page(start).mapped ==> {
             let page = after.page(start);
             &&& !page.mapped
             &&& page.allowed == before.page(start).allowed
-            &&& new_frame(page.frame, before, before)
+            &&& new_frame(page.frame, token, before, after)
         }
     &&& forall|start: u64, other_start: u64|
             #![trigger after.page(start), after.page(other_start)]
@@ -137,15 +156,23 @@ pub open spec fn copied_own(start: u64, other: Space, addresses: Range<u64>, oth
 }
 
 /// Each page among the addresses allows what its source page allows and shares its frame if that was mapped, else holds a new frame of its own.
-pub open spec fn copied(before: Space, after: Space, other: Space, addresses: Range<u64>, other_start: u64) -> bool {
+pub open spec fn copied(
+    before: Space,
+    after: Space,
+    other: Space,
+    addresses: Range<u64>,
+    other_start: u64,
+    token: Loc,
+) -> bool {
     &&& unchanged_outside(before, after, addresses)
+    &&& before.made <= after.made
     &&& forall|start: u64| #![trigger after.page(start)] page_among(start, addresses) ==> {
             let from = other.page(source(start, addresses, other_start));
             let page = after.page(start);
             &&& page.allowed == from.allowed
             &&& page.mapped == from.mapped
             &&& from.mapped ==> page.frame == from.frame
-            &&& !from.mapped ==> new_frame(page.frame, before, other)
+            &&& !from.mapped ==> new_frame(page.frame, token, before, after)
         }
     &&& forall|start: u64, other_page: u64|
             #![trigger after.page(start), after.page(other_page)]
@@ -163,6 +190,7 @@ pub open spec fn copied(before: Space, after: Space, other: Space, addresses: Ra
 ///
 /// Bytes borrowed from the space ignore the permissions, which bind only the code executed on it.
 /// The page methods take the token that holds the space's model: its holder is the one party that changes the space's pages.
+/// The clauses cover pages, frames and permissions; what the bytes hold is not in them yet, and the suite tests it.
 pub trait MemorySpace: Sized {
     /// A borrowed part of the space, which its guest may be changing while it is held.
     type Bytes<'space>: VolatileBytes
@@ -174,6 +202,9 @@ pub trait MemorySpace: Sized {
 
     /// Which token holds this space's model.
     spec fn token(&self) -> Loc;
+
+    /// Whether a map or a copy may be refused for want of host memory.
+    spec fn can_run_out() -> bool;
 
     fn borrow(&self, addresses: Range<u64>) -> (result: Result<Self::Bytes<'_>, InvalidAddressError>)
         ensures
@@ -249,12 +280,13 @@ pub trait MemorySpace: Sized {
                     && source_fits(addresses, other_start, Self::addressable());
                 &&& final(space).id() == old(space).id()
                 &&& (result matches Err(MapMemoryError::InvalidAddress(_))) <==> !fits
+                &&& (result matches Err(MapMemoryError::OutOfMemory)) ==> Self::can_run_out()
                 &&& result is Ok ==> mapped(before, after, other_space@, addresses, other_start)
                 &&& result is Err ==> after == before
             }),
     ;
 
-    /// Ends the mapping of the addresses, which become zeroed out wherever they were previously mapped from.
+    /// Ends the mapping of the addresses, which become zeroed out wherever they were previously mapped from (the zeros are tested, not proven).
     fn unmap_from(
         &self,
         addresses: Range<u64>,
@@ -268,7 +300,7 @@ pub trait MemorySpace: Sized {
                 let after = final(space)@;
                 &&& final(space).id() == old(space).id()
                 &&& result is Ok <==> whole_pages(addresses, Self::addressable())
-                &&& result is Ok ==> unmapped(before, after, addresses)
+                &&& result is Ok ==> unmapped(before, after, addresses, final(space).id())
                 &&& result is Err ==> after == before
             }),
     ;
@@ -293,7 +325,8 @@ pub trait MemorySpace: Sized {
                     && source_fits(addresses, other_start, Self::addressable());
                 &&& final(space).id() == old(space).id()
                 &&& (result matches Err(CopyMemoryError::InvalidAddress(_))) <==> !fits
-                &&& result is Ok ==> copied(before, after, other_space@, addresses, other_start)
+                &&& (result matches Err(CopyMemoryError::OutOfMemory)) ==> Self::can_run_out()
+                &&& result is Ok ==> copied(before, after, other_space@, addresses, other_start, final(space).id())
                 &&& result is Err ==> after == before
             }),
     ;
@@ -314,6 +347,42 @@ pub fn no_permissions() -> (allowed: Permissions)
         allowed == nothing(),
 {
     Permissions::empty()
+}
+
+/// Returns whether the permissions allow nothing.
+#[verifier::external_body]
+pub fn allows_nothing(allowed: Permissions) -> (result: bool)
+    ensures
+        result == (allowed == nothing()),
+{
+    allowed.is_empty()
+}
+
+/// Returns whether guest code may read a page that allows these permissions.
+#[verifier::external_body]
+pub fn allows_reading(allowed: Permissions) -> (result: bool)
+    ensures
+        result == reads(allowed),
+{
+    allowed.contains(Permissions::READ)
+}
+
+/// Returns whether guest code may write a page that allows these permissions.
+#[verifier::external_body]
+pub fn allows_writing(allowed: Permissions) -> (result: bool)
+    ensures
+        result == writes(allowed),
+{
+    allowed.contains(Permissions::WRITE)
+}
+
+/// Returns whether guest code may run instructions from a page that allows these permissions.
+#[verifier::external_body]
+pub fn allows_executing(allowed: Permissions) -> (result: bool)
+    ensures
+        result == executes(allowed),
+{
+    allowed.contains(Permissions::EXECUTE)
 }
 
 /// The bytes a borrow lends: the contract promises nothing about them yet.

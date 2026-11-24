@@ -26,6 +26,9 @@ use wcontainers_volatile_bytes::VolatileBytes;
 
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 
+/// Why a space stops the program: a page method stopped while it held the pages, so they are gone.
+const LOST: &str = "a page method stopped while it held the space's pages";
+
 // The proof's copies of the architecture's bounds and the ABI's page mask, checked equal here.
 const _: () =
     assert!(Arm64::ADDRESSABLE.start == u64::MIN && Arm64::ADDRESSABLE.end == ADDRESSABLE_END);
@@ -55,11 +58,11 @@ pub(crate) struct Frame(Arc<Mutex<Box<[u8]>>>);
 
 impl Frame {
     /// The name the contract gives the frame: every handle to the same bytes has the same name.
-    pub uninterp spec fn name(&self) -> int;
+    pub uninterp spec fn name(&self) -> contract::FrameName;
 
     /// Returns a new frame of zeros, with the given name.
     #[verifier::external_body]
-    fn zeros(Ghost(name): Ghost<int>) -> (frame: Frame)
+    fn zeros(Ghost(name): Ghost<contract::FrameName>) -> (frame: Frame)
         ensures
             frame.name() == name,
     {
@@ -77,7 +80,7 @@ impl Frame {
 
     /// Returns a new frame holding a copy of the bytes, with the given name.
     #[verifier::external_body]
-    fn copy(&self, Ghost(name): Ghost<int>) -> (frame: Frame)
+    fn copy(&self, Ghost(name): Ghost<contract::FrameName>) -> (frame: Frame)
         ensures
             frame.name() == name,
     {
@@ -88,13 +91,14 @@ impl Frame {
 /// A space's pages behind a lock, which keeps them well formed for the token it was made for.
 #[verifier::external_body]
 struct Locked {
-    mutex: Mutex<Table>,
+    /// None only while a page method holds the table, or after one stopped without putting it back.
+    mutex: Mutex<Option<Table>>,
 }
 
 /// The lock held, until the table is put back.
 #[verifier::external_body]
 struct Held<'lock> {
-    guard: MutexGuard<'lock, Table>,
+    guard: MutexGuard<'lock, Option<Table>>,
 }
 
 impl Locked {
@@ -108,10 +112,10 @@ impl Locked {
         ensures
             locked.token() == table.model@.id(),
     {
-        Locked { mutex: Mutex::new(table) }
+        Locked { mutex: Mutex::new(Some(table)) }
     }
 
-    /// Takes the lock and the table out of it.
+    /// Takes the lock and the table out of it; stops the program if a page method lost the table.
     #[verifier::external_body]
     fn acquire(&self) -> (taken: (Table, Held<'_>))
         ensures
@@ -119,8 +123,7 @@ impl Locked {
             taken.1.token() == self.token(),
     {
         let mut guard = self.mutex.lock().unwrap_or_else(PoisonError::into_inner);
-        let empty = Table { pages: BTreeMap::new(), unmade: Ghost::assume_new(), model: Tracked::assume_new() };
-        let table = core::mem::replace(&mut *guard, empty);
+        let table = guard.take().expect(LOST);
         (table, Held { guard })
     }
 }
@@ -135,7 +138,7 @@ impl<'lock> Held<'lock> {
             table.wf(self.token()),
     {
         let mut guard = self.guard;
-        *guard = table;
+        *guard = Some(table);
     }
 }
 
@@ -145,17 +148,14 @@ fn count_change() -> u64 {
     CHANGES.fetch_add(1, Ordering::AcqRel)
 }
 
-/// A name for a new frame for each page: one neither space holds, and a different one for each page.
-uninterp spec fn fresh(this: contract::Space, other: contract::Space, start: u64) -> int;
+/// The name of the new frame a change gives the page at the start: numbered past those the space had used.
+spec fn new_name(token: Loc, before: contract::Space, start: u64) -> contract::FrameName {
+    contract::FrameName { space: token, number: before.made + start }
+}
 
-/// Trusted: two spaces hold at most 2^53 frames between them, while there are infinitely many names.
-#[verifier::external_body]
-proof fn fresh_names(this: contract::Space, other: contract::Space)
-    ensures
-        forall|start: u64| #[trigger] contract::new_frame(fresh(this, other, start), this, other),
-        forall|start: u64, page: u64|
-            start != page ==> #[trigger] fresh(this, other, start) != #[trigger] fresh(this, other, page),
-{
+/// The count of frame numbers a space has used once a change has made new frames.
+spec fn made_after(before: contract::Space) -> int {
+    before.made + u64::MAX + 1
 }
 
 // ---------------------------------------------------------------- the pages
@@ -168,7 +168,7 @@ pub(crate) struct Page {
     pub(crate) mapped: bool,
     pub(crate) permissions: Permissions,
     /// The name of the page's frame, given before the frame is made.
-    name: Ghost<int>,
+    name: Ghost<contract::FrameName>,
 }
 
 impl Page {
@@ -184,7 +184,7 @@ impl Page {
 }
 
 /// Returns a page that reads as zeros, is not mapped and allows nothing.
-fn empty_page(Ghost(name): Ghost<int>) -> (page: Page)
+fn empty_page(Ghost(name): Ghost<contract::FrameName>) -> (page: Page)
     ensures
         page.wf(),
         page@ == (contract::Page { frame: name, mapped: false, allowed: contract::nothing() }),
@@ -197,14 +197,16 @@ pub(crate) struct Table {
     /// The pages that have a frame, a mapping or permissions, by their first address.
     pub(crate) pages: BTreeMap<u64, Page>,
     /// The name of the frame of each page with no entry.
-    unmade: Ghost<spec_fn(u64) -> int>,
+    unmade: Ghost<spec_fn(u64) -> contract::FrameName>,
+    /// How many frame numbers the space has used.
+    made: Ghost<int>,
     /// The other half of the token that holds the space's model.
     #[allow(dead_code, reason = "ghost state, erased from the built code")]
     model: Tracked<GhostVarAuth<contract::Space>>,
 }
 
 /// The page that starts at the address, as the contract sees it.
-spec fn page_of(pages: Map<u64, Page>, unmade: spec_fn(u64) -> int, start: u64) -> contract::Page {
+spec fn page_of(pages: Map<u64, Page>, unmade: spec_fn(u64) -> contract::FrameName, start: u64) -> contract::Page {
     if pages.contains_key(start) {
         pages[start]@
     } else {
@@ -213,13 +215,13 @@ spec fn page_of(pages: Map<u64, Page>, unmade: spec_fn(u64) -> int, start: u64) 
 }
 
 /// The space, as the contract sees it.
-spec fn space_of(pages: Map<u64, Page>, unmade: spec_fn(u64) -> int) -> contract::Space {
-    contract::Space { pages: |start: u64| page_of(pages, unmade, start) }
+spec fn space_of(pages: Map<u64, Page>, unmade: spec_fn(u64) -> contract::FrameName, made: int) -> contract::Space {
+    contract::Space { pages: |start: u64| page_of(pages, unmade, start), made }
 }
 
 impl Table {
     spec fn space(&self) -> contract::Space {
-        space_of(self.pages@, self.unmade@)
+        space_of(self.pages@, self.unmade@, self.made@)
     }
 
     /// Whether the table is well formed and is the model held by the token.
@@ -261,13 +263,19 @@ impl SimulatedMemory {
     pub fn new() -> (made: (SimulatedMemory, Tracked<GhostVar<contract::Space>>))
         ensures
             made.1@.id() == made.0.token(),
-            contract::new_space(made.1@@),
+            contract::new_space(made.1@@, made.0.token()),
     {
         let pages = BTreeMap::new();
-        let ghost unmade = |start: u64| start as int;
-        let tracked (auth, var) = GhostVarAuth::<contract::Space>::new(space_of(Map::empty(), unmade));
-        let table = Table { pages, unmade: Ghost(unmade), model: Tracked(auth) };
-        assert(table.space().pages =~= space_of(Map::empty(), unmade).pages);
+        let ghost first: contract::Space = arbitrary();
+        let tracked (mut auth, mut var) = GhostVarAuth::<contract::Space>::new(first);
+        let ghost token = auth.id();
+        let ghost unmade = |start: u64| contract::FrameName { space: token, number: start as int };
+        let ghost made = u64::MAX + 1;
+        proof {
+            auth.update(&mut var, space_of(Map::empty(), unmade, made));
+        }
+        let table = Table { pages, unmade: Ghost(unmade), made: Ghost(made), model: Tracked(auth) };
+        assert(table.space().pages =~= space_of(Map::empty(), unmade, made).pages);
         (SimulatedMemory { pages: Locked::new(table) }, Tracked(var))
     }
 
@@ -404,28 +412,38 @@ spec fn nth_page(addresses: Range<u64>, index: int) -> u64 {
 }
 
 /// Putting an entry at a start changes that page of the space alone.
-proof fn lemma_put(pages: Map<u64, Page>, unmade: spec_fn(u64) -> int, start: u64, entry: Page)
+proof fn lemma_put(pages: Map<u64, Page>, unmade: spec_fn(u64) -> contract::FrameName, made: int, start: u64, entry: Page)
     ensures
-        forall|page: u64| #[trigger] space_of(pages.insert(start, entry), unmade).page(page)
-            == if page == start { entry@ } else { space_of(pages, unmade).page(page) },
+        forall|page: u64| #[trigger] space_of(pages.insert(start, entry), unmade, made).page(page)
+            == if page == start { entry@ } else { space_of(pages, unmade, made).page(page) },
 {
 }
 
 /// The names of the frames of pages with no entry, with the page at the start named anew.
-spec fn renamed(unmade: spec_fn(u64) -> int, start: u64, name: int) -> spec_fn(u64) -> int {
+spec fn renamed(
+    unmade: spec_fn(u64) -> contract::FrameName,
+    start: u64,
+    name: contract::FrameName,
+) -> spec_fn(u64) -> contract::FrameName {
     |page: u64| if page == start { name } else { unmade(page) }
 }
 
 /// Taking the entry at a start out, and naming that page's frame anew, changes that page of the space alone.
-proof fn lemma_take(pages: Map<u64, Page>, unmade: spec_fn(u64) -> int, start: u64, name: int)
+proof fn lemma_take(
+    pages: Map<u64, Page>,
+    unmade: spec_fn(u64) -> contract::FrameName,
+    made: int,
+    start: u64,
+    name: contract::FrameName,
+)
     ensures
         ({
             let renamed = renamed(unmade, start, name);
-            forall|page: u64| #[trigger] space_of(pages.remove(start), renamed).page(page)
+            forall|page: u64| #[trigger] space_of(pages.remove(start), renamed, made).page(page)
                 == if page == start {
                     contract::Page { frame: name, mapped: false, allowed: contract::nothing() }
                 } else {
-                    space_of(pages, unmade).page(page)
+                    space_of(pages, unmade, made).page(page)
                 }
         }),
 {
@@ -480,6 +498,10 @@ impl MemorySpace for SimulatedMemory {
 
     closed spec fn token(&self) -> Loc {
         self.pages.token()
+    }
+
+    open spec fn can_run_out() -> bool {
+        false
     }
 
     fn borrow(&self, addresses: Range<u64>) -> (result: Result<SimulatedBytes<'_>, InvalidAddressError>) {
@@ -549,11 +571,11 @@ impl MemorySpace for SimulatedMemory {
             let ghost entry = page;
             table.pages.insert(start, page);
             proof {
-                lemma_put(pages_before, table.unmade@, start, entry);
+                lemma_put(pages_before, table.unmade@, table.made@, start, entry);
                 assert(table.pages@ =~= pages_before.insert(start, entry));
                 assert(entry@ == contract::Page { allowed, ..before.page(start) });
                 assert(forall|page: u64| #[trigger] table.space().page(page)
-                    == if page == start { entry@ } else { space_of(pages_before, table.unmade@).page(page) });
+                    == if page == start { entry@ } else { space_of(pages_before, table.unmade@, table.made@).page(page) });
                 lemma_next(addresses, start);
             }
             start += contract::PAGE_SIZE;
@@ -654,10 +676,10 @@ impl MemorySpace for SimulatedMemory {
             let ghost entry = page;
             table.pages.insert(start, page);
             proof {
-                lemma_put(pages_before, table.unmade@, start, entry);
+                lemma_put(pages_before, table.unmade@, table.made@, start, entry);
                 assert(table.pages@ =~= pages_before.insert(start, entry));
                 assert(forall|page: u64| #[trigger] table.space().page(page)
-                    == if page == start { entry@ } else { space_of(pages_before, table.unmade@).page(page) });
+                    == if page == start { entry@ } else { space_of(pages_before, table.unmade@, table.made@).page(page) });
                 lemma_next(addresses, start);
             }
             start += contract::PAGE_SIZE;
@@ -683,13 +705,11 @@ impl MemorySpace for SimulatedMemory {
             table.model.borrow().agree(space);
         }
         let ghost before = table.space();
-        proof {
-            fresh_names(before, before);
-        }
+        let ghost token = space.id();
         let keys = keys_among(&table.pages, &addresses);
         let ghost before_pages = table.pages@;
         proof {
-            assert forall|key: u64| before_pages.contains_key(key) && before.page(key).mapped implies contract::starts_page(key) by {
+            assert forall|key: u64| #![trigger before.page(key)] before_pages.contains_key(key) && before.page(key).mapped implies contract::starts_page(key) by {
                 assert(table.space().page(key) == before.page(key));
             }
         }
@@ -704,6 +724,8 @@ impl MemorySpace for SimulatedMemory {
                 btree_map_inv(&table.pages),
                 table.model@.id() == self.pages.token(),
                 table.model@@ == before,
+                table.made@ == before.made,
+                token == space.id(),
                 forall|key: u64| #[trigger] table.pages@.contains_key(key) ==> {
                     &&& table.pages@[key].wf()
                     &&& table.pages@[key].mapped ==> contract::starts_page(key)
@@ -711,7 +733,7 @@ impl MemorySpace for SimulatedMemory {
                 forall|page: u64| #[trigger] done.contains(page) ==> exists|at: int| 0 <= at < index && keys@[at] == page,
                 forall|at: int| 0 <= at < index ==> #[trigger] done.contains(keys@[at]),
                 forall|page: u64| #[trigger] table.space().page(page) == if done.contains(page) && before.page(page).mapped {
-                    contract::Page { frame: fresh(before, before, page), mapped: false, allowed: before.page(page).allowed }
+                    contract::Page { frame: new_name(token, before, page), mapped: false, allowed: before.page(page).allowed }
                 } else {
                     before.page(page)
                 },
@@ -738,12 +760,12 @@ impl MemorySpace for SimulatedMemory {
             }
             if let Some(found) = removed {
                 if found.mapped {
-                    let fresh_name = Ghost(fresh(before, before, key));
+                    let fresh_name = Ghost(new_name(token, before, key));
                     let page = Page { frame: None, mapped: false, name: fresh_name, ..found };
                     let ghost entry = page;
                     table.pages.insert(key, page);
                     proof {
-                        lemma_put(pages_before, table.unmade@, key, entry);
+                        lemma_put(pages_before, table.unmade@, table.made@, key, entry);
                         assert(table.pages@ =~= pages_before.insert(key, entry));
                     }
                 } else {
@@ -763,8 +785,11 @@ impl MemorySpace for SimulatedMemory {
             }
             index += 1;
         }
+        let ghost unmapped_pages = table.space();
+        table.made = Ghost(made_after(before));
         proof {
             let after = table.space();
+            assert(forall|page: u64| #[trigger] after.page(page) == unmapped_pages.page(page));
             assert forall|page: u64| keys@.contains(page) implies done.contains(page) by {
                 let at = choose|at: int| 0 <= at < keys@.len() && keys@[at] == page;
                 assert(done.contains(keys@[at]));
@@ -773,7 +798,6 @@ impl MemorySpace for SimulatedMemory {
                 #[trigger] keys@.contains(page) by {
                 assert(before_pages.contains_key(page));
             }
-            fresh_names(before, before);
             assert forall|start: u64| !(contract::page_among(start, addresses) && before.page(start).mapped) implies
                 #[trigger] after.page(start) == before.page(start) by {
                 if done.contains(start) && before.page(start).mapped {
@@ -785,12 +809,12 @@ impl MemorySpace for SimulatedMemory {
                 let page = #[trigger] after.page(start);
                 &&& !page.mapped
                 &&& page.allowed == before.page(start).allowed
-                &&& contract::new_frame(page.frame, before, before)
+                &&& contract::new_frame(page.frame, token, before, after)
             } by {
                 assert(keys@.contains(start));
                 assert(done.contains(start));
             }
-            assert(contract::unmapped(before, after, addresses));
+            assert(contract::unmapped(before, after, addresses, token));
             table.model.borrow_mut().update(space, after);
         }
         held.release(table);
@@ -815,9 +839,7 @@ impl MemorySpace for SimulatedMemory {
         };
         let ghost before = space@;
         let ghost from = other_space@;
-        proof {
-            fresh_names(before, from);
-        }
+        let ghost token = space.id();
         // The copied pages in reverse order, so that each is taken off the end in the order of the pages.
         let mut copied: Vec<Option<Page>> = Vec::new();
         {
@@ -838,7 +860,7 @@ impl MemorySpace for SimulatedMemory {
                     forall|index: int| 0 <= index < copied@.len() ==> {
                         let page = (other_addresses.end - (index + 1) * contract::PAGE_SIZE) as u64;
                         let start = (addresses.end - (index + 1) * contract::PAGE_SIZE) as u64;
-                        copied_as(#[trigger] copied@[index], other_table.pages@, page, before, from, start)
+                        copied_as(#[trigger] copied@[index], other_table.pages@, page, token, before, start)
                     },
                     other_addresses.start == other_start,
                     other_addresses.end == other_start + (addresses.end - addresses.start),
@@ -849,7 +871,7 @@ impl MemorySpace for SimulatedMemory {
                 let ghost start = (addresses.start + (end - other_start)) as u64;
                 #[allow(clippy::manual_map, reason = "Verus would need a specification for the closure `map` takes")]
                 let page = match other_table.pages.get(&end) {
-                    Some(found) => Some(copy_page(found, Ghost(fresh(before, from, start)))),
+                    Some(found) => Some(copy_page(found, Ghost(new_name(token, before, start)))),
                     None => None,
                 };
                 copied.push(page);
@@ -871,17 +893,19 @@ impl MemorySpace for SimulatedMemory {
                 other_addresses.end == other_start + (addresses.end - addresses.start),
                 forall|index: int| 0 <= index < copied@.len() ==> {
                     let start = (addresses.end - (index + 1) * contract::PAGE_SIZE) as u64;
-                    copied_into(#[trigger] copied@[index], before, from, addresses, other_start, start)
+                    copied_into(#[trigger] copied@[index], token, before, from, addresses, other_start, start)
                 },
                 btree_map_inv(&table.pages),
                 table.model@.id() == self.pages.token(),
                 table.model@@ == before,
+                table.made@ == before.made,
+                token == space.id(),
                 forall|key: u64| #[trigger] table.pages@.contains_key(key) ==> {
                     &&& table.pages@[key].wf()
                     &&& table.pages@[key].mapped ==> contract::starts_page(key)
                 },
                 forall|page: u64| #[trigger] table.space().page(page) == if contract::page_among(page, addresses) && page < start {
-                    copy_target(before, from, addresses, other_start, page)
+                    copy_target(token, before, from, addresses, other_start, page)
                 } else {
                     before.page(page)
                 },
@@ -889,10 +913,11 @@ impl MemorySpace for SimulatedMemory {
         {
             let ghost pages_before = table.pages@;
             let ghost unmade = table.unmade@;
+            let ghost made = table.made@;
             let ghost space_before = table.space();
             proof {
                 assert(addresses.end - copied@.len() * contract::PAGE_SIZE == start);
-                assert(forall|page: u64| #[trigger] space_before.page(page) == space_of(pages_before, unmade).page(page));
+                assert(forall|page: u64| #[trigger] space_before.page(page) == space_of(pages_before, unmade, made).page(page));
             }
             let page = copied.pop().unwrap();
             match page {
@@ -900,39 +925,41 @@ impl MemorySpace for SimulatedMemory {
                     let ghost entry = page;
                     table.pages.insert(start, page);
                     proof {
-                        lemma_put(pages_before, unmade, start, entry);
-                        assert(entry@ == copy_target(before, from, addresses, other_start, start));
-                        assert(table.space().page(start) == copy_target(before, from, addresses, other_start, start));
+                        lemma_put(pages_before, unmade, made, start, entry);
+                        assert(entry@ == copy_target(token, before, from, addresses, other_start, start));
+                        assert(table.space().page(start) == copy_target(token, before, from, addresses, other_start, start));
                     }
                 },
                 None => {
                     table.pages.remove(&start);
-                    table.unmade = Ghost(renamed(unmade, start, fresh(before, from, start)));
+                    table.unmade = Ghost(renamed(unmade, start, new_name(token, before, start)));
                     proof {
-                        lemma_take(pages_before, unmade, start, fresh(before, from, start));
-                        assert(table.space().page(start) == copy_target(before, from, addresses, other_start, start));
+                        lemma_take(pages_before, unmade, made, start, new_name(token, before, start));
+                        assert(table.space().page(start) == copy_target(token, before, from, addresses, other_start, start));
                     }
                 },
             };
             proof {
                 lemma_next(addresses, start);
                 assert(forall|page: u64| #[trigger] table.space().page(page) == if page == start {
-                    copy_target(before, from, addresses, other_start, start)
+                    copy_target(token, before, from, addresses, other_start, start)
                 } else {
-                    space_of(pages_before, unmade).page(page)
+                    space_of(pages_before, unmade, made).page(page)
                 });
                 assert(forall|page: u64| page != start ==> #[trigger] space_before.page(page) == if contract::page_among(page, addresses) && page < start {
-                    copy_target(before, from, addresses, other_start, page)
+                    copy_target(token, before, from, addresses, other_start, page)
                 } else {
                     before.page(page)
                 });
             }
             start += contract::PAGE_SIZE;
         }
+        let ghost copied_pages = table.space();
+        table.made = Ghost(made_after(before));
         proof {
             let after = table.space();
-            fresh_names(before, from);
-            assert(contract::copied(before, after, from, addresses, other_start));
+            assert(forall|page: u64| #[trigger] after.page(page) == copied_pages.page(page));
+            assert(contract::copied(before, after, from, addresses, other_start, token));
             table.model.borrow_mut().update(space, after);
         }
         held.release(table);
@@ -942,41 +969,63 @@ impl MemorySpace for SimulatedMemory {
 }
 
 /// The page a copy gives the page at the start: its source's frame if that was mapped, else a new one.
-spec fn copy_target(before: contract::Space, from: contract::Space, addresses: Range<u64>, other_start: u64, start: u64) -> contract::Page {
+spec fn copy_target(
+    token: Loc,
+    before: contract::Space,
+    from: contract::Space,
+    addresses: Range<u64>,
+    other_start: u64,
+    start: u64,
+) -> contract::Page {
     let source = from.page(contract::source(start, addresses, other_start));
     if source.mapped {
         source
     } else {
-        contract::Page { frame: fresh(before, from, start), ..source }
+        contract::Page { frame: new_name(token, before, start), ..source }
     }
 }
 
 /// Whether the copied entry is the copy of the other table's entry for the page, for the page at the start.
-spec fn copied_as(copied: Option<Page>, other_pages: Map<u64, Page>, page: u64, before: contract::Space, from: contract::Space, start: u64) -> bool {
+spec fn copied_as(
+    copied: Option<Page>,
+    other_pages: Map<u64, Page>,
+    page: u64,
+    token: Loc,
+    before: contract::Space,
+    start: u64,
+) -> bool {
     match copied {
         Some(copy) => other_pages.contains_key(page) && copy.wf() && copy@ == if other_pages[page].mapped {
             other_pages[page]@
         } else {
-            contract::Page { frame: fresh(before, from, start), ..other_pages[page]@ }
+            contract::Page { frame: new_name(token, before, start), ..other_pages[page]@ }
         },
         None => !other_pages.contains_key(page),
     }
 }
 
 /// Whether the copied entry, put at the start, gives the page its copy target.
-spec fn copied_into(copied: Option<Page>, before: contract::Space, from: contract::Space, addresses: Range<u64>, other_start: u64, start: u64) -> bool {
+spec fn copied_into(
+    copied: Option<Page>,
+    token: Loc,
+    before: contract::Space,
+    from: contract::Space,
+    addresses: Range<u64>,
+    other_start: u64,
+    start: u64,
+) -> bool {
     match copied {
         Some(copy) => copy.wf() && (copy.mapped ==> contract::starts_page(start))
-            && copy@ == copy_target(before, from, addresses, other_start, start),
+            && copy@ == copy_target(token, before, from, addresses, other_start, start),
         None => {
-            let target = copy_target(before, from, addresses, other_start, start);
-            &&& target == (contract::Page { frame: fresh(before, from, start), mapped: false, allowed: contract::nothing() })
+            let target = copy_target(token, before, from, addresses, other_start, start);
+            &&& target == (contract::Page { frame: new_name(token, before, start), mapped: false, allowed: contract::nothing() })
         },
     }
 }
 
 /// Returns the page as a copy carries it: a mapped frame shared, an owned one copied under the given name.
-fn copy_page(page: &Page, Ghost(name): Ghost<int>) -> (copy: Page)
+fn copy_page(page: &Page, Ghost(name): Ghost<contract::FrameName>) -> (copy: Page)
     requires
         page.wf(),
     ensures
@@ -1007,6 +1056,49 @@ fn keys_among(pages: &BTreeMap<u64, Page>, addresses: &Range<u64>) -> (keys: Vec
         forall|key: u64| #[trigger] keys@.contains(key) <==> pages@.contains_key(key) && addresses.start <= key < addresses.end,
 {
     pages.range(addresses.clone()).map(|(&key, _)| key).collect()
+}
+
+/// The ARM64 permission types are plain values.
+#[verifier::external_type_specification]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
+pub struct ExPagePermission(PagePermission);
+
+#[verifier::external_type_specification]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
+pub struct ExDataAccess(DataAccess);
+
+#[verifier::external_type_specification]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
+pub struct ExInstructionFetch(InstructionFetch);
+
+/// Returns what the page allows as ARM64 sees it; a page that allows nothing is held unmapped.
+fn to_page_permission(permissions: Permissions) -> (page: Option<PagePermission>)
+    ensures
+        page is None <==> permissions == contract::nothing(),
+        !(page matches Some(PagePermission::Unmapped)),
+        page matches Some(PagePermission::Mapped { data_access, instruction_fetch }) ==> {
+            &&& (instruction_fetch == InstructionFetch::Allowed) == contract::executes(permissions)
+            &&& (data_access == DataAccess::ReadWrite) == contract::writes(permissions)
+            &&& (data_access == DataAccess::ReadOnly) == (contract::reads(permissions) && !contract::writes(permissions))
+        },
+{
+    if contract::allows_nothing(permissions) {
+        return None;
+    }
+    // ARM64 has no page that can be written and not read; Linux gives such a page read and write.
+    let data_access = if contract::allows_writing(permissions) {
+        DataAccess::ReadWrite
+    } else if contract::allows_reading(permissions) {
+        DataAccess::ReadOnly
+    } else {
+        DataAccess::Forbidden
+    };
+    let instruction_fetch = if contract::allows_executing(permissions) {
+        InstructionFetch::Allowed
+    } else {
+        InstructionFetch::Forbidden
+    };
+    Some(PagePermission::Mapped { data_access, instruction_fetch })
 }
 
 } // verus!
@@ -1094,7 +1186,8 @@ impl SimulatedMemory {
 
     /// Returns the copy of every page, current at the count of changes given (read before the pages are).
     fn take_copy(&self, changes: Option<u64>) -> SpaceCopy {
-        let table = self.lock_pages();
+        let guard = self.lock_pages();
+        let table = guard.as_ref().expect(LOST);
         let mut copy = SpaceCopy {
             changes,
             ..SpaceCopy::default()
@@ -1118,7 +1211,7 @@ impl SimulatedMemory {
     }
 
     /// Takes the lock to read the pages: only verified code changes them.
-    fn lock_pages(&self) -> MutexGuard<'_, Table> {
+    fn lock_pages(&self) -> MutexGuard<'_, Option<Table>> {
         self.pages
             .mutex
             .lock()
@@ -1127,6 +1220,8 @@ impl SimulatedMemory {
 
     fn find_frame(&self, page: u64) -> Option<Frame> {
         self.lock_pages()
+            .as_ref()
+            .expect(LOST)
             .pages
             .get(&page)
             .and_then(|found| found.frame.as_ref().map(Frame::share))
@@ -1214,30 +1309,6 @@ fn split_at_pages(start: u64, length: usize) -> Vec<(u64, Range<usize>, Range<us
 /// Returns the length as a count of host bytes, at most the most the host can count.
 fn to_count(length: u64) -> usize {
     usize::try_from(length).unwrap_or(usize::MAX)
-}
-
-/// Returns what the page allows as ARM64 sees it; a page that allows nothing is held unmapped.
-fn to_page_permission(permissions: Permissions) -> Option<PagePermission> {
-    if permissions.is_empty() {
-        return None;
-    }
-    // ARM64 has no page that can be written and not read; Linux gives such a page read and write.
-    let data_access = if permissions.contains(Permissions::WRITE) {
-        DataAccess::ReadWrite
-    } else if permissions.contains(Permissions::READ) {
-        DataAccess::ReadOnly
-    } else {
-        DataAccess::Forbidden
-    };
-    let instruction_fetch = if permissions.contains(Permissions::EXECUTE) {
-        InstructionFetch::Allowed
-    } else {
-        InstructionFetch::Forbidden
-    };
-    Some(PagePermission::Mapped {
-        data_access,
-        instruction_fetch,
-    })
 }
 
 fn to_permissions(permission: PagePermission) -> Permissions {
