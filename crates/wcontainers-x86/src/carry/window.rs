@@ -1,29 +1,29 @@
 //! The in-process way's forms of a guest access (docs/x86-native-output.md section 4): each on GS, the window's
 //! base, at a 32-bit address, so that no access, run or only speculated, leaves the window; the exact form first
 //! probes the address the access reaches without writing a flag, so that one at or above 2^32 is the guest's fault.
+//! rsp holds B plus the guest's rsp, so the stack's own accesses run as the guest wrote them.
 
 use iced_x86::{
     Code, Instruction as Iced, InstructionInfoFactory, MemoryOperand, Mnemonic, OpAccess, OpKind,
     Register,
 };
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::HostCode;
-use wcontainers_guest_cpu::position::{Fixup, Held, Resume};
+use wcontainers_guest_cpu::position::{Held, Resume};
 
-use super::{
-    AREA_WORD, T, T_LOW, T_NUMBER, U, U_LOW, WITHHELD, bytes_of, full, load_area, put, sized,
-    store_area, withheld_slot,
-};
+use super::{AREA_WORD, T, T_LOW, U, U_LOW, bytes_of, full, load_area, put, sized, store_area};
 use crate::area::{
     GUEST_FS_BASE, GUEST_GS_BASE, KEPT_T, PROBE_PAGE, STAND_IN_VALUES, WINDOW, WINDOW_NEGATED,
 };
 use crate::native::{Check, Way};
 use crate::operand::{R8, RAX, RBP, RBX, RDI, RSI, RSP, W16, W32, W64, general};
 
-/// t's and u's low 16 bits, for a 16-bit push or pop.
+/// t's low 16 bits, for a 16-bit `leave`.
 const T_WORD: Register = Register::R11W;
-const U_WORD: Register = Register::R15W;
 /// The bytes of a displacement that make an operand without registers a 32-bit address (iced's convention).
 const DISPLACEMENT32: u32 = size_of::<u32>() as u32;
+/// How far below rsp an operand made as the guest wrote it may start: the guard page under the window.
+const STACK_REACH_BELOW: i64 = PAGE_SIZE as i64;
 
 /// Whether host instruction `i` reads or writes memory (forming an address alone, as `lea` does, is not).
 pub(super) fn reaches_memory(i: &Iced) -> bool {
@@ -35,21 +35,17 @@ pub(super) fn reaches_memory(i: &Iced) -> bool {
 }
 
 /// Writes host instruction `i`, which reaches guest memory, in the window's form `check`, with `resume` its commit
-/// point; `probed`: a push whose stack the exact form has probed already ([`probe_stack`]).
-pub(super) fn access(
-    check: Check,
-    code: &mut HostCode,
-    i: &Iced,
-    resume: Option<Resume>,
-    probed: bool,
-) {
+/// point.
+pub(super) fn access(check: Check, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     use Mnemonic::*;
     let form = Form {
         exact: check == Check::Exact,
         way: Way::InProcess(check),
     };
     match i.mnemonic() {
-        Push => push(form, code, i, resume, probed),
+        // The stack's side as written; an operand in memory in the window's form.
+        Push | Pop if i.op0_kind() != OpKind::Memory => finish(code, i, resume),
+        Push => explicit(form, code, i, resume),
         Pop => pop(form, code, i, resume),
         Leave => leave(form, code, i, resume),
         Xlatb | Maskmovq | Maskmovdqu | Vmaskmovdqu => implicit(form, code, i, resume),
@@ -59,6 +55,61 @@ pub(super) fn access(
         _ if is_string(i) => string(form, code, i, resume),
         _ => explicit(form, code, i, resume),
     }
+}
+
+/// Whether `i`'s operand is rsp and a displacement no lower than the guard page under the window: with rsp at B plus
+/// a guest rsp within [0, 2^32 + 2^16 + 8], it reaches only the window and our reservation without access around it,
+/// so it is made as the guest wrote it (the operand alone: never a bit test's register offset).
+fn on_stack_as_written(i: &Iced) -> bool {
+    i.memory_base() == Register::RSP
+        && i.memory_index() == Register::None
+        && i.memory_displacement64() as i64 >= -STACK_REACH_BELOW
+        && guest_segment(i).is_none()
+        && !(matches!(
+            i.mnemonic(),
+            Mnemonic::Bt | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc
+        ) && i.op1_kind() == OpKind::Register)
+}
+
+/// The guest's rsp into `s`: rsp less the window's base.
+pub(super) fn guest_stack_into(way: Way, code: &mut HostCode, s: Register) {
+    put(code, &load_area(way, s, WINDOW_NEGATED));
+    put(
+        code,
+        &Iced::with2(
+            Code::Lea_r64_m,
+            s,
+            MemoryOperand::with_base_index(full(RSP), s),
+        )
+        .expect("the guest's rsp"),
+    );
+}
+
+/// rsp made B plus the guest rsp written in `s`, which the map holds meanwhile: in the exact form a value at or above
+/// 2^32 faults at the probe, the instruction done (section 5); in both it is cut to 32 bits, so that rsp stays in the
+/// window even where that probe's fault is only speculated.
+pub(super) fn guest_stack_from(check: Check, code: &mut HostCode, s: Register) {
+    let number = general(s).expect("a general register").number;
+    code.relocate(RSP, Held::Register(number));
+    if check == Check::Exact {
+        probe(code, s);
+    }
+    let low = sized(number, W32);
+    put(
+        code,
+        &Iced::with2(Code::Mov_r32_rm32, low, low).expect("the rsp cut"),
+    );
+    put(code, &load_area(Way::InProcess(check), U, WINDOW));
+    put(
+        code,
+        &Iced::with2(
+            Code::Lea_r64_m,
+            full(RSP),
+            MemoryOperand::with_base_index(s, U),
+        )
+        .expect("rsp in the window"),
+    );
+    code.home(RSP);
 }
 
 #[derive(Clone, Copy)]
@@ -161,23 +212,6 @@ fn on(i: &Iced, base: Register) -> Iced {
     out
 }
 
-/// The exact form's probe of the `bytes` below rsp a push stores, made before it where u is needed in between (a
-/// call through a register or memory, whose lookup's first level is read before the push).
-pub(super) fn probe_stack(check: Check, code: &mut HostCode, bytes: i64) {
-    if check == Check::Exact {
-        put(
-            code,
-            &Iced::with2(
-                Code::Lea_r64_m,
-                U,
-                MemoryOperand::with_base_displ(full(RSP), -bytes),
-            )
-            .expect("the push's address"),
-        );
-        probe(code, U);
-    }
-}
-
 /// The flag-free probe of the address in `x` (section 4): u reads the page of zeros at B - 2 pages when bits 32 to 63
 /// of the address are clear, else a place 8 to 2^35 bytes below it where nothing is mapped, so the guest faults.
 /// `x` may be u.
@@ -252,7 +286,7 @@ fn guest_segment(i: &Iced) -> Option<usize> {
 
 /// Writes t as the operand's offset part (base + index * scale + displacement), wrapped to 32 bits under the
 /// guest's 0x67, unless t is that already.
-fn offset_into_t(code: &mut HostCode, i: &Iced) {
+fn offset_into_t(way: Way, code: &mut HostCode, i: &Iced) {
     let (base, index) = (i.memory_base(), i.memory_index());
     let displacement = i.memory_displacement64();
     let wrapped = address32(i);
@@ -294,13 +328,22 @@ fn offset_into_t(code: &mut HostCode, i: &Iced) {
         Iced::with2(Code::Lea_r64_m, T, operand)
     };
     put(code, &lea.expect("the offset"));
+    // rsp is B more than the guest's (in 32 bits, B's low half is zero).
+    if base == Register::RSP {
+        put(code, &load_area(way, U, WINDOW_NEGATED));
+        put(
+            code,
+            &Iced::with2(Code::Lea_r64_m, T, MemoryOperand::with_base_index(T, U))
+                .expect("the guest's offset"),
+        );
+    }
 }
 
 /// Writes what forms the address the access reaches where it is not one register already, and gives that register
 /// with the access made on it: the guest's segment base added to the offset part, as the meaning adds it.
 fn operand_address(form: Form, code: &mut HostCode, i: &Iced) -> (Register, Iced) {
     if let Some(word) = guest_segment(i) {
-        offset_into_t(code, i);
+        offset_into_t(form.way, code, i);
         put(code, &load_area(form.way, U, word));
         put(
             code,
@@ -311,10 +354,10 @@ fn operand_address(form: Form, code: &mut HostCode, i: &Iced) -> (Register, Iced
     }
     let base = i.memory_base();
     let alone = i.memory_index() == Register::None && i.memory_displacement64() == 0;
-    if alone && general(base).is_some_and(|g| g.width == W64) {
+    if alone && general(base).is_some_and(|g| g.width == W64 && g.number != RSP) {
         return (base, cut(i));
     }
-    offset_into_t(code, i);
+    offset_into_t(form.way, code, i);
     (T, on(i, T))
 }
 
@@ -325,6 +368,9 @@ fn explicit(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
         "an access of a shape the window has no form for: {:?}",
         i.code()
     );
+    if on_stack_as_written(i) {
+        return finish(code, i, resume);
+    }
     let segment = guest_segment(i).is_some();
     // Under the guest's 0x67 the address is below 2^32 and the CPU wraps each part as the meaning does.
     if !segment && (!form.exact || address32(i)) {
@@ -366,205 +412,30 @@ fn explicit(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     code.home(legacy);
 }
 
-/// The operand of `i` given to an instruction `with` built on a placeholder operand.
-fn with_operand_of(mut with: Iced, i: &Iced) -> Iced {
-    with.set_memory_base(i.memory_base());
-    with.set_memory_index(i.memory_index());
-    with.set_memory_index_scale(i.memory_index_scale());
-    with.set_memory_displacement64(i.memory_displacement64());
-    with.set_memory_displ_size(i.memory_displ_size());
-    with.set_segment_prefix(i.segment_prefix());
-    with
-}
-
-/// The stack's top at `displacement` from rsp, on GS at esp.
-fn stack(displacement: i64) -> MemoryOperand {
-    MemoryOperand::new(
-        Register::ESP,
-        Register::None,
-        1,
-        displacement,
-        u32::from(displacement != 0),
-        false,
-        Register::GS,
-    )
-}
-
-/// `lea r, [base + displacement]`, the stack pointer's move, the commit point where `resume` is given.
-fn move_stack(code: &mut HostCode, base: u8, by: i64, resume: Option<Resume>) {
-    let lea = Iced::with2(
-        Code::Lea_r64_m,
-        full(RSP),
-        MemoryOperand::with_base_displ(full(base), by),
-    )
-    .expect("the stack pointer's move");
-    finish(code, &lea, resume);
-}
-
-/// A push: the store below the guest's rsp, its commit point, then rsp moved, which a stop there makes as a fix-up.
-fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>, probed: bool) {
-    let bytes = -i64::from(i.stack_pointer_increment());
-    let word = bytes == i64::from(W64 / 8);
-    let (load, into) = if word {
-        (Code::Mov_r64_rm64, T)
-    } else {
-        (Code::Mov_r16_rm16, T_WORD)
-    };
-    let store = match i.op0_kind() {
-        OpKind::Register | OpKind::Memory => {
-            let source = if i.op0_kind() == OpKind::Memory {
-                let placeholder = MemoryOperand::with_base(full(RAX));
-                let read = Iced::with2(load, into, placeholder).expect("the pushed value's load");
-                explicit(form, code, &with_operand_of(read, i), None);
-                into
-            } else {
-                i.op0_register()
-            };
-            let code_of = if word {
-                Code::Mov_rm64_r64
-            } else {
-                Code::Mov_rm16_r16
-            };
-            Iced::with2(code_of, stack(-bytes), source)
-        }
-        // iced gives the immediate sign-extended to the operand size.
-        _ if word => Iced::with2(Code::Mov_rm64_imm32, stack(-bytes), i.immediate(0) as i32),
-        _ => Iced::with2(
-            Code::Mov_rm16_imm16,
-            stack(-bytes),
-            u32::from(i.immediate(0) as u16),
-        ),
-    }
-    .expect("the push's store");
-    if !probed {
-        probe_stack(check_of(form), code, bytes);
-    }
-    finish(code, &store, resume);
-    move_stack_after(code, -bytes);
-}
-
-/// rsp moved by `by` bytes after a store that is its instruction's commit point, which a stop between them makes as a
-/// fix-up.
-fn move_stack_after(code: &mut HostCode, by: i64) {
-    code.fixup(Fixup::Offset {
-        register: RSP,
-        by: i32::try_from(by).expect("a stack access's size"),
-    });
-    let lea = Iced::with2(
-        Code::Lea_r64_m,
-        full(RSP),
-        MemoryOperand::with_base_displ(full(RSP), by),
-    )
-    .expect("the stack pointer's move");
-    put(code, &lea);
-    code.fixed();
-}
-
-fn check_of(form: Form) -> Check {
-    if form.exact {
-        Check::Exact
-    } else {
-        Check::Wrapping
-    }
-}
-
-/// A pop: the load into t, then rsp moved, its commit point, after which t holds the popped register; a pop to memory
-/// commits at its store, rsp's move then a fix-up.
+/// A pop to memory: the stack's side as written, the destination in the window's form; the CPU forms an rsp-based
+/// destination after rsp moves, which the exact form's probe follows.
 fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
-    let bytes = i64::from(i.stack_pointer_increment());
-    let word = bytes == i64::from(W64 / 8);
+    if on_stack_as_written(i) {
+        return finish(code, i, resume);
+    }
+    if guest_segment(i).is_none() && (!form.exact || address32(i)) {
+        return finish(code, &cut(i), resume);
+    }
+    let mut formed = *i;
+    if general(i.memory_base()).is_some_and(|g| g.number == RSP && g.width == W64) {
+        let bytes = u64::from(i.stack_pointer_increment().unsigned_abs());
+        formed.set_memory_displacement64(i.memory_displacement64().wrapping_add(bytes));
+        formed.set_memory_displ_size(AREA_WORD as u32);
+    }
+    let (x, at) = operand_address(form, code, &formed);
     if form.exact {
-        probe(code, full(RSP));
+        probe(code, x);
     }
-    let into = if word { T } else { T_WORD };
-    let load = if word {
-        Code::Mov_r64_rm64
-    } else {
-        Code::Mov_r16_rm16
-    };
-    match i.op0_kind() {
-        OpKind::Register => {
-            let number = general(i.op0_register())
-                .expect("a general register")
-                .number;
-            let withheld = WITHHELD.contains(&number);
-            if !word {
-                let rest = if withheld {
-                    load_area(form.way, T, withheld_slot(number))
-                } else {
-                    Iced::with2(Code::Mov_r64_rm64, T, full(number))
-                        .expect("the rest of the register")
-                };
-                put(code, &rest);
-            }
-            finish(
-                code,
-                &Iced::with2(load, into, stack(0)).expect("the pop's load"),
-                None,
-            );
-            move_stack(code, RSP, bytes, resume);
-            code.relocate(number, Held::Register(T_NUMBER));
-            let written = if withheld {
-                store_area(form.way, withheld_slot(number), T)
-            } else {
-                Iced::with2(Code::Mov_r64_rm64, full(number), T).expect("the popped register")
-            };
-            put(code, &written);
-            code.home(number);
-        }
-        _ => {
-            // A RIP-relative destination's address is in t already: the value goes to u.
-            let names_t = [i.memory_base(), i.memory_index()]
-                .iter()
-                .any(|r| r.full_register() == T);
-            let into = match (names_t, word) {
-                (false, _) => into,
-                (true, true) => U,
-                (true, false) => U_WORD,
-            };
-            finish(
-                code,
-                &Iced::with2(load, into, stack(0)).expect("the pop's load"),
-                None,
-            );
-            let placeholder = MemoryOperand::with_base(full(RAX));
-            let store = |from: Register| {
-                let code_of = if word {
-                    Code::Mov_rm64_r64
-                } else {
-                    Code::Mov_rm16_r16
-                };
-                let mut store = with_operand_of(
-                    Iced::with2(code_of, placeholder, from).expect("the popped value's store"),
-                    i,
-                );
-                // The CPU forms an rsp-based destination after rsp moves.
-                if general(i.memory_base()).is_some_and(|g| g.number == RSP) {
-                    store.set_memory_displacement64(
-                        store.memory_displacement64().wrapping_add(bytes as u64),
-                    );
-                    store.set_memory_displ_size(AREA_WORD as u32);
-                }
-                store
-            };
-            if guest_segment(i).is_none() && (!form.exact || address32(i)) {
-                finish(code, &cut(&store(into)), resume);
-            } else {
-                // The destination's address takes t and its probe u: the value waits in the area meanwhile.
-                put(code, &store_area(form.way, KEPT_T, full_of(into)));
-                let (x, at) = operand_address(form, code, &store(if word { U } else { U_WORD }));
-                if form.exact {
-                    probe(code, x);
-                }
-                put(code, &load_area(form.way, U, KEPT_T));
-                finish(code, &at, resume);
-            }
-            move_stack_after(code, bytes);
-        }
-    }
+    finish(code, &at, resume);
 }
 
-/// `leave`: rbp's load into t, then rsp moved past it, the commit point, after which t holds rbp.
+/// `leave`: rbp's load into t from the window, then rbp written, the commit point, after which u holds the guest's
+/// rsp, rbp's low half and the bytes popped, until rsp is B more.
 fn leave(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     let word = i.code() == Code::Leaveq;
     let bytes = i64::from(if word { W64 } else { W16 } / 8);
@@ -582,13 +453,32 @@ fn leave(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
         Iced::with2(Code::Mov_r16_rm16, T_WORD, frame)
     };
     finish(code, &load.expect("the frame's load"), None);
-    move_stack(code, RBP, bytes, resume);
-    code.relocate(RBP, Held::Register(T_NUMBER));
     put(
         code,
-        &Iced::with2(Code::Mov_r64_rm64, full(RBP), T).expect("rbp"),
+        &Iced::with2(Code::Mov_r32_rm32, U_LOW, Register::EBP).expect("rbp cut"),
     );
-    code.home(RBP);
+    put(
+        code,
+        &Iced::with2(Code::Lea_r64_m, U, MemoryOperand::with_base_displ(U, bytes))
+            .expect("the guest's rsp"),
+    );
+    finish(
+        code,
+        &Iced::with2(Code::Mov_r64_rm64, full(RBP), T).expect("rbp"),
+        resume,
+    );
+    code.relocate(RSP, Held::Register(super::U_NUMBER));
+    put(code, &load_area(form.way, T, WINDOW));
+    put(
+        code,
+        &Iced::with2(
+            Code::Lea_r64_m,
+            full(RSP),
+            MemoryOperand::with_base_index(U, T),
+        )
+        .expect("rsp in the window"),
+    );
+    code.home(RSP);
 }
 
 /// `xlat` at rbx + al, and the masked stores at rdi, which no override of ours can move off their implicit
@@ -640,7 +530,7 @@ fn bit_test(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     // Under the guest's 0x67 on a segment, A is the segment's base plus the wrapped sum of the operand's offset and
     // the bit's words (x86/meaning.rs `bit_test`): the base is added after.
     let (x, at) = if wrapped {
-        offset_into_t(code, i);
+        offset_into_t(form.way, code, i);
         (T, on(i, T))
     } else {
         operand_address(form, code, i)
@@ -771,9 +661,4 @@ fn string(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
         rebase(code, WINDOW_NEGATED);
         code.home(RDI);
     }
-}
-
-/// The 64-bit register of a general register.
-fn full_of(r: Register) -> Register {
-    general(r).map_or(r, |g| full(g.number))
 }

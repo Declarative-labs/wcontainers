@@ -1,13 +1,15 @@
 //! The in-process way's two forms of a guest access read back through iced's decoder (docs/x86-native-output.md
-//! sections 4 and 7): every access the output makes to guest memory is on GS at a 32-bit address, so that none, run
-//! or only speculated, leaves the window; the exact form probes the address an access reaches before it.
+//! sections 4 and 7): every access the output makes to guest memory is on GS at a 32-bit address, or on rsp, which
+//! holds B plus the guest's rsp and is written only in the window's form, so that none, run or only speculated, leaves
+//! the window; the exact form probes the address an access reaches before it.
 
 use iced_x86::{
     Code, Decoder, DecoderOptions, Formatter, Instruction as Iced, InstructionInfoFactory,
     IntelFormatter, Mnemonic, OpAccess, OpKind, Register,
 };
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::HostCode;
-use wcontainers_guest_cpu::position::{Fixup, Held, Side};
+use wcontainers_guest_cpu::position::{Held, Side};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::{PROBE_PAGE, WINDOW};
 use wcontainers_x86::carry::{T, U};
@@ -92,6 +94,16 @@ struct Starts {
     rdi_cut: bool,
     rdi_rebased: bool,
     t_window: bool,
+    /// By register number: holding the window's base B, and holding a value below 2^32 plus a ret's pop.
+    window: [bool; 16],
+    small: [bool; 16],
+}
+
+/// The most a host `lea rsp, [rsp + d]` (a guest return's pop) or the cut guest rsp's `lea` may add.
+const POPPED: i64 = u16::MAX as i64 + 1 + 8;
+
+fn number(r: Register) -> Option<usize> {
+    r.is_gpr().then(|| r.full_register().number())
 }
 
 impl Starts {
@@ -140,8 +152,66 @@ impl Starts {
             self.rdi_cut = true;
         }
         self.t_window = window || self.t_window && !t;
+        let destination = (i.op0_kind() == OpKind::Register)
+            .then(|| i.op0_register())
+            .filter(|&r| number(r).is_some());
+        for u in &used {
+            let Some(n) = number(u.register()) else {
+                continue;
+            };
+            if matches!(
+                u.access(),
+                OpAccess::Read | OpAccess::CondRead | OpAccess::NoMemAccess
+            ) {
+                continue;
+            }
+            let own =
+                destination.is_some_and(|d| d.full_register() == u.register().full_register());
+            self.window[n] = own
+                && i.code() == Code::Mov_r64_rm64
+                && i.op1_kind() == OpKind::Memory
+                && i.memory_segment() == Register::FS
+                && i.memory_base() == Register::None
+                && i.memory_displacement64() == WINDOW as u64;
+            self.small[n] = own
+                && (destination.is_some_and(|d| d.is_gpr32())
+                    || i.code() == Code::Lea_r64_m
+                        && i.memory_index() == Register::None
+                        && number(i.memory_base()).is_some_and(|b| self.small[b])
+                        && (0..=POPPED).contains(&(i.memory_displacement64() as i64)));
+        }
         self
     }
+}
+
+/// What is wrong with a host write of rsp, if anything: rsp keeps B plus a guest rsp of at most 2^32 plus a return's
+/// pop by the stack's own instructions, a return's `lea rsp, [rsp + d]`, or `lea rsp, [x + y]` of B and a cut value.
+fn rsp_outside(i: &Iced, starts: Starts) -> Option<&'static str> {
+    let mut info = InstructionInfoFactory::new();
+    let writes = info
+        .info(i)
+        .used_registers()
+        .iter()
+        .any(|u| u.register().full_register() == Register::RSP && u.access() != OpAccess::Read);
+    if !writes || matches!(i.mnemonic(), Mnemonic::Push | Mnemonic::Pop) {
+        return None;
+    }
+    let lea = i.code() == Code::Lea_r64_m && i.op0_register() == Register::RSP;
+    let returned = lea
+        && i.memory_base() == Register::RSP
+        && i.memory_index() == Register::None
+        && (0..=POPPED).contains(&(i.memory_displacement64() as i64));
+    let (base, index) = (number(i.memory_base()), number(i.memory_index()));
+    let made = lea
+        && i.memory_displacement64() == 0
+        && i.memory_index_scale() == 1
+        && match (base, index) {
+            (Some(b), Some(x)) => {
+                starts.window[b] && starts.small[x] || starts.window[x] && starts.small[b]
+            }
+            _ => false,
+        };
+    (!(returned || made)).then_some("rsp written outside the window's rule")
 }
 
 /// What is wrong with a string's accesses, if anything: its rsi side on GS at an rsi cut to 32 bits, its rdi side at
@@ -184,6 +254,22 @@ fn outside(i: &Iced, starts: Starts) -> Option<&'static str> {
     }
     if string(i) {
         return string_outside(i, starts);
+    }
+    let explicit = (0..i.op_count()).any(|n| i.op_kind(n) == OpKind::Memory);
+    if matches!(i.mnemonic(), Mnemonic::Push | Mnemonic::Pop) && !explicit {
+        return None;
+    }
+    // On rsp as written, at most the guard page below it.
+    let on_stack = i.memory_base() == Register::RSP
+        && i.memory_index() == Register::None
+        && !matches!(i.memory_segment(), Register::FS | Register::GS)
+        && i.memory_displacement64() as i64 >= -(PAGE_SIZE as i64)
+        && !(matches!(
+            i.mnemonic(),
+            Mnemonic::Bt | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc
+        ) && i.op1_kind() == OpKind::Register);
+    if explicit && on_stack {
+        return None;
     }
     let memory = (0..i.op_count()).find(|&n| {
         matches!(
@@ -296,7 +382,7 @@ fn every_guest_access_is_cut_to_the_window() {
                 let mut starts = Starts::default();
                 for (at, i) in host(&piece.bytes) {
                     strings += u64::from(string(&i));
-                    if let Some(what) = outside(&i, starts) {
+                    if let Some(what) = outside(&i, starts).or_else(|| rsp_outside(&i, starts)) {
                         panic!(
                             "case {case} of seed {seed:#x} ({way:?}, counted {counted}): {what} at {at}\nguest \
                              {guest:02x?}\n{}",
@@ -380,42 +466,105 @@ fn a_plain_operand_is_cut_and_probed() {
 }
 
 #[test]
-fn a_stack_access_is_explicit_and_rsp_moves_last() {
+fn the_stack_runs_as_written() {
     use Mnemonic::*;
-    // push rax; pop rbx; ret
-    let hex = "50 5b c3";
-    let wrapping = shape(hex, WRAPPING);
-    assert_eq!(wrapping[..5], [Mov, Lea, Mov, Lea, Mov]);
+    // push rax; pop rbx; push qword [rsp+8]; mov rax, [rsp-8]; ret: as the guest wrote them in both forms.
+    let hex = "50 5b ff 74 24 08 48 8b 44 24 f8 c3";
+    for way in WAYS {
+        let made = decoded(hex, way);
+        assert_eq!(made[0].code(), Code::Push_r64);
+        assert_eq!(made[1].code(), Code::Pop_r64);
+        assert_eq!(
+            (made[2].code(), made[2].memory_base()),
+            (Code::Push_rm64, Register::RSP)
+        );
+        assert_eq!(
+            (made[3].code(), made[3].memory_base()),
+            (Code::Mov_r64_rm64, Register::RSP)
+        );
+        // The return's read of its target on rsp.
+        assert_eq!(
+            (made[4].op0_register(), made[4].memory_base()),
+            (T, Register::RSP)
+        );
+    }
+    // An index, or a displacement past the guard page below, is the window's form: on GS at esp in 32 bits.
+    let indexed = decoded("48 8b 04 cc c3", WRAPPING);
+    assert_eq!(
+        (indexed[0].memory_segment(), indexed[0].memory_base()),
+        (Register::GS, Register::ESP)
+    );
+    let far = decoded("48 8b 84 24 00 e0 ff ff c3", WRAPPING);
+    assert_eq!(far[0].memory_base(), Register::ESP);
+    // In the exact form the offset is formed less B, then probed.
+    let exact = shape("48 8b 04 cc c3", EXACT);
+    assert_eq!(exact[..3], [Lea, Mov, Lea]);
+    assert_eq!(exact[3..8], PROBE);
+}
+
+#[test]
+fn rsp_as_a_value_is_less_b_and_written_back_cut() {
+    use Mnemonic::*;
+    // mov rbp, rsp: rsp less B into t, then the instruction on t.
+    let read = decoded("48 89 e5 c3", WRAPPING);
+    assert_eq!(
+        read[0].memory_displacement64(),
+        wcontainers_x86::area::WINDOW_NEGATED as u64
+    );
+    assert_eq!(
+        (
+            read[1].code(),
+            read[1].memory_base(),
+            read[1].memory_index()
+        ),
+        (Code::Lea_r64_m, Register::RSP, T)
+    );
+    assert_eq!(
+        (read[2].op0_register(), read[2].op1_register()),
+        (Register::RBP, T)
+    );
+    // sub rsp, 16: on t, then t cut to 32 bits and rsp B more; the exact form probes t first.
+    let hex = "48 83 ec 10 c3";
+    assert_eq!(shape(hex, WRAPPING)[..6], [Mov, Lea, Sub, Mov, Mov, Lea]);
     let exact = shape(hex, EXACT);
-    assert_eq!(exact[0], Lea);
-    assert_eq!(exact[1..6], PROBE);
-    assert_eq!(exact[6..8], [Mov, Lea]);
-    assert_eq!(exact[8..13], PROBE);
-    // The pop's commit point is rsp's move, after which t holds rbx until it is written.
+    assert_eq!(exact[..3], [Mov, Lea, Sub]);
+    assert_eq!(exact[3..8], PROBE);
+    assert_eq!(exact[8..11], [Mov, Mov, Lea]);
+    // After the commit point the guest's rsp is t's.
     let piece = piece(&bytes(hex), WRAPPING, false).expect("a piece");
     let host = host(&piece.bytes);
-    // The push's is its store: a stop at rsp's move after it moves rsp as a fix-up.
-    let (moving, _) = host[1];
-    let span = piece.span(moving as u32).expect("a span");
-    assert_eq!(span.side, Side::After);
-    assert_eq!(
-        span.fixups,
-        [Fixup::Offset {
-            register: wcontainers_x86::RSP,
-            by: -8
-        }]
-    );
-    let (moved, _) = host[3];
-    assert_eq!(piece.span(moved as u32).expect("a span").side, Side::Before);
-    let (written, _) = host[4];
-    let span = piece.span(written as u32).expect("a span");
+    let (cut, _) = host[3];
+    let span = piece.span(cut as u32).expect("a span");
     assert_eq!(span.side, Side::After);
     assert!(
         span.relocated
             .iter()
-            .any(|r| r.guest == wcontainers_x86::RBX
+            .any(|r| r.guest == wcontainers_x86::RSP
                 && r.held == Held::Register(wcontainers_x86::R11)),
-        "rbx in t: {span:?}"
+        "rsp in t: {span:?}"
+    );
+    // leave: rbp's load, the guest's rsp in u from rbp's low half, rbp written (the commit), rsp B more.
+    let leave = decoded("c9 c3", WRAPPING);
+    assert_eq!(
+        (leave[0].memory_segment(), leave[0].memory_base()),
+        (Register::GS, Register::EBP)
+    );
+    assert_eq!(leave[1].code(), Code::Mov_r32_rm32);
+    assert_eq!(
+        (leave[4].op0_register(), leave[4].memory_displacement64()),
+        (T, WINDOW as u64)
+    );
+    assert_eq!(leave[5].op0_register(), Register::RSP);
+    assert_eq!(shape("c9 c3", EXACT)[..5], PROBE);
+    // A memory operand beside rsp as a value: a guest register stands in, kept in the area.
+    let beside = decoded("48 8b 64 24 08 c3", WRAPPING);
+    assert_eq!(
+        (beside[0].memory_segment(), beside[0].op1_register()),
+        (Register::FS, Register::RAX)
+    );
+    assert_eq!(
+        (beside[1].op0_register(), beside[1].memory_base()),
+        (Register::RAX, Register::RSP)
     );
 }
 
@@ -582,6 +731,13 @@ fn stack_and_withheld_forms_are_made() {
         "41 53 c3",
         "0f ae 4c 64 f7 c3",
         "41 ff 33 c3",
+        // push rsp; pop rsp; call rsp; rdfsbase rsp; lea rsp, [rbp-8]; xchg rsp, [rbx]
+        "54 c3",
+        "5c c3",
+        "ff d4",
+        "f3 48 0f ae c4 c3",
+        "48 8d 65 f8 c3",
+        "48 87 23 c3",
     ] {
         for way in WAYS {
             for counted in [false, true] {

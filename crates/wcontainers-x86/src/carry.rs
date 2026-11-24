@@ -491,8 +491,6 @@ enum Written<'a> {
     /// The guest's own bytes.
     Bytes(&'a [u8]),
     Instruction(&'a Iced),
-    /// A push whose stack the in-process way's exact form has probed already.
-    Probed(&'a Iced),
 }
 
 /// Writes a host instruction that may reach guest memory, with `resume` its commit point: the one place each way's
@@ -506,17 +504,16 @@ fn access(way: Way, code: &mut HostCode, written: Written, resume: Option<Resume
                 decoded = crate::decode::decode(bytes).expect("a guest instruction").0;
                 &decoded.iced
             }
-            Written::Instruction(i) | Written::Probed(i) => i,
+            Written::Instruction(i) => i,
         };
         if window::reaches_memory(i) {
-            let probed = matches!(written, Written::Probed(_));
-            return window::access(check, code, i, resume, probed);
+            return window::access(check, code, i, resume);
         }
     }
     let at = code.offset() as u64;
     let bytes = match written {
         Written::Bytes(bytes) => bytes.to_vec(),
-        Written::Instruction(i) | Written::Probed(i) => bytes_of(i, at),
+        Written::Instruction(i) => bytes_of(i, at),
     };
     match resume {
         Some(resume) => code.commit(&bytes, resume),
@@ -609,21 +606,32 @@ fn rewritten(
     reach: Reach,
 ) {
     let next = Resume::At(address.wrapping_add(i.iced.len() as u64));
+    let in_process = matches!(way, Way::InProcess(_));
     let stack = matches!(guest.mnemonic(), Mnemonic::Push | Mnemonic::Pop)
-        && guest.op0_kind() == OpKind::Register;
-    if stack && let Way::InProcess(_) = way {
-        // A withheld register's push is t's, loaded from its slot; the window's pop writes the slot itself.
+        && guest.op0_kind() == OpKind::Register
+        && names_withheld(guest);
+    if stack && in_process {
+        // A withheld register's push and pop are t's, the stack's side as written: t loaded from its slot before,
+        // and the slot written from it after.
         code.slow(NativeReason::WithheldRegisterNamed);
         let named = general(guest.op0_register()).expect("a general register");
         let mut made = *guest;
-        if guest.mnemonic() == Mnemonic::Push {
+        made.set_op0_register(sized(T_NUMBER, named.width));
+        let pop = guest.mnemonic() == Mnemonic::Pop;
+        if !pop || named.width < W64 {
             put(code, &load_area(way, T, withheld_slot(named.number)));
-            made.set_op0_register(sized(T_NUMBER, named.width));
         }
         access(way, code, Written::Instruction(&made), Some(next));
+        if pop {
+            code.relocate(named.number, Held::Register(T_NUMBER));
+            put(code, &store_area(way, withheld_slot(named.number), T));
+            code.home(named.number);
+        }
         return;
     }
+    let stack_value = in_process && names_stack_value(guest);
     if reach == Reach::Plain
+        && !stack_value
         && let Some(on) = on_slot(way, guest)
     {
         // Its operand is the register area, not guest memory.
@@ -637,6 +645,13 @@ fn rewritten(
         code.slow(NativeReason::WithheldRegisterNamed);
     }
     stand_ins_in(way, code, guest, &swaps);
+    let (ins, stack) = if stack_value {
+        let stack = StackValue::of(way, &ins, reach, swaps.len());
+        stack.enter(way, code);
+        (stack.on(&ins), Some(stack))
+    } else {
+        (ins, None)
+    };
     let window = reach == Reach::GuestSegment;
     if window {
         enter_guest_segment(way, code);
@@ -665,9 +680,142 @@ fn rewritten(
         put(code, &load_area(way, full(legacy), STAND_IN_VALUES));
         code.home(legacy);
     }
+    if let Some(stack) = &stack {
+        stack.done(code);
+    }
     stand_ins_out(way, code, guest, &swaps);
+    if let Some(stack) = stack {
+        stack.leave(way, code);
+    }
     if window {
         leave_guest_segment(code);
+    }
+}
+
+/// Whether guest instruction `i` names rsp as a value, which in process is B less than the host's rsp: as a register
+/// operand, or as the base of a 64-bit `lea` (whose low 32 bits B leaves as they are).
+fn names_stack_value(i: &Iced) -> bool {
+    let rsp = |r: Register| general(r).is_some_and(|g| g.number == RSP);
+    (0..i.op_count()).any(|n| i.op_kind(n) == OpKind::Register && rsp(i.op_register(n)))
+        || i.code() == Code::Lea_r64_m && i.memory_base() == Register::RSP
+}
+
+/// In process, the register that stands in for the guest's rsp in an instruction naming it as a value: t where the
+/// instruction leaves t free, else a guest register kept in a stand-in slot meanwhile (section 4).
+struct StackValue {
+    s: u8,
+    /// The area word keeping s's own value, where s is not t.
+    own: Option<usize>,
+    reads: bool,
+    writes: bool,
+}
+
+impl StackValue {
+    fn of(way: Way, i: &Iced, reach: Reach, taken: usize) -> Self {
+        let Way::InProcess(_) = way else {
+            unreachable!("rsp is the guest's own outside the in-process way")
+        };
+        let mut info = InstructionInfoFactory::new();
+        let info = info.info(i);
+        let (mut reads, mut writes) = (false, false);
+        for n in 0..i.op_count() {
+            let named = i.op_kind(n) == OpKind::Register
+                && general(i.op_register(n)).is_some_and(|g| g.number == RSP);
+            if !named {
+                continue;
+            }
+            let partial = general(i.op_register(n)).is_some_and(|g| g.width < crate::operand::W32);
+            use iced_x86::OpAccess::*;
+            match info.op_access(n) {
+                Read | CondRead => reads = true,
+                Write => {
+                    writes = true;
+                    reads |= partial;
+                }
+                // A write that may not happen (a `cmov`) keeps the value, or in 32 bits its low half, so it reads.
+                _ => (reads, writes) = (true, true),
+            }
+        }
+        reads |= i.code() == Code::Lea_r64_m && i.memory_base() == Register::RSP;
+        let lea = i.mnemonic() == Mnemonic::Lea && !i.is_ip_rel_memory_operand();
+        let t_free =
+            reach == Reach::Plain && (!has_memory_operand(i) || lea) && !names_high_byte(i);
+        if t_free {
+            return Self {
+                s: T_NUMBER,
+                own: None,
+                reads,
+                writes,
+            };
+        }
+        let used: Vec<u8> = info
+            .used_registers()
+            .iter()
+            .filter_map(|u| general(u.register()).map(|g| g.number))
+            .collect();
+        // A register of the first four where the instruction names a high byte, which excludes a REX prefix.
+        let s = stand_ins()
+            .filter(|n| !names_high_byte(i) || *n <= crate::operand::RBX)
+            .find(|n| !used.contains(n))
+            .expect("an instruction leaves a register free");
+        let own = if taken < crate::area::WITHHELD {
+            STAND_IN_VALUES + taken * AREA_WORD
+        } else {
+            crate::area::KEPT_T
+        };
+        Self {
+            s,
+            own: Some(own),
+            reads,
+            writes,
+        }
+    }
+
+    /// The instruction with rsp, where it names it as a value, made s.
+    fn on(&self, i: &Iced) -> Iced {
+        let mut out = *i;
+        for n in 0..i.op_count() {
+            if i.op_kind(n) != OpKind::Register {
+                continue;
+            }
+            if let Some(g) = general(i.op_register(n)).filter(|g| g.number == RSP) {
+                out.set_op_register(n, sized(self.s, g.width));
+            }
+        }
+        if i.code() == Code::Lea_r64_m && i.memory_base() == Register::RSP {
+            out.set_memory_base(full(self.s));
+        }
+        out
+    }
+
+    fn enter(&self, way: Way, code: &mut HostCode) {
+        if let Some(own) = self.own {
+            put(code, &store_area(way, own, full(self.s)));
+            code.relocate(self.s, page(own));
+        }
+        if self.reads {
+            window::guest_stack_into(way, code, full(self.s));
+        }
+    }
+
+    /// After the instruction: the guest's rsp is s's where the instruction writes it.
+    fn done(&self, code: &mut HostCode) {
+        if self.writes {
+            code.relocate(RSP, Held::Register(self.s));
+        }
+    }
+
+    fn leave(&self, way: Way, code: &mut HostCode) {
+        let Way::InProcess(check) = way else {
+            unreachable!("rsp is the guest's own outside the in-process way")
+        };
+        if self.writes {
+            window::guest_stack_from(check, code, full(self.s));
+        }
+        if let Some(own) = self.own {
+            put(code, &load_area(way, full(self.s), own));
+            code.home(self.s);
+        }
     }
 }
 
@@ -793,7 +941,10 @@ fn carry_plain(
         return;
     }
     match route {
-        Route::Copy if !names_withheld(&i.iced) => {
+        Route::Copy
+            if !names_withheld(&i.iced)
+                && !(matches!(way, Way::InProcess(_)) && names_stack_value(&i.iced)) =>
+        {
             access(way, code, Written::Bytes(bytes), Some(Resume::At(next)));
         }
         Route::Copy => rewritten(way, code, i, &i.iced, address, Reach::Plain),
@@ -1012,6 +1163,12 @@ fn area_in_process(way: Way, code: &mut HostCode, i: &Instruction, address: u64)
             .expect("a load from the area")
         }
     };
+    if let (Way::InProcess(check), RSP) = (way, destination.number) {
+        // rsp is B more than the guest's: the base read into t, then rsp made from it.
+        let at = code.offset() as u64;
+        code.commit(&bytes_of(&read(T_NUMBER), at), next);
+        return window::guest_stack_from(check, code, T);
+    }
     let written = if WITHHELD.contains(&destination.number) {
         put(code, &read(U_NUMBER));
         store_area(way, withheld_slot(destination.number), U)
@@ -1202,11 +1359,6 @@ fn transfer(
         Jmp | Call => {
             into_t(way, code, i, address);
             let call = ins.mnemonic() == Call;
-            // In process the exact form's probe of the push takes u, so it comes before the lookup's first level,
-            // which a target past user space faults on with nothing of the call done.
-            if call && let Way::InProcess(check) = way {
-                window::probe_stack(check, code, i64::from(SLOT));
-            }
             first_level(way, code);
             let through = Resume::Through(Held::Register(T_NUMBER));
             if call {
@@ -1215,7 +1367,7 @@ fn transfer(
                 code.relocate(RAX, page(own));
                 place_address(code, full(RAX), next);
                 let push = Iced::with1(Code::Push_r64, full(RAX)).expect("a push");
-                access(way, code, Written::Probed(&push), Some(through));
+                access(way, code, Written::Instruction(&push), Some(through));
                 put(code, &load_area(way, full(RAX), own));
                 code.home(RAX);
             } else {
@@ -1349,7 +1501,12 @@ fn into_t(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
         enter_guest_segment(way, code);
     }
     let read = reach_operand(code, &read, i.address32, reach, target);
-    access(way, code, Written::Instruction(&read), None);
+    let stack = operand.op0_kind() == OpKind::Register && operand.op0_register() == Register::RSP;
+    if in_process && stack {
+        window::guest_stack_into(way, code, T);
+    } else {
+        access(way, code, Written::Instruction(&read), None);
+    }
     if window {
         leave_guest_segment(code);
     }
