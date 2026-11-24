@@ -131,9 +131,10 @@ impl CodeArea {
     }
 
     /// Writes every staged page to the memfd, a run of consecutive pages per host call, and makes them what
-    /// instruction fetch sees; gives back each page reached and never written, and counts those the host kept.
-    pub(crate) fn flush(&mut self, probe: &HostProbe) -> usize {
-        let mut kept = 0;
+    /// instruction fetch sees; gives back each page reached and never written. How many were given back, and how many
+    /// the host kept.
+    pub(crate) fn flush(&mut self, probe: &HostProbe) -> (usize, usize) {
+        let (mut given, mut kept) = (0, 0);
         for page in core::mem::take(&mut self.reached) {
             if !self.pages.contains_key(&page) {
                 let given_back = rustix::fs::fallocate(
@@ -142,12 +143,13 @@ impl CodeArea {
                     (page * PAGE_SIZE as usize) as u64,
                     PAGE_SIZE,
                 );
+                given += usize::from(given_back.is_ok());
                 kept += usize::from(given_back.is_err());
             }
         }
         let dirty: Vec<usize> = core::mem::take(&mut self.dirty).into_iter().collect();
         if dirty.is_empty() {
-            return kept;
+            return (given, kept);
         }
         for run in dirty.chunk_by(|a, b| a + 1 == *b) {
             for run in run.chunks(UIO_MAXIOV) {
@@ -181,7 +183,7 @@ impl CodeArea {
         }
         #[cfg(not(target_arch = "aarch64"))]
         let _ = probe;
-        kept
+        (given, kept)
     }
 
     /// The embedder's address of byte `offset` of the memfd, mapping its slot table's window at first use.

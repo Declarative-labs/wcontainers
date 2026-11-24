@@ -730,7 +730,8 @@ impl HostProcessExecutor {
     pub(super) fn flush_code(&mut self, memory: MemoryId) {
         let probe = *self.host.probe();
         if let Some(Some(code)) = self.codes.get_mut(memory.0 as usize) {
-            let kept = code.area.flush(&probe);
+            let (given, kept) = code.area.flush(&probe);
+            self.counters.slot_pages_given_back += given as u64;
             if kept > 0 {
                 self.slow(reason::SLOT_PAGE_KEPT, kept as u64, memory.0.into());
             }

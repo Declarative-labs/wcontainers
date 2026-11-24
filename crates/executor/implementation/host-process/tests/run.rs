@@ -549,6 +549,41 @@ fn jumps_through_registers_find_their_slots_and_returns_their_last_targets() {
     assert_eq!(registers.x[1], 0);
 }
 
+/// A jump through a register into data pages, never code, reaches an empty slot each time; the page of the slot table it
+/// read is given back before the next turn, so a guest jumping to many places holds no slot pages for them.
+#[test]
+fn slot_pages_a_jump_reached_and_nothing_wrote_are_given_back() {
+    let jumps = 16;
+    let mut cpu = executor();
+    let (memory, thread) = guest(&mut cpu, &[encode::branch_register(form::BR, 2)]);
+    cpu.set_permissions(
+        memory,
+        DATA,
+        jumps * PAGE,
+        Permissions::READ | Permissions::WRITE,
+    )
+    .expect("data");
+    let before = cpu.counters().slot_pages_given_back;
+    for jump in 0..=jumps {
+        let mut registers = RegisterBlock::ZERO;
+        registers.pc = CODE;
+        registers.x[2] = DATA + jump * PAGE;
+        cpu.set_registers(thread, &registers);
+        let seen = run_to_exit(&mut cpu, thread);
+        assert!(
+            matches!(seen.exits[..], [(Exit::MemoryFault { address, access: Access::Execute }, _, _)]
+                if address == registers.x[2]),
+            "{:?}",
+            seen.exits
+        );
+        assert_eq!(
+            cpu.counters().slot_pages_given_back - before,
+            jump,
+            "each turn gives back the page the last one reached"
+        );
+    }
+}
+
 /// Calls the function whose address is at x2's data 50 times through a register, then exits; of its two functions the
 /// first adds 1 to x0 and the second 2. Where each function is.
 fn calling_from_data_program() -> (Vec<u32>, [u64; 2]) {

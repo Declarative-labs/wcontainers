@@ -171,6 +171,8 @@ pub struct Counters {
     pub pieces_loaded_ahead: u64,
     /// Last targets of jumps made at a piece's load, as an earlier memory starting from the same piece made them.
     pub last_targets_made_ahead: u64,
+    /// Pages of the slot table a jump reached and no slot was written in, given back to the host.
+    pub slot_pages_given_back: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
