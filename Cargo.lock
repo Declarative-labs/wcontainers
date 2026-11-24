@@ -6075,6 +6075,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-tcp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -6098,6 +6099,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-tcp-sockets",
  "wcontainers-tcp-sockets-conformance",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
