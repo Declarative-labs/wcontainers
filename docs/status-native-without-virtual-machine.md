@@ -753,6 +753,34 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     failed.
   - Not done this run: the kernel, busybox and speed tests on the shared tree (they wait on wasmtime).
   - No new unsafe code; two uses fewer.
+- W1 round 4, run 2 (2026-11-24, 03:30 UTC on), Graviton4:
+  - Conforming: nothing new to follow since run 1 (host-process already follows the 2026-11-23 interfaces; form I
+    is W2's).
+  - Translations move (native.rs): kept by the code they were made from (the rest of its page), its offset in the
+    page, and the page only where the code is outside `wcontainers_arm64::carry::movable(Way::Process)` (4 GiB to
+    under 2^44 less a branch's reach); a load at another page clones the kept one and moves it there
+    (`Translation::moved`), as the VM form's translator does. Pieces now hold a `Translation`, not a `HostCode`.
+    This is busybox `sh`'s missing piece (a position-independent program at a new base at every exec). tests/run.rs
+    (+1): a program naming its own addresses (`adr`, `bl`, a loop) runs at 8 GiB, then at three other movable bases
+    with no new translation (registers, link and data checked at each), then under 4 GiB with one. With the move
+    left out in the remote copy, the test fails (scratch w1/r4run2/mutate-move-arm.out).
+  - The thread past the last index through the `Cpu` calls (tests/run.rs +1): 32,768 threads made in one memory,
+    the next `thread_new` is `OutOfMemory` and counted (`threads_exhausted`), the last made runs guest code, and one
+    let go makes room for exactly one more (2.1 s).
+  - Forged exits as translated guest code after two forks (tests/forged.rs, 3; plan 13): A forks B and C, A's store
+    gives the page to B, which lends it to C; B's code writes a forged exit kind (all eight, 0 and 9), value, detail,
+    syndrome, request word and thread id into its register page, runs on past the embedder's 100 ms look at the
+    request word, then stores to the page. 80 cases. Whatever the forgery: C's copy is the page at the fork, A keeps
+    its store, both still run and read their own, B's page is the fork's or its own store, and the runner returns
+    (a watchdog kills B after 20 s and fails the case). Seen (scratch w1/r4run2/forged5-arm.out): a forged stop is a
+    stop (B runs on and exits); a forged fault is a fault for B; every other kind ends B ("stub exit not
+    understood"). Also a store to its own control pages (three of them) is the guest's write fault at that address,
+    and its thread runs on.
+  - Found by it and fixed (stub.rs): a forged `CommandRefused` whose error number is outside 1 to 4,095 panicked the
+    embedder in rustix's `Errno::from_raw_os_error` (forged4-arm.out); it is now a forged exit, which ends the stub.
+    Not asserted: that no host code runs that we did not translate (nothing observes it from outside).
+  - The shared tree built every host-process test binary again at about 04:00 UTC (with other jobs' uncommitted
+    wasmtime and Unicorn edits in it).
 
 ## W1 complete, with its gap list (for the independent check)
 
@@ -775,10 +803,10 @@ met, each with what is known:
   the WebAssembly side has its recorded faults) and busybox's 56 `text` and `files` commands give the reference's
   output (run 3).
 - Adversarial cases not built: the fork while a sibling is in a system call and another writes (needs several guest
-  threads running at once, which today's kernel loop never does); the forged-exit case is built at the stub level
-  (tests/memory.rs, forged fault reports) but not as translated guest code after two forks; the 32,769th thread is
-  refused at the stub (tests/threads.rs) but not yet as a guest `clone` counted; one P and two I containers in one
-  embedder is W2's.
+  threads running at once, which today's kernel loop never does); one P and two I containers in one embedder is
+  W2's. Built in round 4 run 2: forged exits as translated guest code after two forks (tests/forged.rs) and the
+  thread past the last index refused and counted through the `Cpu` calls (tests/run.rs); the kernel's own `clone`
+  answer to it is not tested here.
 - Placement's two measured items (a getppid loop with work between calls within 5% of a free CPU's after its move;
   at most one move a second with every CPU contended) are not measured; the move itself is tested (tests/
   placement.rs).
