@@ -19,10 +19,66 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   built the stack form the measurement chose (rsp held as B + the guest's rsp). Run 5 confirmed the speed bars on a
   quiet machine (load 1.4 to 4.3: wrapping 1.087 times the unchecked form, bar 1.10; exact 1.315, bar 1.35), ran
   every way I access shape of plan 7 that needs no executor against the CPU (892 cases a form, 0 failing), and the
-  speculation probe with every gadget of plan 7 but `ret` (0 secret reads in the cut forms). What is left of XN2
-  needs an x86 executor (gap item 1), which no track has built (the native-without-virtual-machine track's form I,
-  its W2, does not exist yet): the link, register-group and hostile-guest tests in I, the ymm upper halves across a
-  call into the inside, and the X9 programs.
+  speculation probe with every gadget of plan 7 but `ret` (0 secret reads in the cut forms). Run 6 tried to defeat
+  the forms (no hole found; a static test of every encoding family writing rsp added) and measured the benchmark set
+  at five code placements: single-placement figures move by up to 40 percent a program (interpret) with the same
+  instructions, so the fair figures are over placements: wrapping 1.034, exact 1.293 (counted 1.020 and 1.275).
+  What is left of XN2 needs an x86 executor (gap item 1), which no track has built (the
+  native-without-virtual-machine track's form I, its W2, does not exist yet at 12:45 UTC on 2026-11-24): the link,
+  register-group and hostile-guest tests in I, the ymm upper halves across a call into the inside, and the X9
+  programs.
+
+## XN2 run 6 (2026-11-24)
+
+No code of the output changed. Attempts to defeat the forms (rented ARM64 machine, the output read back):
+- Forms whose operand iced may report as no access (the one place, `carry::access`, sends to the window only what
+  iced's `used_memory` names): 49 encodings made in both forms (scratch xn2r6/probe.out, from a test file sent to
+  the machine and not kept). None reaches memory uncut: prefetches, `nop` with memory, `cldemote` and the
+  reserved-NOP space emit no host instruction; `clflush` is cut and probed as a load; `clflushopt`, `clwb`,
+  `movdir64b`, `movdiri`, `enqcmd`, the shadow-stack stores, `monitor`, `umonitor`, `ptwrite`, `clzero`, `tpause`,
+  `xsavec`, `xsaves`, `xrstors` and `invlpg` take the Trap route; `xsave`, `lfs`, `lss`, segment
+  register moves, `sgdt`, `lar`, `lsl`, `verr` and `str` go to the inside; `cmpxchg16b`, `vmaskmovps`,
+  `vpmaskmovq`, `pinsrb`, `lddqu`, `movntdqa` and `vbroadcastss` are cut like any operand.
+- Forms that write rsp: the sweep's random bytes seldom make VEX or vector-to-register forms, so a new test,
+  `every_form_writing_rsp_keeps_it_in_the_window` (commit d34a4fc4d), makes 63 encodings writing rsp, esp, sp or
+  spl (shlx, sarx, shrx, rorx, pdep, pext, bzhi, bextr, mulx with either destination, andn, blsi, blsr, blsmsk,
+  movq, vmovq, pextrq, vpextrq, cvttsd2si, vcvttss2si, the mask moves, popcnt, lzcnt, tzcnt, bsr, bsf, crc32,
+  movbe, rdrand, rdseed, adcx, adox, cmpxchg, xadd, bswap, xchg, cmov, 32, 16 and 8-bit moves, lea, movzx, movsx,
+  movsxd, imul, shld, setz, sbb, arithmetic, shifts, `pop sp`, rdgsbase) followed by `mov rax, [rsp]`, in both
+  forms, counted and not, through the sweep's checks: all pass.
+- The stack's reach as written: at most 2^31 + 2^16 + 72 bytes past the window's top (`ret 0xffff` at the top, then
+  `[rsp + 2^31 - 1]`; a second return reads `[rsp]` first and faults), inside the 2^35 bytes nothing is mapped.
+
+Interpret's wrapping figure (run 5: 1.394 times P uncounted, 0.75 counted), studied (rented x86 machine, Xeon 8488C,
+12:13 to 12:20 UTC, load 0.2 to 1.7 until 12:19, `taskset -c 0-9`; scratch xn2r6/interp2.out, interp3.out,
+align.out; the benchmark patched only in the machine's copy, xn2r6/counted.diff, to run one count setting):
+- perf stat of the whole test process, each way and count its own process, a run with no way subtracted: P
+  uncounted 10.5e9 cycles for 42.37e9 instructions, the wrapping form 14.8e9 cycles for 42.38e9 instructions (0.013
+  percent more), with equal branches, branch misses, uops issued and executed, uops from the decoded cache and from
+  the decoders, decoded-cache misses, machine clears and blocked loads (store forwarding, 4 KiB aliasing). Counted,
+  the reverse: P 14.2e9 cycles, the wrapping form 10.7e9, for the same instructions as each other. So the
+  difference is the core's back end running the same instructions at different speeds by where they are, which
+  none of those counters shows; not the form.
+- The pieces' alignment (16 as committed, 32, 64) and the first piece moved by 16 and 48 bytes, interpret alone,
+  best of 7: P uncounted 0.346, 0.362, 0.511, 0.355 and 0.516 s; wrapping 0.466, 0.328, 0.330, 0.410, 0.343 s;
+  exact 0.614 to 0.618 s at every placement. Wrapping against P: 1.346, 0.906, 0.647, 1.153, 0.664.
+
+The benchmark set at the same five placements (12:20 to 12:44 UTC, best of 5, `taskset -c 0-9`, the machine's
+1-minute load 2 to 15 with two spikes to 52 and 58 from other jobs at 12:28 and 12:32, during the 32 and 64 byte
+alignments; scratch xn2r6/alignall.out, placements.txt from placements.py), each way's geometric mean time over the
+placements against P's:
+- Uncounted, wrapping and exact: fib 1.027 and 1.047, sieve 1.032 and 1.187, hash 0.996 and 0.996, sort 1.067 and
+  1.263, interpret 1.018 and 1.674, matrix 1.012 and 2.563, walk 1.089 and 1.015 (four placements: a line of the
+  last was lost to the load sampler's output), search 1.032 and 1.146. Geometric mean wrapping 1.034, exact 1.293.
+- Counted: wrapping 1.020, exact 1.275.
+- At each placement alone, uncounted: wrapping 1.099 (16, the committed layout; run 5 gave 1.087 there), 1.031,
+  1.027, 0.999, 1.004; exact 1.334, 1.274, 1.340, 1.256, 1.302.
+- So the forms' cost on these programs is about +3 percent wrapping and +29 percent exact, with the exact form's
+  probe the cost of matrix (2.56) and interpret (1.67) at every placement. Both bars met at every placement.
+
+Checks (rented ARM64 machine, load 12 to 13): every test of tests/native_window.rs passes (11, the gadget printer
+ignored; the sweep at seed 0x5eed, 20,000 cases, 80,000 pieces, 0 outside); clippy with warnings denied, `--no-deps
+-p wcontainers-x86 --all-targets`, clean.
 
 ## XN2 run 5 (2026-11-24)
 
@@ -618,6 +674,33 @@ Fptan, Fsin, Fsincos, Fyl2x and Fyl2xp1. Cases with TF or AC set are not made (x
 - The slow path of a form routed for the host (round 3 run 4): tests/native_output.rs
   `a_form_routed_for_the_host_is_counted`.
 
+## For the independent check of XN2
+
+Ways to try to defeat each form (commands under "How to run XN2's tests"):
+- The one place: every host instruction that may reach guest memory goes through `carry::access`, which in I sends
+  it to `window::access` when iced's `used_memory` names an access (`window::reaches_memory`). A form iced reports
+  as no access is therefore copied: prefetches, `nop` with memory, `cldemote` and the reserved-NOP space, all
+  routed Nothing (no host instruction). Run 6 printed both forms of 49 such and nearby encodings (scratch
+  xn2r6/probe.out): `clflush` is cut and probed like a load; `clflushopt`, `clwb`, `monitor`, `umonitor`,
+  `ptwrite`, `movdir64b`, `movdiri`, `enqcmd`, the shadow-stack stores, `xsavec`, `xsaves`, `xrstors`, `clzero`,
+  `tpause` and `invlpg` take the Trap route; `xsave`, `fxsave`, `lfs`, `lss`, segment register moves, `sgdt`, `lar`, `lsl`,
+  `verr` and `str` go to the inside.
+- Static: tests/native_window.rs, the seeded sweep (`X86_WINDOW_SEED`, `X86_WINDOW_CASES`) reads every piece back
+  and fails any host access not on GS at a 32-bit address, the area on FS, the lookup or the probe, and any host
+  write of rsp that is not a push or pop, a return's bounded move or `lea rsp, [B + a cut value]`;
+  `every_form_writing_rsp_keeps_it_in_the_window` does the same for 63 encodings writing rsp, esp, sp or spl
+  (the VEX and vector-to-register forms, which random bytes seldom make).
+- Against the CPU: the window cases (892 a form) and native layer 1 in I with a new seed (`WC_LAYER1_SEED`);
+  layers 2 and 3 in I.
+- Speculation: the gadget printer and scratch xn2r5/specemit.c; add a gadget to `speculation_gadgets` as a guest
+  sequence, the probe takes it from the printed line.
+- Reach of the stack as written: rsp holds B plus a guest rsp of at most 2^32 + 2^16 + 8 (after `ret 0xffff` at
+  the top; a second return reads `[rsp]` first and faults), so `[rsp + 2^31 - 1]` reaches at most 2^31 + 2^16 + 72
+  bytes past the window's top, inside the 2^35 bytes the slot keeps unmapped (plan 4 and 6).
+- What is not covered without an executor: the link, register-group and hostile-guest tests in I, the ymm upper
+  halves across a call into the inside, the X9 programs (gap item 1); `maskmovdqu` in the speculation probe (no
+  leak to see even uncut); `ret` as a gadget (its read is `pop`'s).
+
 ## How to run XN2's tests
 
 Run 3's (rented x86 machine): `WC_LAYER2_CASES=10000 WC_LAYER2_SEED=23 WC_LAYER2_JOBS=48 cargo test -q -p
@@ -627,7 +710,11 @@ WC_LAYER3_JOBS=48 ... --test layer3 csmith_programs_match_linux_natively_in_proc
 `WC_BENCH_RUNS=7 taskset -c 0-9 cargo test -q -p wcontainers-translator-test --test benchmarks
 measure_benchmarks_natively_x86_64 -- --ignored --nocapture` (`WC_BENCH_WAYS=process,wrapping,exact`; lines "times
 the unchecked form's"). Run 3's stack floor patch (scratch xn2r3/stackfloor.diff) no longer applies: run 4 built that
-form. Scratch xn2r4/run.sh sends one command to the x86 machine, retrying while its SSH refuses.
+form. Scratch xn2r4/run.sh sends one command to the x86 machine, retrying while its SSH refuses. Speed over code
+placements (run 6): scratch xn2r6/alignall.sh, sent as one command (`echo <its base64> | base64 -d >
+target/alignall.sh && bash target/alignall.sh`), edits the machine's copy of native_programs.rs to each placement
+(`PIECE_ALIGN` 16, 32, 64; `PIECES` 16 and 48 bytes later), runs the benchmark at each and puts the file back;
+`python3 -I xn2r6/placements.py <its output>` gives the means over placements.
 
 `orchestrator/cloud/arm-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
 native_window -- --nocapture'` (any Linux machine: the tests decode, they run no guest code); the sweep takes
@@ -1056,6 +1143,11 @@ Licences read from cargo tree on the rented machine.
 
 ## Security
 
+- XN2 run 6: no `unsafe` and no import added (one test in native_window.rs; the probes and patches are scratch).
+  Tried to defeat both forms: 49 encodings whose operand iced may call no access (cache-line, prefetch, monitor,
+  shadow-stack, direct-store, xsave and segment forms) none reaching memory uncut, and 63 encodings writing rsp
+  (VEX, vector-to-register and the rest) none leaving rsp outside the window's rule; no hole found. Hostile-guest
+  suite in I: not yet (needs an executor, gap item 1).
 - XN2 run 5: no `unsafe` and no import added (test cases and a gadget printer only; the C probe is scratch). The
   isolation was tried against the CPU through every way I access shape of plan 7 that runs without an executor (892
   cases a form, none reaching outside the window), and the speculation probe now covers a string from rdi, `xlat`,
