@@ -5647,6 +5647,7 @@ dependencies = [
  "spirv",
  "wcontainers-gpu",
  "wcontainers-shaders",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5654,6 +5655,7 @@ name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.71.1",
+ "build-rs",
  "cc",
  "naga",
  "pollster",
