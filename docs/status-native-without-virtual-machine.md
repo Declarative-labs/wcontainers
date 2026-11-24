@@ -546,20 +546,92 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     then stopped answering SSH ("not set up", 23:05 UTC), so the second round there did not run. The first
     Graviton4 round failed only the kernel test, whose zig sudo's PATH did not have.
   - No new unsafe code (the code area's one write is the same, moved into `write_file`).
-- Not built yet (W1's bar is not met): the trait of crates/executor/interface.rs (single instruction) and the
-  executor conformance suite; busybox's text and files commands; the run inside Docker's profile and under gVisor
-  with translated code; placement's remaining items; the copy unit
-  on translated code; the speed figures.
+- W1 round 3, run 3 (2026-11-23 23:00 to 2026-11-24 01:30 UTC), Graviton4 (the Xeon did not answer SSH for most of it;
+  both machines dropped SSH for minutes at a time):
+  - Busybox (tests/busybox.rs, plan 13's N3 item): all 56 commands of the kernel test crate's busybox `text` and
+    `files` lists and the VM form's own bzip2 pipe run as a container's first process in the kernel's loop under
+    form P (root in memory, alpine:3.22's files, seeded policy, seed 1) and give the reference's output, exit code and
+    changed files (Docker on Graviton4, `Reference::check` of wcontainers-executor-unicorn, a new dev-dependency).
+    Passed first time, /dev/kvm denied (the docker group kept for the reference only), 29.8 s; 23.5 s after the
+    resume fix below. tests/kernel_host (the run in the kernel's loop) and tests/guest_build (zig builds) are shared
+    test modules now; the kernel test also checks the program's file is still in the root.
+  - Sandboxes with translated code (scratch w1/r3run3/sandbox.sh, sb1-arm.out, sb1log/log; Graviton4, load 2 to 19):
+    inside Docker's default profile every binary passes, the run (5) and translated (2) tests of translated guest
+    code included, and the kernel test (7) once the sources are mounted read-only (speed1-arm.out: the first run
+    mounted only /nix and the build folder, so zig found no source). The busybox test is left out of the sandboxes:
+    its reference is Docker itself. Under gVisor: run 5's known failures and the step test's /proc read as before,
+    the run and translated tests pass, and in the kernel test hello and getppid pass; forks, code and mappings fail
+    on the WebAssembly side of the comparison (wasmtime's memory reads /proc/self/pagemap, which gVisor lacks; form
+    P had finished its run), blocks and jumptables pass the 300 s limit (which side was not found).
+  - Interrupted threads resume where they stopped (native.rs, `Guest::interrupted`): after a stop in translated code
+    with `Resume::Continue`, the thread goes on at its host pc in the same loaded piece (checked by its guest start,
+    base and code), instead of loading a piece from the guest pc the stop landed at. Before, each stop at a new pc
+    made a translation from there: busybox `sh` starting 1,000 programs made 243,918 translations (speed2log), bench's
+    matrix ran 3.97 times its plain time. `set_registers` drops it.
+  - The kernel-entry count (`Counters::kernel_entries`, every exit given to the kernel but a turn's end: plan 7's k,
+    standing in for the owner's `ProcessInfo::kernel_entries`) and `slow_paths()` for the measurements.
+  - Per exit, two clock reads and an allocation fewer: `Stub::wait_within` reads the clock only after a wake that did
+    not publish the turn, and `take_warnings` returns at once when nothing is new (profile below).
+  - Speed (tests/speed.rs, ignored tests, scratch speed1.sh to speed3.sh, Graviton4, CPU 41, /dev/kvm denied):
+    - Debug builds overstate the embedder's share (getppid 3,620 to 3,672 ns, speed1-arm.out); every figure below is
+      a release build.
+    - getppid round trip (translated `svc` loop, each call answered at once by the test's loop, timed at every exit),
+      before the per-exit cuts (speed2log/log, load 4.7 to 8.4): median of batch means 3,048 to 3,059 ns against W0's
+      futex slot's 2,395 to 2,413 ns alternating in the same run, 1.26 to 1.28 times (bar: under 1.25); per call
+      median 3,022 to 3,031 ns, 99% 3,620 to 3,654 ns, largest 197 to 214 µs, none over 1 ms in 1,000,000 (3 runs).
+      A profile of CPU 41 (check3-arm.out, 3,000,000 calls, load 10.7): 33% the host's task switch, 11% its unlock,
+      6.7% `gup_fast_fallback` (the futex word is in shared memory), the embedder's own code about 14%, the vDSO clock
+      about 4%. After the cuts and the resume fix (speed3-arm.out, load 11.8 to 12.7): 3,021 to 3,060 ns against the
+      slot's 2,373 to 2,396 ns, 1.26 to 1.29 times, still over the bar; per call median 3,001 to 3,021 ns, 99% 3,556
+      to 3,667 ns, largest 43 to 44 µs, none over 1 ms. The cuts did not move the median measurably.
+    - getppid in the kernel's loop with the seeded policy (whole runs of 1,000,000 calls against none): 3,481 ns per
+      call, 3,441 after the cuts (debug 4,322).
+    - bench.c's eight workloads (SCALE 1), whole runs, medians of 3, before the resume fix (speed2log/log): form P
+      against plain fib 1.317, sieve 1.014, hash 1.002, sort 1.360, interpret 1.318, matrix 3.965, walk 0.998, search
+      1.161, geometric mean 1.350; the WebAssembly output (wasmtime, look-ahead full, in the same loop) 24.997, which
+      is far from the engine track's figures and not examined here (its run includes compiling at look-ahead full and
+      the seeded policy's counted turns). After the resume fix (speed3-arm.out): the same within 1.5% (matrix 4.014,
+      geometric mean 1.349), so stops were not matrix's cost. Not yet known: whether it is translation time at
+      look-ahead full, the count's adds or the probes of accesses that may cross a page; a profile of matrix is next.
+    - busybox `sh` starting 1,000 programs, before the resume fix: 14.15 s first, 8.55 s on the same executor again
+      (translations kept), 26,027 kernel entries each; the reference 0.32 s; process creation and end 296 µs; model
+      6.60 s; first run 2.15 times the model (bar: 1.25). After the fix: 13.54 s then 7.83 s, model 6.70 s, 2.02 times,
+      and still 243,918 translations: alpine's busybox is position-independent and the kernel places each exec at a
+      new random base, so translations kept by guest address never match again. Keeping them by bytes and moving them
+      (`wcontainers_arm64::carry::movable(Way::Process)`, which no P loader uses yet) is what this bar needs.
+  - Final verdicts of this run's code (commits 0932c4a3 to a8f480ad), on a tree of 3f7cb472 (the commit before the
+    owner's merge) with this crate's files, every test binary 3 times with /dev/kvm denied (the docker group kept),
+    each run first proving the device cannot be opened, clippy with warnings denied clean (scratch w1/r3run3/
+    final2-arm.log, lx/log): Graviton4 57 runs, 225 tests passed, none failed (01:08 to 01:15 UTC, load 10.5 to
+    12.9); Xeon 57 runs, 156 passed, none failed (load 26 to 30 from other tracks).
+  - No new unsafe code.
+  - Not done: the executor suite (see "For the owner"); the VM executor's own speed test beside P's.
+- Not built yet (W1's bar is not met): conformance to the owner's new `Executor` (merged at e65273d5 during run 3,
+  see Next); the getppid round trip under 1.25 times the slot and busybox `sh` within 1.25 times the model, measured
+  after this run's fixes; placement's remaining items; the copy unit on translated code; the VM executor's figures
+  beside P's; the x86-64 rounds of this run's code.
 
 ## Next
 
+- FIRST: the owner's executor interface was merged into agents at e65273d5 (2026-11-24 01:02 UTC) while run 3
+  measured: `Executor` now has `type GuestMemory: MemorySpace` (crates/executor/memory_space.rs: `borrow` of
+  volatile bytes, `zero`, `set_permissions`, `map_from`, `unmap_from`, `copy_from`, all through `&self`),
+  `create_guest_memory`, `execute(processor state, &memory, &mut impl TrapHandler) -> processor state` with typed
+  answers (system call: return or terminate; fault: retry or terminate; interrupt: continue or terminate), and still
+  `execute_single_instruction_in_place`. P does not implement `Executor` yet (its library does not depend on the
+  executor crate, so it still builds); conform in execution.rs: a P memory as the `MemorySpace` (a stub and its
+  memfd, the window cache for `borrow`, `copy_from` as today's fork, `map_from` as a shared block; `&self` methods
+  need the memory's records behind a lock), `execute` as `run_pieces` with the handler's answers in place of the
+  runtime's `Answer`. The WebAssembly executor (and so the unicorn crate, which P's kernel, busybox and speed tests
+  use) did not build on agents after the merge (01:20 UTC): this run's final verdicts are of a tree of the commit
+  before the merge (3f7cb472) with this crate's files (scratch w1/r3run3/tree, `CHECKOUT=.../tree both.sh`).
+- Then the speed bars (scratch w1/r3run3/speed3.sh measures all of them): busybox `sh` needs translations kept
+  across execs at new bases (moved translations, above); the round trip (1.26 to 1.29 times the slot) needs the
+  embedder's per-exit work cut (register block copies, `stop::resolve`, placement's two clock reads per turn); bench's
+  matrix (4.0 times plain) needs a profile.
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
-- Next, in this order: the kernel test with busybox's text and files commands (the VM form's tests/busybox.rs);
-  the same tests inside Docker's default profile and under gVisor (run 10's sandbox scripts); the executor trait
-  of crates/executor/interface.rs (one instruction: translate it alone, run it in a stub, read the memory it
-  changed) and the executor conformance suite, in execution.rs's module; the speed figures (getppid round trip against the futex slot, a
-  memory-heavy program against wasmtime and the VM executor, the workload pairs); the copy unit on translated
-  stores; placement's getppid item.
+- Then: the copy unit on translated stores; placement's getppid item; the gVisor kernel test's blocks and jumptables
+  (which side hangs); the gap list and the W1-complete report (due by the fifth run).
 - The process way's translations are never moved (`Translation::moved`): `Native::movable` is the machine way's
   range; `wcontainers_arm64::carry::movable(Way::Process)` is the process way's, for a P loader that keeps
   translations.
@@ -583,6 +655,14 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 3 run 3: tests/busybox.rs needs Docker on the machine (its reference), so scratch w1/r3run3/nokvm.sh
+  keeps the docker group when it denies /dev/kvm (`setpriv --groups=<docker>`), and both.sh takes `CHECKOUT=<tree>`.
+  The speed figures are ignored tests of tests/speed.rs (`getppid_round_trip`, `getppid_in_the_kernel`,
+  `bench_workloads_plainly_under_p_and_under_web_assembly`, `busybox_sh_starting_programs`; knobs `WCHP_CALLS`,
+  `WCHP_PER_BATCH`, `WCHP_ROUNDS`, `WCHP_PROGRAMS`), run in release: scratch w1/r3run3/speed3.sh (sent inline through
+  `arm-run`) runs them on CPU 41 with W0's slot alternating, then the VM executor's speed test. perf.sh profiles CPU
+  41 during the round trip. sandbox.sh is run 10's with the sources mounted into Docker and the busybox test left out.
 
 - W1's tests, on either rented machine: `arm-run <checkout> --name nwvm -- 'cargo test -p
   wcontainers-executor-host-process -j 12 -- --test-threads 3'` (or `x86-run`). With /dev/kvm denied: build with
@@ -725,6 +805,12 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
     container.
     Built meanwhile as the private stand-in `HostProcessHost` (crates/executor/implementation/host-process/host.rs),
     the one place his ruling changes.
+- The executor conformance suite cannot run on form P as it stands (plan 8): its one state generator,
+  wcontainers-instruction-input-domain-arm64, places every state's instruction at 0x1000 (`CODE_ADDRESS`) and its
+  data pages at 0x2000 to 0x4000, below the host's `vm.mmap_min_addr` (32,768 on Graviton4, 65,536 on the Xeon), so
+  an unprivileged host process cannot map them; P runs guest addresses as host addresses. Example: the first state
+  of `AddShiftedRegister64` has pc 0x1000. A generator whose pages lie at or above 64 KiB, or one the executor's
+  address space places, would let every executor run it.
 - Decisions in plan section 12:
   - names;
   - I's wrapping check: about 10 points faster, but an access outside the window lands in the process's own
@@ -751,6 +837,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 round 3 run 3: the busybox test (and the kernel test, now) runs with /dev/kvm denied but the docker group kept,
+  since its reference runs in Docker; the earlier test binaries' runs cleared every group. The executor suite is not
+  run (For the owner). The round trip's bar is measured with each call answered by the test's own loop, not by the
+  kernel (the kernel's own share is measured beside it as `getppid_in_the_kernel`).
 
 - W1 round 3 run 2: slot pages are pages of the code area's memfd past the code area, given out in order and never
   reused, not a memfd of their own: the embedder writes them through the code area's own mapping (and its cache
@@ -862,6 +953,10 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since round 3 run 3, for the busybox and speed tests only (ARM64): wcontainers-executor-unicorn (this workspace's:
+the reference image, the busybox command lists and the Docker reference), which brings unicorn-engine 2.1.5
+(GPL-2.0) as a test-only dependency, as the VM executor's tests already do; never a dependency of the library.
 
 Since round 3 run 2, ARM64 only: wcontainers-translator (`native`), wcontainers-guest-cpu,
 wcontainers-executor-arm64-stop and wcontainers-runtime-single-kernel (without `std`), all this workspace's; for the

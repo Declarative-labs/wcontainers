@@ -1115,6 +1115,12 @@ These executors implement, as they stand:
 - `wcontainers_executor::Executor` (one instruction, `execute_single_instruction_in_place`): each translates the
   instruction at look-ahead none and runs it in a scratch memory (P: a scratch stub; I: a scratch slot) with the
   given processor state and memory deltas, through the executor conformance suite.
+  As built (W1 round 3 run 3): not implemented by P. The suite's only state generator
+  (wcontainers-instruction-input-domain-arm64) puts every state's instruction at 0x1000 and its data at 0x2000 to
+  0x4000, below the host's `vm.mmap_min_addr` (32,768 on Graviton4, 65,536 on the Xeon), which an unprivileged
+  process cannot map, and P runs guest addresses as host addresses; the helper every `Cpu`-based executor uses
+  (`execute_on_cpu`) is in the WebAssembly executor's crate, which P would carry whole. The owner's new
+  `Executor::execute` with a `MemorySpace` replaces this trait; P conforms to that when it is merged.
 - `wcontainers_abi::Cpu`, which `wcontainers-kernel-linux` requires of its executor (`C: Cpu + Executor`), every
   method as 3.5, 4.1 and 5.1 say.
 - Not `PerThreadWatch` (either trait) in W1 and W2: threads of one host process share one set of host page tables.
