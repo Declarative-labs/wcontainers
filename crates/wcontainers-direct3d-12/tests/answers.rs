@@ -5,8 +5,9 @@
 //! need a program, from programs fxc compiled (tests/answers/compile.cmd): loads, sampling,
 //! comparison, gathering, multisampled loads, typed buffer views, typed storage stores, loads and
 //! atomics, vertex and index input, and drawing into targets (blended where answered) and depth
-//! targets; loads, samples, comparisons and gathers of texels of varied components, of the formats
-//! of whole-byte components alike, checked against Direct3D's conversions; and resource binding
+//! targets; loads, samples, comparisons, gathers, multisampled loads, typed buffer loads and typed
+//! storage loads of texels of varied components, of the formats of whole-byte components alike,
+//! checked against Direct3D's conversions; and resource binding
 //! tier 1's counts bound at once. Needs a GPU: run it through `tools/graphics-rig/gpu-job`.
 //! `WEBGPU_API` picks wgpu's
 //! API (dx12, vulkan, metal).
@@ -36,8 +37,10 @@ use wcontainers_direct3d_12::state::{
     Blend, COMPARISON_ALWAYS, COMPARISON_LESS_EQUAL, CULL_MODE_NONE, DepthStencil, FILL_MODE_SOLID,
     InputElement, Raster, TOPOLOGY_TRIANGLELIST, TOPOLOGY_TYPE_TRIANGLE,
 };
-use wcontainers_direct3d_12::{Device, GraphicsPipelineDesc, PipelineId, ResourceId};
-use wcontainers_directx_graphics_infrastructure::d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+use wcontainers_direct3d_12::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
+use wcontainers_directx_graphics_infrastructure::d3d::{
+    DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT, TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+};
 use wcontainers_directx_graphics_infrastructure::required::MOST_SAMPLES;
 use wcontainers_directx_graphics_infrastructure::{
     dxgi, dxgi_format, support1, support2, typeless_group,
@@ -461,6 +464,8 @@ const ADDRESS_CLAMP: u32 = 3;
 const ROOT_UAV: u32 = 4;
 /// `D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING`.
 const DEFAULT_MAPPING: u32 = 0x1688;
+/// `D3D12_LOGIC_OP_COPY`.
+const LOGIC_OP_COPY: u32 = 2;
 /// `D3D12_BLEND_ONE` and `D3D12_BLEND_OP_ADD`.
 const BLEND_ONE: u32 = 2;
 const BLEND_OP_ADD: u32 = 1;
@@ -637,14 +642,31 @@ impl Programs {
         outputs: Outputs,
         what: &str,
     ) -> PipelineId {
+        self.try_pipeline(device, (vs, input), ps, outputs)
+            .unwrap_or_else(|e| panic!("{what}: the pipeline refused: {e:?}"))
+    }
+
+    /// [`Programs::pipeline`], refused or made.
+    fn try_pipeline(
+        &self,
+        device: &mut Device<WebGpu>,
+        (vs, input): (&[u8], u32),
+        ps: &[u8],
+        outputs: Outputs,
+    ) -> Result<PipelineId, Error> {
         let Outputs {
             targets,
             blended,
             depth,
             samples,
+            logic,
         } = outputs;
         let mut blend = Blend::default();
         blend.targets[0].write_mask = ColorWrites::all().bits();
+        if logic {
+            blend.targets[0].logic_op_enable = true;
+            blend.targets[0].logic_op = LOGIC_OP_COPY;
+        }
         if blended {
             let t = &mut blend.targets[0];
             t.blend_enable = true;
@@ -657,46 +679,45 @@ impl Programs {
             depth_func: COMPARISON_ALWAYS,
             ..Default::default()
         };
-        device
-            .create_graphics_pipeline(&GraphicsPipelineDesc {
-                root: Some(self.graphics.clone()),
-                vs,
-                ps,
-                blend,
-                sample_mask: u32::MAX,
-                raster: Raster {
-                    fill: FILL_MODE_SOLID,
-                    cull: CULL_MODE_NONE,
-                    depth_clip: true,
-                    ..Default::default()
-                },
-                depth_stencil,
-                inputs: vec![InputElement {
-                    semantic: "VALUE".into(),
-                    semantic_index: 0,
-                    format: input,
-                    slot: 0,
-                    offset: 0,
-                    per_instance: false,
-                    step_rate: 0,
-                }],
-                topology_type: TOPOLOGY_TYPE_TRIANGLE,
-                dsv_format: depth,
-                rtv_formats: targets,
-                samples,
+        device.create_graphics_pipeline(&GraphicsPipelineDesc {
+            root: Some(self.graphics.clone()),
+            vs,
+            ps,
+            blend,
+            sample_mask: u32::MAX,
+            raster: Raster {
+                fill: FILL_MODE_SOLID,
+                cull: CULL_MODE_NONE,
+                depth_clip: true,
                 ..Default::default()
-            })
-            .unwrap_or_else(|e| panic!("{what}: the pipeline refused: {e:?}"))
+            },
+            depth_stencil,
+            inputs: vec![InputElement {
+                semantic: "VALUE".into(),
+                semantic_index: 0,
+                format: input,
+                slot: 0,
+                offset: 0,
+                per_instance: false,
+                step_rate: 0,
+            }],
+            topology_type: TOPOLOGY_TYPE_TRIANGLE,
+            dsv_format: depth,
+            rtv_formats: targets,
+            samples,
+            ..Default::default()
+        })
     }
 }
 
-/// What a pipeline draws into: targets of `targets`, blended (adding) where `blended`, or a depth
-/// target of `depth`, of `samples` samples.
+/// What a pipeline draws into: targets of `targets`, blended (adding) where `blended`, copied by a
+/// logic operation where `logic`, or a depth target of `depth`, of `samples` samples.
 struct Outputs {
     targets: Vec<u32>,
     blended: bool,
     depth: u32,
     samples: u32,
+    logic: bool,
 }
 
 impl Outputs {
@@ -706,6 +727,7 @@ impl Outputs {
             blended,
             depth: dxgi::UNKNOWN,
             samples,
+            logic: false,
         }
     }
 }
@@ -899,6 +921,50 @@ fn reads_zero(kind: Kind, words: [u32; 4]) -> bool {
     })
 }
 
+/// Whether `words` read are the varied texel's `want` (none: any), normalised ones within the
+/// conversions' rounding, `tolerance` bits.
+fn read_varied(words: [u32; 4], want: [Option<u32>; 4], tolerance: u32) -> bool {
+    words
+        .iter()
+        .zip(want)
+        .all(|(&w, e)| e.is_none_or(|e| w.abs_diff(e) <= tolerance))
+}
+
+/// An upload buffer of `size` bytes holding texel `bytes` in every texel of the first subresource
+/// of a 2D texture of `format`, laid out for a copy from its start.
+fn filled(device: &mut Device<WebGpu>, format: u32, bytes: &[u8], size: u64) -> ResourceId {
+    let desc = texture(format, DIMENSION_TEXTURE2D, 1, 1, 1, 0);
+    let (f, _) = desc.footprints(0, 1, 0).unwrap();
+    let pitch = f[0].footprint.row_pitch as usize;
+    let mut fill = vec![0; size as usize];
+    for row in 0..f[0].rows as usize {
+        for x in 0..f[0].footprint.width as usize {
+            let at = row * pitch + x * bytes.len();
+            fill[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+    uploaded(device, &fill)
+}
+
+/// The colour a clear of a target of `kind` takes to store the loaded words `expected`, and the
+/// words a load then gives: Direct3D converts the colour's floats to the format, so an integer
+/// component a float does not hold exactly is not checked (none).
+fn clear_of(kind: Kind, expected: [u32; 4]) -> ([f32; 4], [Option<u32>; 4]) {
+    let exact = |w: u32| match kind {
+        Kind::Float => (f32::from_bits(w), Some(w)),
+        Kind::Uint => {
+            let c = w as f32;
+            (c, (f64::from(c) == f64::from(w)).then_some(w))
+        }
+        Kind::Sint => {
+            let c = w as i32 as f32;
+            (c, (f64::from(c) == f64::from(w as i32)).then_some(w))
+        }
+    };
+    let pairs = expected.map(exact);
+    (pairs.map(|p| p.0), pairs.map(|p| p.1))
+}
+
 /// A single-sampled 2D texture of `format` with `flags`, and the commands copying zeros into its
 /// first subresource from `zeros`, an upload buffer of zeros as large as any footprint needs.
 fn zeroed(
@@ -964,7 +1030,8 @@ fn first_texel(
 
 /// Uses every ability answered for DXGI format `format` that needs a program; how many uses were
 /// made. Each program reads zeros, so what it read is checked to be zero, and loads, samples,
-/// comparisons and gathers of the formats `varied_texel` decodes also read varied texels, checked
+/// comparisons, gathers, multisampled loads (of a cleared target), typed buffer loads and typed
+/// storage loads of the formats `varied_texel` decodes also read varied texels, checked
 /// against Direct3D's conversions; stores and draws are
 /// checked to have written the first texel, atomics to have returned and left what Direct3D's
 /// operations give.
@@ -1061,21 +1128,12 @@ fn program_uses_of(format: u32) -> usize {
     // Reads of a texture whose every texel has varied components, of the formats `varied_texel`
     // decodes: a load gives the texel; a linear sample and a gather of equal texels give its
     // components and its red ones, a comparison with 0.5 whether 0.5 is at most its red.
-    if format == view
-        && let Some((bytes, expected, tolerance)) = varied_texel(format)
-    {
+    let varied_read = varied_texel(format).filter(|_| format == view);
+    let varied_upload = varied_read
+        .as_ref()
+        .map(|(bytes, ..)| filled(&mut device, format, bytes, zero_bytes));
+    if let (Some((_, expected, tolerance)), Some(varied)) = (varied_read.clone(), varied_upload) {
         let what = format!("format {format}: reads of varied texels");
-        let desc = texture(format, DIMENSION_TEXTURE2D, 1, 1, 1, 0);
-        let (f, _) = desc.footprints(0, 1, 0).unwrap();
-        let pitch = f[0].footprint.row_pitch as usize;
-        let mut fill = vec![0; zero_bytes as usize];
-        for row in 0..f[0].rows as usize {
-            for x in 0..f[0].footprint.width as usize {
-                let at = row * pitch + x * bytes.len();
-                fill[at..at + bytes.len()].copy_from_slice(&bytes);
-            }
-        }
-        let varied = uploaded(&mut device, &fill);
         let (t, copy, _) = zeroed(&mut device, format, 0, varied, &what);
         let float = |w: u32| f64::from(f32::from_bits(w));
         // Filtering equal texels may round in the last bits.
@@ -1120,16 +1178,17 @@ fn program_uses_of(format: u32) -> usize {
             let what = format!("format {format}: {name} of varied texels");
             let views = [srv(t, SRV_DIMENSION_TEXTURE2D), Descriptor::Empty];
             let words = programs.dispatch(&mut device, cs, views, vec![copy.clone()], &what);
-            let near = words.iter().zip(want).all(|(&w, e)| match e {
-                None => true,
-                Some(e) if bit == support1::SHADER_LOAD => w.abs_diff(e) <= tolerance,
-                Some(e) => near_float(w, e),
-            });
+            let near = match bit {
+                support1::SHADER_LOAD => read_varied(words, want, tolerance),
+                _ => words
+                    .iter()
+                    .zip(want)
+                    .all(|(&w, e)| e.is_none_or(|e| near_float(w, e))),
+            };
             assert!(near, "{what}: read {words:x?}, Direct3D gives {want:x?}");
             used += 1;
         }
         device.destroy_resource(t);
-        device.destroy_resource(varied);
     }
 
     // A load of each sample of a multisampled texture cleared to zeros.
@@ -1175,8 +1234,30 @@ fn program_uses_of(format: u32) -> usize {
                 &what,
             );
             assert!(reads_zero(kind, words), "{what}: read {words:x?} of zeros");
-            device.destroy_resource(ms);
             used += 1;
+            // Every sample cleared to the varied texel's components.
+            if let Some((_, expected, tolerance)) = varied_read.clone().filter(|_| !depth) {
+                let what = format!("{what} of varied texels");
+                let (color, want) = clear_of(kind, expected);
+                let clear = Command::ClearTarget {
+                    view: Descriptor::RenderTarget(target(ms, format)),
+                    color,
+                    rects: vec![],
+                };
+                let words = programs.dispatch(
+                    &mut device,
+                    programs::MULTISAMPLE_LOAD[k],
+                    views,
+                    vec![clear],
+                    &what,
+                );
+                assert!(
+                    read_varied(words, want, tolerance),
+                    "{what}: read {words:x?}, Direct3D gives {want:x?}"
+                );
+                used += 1;
+            }
+            device.destroy_resource(ms);
         }
     }
 
@@ -1216,6 +1297,31 @@ fn program_uses_of(format: u32) -> usize {
         );
         assert!(reads_zero(kind, words), "{what}: read {words:x?} of zeros");
         used += 1;
+        if let Some((_, expected, tolerance)) = varied_read.clone()
+            && let Some(varied) = varied_upload
+        {
+            let what = format!("{what}: a load of a varied element");
+            let element = Command::CopyBuffer {
+                dst: b,
+                dst_offset: 0,
+                src: varied,
+                src_offset: 0,
+                size: u64::from(ELEMENT_BYTES),
+            };
+            let words = programs.dispatch(
+                &mut device,
+                programs::BUFFER_LOAD[k],
+                views,
+                vec![element],
+                &what,
+            );
+            let want = expected.map(Some);
+            assert!(
+                read_varied(words, want, tolerance),
+                "{what}: read {words:x?}, Direct3D gives {want:x?}"
+            );
+            used += 1;
+        }
         if has(support1::TYPED_UNORDERED_ACCESS_VIEW) && has2(support2::UAV_TYPED_STORE) {
             let what = format!("format {format}: a typed buffer store");
             let views = [Descriptor::Empty, view(uav(b, UAV_DIMENSION_BUFFER))];
@@ -1280,6 +1386,28 @@ fn program_uses_of(format: u32) -> usize {
                 "{what}: read {words:x?} of zeros"
             );
             used += 1;
+            // Its first component of a texture of varied texels.
+            if let Some((_, expected, tolerance)) = varied_read.clone()
+                && let Some(varied) = varied_upload
+            {
+                let what = format!("{what} of varied texels");
+                let (v, copy, _) =
+                    zeroed(&mut device, format, FLAG_UNORDERED_ACCESS, varied, &what);
+                let words = programs.dispatch(
+                    &mut device,
+                    programs::TYPED_LOAD[k],
+                    [Descriptor::Empty, uav(v, UAV_DIMENSION_TEXTURE2D)],
+                    vec![copy],
+                    &what,
+                );
+                let want = [Some(expected[0]), None, None, None];
+                assert!(
+                    read_varied(words, want, tolerance),
+                    "{what}: read {words:x?}, Direct3D gives {want:x?}"
+                );
+                device.destroy_resource(v);
+                used += 1;
+            }
         }
         for (bit, by_kind, expected) in programs::ATOMICS {
             if !has2(bit) {
@@ -1438,6 +1566,7 @@ fn program_uses_of(format: u32) -> usize {
             blended: false,
             depth: format,
             samples: 1,
+            logic: false,
         };
         let pso = programs.pipeline(&mut device, vs, &[], outputs, &what);
         let dsv = Descriptor::DepthStencil {
@@ -1464,8 +1593,211 @@ fn program_uses_of(format: u32) -> usize {
         used += 1;
     }
     device.destroy_resource(zeros);
+    if let Some(varied) = varied_upload {
+        device.destroy_resource(varied);
+    }
     device.destroy_descriptor_heap(programs.heap);
     used
+}
+
+/// The formats `TypedUAVLoadAdditionalFormats` promises typed storage loads of beyond `R32_*`
+/// (Microsoft's "Typed unordered access view loads").
+const ADDITIONAL_TYPED_LOADS: [u32; 15] = [
+    dxgi::R32G32B32A32_FLOAT,
+    dxgi::R32G32B32A32_UINT,
+    dxgi::R32G32B32A32_SINT,
+    dxgi::R16G16B16A16_FLOAT,
+    dxgi::R16G16B16A16_UINT,
+    dxgi::R16G16B16A16_SINT,
+    dxgi::R8G8B8A8_UNORM,
+    dxgi::R8G8B8A8_UINT,
+    dxgi::R8G8B8A8_SINT,
+    dxgi::R16_FLOAT,
+    dxgi::R16_UINT,
+    dxgi::R16_SINT,
+    dxgi::R8_UNORM,
+    dxgi::R8_UINT,
+    dxgi::R8_SINT,
+];
+
+/// `D3D12_OPTIONS`' answers beyond formats and binding counts that name abilities, each asked and
+/// used: resource heap tier 2's heaps holding a buffer, a texture and a target at once, each read
+/// or drawn; `TypedUAVLoadAdditionalFormats` present exactly where each format it names is
+/// answered with typed storage loads (which `every_answered_format_ability_is_served` uses);
+/// logic operations drawn where answered present and refused by name where answered absent.
+#[test]
+fn every_answered_option_is_served() {
+    let mut device = Device::new(webgpu());
+    let caps = device.backend().caps().clone();
+    let o = options(&caps);
+
+    let typed_loads = ADDITIONAL_TYPED_LOADS
+        .iter()
+        .all(|&f| format_support(&caps, f).support2 & support2::UAV_TYPED_LOAD != 0);
+    assert_eq!(
+        o.typed_uav_load_additional_formats, typed_loads,
+        "TypedUAVLoadAdditionalFormats"
+    );
+
+    let programs = Programs::new(&mut device);
+    let rgba8 = dxgi::R8G8B8A8_UNORM;
+    let desc = texture(rgba8, DIMENSION_TEXTURE2D, 1, 1, 1, 0);
+    let (f, total) = desc.footprints(0, 1, 0).unwrap();
+    let (bytes, expected, tolerance) = varied_texel(rgba8).unwrap();
+    let upload = filled(&mut device, rgba8, &bytes, total);
+    // Zeros for the vertices and for a texture of `R8G8B8A8_UINT`.
+    let zeros = uploaded(
+        &mut device,
+        &vec![0; total.max(u64::from(3 * ELEMENT_BYTES)) as usize],
+    );
+    let vs = (
+        programs::VERTEX[Kind::Float as usize],
+        dxgi::R32G32B32A32_FLOAT,
+    );
+    let view = |resource, dimension| {
+        Descriptor::ShaderResource(ResourceView {
+            resource,
+            format: rgba8,
+            dimension,
+            mapping: DEFAULT_MAPPING,
+            first_element: 0,
+            count: 1,
+            stride: 0,
+            mip: 0,
+            first_layer: 0,
+            layers: 1,
+            flags: 0,
+            min_lod: 0,
+        })
+    };
+
+    assert_eq!(o.resource_heap_tier, 2, "ResourceHeapTier");
+    let what = "a heap holding a buffer, a texture and a target";
+    let at = DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    let heap = device
+        .create_heap(3 * at, at, HeapType::Default, 0)
+        .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+    let target_desc = texture(rgba8, DIMENSION_TEXTURE2D, 1, 1, 1, FLAG_RENDER_TARGET);
+    let [b, t, rt] = [
+        (0, buffer(u64::from(ELEMENT_BYTES), 0)),
+        (at, desc),
+        (2 * at, target_desc),
+    ]
+    .map(|(offset, d)| {
+        device
+            .create_placed(heap, offset, &d)
+            .unwrap_or_else(|e| panic!("{what}: placed at {offset}: {e:?}"))
+    });
+    let want = expected.map(Some);
+    let element = Command::CopyBuffer {
+        dst: b,
+        dst_offset: 0,
+        src: upload,
+        src_offset: 0,
+        size: u64::from(ELEMENT_BYTES),
+    };
+    let words = programs.dispatch(
+        &mut device,
+        programs::BUFFER_LOAD[Kind::Float as usize],
+        [view(b, SRV_DIMENSION_BUFFER), Descriptor::Empty],
+        vec![element],
+        what,
+    );
+    assert!(
+        read_varied(words, want, tolerance),
+        "{what}: its buffer read {words:x?}, Direct3D gives {want:x?}"
+    );
+    let copy = Command::CopyTexture {
+        dst: CopyLocation::Subresource {
+            resource: t,
+            index: 0,
+        },
+        at: [0; 3],
+        src: CopyLocation::Footprint {
+            resource: upload,
+            footprint: f[0].footprint,
+        },
+        area: None,
+    };
+    let words = programs.dispatch(
+        &mut device,
+        programs::LOAD[Kind::Float as usize],
+        [view(t, SRV_DIMENSION_TEXTURE2D), Descriptor::Empty],
+        vec![copy],
+        what,
+    );
+    assert!(
+        read_varied(words, want, tolerance),
+        "{what}: its texture read {words:x?}, Direct3D gives {want:x?}"
+    );
+    let pso = programs.pipeline(
+        &mut device,
+        vs,
+        programs::PIXEL[Kind::Float as usize],
+        Outputs::colour(vec![rgba8], false, 1),
+        what,
+    );
+    let rtv = Descriptor::RenderTarget(target(rt, rgba8));
+    let mut commands = vec![Command::ClearTarget {
+        view: rtv,
+        color: [0.0; 4],
+        rects: vec![],
+    }];
+    let vertices = device.address(zeros);
+    commands.extend(draw(
+        pso,
+        &programs.graphics,
+        vec![rtv],
+        None,
+        vertices,
+        None,
+    ));
+    run(&mut device, commands, what);
+    let texel = first_texel(&mut device, rt, f[0], what);
+    assert_eq!(texel, [u8::MAX; 4], "{what}: its target not drawn");
+    device.destroy_pipeline(pso);
+    for r in [b, t, rt] {
+        device.destroy_resource(r);
+    }
+    device.destroy_heap(heap);
+
+    let what = "logic operations";
+    let uint = dxgi::R8G8B8A8_UINT;
+    let outputs = Outputs {
+        logic: true,
+        ..Outputs::colour(vec![uint], false, 1)
+    };
+    let made = programs.try_pipeline(
+        &mut device,
+        vs,
+        programs::PIXEL[Kind::Uint as usize],
+        outputs,
+    );
+    match (o.output_merger_logic_op, made) {
+        (true, Ok(pso)) => {
+            let (t, zero, f) = zeroed(&mut device, uint, FLAG_RENDER_TARGET, zeros, what);
+            let rtv = Descriptor::RenderTarget(target(t, uint));
+            let mut commands = vec![zero];
+            commands.extend(draw(
+                pso,
+                &programs.graphics,
+                vec![rtv],
+                None,
+                vertices,
+                None,
+            ));
+            run(&mut device, commands, what);
+            let texel = first_texel(&mut device, t, f, what);
+            assert_eq!(texel, [1; 4], "{what}: not copied");
+            device.destroy_pipeline(pso);
+            device.destroy_resource(t);
+        }
+        (false, Err(Error::NotImplemented(_))) => {}
+        (answered, made) => panic!("{what}: answered {answered}, the pipeline {made:?}"),
+    }
+    device.destroy_resource(upload);
+    device.destroy_resource(zeros);
+    device.destroy_descriptor_heap(programs.heap);
 }
 
 /// What each unordered access view past the result holds, by its register: this times it.
