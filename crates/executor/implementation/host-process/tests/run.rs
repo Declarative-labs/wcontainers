@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use wcontainers_abi::{
-    Access, Cpu, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning,
+    Access, Cpu, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, SharedId, ThreadId,
+    Warning,
 };
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::{Address, Instruction, Reg};
@@ -529,6 +530,198 @@ fn pieces_an_earlier_memory_loaded_next_are_loaded_ahead_only_where_their_code_a
         }
     );
     assert_eq!(ahead, CHANGED_PAGE + 1);
+}
+
+/// What the function in the second block adds.
+const ADDED_THERE: u64 = 7;
+
+/// Where in the function's block a longer function starts, which adds as the first does and returns through two jumps
+/// by register, each to a piece of its own.
+const LONGER: u64 = 0x100;
+const SECOND_HOP: u64 = 0x200;
+const THIRD_HOP: u64 = 0x300;
+
+/// A caller and a function, each the first page of a block of its own: the caller loads the function's address from the
+/// page after its own, calls it, then calls getpid and exit; the function adds [`ADDED_THERE`] to x0 and returns. The
+/// function's block also holds a [`LONGER`] one.
+fn two_blocks(cpu: &mut HostProcessExecutor) -> (SharedId, SharedId) {
+    let add = |rd, rn, value| encode::add_immediate(rd, rn, value).expect("an add");
+    let mut caller = vec![
+        encode::movz(0, 0, 0),
+        encode::adr(4, PAGE as i64 - INSTRUCTION).expect("adr"),
+        encode::load_store(form::LDR, 9, 4, 0, WORD).expect("ldr"),
+        encode::branch_register(form::BLR, 9),
+    ];
+    caller.extend(syscall(GETPID));
+    caller.extend(syscall(EXIT));
+    let hop = |to: u64, from: u64| {
+        [
+            encode::adr(9, to as i64 - from as i64).expect("adr"),
+            encode::branch_register(form::BR, 9),
+        ]
+    };
+    let mut function = vec![0; (THIRD_HOP / INSTRUCTION as u64 + 1) as usize];
+    let mut put = |at: u64, words: &[u32]| {
+        let at = (at / INSTRUCTION as u64) as usize;
+        function[at..at + words.len()].copy_from_slice(words);
+    };
+    put(
+        0,
+        &[
+            add(0, 0, ADDED_THERE as i64),
+            encode::branch_register(form::RET, LINK),
+        ],
+    );
+    put(LONGER, &[add(0, 0, ADDED_THERE as i64)]);
+    put(
+        LONGER + INSTRUCTION as u64,
+        &hop(SECOND_HOP, LONGER + INSTRUCTION as u64),
+    );
+    put(SECOND_HOP, &hop(THIRD_HOP, SECOND_HOP));
+    put(THIRD_HOP, &[encode::branch_register(form::RET, LINK)]);
+    [caller.as_slice(), function.as_slice()]
+        .map(|words| {
+            let block = cpu.shared_new(PAGE).expect("block");
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            cpu.shared_write(block, 0, &bytes).expect("code");
+            block
+        })
+        .into()
+}
+
+/// [`run_two_blocks_kept`], its memory then dropped.
+fn run_two_blocks_at(
+    cpu: &mut HostProcessExecutor,
+    blocks: (SharedId, SharedId),
+    caller: u64,
+    function: u64,
+) -> (u64, u64) {
+    run_two_blocks_entry(cpu, blocks, caller, function, 0)
+}
+
+/// [`run_two_blocks_kept`], its memory then dropped.
+fn run_two_blocks_entry(
+    cpu: &mut HostProcessExecutor,
+    blocks: (SharedId, SharedId),
+    caller: u64,
+    function: u64,
+    entry: u64,
+) -> (u64, u64) {
+    let (memory, sum, ahead) = run_two_blocks_kept(cpu, blocks, caller, function, entry);
+    cpu.memory_drop(memory);
+    (sum, ahead)
+}
+
+/// Runs the caller of [`two_blocks`] at `caller`, its function's block at `function` and the function at `entry` in it,
+/// in a memory of its own that it keeps; that memory, x0 at its getpid and how many pieces were loaded ahead meanwhile.
+fn run_two_blocks_kept(
+    cpu: &mut HostProcessExecutor,
+    (caller_block, function_block): (SharedId, SharedId),
+    caller: u64,
+    function: u64,
+    entry: u64,
+) -> (MemoryId, u64, u64) {
+    let ahead = cpu.counters().pieces_loaded_ahead;
+    let memory = cpu.memory_new().expect("memory");
+    for (block, at) in [(caller_block, caller), (function_block, function)] {
+        cpu.shared_map(block, 0, memory, at, PAGE).expect("map");
+        cpu.set_permissions(memory, at, PAGE, Permissions::READ | Permissions::EXECUTE)
+            .expect("code");
+        cpu.code_changed(memory, at, PAGE, &[at]);
+    }
+    cpu.set_permissions(
+        memory,
+        caller + PAGE,
+        PAGE,
+        Permissions::READ | Permissions::WRITE,
+    )
+    .expect("data");
+    cpu.write(memory, caller + PAGE, &(function + entry).to_le_bytes())
+        .expect("the function's address");
+    let thread = cpu.thread_new(memory).expect("thread");
+    let mut registers = RegisterBlock::ZERO;
+    registers.pc = caller;
+    cpu.set_registers(thread, &registers);
+    let seen = run_to_exit(cpu, thread);
+    let (exit, registers, _) = &seen.exits[0];
+    assert!(
+        matches!(exit, Exit::Syscall(call) if call.number.0 == u64::from(GETPID)),
+        "{exit:?}"
+    );
+    let sum = registers.x[0];
+    cpu.thread_drop(thread);
+    (memory, sum, cpu.counters().pieces_loaded_ahead - ahead)
+}
+
+/// A memory follows only the walks of memories that have ended: while the first is kept, a second loads nothing ahead
+/// (as `sh` keeps running while each program it starts loads its own pieces); once the second has ended, a third does.
+#[test]
+fn pieces_are_loaded_ahead_only_after_a_memory_that_loaded_them_has_ended() {
+    let mut cpu = executor();
+    let blocks = two_blocks(&mut cpu);
+    let (caller, function) = (0x2_0000_0000, 0x3_0000_0000);
+    let (running, sum, ahead) = run_two_blocks_kept(&mut cpu, blocks, caller, function, 0);
+    assert_eq!((sum, ahead), (ADDED_THERE, 0));
+    assert_eq!(
+        run_two_blocks_at(&mut cpu, blocks, caller, function),
+        (ADDED_THERE, 0),
+        "while the first memory runs"
+    );
+    cpu.memory_drop(running);
+    let (sum, ahead) = run_two_blocks_at(&mut cpu, blocks, caller, function);
+    assert_eq!(sum, ADDED_THERE);
+    assert!(ahead >= 1, "after it ended, {ahead} pieces loaded ahead");
+}
+
+/// A program that loads more than one that ended before it from the same first piece does not replace its walk: a
+/// later short program loads ahead only what the short one needed (as each program `sh` starts would otherwise load
+/// `sh`'s own pieces once `sh` has ended).
+#[test]
+fn a_longer_walk_does_not_replace_a_shorter_one() {
+    let mut cpu = executor();
+    let blocks = two_blocks(&mut cpu);
+    let (caller, function) = (0x2_0000_0000, 0x3_0000_0000);
+    assert_eq!(
+        run_two_blocks_at(&mut cpu, blocks, caller, function),
+        (ADDED_THERE, 0)
+    );
+    let (sum, alike) = run_two_blocks_at(&mut cpu, blocks, caller, function);
+    assert_eq!(sum, ADDED_THERE);
+    let (sum, _) = run_two_blocks_entry(&mut cpu, blocks, caller, function, LONGER);
+    assert_eq!(sum, ADDED_THERE, "the longer function");
+    assert_eq!(
+        run_two_blocks_at(&mut cpu, blocks, caller, function),
+        (ADDED_THERE, alike),
+        "after the longer one ended"
+    );
+}
+
+/// A memory that runs a program and a library placed apart from each other otherwise than an earlier memory did (as
+/// every exec places them) loads ahead the same pieces as one that places them as the earlier one did: the next piece
+/// is found at its offset in its block, not at its distance from the piece before.
+#[test]
+fn pieces_in_another_block_are_loaded_ahead_where_that_block_is_placed() {
+    let mut cpu = executor();
+    let blocks = two_blocks(&mut cpu);
+    let (caller, function) = (0x2_0000_0000, 0x3_0000_0000);
+    assert_eq!(
+        run_two_blocks_at(&mut cpu, blocks, caller, function),
+        (ADDED_THERE, 0)
+    );
+    let (sum, alike) = run_two_blocks_at(&mut cpu, blocks, caller, function);
+    assert_eq!(sum, ADDED_THERE);
+    assert!(alike >= 1, "placed alike, {alike} pieces loaded ahead");
+    for (caller, function) in [
+        (0x2_4000_0000, 0x3_7000_0000),
+        (0x5_0000_0000, 0x1_0000_0000),
+    ] {
+        let (sum, apart) = run_two_blocks_at(&mut cpu, blocks, caller, function);
+        assert_eq!(
+            (sum, apart),
+            (ADDED_THERE, alike),
+            "the caller at {caller:#x} and the function at {function:#x}"
+        );
+    }
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use wcontainers_abi::{
-    Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume,
+    Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, SharedId,
     SystemCallNumber, SystemCallRequest, ThreadId,
 };
 use wcontainers_arm64::carry::{LinkWords, link_words, movable};
@@ -175,6 +175,9 @@ pub(super) struct Code {
     /// The kept translations of the pieces loaded first and last, and the guest address of the last, after which the
     /// next is recorded.
     loaded_last: Option<(KeptAt, KeptAt, u64)>,
+    /// Every piece this code's memories loaded and what they did after it: a walk, given to later memories only when
+    /// the code is dropped, so that it is one program's and never runs on into what a program still running loads.
+    walk: HashMap<KeptAt, After>,
 }
 
 /// Decision 16's stand-in (plan section 12): a fork child runs its parent's translated code, see
@@ -371,17 +374,37 @@ pub(super) struct Translations {
     kept: Vec<Kept>,
     /// Where the translations of each key are kept.
     by_key: HashMap<Key, Vec<KeptAt>>,
-    /// What a memory that loaded the first piece loaded after the second, the last time one did.
-    after: HashMap<(KeptAt, KeptAt), After>,
+    /// By the piece a memory loaded first, the walk of the memory that loaded it first and ended having loaded the
+    /// fewest pieces of those that did; a program that loads more stops for the rest, and none loads ahead what it
+    /// did not need.
+    walks: HashMap<KeptAt, HashMap<KeptAt, After>>,
 }
 
-/// What a memory did after loading a piece, all of it relative to the piece's guest address and its base.
+/// What a memory did after loading a piece, all of it seen from the piece's guest address, its calls from its base.
 #[derive(Default)]
 struct After {
-    /// How far from the piece the next piece it had to load was; none where it loaded no other.
-    next: Option<u64>,
+    /// Where the next piece it had to load was; none where it loaded no other.
+    next: Option<Seen>,
     /// The last targets it made for the piece's jumps: each jump's call into the floor and its target.
-    targets: Vec<(u64, u64)>,
+    targets: Vec<(u64, Seen)>,
+}
+
+impl After {
+    /// Records the last target made for the jump whose call into the floor is at `call`, replacing an older one.
+    fn record_target(&mut self, call: u64, target: Seen) {
+        match self.targets.iter_mut().find(|(at, _)| *at == call) {
+            Some(made) => made.1 = target,
+            None => self.targets.push((call, target)),
+        }
+    }
+}
+
+/// A guest address seen from another: how far from it, and the shared block and offset it was at where it was in one,
+/// so that it is found again where the two lie in mappings placed apart (a program and the libraries it loads).
+#[derive(Clone, Copy)]
+struct Seen {
+    by: u64,
+    block: Option<(SharedId, u64)>,
 }
 
 /// The bytes of the code a translation is found by; the rest of the page is compared only with what was found.
@@ -548,6 +571,7 @@ impl HostProcessExecutor {
                     hosts: BTreeMap::new(),
                     exits_to: BTreeMap::new(),
                     loaded_last: None,
+                    walk: HashMap::new(),
                 },
             );
         }
@@ -586,14 +610,19 @@ impl HostProcessExecutor {
         }
     }
 
-    /// Drops a memory's code with the memory, where no other memory uses it; the piece it loaded last had none loaded
-    /// after it.
+    /// Drops a memory's code with the memory, where no other memory uses it, and gives its walk to the memories that
+    /// load the same first piece later where no shorter one was given.
     pub(super) fn drop_code(&mut self, memory: MemoryId) {
-        if let Some(code) = self.codes.release(memory)
-            && let Some((first, last, _)) = code.loaded_last
-            && let Some(after) = self.translations.after.get_mut(&(first, last))
-        {
-            after.next = None;
+        let Some(code) = self.codes.release(memory) else {
+            return;
+        };
+        let Some((first, _, _)) = code.loaded_last else {
+            return;
+        };
+        match self.translations.walks.entry(first) {
+            Entry::Occupied(kept) if kept.get().len() < code.walk.len() => {}
+            Entry::Occupied(mut kept) => _ = kept.insert(code.walk),
+            Entry::Vacant(entry) => _ = entry.insert(code.walk),
         }
     }
 
@@ -648,9 +677,37 @@ impl HostProcessExecutor {
         Some((made.map(|made| (made, 0)), at))
     }
 
+    /// How guest `to` is seen from `from` in `memory`.
+    fn seen(&self, memory: MemoryId, from: u64, to: u64) -> Seen {
+        let block = self.memory(memory).shared.get(&to);
+        Seen {
+            by: to.wrapping_sub(from),
+            block: block.map(|&(block, delta)| (block, to.wrapping_add(delta))),
+        }
+    }
+
+    /// Where an address `seen` from `from` is in `memory`: at the same offset of the same block where it was in one
+    /// and this memory maps that offset, else as far from `from`.
+    fn found(&self, memory: MemoryId, from: u64, seen: Seen) -> u64 {
+        let near = from.wrapping_add(seen.by);
+        let Some((block, offset)) = seen.block else {
+            return near;
+        };
+        let shared = &self.memory(memory).shared;
+        if shared.get(&near) == Some(&(block, offset.wrapping_sub(near))) {
+            return near;
+        }
+        shared
+            .iter()
+            .find(|(range, (mapped, delta))| {
+                *mapped == block && range.contains(&offset.wrapping_sub(*delta))
+            })
+            .map_or(near, |(_, (_, delta))| offset.wrapping_sub(*delta))
+    }
+
     /// Makes sure a piece starting at guest `pc` is loaded in `memory`, or gives the exit that running from there is.
-    /// A piece it loads is recorded as the next one after the piece loaded last, and the pieces an earlier memory that
-    /// loaded the same piece first loaded next after it are loaded too, as long as each is kept and its code the same.
+    /// A piece it loads is recorded as the next one after the piece loaded last, and the pieces the walk given for the
+    /// memory's first piece has next after it are loaded too, as long as each is kept and its code the same.
     fn load(&mut self, memory: MemoryId, pc: u64) -> Result<(), Exit> {
         if self
             .code(memory)
@@ -670,32 +727,44 @@ impl HostProcessExecutor {
         let code = self.codes.get_mut(memory).expect("made above");
         let first = match code.loaded_last.take() {
             Some((first, last, from)) => {
-                self.translations
-                    .after
-                    .entry((first, last))
-                    .or_default()
-                    .next = Some(pc.wrapping_sub(from));
+                let next = self.seen(memory, from, pc);
+                let code = self.codes.get_mut(memory).expect("made above");
+                code.walk.entry(last).or_default().next = Some(next);
                 first
             }
             None => at,
         };
+        self.codes
+            .get_mut(memory)
+            .expect("made above")
+            .walk
+            .entry(at)
+            .or_default();
         let mut at_pc = pc;
         for _ in 0..AHEAD {
-            let Some(after) = self.translations.after.get(&(first, at)) else {
+            let Some(after) = self
+                .translations
+                .walks
+                .get(&first)
+                .and_then(|walk| walk.get(&at))
+            else {
                 break;
             };
             let (next, targets) = (after.next, after.targets.clone());
             if !targets.is_empty() {
                 let base = self.codes.get(memory).expect("made above").pieces[&at_pc].base;
-                for (call, target) in targets {
-                    self.make_last_target(memory, base + call, at_pc.wrapping_add(target));
+                for (call, seen) in targets {
+                    let target = self.found(memory, at_pc, seen);
+                    self.make_last_target(memory, base + call, target);
                     self.counters.last_targets_made_ahead += 1;
+                    let code = self.codes.get_mut(memory).expect("made above");
+                    code.walk.entry(at).or_default().record_target(call, seen);
                 }
             }
-            let Some(next) = next else {
+            let Some(seen) = next else {
                 break;
             };
-            let next = at_pc.wrapping_add(next);
+            let next = self.found(memory, at_pc, seen);
             let code = self.codes.get(memory).expect("made above");
             if code.pieces.contains_key(&next) {
                 break;
@@ -703,6 +772,9 @@ impl HostProcessExecutor {
             match self.load_piece(memory, next, false, &mut read) {
                 Ok(Some(found)) => {
                     self.counters.pieces_loaded_ahead += 1;
+                    let walk = &mut self.codes.get_mut(memory).expect("made above").walk;
+                    walk.entry(at).or_default().next = Some(seen);
+                    walk.entry(found).or_default();
                     (at, at_pc) = (found, next);
                 }
                 _ => break,
@@ -989,21 +1061,18 @@ impl HostProcessExecutor {
         let Some(code) = self.codes.get(memory) else {
             return;
         };
-        let (Some((first, _, _)), Some((&base, &start))) =
-            (&code.loaded_last, code.hosts.range(..=call).next_back())
+        let (Some(_), Some((&base, &start))) =
+            (code.loaded_last, code.hosts.range(..=call).next_back())
         else {
             return;
         };
-        let after = self
-            .translations
-            .after
-            .entry((*first, code.pieces[&start].kept))
-            .or_default();
-        let (call, target) = (call - base, target.wrapping_sub(start));
-        match after.targets.iter_mut().find(|(at, _)| *at == call) {
-            Some(made) => made.1 = target,
-            None => after.targets.push((call, target)),
-        }
+        let kept = code.pieces[&start].kept;
+        let target = self.seen(memory, start, target);
+        let code = self.codes.get_mut(memory).expect("found above");
+        code.walk
+            .entry(kept)
+            .or_default()
+            .record_target(call - base, target);
     }
 
     /// Drops the pieces of `memory` made from guest code overlapping `range`; whether one was dropped, and whether the
