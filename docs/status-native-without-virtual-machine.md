@@ -895,6 +895,9 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     other seven are then the child's (it fails at one page). Every binary once with /dev/kvm denied after it:
     Graviton4 108 passed, 1 failed (the known precise-set test; unit3-all2-arm.out), Xeon 53 passed
     (unit3-all-x86.out); clippy clean on both.
+  - Final verdict after the last code commit (de4a1037), shared tree, Graviton4, every binary once with /dev/kvm
+    denied plus the unit test (final-arm.out, load 10 to 15): 110 passed, 1 failed (the known precise-set test);
+    clippy clean. No new unsafe code this run.
   - Verdicts after the placement fixes, shared tree, every binary once with /dev/kvm denied: Graviton4 108 passed, 1
     failed (the known precise-set test; all3-arm.out), Xeon 52 passed, none failed (all2-x86.out); clippy with
     warnings denied clean on both.
