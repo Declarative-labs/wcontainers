@@ -1284,7 +1284,12 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         texels,
         twin,
         sampled,
-        dimension: view_dimension(target, false),
+        // A multisampled array's views are of its layers' 2D textures.
+        dimension: if layers.is_some() {
+            ViewDimension::D2
+        } else {
+            view_dimension(target, false)
+        },
         samples,
         layers,
     }))

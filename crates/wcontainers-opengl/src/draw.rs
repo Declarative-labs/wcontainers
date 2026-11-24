@@ -1460,10 +1460,25 @@ pub(crate) fn binding_sets<B: Backend>(
                 .and_then(|unit| bound.views.get(unit as usize))
                 .filter(|v| !v.is_null())
                 .ok_or("a multisampled array the program reads is not bound")?;
-            // SAFETY: the slot holds a reference on a live view of this driver.
-            let view = unsafe { View::<B>::of(*view) }
-                .layer_view(layer)
-                .ok_or("a layer of a multisampled array past its view's")?;
+            // A view of another kind than the program reads is read through its stand-in, every
+            // layer alike.
+            let first = built
+                .bindings
+                .iter()
+                .find(|m| {
+                    m.added.is_none()
+                        && m.kind == SlotKind::Texture
+                        && (m.slot()..m.slot() + m.count).contains(&slot)
+                })
+                .map(|m| m.binding + slot - m.slot());
+            let stand_in = stand_ins.iter().find(|&&(at, _)| Some(at) == first);
+            let view = match stand_in {
+                Some(&(_, index)) => made.stand_in_view(index),
+                // SAFETY: the slot holds a reference on a live view of this driver.
+                None => unsafe { View::<B>::of(*view) }
+                    .layer_view(layer)
+                    .ok_or("a layer of a multisampled array past its view's")?,
+            };
             entries.push(BindingEntry {
                 binding: b.binding,
                 stages: visible,
