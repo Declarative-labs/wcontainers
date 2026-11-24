@@ -3,6 +3,127 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## Where busybox sh's factor of four goes, and why the bar of 1.25 cannot be met by this design (2026-11-24)
+
+The test: busybox `sh` starting 1,000 programs (`/bin/true` in a loop) under form P against the model, release, CPU
+41 of Graviton4, /dev/kvm denied, the guest's stubs pinned to the same CPU. Machine load 14 to 33 on 96 cores
+during the runs (other tracks' jobs; CPU 41 was not theirs: 2.6% of its samples were other processes). Scratch
+w1/account: account.sh, account2.sh, account3.sh (one command each), their outputs account1-3-arm.out, the remote-only
+timers diag.py, diag2.py, diag3.py and the sample sorters samples.py and idle.py.
+
+How it was measured. The plain build's second run took 4.75, 4.76, 4.84 and 4.90 ms a program in four runs (the
+model 1.08 to 1.19 ms: the reference 0.37 to 0.42 ms, busybox natively on the same host kernel in Docker; plus two
+bare stubs made and ended, 0.29 to 0.34 ms each; plus 26 round trips of 2.9 us): 4.0 to 4.5 times the model. Then
+timers on the embedder's thread, each instant charged to the innermost timed function and to the kernel exit being
+handled, which add up to the whole run (the stubs run on the same CPU, so a turn's time holds the stub's work); they
+add about 11% (5.36 ms a program against 4.81). Below, each part's share of the timed run, then that share of the
+plain 4.81 ms. Then a cpu-clock profile of CPU 41 with call chains, split by who ran (embedder, stubs, idle, others)
+and by host system call, for what happens inside a turn.
+
+The parts, per program:
+- Loading translated pieces: 32%, about 1,550 us. 434 pieces: 333 into the exec'd busybox (each exec at a new random
+  base, so every piece is moved) and 101 into the fork child (at its parent's base, but its code area starts
+  empty). About 3.6 us a piece (timed: finding the kept translation by its key 0.67, writing its moved bytes and
+  address places 1.85, placing 0.23, its slot 0.22, last targets 0.13, the walk 0.4), plus writing the changed
+  pages into the code area's memfd with the cache maintenance, 0.21 ms a program. The model has none of it.
+- Turns: 33%, about 1,590 us. 54 a program: 26 kernel entries (21 system calls, 5 faults the kernel answers), 16
+  copy-on-write faults the executor answers itself, 11 stops at a piece not loaded yet, 1 applying a fork child's
+  commands. The transition itself is the round trip, 2.9 us (0.16 ms for 54). The rest is host work in the stub:
+  34 turns carry 156 commands a program, of which 88 map one slot-table page each and send the code area's
+  descriptor again with it (96 descriptors sent a program with 6 file blocks and 2 code areas), 51 protections, 7
+  maps, 2 others. Timed, a turn with commands took 47 us (a new memory's) or 62 us (a fork child's), one without
+  10 to 12 us. In the profile: the stub's mmap 6.1% of the CPU, its system-call entries and exits 5%, page faults
+  3.3%, recvmsg 2.9%, mprotect 2.4%, futex 2.5%; the embedder's sendmsg 3.0%; the guest's own translated code only
+  1.8% (about 90 us a program) and the floor 0.8%.
+- Stubs: 16%, about 780 us, 2 a program (the fork child's and the exec's), 390 us each: the start 220 (the zygote's
+  fork, the stub mapping its pages, installing its filter: the filter's install alone is 3.4% of the CPU, about 80
+  us a stub), the end 150 (waiting for its exit: the host tearing its mappings down is 4.7%), the reap 23. The
+  model counts two bare stubs made, killed and reaped, 300 us each.
+- The kernel reading the whole program file at each exec: 5.5%, about 265 us (two reads of 146 us; the kernel
+  track's `loader::program_of`, below under Requests to other tracks).
+- The kernel's own work: 5.0%, about 240 us (exec 130, exit 45, every other call under 15).
+- The kernel's memory calls: 8.1%, about 390 us: dropping a memory at exit and exec 170 (its code area's records,
+  descriptors and mappings), the executor's copy-on-write copies 75 (7 copies of 8 pages), the faults' unmapping of
+  shared blocks 36, the kernel's reads and writes of guest memory by position 60, the fork's duplicate 21, the rest
+  under 10 each.
+- Also seen in the profile: 7.7% of CPU 41's samples idle; a trace of every switch on CPU 41 for 2 s in a later run
+  found it never idle, so that is not a wait of ours that recurs. Not explained.
+
+The floors: each part done as well as it can be while every guest process stays a host process with its own code
+area, guest memory in a memfd, and the kernel in the embedder.
+- Loading: about 0.3 ms. Each new process's code must be written into its own code area; that write is measured
+  (0.21 ms timed, about 0.19 plain). The rest is per-piece work (3.4 us) that could be a lookup and a copy
+  (expected about 0.25 us a piece, 0.1 ms; not measured).
+- Turns: about 0.31 ms beyond the guest's own code: the 26 kernel entries' round trips (0.076, the model's), the 16
+  copy-on-write faults' round trips and 7 copies (0.05 and 0.05, measured), no stop for a piece (pieces loaded ahead
+  completely), per new process the code area and slot table mapped once with one descriptor each and the file's
+  blocks (about 10 mappings and 8 descriptors a program, expected 5 us each, 0.05), and the fork child's first
+  touches that a host fork would not take (expected half of the measured 0.16 ms of faults). The guest's own
+  mappings and first touches are in the reference too.
+- Stubs: the model's 0.62 ms. A real stub's end costs 0.15 ms a program more than a bare one's kill, but that is
+  the host tearing down what the program mapped, which Linux's own exit also does.
+- The file read: 0 (read the headers only, as Linux does).
+- The kernel's own work and memory calls: the model already holds Linux's own fork, exec, exit and wait inside the
+  reference, so the floor is ours being as fast as Linux's: nothing beyond the model. Today 0.63 ms against about
+  0.31 ms of the reference that is not the guest's code (taking the guest's code as P's measured 90 us).
+- Sum: the reference 0.40 + the stubs 0.62 + the turns' 0.31 + loading 0.3 = about 1.63 ms a program, 1.4 times a
+  model of 1.15 ms (1.37 to 1.51 over the measured models of 1.08 to 1.19 ms).
+
+So the bar of 1.25 cannot be met by this design: even done as well as it can be, form P starting programs costs
+about 1.4 times the model, because every new host process must be given its translated code and its code area's
+mappings, which a native exec does not need. The bar this design can meet is about 1.5 times the model. Today it
+is 4.0 to 4.5.
+
+The changes of design that would move it, ranked by what they remove, measured in the timed run:
+1. One translated image shared by the processes that run the same file at the same base: a fork child maps its
+   parent's code area and slot table instead of loading again, and an exec maps the image kept for that file at
+   that base. The fork-child half removes 101 loads, 34 slot-page commands with their descriptors and the child's
+   code-area set-up: of its 0.35 ms of loads and 0.44 ms of command-carrying turns timed (about 0.7 ms plain, 15%),
+   all the loads and most of the turns. The
+   exec half removes the other 333 loads and the exec'd process's code-area set-up: about 1.4 ms timed, 1.25 ms plain
+   (26%), but only when the exec lands at the same base, so it needs either the kernel to keep a file's base across
+   execs (fewer random bases than Linux gives: the owner's ruling) or translated code that does not depend on the
+   base (the translator's). With both halves loading's floor goes to a few mappings and the sum to about 1.28 ms,
+   1.1 times the model (expected from the measured parts). The question is decision 16 of docs/native.md (loaded
+   translations shared between processes) asked for P; until the owner rules it is built behind a private stand-in.
+2. Fewer host calls inside turns: the stub keeps the code area's descriptor and maps the slot table whole once, so
+   no slot page needs its own command and descriptor. It removes the embedder's 96 descriptor sends a program (0.20
+   ms timed), the stub's receives (2.9% of the CPU, about 0.14 ms) and most of its 88 slot mmaps (within its 6.1%
+   mmap share, up to 0.29 ms): expected 0.4 to 0.6 ms a program (8 to 12%). No ruling needed; built first.
+3. Not ranked: a pool of stubs started ahead takes their start (0.22 ms each) off the program's path only while
+   another CPU is free, and the model counts stub creation anyway, so the ratio does not move on one CPU.
+What neither removes: the per-piece cost of whatever is still loaded (3.6 us against a floor under 1 us) and the
+kernel's whole-file read (the kernel track's). Runs 2 to 4 build 2, then the fork-child half of 1, each measured
+before and after, alternating, on a quiet machine.
+
+## Findings carried from the fourth check of the plan, each settled or open
+
+- The zygote's inherited restartable-sequences registration: settled, plan dec511ab (4.1, 6); code f655e9b0 (the
+  zygote unregisters it and proves none is left), tested by tests/zygote.rs's migration test on both machines.
+- 3.1's claim that the kernel places mappings low first (K2): settled, plan dec511ab (3.1, 13); K2 landed in the
+  kernel and tests/kernel.rs compares addresses, memory size and turns (round 5 run 2); `count_at_every_stop` met
+  (round 7 run 2).
+- The SVE ABI's promise after a system call: settled, plan dec511ab (3.8 quotes sve.rst); the probe stays as a
+  check (ebe9a8e9) and SVE builds are refused (1f5abd8a).
+- The zygote's own end: settled, plan dec511ab (4.1, 7); code 924c92c2 forks a new zygote, its stubs ended as
+  killed, counted "zygote ended" (tests/host.rs).
+- I's checked address and no check of a pair's last byte: settled in the plan, dec511ab (3.2, 7); the code is W2's
+  (form I is not built).
+- The stack probe fault's counter: settled in the plan, dec511ab (3.2, "stack probe faulted"); the code is W2's.
+- The span from the request word to the futex wait: settled, plan dec511ab (3.6); code 5f5feb5e (a stop landing
+  there publishes again), tested by tests/stop.rs.
+- Aliasing instruction caches: settled, plan dec511ab (3.4); the probe reads `CTR_EL0` (Graviton4: DIC and IDC set,
+  L1Ip PIPT).
+
+## Requests to other tracks
+
+- Kernel track: `loader::program_of` (crates/kernel/implementation/linux/loader.rs) copies a regular file whole with
+  `file.bytes(cpu)` at every exec; for busybox that is two `shared_read` calls of 146 us each, 5.5% of form P's
+  time starting programs (and the same copy under every executor). Wanted: keep the file in `Program` (as the
+  backend case keeps its handle), put only its first bytes in `Program::bytes` (Linux's `prepare_binprm` reads 256
+  for the `#!` check and the header), and have `file_bytes` read just the range asked through `Regular::read`; the
+  segments themselves are mapped from the file's blocks and need no copy.
+
 ## Where things stand
 
 - W0 (the plan for both forms) is accepted (runs 1 to 6, four independent checks; its history is in git, commit
@@ -1116,6 +1237,13 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     conformance 20 of 21 (the known precise-set test); clippy with warnings denied clean. The Xeon from the same tree
     (verdict1-x86.out, load 3 to 19): its 54 tests of 13 binaries pass (the translated-code binaries build none there).
 
+- W1 round 9 run 1 (2026-11-24, 10:40 UTC on; the orchestrator's round 4 run 1), scratch w1/account, Graviton4:
+  - Conforming: the executor suite's run moved to conformance_run.rs with its `path` line (8d1ba890), as the notice
+    of 2026-11-24 asks; built and run with /dev/kvm denied: 20 passed, 1 failed (the known precise-set test);
+    clippy with warnings denied clean on every target (rename-arm.out). No interface change touched the executor,
+    memory space or volatile bytes since round 4. No unsafe code added or touched.
+  - The measured account of busybox `sh` against the model, at the top of this file. Nothing else built.
+
 ## W1 not complete: the gap list
 
 W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
@@ -1127,7 +1255,8 @@ known:
   programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
   1): 4.36 times the model (bar 1.25; 9.25 before), 4.29 to 5.01 since round 8 run 1 read guest memory by position
   instead of through mapped windows (Departures), 3.78 to 4.44 since round 8 run 2 loaded moved pieces by their bytes
-  alone and read each page once a load; per program about 1.45 ms of memory calls (about 0.6 ms of it the
+  alone and read each page once a load (the account at the top of this file: the design's floor is about 1.4 times
+  the model, so this bar cannot be met by it; about 1.5 can); per program about 1.45 ms of memory calls (about 0.6 ms of it the
   model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
   workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
   page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
@@ -1179,7 +1308,10 @@ round 8 run 1 read and written by position, adding no mapping); register isolati
   primitive); when they land, each use here becomes a call of one.
 - W1 is not complete (gap list). In order: busybox `sh`'s bar, the round trip's margin, the adversarial fork with a
   writing sibling, `Execution::restored`; x86-64 and form I are W3's and W2's.
-- busybox `sh`'s bar (3.78 to 4.44 times the model, round 8 run 2): the loads (440 a program; left after round 8 run 2:
+- busybox `sh`'s bar: the account at the top of this file replaces what follows in this item. Next: the stub keeps
+  the code area's descriptor and maps the slot table whole once (its change 2), then a fork child maps its parent's
+  code area and slot table (the fork-child half of its change 1, behind a private stand-in for decision 16), each
+  measured before and after, alternating. Older notes: the loads (440 a program; left after round 8 run 2:
   the key's hash, comparing the rest of the page with the kept code, writing the moved address places, placing, the
   slot; perf2-arm.out) and the kernel's read of the whole program file at each exec (7 to 8%, the kernel track's
   `loader::program_of`), and the memory calls
@@ -1208,6 +1340,10 @@ round 8 run 1 read and written by position, adding no mapping); register isolati
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- The account (scratch w1/account): each of account.sh, account2.sh and account3.sh is one `arm-run` command with
+  its Python helpers sent as base64 in environment variables (DIAG, DIAG2, DIAG3, SAMPLES, IDLE; the lines used are
+  in this run's outputs). The timers patch the remote copy only and are lost at the next copy.
 
 - Since round 8 run 2: scratch w1/r8run2. check.sh is round 6's; perf-bb.sh profiles CPU 41 during busybox `sh` and
   keeps the speed test it built as speed-before; ab-file.sh (`FILE=<path> BEFORE=<base64 of its committed text>`, then
