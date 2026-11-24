@@ -303,6 +303,18 @@ fn outside(i: &Iced, starts: Starts) -> Option<&'static str> {
     (!cut).then_some("a guest access not cut to 32 bits")
 }
 
+/// The first host instruction of a piece that breaks the window's rule, with what it breaks.
+fn first_outside(host: &[(usize, Iced)]) -> Option<(usize, &'static str)> {
+    let mut starts = Starts::default();
+    for (at, i) in host {
+        if let Some(what) = outside(i, starts).or_else(|| rsp_outside(i, starts)) {
+            return Some((*at, what));
+        }
+        starts = starts.after(i);
+    }
+    None
+}
+
 fn string(i: &Iced) -> bool {
     (0..i.op_count()).any(|n| {
         matches!(
@@ -379,18 +391,15 @@ fn every_guest_access_is_cut_to_the_window() {
                     continue;
                 };
                 pieces += 1;
-                let mut starts = Starts::default();
-                for (at, i) in host(&piece.bytes) {
-                    strings += u64::from(string(&i));
-                    if let Some(what) = outside(&i, starts).or_else(|| rsp_outside(&i, starts)) {
-                        panic!(
-                            "case {case} of seed {seed:#x} ({way:?}, counted {counted}): {what} at {at}\nguest \
-                             {guest:02x?}\n{}",
-                            listing(&piece.bytes)
-                        );
-                    }
-                    accesses += u64::from(i.op_count() > 0);
-                    starts = starts.after(&i);
+                let host = host(&piece.bytes);
+                strings += host.iter().filter(|(_, i)| string(i)).count() as u64;
+                accesses += host.iter().filter(|(_, i)| i.op_count() > 0).count() as u64;
+                if let Some((at, what)) = first_outside(&host) {
+                    panic!(
+                        "case {case} of seed {seed:#x} ({way:?}, counted {counted}): {what} at {at}\nguest \
+                         {guest:02x?}\n{}",
+                        listing(&piece.bytes)
+                    );
                 }
             }
         }
@@ -742,6 +751,107 @@ fn stack_and_withheld_forms_are_made() {
         for way in WAYS {
             for counted in [false, true] {
                 assert!(piece(&bytes(hex), way, counted).is_some(), "{hex}");
+            }
+        }
+    }
+}
+
+/// Every encoding family that writes rsp, esp, sp or spl as a register, the VEX and vector-to-register forms among
+/// them (which the sweep's random bytes seldom make): each piece, in both forms, counted and not, keeps the window's
+/// rule, rsp included.
+#[test]
+fn every_form_writing_rsp_keeps_it_in_the_window() {
+    const WRITERS: &[&str] = &[
+        // shlx, sarx, shrx, rorx, pdep, pext, bzhi, bextr, mulx (either destination), andn, blsi, blsr, blsmsk
+        "c4 e2 f1 f7 e0",
+        "c4 e2 f2 f7 e0",
+        "c4 e2 f3 f7 e0",
+        "c4 e3 fb f0 e0 05",
+        "c4 e2 f3 f5 e0",
+        "c4 e2 f2 f5 e0",
+        "c4 e2 f0 f5 e0",
+        "c4 e2 f0 f7 e0",
+        "c4 e2 e3 f6 e0",
+        "c4 e2 db f6 d8",
+        "c4 e2 f0 f2 e0",
+        "c4 e2 d8 f3 d8",
+        "c4 e2 d8 f3 c8",
+        "c4 e2 d8 f3 d0",
+        // movq, vmovq, pextrq, vpextrq, cvttsd2si, vcvttss2si, movmskps, pmovmskb, vmovmskps, vpmovmskb
+        "66 48 0f 7e c4",
+        "c4 e1 f9 7e c4",
+        "66 48 0f 3a 16 c4 01",
+        "c4 e3 f9 16 c4 01",
+        "f2 48 0f 2c e0",
+        "c4 e1 fa 2c e0",
+        "0f 50 e0",
+        "66 0f d7 e0",
+        "c5 fc 50 e0",
+        "c5 fd d7 e0",
+        // popcnt, lzcnt, tzcnt, bsr, bsf, crc32, movbe, rdrand, rdseed, adcx, adox
+        "f3 48 0f b8 e0",
+        "f3 48 0f bd e0",
+        "f3 48 0f bc e0",
+        "48 0f bd e0",
+        "48 0f bc e0",
+        "f2 48 0f 38 f1 e0",
+        "48 0f 38 f0 20",
+        "48 0f c7 f4",
+        "48 0f c7 fc",
+        "66 48 0f 38 f6 e0",
+        "f3 48 0f 38 f6 e0",
+        // cmpxchg, xadd, bswap (64 and 32), xchg rax, xchg [rbx] with esp, cmovz (32 and 64)
+        "48 0f b1 cc",
+        "48 0f c1 cc",
+        "48 0f cc",
+        "0f cc",
+        "48 94",
+        "87 23",
+        "0f 44 e0",
+        "48 0f 44 e0",
+        // mov esp, sp and spl; lea esp; movzx, movsx, movsxd; imul; shld; setz spl; sbb rsp, rsp
+        "89 c4",
+        "66 89 c4",
+        "40 88 c4",
+        "8d 60 08",
+        "0f b6 e0",
+        "48 0f bf e0",
+        "48 63 e0",
+        "48 6b e0 05",
+        "48 0f a5 c4",
+        "40 0f 94 c4",
+        "48 19 e4",
+        // add, and, neg, inc, shl, rcl by cl, 16-bit sub and pop, rdgsbase
+        "48 01 c4",
+        "48 83 e4 f0",
+        "48 f7 dc",
+        "48 ff c4",
+        "48 d1 e4",
+        "48 d3 d4",
+        "66 83 ec 10",
+        "66 5c",
+        "f3 48 0f ae cc",
+    ];
+    for hex in WRITERS {
+        let guest = bytes(&format!("{hex} 48 8b 04 24 c3"));
+        let first = Decoder::with_ip(64, &guest, AT, DecoderOptions::NONE).decode();
+        assert!(!first.is_invalid(), "{hex}");
+        let mut info = InstructionInfoFactory::new();
+        assert!(
+            info.info(&first).used_registers().iter().any(|u| {
+                u.register().full_register() == Register::RSP && u.access() != OpAccess::Read
+            }),
+            "{hex} writes rsp"
+        );
+        for way in WAYS {
+            for counted in [false, true] {
+                let piece = piece(&guest, way, counted).expect("a piece");
+                if let Some((at, what)) = first_outside(&host(&piece.bytes)) {
+                    panic!(
+                        "{hex} ({way:?}, counted {counted}): {what} at {at}\n{}",
+                        listing(&piece.bytes)
+                    );
+                }
             }
         }
     }
