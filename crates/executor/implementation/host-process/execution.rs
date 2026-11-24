@@ -184,7 +184,8 @@ impl HostProcessExecutor {
         Ok(())
     }
 
-    /// Queues the loss of write in the view of every writable range of `id` inside `range`; true when one was queued.
+    /// Queues the loss of write in the view of every writable range of `id` inside `range`, before any of its pages
+    /// is recorded as lent; true when one was queued.
     fn take_write_from_lent(&mut self, id: MemoryId, range: Range<u64>) -> Result<bool, CpuError> {
         let writable: Vec<(Range<u64>, Permissions)> = self
             .memory(id)
@@ -200,7 +201,7 @@ impl HostProcessExecutor {
             .collect();
         self.room(id, writable.len())?;
         for (part, granted) in &writable {
-            let view = self.view_bound(id, part.clone(), *granted);
+            let view = self.view_bound(id, part.clone(), *granted) - rustix::mm::ProtFlags::WRITE;
             self.memory_mut(id)
                 .push(super::protect(part.clone(), view), None);
         }
@@ -243,6 +244,11 @@ impl HostProcessExecutor {
         }
         self.zero(id, to.start, length)?;
         self.set_permissions(id, to.start, length, Permissions::empty())?;
+        // The source loses write in its view before any page is recorded as lent: a refusal here or later then
+        // leaves no store of its own reaching a page a borrower reads.
+        if shift == 0 && self.take_write_from_lent(other, source.clone())? {
+            self.apply_now(other)?;
+        }
         let mut buffer = vec![0; COPY_CHUNK];
         for (piece, shared) in pieces(&self.memory(other).shared, source.clone()) {
             let length = piece.end - piece.start;
@@ -268,9 +274,6 @@ impl HostProcessExecutor {
                     }
                 }
             }
-        }
-        if shift == 0 && self.take_write_from_lent(other, source.clone())? {
-            self.apply_now(other)?;
         }
         let granted: Vec<(Range<u64>, Permissions)> = self
             .memory(other)

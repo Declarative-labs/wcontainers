@@ -137,6 +137,57 @@ fn a_copy_at_the_same_addresses_lends_its_pages_and_each_side_s_stores_stay_its_
     );
 }
 
+/// A copy refused for want of the source's host mappings leaves the copy reading none of the source's later stores:
+/// the source loses write before any page is lent, or nothing is lent.
+#[test]
+fn a_refused_copy_lends_no_page_the_source_still_writes() {
+    let limit = HOST.get_or_init(|| {
+        Arc::new(HostProcessHost::new().expect("the host is refused"))
+    })
+    .probe()
+    .mapping_limit();
+    // gVisor gives 2^31 - 1, which no test reaches in reasonable time (`WCHP_MAPPING_LIMIT_MAX`).
+    let reachable = std::env::var("WCHP_MAPPING_LIMIT_MAX")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1 << 22);
+    if limit > reachable {
+        eprintln!("not run: the host's limit of {limit} mappings is past {reachable}");
+        return;
+    }
+    let mut executor = executor();
+    let source = storing_space(&executor);
+    store(&mut executor, &source, 1);
+    // Pages of alternating permissions take the source's host mappings until one more change is refused, which the
+    // memory space's `set_permissions` has no error for: it panics, and nothing is changed.
+    let far = 0x1000_0000;
+    let refused = (0..).find(|index: &u64| {
+        let allowed = if index.is_multiple_of(2) {
+            Permissions::READ | Permissions::WRITE
+        } else {
+            Permissions::READ
+        };
+        let at = far + index * PAGE;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            source.set_permissions(at..at + PAGE, allowed)
+        }))
+        .is_err()
+    });
+    assert!(refused.is_some());
+    let copy = executor.create_guest_memory().expect("a memory");
+    assert!(
+        copy.copy_from(CODE..DATA + PAGE, &source, CODE).is_err(),
+        "the copy is refused"
+    );
+    store(&mut executor, &source, 7);
+    assert_eq!(read_word(&source, DATA), 7, "the source's store");
+    assert_ne!(
+        read_word(&copy, DATA),
+        7,
+        "the copy reads a store the source made after it"
+    );
+}
+
 #[test]
 fn a_copy_within_one_space_reads_its_bytes_as_they_were_before_it() {
     let executor = executor();
