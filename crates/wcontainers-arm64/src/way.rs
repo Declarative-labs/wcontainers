@@ -228,7 +228,8 @@ impl Way {
     /// The way of each part of a piece whose parts name the general registers in `named`, given its loops as
     /// ranges of parts: [`Self::for_piece`] of the whole where no register stands in for u or the base there;
     /// otherwise, outermost first, each loop not inside one chosen already that is written without a stand-in for
-    /// its own, and the other parts for theirs.
+    /// its own, and the other parts for theirs. Loops that share a part without one holding the other (a rotated
+    /// loop's turns, a nest whose inner loop is entered past its head) are taken as one, their union.
     pub fn for_parts(self, named: &[u32], loops: &[core::ops::Range<usize>]) -> Vec<Self> {
         let union = |parts: &[u32]| parts.iter().fold(0, |b, &n| b | n);
         let whole = self.for_piece(union(named));
@@ -237,6 +238,20 @@ impl Way {
         }
         let mut chosen: Vec<Option<Self>> = vec![None; named.len()];
         let mut outermost: Vec<_> = loops.to_vec();
+        let crossing = |x: &core::ops::Range<usize>, y: &core::ops::Range<usize>| {
+            let holds = |a: &core::ops::Range<usize>, b: &core::ops::Range<usize>| {
+                a.start <= b.start && b.end <= a.end
+            };
+            x.start < y.end && y.start < x.end && !holds(x, y) && !holds(y, x)
+        };
+        while let Some((x, y)) = (outermost.iter())
+            .flat_map(|x| outermost.iter().map(move |y| (x, y)))
+            .find(|(x, y)| crossing(x, y))
+            .map(|(x, y)| (x.clone(), y.clone()))
+        {
+            outermost.retain(|l| *l != x && *l != y);
+            outermost.push(x.start.min(y.start)..x.end.max(y.end));
+        }
         outermost.sort_by_key(|l| core::cmp::Reverse(l.len()));
         for l in outermost {
             if chosen[l.clone()].iter().any(Option::is_some) {
@@ -384,6 +399,25 @@ mod tests {
         let inner = WAY.for_piece(named(&[CHECK, 1]));
         assert!(inner.moves_kept());
         assert_eq!(ways, vec![WAY, WAY, inner, WAY]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn loops_sharing_a_part_are_one_loop() {
+        // A nest whose outer loop's branch back is in the inner loop's first part: 1 to 3 and 3 to 5 share part 3,
+        // and the inner loop's turns would cross between two ways if each were chosen alone.
+        let parts = [
+            crowded(),
+            named(&[CHECK, 1]),
+            named(&[2]),
+            named(&[3]),
+            named(&[4]),
+            named(&[5]),
+        ];
+        let ways = WAY.for_parts(&parts, &[1..4, 3..6]);
+        let nest = WAY.for_piece(named(&[CHECK, 1, 2, 3, 4, 5]));
+        assert!(nest.moves_kept());
+        assert_eq!(ways, vec![WAY, nest, nest, nest, nest, nest]);
     }
 
     #[cfg(feature = "translate")]
