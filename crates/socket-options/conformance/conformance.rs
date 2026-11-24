@@ -377,13 +377,14 @@ struct Guarded {
 }
 
 impl Guarded {
-    /// Leaves `QUEUED` bytes, and only those, waiting on a connected socket.
+    /// Leaves `QUEUED` bytes, and only those, waiting on a connected socket: bytes unlike the mark, so that a copy of
+    /// them into the decoy shows.
     fn refill(&self) {
         let Some(peer) = &self.peer else { return };
         let mut sink = [u8::MIN; GUARDED];
         while rustix::net::recv(&self.socket, &mut sink, RecvFlags::DONTWAIT).is_ok_and(|(read, _)| read > usize::MIN)
         {}
-        let _ = rustix::net::send(peer, &[MARK; QUEUED], SendFlags::DONTWAIT);
+        let _ = rustix::net::send(peer, &[!MARK; QUEUED], SendFlags::DONTWAIT);
     }
 }
 
