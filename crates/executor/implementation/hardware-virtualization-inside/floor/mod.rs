@@ -5,6 +5,7 @@ pub mod entry;
 pub mod heap;
 pub mod tables;
 
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::ptr::{self, NonNull};
@@ -186,6 +187,9 @@ impl Floor {
         let global = Table::boot_map(start.boot_root);
         if start.cpu == 0 {
             *FRAMES.lock() = Some(Frames::new(start.free, MEMORY_BASE + start.memory));
+            // The free list's room, made by the heap outside the frames' lock.
+            let list = Vec::with_capacity(with_frames(|frames| frames.most()));
+            with_frames(|frames| frames.keep_free_list_in(list));
             with_frames(|frames| global.reserve_top(frames, Region::Code.base()))
                 .expect("the boot frames fit guest-physical memory");
         }

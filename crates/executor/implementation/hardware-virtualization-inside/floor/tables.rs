@@ -1,5 +1,7 @@
 //! Frames of guest-physical memory and the translation tables written over them.
 
+use alloc::vec::Vec;
+use core::ops::Range;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -64,7 +66,15 @@ const fn kept_for_inside(memory: u64) -> u64 {
 pub struct Frames {
     next: u64,
     end: u64,
-    free: u64,
+    /// Frames given back, taken before those never used. Kept here, not in the frames, so that a frame
+    /// someone still writes cannot choose the next frame given out. Its room for every frame is made by
+    /// [`Frames::keep_free_list_in`] before any is given back: it never grows under the frames' lock, which the
+    /// heap takes to grow.
+    free: Vec<u64>,
+    /// Frames given back before the free list is kept (the heap's first growth, which makes the list's room,
+    /// gives back the frames below its block): one run, taken last, once no other frame is left, so that the
+    /// frames after it still come in a row.
+    before_list: Range<u64>,
     /// The bytes before `end` the guest's memory may not take.
     kept: u64,
 }
@@ -76,14 +86,27 @@ impl Frames {
         Frames {
             next,
             end,
-            free: 0,
+            free: Vec::new(),
+            before_list: 0..0,
             kept: kept_for_inside(end.saturating_sub(next)),
         }
     }
 
+    /// How many frames there are at most: the room the free list needs.
+    pub fn most(&self) -> usize {
+        (self.end.saturating_sub(self.next) / PAGE_SIZE) as usize
+    }
+
+    /// Keeps the free list in `list`, empty, with room for [`Frames::most`] frames, made outside the frames' lock.
+    pub fn keep_free_list_in(&mut self, list: Vec<u64>) {
+        assert!(list.is_empty() && list.capacity() >= self.most(), "room for every frame");
+        assert!(self.free.capacity() == 0, "the free list is kept once");
+        self.free = list;
+    }
+
     /// Whether a frame for the guest's memory can be taken without the frames kept for the inside.
     pub fn has_room_for_guest(&self) -> bool {
-        self.free != 0 || self.next + PAGE_SIZE + self.kept <= self.end
+        !self.free.is_empty() || self.next + PAGE_SIZE + self.kept <= self.end
     }
 
     /// A zeroed frame for the guest's memory, which leaves the frames kept for the inside alone.
@@ -105,23 +128,16 @@ impl Frames {
 
     /// A zeroed frame.
     pub fn take(&mut self) -> Result<u64, Full> {
-        let frame = if self.free != 0 {
-            let frame = self.free;
-            // SAFETY: a freed frame holds the next free frame's address in its first word.
-            #[expect(
-                unsafe_code,
-                reason = "UNSOUND: reads the free-list link from the first word of a given-back frame through the linear map, and give is a safe pub fn that accepts any frame number; Words over the linear map replaces it"
-            )]
-            let next = unsafe { ptr::read(linear(frame) as *const u64) };
-            self.free = next;
+        let frame = if let Some(frame) = self.free.pop() {
             frame
-        } else {
-            let frame = self.next;
-            if frame + PAGE_SIZE > self.end {
-                return Err(full());
-            }
+        } else if self.next + PAGE_SIZE <= self.end {
             self.next += PAGE_SIZE;
-            frame
+            self.next - PAGE_SIZE
+        } else if !self.before_list.is_empty() {
+            self.before_list.start += PAGE_SIZE;
+            self.before_list.start - PAGE_SIZE
+        } else {
+            return Err(full());
         };
         clear(frame);
         Ok(frame)
@@ -147,16 +163,26 @@ impl Frames {
         Ok(block)
     }
 
-    /// Takes back one frame.
+    /// Takes back one frame. Nothing is written into it: the next `take` zeroes it.
     pub fn give(&mut self, frame: u64) {
         let frame = checked_frame(frame);
-        // SAFETY: the frame is no longer used by anyone and is reached through the linear map.
-        #[expect(
-            unsafe_code,
-            reason = "UNSOUND: writes the free-list link into whatever frame number this safe pub fn is given, through the linear map; Words over the linear map replaces it"
-        )]
-        unsafe { ptr::write(linear(frame) as *mut u64, self.free) };
-        self.free = frame;
+        if self.free.capacity() == 0 {
+            assert!(
+                self.before_list.is_empty() || self.before_list.end == frame,
+                "frames given back before the free list is kept are one run"
+            );
+            self.before_list = if self.before_list.is_empty() {
+                frame..frame + PAGE_SIZE
+            } else {
+                self.before_list.start..frame + PAGE_SIZE
+            };
+            return;
+        }
+        assert!(
+            self.free.len() < self.free.capacity(),
+            "the free list has room for every frame: more were given back than there are"
+        );
+        self.free.push(frame);
     }
 }
 
@@ -563,7 +589,7 @@ impl Table {
             // SAFETY: the new table is ours.
             #[expect(
                 unsafe_code,
-                reason = "UNSOUND: fills a fresh table frame with the page entries of a split block, a frame from take, which reads a link from frames give accepts unchecked; Words over the linear map, or aarch64-paging, replaces it"
+                reason = "UNSOUND: fills a fresh table frame with the page entries of a split block, a frame from take, which hands out frames give takes back without checking that nothing uses them; Words over the linear map, or aarch64-paging, replaces it"
             )]
             unsafe { ptr::write_volatile((linear(pages) + page * ENTRY_BYTES) as *mut u64, entry) };
         }
