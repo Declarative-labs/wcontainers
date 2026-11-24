@@ -182,6 +182,10 @@ pub const TASK_ID_LIMIT: u32 = 4_194_304;
 /// The task ID that allocation restarts from after it reaches the limit, as Linux [keeps the lower ones](https://github.com/torvalds/linux/blob/v6.18/include/linux/pid.h#L48) for early processes.
 pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
 
+#[allow(
+    reviewable::explicit_shared_error::HostError,
+    reason = "both directions of one stream fail the same ways and the kernel tells only would-block from hung up"
+)]
 /// A transport of byte streams to and from endpoints.
 pub trait StreamTransport: Readiness<Self::Endpoint> {
     type Endpoint: Ord;
@@ -204,6 +208,10 @@ pub trait FallbackObserver<Fallback> {
     fn on_fallback_used(&self, which: &Fallback) {}
 }
 
+#[allow(
+    reviewable::explicit_shared_error::HostError,
+    reason = "both methods use the one connection to the server, so both fail only when there is no server or it is gone"
+)]
 /// A [FUSE](https://man7.org/linux/man-pages/man4/fuse.4.html) server.
 pub trait FuseServer {
     type Reply: Deref<Target = [u8]>;

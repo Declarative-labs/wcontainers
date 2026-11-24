@@ -30,6 +30,10 @@ use crate::state::{
 /// Sockets for [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) connections.
 pub trait TcpSockets: TcpConnections + TcpListeners {}
 
+#[allow(
+    reviewable::explicit_shared_error::HostError,
+    reason = "each method is one call on the host's socket and fails only the ways that call does"
+)]
 pub trait TcpConnections:
     for<'a> Configurable<Self::Connection, TcpSetting<'a>>
     + NegativeRouteAdvisable<Self::Connection>
@@ -122,6 +126,10 @@ pub trait TcpConnections:
     ) -> Result<(), HostError>;
 }
 
+#[allow(
+    reviewable::explicit_shared_error::HostError,
+    reason = "each method is one call on the host's socket and fails only the ways that call does"
+)]
 pub trait TcpListeners:
     TcpConnections
     + for<'a> Configurable<Self::Listener, TcpListenerSetting<'a>>
