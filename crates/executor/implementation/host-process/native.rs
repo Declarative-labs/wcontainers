@@ -252,16 +252,30 @@ pub(super) struct Translations {
     kept: HashMap<Key, Vec<Kept>>,
 }
 
-/// What a translation is kept by.
+/// The bytes of the code a translation is found by; the rest of the page is compared only with what was found.
+const KEY_BYTES: usize = 64;
+
+/// What a translation is found by: its offset in the page, which gives the length of the rest of the page, and that
+/// rest's first [`KEY_BYTES`], zero past its end.
 #[derive(Hash, PartialEq, Eq)]
 struct Key {
-    code: Vec<u8>,
     offset: u64,
+    head: [u8; KEY_BYTES],
 }
 
-/// A translation, or none where the code has none, and the page it was made at.
+impl Key {
+    fn new(offset: u64, code: &[u8]) -> Self {
+        let mut head = [0; KEY_BYTES];
+        let length = code.len().min(KEY_BYTES);
+        head[..length].copy_from_slice(&code[..length]);
+        Self { offset, head }
+    }
+}
+
+/// A translation, or none where the code has none, the code it was made from (the rest of its page) and that page.
 struct Kept {
     translation: Option<Arc<Translation>>,
+    code: Vec<u8>,
     page: u64,
 }
 
@@ -361,17 +375,15 @@ impl HostProcessExecutor {
     }
 
     /// The guest translation of the code at `pc`, made, kept, or kept and moved from another page.
-    fn translate(&mut self, pc: u64, code: Vec<u8>) -> Option<Arc<Translation>> {
+    fn translate(&mut self, pc: u64, code: &[u8]) -> Option<Arc<Translation>> {
         let page = pc & !(PAGE_SIZE - 1);
-        let key = Key {
-            code,
-            offset: pc - page,
-        };
+        let key = Key::new(pc - page, code);
         if let Some(kept) = self.translations.kept.get(&key) {
-            if let Some(same) = kept.iter().find(|kept| kept.page == page) {
+            let mut same_code = kept.iter().filter(|kept| kept.code == code);
+            if let Some(same) = same_code.clone().find(|kept| kept.page == page) {
                 return same.translation.clone();
             }
-            let movable = kept.iter().find_map(|kept| {
+            let movable = same_code.find_map(|kept| {
                 let translation = kept.translation.as_ref()?;
                 moves(translation, kept.page, page).then_some((translation, kept.page))
             });
@@ -386,11 +398,12 @@ impl HostProcessExecutor {
         } else {
             LookAhead::Full
         };
-        let made = translate_native_for::<Arm64>(&key.code, pc, look_ahead, true, &WAY, &())
+        let made = translate_native_for::<Arm64>(code, pc, look_ahead, true, &WAY, &())
             .map(|made| Arc::new(HostCode::translation(made)));
         self.slow(reason::TRANSLATED, 1, pc);
         self.translations.kept.entry(key).or_default().push(Kept {
             translation: made.clone(),
+            code: code.to_vec(),
             page,
         });
         made
@@ -428,7 +441,7 @@ impl HostProcessExecutor {
         self.read_guest(memory, pc, &mut source)
             .map_err(|_| refused)?;
         let piece = self
-            .translate(pc, source.clone())
+            .translate(pc, &source)
             .ok_or(Exit::IllegalInstruction)?;
         let base = match self.place(memory, &piece.bytes) {
             Some(base) => base,
