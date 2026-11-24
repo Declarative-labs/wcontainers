@@ -5,6 +5,54 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 27 (2026-11-23, round 4's fifth run). Built this run, each linted with warnings denied
+with and without Mesa and the nir crate's route tests passed on the x86-64 machine (20 of 20;
+glsl_reference 10 and 2 ignored):
+- Layered geometry output (52e1e713, 6b607c52). A geometry program writing `gl_Layer` draws once
+  a layer of a layered framebuffer (`SlowPath::LayerSplit`, as the Direct3D 11 front's
+  `draw_runs`): each run sets that layer's targets (`context::layer_targets`, the surfaces' first
+  layer plus the run), and the pass-through keeps the primitives naming the run's layer (its
+  helper block `stage::PASSTHROUGH_HELPERS` and `PASSTHROUGH_LAYER_COUNT` written per run, beside
+  the fragment program's own helper block). The layers are the fewest any target has
+  (`context::layers`; OpenGL leaves a layer past them undefined; such primitives go to layer 0, as
+  Direct3D draws them); a framebuffer that is not layered is one run with a layer count of zero,
+  so every primitive is drawn in it, as OpenGL draws it. The geometry program is converted with
+  `VariantFlags::LAYER_FROM_STAGE`, its pass-through passing the layer named at the location
+  after its outputs (the bridge's `wc_nir_named_layer_location`, from `outputs_written`); a
+  fragment program's `gl_Layer` is routed at `direct::NAMED_LAYER_INPUT`, a flat input the driver
+  moves there, or replaces with zero where no geometry program names a layer
+  (`read_named_layer`). Targets drawn through twins are refused by name when layered. Clears of a
+  layered framebuffer clear every layer, a layer at a time. Test
+  `a_fragment_programs_layer_is_a_flat_input_the_driver_places`.
+- Integer cube maps sampled with gradients (9f7bfe8b): the level now takes the derivative of the
+  face's coordinates on the face the direction picks (OpenGL's chain rule,
+  `cube_face_derivative`), not the difference of the faces of the coordinate and the coordinate
+  plus the gradient, which crossed to another face for KHR `texture_cube_map_array.sampling`'s
+  gradients of four face widths. Not yet run on the rig at the time of writing.
+- Storage buffers and images in geometry and control programs (01fbd941): both run as compute
+  work in the stage helper, so the screen reports them as for compute programs. Evaluation
+  programs still have none (their drawn form is a vertex program, and the WebGPU back end writes
+  no storage there): KHR-GLES32 `constant_expressions`' 232 evaluation cases stay NotSupported.
+- A blit the blitter does not make is refused with its formats (300ed5b6).
+  Read from Mesa this run: `glCopyImageSubData` from `GL_RGB32F` to `GL_RGB32I` or `_UI` reaches
+  the driver as a blit between textures of different texel sizes, because st/mesa asks a render
+  use for `GL_RGB32F` (its list of always-renderable formats) and so picks `R32G32B32A32_FLOAT`
+  (16 bytes), while `GL_RGB32I` takes `R32G32B32_SINT` (12 bytes); no copy of the interface
+  copies between them. Asked of the WebGPU back end track below.
+- Unsafe code: wcontainers-nir 109 (one more: the named layer's call), wcontainers-opengl 365
+  (unchanged); the root list carries both (1adfd279). No dependency or licence was added.
+
+Run 27's group run (6b607c52's driver; desktop, RTX 3080, one GPU job, 8 glcts at once, 17:35 to
+17:36 desktop time; scratch `results/g9r27/a`, log `logs/g9r27/a.log`): dEQP-GLES31, KHR-GLES31
+and KHR-GLES32 groups `geometry_shad*`, `texture_cube_map_array`,
+`tessellation_geometry_interaction`: 535 of 558 run pass. Against run 26's whole run 53 cases
+that crashed or failed pass: dEQP-GLES31 `geometry_shading.layered` 21 and `instanced` 8,
+`tessellation_geometry_interaction.render.scatter.geometry_scatter_layers`, KHR-GLES31 and -GLES32
+`geometry_shader.layered_*` 8 each (`clear_call_support` among them) and
+`texture_cube_map_array.color_depth_attachments` and `stencil_attachments_*` 3 each. No case that
+passed fails (`texture_cube_map_array.image_op_compute_sh` moved from pass to flake, a known
+flake in KHR-GLES32 already).
+
 G9 run 26 (2026-11-23, round 4's fourth run). Built this run, each linted with warnings denied
 with and without Mesa and the nir crate's route tests passed on the x86-64 machine (19 of 19):
 - Multisampled array textures (2a05247e). ES 3.2 requires them (`TexStorage3DMultisample`,
@@ -619,6 +667,10 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 27: `scripts/g9r27-run.sh` is run 26's under its name. Never submit a second job with
+  `--build` (a group run) while a whole run waits in the queue: its build sends another tree to
+  the desktop's copy and the waiting job then fails at its start ("holds tree ..., not the sent
+  ..."), as run 27's first whole run did. Run them one after the other.
 - G9 run 26: `scripts/g9r26-run.sh <log> [<lists> [<regexes>]]` is run 24's one-command run under
   its name (no lists: every list, one GPU job of about 40 minutes after the queue's wait);
   `scripts/g9r25-lint.sh` and `scripts/g9r25-table.py <run> <base>` as below. A case's `.qpa` is
@@ -1355,6 +1407,15 @@ None.
 
 ## Requests to other tracks
 
+- WebGPU back end track (G9 run 27): `Rgb32Float`, `Rgb32Uint` and `Rgb32Sint` are held in
+  four-channel textures, which the host renders into, but are reported without a render use, so
+  st/mesa holds `GL_RGB32F` (which it asks a render use of) as `R32G32B32A32_FLOAT` while
+  `GL_RGB32I` and `_UI` are `R32G32B32_*`: OpenGL's copies between them (one 96-bit view class)
+  then meet textures of 16- and 12-byte texels, which no interface copy joins (dEQP-GLES31
+  `copy_image.non_compressed.viewclass_96_bits` rgb32f to and from rgb32i and rgb32ui, 32
+  crashes). Asked: the render use for the three formats where their held format has it (the
+  copies are then of equal formats), or a copy between a three-channel format and its held
+  four-channel one.
 - Shaders track (G9 run 26): the multisampled array split (`variant/layers.rs`) adds a binding for
   every layer of `VariantKey::texture_layers` whatever the program does with the array; a program
   that only queries its size or layer count needs layer 0 alone, and one that loads needs only the
