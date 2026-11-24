@@ -718,6 +718,13 @@ impl StandIn {
         std::mem::take(&mut self.refused)
     }
 
+    /// Adds what the stand-in of a copy made at a save refused, which the copy reported as it
+    /// ended, so they fail the test as this stand-in goes, as its own refusals do.
+    #[cfg(not(feature = "runtime"))]
+    pub(crate) fn refused_in_a_copy(&mut self, refused: Vec<Refused>) {
+        self.refused.extend(refused);
+    }
+
     /// The memories that show any of the block's bytes, in order.
     fn showing(&self, block: &Block) -> Vec<MemoryId> {
         let start = block.bytes.as_ptr().addr();

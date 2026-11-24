@@ -245,6 +245,9 @@ pub struct Run {
     pub tape: Option<Tape>,
     /// What every guest memory held, for a run that kept a record.
     pub memories: MemoryDigests,
+    /// What the stand-in refused in a copy made at a save, which ends without dropping it, handed
+    /// back so the process it was copied from fails the test as its own stand-in goes.
+    pub refused: Vec<crate::standin::Refused>,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -1741,6 +1744,14 @@ where
     let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &host);
     let status = match ending {
         Ok(Ending::Finished { status }) => status,
+        // A copy made at a save ran the rest: what its stand-in refused fails the test as this
+        // process's stand-in goes, as its own refusals do.
+        #[cfg(not(feature = "runtime"))]
+        Ok(Ending::Ended(mut run)) => {
+            cpu.refused_in_a_copy(std::mem::take(&mut run.refused));
+            return Ok(run);
+        }
+        #[cfg(feature = "runtime")]
         Ok(Ending::Ended(run)) => return Ok(run),
         // A copy cannot hand a failure back; it says what it was and ends.
         Err(failure) if host.injecting().report.is_some() => {
@@ -1790,6 +1801,15 @@ where
         let mut injecting = host.injecting();
         (injecting.report.take(), injecting.saved, injecting.turns)
     };
+    // A copy ends without dropping its stand-in, so it reports what the stand-in refused.
+    #[cfg(not(feature = "runtime"))]
+    let refused = if report.is_some() {
+        cpu.take_refused()
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "runtime")]
+    let refused = Vec::new();
     let streams = std::mem::take(&mut *host.streams());
     let run = Run {
         outcome: Outcome {
@@ -1809,6 +1829,7 @@ where
         input_closed,
         tape,
         memories,
+        refused,
     };
     Ok(finish(run, report))
 }
@@ -2487,6 +2508,18 @@ fn encode(run: &Run) -> Vec<u8> {
         bytes(&mut out, &file.contents);
         number(&mut out, file.rdev);
     }
+    number(&mut out, run.refused.len() as u64);
+    for refused in &run.refused {
+        match refused {
+            crate::standin::Refused::DroppingAShownBlock { block, shown_in } => {
+                number(&mut out, block.0.into());
+                number(&mut out, shown_in.len() as u64);
+                for memory in shown_in {
+                    number(&mut out, memory.0.into());
+                }
+            }
+        }
+    }
     out
 }
 
@@ -2549,6 +2582,14 @@ fn decode(input: &[u8]) -> Run {
             rdev: reader.number(),
         })
         .collect();
+    let refused = (0..reader.number())
+        .map(|_| crate::standin::Refused::DroppingAShownBlock {
+            block: wcontainers_abi::SharedId(reader.number() as u32),
+            shown_in: (0..reader.number())
+                .map(|_| wcontainers_abi::MemoryId(reader.number() as u32))
+                .collect(),
+        })
+        .collect();
     Run {
         outcome: Outcome {
             stdout,
@@ -2568,6 +2609,7 @@ fn decode(input: &[u8]) -> Run {
         // A copy made at a save keeps no record.
         tape: None,
         memories: Vec::new(),
+        refused,
     }
 }
 
