@@ -8,7 +8,110 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
-## KC, twelfth run: the three files still unchanged
+## KC, thirteenth run: the three files fixed, the workspace builds, the quiet suite
+
+Started about 07:50 UTC on 2026-11-24 at b80efb96. Every build and test ran on the rented
+machines; the Mac only edited, formatted single files and committed. Scratch kernel/kc13 (arm.sh,
+x86.sh, whole.sh, t1.sh to t3.sh, ltp30.sh, logs beside them).
+
+- The three other tracks' files, fixed by this track as the orchestrator ordered, each in its own
+  commit (no uncommitted edit of anyone else's was in them): hardware-virtualization's
+  tests/guest_memory.rs:222 asks `reached.is_empty()` (920abe37); translator-test's layer1.rs
+  gives `#[cfg(all(target_os = "linux", target_arch = "x86_64"))]` to the four functions that use
+  `guest::x86_64::native` without it (the reciprocals, far transfers and xsave tests and the
+  helper `answered_as_the_meaning`; c027d2e0); the measured precise instruction set's `Counted`
+  passes `GuestMemory`, `Interrupter`, `CreateGuestMemoryError`, `create_guest_memory` and
+  `execute` through to its chip and takes `ProcessorStateOf<Self>` (2ca8530e).
+- The whole workspace's `cargo check --keep-going --workspace --all-targets` at 2ca8530e, other
+  agents' uncommitted edits taken back: status 0 on ARM64 (07:52 UTC, load 26) and on x86-64
+  (07:53 UTC, load 104 from other jobs). KC's build bar is met.
+- Unsafe: the tests' counting allocator in waiting.rs is gone; the allocation checks (waiting.rs,
+  fs/backend.rs, syscall/socket/outside.rs) count with allocation-counter 0.8.1 (MIT OR
+  Apache-2.0, already the TCP host's test dependency; its own allocator holds the unsafe, an
+  import), 1ac58b05, lock line 3616c2ed. The crate counts 331 uses (was 336); the root list and
+  the crate's TODO say so (d072e774, 111414c2). Kernel clippy (all targets, warnings denied)
+  status 0 and kernel unit tests 24 pass (t1b.log, 08:00 UTC, load 34).
+- The `unsafe impl Sync for KernelWithExecutor` and `unsafe impl Send for KernelRunner` are NOT
+  removed: no means without unsafe exists in this milestone. What they hold is not `Send`, for
+  three reasons, each outside one milestone's reach: the kernel's state is `Rc`, `Weak`,
+  `RefCell` and `Cell` throughout (`Arc<RefCell<_>>` is not `Send` either, so it is the owner's
+  parallel redesign, each record behind a lock, not a renaming); the system's waiting calls it
+  keeps are futures of the interfaces' `async fn`s, which stable Rust cannot require to be `Send`
+  (return type notation is still unstable on the pinned 1.99.0: E0658, tried on the ARM64
+  machine this run); and the executor interface's `MemorySpace` does not require `Send` (the
+  stand-in's `UnicornSpace` holds a `RefCell`). Keeping the value on one thread does not fit
+  either: `Kernel: Sync` is called from any host thread and hands out tasks and contexts that
+  share the kernel's records. Listed for the owner (see "For the owner", KC fourth run).
+- The whole suite of this track's crates and the stand-ins at 0c81b5c0 (whole.sh, job
+  kernel/20261124-075545-2700871, suite start 07:55 UTC, load 17; 8 test threads; other agents'
+  uncommitted edits taken back):
+  443 passed, 36 failed, 8 ignored (136 result lines; suite end 09:34 UTC, load 39); clippy over
+  this track's packages, all targets, warnings denied, status 0; fmt no diff. 35 failures are
+  exactly the ARM list (kf7/fails7.txt); python's `system_test_modules_match_reference` passed.
+  Every failure by name, with the first line where ours and the reference differ (kc13/causes.txt):
+  - `a_full_connection_hears_a_reset` (outside), NOT on the ARM list: ours polls "in out" and
+    reads SO_ERROR none where Linux has "err hup rdhup" and the reset; ours heard the reset only
+    after (its last read failed with it). It passed 20 of 20 alone (t2.log, 08:23 UTC, load 23)
+    and its binary 10 of 10 (t3.log, load 35; 2.6 s a run against 11 s in the suite). A timing
+    defect of the kernel's: the guest learns of the reset through a second connection 300 ms
+    later, and the kernel settles every woken wait before a thread runs, so the host reported
+    the data connection's reset after the signal connection's bytes. The kernel answers poll and
+    SO_ERROR from what its waits last reported, never asking the host at the call; asking there
+    (polling the connection's live wait once) is the fix, not made in this run. Listed.
+  The 35 of the ARM list: the reference here is the machine's own kernel (Linux
+  7.0.0-1018-aws, bare metal: SVE, no /proc/config.gz, its own cgroup and tmpfs options), and
+  these tests' outcomes were settled against Docker Desktop's 7.0.14-linuxkit, where they pass
+  (the Mac's part, not run by ruling; arm-machine.md lists them):
+  - `attributes_and_exec_credentials_match_reference`: getxattr errno 95 against 61.
+  - `cgroup_matches_reference`: the cgroup2 mount lacks nsdelegate,memory_recursiveprot.
+  - `clock_adjustments_match_reference`: adjtimex's state and frequency (the machine's NTP).
+  - `clocks_match_reference`: clock id 8 (CLOCK_REALTIME_ALARM) works on ours, -22 there.
+  - `core_dumps_match_reference`: the CORE note's flags 400740 against c00740.
+  - `coredump_filter_matches_reference`: 00000023 against 00000033 at start.
+  - `file_capabilities_match_reference`: get file capabilities -1 EINVAL against 20 bytes.
+  - `file_requests_match_reference`: WATCH_SIZE ENOTTY against ENODEV.
+  - `limits_match_reference`: the outcomes differ (the kept log shows only the start of both).
+  - `listings_are_a_subset_of_the_reference`, `thread_listings_are_a_subset_of_the_reference`:
+    link counts (/proc/net 6 against 7, task mem 20 against 21).
+  - `making_pairs`: TIOCSTI errno 1 against 5.
+  - `map_flags_match_reference`: madvise advice 101 errno 22 against 1.
+  - `mount_tables_match_reference` and `_on_backend_root`: tmpfs without inode64.
+  - `partial_copies_match_reference`: sched_getaffinity into partly mapped buffers (ours 8,
+    theirs fails each); `priorities_across_processes_match_reference`: getaffinity 8 against
+    EINVAL.
+  - `proc_attr_matches_reference`, `proc_mem_matches_reference`: the outcomes of /proc/<pid>/attr
+    and mem differ (the kept log shows only the start of both).
+  - `proc_net_matches_reference`: a listener's queue 0x380 against 0x3C0.
+  - `proc_task_matches_reference`: a cwd link's offset 21 against 22.
+  - `proc_writes_seeks_and_reads_match_reference`: a 4 MiB pread of ostype ENOMEM against 6.
+  - `root_files_match_reference`: dioalign memory 512 against 4.
+  - `route_questions_and_rules_match_reference`: a rule message of 52 bytes against 60.
+  - `scheduling_attributes_match_reference`: sched_getattr's tail bytes.
+  - `secret_memory_matches_reference`: madvise and the lock limit on secret memory.
+  - `sequences_match_reference`, `sequences_on_backend_match_reference`,
+    `sequences_on_cached_backend_match_reference`: layer 1's seed 0 sequence from mkdirat.
+  - `shared_memory_segments_match_reference`: a 2^40-byte segment succeeds, ENOMEM there.
+  - `signal_frames_match_reference`: the machine's SVE record (53564501) in the frame.
+  - `socket_edges_match_reference`: an urgent peek of length 1 EAGAIN against 0.
+  - `special_files_match_reference`: getxattr through /proc errno 22 against 61.
+  - busybox `system`: zcat /proc/config.gz (the machine has none).
+  - `timers_match_reference`: timer_create on the alarm clock EPERM against EOPNOTSUPP.
+  None of these fails only under load: each is on the ARM list, which every whole suite on this
+  machine in this file's record failed, quiet or loaded. Of the 04:00 UTC run at load near 200 the
+  orchestrator named (timers, signal_frames, sequences, proc_task, mount_tables, socket_edges),
+  every one is on this list and fails here at load 17 too.
+- Thirty LTP verdicts against the reference, one command (ltp30.sh; at 98f0c901, 08:27 UTC, load
+  30): fork01, clone04, vfork01, mmap01, munmap01, mprotect01, pipe01, pipe2_01, socket01,
+  socketpair01, sendto01, recvfrom01, connect01, bind01, listen01, accept01, epoll_wait01,
+  poll01, select01, futex_wait01, futex_wake01, sigaction01, rt_sigprocmask01, getrandom01,
+  prctl01, shmat01, eventfd01, timerfd01, execve01, waitpid01: all 30 pass on ours and match
+  the committed reference; against the reference run now on the machine 29 match and eventfd01
+  differs (reference broken: "Cannot parse kernel .config", the machine's kernel has no
+  /proc/config.gz, the same machine difference as busybox `system`).
+- The whole LTP comparison in the same job started at 09:34 UTC (LTP_JOBS 8, LTP_LIMIT 900);
+  LTP_RESULT
+
+
 
 Started about 07:47 UTC on 2026-11-24 at a329bc12. The three other tracks' files (see "For the
 orchestrator") had no commit and no uncommitted edit; the owner's merges of 2026-11-23
@@ -902,6 +1005,13 @@ its renamed part.
     every system: the runtime, the test policy, the hardware embedders, the stand-in).
   - The stand-in (an executor) now marks its two KC uses with `#[expect(unsafe_code, reason)]`:
     standin.rs `unsafe impl Send for StandIn` and driver.rs's call of `KernelConfig::new`.
+  - KC, thirteenth run: asked to remove the two `unsafe impl`s in KC, I found no way without
+    unsafe code and left them (reasons in that run's section: `Rc`/`RefCell` state, futures of
+    `async fn`s that cannot be bounded `Send` on stable 1.99.0, a `MemorySpace` not bound `Send`).
+    Example: `Arc<Shared<C>>` holds `spin::Mutex<Inner<C>>`, `Sync` only if `Inner: Send`, and
+    `Inner` holds the kernel's `Rc<RefCell<Socket>>` records and the system's
+    `send_request` future. The tests' counting allocator is gone (allocation-counter); the crate
+    counts 331 uses.
 
 - KC (first run; the second run's entry above replaces it): the system's `async fn`s carry no
   `Send` bound. Example: a browser system whose `send_request` future holds a JavaScript value
@@ -1094,6 +1204,8 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KC, thirteenth run: the three files below were fixed by this track (920abe37, c027d2e0,
+  2ca8530e) and the whole workspace's check passes on both machines; the item is settled.
 - KC, eighth run: KC's whole-workspace check fails only in other tracks' files, unchanged since
   the owner's merges of 2026-11-23: crates/precise-instruction-set/implementation/measured/tests.rs:59
   (both machines; the instruction design track's), crates/wcontainers-translator-test/tests/layer1.rs
