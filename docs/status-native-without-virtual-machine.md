@@ -3,6 +3,50 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 7 (2026-11-24): form I's translated code measured on whole programs
+
+Scratch w2/run7 (crossover.sh with `ROUNDS`, `PROGRAMS`, `WCHP_FIXED`; perf.sh with `WORKLOADS`, `FIXED`;
+summarise.py; test.patch, way.patch and the files they came from in orig/, new/, newtest/; outputs *-arm.out).
+Graviton4. Form I's executor is still not built: no primitive has landed (the executor primitives are on branch
+`unsafe-primitives`, unmerged, and cover none of Form I's first three needs) and the rule of 2026-11-24 (no new
+unsafe) stands. Nothing of this run adds unsafe code. No interface notice since run 6 touches this track's crates.
+- Run 6's whole host-process run, read (run7/whole-arm.out, 18:25 to 18:30 UTC, load 18 to 36): every binary passed
+  but two. conformance 20 of 21 (the known precise-set test), and in_process_attacks, whose access test failed with
+  `ReservationRefused`: its two tests started a zygote each at the same moment, and one embedder process has one
+  zygote place. Fixed, d37580a66 (they start theirs one at a time, as floor.rs's do); both pass together three times
+  in a row (attacks-arm.out).
+- Measured, scratch only: form I's translated code on whole programs, before its executor exists. way.patch (remote
+  copy only, never committed: a second way in host-process would be a parallel path) makes form P translate for
+  `Way::InProcess { slot: 0 }`, whose window base is 0, so P's stubs, slot table and floor serve it unchanged:
+  `IN_PROCESS_ENTRIES` set to P's entries (the attacks test's change, done once), the guest kept below 4 GiB less
+  the band (`AddressSpace`), the two words after the register page made room for (`TRANSLATED_SIZE` 144) and
+  carried, and resolution through the stop crate's `in_process` module (`Outside` as the guest's fault, `Probed` as
+  done, `Displaced` refused; none occurred). test.patch adds a scratch test, `crossover`, that runs bench.c's eight
+  workloads and busybox `sh` starting 200 programs once under the build it is in, outputs checked against the program
+  run on the host. Same kernel, system calls and floor: the difference is I's code alone (checks, cut accesses,
+  the jump's one more instruction, the two more withheld registers). 7 alternating rounds, medians of the rounds'
+  ratios I's code to P's (cross2-arm.out, 18:39 UTC, one-minute load 7.6 to 11.8): fib 1.059, sieve 1.137, hash
+  1.001, sort 1.242, interpret 1.628, matrix 1.104, walk 1.108, search 3.922, busybox sh 1.011 (second run; 1.018
+  first); each round's ratio within 0.03 of the median but walk's and busybox's.
+- The two more withheld registers are most of it where it is large. With x15 and x24 kept out of the programs
+  (clang's `+reserve-x15`, `+reserve-x24` through `-Xclang`; zig 0.16 maps `-ffixed-x15` and `-ffixed-x24` to x7 and
+  x9 and the output did not change, cross3-arm.out, so those rounds are void): 1.058, 1.150, 1.000, 1.179, 1.149,
+  1.084, 1.107, 1.460 (cross4-arm.out, 18:48 UTC, load 6.9 to 9.1). User-mode counts by perf (both rounds alike):
+  search as compiled, instructions +41.8% and cycles +154%; kept out, +19.5% and +22.9%; interpret +56.6% and
+  +34.0%, kept out +27.4% and +9.9%. A stand-in's page round trips serialise a hot loop. Plan 3.2 records this and
+  the remedy to measure (the two chosen per piece), not built.
+- The crossover, from these f and c = 2.50 to 2.63 µs (W0 runs 4 and 5, P's round trip with work between calls),
+  I's own call taken as nothing (not measured: the executor): I wins above k = f / c kernel entries per second of
+  guest CPU time: fib 22,000 to 24,000, sieve 52,000 to 55,000, hash 400, sort 92,000 to 97,000, interpret 239,000 to
+  251,000, matrix 40,000 to 42,000, walk 41,000 to 43,000, search 1,110,000 to 1,170,000; with the registers kept
+  out fib 22,000 to 23,000, sieve 57,000 to 60,000, hash 0, sort 68,000 to 72,000, interpret 57,000 to 60,000, matrix
+  32,000 to 34,000, walk 41,000 to 43,000, search 175,000 to 184,000. Each of bench.c's workloads makes 2 kernel
+  entries, so P is theirs; busybox sh's comparison turns on process starts, which this cannot measure. Plan 7 has
+  the same figures. Not a crossover with both forms built: I's call, I's process start and copy, and the Python
+  start wait on the executor.
+- Bar items this moves: the check's cost per workload (exact form) is measured as far as code goes; the wrapping
+  form waits on the owner's decision 2.
+
 ## W2 run 6 (2026-11-24): the independent check's attacks on the inline protection, on hardware
 
 Scratch w2/run6 (check.sh with `SEEDS`, `CASES`, `ACASES`; check-vm.sh; attacks.sh; mutate-jumps.sh,
@@ -1814,14 +1858,18 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   checked, and displaced code (rule e) is built and checked (W2 run 4); collisions are checked, and the way's code
   runs natively in a stub at window base 0, its cost per access shape measured and the bounds-check-bypass test
   run on it (W2 run 5); the independent check's attacks on jumps and accesses run on hardware in slot 1, and the
-  mark has its own byte (W2 run 6). The in-process executor itself waits for
+  mark has its own byte (W2 run 6); the way's code is measured on whole programs under P's stubs, f per workload and
+  the crossover from it (W2 run 7). Next without unsafe: the two more withheld registers chosen per piece (the
+  translator; W2 run 7 found them the largest cost where a hot loop names x15 or x24), measured with crossover.sh;
+  it changes the way's register rules, so the in_process_way, in_process_attacks and stop tests must follow. The
+  in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
   when sp is back in the window, never link displaced pieces), its last-target rule (W2 run 6), the attack by
-  self-modifying code, and every measured item of W2's bar (the check's cost per workload, the crossover table,
-  the getppid entry, isolation through system-call pointers and signal frames, slot exhaustion, two I containers
-  beside a P one). The wrapping form waits on the owner's decision 2. Beyond these, nothing of W2 is left that
-  can be built or measured without new unsafe code.
+  self-modifying code, and every measured item of W2's bar that needs I's own process (the crossover table with
+  both forms built and I's call in it, the Python start, the getppid entry, isolation through system-call pointers
+  and signal frames, slot exhaustion, two I containers beside a P one). The wrapping form waits on the owner's
+  decision 2.
 - W3 now also carries the x86 native output track's in-process tests (interface-changes.md, 2026-11-24): the link,
   register-group and hostile-guest tests in the in-process way, the ymm upper halves across a call into the inside,
   the X9 programs natively in that way with figures, and 0x67 string instructions through the inside

@@ -254,7 +254,14 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
    native output emits no replay check in any way (none reads `TPIDRRO_EL0`), so nothing changes here yet.
 As built for I (W2 run 2, `wcontainers_arm64::Way::InProcess { slot }`, the exact form only): `u` is x15 and
 `base` x24 (the next two by native.md 3.3's static count, 29.2 and 30.3 per 1000), their guest values the two words
-after the register page. Every failed check, and every new stack pointer outside the window by (d), reads one byte
+after the register page. Measured on whole programs (W2 run 7, section 7), the static count misleads: a hot loop
+that names one of them pays a stand-in's save, load, store and restore through the page at every such
+instruction, and those memory round trips serialise the loop. bench.c's search took 3.92 times form P's time
+with the compiler's own register choice and 1.46 times with x15 and x24 kept out of the program (instructions
++42% but cycles +154%, against +20% and +23% without them); interpret took 1.63 and 1.15. The two registers, not the
+check, are form I's largest cost where a hot loop names them; choosing them per piece (two the piece does not
+name, their guest values moved at the piece's entry and exits) is the remedy to measure, and is not built.
+Every failed check, and every new stack pointer outside the window by (d), reads one byte
 at the window's base plus 2^32 plus 4095 (`way::MARK`, unmapped by 3.1; 4095 being `ldrb`'s largest offset) out of
 line. It is not the first byte past the window because an access whose bytes cross the window's top faults there on
 hardware when its first bytes are mapped (Graviton4 reports the faulting page's first byte), which the floor took
@@ -1215,6 +1222,19 @@ guest CPU above 350,000. Either way it is I's by a factor (and P pays two proces
 start with 70 imports makes about 3,460 calls in 0.9 s (about 4,000 per second of wall time): P (under 1% against
 I's f); a compute benchmark makes 9: P. These are expected outcomes from the arithmetic; W2 measures them on both
 forms.
+f measured on whole programs (W2 run 7, before form I's executor exists): form P running the in-process way's
+translated code (window slot 0, whose base is 0, so P's stubs, floor and slot table serve it unchanged; the guest
+kept below 4 GiB) against P running the process way's, the same kernel, system calls and floor, so the difference
+is I's translated code alone: its checks, its cut accesses, its one more instruction per jump through a register
+and its two more withheld registers. Graviton4 18:39 to 18:51 UTC, one-minute load 7 to 12 on 96 cores, 7 alternating rounds, medians of the
+rounds' ratios, outputs equal to the program run on the host: bench.c's workloads fib 1.059, sieve 1.137, hash
+1.001, sort 1.242, interpret 1.628, matrix 1.104, walk 1.108, search 3.922 (geometric mean 1.360; 1.169 without
+search); with x15 and x24 kept out of the programs by the compiler, 1.058, 1.150, 1.000, 1.179, 1.149, 1.084,
+1.107, 1.460 (1.142); busybox sh starting 200 programs 1.011 (its time is process starts and the kernel's). So f
+is 0.00 to 0.63 on these programs as compiled, 2.92 on one, against section 11's 0.214, and k > f / c with
+c = 2.50 to 2.63 µs gives I the win above about 400 (hash) to 250,000 (interpret) kernel entries per second of
+guest CPU time, 1,100,000 for search; with the registers kept out, 0 to 72,000, 184,000 for search. I's own call
+cost (not measured: the executor) is taken as nothing against c.
 Rule given to the embedder (it chooses, not us): with no history, P (the owner's default for agentic workloads);
 with history, the form whose arithmetic above is lower at the recorded rates on this host's measured c and f (s
 and c_busy when the probe found no free CPU); P whatever the arithmetic when the container needs the line between
