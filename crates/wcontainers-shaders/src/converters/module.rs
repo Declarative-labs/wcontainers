@@ -100,9 +100,17 @@ fn loaded() -> &'static Loaded {
     static LOADED: OnceLock<Loaded> = OnceLock::new();
     LOADED.get_or_init(|| {
         let mut config = Config::new();
+        // As many instances at once as the host runs threads: a conversion is bound by the
+        // processor, so more gain nothing, and the converters' memory together stays within that
+        // many bounds. A conversion finding every instance taken waits for one.
+        let instances = std::thread::available_parallelism()
+            .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
         let mut pool = PoolingAllocationConfig::default();
         pool.max_memory_size(MEMORY_BOUND)
-            .linear_memory_keep_resident(KEPT_RESIDENT);
+            .linear_memory_keep_resident(KEPT_RESIDENT)
+            .total_core_instances(instances)
+            .total_memories(instances)
+            .total_tables(instances);
         config
             .consume_fuel(true)
             .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
