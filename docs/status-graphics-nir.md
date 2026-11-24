@@ -35,6 +35,10 @@ with and without Mesa and the nir crate's route test passed (22) on the x86-64 m
 - `run-windows.ps1` removes earlier results through the long-path prefix (2483bada).
 - Unsafe code: wcontainers-nir 116, wcontainers-opengl 370; the root list carries both. No
   dependency or licence was added.
+- The suite of both crates at 0d2108df (x86-64 machine, load 63 to 72, the shaders crate as
+  committed): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa the nir
+  crate's route 22, glsl_reference 10 and 2 ignored, glsl_buffers 2 and narrow 1 pass;
+  wcontainers-opengl has no tests of its own.
 
 THE TABLE, run 30's whole run at 1ae22774's driver (every change above, the shaders crate as
 committed at f8b65a56; desktop, RTX 3080, one GPU job in the hazard group, 8 glcts at once, about
