@@ -202,6 +202,7 @@ unsafe extern "C" {
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
     fn wc_nir_geometry_vertices_out(nir: *const NirShader) -> u32;
     fn wc_nir_control_points_out(nir: *const NirShader) -> u32;
+    fn wc_nir_makes_points(nir: *const NirShader) -> bool;
     fn wc_nir_named_layer_location(nir: *const NirShader) -> u32;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
@@ -227,6 +228,12 @@ unsafe extern "C" {
     fn wc_nir_point_size_also_at(nir: *mut NirShader, at: u32) -> bool;
     fn wc_nir_point_size_at_most(nir: *const NirShader, size: f32) -> bool;
     fn wc_nir_point_square(vs: *const NirShader, at: u32, largest: f32) -> *mut NirShader;
+    fn wc_nir_geometry_squares(
+        gs: *const NirShader,
+        at: u32,
+        largest: f32,
+        block: u32,
+    ) -> *mut NirShader;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -401,6 +408,12 @@ impl Nir {
         unsafe { wc_nir_control_points_out(self.0) }
     }
 
+    /// An evaluation program in point mode, or a geometry program whose output is points.
+    pub fn makes_points(&self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_makes_points(self.0) }
+    }
+
     /// gl_FragColor written to each of the first `buffers` draw buffers. Nothing for a program
     /// that does not write it, or of another stage.
     pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
@@ -490,6 +503,19 @@ impl Nir {
         // SAFETY: self.0 is a live shader; the result is a new shader or null.
         let square = unsafe { wc_nir_point_square(self.0, at, largest) };
         (!square.is_null()).then_some(Nir(square))
+    }
+
+    /// This geometry program, whose output is points and whose uniform blocks are words
+    /// ([`Self::uniform_blocks_as_words`]), rewritten to draw each as a square of two triangles as
+    /// [`Self::point_square`] draws them (its new block in words too): its size the point size it writes, clamped
+    /// to 1..`largest`, or else the first word of uniform block `block`, whose words are
+    /// [`Self::point_square`]'s block 0's; `gl_PointCoord` at the generic location `at`. `None`
+    /// for a program of another output, writing clip distances, outputs at offsets known only
+    /// when run or at `at`, or to more than one stream.
+    pub fn geometry_squares(&self, at: u32, largest: f32, block: u32) -> Option<Nir> {
+        // SAFETY: self.0 is a live shader; the result is a new shader or null.
+        let squares = unsafe { wc_nir_geometry_squares(self.0, at, largest, block) };
+        (!squares.is_null()).then_some(Nir(squares))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the

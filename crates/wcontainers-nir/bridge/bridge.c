@@ -482,6 +482,19 @@ wc_nir_control_points_out(const struct nir_shader *nir)
    return nir->info.stage == MESA_SHADER_TESS_CTRL ? nir->info.tess.tcs_vertices_out : 0;
 }
 
+bool
+wc_nir_makes_points(const struct nir_shader *nir)
+{
+   switch (nir->info.stage) {
+   case MESA_SHADER_TESS_EVAL:
+      return nir->info.tess.point_mode;
+   case MESA_SHADER_GEOMETRY:
+      return nir->info.gs.output_primitive == MESA_PRIM_POINTS;
+   default:
+      return false;
+   }
+}
+
 static bool
 fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *buffers)
 {
@@ -2139,6 +2152,56 @@ note_written(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 static const float square_corners[][2] = {{-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
 enum { SQUARE_SIZE, SQUARE_STEP_X, SQUARE_STEP_Y, SQUARE_COORD_T };
 
+/* A slot a point's square copies to its corners: not the position, the size or the coordinate. */
+static bool
+copied_to_corners(unsigned slot, unsigned coord_slot)
+{
+   return slot != VARYING_SLOT_POS && slot != VARYING_SLOT_PSIZ && slot != VARYING_SLOT_EDGE &&
+          slot != coord_slot;
+}
+
+/* A point's square emitted as a strip of two triangles and ended: `values` (by slot and
+ * component, as `written` lists them) at each corner, the clip-space `position` moved half `size`
+ * pixels each way by the square's `block`, and gl_PointCoord at `coord_slot`. */
+static void
+emit_square(nir_builder *b, const struct written_slots *written,
+            nir_def *values[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS], nir_def *position,
+            nir_def *size, nir_def *block, unsigned coord_slot)
+{
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *w = nir_channel(b, position, 3);
+   nir_def *step_x = nir_fmul(b, nir_fmul(b, size, nir_channel(b, block, SQUARE_STEP_X)), w);
+   nir_def *step_y = nir_fmul(b, nir_fmul(b, size, nir_channel(b, block, SQUARE_STEP_Y)), w);
+   const nir_io_semantics position_semantics = {.location = VARYING_SLOT_POS, .num_slots = 1};
+   const nir_io_semantics coord_semantics = {.location = coord_slot, .num_slots = 1};
+   for (unsigned i = 0; i < ARRAY_SIZE(square_corners); i++) {
+      const float sx = square_corners[i][0], sy = square_corners[i][1];
+      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+         const struct written_slot *s = &written->slots[slot];
+         for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++) {
+            if (!values[slot][c])
+               continue;
+            nir_store_output(b, values[slot][c], nir_imm_int(b, s->offset), .component = c,
+                             .src_type = s->types[c], .io_semantics = s->semantics);
+         }
+      }
+      nir_def *corner =
+         nir_vec4(b, nir_fadd(b, nir_channel(b, position, 0), nir_fmul_imm(b, step_x, sx)),
+                  nir_fadd(b, nir_channel(b, position, 1), nir_fmul_imm(b, step_y, sy)),
+                  nir_channel(b, position, 2), w);
+      nir_store_output(b, corner, zero, .src_type = nir_type_float32,
+                       .io_semantics = position_semantics);
+      const float half = 0.5f;
+      nir_def *t =
+         nir_fadd_imm(b, nir_fmul_imm(b, nir_channel(b, block, SQUARE_COORD_T), half * sy), half);
+      nir_def *coord = nir_vec2(b, nir_imm_float(b, half + half * sx), t);
+      nir_store_output(b, coord, zero, .src_type = nir_type_float32,
+                       .io_semantics = coord_semantics);
+      nir_emit_vertex(b, 0);
+   }
+   nir_end_primitive(b, 0);
+}
+
 struct nir_shader *
 wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest)
 {
@@ -2189,16 +2252,12 @@ wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest)
    nir_def *position = nir_load_per_vertex_input(&b, 4, 32, zero, zero,
                                                  .dest_type = nir_type_float32,
                                                  .io_semantics = position_semantics);
-   nir_def *w = nir_channel(&b, position, 3);
-   nir_def *step_x = nir_fmul(&b, nir_fmul(&b, size, nir_channel(&b, block, SQUARE_STEP_X)), w);
-   nir_def *step_y = nir_fmul(&b, nir_fmul(&b, size, nir_channel(&b, block, SQUARE_STEP_Y)), w);
 
    /* Every other output, as the program wrote it. */
    nir_def *values[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS] = {{0}};
    for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
       const struct written_slot *s = &written->slots[slot];
-      if (slot == VARYING_SLOT_POS || slot == VARYING_SLOT_PSIZ || slot == VARYING_SLOT_EDGE ||
-          slot == coord_slot)
+      if (!copied_to_corners(slot, coord_slot))
          continue;
       u_foreach_bit(c, s->components) {
          values[slot][c] = nir_load_per_vertex_input(
@@ -2206,37 +2265,132 @@ wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest)
             .component = c, .dest_type = s->types[c], .io_semantics = s->semantics);
       }
    }
-   for (unsigned i = 0; i < ARRAY_SIZE(square_corners); i++) {
-      const float sx = square_corners[i][0], sy = square_corners[i][1];
-      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
-         const struct written_slot *s = &written->slots[slot];
-         for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++) {
-            if (!values[slot][c])
-               continue;
-            nir_store_output(&b, values[slot][c], nir_imm_int(&b, s->offset), .component = c,
-                             .src_type = s->types[c], .io_semantics = s->semantics);
-         }
-      }
-      nir_def *corner =
-         nir_vec4(&b, nir_fadd(&b, nir_channel(&b, position, 0), nir_fmul_imm(&b, step_x, sx)),
-                  nir_fadd(&b, nir_channel(&b, position, 1), nir_fmul_imm(&b, step_y, sy)),
-                  nir_channel(&b, position, 2), w);
-      nir_store_output(&b, corner, zero, .src_type = nir_type_float32,
-                       .io_semantics = position_semantics);
-      const float half = 0.5f;
-      nir_def *t =
-         nir_fadd_imm(&b, nir_fmul_imm(&b, nir_channel(&b, block, SQUARE_COORD_T), half * sy), half);
-      nir_def *coord = nir_vec2(&b, nir_imm_float(&b, half + half * sx), t);
-      const nir_io_semantics coord_semantics = {.location = coord_slot, .num_slots = 1};
-      nir_store_output(&b, coord, zero, .src_type = nir_type_float32,
-                       .io_semantics = coord_semantics);
-      nir_emit_vertex(&b, 0);
-   }
-   nir_end_primitive(&b, 0);
+   emit_square(&b, written, values, position, size, block, coord_slot);
    free(written);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    nir_recompute_io_bases(nir, nir_var_shader_in | nir_var_shader_out);
    nir_validate_shader(nir, "point square");
+   return nir;
+}
+
+/* What a geometry program's squares rewrite (`wc_nir_geometry_squares`) reads and writes. */
+struct squares_rewrite {
+   const struct written_slots *written;
+   /* Each output component the program writes, held until it emits a vertex. */
+   nir_variable *held[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS];
+   nir_def *block;
+   float largest;
+   unsigned coord_slot;
+   /* The program emits with counters (nir_lower_gs_intrinsics' form), which is not rewritten. */
+   bool counted;
+};
+
+static bool
+rewrite_to_squares(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct squares_rewrite *r = data;
+   b->cursor = nir_before_instr(&intr->instr);
+   switch (intr->intrinsic) {
+   case nir_intrinsic_store_output: {
+      const nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+      const unsigned slot = semantics.location + nir_src_as_uint(*nir_get_io_offset_src(intr));
+      const unsigned first = nir_intrinsic_component(intr);
+      u_foreach_bit(c, nir_intrinsic_write_mask(intr)) {
+         nir_store_var(b, r->held[slot][first + c], nir_channel(b, intr->src[0].ssa, c), 1);
+      }
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   case nir_intrinsic_emit_vertex: {
+      nir_def *values[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS] = {{0}};
+      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+         if (!copied_to_corners(slot, r->coord_slot))
+            continue;
+         for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++) {
+            if (r->held[slot][c])
+               values[slot][c] = nir_load_var(b, r->held[slot][c]);
+         }
+      }
+      nir_def *position_parts[4];
+      for (unsigned c = 0; c < ARRAY_SIZE(position_parts); c++) {
+         nir_variable *v = r->held[VARYING_SLOT_POS][c];
+         position_parts[c] = v ? nir_load_var(b, v) : nir_undef(b, 1, 32);
+      }
+      nir_def *position = nir_vec(b, position_parts, ARRAY_SIZE(position_parts));
+      nir_variable *sized = r->held[VARYING_SLOT_PSIZ][0];
+      nir_def *size = sized ? nir_fclamp(b, nir_load_var(b, sized), nir_imm_float(b, 1),
+                                         nir_imm_float(b, r->largest))
+                            : nir_channel(b, r->block, SQUARE_SIZE);
+      emit_square(b, r->written, values, position, size, r->block, r->coord_slot);
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   /* Each square ends its own strip. */
+   case nir_intrinsic_end_primitive:
+      nir_instr_remove(&intr->instr);
+      return true;
+   case nir_intrinsic_emit_vertex_with_counter:
+   case nir_intrinsic_end_primitive_with_counter:
+      r->counted = true;
+      return false;
+   default:
+      return false;
+   }
+}
+
+struct nir_shader *
+wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest, uint32_t block)
+{
+   if (gs->info.stage != MESA_SHADER_GEOMETRY || gs->info.gs.output_primitive != MESA_PRIM_POINTS ||
+       VARYING_SLOT_VAR0 + at >= VARYING_SLOT_MAX)
+      return NULL;
+   nir_shader *nir = nir_shader_clone(NULL, gs);
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   const bool clipped = nir->info.outputs_written &
+                        (VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 | VARYING_BIT_CLIP_VERTEX);
+   struct written_slots *written = calloc(1, sizeof(*written));
+   if (!written || clipped || nir->info.gs.active_stream_mask > 1) {
+      free(written);
+      ralloc_free(nir);
+      return NULL;
+   }
+   nir_shader_intrinsics_pass(nir, note_written, nir_metadata_all, written);
+   const unsigned coord_slot = VARYING_SLOT_VAR0 + at;
+   if (written->indirect || written->slots[coord_slot].components) {
+      free(written);
+      ralloc_free(nir);
+      return NULL;
+   }
+   struct squares_rewrite r = {.written = written, .largest = largest, .coord_slot = coord_slot};
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+      const struct written_slot *s = &written->slots[slot];
+      u_foreach_bit(c, s->components) {
+         const enum glsl_base_type base = nir_get_glsl_base_type_for_nir_type(s->types[c]);
+         r.held[slot][c] = nir_local_variable_create(impl, glsl_scalar_type(base), "held output");
+      }
+   }
+   /* The squares' block, in the words every other block of the program was made
+    * (`wc_nir_uniform_blocks_as_words`). */
+   const uint32_t block_bytes = WC_UNIFORM_VECTOR_WORDS * WC_WORD_BYTES;
+   nir_variable *words = word_block(nir, nir_var_mem_ubo, block, block_bytes, false, false);
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+   r.block = nir_load_deref(
+      &b, nir_build_deref_array_imm(&b, nir_build_deref_struct(&b, nir_build_deref_var(&b, words), 0),
+                                    0));
+   nir_shader_intrinsics_pass(nir, rewrite_to_squares, nir_metadata_none, &r);
+   free(written);
+   if (r.counted) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   nir->info.gs.output_primitive = MESA_PRIM_TRIANGLE_STRIP;
+   nir->info.gs.vertices_out *= ARRAY_SIZE(square_corners);
+   nir_lower_vars_to_ssa(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_out);
+   nir_validate_shader(nir, "geometry squares");
    return nir;
 }
 

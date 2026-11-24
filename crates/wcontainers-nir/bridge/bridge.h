@@ -192,6 +192,8 @@ uint32_t wc_nir_geometry_vertices_out(const struct nir_shader *nir);
 uint32_t wc_nir_named_layer_location(const struct nir_shader *nir);
 /* The control points of a tessellation control program's output patch; zero for another stage. */
 uint32_t wc_nir_control_points_out(const struct nir_shader *nir);
+/* An evaluation program in point mode, or a geometry program whose output is points. */
+bool wc_nir_makes_points(const struct nir_shader *nir);
 
 /* gl_FragColor written to each of the first `buffers` draw buffers, nir_lower_fragcolor's step
  * (the driver's own, as Zink's) on lowered stage values. */
@@ -344,6 +346,15 @@ bool wc_nir_point_size_at_most(const struct nir_shader *nir, float size);
  * grows with the rows, -1 where it falls). NULL for a program writing clip distances, or outputs
  * at offsets known only when run. */
 struct nir_shader *wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest);
+/* A geometry program whose output is points, its uniform blocks as words
+ * (`wc_nir_uniform_blocks_as_words`), rewritten to draw each as a square of two triangles
+ * (PointsAsQuads), as `wc_nir_point_square` draws them: its size the point size it writes,
+ * clamped to 1..`largest`, or else the first word of uniform block `block` (made in words too),
+ * whose words are `wc_nir_point_square`'s; gl_PointCoord at the generic slot `at`. NULL for a program of another
+ * output, writing clip distances, outputs at offsets known only when run or at `at`, or to more
+ * than one stream. */
+struct nir_shader *wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest,
+                                           uint32_t block);
 
 /* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
  * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,

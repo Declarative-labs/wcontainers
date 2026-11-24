@@ -199,16 +199,20 @@ pub struct Programs<B: Backend> {
     staged: HashMap<StagedKey, Staged<B>>,
     /// The stage helpers of vertex programs and the tessellation and geometry programs after them.
     tessellated: HashMap<TessellatedKey, Staged<B>>,
-    /// The programs drawing a vertex program's points as squares, by it and the location their
-    /// size and `gl_PointCoord` pass at; `None` for one whose every point is a pixel.
+    /// The programs drawing a vertex or evaluation program's points as squares, by it and the
+    /// location their size and `gl_PointCoord` pass at; `None` for one whose every point is a
+    /// pixel.
     squares: HashMap<(ShaderId, u32), Option<Box<Squares>>>,
 }
 
-/// A vertex program's points drawn as squares (`PointsAsQuads`): the geometry program making
-/// them, after the vertex program or its copy that also writes its point size at a location.
+/// A vertex or evaluation program's points drawn as squares (`PointsAsQuads`): the geometry
+/// program making them, after that program or its copy that also writes its point size at a
+/// location.
 struct Squares {
-    vertex: Option<Shader>,
+    before: Option<Shader>,
     geometry: Shader,
+    /// The points' size is the one the programs write, not the rasterizer's.
+    sized: bool,
 }
 
 /// A vertex program and the geometry program after it run by the stage helper, and the vertex
@@ -279,8 +283,8 @@ impl<B: Backend> Programs<B> {
         for key in squares {
             if let Some(made) = self.squares.remove(&key).flatten() {
                 self.forget(screen, &made.geometry);
-                if let Some(vertex) = &made.vertex {
-                    self.forget(screen, vertex);
+                if let Some(before) = &made.before {
+                    self.forget(screen, before);
                 }
             }
         }
@@ -2184,30 +2188,63 @@ fn draw<B: Backend>(
     let mut backend = screen.backend();
     let backend = &mut *backend;
     transform.fixed_point_size = !backend.caps().has(Features::POINT_SIZE);
-    let squares = if gs.is_null() && !tessellated && mode == MESA_PRIM_POINTS {
-        // SAFETY: bound shaders live until Mesa unbinds and deletes them.
-        let (vertex, fragment) = unsafe { (&*vs, &*fs) };
-        squares_for(&mut context.programs, backend, vertex, fragment, raster)?
-    } else {
+    // The program whose points are rasterized: an evaluation program in point mode, or the
+    // vertex program of a draw of points.
+    let pointed = if !gs.is_null() {
         None
+    } else if tessellated {
+        // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+        unsafe { &*tes }.nir.makes_points().then_some(tes)
+    } else {
+        (mode == MESA_PRIM_POINTS).then_some(vs)
+    };
+    // SAFETY: bound shaders live until Mesa unbinds and deletes them.
+    let fragment_program = unsafe { &*fs };
+    let squares = match (pointed, geometry_shader) {
+        (Some(before), _) => {
+            // SAFETY: as above.
+            let before = unsafe { &*before };
+            squares_for(
+                &mut context.programs,
+                backend,
+                before,
+                fragment_program,
+                raster,
+            )?
+            .map(|(before, geometry, at)| (before, geometry, at, 0))
+        }
+        (None, Some(g)) if g.nir.makes_points() => {
+            geometry_squares_for(&mut context.programs, backend, g, fragment_program, raster)?
+                .map(|(geometry, at, block)| (std::ptr::null(), geometry, at, block))
+        }
+        (None, _) => None,
     };
     // The vertex program the API bound, which streams what it writes.
     let api_vs = vs;
-    let (vs, gs, point_coord) = match squares {
-        Some((vertex, geometry, at)) => {
+    // Where the squares read their block: 0 for the squares' own geometry program, another for a
+    // geometry program rewritten to make them.
+    let (vs, tes, gs, point_coord, squares_block_at) = match squares {
+        Some((before, geometry, at, block)) => {
             backend.slow_paths().hit(SlowPath::PointsAsQuads);
-            (vertex, geometry, Some(at))
+            if before.is_null() {
+                (vs, tes, geometry, Some(at), block)
+            } else if tessellated {
+                (vs, before, geometry, Some(at), block)
+            } else {
+                (before, tes, geometry, Some(at), block)
+            }
         }
-        None => (vs, gs, None),
+        None => (vs, tes, gs, None, 0),
     };
+    // A geometry program the API bound, rewritten to make squares, keeps its own variant.
+    let own_squares = point_coord.is_none() || geometry_shader.is_some();
     if transform.half_z {
         backend.slow_paths().hit(SlowPath::ClipDepthRewrite);
     }
     if transform.reverse_z {
         backend.slow_paths().hit(SlowPath::ViewportDepthFlip);
     }
-    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    let fragment_shader = unsafe { &*fs };
+    let fragment_shader = fragment_program;
     let fragment = Variant {
         swizzles: swizzles(context.stages.get(Stage::Fragment)),
         targets: target_kinds(&context.framebuffer.state),
@@ -2280,7 +2317,7 @@ fn draw<B: Backend>(
     let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
-    let geometry = if point_coord.is_some() {
+    let geometry = if !own_squares {
         // A point's square samples nothing.
         Variant {
             transform,
@@ -2369,6 +2406,27 @@ fn draw<B: Backend>(
                 gs.as_ref().map(|g| (g, &geometry)),
             )
         };
+        // Squares made after tessellation would stream and count squares, not the API's points.
+        let squares_block = match point_coord {
+            Some(_) if context.streams.active() || !context.counting.is_empty() => {
+                return refused(format_args!(
+                    "points drawn as squares after tessellation or a geometry program while \
+                     streaming or counting (not built)"
+                ));
+            }
+            Some(_) => Some(state::Constants {
+                bytes: square_block(&context.bound.viewport, raster),
+                ..state::Constants::default()
+            }),
+            None => None,
+        };
+        let block_at = squares_block_at as usize;
+        let held = squares_block.map(|block| {
+            std::mem::replace(
+                &mut context.stages.get_mut(Stage::Geometry).constants[block_at],
+                block,
+            )
+        });
         let made = run_tessellated(
             context,
             backend,
@@ -2377,8 +2435,11 @@ fn draw<B: Backend>(
             elements,
             (info, d),
             staged_provoking,
-        )?;
-        match made {
+        );
+        if let Some(held) = held {
+            context.stages.get_mut(Stage::Geometry).constants[block_at] = held;
+        }
+        match made? {
             Some(made) => Some(made),
             None => return Ok(()),
         }
@@ -2420,6 +2481,15 @@ fn draw<B: Backend>(
             )?,
             Some(_) => {
                 let square = square_block(&context.bound.viewport, raster);
+                // A rewritten geometry program would stream and count squares, not its points.
+                if geometry_shader.is_some()
+                    && (context.streams.active() || !context.counting.is_empty())
+                {
+                    return refused(format_args!(
+                        "points drawn as squares after tessellation or a geometry program while \
+                         streaming or counting (not built)"
+                    ));
+                }
                 if context.streams.active() {
                     // SAFETY: as above.
                     let streamed = (unsafe { &*api_vs }, &vertex);
@@ -2441,7 +2511,7 @@ fn draw<B: Backend>(
                     elements,
                     (info, d),
                     staged_provoking,
-                    square,
+                    (squares_block_at as usize, square),
                 )?
             }
         };
@@ -3011,10 +3081,10 @@ fn helper_indices<B: Backend>(
     Ok(rewritten.map_or(HelperIndices::Nothing, HelperIndices::Rewritten))
 }
 
-/// The geometry program drawing a vertex program's points as squares where the back end draws
-/// points of one size and these are larger (`PointsAsQuads`), the vertex program before it (`vs`
-/// or its copy also writing its point size where the squares read it), and where the squares pass
-/// `gl_PointCoord`; `None` for points of one pixel.
+/// The geometry program drawing a vertex or evaluation program's points as squares where the
+/// back end draws points of one size and these are larger (`PointsAsQuads`), the program before
+/// it (`vs` or its copy also writing its point size where the squares read it), and where the
+/// squares pass `gl_PointCoord`; `None` for points of one pixel.
 fn squares_for<B: Backend>(
     programs: &mut Programs<B>,
     backend: &B,
@@ -3061,7 +3131,8 @@ fn squares_for<B: Backend>(
                 named_layer: None,
             };
             slot.insert(Some(Box::new(Squares {
-                vertex: sized.then(|| shader(Stage::Vertex, copy)),
+                before: sized.then(|| shader(vs.stage, copy)),
+                sized,
                 geometry: Shader {
                     formatless_images: 0,
                     integer_sampled: 0,
@@ -3073,7 +3144,7 @@ fn squares_for<B: Backend>(
     let Some(made) = made else {
         return Ok(None);
     };
-    if made.vertex.is_none() && raster.point_size <= ONE_PIXEL {
+    if !made.sized && raster.point_size <= ONE_PIXEL {
         return Ok(None);
     }
     if at >= backend.caps().limits.inter_stage_slots {
@@ -3081,11 +3152,85 @@ fn squares_for<B: Backend>(
             "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
         ));
     }
-    let vertex = made
-        .vertex
+    let before = made
+        .before
         .as_ref()
         .map_or(std::ptr::from_ref(vs), std::ptr::from_ref);
-    Ok(Some((vertex, std::ptr::from_ref(&made.geometry), at)))
+    Ok(Some((before, std::ptr::from_ref(&made.geometry), at)))
+}
+
+/// A geometry program whose output is points rewritten to draw them as squares where the back end
+/// draws points of one size and these are larger (`PointsAsQuads`), where it passes
+/// `gl_PointCoord`, and the uniform block its squares read (after every one the screen reports,
+/// which leaves one of the host's free); `None` for points of one pixel.
+fn geometry_squares_for<B: Backend>(
+    programs: &mut Programs<B>,
+    backend: &B,
+    gs: &Shader,
+    fs: &Shader,
+    raster: &state::Raster<B>,
+) -> Result<Option<(*const Shader, u32, u32)>, String> {
+    if backend.caps().has(Features::POINT_SIZE) {
+        return Ok(None);
+    }
+    let at = gs.nir.generic_end().max(fs.nir.generic_end());
+    let block = backend.caps().limits.uniform_buffers_per_stage - 1;
+    if block as usize >= PIPE_MAX_CONSTANT_BUFFERS as usize {
+        return refused(format_args!(
+            "points of a geometry program drawn as squares where the host has a uniform buffer \
+             for every block Gallium binds (not built)"
+        ));
+    }
+    let made = match programs
+        .squares
+        .entry((std::ptr::from_ref(gs) as ShaderId, at))
+    {
+        Entry::Occupied(made) => made.into_mut(),
+        Entry::Vacant(slot) => {
+            let mut probe = gs.nir.try_clone().ok_or("out of memory")?;
+            let sized = probe.point_size_also_at(at);
+            // Points every one of which is a pixel are the back end's own.
+            if probe.point_size_at_most(ONE_PIXEL) {
+                slot.insert(None);
+                return Ok(None);
+            }
+            let largest = crate::screen::largest_point_size(backend.caps());
+            let Some(nir) = gs.nir.geometry_squares(at, largest, block) else {
+                return refused(format_args!(
+                    "points of a geometry program drawn as squares where it writes clip \
+                     distances, outputs at offsets known only when run or to several streams, or \
+                     emits with counters (not built)"
+                ));
+            };
+            slot.insert(Some(Box::new(Squares {
+                before: None,
+                geometry: Shader {
+                    stage: Stage::Geometry,
+                    nir,
+                    streamed: Ok(None),
+                    reads_sample_positions: false,
+                    writes_sample_mask: false,
+                    fetches_target: false,
+                    formatless_images: gs.formatless_images,
+                    integer_sampled: gs.integer_sampled,
+                    named_layer: gs.named_layer,
+                },
+                sized,
+            })))
+        }
+    };
+    let Some(made) = made else {
+        return Ok(None);
+    };
+    if !made.sized && raster.point_size <= ONE_PIXEL {
+        return Ok(None);
+    }
+    if at >= backend.caps().limits.inter_stage_slots {
+        return refused(format_args!(
+            "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
+        ));
+    }
+    Ok(Some((std::ptr::from_ref(&made.geometry), at, block)))
 }
 
 /// The uniform block of a point's square (`Nir::point_square`): the bound size, half a pixel's
@@ -3107,8 +3252,8 @@ fn square_block<B: Backend>(viewport: &pipe_viewport_state, raster: &state::Rast
 }
 
 /// One range of points drawn as squares (`PointsAsQuads`): the stage helper runs the vertex
-/// program and the squares' geometry program, which reads `block` as its uniform block 0, and
-/// neither streams nor counts what it makes (the API's points are counted as drawn).
+/// program and the geometry program making squares, which reads `block` as its uniform block
+/// `at`, and neither streams nor counts what it makes (the API's points are counted as drawn).
 fn draw_squares<B: Backend>(
     context: &mut Context<B>,
     backend: &mut B,
@@ -3116,14 +3261,14 @@ fn draw_squares<B: Backend>(
     elements: &state::Elements<B>,
     range: (&pipe_draw_info, &pipe_draw_start_count_bias),
     provoking: Provoking,
-    block: Vec<u8>,
+    (at, block): (usize, Vec<u8>),
 ) -> Result<Option<Made<B>>, String> {
     let squares_block = state::Constants {
         bytes: block,
         ..state::Constants::default()
     };
     let held = std::mem::replace(
-        &mut context.stages.get_mut(Stage::Geometry).constants[0],
+        &mut context.stages.get_mut(Stage::Geometry).constants[at],
         squares_block,
     );
     let counting = std::mem::take(&mut context.counting);
@@ -3137,7 +3282,7 @@ fn draw_squares<B: Backend>(
         provoking,
     );
     context.counting = counting;
-    context.stages.get_mut(Stage::Geometry).constants[0] = held;
+    context.stages.get_mut(Stage::Geometry).constants[at] = held;
     made
 }
 
