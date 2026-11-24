@@ -6,7 +6,7 @@ home=${KANI_HOME:-/work/ktrial}
 export RUSTUP_HOME=$home/rustup CARGO_HOME=$home/cargo KANI_HOME=$home/kani PATH=$home/cargo/bin:$PATH
 ulimit -v 40000000
 out=/work/target/gmc-kani-out; rm -rf $out; mkdir -p $out
-harnesses="counts_the_bytes_mapped loads_stores_swaps_and_exchanges_only_8_byte_words_inside loads_stores_swaps_and_exchanges_only_4_byte_words_inside reads_exactly_the_bytes_asked writes_exactly_the_bytes_given parts_lie_inside_and_reach_only_their_bytes parts_read_to_a_sink_and_write_from_a_source waits_and_wakes_only_on_words_inside"
+harnesses="counts_the_bytes_mapped loads_stores_and_swaps_only_8_byte_words_inside loads_stores_and_exchanges_only_4_byte_words_inside reads_exactly_the_bytes_asked writes_exactly_the_bytes_given parts_lie_inside_and_reach_only_their_bytes parts_read_to_a_sink_and_write_from_a_source waits_and_wakes_only_on_words_inside"
 one() { # target dir, module::harness
   local s=$(date +%s)
   CARGO_TARGET_DIR=$1 timeout 2400 cargo kani -p wcontainers-shared-memory -Z stubbing --harness "foreign_implementation::proofs::$2" --exact > $out/$2.txt 2>&1

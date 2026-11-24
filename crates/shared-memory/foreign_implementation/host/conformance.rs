@@ -60,6 +60,48 @@ mod anonymous {
         );
     }
 
+    /// Checks copies far longer than the suite's, past the lengths at which a C library switches to its copies for large
+    /// sizes, from starts and buffers at several alignments: each copies exactly its bytes and changes none around them.
+    #[cfg(not(miri))]
+    #[test]
+    fn copies_long_lengths_exactly() {
+        /// The longest copy: past the size at which glibc's x86-64 copy uses stores that bypass the cache on most hosts.
+        const LONGEST: usize = 9 << 20;
+        /// The bytes either side of each copy that are checked unchanged.
+        const AROUND: usize = 64;
+        /// The byte that fills the memory and the buffers outside the bytes copied.
+        const SENTINEL: u8 = 0xee;
+
+        let length = LONGEST + 2 * page();
+        let memory = HostMapping::anonymous(length).expect("the host maps the pages");
+        let source: Vec<u8> = (0..LONGEST + 16)
+            .map(|index| (index * 31 + index / 251) as u8)
+            .collect();
+        for count in [(2 << 20) - 1, 2 << 20, (2 << 20) + 1, LONGEST - 3] {
+            for shift in [0, 1, 7, 15] {
+                assert_eq!(memory.write(0, &vec![SENTINEL; length]), Ok(()));
+                let at = page() - shift;
+                let written = &source[shift..shift + count];
+                assert_eq!(memory.write(at as u64, written), Ok(()));
+                let mut into = vec![SENTINEL; count + 2 * AROUND];
+                assert_eq!(memory.read(at as u64, &mut into[AROUND + shift % 8..][..count]), Ok(()));
+                assert!(into[AROUND + shift % 8..][..count] == *written, "{count} bytes at {at}");
+                let mut around = vec![0; AROUND];
+                for edge in [at - AROUND, at + count] {
+                    assert_eq!(memory.read(edge as u64, &mut around), Ok(()));
+                    assert!(around.iter().all(|&byte| byte == SENTINEL), "{count} bytes at {at}");
+                }
+                assert!(
+                    into[..AROUND + shift % 8]
+                        .iter()
+                        .chain(&into[AROUND + shift % 8 + count..])
+                        .all(|&byte| byte == SENTINEL),
+                    "a read of {count} bytes at {at} wrote past its buffer"
+                );
+            }
+        }
+    }
+
     #[test]
     fn refuses_no_length() {
         assert!(HostMapping::anonymous(0).is_err());

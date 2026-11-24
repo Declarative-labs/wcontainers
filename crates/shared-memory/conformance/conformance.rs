@@ -25,9 +25,11 @@ pub const NEEDED: u64 = 5 * WORD as u64;
 /// The rounds of the tests where another thread writes.
 const ROUNDS: usize = if cfg!(miri) { 64 } else { 20_000 };
 
-/// The lengths of the copies at each boundary: none, each up to two words and a byte, and around a cache line and two.
-const LENGTHS: [usize; 24] = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33, 63, 64, 65, 127, 129,
+/// The lengths of the copies at each boundary: none, each up to two words and a byte, and around each length at which a
+/// C library's copy changes how it moves bytes, up to a page and a byte.
+const LENGTHS: [usize; 42] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511,
+    512, 513, 1023, 1024, 1025, 2047, 2048, 2049, 4095, 4096, 4097, 8191, 8193,
 ];
 
 /// Returns the number of bytes of the memory, which must hold the bytes the tests need.
@@ -59,22 +61,36 @@ pub fn counts_its_bytes<M: SharedMemory>(memory: M) {
     assert_eq!(memory.borrow(0..length).map(|part| part.len()), Ok(length));
 }
 
-/// Checks that each word of both sizes loads what was stored, swaps out what it held, and is exchanged only when it
-/// holds the value compared, all in the bytes the word covers.
+/// Checks that each word of both sizes loads what was stored, that each 8-byte word swaps out what it held, and that each
+/// 4-byte word is exchanged only when it holds the value compared, all in the bytes the word covers.
 pub fn loads_stores_swaps_and_exchanges_words<M: SharedMemory>(memory: M) {
     let length = bytes(&memory);
     memory
         .write(0, &vec![u8::MIN; length])
         .expect("the bytes lie inside the memory");
-    check_words(&memory, 0x0123_4567_89ab_cdef_u64, u64::to_ne_bytes);
-    check_words(&memory, 0x8967_4523_u32, u32::to_ne_bytes);
+    check_words(&memory, 0x0123_4567_89ab_cdef_u64, u64::to_ne_bytes, |at, value| {
+        assert_eq!(memory.swap(at, !value), Ok(value), "{at}");
+        assert_eq!(memory.load::<u64>(at), Ok(!value), "{at}");
+        assert_eq!(memory.swap(at, u64::MIN), Ok(!value), "{at}");
+    });
+    check_words(&memory, 0x8967_4523_u32, u32::to_ne_bytes, |at, value| {
+        assert_eq!(
+            memory.compare_exchange(at, !value, u32::MIN),
+            Ok(value),
+            "a compare-and-exchange that does not hold the value compared, at {at}"
+        );
+        assert_eq!(memory.load::<u32>(at), Ok(value), "{at}");
+        assert_eq!(memory.compare_exchange(at, value, u32::MIN), Ok(value), "{at}");
+    });
 }
 
-/// Checks the words of one size over the first words the suite covers, each starting from zero.
+/// Checks the words of one size over the first words the suite covers, each starting from zero; `change` gets each word
+/// holding its value and must leave it zero.
 fn check_words<M: SharedMemory, W: Word + core::ops::Not<Output = W>, const SIZE: usize>(
     memory: &M,
     seed: W,
     to_bytes: fn(W) -> [u8; SIZE],
+    change: impl Fn(u64, W),
 ) {
     for at in (0..4 * WORD).step_by(SIZE) {
         let value = if (at / SIZE).is_multiple_of(2) {
@@ -82,24 +98,12 @@ fn check_words<M: SharedMemory, W: Word + core::ops::Not<Output = W>, const SIZE
         } else {
             !seed
         };
-        let zero = word::<W>(u64::MIN);
+        let zero = W::try_from(u64::MIN).unwrap_or_else(|_| unreachable!("zero fits every word"));
         assert_eq!(memory.load::<W>(at as u64), Ok(zero), "{at}");
         assert_eq!(memory.store(at as u64, value), Ok(()));
         assert_eq!(memory.load::<W>(at as u64), Ok(value), "{at}");
         assert_eq!(read_at(memory, at, SIZE), to_bytes(value), "{at}");
-        assert_eq!(memory.swap(at as u64, !value), Ok(value), "{at}");
-        assert_eq!(memory.load::<W>(at as u64), Ok(!value), "{at}");
-        assert_eq!(
-            memory.compare_exchange(at as u64, value, zero),
-            Ok(!value),
-            "a compare-and-exchange that does not hold the value compared, at {at}"
-        );
-        assert_eq!(memory.load::<W>(at as u64), Ok(!value), "{at}");
-        assert_eq!(
-            memory.compare_exchange(at as u64, !value, zero),
-            Ok(!value),
-            "{at}"
-        );
+        change(at as u64, value);
         assert_eq!(memory.load::<W>(at as u64), Ok(zero), "{at}");
         assert!(
             read_at(memory, 0, 5 * WORD)
@@ -217,31 +221,23 @@ pub fn refuses_offsets_outside<M: SharedMemory>(memory: M) {
     let outside = Err(WordError::Outside(OutsideError));
     for at in [length, length - 4, length + 8, u64::MAX - 7, u64::MAX - 3] {
         if at > length - WORD as u64 {
-            assert_eq!(
-                each_word_method::<M, u64>(&memory, at),
-                [outside; 4],
-                "{at}"
-            );
+            assert_eq!(each_8_byte_word_method(&memory, at), [outside; 3], "{at}");
         }
         if at > length - HALF as u64 {
-            assert_eq!(
-                each_word_method::<M, u32>(&memory, at),
-                [outside; 4],
-                "{at}"
-            );
+            assert_eq!(each_4_byte_word_method(&memory, at), [outside; 3], "{at}");
         }
     }
     let misaligned = Err(WordError::Misaligned);
     for at in 1..WORD as u64 {
         assert_eq!(
-            each_word_method::<M, u64>(&memory, at),
-            [misaligned; 4],
+            each_8_byte_word_method(&memory, at),
+            [misaligned; 3],
             "{at}"
         );
         if at % HALF as u64 != 0 {
             assert_eq!(
-                each_word_method::<M, u32>(&memory, at),
-                [misaligned; 4],
+                each_4_byte_word_method(&memory, at),
+                [misaligned; 3],
                 "{at}"
             );
         }
@@ -278,14 +274,21 @@ pub fn refuses_offsets_outside<M: SharedMemory>(memory: M) {
     assert_eq!(memory.write(length, &[]), Ok(()));
 }
 
-/// Returns what load, store, swap and compare-and-exchange of a word of the type at the offset return, without the value.
-fn each_word_method<M: SharedMemory, W: Word>(memory: &M, at: u64) -> [Result<(), WordError>; 4] {
-    let all = word::<W>(u64::from(u32::MAX));
+/// Returns what load, store and swap of an 8-byte word at the offset return, without the value.
+fn each_8_byte_word_method<M: SharedMemory>(memory: &M, at: u64) -> [Result<(), WordError>; 3] {
     [
-        memory.load::<W>(at).map(|_| ()),
-        memory.store(at, all),
-        memory.swap(at, all).map(|_| ()),
-        memory.compare_exchange(at, word(u64::MIN), all).map(|_| ()),
+        memory.load::<u64>(at).map(|_| ()),
+        memory.store(at, u64::MAX),
+        memory.swap(at, u64::MAX).map(|_| ()),
+    ]
+}
+
+/// Returns what load, store and compare-and-exchange of a 4-byte word at the offset return, without the value.
+fn each_4_byte_word_method<M: SharedMemory>(memory: &M, at: u64) -> [Result<(), WordError>; 3] {
+    [
+        memory.load::<u32>(at).map(|_| ()),
+        memory.store(at, u32::MAX),
+        memory.compare_exchange(at, u32::MIN, u32::MAX).map(|_| ()),
     ]
 }
 
@@ -406,6 +409,177 @@ pub fn reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes<
     });
 }
 
+/// Loads, stores, swaps and compares and exchanges words of the first `length` bytes, storing only values whose bytes are
+/// each the background or its complement, as the writer does; checks that each byte every method returns is one of the
+/// two, and returns the number of rounds.
+pub fn use_words_checking_values_held<M: SharedMemory>(memory: &M, length: usize, rounds: usize) -> usize {
+    let held = |at: usize, value: &[u8]| {
+        value
+            .iter()
+            .enumerate()
+            .all(|(index, &byte)| either(at + index, byte))
+    };
+    let pattern = |at: usize, round: usize| -> [u8; WORD] {
+        core::array::from_fn(|index| {
+            if (round + index).is_multiple_of(2) {
+                background(at + index)
+            } else {
+                !background(at + index)
+            }
+        })
+    };
+    let words = length / WORD * WORD;
+    for round in 0..rounds {
+        let long = (round * WORD) % words;
+        let short = long + HALF * (round % 2);
+        let mut half = [u8::MIN; HALF];
+        half.copy_from_slice(&pattern(short, round)[..HALF]);
+        match round % 4 {
+            0 => {
+                let value = memory.load::<u64>(long as u64).expect("inside");
+                assert!(held(long, &value.to_ne_bytes()), "loaded {value:#x} at {long}");
+                let value = memory.load::<u32>(short as u64).expect("inside");
+                assert!(held(short, &value.to_ne_bytes()), "loaded {value:#x} at {short}");
+            }
+            1 => {
+                memory
+                    .store(long as u64, u64::from_ne_bytes(pattern(long, round)))
+                    .expect("inside");
+                memory
+                    .store(short as u64, u32::from_ne_bytes(half))
+                    .expect("inside");
+            }
+            2 => {
+                let value = memory
+                    .swap(long as u64, u64::from_ne_bytes(pattern(long, round)))
+                    .expect("inside");
+                assert!(held(long, &value.to_ne_bytes()), "swapped out {value:#x} at {long}");
+            }
+            _ => {
+                let seen = memory.load::<u32>(short as u64).expect("inside");
+                let value = memory
+                    .compare_exchange(short as u64, seen, u32::from_ne_bytes(half))
+                    .expect("inside");
+                assert!(held(short, &value.to_ne_bytes()), "exchanged out {value:#x} at {short}");
+            }
+        }
+    }
+    rounds
+}
+
+/// Checks that each byte every word method returns is a value that byte held, while another thread writes the same bytes
+/// with single bytes, 4-byte words and 8-byte words.
+pub fn uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes<
+    M: SharedMemory + Sync,
+>(
+    memory: M,
+) {
+    let length = bytes(&memory).min(2 * CACHE_LINE + WORD);
+    let model: Vec<u8> = (0..length).map(background).collect();
+    assert_eq!(memory.write(0, &model), Ok(()));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            write_mixed_sizes(&memory, length, || {
+                done.load(std::sync::atomic::Ordering::Relaxed)
+            })
+        });
+        use_words_checking_values_held(&memory, length, ROUNDS);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+/// The bytes the other party owns at each end of a slot, where the copies own the bytes between: an 8-byte word, a
+/// 4-byte word and a byte at the start, and the same in the opposite order at the end.
+pub const EDGE: usize = WORD + HALF + 1;
+
+/// Returns the bytes of each slot for a memory of the length: half of all but its last two words, which stay the test's
+/// own, rounded down to a multiple of a word.
+pub fn slot_bytes(length: usize) -> usize {
+    (length - 2 * WORD) / 2 / WORD * WORD
+}
+
+/// Writes the other party's bytes at both ends of each of the two slots over and over, with 8-byte, 4-byte and
+/// single-byte stores, checking before each write that the bytes still hold what it last wrote, until `done` returns
+/// true and at least one check is made; returns the number of checks.
+pub fn write_own_edges<M: SharedMemory>(memory: &M, done: impl Fn() -> bool) -> usize {
+    let slot = slot_bytes(bytes(memory));
+    let starts = [0, slot];
+    let ends = starts.map(|start| start + slot);
+    let mut round = 0_u64;
+    let mut checks = 0;
+    while round < 2 || !done() {
+        for (&start, &end) in starts.iter().zip(&ends) {
+            if round > 0 {
+                let last = round - 1;
+                assert_eq!(memory.load::<u64>(start as u64), Ok(last), "the word at {start}");
+                assert_eq!(memory.load::<u64>((end - WORD) as u64), Ok(last), "the word before {end}");
+                assert_eq!(memory.load::<u32>((start + WORD) as u64), Ok(last as u32), "after {start}");
+                assert_eq!(memory.load::<u32>((end - EDGE + 1) as u64), Ok(last as u32), "before {end}");
+                let mut byte = [u8::MIN];
+                for at in [start + EDGE - 1, end - EDGE] {
+                    memory.read(at as u64, &mut byte).expect("inside");
+                    assert_eq!(byte, [last as u8], "the byte at {at}");
+                }
+                checks += 1;
+            }
+            memory.store(start as u64, round).expect("inside");
+            memory.store((end - WORD) as u64, round).expect("inside");
+            memory.store((start + WORD) as u64, round as u32).expect("inside");
+            memory.store((end - EDGE + 1) as u64, round as u32).expect("inside");
+            for at in [start + EDGE - 1, end - EDGE] {
+                memory.write(at as u64, &[round as u8]).expect("inside");
+            }
+        }
+        round += 1;
+    }
+    checks
+}
+
+/// Copies into the bytes between the other party's in the two slots, from every start within a word of the edge and at
+/// lengths from one byte to all of them, and checks that each copy reads back; returns the number of bytes copied.
+pub fn write_between_edges<M: SharedMemory>(memory: &M, rounds: usize) -> usize {
+    let slot = slot_bytes(bytes(memory));
+    let mut copied = 0;
+    for round in 0..rounds {
+        let first = (round % 2) * slot + EDGE + (round / 2) % WORD;
+        let room = (round % 2) * slot + slot - EDGE - first;
+        let count = 1 + (round * 997) % room;
+        let written: Vec<u8> = (0..count)
+            .map(|index| (round as u8).wrapping_mul(13).wrapping_add(index as u8))
+            .collect();
+        memory.write(first as u64, &written).expect("inside");
+        assert_eq!(read_at(memory, first, count), written, "{count} bytes at {first}");
+        copied += count;
+    }
+    copied
+}
+
+/// Checks that copies in change no byte beside them, while another thread writes the bytes beside them with 8-byte,
+/// 4-byte and single-byte stores and checks each.
+pub fn copies_in_keeping_the_bytes_beside_them_that_another_thread_writes<M: SharedMemory + Sync>(
+    memory: M,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (started, done) = (AtomicBool::new(false), AtomicBool::new(false));
+    let checks = thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            write_own_edges(&memory, || {
+                started.store(true, Ordering::Relaxed);
+                done.load(Ordering::Relaxed)
+            })
+        });
+        while !started.load(Ordering::Relaxed) {
+            thread::yield_now();
+        }
+        write_between_edges(&memory, ROUNDS);
+        done.store(true, Ordering::Relaxed);
+        writer.join().expect("the other thread finishes")
+    });
+    assert!(checks > 0, "the other thread never checked its bytes");
+}
+
 /// Checks that a write keeps the bytes beside it in the same word, which another thread writes meanwhile.
 pub fn keeps_the_bytes_beside_it_that_another_thread_writes<M: SharedMemory + Sync>(memory: M) {
     bytes(&memory);
@@ -429,66 +603,74 @@ pub fn keeps_the_bytes_beside_it_that_another_thread_writes<M: SharedMemory + Sy
     assert_eq!(read_at(&memory, 0, WORD), expected);
 }
 
+/// The offset of the 4-byte word the counting tests add to.
+pub const COUNTED: u64 = WORD as u64;
+
+/// The offset of the 8-byte word the counting tests swap tokens through.
+pub const SWAPPED: u64 = 2 * WORD as u64;
+
 /// Checks that compare-and-exchange and swap are each one atomic access: threads that count with them lose no count,
 /// and the values swapped out are exactly the values swapped in.
 pub fn counts_and_swaps_without_losing_a_value_across_threads<M: SharedMemory + Sync>(memory: M) {
     /// The threads that count and swap at once.
-    const THREADS: usize = 4;
+    const THREADS: usize = 8;
     bytes(&memory);
-    let increments = ROUNDS / 4;
-    assert_eq!(memory.store(0, u64::MIN), Ok(()));
-    assert_eq!(memory.store(WORD as u64, u32::MIN), Ok(()));
-    assert_eq!(memory.store(2 * WORD as u64, u64::MIN), Ok(()));
-    let swapped_out: Vec<Vec<u64>> = thread::scope(|scope| {
+    let increments = ROUNDS;
+    assert_eq!(memory.store(COUNTED, u32::MIN), Ok(()));
+    assert_eq!(memory.store(SWAPPED, u64::MIN), Ok(()));
+    let start = std::sync::Barrier::new(THREADS);
+    let swapped_out: Vec<u64> = thread::scope(|scope| {
         let counters: Vec<_> = (0..THREADS)
             .map(|thread| {
-                let memory = &memory;
+                let (memory, start) = (&memory, &start);
                 scope.spawn(move || {
-                    let mut out = Vec::new();
-                    for round in 0..increments {
-                        increment::<M, u64>(memory, 0);
-                        increment::<M, u32>(memory, WORD as u64);
-                        let token = (thread * increments + round + 1) as u64;
-                        out.push(
-                            memory
-                                .swap(2 * WORD as u64, token)
-                                .expect("the word lies inside the memory"),
-                        );
-                    }
-                    out
+                    start.wait();
+                    count_and_swap(memory, (thread * increments) as u64, increments)
                 })
             })
             .collect();
         counters
             .into_iter()
-            .map(|handle| handle.join().expect("the thread finishes"))
+            .flat_map(|handle| handle.join().expect("the thread finishes"))
             .collect()
     });
-    let total = (THREADS * increments) as u64;
-    assert_eq!(memory.load::<u64>(0), Ok(total));
-    assert_eq!(memory.load::<u32>(WORD as u64), Ok(total as u32));
-    let mut seen: Vec<u64> = swapped_out.into_iter().flatten().collect();
+    check_counted_and_swapped(&memory, swapped_out, (THREADS * increments) as u64);
+}
+
+/// Swaps the tokens from `first + 1` to `first + rounds` in turn into the 8-byte word at `SWAPPED`, then adds one to the
+/// 4-byte word at `COUNTED` `rounds` times; returns the values swapped out.
+pub fn count_and_swap<M: SharedMemory>(memory: &M, first: u64, rounds: usize) -> Vec<u64> {
+    let swapped_out = (1..=rounds as u64)
+        .map(|round| {
+            memory
+                .swap(SWAPPED, first + round)
+                .expect("the word lies inside the memory")
+        })
+        .collect();
+    (0..rounds).for_each(|_| increment(memory, COUNTED));
+    swapped_out
+}
+
+/// Checks that the count is the total, and that the values swapped out and the one left are each token from 0 to the
+/// total once.
+pub fn check_counted_and_swapped<M: SharedMemory>(memory: &M, swapped_out: Vec<u64>, total: u64) {
+    assert_eq!(memory.load::<u32>(COUNTED), Ok(total as u32));
+    let mut seen = swapped_out;
     seen.push(
         memory
-            .load::<u64>(2 * WORD as u64)
+            .load::<u64>(SWAPPED)
             .expect("the word lies inside the memory"),
     );
     seen.sort_unstable();
     assert_eq!(seen, (0..=total).collect::<Vec<u64>>());
 }
 
-/// Returns the value as a word, which it fits.
-fn word<W: Word>(value: u64) -> W {
-    W::try_from(value).unwrap_or_else(|_| panic!("{value} fits the word"))
-}
-
-/// Adds one to the word with a compare-and-exchange.
-fn increment<M: SharedMemory, W: Word>(memory: &M, at: u64) {
-    let mut seen: W = memory.load(at).expect("the word lies inside the memory");
+/// Adds one to the 4-byte word with a compare-and-exchange.
+fn increment<M: SharedMemory>(memory: &M, at: u64) {
+    let mut seen: u32 = memory.load(at).expect("the word lies inside the memory");
     loop {
-        let next = word::<W>(seen.into() + 1);
         let held = memory
-            .compare_exchange(at, seen, next)
+            .compare_exchange(at, seen, seen.wrapping_add(1))
             .expect("the word lies inside the memory");
         if held == seen {
             return;
@@ -575,6 +757,24 @@ macro_rules! tests {
         )]
         fn reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes() {
             $crate::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes($memory);
+        }
+
+        #[test]
+        #[cfg_attr(
+            miri,
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
+        )]
+        fn uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes() {
+            $crate::uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes($memory);
+        }
+
+        #[test]
+        #[cfg_attr(
+            miri,
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
+        )]
+        fn copies_in_keeping_the_bytes_beside_them_that_another_thread_writes() {
+            $crate::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes($memory);
         }
 
         #[test]

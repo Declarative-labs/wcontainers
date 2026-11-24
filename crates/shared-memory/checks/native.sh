@@ -13,20 +13,24 @@ echo "-- what the guard and process tests saw"
 cargo test -q -p wcontainers-shared-memory --features host --test guard --test process -- --nocapture 2>&1 | grep -E "copied|bytes read|test result"
 echo "-- clippy"
 cargo clippy -q -p wcontainers-shared-memory -p wcontainers-shared-memory-conformance --features host --all-targets --no-deps -- -D warnings 2>&1 | tail -20
-echo "-- the other architecture's assembly assembles; the floor's target and an architecture with no assembly build"
+echo "-- the other architecture's host build, the floor's target and a target with no C library build"
 case $arch in x86_64) other=aarch64 ;; *) other=x86_64 ;; esac
 for target in $other-unknown-linux-musl aarch64-unknown-none wasm32-unknown-unknown; do
   features=$([ "$target" = "$other-unknown-linux-musl" ] && echo "--features host")
   cargo build -q -p wcontainers-shared-memory $features --target $target 2>&1 | tail -5; echo "$target: status ${PIPESTATUS[0]}"
 done
 
-echo "===== the listing of HostMapping's read, which copies out, optimized"
+echo "===== the listings of HostMapping's read and write and the region's copy, optimized"
 rm -rf target/gmc-asm
 CARGO_TARGET_DIR=target/gmc-asm cargo rustc -q --release -p wcontainers-shared-memory --features host --lib -- --emit asm -C codegen-units=1 2>&1 | tail -3
 s=$(ls target/gmc-asm/release/deps/wcontainers_shared_memory-*.s | head -1)
-symbol=$(grep -E '^_?_ZN.*HostMapping.*SharedMemory.*4read.*:$|^_R.*HostMapping.*SharedMemory.*4read.*:$' "$s" | head -1 | tr -d ':')
-echo "symbol: $symbol"
-awk -v f="$symbol:" '$0==f{p=1} p{print} p&&/\.cfi_endproc/{exit}' "$s" | grep -vE '^\s*\.(cfi|p2align|loc|file)' | head -120
+for pattern in 'HostMapping.*SharedMemory.*4read' 'HostMapping.*SharedMemory.*5write' 'region4copy'; do
+  symbol=$(grep -E "^_?_ZN.*${pattern}.*:\$|^_R.*${pattern}.*:\$" "$s" | head -1 | tr -d ':')
+  echo "--- symbol: ${symbol:-none matching $pattern}"
+  [ -n "$symbol" ] && awk -v f="$symbol:" '$0==f{p=1} p{print} p&&/\.cfi_endproc/{exit}' "$s" | grep -vE '^\s*\.(cfi|p2align|loc|file)' | head -60
+done
+echo "--- every line of the crate's listing that names memcpy"
+grep -n memcpy "$s" | head -20
 rm -rf target/gmc-asm
 
 [ "${REFUSALS:-1}" = 1 ] && {
@@ -58,38 +62,18 @@ PY
 R=crates/shared-memory/foreign_implementation/region
 H=crates/shared-memory/foreign_implementation/host/implementation.rs
 A=crates/shared-memory/arithmetic.rs
-case $arch in
-  x86_64)
-    mutate copy-reads-one-byte-past-the-end $R/x86_64.rs "--test guard" 'inout("rcx") length => _,' 'inout("rcx") length + 1 => _,'
-    mutate copy-reads-one-byte-before-the-start $R/x86_64.rs "--test guard" 'inout("rsi") from => _,' 'inout("rsi") from.wrapping_sub(1) => _,'
-    mutate swap-is-a-load-and-a-store $R/x86_64.rs "--test host" '"xchg qword ptr [{word}], {value}",
-            word = in(reg) word,
-            value = inout(reg) value => old,' '"mov {spare}, qword ptr [{word}]",
-            "mov qword ptr [{word}], {value}",
-            "mov {value}, {spare}",
-            word = in(reg) word,
-            value = inout(reg) value => old,
-            spare = out(reg) _,'
-    mutate compare-exchange-unlocked $R/x86_64.rs "--test host" '"lock cmpxchg dword ptr [{word}], {new:e}",' '"cmpxchg dword ptr [{word}], {new:e}",'
-    ;;
-  *)
-    mutate copy-reads-one-byte-past-the-end $R/aarch64.rs "--test guard" 'count = inout(reg) length => _,' 'count = inout(reg) length + 1 => _,'
-    mutate copy-reads-one-byte-before-the-start $R/aarch64.rs "--test guard" 'from = inout(reg) from => _,' 'from = inout(reg) from.wrapping_sub(1) => _,'
-    mutate swap-is-a-load-and-a-store $R/aarch64.rs "--test host" '"ldaxr {old}, [{word}]",
-            "stlxr {status:w}, {value}, [{word}]",
-            "cbnz {status:w}, 2b",' '"ldr {old}, [{word}]",
-            "str {value}, [{word}]",
-            "mov {status:w}, wzr",'
-    mutate compare-exchange-unexclusive $R/aarch64.rs "--test host" '"ldaxr {old:w}, [{word}]",
-            "cmp {old:w}, {current:w}",
-            "b.ne 3f",
-            "stlxr {status:w}, {new:w}, [{word}]",' '"ldr {old:w}, [{word}]",
-            "cmp {old:w}, {current:w}",
-            "b.ne 3f",
-            "str {new:w}, [{word}]",
-            "mov {status:w}, wzr",'
-    ;;
-esac
+mutate copy-reads-one-byte-past-the-end $R/implementation.rs "--test guard" 'memcpy(to.cast(), from.cast(), length);' 'memcpy(to.cast(), from.cast(), length + 1);'
+mutate copy-starts-one-byte-early $R/implementation.rs "--test guard" 'memcpy(to.cast(), from.cast(), length);' 'memcpy(to.wrapping_sub(1).cast(), from.wrapping_sub(1).cast(), length);'
+mutate swap-is-a-load-and-a-store $R/implementation.rs "--test host" 'Ok(unsafe { AtomicU64::from_ptr(word) }.swap(value, Ordering::AcqRel))' 'Ok(unsafe { let old = word.read_volatile(); word.write_volatile(value); old })'
+mutate compare-exchange-is-a-load-and-a-store $R/implementation.rs "--test host" 'let exchanged = unsafe { AtomicU32::from_ptr(word) }.compare_exchange(
+            current,
+            new,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );' 'let exchanged: Result<u32, u32> = unsafe {
+            let old = word.read_volatile();
+            if old == current { word.write_volatile(new); Ok(old) } else { Err(old) }
+        };'
 mutate range-one-byte-long $A "--test host" 'if end > u64::try_from(length)' 'if end > 1 + u64::try_from(length)'
 mutate misaligned-word-accepted $A "--test host" 'if !index.is_multiple_of(size) {' 'if false && !index.is_multiple_of(size) {'
 mutate part-past-its-memory crates/shared-memory/interface.rs "--test host" 'offsets.end > self.len()' 'offsets.end > self.len() + 1'

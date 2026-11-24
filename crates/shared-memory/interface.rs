@@ -4,6 +4,7 @@ extern crate alloc;
 #[cfg(any(target_os = "linux", all(feature = "host", unix)))]
 extern crate std;
 
+#[cfg(any(all(feature = "host", unix), miri, kani))]
 mod arithmetic;
 mod foreign_implementation {
     #[cfg(any(miri, kani))]
@@ -15,14 +16,9 @@ mod foreign_implementation {
     #[cfg(kani)]
     #[path = "heap/proofs.rs"]
     mod proofs;
+    // Only the host's and the heap's mappings use it; it calls the C library, which a build without them may not have.
+    #[cfg(any(all(feature = "host", unix), miri, kani))]
     #[path = "region/implementation.rs"]
-    #[cfg_attr(
-        not(any(all(feature = "host", unix), miri, kani)),
-        expect(
-            dead_code,
-            reason = "only the host's and the heap's mappings use it, which this build leaves out"
-        )
-    )]
     pub(crate) mod region;
 }
 /// Holds the trait no other crate can name, so that only `u32` and `u64` are words.
@@ -55,11 +51,11 @@ pub use crate::foreign_implementation::host::{AnonymousError, HostMapping};
 /// Memory that another party, such as a guest or another process, may read and write at any moment.
 ///
 /// While the other party writes, each byte a read copies is some value that byte held during the call; the bytes of
-/// one call need not come from one moment, and each byte is read once. A write stores each byte once and touches no
-/// byte outside its range, not even to read it. Every method checks its offsets and, when they lie outside, returns an
-/// error and touches nothing. Nothing here synchronizes with anything: no method orders this program's other memory,
-/// atomics or locks; on the processor alone, a load comes before this thread's later accesses to this memory, a store
-/// after its earlier ones, and a swap, or a compare-and-exchange that stores, both.
+/// one call need not come from one moment, and a byte may be read more than once. A write stores only the bytes of its
+/// range, each its new value, possibly more than once. Every method checks its offsets and, when they lie outside,
+/// returns an error and touches nothing. Nothing here synchronizes with anything: no method orders this program's other
+/// memory, atomics or locks; on the processor alone, a load comes before this thread's later accesses to this memory, a
+/// store after its earlier ones, and a swap, or a compare-and-exchange that stores, both.
 #[expect(
     clippy::len_without_is_empty,
     reason = "no caller asks whether the memory is empty"
@@ -78,11 +74,11 @@ pub trait SharedMemory {
 
     fn store<W: Word>(&self, at: u64, value: W) -> Result<(), WordError>;
 
-    /// Stores the value and returns the value the word held before.
-    fn swap<W: Word>(&self, at: u64, value: W) -> Result<W, WordError>;
+    /// Stores the value in the 8-byte word and returns the value the word held before.
+    fn swap(&self, at: u64, value: u64) -> Result<u64, WordError>;
 
-    /// Stores `new` if the word holds `current`, and returns the value the word held before.
-    fn compare_exchange<W: Word>(&self, at: u64, current: W, new: W) -> Result<W, WordError>;
+    /// Stores `new` in the 4-byte word if it holds `current`, and returns the value the word held before.
+    fn compare_exchange(&self, at: u64, current: u32, new: u32) -> Result<u32, WordError>;
 
     /// Waits, until woken or the timeout passes, while the 4-byte word at the offset holds `expected`.
     #[cfg(target_os = "linux")]
@@ -105,8 +101,7 @@ pub trait SharedMemory {
     }
 }
 
-/// An unsigned integer the processor loads, stores, swaps and compares and exchanges in one access, at an offset that is
-/// a multiple of its size.
+/// An unsigned integer the processor loads and stores in one access, at an offset that is a multiple of its size.
 pub trait Word: Copy + Eq + Debug + Into<u64> + TryFrom<u64> + seal::Sealed {}
 
 impl Word for u32 {}

@@ -82,8 +82,8 @@ impl HostMapping {
             reason = "memory the host mapped, which only the region reaches"
         )]
         // SAFETY: `MmapRaw` keeps the range mapped readable and writable until it drops, after the region, and nothing here
-        // remaps or unmaps it; it hands out the address and never a reference, and nothing here forms one, so the bytes lie
-        // outside every Rust allocation. Anonymous memory never traps; a file is sealed against shrinking, which no
+        // remaps or unmaps it; it hands out the address and never a reference, and nothing here forms one but the region's
+        // one-word borrows its promise allows, so the bytes lie outside every Rust allocation. Anonymous memory never traps; a file is sealed against shrinking, which no
         // descriptor of it can undo, and was at least as long as the range when mapped, so it stays so, and it is not on
         // the huge-page file system. The order matters: the seal was seen BEFORE the size was read (`ShrinkSealedFile`),
         // since a size read first can be shrunk away and the file sealed after. memmap2 returns the address of the offset
@@ -171,11 +171,11 @@ impl SharedMemory for HostMapping {
         self.region.store(at, value)
     }
 
-    fn swap<W: Word>(&self, at: u64, value: W) -> Result<W, WordError> {
+    fn swap(&self, at: u64, value: u64) -> Result<u64, WordError> {
         self.region.swap(at, value)
     }
 
-    fn compare_exchange<W: Word>(&self, at: u64, current: W, new: W) -> Result<W, WordError> {
+    fn compare_exchange(&self, at: u64, current: u32, new: u32) -> Result<u32, WordError> {
         self.region.compare_exchange(at, current, new)
     }
 

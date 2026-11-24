@@ -1,7 +1,8 @@
 //! Kani's checks of the range arithmetic of every method, over a heap mapping of each count of words from 1 to `WORDS`
 //! (one harness per count: a vector of a symbolic size makes the solver run out of memory), and every offset, length and
-//! content. Kani runs no assembly, so these run the volatile fallback; each check of bytes picks one byte at any index,
-//! so that it covers them all without a loop. An empty mapping is left to the tests.
+//! content. Kani cannot call the C library, so the copies call a stand-in built on `copy_nonoverlapping`, whose ranges
+//! Kani checks are valid and apart; each check of bytes picks one byte at any index, so that it covers them all without a
+//! loop. An empty mapping is left to the tests.
 //! Run with `cargo kani -p wcontainers-shared-memory -Z stubbing`.
 
 use alloc::vec::Vec;
@@ -70,11 +71,26 @@ fn counts_the_bytes_mapped(count: usize) {
     assert_eq!(HeapMapping::new(count).len(), (count * WORD) as u64);
 }
 
-/// Checks load, store, swap and compare-and-exchange of words of one size at any offset: each succeeds exactly when
-/// the word lies inside and is aligned, returns what the word held, and changes only the word's own bytes.
+/// The stand-in for the foreign call to `memcpy`, with the same contract.
+///
+/// # Safety
+/// `from` is readable and `to` writable for `length` bytes, and the two ranges do not overlap.
+#[expect(
+    unsafe_code,
+    reason = "Kani's stand-in for the foreign call, which Kani checks"
+)]
+unsafe fn copy(to: *mut u8, from: *const u8, length: usize) {
+    // SAFETY: the caller's promise, which is what Kani checks here.
+    unsafe { core::ptr::copy_nonoverlapping(from, to, length) }
+}
+
+/// Checks load, store and the method only words of this size have, at any offset: each succeeds exactly when the word
+/// lies inside and is aligned, returns what the word held, and changes only the word's own bytes; `change` returns the
+/// value it left in the word.
 fn words_of_one_size<W: Word + kani::Arbitrary, const SIZE: usize>(
     count: usize,
     to_bytes: fn(W) -> [u8; SIZE],
+    change: fn(&HeapMapping, u64, W, W, Result<(), WordError>) -> W,
 ) {
     let (memory, before) = any_memory(count);
     let (at, value, other): (u64, W, W) = (kani::any(), kani::any(), kani::any());
@@ -86,13 +102,7 @@ fn words_of_one_size<W: Word + kani::Arbitrary, const SIZE: usize>(
     );
     assert_eq!(memory.load::<W>(at).map(|_| ()), expected);
     assert_eq!(memory.store(at, value), expected);
-    assert_eq!(memory.swap(at, other), expected.map(|()| value));
-    assert_eq!(
-        memory.compare_exchange(at, value, value),
-        expected.map(|()| other)
-    );
-    let exchanged = memory.compare_exchange(at, other, value);
-    assert_eq!(exchanged, expected.map(|()| other));
+    let value = change(&memory, at, value, other, expected);
     if inside {
         assert_eq!(memory.load::<W>(at), Ok(value));
     }
@@ -104,6 +114,35 @@ fn words_of_one_size<W: Word + kani::Arbitrary, const SIZE: usize>(
             before[byte]
         }
     });
+}
+
+/// Swaps `other` into the word that holds `value`, checks it returns `value`, and returns `other`.
+fn swap(memory: &HeapMapping, at: u64, value: u64, other: u64, expected: Result<(), WordError>) -> u64 {
+    assert_eq!(memory.swap(at, other), expected.map(|()| value));
+    other
+}
+
+/// Exchanges with a value compared that the word does not hold and then with one it holds, checks both return `value`,
+/// and returns what the second left.
+fn compare_exchange(
+    memory: &HeapMapping,
+    at: u64,
+    value: u32,
+    other: u32,
+    expected: Result<(), WordError>,
+) -> u32 {
+    assert_eq!(
+        memory.compare_exchange(at, !value, other),
+        expected.map(|()| value)
+    );
+    if expected.is_ok() {
+        assert_eq!(memory.load::<u32>(at), Ok(value));
+    }
+    assert_eq!(
+        memory.compare_exchange(at, value, other),
+        expected.map(|()| value)
+    );
+    other
 }
 
 fn reads_exactly_the_bytes_asked(count: usize) {
@@ -256,36 +295,48 @@ macro_rules! harnesses {
 
             #[kani::proof]
             #[kani::unwind(6)]
-            fn loads_stores_swaps_and_exchanges_only_8_byte_words_inside() {
-                super::words_of_one_size::<u64, { size_of::<u64>() }>($count, u64::to_ne_bytes);
+            fn loads_stores_and_swaps_only_8_byte_words_inside() {
+                super::words_of_one_size::<u64, { size_of::<u64>() }>(
+                    $count,
+                    u64::to_ne_bytes,
+                    super::swap,
+                );
             }
 
             #[kani::proof]
             #[kani::unwind(6)]
-            fn loads_stores_swaps_and_exchanges_only_4_byte_words_inside() {
-                super::words_of_one_size::<u32, { size_of::<u32>() }>($count, u32::to_ne_bytes);
+            fn loads_stores_and_exchanges_only_4_byte_words_inside() {
+                super::words_of_one_size::<u32, { size_of::<u32>() }>(
+                    $count,
+                    u32::to_ne_bytes,
+                    super::compare_exchange,
+                );
             }
 
             #[kani::proof]
             #[kani::unwind(35)]
+            #[kani::stub(crate::foreign_implementation::region::copy, super::copy)]
             fn reads_exactly_the_bytes_asked() {
                 super::reads_exactly_the_bytes_asked($count);
             }
 
             #[kani::proof]
             #[kani::unwind(35)]
+            #[kani::stub(crate::foreign_implementation::region::copy, super::copy)]
             fn writes_exactly_the_bytes_given() {
                 super::writes_exactly_the_bytes_given($count);
             }
 
             #[kani::proof]
             #[kani::unwind(35)]
+            #[kani::stub(crate::foreign_implementation::region::copy, super::copy)]
             fn parts_lie_inside_and_reach_only_their_bytes() {
                 super::parts_lie_inside_and_reach_only_their_bytes($count);
             }
 
             #[kani::proof]
             #[kani::unwind(35)]
+            #[kani::stub(crate::foreign_implementation::region::copy, super::copy)]
             fn parts_read_to_a_sink_and_write_from_a_source() {
                 super::parts_read_to_a_sink_and_write_from_a_source($count);
             }

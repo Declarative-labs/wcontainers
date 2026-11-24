@@ -29,9 +29,9 @@ impl HeapMapping {
         )]
         // SAFETY: the vector is this value's own, freed only when it drops, after the region, and never grown; `AtomicU64`
         // is aligned to 8; nothing but the region reaches the words, through a pointer `Vec::as_ptr` gives without a
-        // reference to them, into cells that allow writes, and no reference to them is formed after. Unlike a host's
-        // mapping these bytes are a Rust allocation, reached only by volatile accesses, so two threads racing on them is a
-        // data race, which Miri reports.
+        // reference to them, into cells that allow writes, and no reference to them is formed after but the region's
+        // one-word borrows. Unlike a host's mapping these bytes are a Rust allocation, so two threads racing on them with
+        // the region's copies or volatile accesses is a data race, which Miri reports.
         let region = unsafe { Region::new(base, words.len() * size_of::<u64>()) };
         HeapMapping { region, words }
     }
@@ -58,11 +58,11 @@ impl SharedMemory for HeapMapping {
         self.region.store(at, value)
     }
 
-    fn swap<W: Word>(&self, at: u64, value: W) -> Result<W, WordError> {
+    fn swap(&self, at: u64, value: u64) -> Result<u64, WordError> {
         self.region.swap(at, value)
     }
 
-    fn compare_exchange<W: Word>(&self, at: u64, current: W, new: W) -> Result<W, WordError> {
+    fn compare_exchange(&self, at: u64, current: u32, new: u32) -> Result<u32, WordError> {
         self.region.compare_exchange(at, current, new)
     }
 

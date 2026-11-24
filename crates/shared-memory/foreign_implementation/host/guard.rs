@@ -15,8 +15,14 @@ const NAME: &str = "guard-test-memory";
 /// The most tries at getting the three mappings placed next to each other.
 const TRIES: usize = 64;
 
-/// The longest copy at each edge.
+/// The longest copy of every length at each edge.
 const LONGEST: usize = 4 * 64 + 1;
+
+/// Longer copies at each edge, around each length at which a C library's copy changes how it moves bytes; those past the
+/// memory's two pages are left out.
+const LONGER: [usize; 15] = [
+    511, 512, 513, 1023, 1024, 1025, 2047, 2048, 2049, 4095, 4096, 4097, 8191, 8192, 8193,
+];
 
 /// Returns a memory file of the length, sealed against shrinking.
 fn memory_file(name: &str, length: usize) -> OwnedFd {
@@ -82,14 +88,15 @@ fn copies_and_words_at_the_edges_of_a_memory_with_no_page_mapped_before_or_after
             kept.push((after, memory, before));
             continue;
         }
-        let mut buffer = vec![0_u8; LONGEST];
-        let pattern: Vec<u8> = (0..LONGEST).map(|index| index as u8 | 1).collect();
+        let mut buffer = vec![0_u8; length];
+        let pattern: Vec<u8> = (0..length).map(|index| (index * 7) as u8 | 1).collect();
         drop((after, before));
         assert!(
             !mapped(start - 1) && !mapped(end),
             "the pages just before and just after the memory are unmapped"
         );
-        for count in 0..=LONGEST {
+        let counts = (0..=LONGEST).chain(LONGER.into_iter().filter(|&count| count <= length));
+        for count in counts.chain([length - 1, length]) {
             for at in [0, length - count] {
                 memory.write(at as u64, &pattern[..count]).expect("inside");
                 memory
@@ -102,14 +109,12 @@ fn copies_and_words_at_the_edges_of_a_memory_with_no_page_mapped_before_or_after
         let half = (length - size_of::<u32>()) as u64;
         for at in [0, last] {
             memory.store(at, u64::MAX).expect("inside");
-            assert_eq!(memory.swap(at, 1_u64), Ok(u64::MAX));
-            assert_eq!(memory.compare_exchange(at, 1_u64, 2), Ok(1));
-            assert_eq!(memory.load::<u64>(at), Ok(2));
+            assert_eq!(memory.swap(at, 1), Ok(u64::MAX));
+            assert_eq!(memory.load::<u64>(at), Ok(1));
         }
         for at in [0, half] {
             memory.store(at, u32::MAX).expect("inside");
-            assert_eq!(memory.swap(at, 1_u32), Ok(u32::MAX));
-            assert_eq!(memory.compare_exchange(at, 1_u32, 2), Ok(1));
+            assert_eq!(memory.compare_exchange(at, u32::MAX, 2), Ok(u32::MAX));
             assert_eq!(memory.load::<u32>(at), Ok(2));
         }
         assert!(
@@ -117,7 +122,7 @@ fn copies_and_words_at_the_edges_of_a_memory_with_no_page_mapped_before_or_after
             "the pages just before and just after the memory stayed unmapped"
         );
         eprintln!(
-            "copied every length up to {LONGEST} bytes at both edges of {length} bytes at {start:#x}, after {} tries",
+            "copied every length up to {LONGEST} bytes, and longer ones up to all {length}, at both edges at {start:#x}, after {} tries",
             kept.len() + 1
         );
         return;

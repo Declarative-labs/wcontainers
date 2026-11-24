@@ -1,5 +1,5 @@
-# miri.sh: the host suite (anonymous memory), the heap suite and the attacks under Miri, which runs the volatile fallback
-# in place of the assembly; then two wrong changes Miri must report. Run in the synced tree. MIRI_HOME names the rustup
+# miri.sh: the host suite (anonymous memory), the heap suite and the attacks under Miri, which runs its own memcpy in
+# place of the C library's; then two wrong changes Miri must report. Run in the synced tree. MIRI_HOME names the rustup
 # and cargo folders that hold a nightly with Miri.
 set -u
 here=$(pwd)

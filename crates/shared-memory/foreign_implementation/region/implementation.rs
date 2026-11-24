@@ -1,32 +1,24 @@
-//! Memory outside every Rust allocation, reached only by the assembly copies, volatile loads and stores and atomic
-//! instructions here, and never through a reference or a slice.
+//! Memory outside every Rust allocation, reached only by the C library's `memcpy`, volatile loads and stores, and
+//! atomic read-modify-writes of one word, and never through a slice.
 //!
 //! The design rests on one sentence of the standard library's documentation of `core::ptr::read_volatile` (1.100.0,
 //! library/core/src/ptr/mod.rs:2078): "Volatile operations, however, may also be used to access memory that is
 //! _outside_ of any Rust allocation." Whether a program may treat memory it mapped itself as outside every allocation is
 //! not settled yet (https://github.com/rust-lang/unsafe-code-guidelines/issues/607,
-//! https://github.com/rust-lang/unsafe-code-guidelines/issues/543); the assembly reads and writes it as a run of such
-//! volatile accesses would.
+//! https://github.com/rust-lang/unsafe-code-guidelines/issues/543). The copies are the C library's, whose promises are
+//! the stated assumptions of REVIEW.md, trusted and not proved.
 
-use core::sync::atomic::{AtomicPtr, Ordering, fence};
+use core::ffi::c_void;
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering, fence};
 
 use crate::{OutsideError, Word, WordError, arithmetic};
 
-// TODO: remove the assembly once Rust has volatile atomic operations (https://github.com/rust-lang/rust/issues/158947) and a copy that tolerates races (https://github.com/rust-lang/rfcs/pull/3301, https://github.com/rust-lang/rfcs/pull/2728).
-#[cfg(all(target_arch = "x86_64", not(any(miri, kani))))]
-#[path = "x86_64.rs"]
-mod machine;
-#[cfg(all(target_arch = "aarch64", not(any(miri, kani))))]
-#[path = "aarch64.rs"]
-mod machine;
-// On any other architecture, and under Miri and Kani, which run no assembly, a plain volatile fallback: there a swap or
-// a compare-and-exchange is a load and a store, not one atomic access.
-#[cfg(not(all(
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(any(miri, kani))
-)))]
-#[path = "fallback.rs"]
-mod machine;
+// TODO: the copies call the C library's memcpy because Rust has no copy that tolerates a source another party changes. Check on https://github.com/rust-lang/rust/issues/158947 (volatile atomics), https://github.com/rust-lang/rfcs/pull/3301 (a per-byte atomic copy) and https://github.com/rust-lang/rfcs/pull/2728 (volatile atomics); replace the call with Rust's own copy when one is stable.
+
+/// The C library's `memcpy`, which `copy` reads back by a volatile load so that the compiler cannot know which function
+/// it calls and so cannot replace the call with its own copy.
+static MEMCPY: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void =
+    libc::memcpy;
 
 /// The bytes of a mapping; made only by `new`, whose callers promise what every method here relies on.
 pub(crate) struct Region {
@@ -39,8 +31,9 @@ pub(crate) struct Region {
 impl Region {
     /// # Safety
     /// While the value lives, the `length` bytes from `base` stay mapped, readable and writable, and reaching them never
-    /// traps; `base` is aligned to 8; and no reference or slice over any of them is ever formed. They lie outside every
-    /// Rust allocation, except under Miri and Kani, where they are a heap allocation that only this value reaches.
+    /// traps; `base` is aligned to 8; and no reference or slice over any of them is ever formed, except the one word a
+    /// swap or a compare-and-exchange here borrows for its call. They lie outside every Rust allocation, except under
+    /// Miri and Kani, where they are a heap allocation that only this value reaches.
     #[expect(
         unsafe_code,
         reason = "the promise each mapping makes, on which every access here relies"
@@ -62,7 +55,7 @@ impl Region {
         // SAFETY: the bytes from `from` lie inside the region (checked above), which `new`'s promise keeps readable and
         // outside every allocation; the buffer is this call's own, and so cannot overlap them.
         unsafe {
-            machine::copy(into.as_mut_ptr(), from, into.len());
+            copy(into.as_mut_ptr(), from, into.len());
         }
         Ok(())
     }
@@ -73,7 +66,7 @@ impl Region {
         // SAFETY: the bytes from `to` lie inside the region (checked above), which `new`'s promise keeps writable and
         // outside every allocation; the buffer is this call's own, and so cannot overlap them.
         unsafe {
-            machine::copy(to, from.as_ptr(), from.len());
+            copy(to, from.as_ptr(), from.len());
         }
         Ok(())
     }
@@ -99,46 +92,32 @@ impl Region {
         Ok(())
     }
 
-    pub(crate) fn swap<W: Word>(&self, at: u64, value: W) -> Result<W, WordError> {
-        let word = self.word::<W>(at)?;
-        let value: u64 = value.into();
-        #[expect(unsafe_code, reason = "the processor's swap on a word of the region")]
-        // SAFETY: the word lies inside the region and is aligned (checked by `word`), and `W` is the width chosen.
-        let old = unsafe {
-            if size_of::<W>() == size_of::<u32>() {
-                u64::from(machine::swap_u32(word.cast(), value as u32))
-            } else {
-                machine::swap_u64(word.cast(), value)
-            }
-        };
-        Ok(narrow(old))
-    }
-
-    pub(crate) fn compare_exchange<W: Word>(
-        &self,
-        at: u64,
-        current: W,
-        new: W,
-    ) -> Result<W, WordError> {
-        let word = self.word::<W>(at)?;
-        let (current, new): (u64, u64) = (current.into(), new.into());
+    pub(crate) fn swap(&self, at: u64, value: u64) -> Result<u64, WordError> {
+        let word = self.word::<u64>(at)?;
         #[expect(
             unsafe_code,
-            reason = "the processor's compare-and-exchange on a word of the region"
+            reason = "an atomic swap of a word of the region, borrowed for this call"
         )]
-        // SAFETY: the word lies inside the region and is aligned (checked by `word`), and `W` is the width chosen.
-        let old = unsafe {
-            if size_of::<W>() == size_of::<u32>() {
-                u64::from(machine::compare_exchange_u32(
-                    word.cast(),
-                    current as u32,
-                    new as u32,
-                ))
-            } else {
-                machine::compare_exchange_u64(word.cast(), current, new)
-            }
-        };
-        Ok(narrow(old))
+        // SAFETY: the word lies inside the region and is aligned to 8 (checked by `word`), and stays mapped while the
+        // borrow lasts, this one expression. ASSUMED, not checked: every other access to the word while it lasts is an
+        // atomic access of 8 bytes, as the protocols on such words require of the other party (REVIEW.md).
+        Ok(unsafe { AtomicU64::from_ptr(word) }.swap(value, Ordering::AcqRel))
+    }
+
+    pub(crate) fn compare_exchange(&self, at: u64, current: u32, new: u32) -> Result<u32, WordError> {
+        let word = self.word::<u32>(at)?;
+        #[expect(
+            unsafe_code,
+            reason = "an atomic compare-and-exchange of a word of the region, borrowed for this call"
+        )]
+        // SAFETY: as `swap`, for a word of 4 bytes aligned to 4.
+        let exchanged = unsafe { AtomicU32::from_ptr(word) }.compare_exchange(
+            current,
+            new,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        Ok(exchanged.unwrap_or_else(|held| held))
     }
 
     #[cfg(target_os = "linux")]
@@ -179,17 +158,33 @@ impl Region {
     }
 
     /// Returns the address of the word at the offset, if it lies inside and is aligned to its size.
-    fn word<W: Word>(&self, at: u64) -> Result<*mut W, WordError> {
+    fn word<W>(&self, at: u64) -> Result<*mut W, WordError> {
         Ok(self
             .byte(arithmetic::word(self.length, at, size_of::<W>())?)
             .cast())
     }
 }
 
-/// Returns the word the value came from, which is no wider than it.
-fn narrow<W: Word>(value: u64) -> W {
-    W::try_from(value)
-        .unwrap_or_else(|_| unreachable!("the value came from a word of the same size"))
+/// Copies `length` bytes from `from` to `to` with the C library's `memcpy`, called through a pointer the compiler cannot
+/// see into; makes no call for no bytes, so that C's rules for the pointers of an empty copy never arise.
+///
+/// # Safety
+/// `from` is readable and `to` writable for `length` bytes, and the two ranges do not overlap.
+#[expect(
+    unsafe_code,
+    reason = "the one foreign call, to the C library's memcpy, that both directions use"
+)]
+pub(crate) unsafe fn copy(to: *mut u8, from: *const u8, length: usize) {
+    if length == 0 {
+        return;
+    }
+    // SAFETY: `MEMCPY` is a static that lives for the whole program and holds a valid function pointer, so the volatile
+    // load reads a valid value; the call's ranges are the caller's promise. What `memcpy` does with a source another
+    // party changes meanwhile is the C library's, and the stated assumption of REVIEW.md.
+    unsafe {
+        let memcpy = (&raw const MEMCPY).read_volatile();
+        memcpy(to.cast(), from.cast(), length);
+    }
 }
 
 /// The futex system call on the 4 bytes at the address, which rustix takes only as a reference; returns the number the
