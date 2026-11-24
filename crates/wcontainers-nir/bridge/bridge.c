@@ -2070,6 +2070,28 @@ wc_nir_point_size_also_at(struct nir_shader *nir, uint32_t at)
    return true;
 }
 
+bool
+wc_nir_point_size_at_most(const struct nir_shader *nir, float size)
+{
+   bool written = false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_output ||
+                nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_PSIZ)
+               continue;
+            if (!nir_src_is_const(intr->src[0]) || nir_src_as_float(intr->src[0]) > size)
+               return false;
+            written = true;
+         }
+      }
+   }
+   return written;
+}
+
 /* An output component a vertex program writes, which a point's square copies to each corner. */
 struct written_slot {
    nir_io_semantics semantics;

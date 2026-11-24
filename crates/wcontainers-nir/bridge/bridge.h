@@ -333,6 +333,9 @@ uint32_t wc_nir_generic_end(const struct nir_shader *nir);
 /* A vertex program's point size also written at the generic slot `at`; false where it writes
  * none. */
 bool wc_nir_point_size_also_at(struct nir_shader *nir, uint32_t at);
+/* Every point size a program with lowered outputs writes is a constant no larger than `size`;
+ * false where it writes none. */
+bool wc_nir_point_size_at_most(const struct nir_shader *nir, float size);
 /* A geometry program drawing each point of `vs` as a square of two triangles (the slow path
  * PointsAsQuads), each corner with every output of `vs` and gl_PointCoord at the generic slot
  * `at`. Its size is the point size `vs` also writes at `at` (`wc_nir_point_size_also_at`),

@@ -200,8 +200,8 @@ pub struct Programs<B: Backend> {
     /// The stage helpers of vertex programs and the tessellation and geometry programs after them.
     tessellated: HashMap<TessellatedKey, Staged<B>>,
     /// The programs drawing a vertex program's points as squares, by it and the location their
-    /// size and `gl_PointCoord` pass at.
-    squares: HashMap<(ShaderId, u32), Box<Squares>>,
+    /// size and `gl_PointCoord` pass at; `None` for one whose every point is a pixel.
+    squares: HashMap<(ShaderId, u32), Option<Box<Squares>>>,
 }
 
 /// A vertex program's points drawn as squares (`PointsAsQuads`): the geometry program making
@@ -277,7 +277,7 @@ impl<B: Backend> Programs<B> {
         let id = shader as ShaderId;
         let squares: Vec<_> = self.squares.keys().filter(|k| k.0 == id).copied().collect();
         for key in squares {
-            if let Some(made) = self.squares.remove(&key) {
+            if let Some(made) = self.squares.remove(&key).flatten() {
                 self.forget(screen, &made.geometry);
                 if let Some(vertex) = &made.vertex {
                     self.forget(screen, vertex);
@@ -3035,6 +3035,11 @@ fn squares_for<B: Backend>(
         Entry::Vacant(slot) => {
             let mut copy = vs.nir.try_clone().ok_or("out of memory")?;
             let sized = copy.point_size_also_at(at);
+            // Points every one of which is a pixel are the back end's own.
+            if copy.point_size_at_most(ONE_PIXEL) {
+                slot.insert(None);
+                return Ok(None);
+            }
             let largest = crate::screen::largest_point_size(backend.caps());
             let square = if sized { &copy } else { &vs.nir }.point_square(at, largest);
             let Some(mut nir) = square else {
@@ -3055,15 +3060,18 @@ fn squares_for<B: Backend>(
                 integer_sampled: vs.integer_sampled,
                 named_layer: None,
             };
-            slot.insert(Box::new(Squares {
+            slot.insert(Some(Box::new(Squares {
                 vertex: sized.then(|| shader(Stage::Vertex, copy)),
                 geometry: Shader {
                     formatless_images: 0,
                     integer_sampled: 0,
                     ..shader(Stage::Geometry, nir)
                 },
-            }))
+            })))
         }
+    };
+    let Some(made) = made else {
+        return Ok(None);
     };
     if made.vertex.is_none() && raster.point_size <= ONE_PIXEL {
         return Ok(None);

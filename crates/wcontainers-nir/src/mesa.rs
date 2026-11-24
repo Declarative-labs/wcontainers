@@ -225,6 +225,7 @@ unsafe extern "C" {
     fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
     fn wc_nir_generic_end(nir: *const NirShader) -> u32;
     fn wc_nir_point_size_also_at(nir: *mut NirShader, at: u32) -> bool;
+    fn wc_nir_point_size_at_most(nir: *const NirShader, size: f32) -> bool;
     fn wc_nir_point_square(vs: *const NirShader, at: u32, largest: f32) -> *mut NirShader;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
@@ -468,6 +469,13 @@ impl Nir {
     pub fn point_size_also_at(&mut self, at: u32) -> bool {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_point_size_also_at(self.0, at) }
+    }
+
+    /// Every point size the program writes is a constant no larger than `size`; false where it
+    /// writes none. Read after [`Self::point_size_also_at`], which lowers its outputs.
+    pub fn point_size_at_most(&self, size: f32) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_point_size_at_most(self.0, size) }
     }
 
     /// A geometry program drawing each point of this vertex program as a square of two triangles

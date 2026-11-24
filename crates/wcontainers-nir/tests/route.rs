@@ -864,3 +864,28 @@ fn points_are_drawn_as_squares_passing_their_coordinate_after_every_location() {
     assert!(clipped.point_size_also_at(at));
     assert!(clipped.point_square(at, largest).is_none());
 }
+
+const ONE_PIXEL_POINTS: &str = "#version 450
+layout(location = 0) in vec4 at;
+void main() {
+    gl_Position = at;
+    gl_PointSize = 1.0;
+}
+";
+
+#[test]
+fn points_written_as_one_pixel_are_known_as_such() {
+    let vertex = |source| {
+        let mut nir = Nir::from_glsl(&[(Stage::Vertex, source)])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .nir;
+        let at = nir.generic_end();
+        assert!(nir.point_size_also_at(at));
+        nir
+    };
+    let one_pixel = 1.0;
+    assert!(vertex(ONE_PIXEL_POINTS).point_size_at_most(one_pixel));
+    assert!(!vertex(SIZED_POINTS).point_size_at_most(one_pixel));
+}
