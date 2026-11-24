@@ -708,6 +708,34 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     arm-machine.md names.
   - No new unsafe code.
 
+- W1 round 4, run 1 (2026-11-24, 03:05 UTC on; the owner's executor changes of 2026-11-23 merged):
+  - Conforming: host-process already followed the interface on this branch (`execute` returning a future and its
+    `HostProcessInterrupter`, `HostProcessMemory` as the `MemorySpace`, `HostProcessBytes` as the `VolatileBytes` of
+    crates/volatile-bytes, `ProcessorStateOf`); nothing in it had to change. The in-process executor (form I) does not
+    exist yet (W2), so there is nothing of it to conform. The test host (tests/kernel_host) was conformed to the
+    volatile bytes by the callers' job (c07e21cd).
+  - The executor suite on form P (tests/conformance.rs, the shared suite as committed at 79441339, no overlay): 20 of
+    21 pass on Graviton4 with /dev/kvm denied (03:08 UTC, load 4 to 10); the one failing is
+    `agrees_with_precise_instruction_set` at the input domain's 0x1000 (For the owner), as before.
+  - The zygote's signal mask around its fork is set through nix's `pthread_sigmask` (safe), two unsafe uses fewer
+    (28 in the library). tests/zygote.rs and every other binary that builds pass (below).
+  - `MemorySpace::copy_from` at the same addresses now lends the source's private pages as a fork does (the source's
+    writable ranges lose write in its view by a round trip before the call returns); a copy within one space goes
+    through a memory of its own first, so overlapping ranges read the bytes as they were (before, the destination was
+    zeroed first and an overlapping copy lost them). tests/copy.rs (2): the source's store after the copy is a
+    resolved fault that copies the page, each side then stores its own value and keeps it; a copy onto itself changes
+    nothing, one page up and one page down give the shifted pages. With the source's loss of write undone (remote copy
+    only), the first fails (scratch w1/r3run6/mutate-copy-arm.out).
+  - Verdicts with /dev/kvm denied, each binary once, each run first proving the device cannot be opened (scratch
+    w1/r3run6/t1-arm.out, t1-x86.out, copy4-arm.out): Graviton4, every binary that builds (the remote copy leaves out
+    the kernel, busybox and speed tests and their WebAssembly and Unicorn dev-dependencies, run 4's drop-wasm.sh,
+    because wasmtime does not yet build against the volatile bytes crate: its conforming job's): all pass but the
+    precise-set test above; Xeon: all 156 pass. Clippy with warnings denied clean on the library on both and on every
+    target on Graviton4.
+  - Not done this run: the kernel, busybox and speed tests on the shared tree (they wait on wasmtime), bench's matrix
+    profile (scratch w1/r3run6/perf-matrix.sh, ready; it failed only on that build).
+  - No new unsafe code; two uses fewer.
+
 ## W1 complete, with its gap list (for the independent check)
 
 W1 is reported complete at round 3 run 5 so that its independent check runs; these items of plan 13's bar are not
@@ -735,8 +763,8 @@ met, each with what is known:
   at most one move a second with every CPU contended) are not measured; the move itself is tested (tests/
   placement.rs).
 - The copy unit is one page, not yet measured on translated stores (8 pages the candidate).
-- `MemorySpace::copy_from` at the same addresses copies eagerly instead of lending pages as a fork does.
-- The shared tree does not build host-process since 45dc7425 until the kernel follows the volatile bytes (above).
+- The shared tree builds host-process's library again (round 4 run 1); its kernel, busybox and speed tests wait on
+  the WebAssembly executor following the volatile bytes crate (its conforming job's).
 - gVisor: P runs there with known failures (plan 6; Decision 14 is with the owner); in its kernel test, blocks and
   jumptables pass the 300 s limit (which side was not found).
 - x86-64: everything that needs translated code is W3's (the x86 native output's way); on the Xeon the 156 tests of
@@ -962,8 +990,8 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   - `Executor::runner_handle` with `Executor::run_thread`. Today `KernelRunner::run` is `unimplemented!` for want
     of it, for every executor. The alternative is a handle type in `Runner::run`.
   - `ProcessInfo::kernel_entries`, the evaluator's input.
-  - `Executor::Stopper` with `ThreadStopper::stop(thread)`. Without it nothing can stop a thread that is running
-    on another runner; `Interrupter` has no implementation for the same reason.
+  - `Executor::Stopper` with `ThreadStopper::stop(thread)`: settled for one execution by the owner's
+    `ExecutionInterrupter` (167cffce), which P implements (`HostProcessInterrupter`).
   - `StandaloneExecutorHost`: the process-wide part both executors need, made once, making one executor per
     container.
     Built meanwhile as the private stand-in `HostProcessHost` (crates/executor/implementation/host-process/host.rs),
@@ -983,7 +1011,16 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
     interface gives no way to wake a waiting future from that process's answer.
   - A memory belongs to the executor that made it (its stubs are that executor's); using it with another panics. The
     interface does not say whether that is allowed.
-- The executor conformance suite cannot run on form P as it stands (plan 8): its one state generator,
+  - Views of guest memory (the owner's ruling of 2026-11-23): P adds none. `HostProcessBytes::read_to` and
+    `write_from` move the bytes through a heap buffer of their whole length (one more copy and one allocation per
+    call). The view that would remove it is a slice of the stub's memfd where the window cache maps it in the
+    embedder, in windows.rs under one more `#[expect(unsafe_code)]`:
+    `core::slice::from_raw_parts(slot.as_ptr().add(offset), length)` handed to `ByteSink::write` (and
+    `from_raw_parts_mut` to `ByteSource::read`), valid while the cache's lock keeps the window mapped. It is not sound
+    as Rust: the guest's other threads may write those bytes meanwhile, and a `&[u8]` promises they do not change. So
+    the buffer stays unless the sink and source take volatile access.
+- The executor conformance suite runs on form P and passes but for one test (round 4 run 1: 20 of 21), which cannot
+  pass on it as it stands (plan 8): its one state generator,
   wcontainers-instruction-input-domain-arm64, places every state's instruction at 0x1000 (`CODE_ADDRESS`) and its
   data pages at 0x2000 to 0x4000, below the host's `vm.mmap_min_addr` (32,768 on Graviton4, 65,536 on the Xeon), so
   an unprivileged host process cannot map them; P runs guest addresses as host addresses. Example: the first state
@@ -1098,8 +1135,8 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 30 in the library (28
-build on ARM64, 25 on x86-64), 1 in its tests:
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 28 in the library (26
+build on ARM64, 23 on x86-64), 1 in its tests:
 - code.rs (run 7): the code area's `mmap` where the host chooses and its `munmap`; the embedder's write into it (a
   slice of its own mapping, which only it writes and a stub only runs); cache maintenance by address and its
   barriers (`dc cvau`, `ic ivau`, `dsb ish`; no crate wraps them), ARM64 only.
@@ -1108,7 +1145,7 @@ build on ARM64, 25 on x86-64), 1 in its tests:
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
   it refers to nothing outside itself); glibc's `__rseq_offset` and `__rseq_size` (no crate has them); the two
   labels around the assembly; the slice of its code between them; the reservation's `mmap` and `munmap`;
-  `sigfillset` with `pthread_sigmask`, then `fork`, then `pthread_sigmask` again (rustix has no signal mask call);
+  `fork` (the signal mask around it is set through nix's safe `pthread_sigmask`);
   the jump into the zygote's code in the child, one per architecture.
 - probe.rs: `mrs ctr_el0` (no crate wraps it); the fixed `mmap` and `munmap` of the user-space search; the SVE
   probe's assembly (set p0 and FFR, `svc`, store them).
