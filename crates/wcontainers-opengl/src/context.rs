@@ -104,6 +104,10 @@ pub struct Context<B: Backend> {
     /// The occlusion query sets, and the query running in them.
     pub queries: query::Sets<B>,
     pub running: Option<*mut pipe_query>,
+    /// The exact sample counts of counted occlusion queries, one running at a time, and whether
+    /// it counts the next draw (not while st/mesa draws for itself).
+    pub counter: wcontainers_gpu::OcclusionCounter<B>,
+    pub counts_samples: bool,
     /// Queries ended whose counts are not yet read back: their reads start at the next flush, so
     /// that a finished context has every answer.
     pub unread: Vec<*mut pipe_query>,
@@ -157,6 +161,8 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
             blit_bytes: Vec::new(),
             queries: query::Sets::default(),
             running: None,
+            counter: wcontainers_gpu::OcclusionCounter::default(),
+            counts_samples: false,
             unread: Vec::new(),
             counting: Vec::new(),
             condition: None,

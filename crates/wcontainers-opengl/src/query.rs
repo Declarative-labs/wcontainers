@@ -1,5 +1,6 @@
 //! Occlusion queries: whether any sample passed, from the pass tracker's queries, one an
-//! interface query a pass the guest query ran in; counts of the primitives stream output
+//! interface query a pass the guest query ran in; exact counts of the samples that passed, from
+//! the interface's occlusion counter; counts of the primitives stream output
 //! wrote or made, from the stage helper's statistics or counted on the host; and timestamps and times elapsed, from the
 //! interface's timestamps.
 
@@ -92,6 +93,57 @@ pub struct Query<B: Backend> {
     emitted: Option<Emitted<B>>,
     /// For a timestamp or a time elapsed, its timestamps.
     timer: Option<Timer<B>>,
+    /// For an exact count of samples, its count.
+    counted: Option<Counted<B>>,
+}
+
+/// An exact count of the samples that passed (`SAMPLES_PASSED`), which the interface's occlusion
+/// counter writes into `slot` at the query's end (`OcclusionCountReplay`), read back once asked
+/// for.
+pub struct Counted<B: Backend> {
+    slot: B::Buffer,
+    read: Option<B::Readback>,
+    known: Option<u64>,
+}
+
+/// The bytes of a count the occlusion counter writes.
+const COUNT_BYTES: u64 = size_of::<u64>() as u64;
+
+/// A counted query's count, once known (reading back, and waiting if asked to).
+fn counted_value<B: Backend>(
+    tracker: &mut PassTracker<B>,
+    backend: &mut B,
+    counted: &mut Counted<B>,
+    wait: bool,
+) -> Result<Option<u64>, String> {
+    if let Some(known) = counted.known {
+        return Ok(Some(known));
+    }
+    let read = match counted.read.take() {
+        Some(read) => read,
+        None => {
+            tracker.close(backend).map_err(|e| format!("{e:?}"))?;
+            backend
+                .read_back(&ReadSource::Buffer {
+                    buffer: &counted.slot,
+                    offset: 0,
+                    size: COUNT_BYTES,
+                })
+                .map_err(|e| format!("{e:?}"))?
+        }
+    };
+    if backend.read_state(&read) == ReadState::Pending {
+        if !wait {
+            counted.read = Some(read);
+            return Ok(None);
+        }
+        backend.wait_read(&read);
+    }
+    let mut bytes = [0; COUNT_BYTES as usize];
+    backend.finish_read(read, &mut bytes);
+    let value = u64::from_le_bytes(bytes);
+    counted.known = Some(value);
+    Ok(Some(value))
 }
 
 /// A timer's two timestamps, at its begin and its end (a timestamp query writes only the end's),
@@ -294,32 +346,52 @@ pub fn count_drawn<B: Backend>(
     Ok(())
 }
 
-/// `pipe_context::create_query`: occlusion predicates, counts of primitives streamed and timers;
-/// an exact sample count needs `OCCLUSION_COUNT` or the counting replay, which is not built, and
-/// is not made.
+/// `pipe_context::create_query`: occlusion predicates and exact counts, counts of primitives
+/// streamed and timers.
 pub unsafe extern "C" fn create_query<B: Backend>(
     pipe: *mut pipe_context,
     kind: c_uint,
     _: c_uint,
 ) -> *mut pipe_query {
     crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
-        let made = |emitted, timer| {
+        // SAFETY: Mesa passes this driver's context.
+        let context = unsafe { Context::<B>::of(pipe) };
+        let made = |emitted, timer, counted| {
             Box::into_raw(Box::new(Query::<B> {
                 answer: None,
                 paused: false,
                 emitted,
                 timer,
+                counted,
             }))
             .cast()
         };
-        let query = |emitted| made(emitted, None);
+        let query = |emitted| made(emitted, None, None);
         match kind as pipe_query_type {
             PIPE_QUERY_OCCLUSION_PREDICATE | PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE => {
                 query(None)
             }
+            PIPE_QUERY_OCCLUSION_COUNTER => {
+                let slot = context
+                    .screen()
+                    .backend()
+                    .create_buffer(&BufferDesc {
+                        size: COUNT_BYTES,
+                        usage: BufferUsage::COPY_DST.union(BufferUsage::READ_BACK),
+                        intent: MapIntent::Rarely,
+                    })
+                    .unwrap_or_else(|e| refuse(format!("a count of samples: {e:?}")));
+                made(
+                    None,
+                    None,
+                    Some(Counted {
+                        slot,
+                        read: None,
+                        known: None,
+                    }),
+                )
+            }
             PIPE_QUERY_PRIMITIVES_EMITTED | PIPE_QUERY_PRIMITIVES_GENERATED => {
-                // SAFETY: Mesa passes this driver's context.
-                let context = unsafe { Context::<B>::of(pipe) };
                 let slots = context
                     .screen()
                     .backend()
@@ -342,8 +414,6 @@ pub unsafe extern "C" fn create_query<B: Backend>(
                 }))
             }
             PIPE_QUERY_TIMESTAMP | PIPE_QUERY_TIME_ELAPSED => {
-                // SAFETY: Mesa passes this driver's context.
-                let context = unsafe { Context::<B>::of(pipe) };
                 let set = context
                     .screen()
                     .backend()
@@ -357,14 +427,15 @@ pub unsafe extern "C" fn create_query<B: Backend>(
                         read: None,
                         known: None,
                     }),
+                    None,
                 )
             }
-            // An exact count of samples (`SAMPLES_PASSED`) and the rest: the API's own error,
-            // st/mesa's out of memory for a query it could not make.
+            // The rest: the API's own error, st/mesa's out of memory for a query it could not
+            // make.
             _ => {
                 eprintln!(
-                    "{}: not built: a query of Gallium kind {kind} (occlusion predicates, counts \
-                     of primitives streamed and timers are built)",
+                    "{}: not built: a query of Gallium kind {kind} (occlusion predicates and \
+                     counts, counts of primitives streamed and timers are built)",
                     DRIVER_NAME.to_string_lossy()
                 );
                 std::ptr::null_mut()
@@ -397,6 +468,9 @@ pub unsafe extern "C" fn destroy_query<B: Backend>(
         if let Some(timer) = query.timer {
             context.screen().retire(Object::QuerySet(timer.set));
         }
+        if let Some(counted) = query.counted {
+            context.screen().retire(Object::Buffer(counted.slot));
+        }
     })
 }
 
@@ -422,6 +496,17 @@ pub unsafe extern "C" fn begin_query<B: Backend>(
                     refuse(format!("a timer's begin: {reason}"));
                 }
             }
+            return true;
+        }
+        if let Some(counted) = &mut query.counted {
+            (counted.read, counted.known) = (None, None);
+            let mut backend = context.screen().backend();
+            if let Err(error) = context.counter.begin(&mut backend, &mut context.tracker) {
+                refuse(format!("a count of samples: {error:?}"));
+            }
+            query.paused = false;
+            context.running = Some(std::ptr::from_mut(query).cast());
+            context.counts_samples = true;
             return true;
         }
         let screen = context.screen();
@@ -468,6 +553,20 @@ pub unsafe extern "C" fn end_query<B: Backend>(
             if let Err(reason) = stamp(&mut context.tracker, &mut backend, &timer.set, TIMER_END) {
                 refuse(format!("a timer's end: {reason}"));
             }
+            return true;
+        }
+        if let Some(counted) = &query.counted {
+            let mut backend = context.screen().backend();
+            let ended =
+                context
+                    .counter
+                    .end_into(&mut backend, &mut context.tracker, &counted.slot, 0);
+            if let Err(error) = ended {
+                refuse(format!("a count of samples: {error:?}"));
+            }
+            context.running = None;
+            context.counts_samples = false;
+            query.paused = false;
             return true;
         }
         let Some(Answer::Running { set, first }) = query.answer.take() else {
@@ -557,6 +656,13 @@ fn query_result<B: Backend>(
             Err(reason) => refuse(format!("a timer's result: {reason}")),
         };
     }
+    if let Some(counted) = &mut query.counted {
+        let mut backend = context.screen().backend();
+        return match counted_value(&mut context.tracker, &mut backend, counted, wait) {
+            Ok(value) => value.map(|u64_| pipe_query_result { u64_ }),
+            Err(reason) => refuse(format!("a count of samples' result: {reason}")),
+        };
+    }
     match answer(context, query, wait) {
         Ok(passed) => passed.map(|b| pipe_query_result { b }),
         Err(reason) => refuse(format!("an occlusion query's result: {reason}")),
@@ -597,6 +703,14 @@ pub fn condition_holds<B: Backend>(context: &mut Context<B>) -> bool {
         .backend()
         .slow_paths()
         .hit(SlowPath::PredicationWait);
+    if let Some(counted) = &mut query.counted {
+        let mut backend = context.screen().backend();
+        return match counted_value(&mut context.tracker, &mut backend, counted, true) {
+            Ok(Some(count)) => (count != 0) != condition,
+            Ok(None) => true,
+            Err(reason) => refuse(format!("a render condition's count: {reason}")),
+        };
+    }
     match answer(context, query, true) {
         Ok(Some(passed)) => passed != condition,
         Ok(None) => true,
@@ -687,7 +801,7 @@ fn answer<B: Backend>(
 
 /// `pipe_context::set_active_query_state`: st/mesa's own draws (blits, clears) count in no query;
 /// the running query's interface queries stop and go on from the next index, which no other
-/// query takes meanwhile.
+/// query takes meanwhile, and a running count of samples keeps none of them.
 pub unsafe extern "C" fn set_active_query_state<B: Backend>(pipe: *mut pipe_context, enable: bool) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
@@ -698,6 +812,11 @@ pub unsafe extern "C" fn set_active_query_state<B: Backend>(pipe: *mut pipe_cont
         // SAFETY: a running query lives until it ends.
         let query = unsafe { of::<B>(running) };
         if query.paused != enable {
+            return;
+        }
+        if query.counted.is_some() {
+            query.paused = !enable;
+            context.counts_samples = enable;
             return;
         }
         let mut backend = context.screen().backend();

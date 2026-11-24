@@ -18,7 +18,7 @@ use wcontainers_gpu::Format as GpuFormat;
 use wcontainers_gpu::{
     CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
     ShaderStage as GpuStage, SlotKind, SlowPath, SourceStage, StageExtras,
-    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, VariantKey, helper_binding,
+    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
@@ -5239,8 +5239,9 @@ fn pixel_extras(module: &Module) -> StageExtras {
 /// the bound view's format; vertex inputs fetched in the program (`VariantKey::pulled`), which
 /// find their inputs by location; and border colours applied in the program
 /// (`VariantKey::border_in_shader`), which read the sampler's state from helper constants, and
-/// level-of-detail biases added in the program (`VariantKey::lod_bias`). A slot declared without a
-/// format that `variant` does not name is
+/// level-of-detail biases added in the program (`VariantKey::lod_bias`); and a fragment program's
+/// counting form (`VariantFlags::COUNTING`). A slot declared without a format that `variant` does
+/// not name is
 /// refused by name, as is a variant asking for more than these (its rewrites read the program's
 /// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
 /// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it;
@@ -5257,7 +5258,9 @@ pub fn rewrite(
             "a storage image without a format the variant does not name"
         )));
     }
+    // The counting form reads only the program's own outputs.
     let routed_rewrites = VariantKey {
+        flags: variant.flags & VariantFlags::COUNTING,
         storage_formats: variant.storage_formats.clone(),
         texels_through_buffer: variant.texels_through_buffer,
         pulled: variant.pulled.clone(),

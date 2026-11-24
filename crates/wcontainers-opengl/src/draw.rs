@@ -7,15 +7,16 @@ use std::ffi::c_uint;
 
 use wcontainers_gpu::{
     AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
-    BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DOMAIN_PATCHES_BINDING,
-    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, FillMode, Filter, Format,
-    FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot, HelperValue, IndexBinding,
-    IndexFormat, IndexSource, Interpolation, LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS,
-    MapIntent, Object, PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource,
-    ReflectedBinding, Reflection, RingKind, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule,
-    ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology,
-    VariantFlags, VariantKey, VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode,
-    cut_scissors, helper_binding,
+    BorderColor, BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode,
+    DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features,
+    FillMode, Filter, Format, FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot,
+    HelperValue, IndexBinding, IndexFormat, IndexSource, Interpolation, LinkedValues,
+    MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, PassTracker,
+    Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
+    STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
+    SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
+    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, cut_scissors,
+    helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{
@@ -162,6 +163,9 @@ pub(crate) struct Variant {
     /// Where a point's square passes `gl_PointCoord` (fragment programs, which read the centre's
     /// without one).
     point_coord: Option<u32>,
+    /// A fragment program's counting form, which a counted occlusion query draws again
+    /// (`OcclusionCountReplay`).
+    counting: bool,
 }
 
 impl Variant {
@@ -812,6 +816,11 @@ fn convert<B: Backend>(
         Stage::Vertex | Stage::Fragment | Stage::Compute => {}
     }
     let rewrites = VariantKey {
+        flags: if variant.counting {
+            VariantFlags::COUNTING
+        } else {
+            VariantFlags::empty()
+        },
         pulled: variant.pulled.clone(),
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
         lod_bias: slots_of(&bindings, SlotKind::Sampler, variant.lod_bias)?,
@@ -2487,6 +2496,7 @@ fn draw<B: Backend>(
         texture_layers: texture_layers(context.stages.get(Stage::Vertex)),
         named_layer: None,
         point_coord: None,
+        counting: false,
     };
     // SAFETY: as above.
     let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
@@ -2716,6 +2726,25 @@ fn draw<B: Backend>(
     if raster.discard || (raster.cull_both && triangles(topology) && !squared) {
         return Ok(());
     }
+    // A counted occlusion query draws each host draw again with the fragment program's counting
+    // form.
+    let counting_program = if context.counts_samples {
+        let counting = Variant {
+            counting: true,
+            ..fragment.clone()
+        };
+        let first = (first_id, &first_variant);
+        let made = counting_program(
+            &mut context.programs,
+            backend,
+            first,
+            fragment_shader,
+            counting,
+        );
+        Some(made?)
+    } else {
+        None
+    };
     let bound = &context.bound;
     let programs = &mut context.programs;
     let built = [
@@ -2828,6 +2857,7 @@ fn draw<B: Backend>(
         None => elements.block(backend, pulled_mask)?,
     };
     let program = programs.programs[&program_key].clone();
+    let alpha_to_coverage = blend.desc.alpha_to_coverage;
     let (blend, alpha_constant) = blend_for(
         programs,
         backend,
@@ -2992,6 +3022,13 @@ fn draw<B: Backend>(
                 instances: 0,
             },
         };
+        let mut counting = counting_program.as_ref().map(|program| Counting {
+            counter: &mut context.counter,
+            tracker: &mut context.tracker,
+            program,
+            alpha_to_coverage,
+            writes_depth_stencil: depth_stencil.depth || depth_stencil.stencil,
+        });
         for (depth_stencil, block, stencil_reference) in passes {
             let pass = DrawCall {
                 depth_stencil,
@@ -3007,9 +3044,10 @@ fn draw<B: Backend>(
                 ..base
             };
             match &made {
-                Some(m) => draw_made(backend, &pass, &m.out),
+                Some(m) => draw_made(backend, &mut counting, &pass, &m.out)?,
                 None => draw_ranges(
                     backend,
+                    &mut counting,
                     &pass,
                     info,
                     draws,
@@ -3127,25 +3165,103 @@ fn passthrough_helper_size<B: Backend>(built: &Built<B>) -> Result<u32, String> 
         .ok_or("a pass-through without its run's helper constants")?)
 }
 
+/// The program a counted occlusion query draws a draw again with: the first stage's program, as
+/// drawn, and `counting`, the fragment program's variant of its counting form.
+fn counting_program<B: Backend>(
+    programs: &mut Programs<B>,
+    backend: &mut B,
+    (first_id, first_variant): (ShaderId, &Variant),
+    fragment: &Shader,
+    counting: Variant,
+) -> Result<B::Program, String> {
+    programs.built_for(backend, fragment, &counting)?;
+    let key = (first_id, first_variant.clone(), fragment.id, counting);
+    if let Some(program) = programs.programs.get(&key) {
+        return Ok(program.clone());
+    }
+    let shader = |built: &Built<B>| {
+        built
+            .shader
+            .clone()
+            .ok_or("a counted program without its shader")
+    };
+    let vertex = shader(&programs.built[&(first_id, first_variant.clone())])?;
+    let counting = shader(&programs.built[&(fragment.id, key.3.clone())])?;
+    let program = backend
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&counting),
+        })
+        .map_err(|e| format!("a counting program: {e:?}"))?;
+    programs.programs.insert(key, program.clone());
+    Ok(program)
+}
+
+/// A counted occlusion query's part in a draw (`OcclusionCountReplay`): each host draw is kept by
+/// the occlusion counter, drawn, and counted at once with the fragment program's counting form, as
+/// what it reads from the rings stays valid only until their next write.
+struct Counting<'a, B: Backend> {
+    counter: &'a mut OcclusionCounter<B>,
+    tracker: &'a mut PassTracker<B>,
+    program: &'a B::Program,
+    alpha_to_coverage: bool,
+    /// The depth or stencil test is on, so the draw may write them.
+    writes_depth_stencil: bool,
+}
+
+/// Draws `call`, counted where a counted query runs.
+fn host_draw<B: Backend>(
+    backend: &mut B,
+    counting: &mut Option<Counting<'_, B>>,
+    call: &DrawCall<'_, B>,
+) -> Result<(), String> {
+    let Some(c) = counting else {
+        backend.draw(call);
+        return Ok(());
+    };
+    let counted = CountedDraw {
+        counting: c.program,
+        alpha_to_coverage: c.alpha_to_coverage,
+        writes_depth_stencil: c.writes_depth_stencil,
+        instances_step_by_one: false,
+    };
+    let failed = |e| format!("a counted draw: {e:?}");
+    c.counter
+        .draw(backend, c.tracker, call, &counted)
+        .map_err(failed)?;
+    // Keeping a draw that writes depth or stencil copies the target first, outside the pass.
+    c.tracker.before_draw(backend, &[]).map_err(failed)?;
+    backend.draw(call);
+    c.counter.flush(backend, c.tracker).map_err(failed)
+}
+
 /// The draw of what the stage helper made, as `pass` binds it otherwise: its vertices from the
 /// helper's buffer as stream 0, through its indices (32-bit, strips restarting) where it gives them.
-fn draw_made<B: Backend>(backend: &mut B, pass: &DrawCall<'_, B>, out: &FinalDraw<B>) {
+fn draw_made<B: Backend>(
+    backend: &mut B,
+    counting: &mut Option<Counting<'_, B>>,
+    pass: &DrawCall<'_, B>,
+    out: &FinalDraw<B>,
+) -> Result<(), String> {
     // Tessellated points: an indexed indirect draw the tessellator wrote, its indices at the
     // buffer's start, without vertex streams.
     if let Some(t) = &out.tessellated {
-        backend.draw(&DrawCall {
-            index: Some(IndexBinding {
-                buffer: &out.buffer,
-                offset: 0,
-                format: IndexFormat::U32,
-            }),
-            range: DrawRange::IndexedIndirect {
-                args: &t.arguments,
-                offset: 0,
+        return host_draw(
+            backend,
+            counting,
+            &DrawCall {
+                index: Some(IndexBinding {
+                    buffer: &out.buffer,
+                    offset: 0,
+                    format: IndexFormat::U32,
+                }),
+                range: DrawRange::IndexedIndirect {
+                    args: &t.arguments,
+                    offset: 0,
+                },
+                ..*pass
             },
-            ..*pass
-        });
-        return;
+        );
     }
     let index = out.index_offset.map(|offset| IndexBinding {
         buffer: &out.buffer,
@@ -3167,11 +3283,15 @@ fn draw_made<B: Backend>(backend: &mut B, pass: &DrawCall<'_, B>, out: &FinalDra
             instances: 1,
         },
     };
-    backend.draw(&DrawCall {
-        index,
-        range,
-        ..*pass
-    });
+    host_draw(
+        backend,
+        counting,
+        &DrawCall {
+            index,
+            range,
+            ..*pass
+        },
+    )
 }
 
 /// The stage helper's topology of a Gallium primitive, adjacency included; none for a fan or loop.
@@ -4319,6 +4439,7 @@ fn holds_largest(indices: &[u8], format: IndexFormat) -> bool {
 /// Draws `rewritten`'s indices, from the ring, with `base`'s blocks.
 fn draw_rewritten<B: Backend>(
     backend: &mut B,
+    counting: &mut Option<Counting<'_, B>>,
     base: &DrawCall<'_, B>,
     rewritten: &indices::Rewritten,
     base_vertex: i32,
@@ -4333,36 +4454,41 @@ fn draw_rewritten<B: Backend>(
             &mut offset,
         )
         .map_err(|e| format!("{e:?}"))?;
-    backend.draw(&DrawCall {
-        topology: rewritten.topology()?,
-        restart: false,
-        index: Some(IndexBinding {
-            buffer: &ring,
-            offset: offset[0],
-            format: rewritten.format,
-        }),
-        range: DrawRange::Indexed {
-            first: 0,
-            count: rewritten.count(),
-            base_vertex,
-            first_instance: info.start_instance,
-            instances: info.instance_count,
+    host_draw(
+        backend,
+        counting,
+        &DrawCall {
+            topology: rewritten.topology()?,
+            restart: false,
+            index: Some(IndexBinding {
+                buffer: &ring,
+                offset: offset[0],
+                format: rewritten.format,
+            }),
+            range: DrawRange::Indexed {
+                first: 0,
+                count: rewritten.count(),
+                base_vertex,
+                first_instance: info.start_instance,
+                instances: info.instance_count,
+            },
+            ..*base
         },
-        ..*base
-    });
-    Ok(())
+    )
 }
 
 /// Each range of one draw call made with `base`'s blocks; `read` holds indices read back from
 /// the index buffer, and the first one's position in it. Where `provoking` is given, every
 /// primitive's vertices are reordered for the host's provoking vertex; where `drops_adjacency`,
-/// primitives with adjacency are drawn without their adjacent vertices.
+/// primitives with adjacency are drawn without their adjacent vertices. A counted draw's fans and
+/// loops are drawn as lists made here, which the occlusion counter draws again.
 #[allow(
     clippy::too_many_arguments,
     reason = "one draw call's ranges and how each is rewritten"
 )]
 fn draw_ranges<B: Backend>(
     backend: &mut B,
+    counting: &mut Option<Counting<'_, B>>,
     base: &DrawCall<'_, B>,
     info: &pipe_draw_info,
     draws: &[pipe_draw_start_count_bias],
@@ -4373,6 +4499,7 @@ fn draw_ranges<B: Backend>(
 ) -> Result<(), String> {
     let topology = base.topology;
     let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
+    let counted_fan = fan && counting.is_some();
     let restart = base.restart;
     let index_size = info.index_size;
     let user_indices = info.has_user_indices();
@@ -4391,7 +4518,7 @@ fn draw_ranges<B: Backend>(
         if d.count == 0 {
             continue;
         }
-        if index_size == 0 && (provoking.is_some() || drops_adjacency) {
+        if index_size == 0 && (provoking.is_some() || drops_adjacency || counted_fan) {
             if provoking.is_some() {
                 backend.slow_paths().hit(SlowPath::ProvokingRewrite);
             }
@@ -4399,7 +4526,8 @@ fn draw_ranges<B: Backend>(
             // Lists with adjacency, whose adjacent vertices are then dropped.
             let lists = drops_adjacency;
             if let Some(r) = indices::generated(mode, d.start, d.count, lists, p.api, p.host)? {
-                draw_rewritten(backend, base, &indices::without_adjacency(r), 0, info)?;
+                let r = indices::without_adjacency(r);
+                draw_rewritten(backend, counting, base, &r, 0, info)?;
             }
             continue;
         }
@@ -4430,7 +4558,7 @@ fn draw_ranges<B: Backend>(
                     )
                     .map_err(|e| format!("{e:?}"))?;
             } else {
-                backend.draw(&vertices);
+                host_draw(backend, counting, &vertices)?;
             }
             continue;
         }
@@ -4463,7 +4591,7 @@ fn draw_ranges<B: Backend>(
                 && strip
                 && !restart_switch
                 && holds_largest(indices, format);
-            if provoking.is_some() || cut || lists_only || drops_adjacency {
+            if provoking.is_some() || cut || lists_only || drops_adjacency || counted_fan {
                 let paths = [
                     (provoking.is_some(), SlowPath::ProvokingRewrite),
                     (cut || lists_only, SlowPath::RestartRewrite),
@@ -4477,7 +4605,7 @@ fn draw_ranges<B: Backend>(
                 let rewritten = indices::translated(info, indices, restart, lists, api, host)?;
                 if let Some(r) = rewritten {
                     let r = indices::without_adjacency(r);
-                    draw_rewritten(backend, base, &r, d.index_bias, info)?;
+                    draw_rewritten(backend, counting, base, &r, d.index_bias, info)?;
                 }
                 continue;
             }
@@ -4511,15 +4639,19 @@ fn draw_ranges<B: Backend>(
             let ring = backend
                 .write_buffer_ring(RingKind::Indices, &[indices], format.size(), &mut offset)
                 .map_err(|e| format!("{e:?}"))?;
-            backend.draw(&DrawCall {
-                index: Some(IndexBinding {
-                    buffer: &ring,
-                    offset: offset[0],
-                    format,
-                }),
-                range: range(),
-                ..*base
-            });
+            host_draw(
+                backend,
+                counting,
+                &DrawCall {
+                    index: Some(IndexBinding {
+                        buffer: &ring,
+                        offset: offset[0],
+                        format,
+                    }),
+                    range: range(),
+                    ..*base
+                },
+            )?;
             continue;
         }
         if needs_widening(backend, format) {
@@ -4530,15 +4662,19 @@ fn draw_ranges<B: Backend>(
         // SAFETY: an index buffer of this driver, held by st/mesa for the draw.
         let resource = unsafe { Resource::<B>::of(info.index.resource) };
         let buffer = resource.buffer().ok_or("indices in a texture")?;
-        backend.draw(&DrawCall {
-            index: Some(IndexBinding {
-                buffer,
-                offset: u64::from(d.start) * bytes,
-                format,
-            }),
-            range: range(),
-            ..*base
-        });
+        host_draw(
+            backend,
+            counting,
+            &DrawCall {
+                index: Some(IndexBinding {
+                    buffer,
+                    offset: u64::from(d.start) * bytes,
+                    format,
+                }),
+                range: range(),
+                ..*base
+            },
+        )?;
     }
     Ok(())
 }
