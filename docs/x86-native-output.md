@@ -1012,7 +1012,11 @@ window needs the bound in a register, measured at XN2 if asked).
 - The stack's cost is not measured: the earlier figures exempted the stack, and this form rewrites every implicit
   stack access. XN2 measures it, and the alternative the P/I plan uses on ARM64 (rsp holding B plus the guest's rsp,
   so `push`, `pop`, `call` and `ret` run unchanged inside the window, a read of rsp as a value less B, and a write of
-  rsp from another register rebased and checked), and keeps the cheaper that passes the way I tests.
+  rsp from another register rebased and checked), and keeps the cheaper that passes the way I tests. Measured in
+  XN2 run 3 (the status file has the figures): with every stack access cut, the wrapping form costs 1.115 times the
+  unchecked form over the benchmark set (fib 1.355); with the stack's accesses as the guest wrote them and rsp
+  holding B plus the guest's rsp, 1.032 (fib 1.000). The second form is chosen; a guest rsp written outside the
+  window is cut by the wrapping form and faults at the write in the exact form, both named in section 5 once built.
 - The page permissions inside the window are the host's protection of the window's pages, written by the kernel's
   mapping calls, 4 KiB as the guest's.
 

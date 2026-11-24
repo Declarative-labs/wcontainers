@@ -15,10 +15,78 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   its cause and owner. Fifteen independent checks of XN1; XN2 run 1 answered the fifteenth's five minor findings
   in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
   "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
-- XN2 (way I, the checked forms): partly built (runs 1 and 2), see "XN2 run 2" and "XN2 (run 1)" below. Left:
-  the speed figures (needs layer 2's program blob in I, below) and the tests that need an executor. Before run 1, `carry::carry_plain`
+- XN2 (way I, the checked forms): partly built (runs 1 to 3), see "XN2 run 3", "XN2 run 2" and "XN2 (run 1)"
+  below. Run 3 ran layers 2 and 3 and the benchmark set in I and measured the forms: neither meets its speed bar
+  with the stack form built, and the measurement chooses the other stack form (rsp held as B + rsp), which is
+  the next work. Before run 1, `carry::carry_plain`
   refused the in-process way by an assertion for every instruction, memory or not (the fifteenth check: `add rax,
   rcx` refused as `mov rax, [rcx]` was); that assertion is gone, and the one left refuses only a guest string in I.
+
+## XN2 run 3 (2026-11-24)
+
+Built (crates/wcontainers-translator-test, commits 2a0c32b09 and 109720a14):
+- Native layer 2's blob (native_programs.rs) runs in any way: `compare`, `run` and `run_timed` take `(Way,
+  LookAhead)`. In I the program is at B + its address, the reference's stack copied to B + its address and then
+  unmapped (so only the window holds guest memory), the probe's page at B - 2 pages, FS on the area (the guest's FS
+  and GS bases kept in its words), GS on B, the fixed part's `window` words set. The blob's routines read the area on
+  the way's segment. Its answers in I: a system call on a stack of the blob's own with the guest's flags kept, its
+  guest pointers made host addresses around it (`write`, `writev` with each vector's base, `ioctl`'s argument,
+  `set_tid_address`; `arch_prctl(ARCH_SET_FS)` writes the area's FS base word; `exit`, `exit_group` plain; any other
+  ends the run with a record naming it); `pushfq` (which I sends to the inside) stored at the guest's rsp - 8 in the
+  window, a fault there the guest's; a repeated string under the count with rsi and rdi B more around it.
+- Tests: tests/layer2.rs `natively_matches_the_cpu_in_process_x86_64` and tests/layer3.rs
+  `csmith_programs_match_linux_natively_in_process_x86_64` (both forms, or one with `WC_LAYER2_CHECK` /
+  `WC_LAYER3_CHECK`), each at three look-aheads, counted and not. A wrapping run that differs is counted as the named
+  landing only when the CPU's run ended by SIGSEGV and the exact form's run of the same program agrees with the CPU
+  (the two forms make the same cut accesses; the exact form adds only the probes that refuse addresses at or above
+  2^32). tests/benchmarks.rs `measure_benchmarks_natively_x86_64` times P, wrapping and exact (`WC_BENCH_WAYS`),
+  each also against P (the unchecked form).
+
+Results (rented x86 machine, Xeon 8488C):
+- Layer 2 in I, seed 23, 10,000 programs (load 16 to 27): 0 failing; 3,361 faulted; 1,038 runs the wrapping form's
+  named landing; 227,396 blob runs. Seed 7, 500 programs: 0 failing, P's run of the same 500 also 0 failing.
+- Layer 3 in I, seed 5, 300 Csmith programs (load 27 to 12): 264 compared, 36 did not end in time on Linux, 0
+  failing. Seed 1, 24: 22 compared, 0 failing (P also 0).
+- Speed, the benchmark set at full, `taskset -c 0-9`, best of 7, uncounted, each form against P (the unchecked form);
+  10:03 to 10:10 UTC, load 3.5 rising to 21 (the machine is shared): fib wrapping 1.355, exact 2.044; sieve 1.030,
+  1.228; hash 0.994, 1.002; sort 1.074, 1.334; interpret 1.353, 1.819; matrix 1.010, 2.610; walk 1.104, 1.033;
+  search 1.064, 1.227. Geometric mean: wrapping 1.115 (bar 1.10), exact 1.456 (bar 1.35); counted, against P
+  counted: 1.006 and 1.368. Against the host's plain run: P 1.122, wrapping 1.251, exact 1.633. An earlier run
+  (09:56, load 30 falling to 10, best of 5): wrapping 1.085, exact 1.405. So the earlier +2 to +4 percent
+  (wrapping) and +11 to +21 percent (exact), measured with the stack exempt, are corrected to about +9 to +12 and
+  +40 to +46 percent on translated programs with every stack access cut and probed. Single programs move by up to
+  20 percent between runs on this machine (walk: exact 0.831 and 1.033 of P).
+- The stack's share (scratch xn2r3/stackfloor.diff, applied only to the rented copy, never committed): the stack's
+  accesses left as the guest wrote them with rsp holding B + the guest's rsp (pushes, pops, calls, returns, `leave`
+  and every rsp-based operand; rsp read as a value not rebased, so a floor for that form, not the form). 10:22 to
+  10:26 UTC, load 11.5 falling to 5, best of 7: wrapping against P fib 1.000, sieve 0.999, hash 1.001, sort 1.067,
+  interpret 0.995, matrix 1.006, walk 1.223, search 0.988, geometric mean 1.032 (counted 1.014). fib and interpret,
+  call-heavy, go from 1.355 to 1.000 and 1.353 to 0.995: the cut stack form is most of the wrapping form's cost.
+  The exact form under the same patch did not finish (its fib differed or failed; not studied).
+- Where the exact form's cost is (scratch xn2r3/dump6-*.txt, matrix's pieces in P and exact): every access
+  `[base + index*8]` becomes `lea t; rorx u, t, 32; mov u32, u32; lea u, [u*8]; not u; mov u, gs:[u + 1 - 2 pages];`
+  then the cut access, six instructions and a load more per access; matrix's inner loop has four.
+
+The stack form, chosen by this measurement (plan 4: "keeps the cheaper that passes the way I tests"): rsp held as
+B + the guest's rsp. Not built. What it needs, in order:
+1. Every piece in I keeps host rsp = B + guest rsp: `push`, `pop`, `call`, `ret`, `leave` and rsp-based operands run
+   as the guest wrote them (no cut, no probe: the page below B and the 2^35 bytes under the probe's page, and the
+   page and 2^31 bytes above the window, unmapped); an instruction that reads rsp as a value reads it less B (a
+   stand-in loaded `lea s, [rsp + w]` with w = -B from the fixed part); an instruction that writes rsp other than
+   by a push or pop (`sub rsp, n`, `and rsp, -16`, `mov rsp, r`, `lea rsp, [...]`, `pop rsp`, `xchg`) has its
+   result rebased and cut so that rsp stays in the window: `lea rsp, [B + (result mod 2^32)]` flag-free. Readers of
+   a thread's registers in I (the test crate's `guest_state`, later the executor) take rsp less B (a way-level rule,
+   so the map needs no `Held` for it).
+2. The open point, for the owner or the plan's next check: a guest rsp written outside [0, 2^32). The wrapping form
+   cuts it (one more case of its named landing: the value read back differs). The exact form cannot cut it and
+   stay exact; the cheapest sound answer is the probe on the written value, so that `mov rsp, rax` with rax at or
+   above 2^32 faults at the write, a named difference (the CPU faults only at the next stack access, and a read of
+   rsp would give the value). The alternative (the inside keeps the true value and runs the thread until rsp is back)
+   costs nothing on the fast path but is a slow path of its own.
+3. Layer 1 in I then starts each case with rsp cut or refused as above, and its known kinds gain that difference.
+4. Measure again; the floor above says the wrapping form then meets its bar (1.032 before the rebased reads and
+   writes); the exact form's remaining cost is the probe of every other access (matrix 2.6), for which the stack's
+   share is not yet measured.
 
 ## XN2 run 2 (2026-11-24)
 
@@ -80,15 +148,8 @@ Results (rented x86 machine, Xeon 8488C):
   seed 0x5eed 20,000 cases (19,062 strings); seeds 0x2b17, 0x51, 0xdecaf 400,000 cases each (about 377,000
   strings each): 0 outside.
 
-Left after run 2, in order:
-1. Speed per workload, each checked form against the unchecked one (bar 1.10 wrapping, 1.35 exact), and the
-   stack form against rsp held as B + rsp. Needs layer 2's program blob (native_programs.rs) in I: the program and
-   its stack at B + their addresses (the programs sit at 0x400000 and STACK_TOP 0x4810_0000, below 2^32), the
-   probe's page, FS on the area and GS on B, the routines reading the area on FS, and the blob's system calls given
-   host pointers (a guest pointer argument plus B: `write`'s buffer, and whatever else the benchmark set calls;
-   today the routines make the guest's call raw, right only where guest and host addresses agree). Then
-   `measure_benchmarks_natively_x86_64` per way, on an idle machine, `taskset`.
-2. Layer 2 and 3 in I (the same blob), which also gives the link and stop tests in I a program to run.
+Left after run 2, where it stands after run 3: 1. speed per workload, measured (run 3; the stack form chosen, not
+built); 2. layers 2 and 3 in I, done (run 3; the link and stop tests in I can use the same blob);
 3. Register-group and hostile-guest tests in I, and the X9 programs: an executor (gap item 1).
 
 ## XN2 (run 1, 2026-11-24)
@@ -446,6 +507,15 @@ Fptan, Fsin, Fsincos, Fyl2x and Fyl2xp1. Cases with TF or AC set are not made (x
   `a_form_routed_for_the_host_is_counted`.
 
 ## How to run XN2's tests
+
+Run 3's (rented x86 machine): `WC_LAYER2_CASES=10000 WC_LAYER2_SEED=23 WC_LAYER2_JOBS=48 cargo test -q -p
+wcontainers-translator-test --test layer2 natively_matches_the_cpu_in_process -- --nocapture` (summary "layer 2
+natively in process"; `WC_LAYER2_CHECK=wrapping` or `exact`); `WC_LAYER3_CASES=300 WC_LAYER3_SEED=5
+WC_LAYER3_JOBS=48 ... --test layer3 csmith_programs_match_linux_natively_in_process -- --nocapture`; speed:
+`WC_BENCH_RUNS=7 taskset -c 0-9 cargo test -q -p wcontainers-translator-test --test benchmarks
+measure_benchmarks_natively_x86_64 -- --ignored --nocapture` (`WC_BENCH_WAYS=process,wrapping,exact`; lines "times
+the unchecked form's"). The stack floor: the same after `patch -p1 < stackfloor.diff` in the rented copy (copy at
+/work/probes/xn2/stackfloor.diff there), then `patch -R -p1`.
 
 `orchestrator/cloud/arm-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
 native_window -- --nocapture'` (any Linux machine: the tests decode, they run no guest code); the sweep takes
@@ -846,6 +916,11 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   undefined flag goes to the inside or inline flags (shifts are hot). One concrete example: `rol al, 2` (c0 c0 02) of al 1
   with rflags 0xad7 before leaves 0xad6 on the Xeon and 0x2d6 on AMD (OF), which a following `jo` reads.
 - P on a 4-level host: about 3,000 guest threads per process (plan 3.3, 5).
+- Way I's stack form (XN2 run 3): measured, rsp held as B + the guest's rsp is the cheaper by far (fib's wrapping
+  form 1.355 times P with the stack cut, 1.000 with it left as written). Its one open point is a guest rsp written
+  outside the 4 GiB window: proposed, the wrapping form cuts it and the exact form faults at the write, both named
+  differences. Example: `mov rsp, rax` with rax 2^32 + 16, then `mov rbx, rsp`: the CPU gives rbx 2^32 + 16 and
+  faults only at a later push; the wrapping form would give 16, the exact form a SIGSEGV at the `mov rsp, rax`.
 
 ## Licences
 
