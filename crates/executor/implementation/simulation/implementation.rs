@@ -65,6 +65,8 @@ enum Trap {
     Final,
 }
 
+// Left out of the proof build: Creusot cannot translate the `async` block `execute` returns, even when trusted.
+#[cfg(not(creusot))]
 impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     type Architecture = Arm64;
     type TranslatorConfig = ();

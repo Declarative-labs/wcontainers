@@ -26,6 +26,8 @@ wcontainers-processor-architecture = { path = "../../../processor-architecture" 
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The exception classes of ESR_EL1, which decide what a trap is (the version the architecture crate uses).
 aarch64-cpu = "12.0.0"
+# Contracts and the proofs of them: erased from ordinary builds.
+creusot-std = "0.15.0"
 
 [dev-dependencies]
 wcontainers-executor-conformance = { path = "../../conformance" }

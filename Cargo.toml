@@ -59,6 +59,8 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/tcp-sockets/implementation/host (1)
 #   crates/icmp-sockets/conformance (1)
 [workspace.lints.rust]
+# Creusot sets `creusot` when it builds the proofs.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(creusot)"] }
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 

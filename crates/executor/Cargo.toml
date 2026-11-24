@@ -11,6 +11,8 @@ wcontainers-abi.workspace = true
 wcontainers-processor-architecture = { path = "../processor-architecture" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 thiserror = { version = "2.0.21", default-features = false }
+# Contracts and the proofs of them: erased from ordinary builds.
+creusot-std = "0.15.0"
 
 [lints]
 workspace = true

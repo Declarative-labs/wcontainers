@@ -3,6 +3,8 @@
 extern crate alloc;
 
 pub mod memory_space;
+#[cfg(creusot)]
+mod memory_space_proofs;
 
 use alloc::vec::Vec;
 use core::future::Future;
