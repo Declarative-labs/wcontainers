@@ -22,8 +22,9 @@
 //! pixel shader, depth clamped and clipped), `aa_lines` (alpha-antialiased lines
 //! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip),
 //! `format_support` (both words of every format's support), `ms_depth_read` (multisampled depth
-//! textures made for reading and their views) and `bgrx` (what a vertex shader reads from a
-//! `B8G8R8X8_UNORM` element). A second argument, `10_1` or `10_0`, asks for that feature level
+//! textures made for reading and their views), `slots` (a pixel shader reading 25 shader
+//! resource views, the last at t127, and the samplers s0 and s15) and `bgrx` (what a vertex
+//! shader reads from a `B8G8R8X8_UNORM` element). A second argument, `10_1` or `10_0`, asks for that feature level
 //! in place of 11_0. Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
@@ -781,6 +782,82 @@ fn main() -> windows::core::Result<()> {
                 }
             }
         }
+        "slots" => {
+            // One pixel shader reading a stage's last shader resource view (t127) through its
+            // last sampler (s15) beside 24 more views and the first sampler: the target's red
+            // holds their weighted sum.
+            const VIEWS: usize = 24;
+            let texture = Tex {
+                w: 1,
+                h: 1,
+                format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                samples: 1,
+                bind: D3D11_BIND_SHADER_RESOURCE,
+            };
+            let views = (0..=VIEWS)
+                .map(|i| {
+                    let texel = [(i as u8 + 1) * 4, 0, 0, u8::MAX];
+                    make(&texture, Some((texel.as_slice(), 4)))
+                        .map(|t| srv(&t, DXGI_FORMAT_UNKNOWN))
+                })
+                .collect::<windows::core::Result<Vec<_>>>()?;
+            let mut source = String::new();
+            for i in 0..VIEWS {
+                source += &format!("Texture2D t{i} : register(t{i});\n");
+            }
+            source += "Texture2D last : register(t127);
+                SamplerState first : register(s0);
+                SamplerState latest : register(s15);
+                float4 main(float4 p : SV_Position) : SV_Target {
+                    float a = last.SampleLevel(latest, float2(0.5, 0.5), 0).r * 100
+                        + t1.SampleLevel(first, float2(0.5, 0.5), 0).r * 1000;\n";
+            for i in 0..VIEWS {
+                source += &format!("a += t{i}.Load(int3(0, 0, 0)).r * {};\n", i + 1);
+            }
+            source += "return float4(a, 0, 0, 1); }";
+            let pixel = ps(&source);
+            let vertex = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                float2 uv = float2((id << 1) & 2, id & 2);
+                return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+            }");
+            let sampler_desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MaxAnisotropy: 1,
+                MaxLOD: f32::MAX,
+                ..Default::default()
+            };
+            let target = make(
+                &Tex {
+                    w: 1,
+                    h: 1,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let view = rtv(&target);
+            viewport(1, 1);
+            let mut sampler = None;
+            unsafe {
+                device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
+                context.ClearRenderTargetView(view.as_ref().unwrap(), &[-1.0; 4]);
+                context.VSSetShader(vertex.as_ref(), None);
+                context.PSSetShader(pixel.as_ref(), None);
+                context.PSSetShaderResources(0, Some(&views[..VIEWS]));
+                context.PSSetShaderResources(127, Some(&views[VIEWS..]));
+                context.PSSetSamplers(0, Some(&[sampler.clone()]));
+                context.PSSetSamplers(15, Some(&[sampler]));
+                context.OMSetRenderTargets(Some(&[view]), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+            }
+            println!("slots: removed {:#010x}", removed());
+            print("slots", &target, 16);
+        }
         "bgrx" => {
             // One point whose B8G8R8X8_UNORM element (its X byte not 255) the vertex shader
             // passes on whole; the target holds the four components it read.
@@ -999,8 +1076,10 @@ fn main() -> windows::core::Result<()> {
                     )
                 };
             }
-            unsafe { context.Unmap(&s, 0) };
-            unsafe { context.CopyResource(&t, &s) };
+            unsafe {
+                context.Unmap(&s, 0);
+                context.CopyResource(&t, &s);
+            }
             print("written by the CPU", &t, texel);
             println!("removed: {:#010x}", removed());
         }

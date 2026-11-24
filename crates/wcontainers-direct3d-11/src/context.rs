@@ -53,9 +53,9 @@ pub const UAV_SLOTS: usize = 8;
 /// Constant buffer slots of a stage (`D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT`).
 const CONSTANT_BUFFER_SLOTS: usize = 14;
 /// Shader resource slots of a stage (`D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT`).
-const RESOURCE_SLOTS: usize = 128;
+pub(crate) const RESOURCE_SLOTS: usize = 128;
 /// Sampler slots of a stage (`D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT`).
-const SAMPLER_SLOTS: usize = 16;
+pub(crate) const SAMPLER_SLOTS: usize = 16;
 /// Render targets bound at once (`D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT`).
 const TARGET_SLOTS: usize = 8;
 /// Stream output targets (`D3D11_SO_BUFFER_SLOT_COUNT`).

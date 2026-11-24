@@ -222,6 +222,25 @@ fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_bac
         top(&|r| r.caps.features -= Features::COMPUTE),
         Ok(level::L9_3)
     );
+    // Short of a stage's 128 shader resource views (WebGL 2's 16 texture units, Chrome's 48
+    // sampled textures): 9_3; short of 11_0's eight unordered access views as storage textures:
+    // 10_1; short of 16 samplers: no device.
+    assert_eq!(
+        top(&|r| r.caps.limits.textures_per_stage = 127),
+        Ok(level::L9_3)
+    );
+    assert_eq!(
+        top(&|r| r.caps.limits.textures_per_stage = 16),
+        Ok(level::L9_3)
+    );
+    assert_eq!(
+        top(&|r| r.caps.limits.storage_textures_per_stage = 7),
+        Ok(level::L10_1)
+    );
+    assert_eq!(
+        top(&|r| r.caps.limits.samplers_per_stage = 15),
+        Err(Error::Unsupported)
+    );
     // Short of 9_3's four targets: 9_2; short of 9_1's sizes: no device.
     assert_eq!(
         top(&|r| {
@@ -242,7 +261,7 @@ fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_bac
         Some(Error::Unsupported)
     );
     // Transform feedback stands for compute below 11_0 (the stage helper's replay); without cube
-    // arrays the level stops at 10_0, as on WebGL 2.
+    // arrays the level stops at 10_0.
     let replayed = |r: &mut Recorder| {
         r.caps.features -= Features::COMPUTE;
         r.caps.features |= Features::TRANSFORM_FEEDBACK;

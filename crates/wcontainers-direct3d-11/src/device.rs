@@ -240,6 +240,8 @@ const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound 
 const TYPED_BUFFER_UNCLAIMED: &str =
     "a typed buffer view of a format whose typed buffers are not served";
 const STORAGE_UNCLAIMED: &str = "a storage view of a format whose storage views are not served";
+const BINDINGS_BEYOND_LIMIT: &str =
+    "a shader reading more textures or samplers than a stage of the back end reads";
 
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
@@ -294,6 +296,7 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
         || (level < level::L11_0 && caps.has(Features::TRANSFORM_FEEDBACK));
     sized
         && stage_values_served(limits, level)
+        && slots_served(limits, level)
         && (level < level::L10_0
             || (renders(Format::Depth32FloatStencil8, FormatUse::DEPTH_STENCIL)
                 && renders(Format::Rgba32Float, FormatUse::RENDER)
@@ -310,6 +313,34 @@ fn stage_values_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
     let fetched =
         limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;
     fetched >= registers && limits.inter_stage_slots + 1 >= registers
+}
+
+/// The shader resource views and samplers one stage reads at feature level `level`: below 10_0
+/// shader model 2's 16 samplers, each read with its texture
+/// ([ps_2_0's registers](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-registers-ps-2-0#:~:text=Sampler%20Register)),
+/// and from 10_0 Direct3D's slots of each stage; and the unordered access views of the pixel and
+/// compute stages at 11_0, each a storage texture or a storage buffer.
+fn level_slots(level: u32) -> [u32; 3] {
+    let samplers = crate::context::SAMPLER_SLOTS as u32;
+    if level < level::L10_0 {
+        return [samplers, samplers, 0];
+    }
+    let storage = if level < level::L11_0 {
+        0
+    } else {
+        crate::UAV_SLOTS as u32
+    };
+    [crate::context::RESOURCE_SLOTS as u32, samplers, storage]
+}
+
+/// Whether `limits` give each stage feature level `level`'s shader resource views, samplers and
+/// unordered access views ([`level_slots`]).
+fn slots_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
+    let [views, samplers, storage] = level_slots(level);
+    limits.textures_per_stage >= views
+        && limits.samplers_per_stage >= samplers
+        && limits.storage_textures_per_stage >= storage
+        && limits.storage_buffers_per_stage >= storage
 }
 
 /// The highest feature level `caps` serves, if any, with `cube_arrays` as [`serves`] takes it.
@@ -344,16 +375,31 @@ impl<B: Backend> Device<B> {
     /// with every format requirement of Microsoft's tables met.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
         let cube_arrays = makes_cube_arrays(&mut backend);
-        let top = top_level(backend.caps(), cube_arrays).ok_or(Error::Unsupported)?;
-        for l in DEFAULT_LEVELS.into_iter().filter(|&l| l > top) {
-            if !stage_values_served(&backend.caps().limits, l) {
+        let found = top_level(backend.caps(), cube_arrays);
+        let limits = &backend.caps().limits;
+        for l in DEFAULT_LEVELS.into_iter().filter(|&l| found < Some(l)) {
+            if !stage_values_served(limits, l) {
                 eprintln!(
                     "{WARNING_PREFIX}: feature level {l:#x} not reported: the back end passes fewer \
                      vertex inputs or values between stages than its {} registers",
                     level_registers(l)
                 );
             }
+            if !slots_served(limits, l) {
+                let [views, samplers, storage] = level_slots(l);
+                eprintln!(
+                    "{WARNING_PREFIX}: feature level {l:#x} not reported: a stage of the back end \
+                     reads fewer than its {views} shader resource views, {samplers} samplers or \
+                     {storage} unordered access views (textures {}, samplers {}, storage textures \
+                     {} and buffers {})",
+                    limits.textures_per_stage,
+                    limits.samplers_per_stage,
+                    limits.storage_textures_per_stage,
+                    limits.storage_buffers_per_stage
+                );
+            }
         }
+        let top = found.ok_or(Error::Unsupported)?;
         let mut device = Self::at_level(backend, top)?;
         let top = DEFAULT_LEVELS
             .into_iter()
@@ -2477,6 +2523,15 @@ impl<B: Backend> Device<B> {
         } else {
             0
         };
+        // A stage reading more textures (constant buffers read through textures among them) or
+        // samplers than the back end has has no route: refused (plan 4.12).
+        let limits = &self.backend.caps().limits;
+        if textures.count_ones() + past_limit.count_ones() > limits.textures_per_stage
+            || samplers.count_ones() > limits.samplers_per_stage
+        {
+            self.count_slow_path(SlowPath::BindingsBeyondLimit);
+            return Err(Error::InvalidArg(BINDINGS_BEYOND_LIMIT));
+        }
         if past_limit != 0 {
             let key = StageVariant {
                 texture_info,

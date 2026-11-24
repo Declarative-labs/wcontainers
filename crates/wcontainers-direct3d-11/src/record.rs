@@ -51,11 +51,12 @@ impl std::fmt::Debug for Recorder {
     }
 }
 
-/// The vertex buffers and inter-stage values wgpu gives on Direct3D 12, and storage buffers a stage
-/// (fewer than it gives) for the recorder's limits.
+/// The vertex buffers and inter-stage values wgpu gives on Direct3D 12, and storage buffers and
+/// sampled textures a stage (fewer than it gives) for the recorder's limits.
 const VERTEX_BUFFERS: u32 = 16;
 const INTER_STAGE_VALUES: u32 = 31;
 const STORAGE_BUFFERS: u32 = 64;
+const SAMPLED_TEXTURES: u32 = 128;
 
 impl Recorder {
     /// The bytes buffer `id` holds now.
@@ -64,7 +65,8 @@ impl Recorder {
     }
 
     /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
-    /// 4.11), with the vertex and inter-stage limits wgpu gives on Direct3D 12 there and every format
+    /// 4.11), with the vertex, inter-stage and sampled texture limits wgpu gives on Direct3D 12 there
+    /// (Chrome gives 48 sampled textures a stage) and every format
     /// able to do everything at 1, 2, 4 and 8 samples; `echo` also receives each line.
     pub fn new(echo: Option<fn(&str)>) -> Self {
         let limits = Limits {
@@ -76,7 +78,7 @@ impl Recorder {
             max_uniform_buffer_size: 1 << 16,
             max_storage_buffer_size: 1 << 30,
             uniform_buffers_per_stage: 12,
-            textures_per_stage: 48,
+            textures_per_stage: SAMPLED_TEXTURES,
             samplers_per_stage: 16,
             storage_buffers_per_stage: STORAGE_BUFFERS,
             storage_textures_per_stage: 8,

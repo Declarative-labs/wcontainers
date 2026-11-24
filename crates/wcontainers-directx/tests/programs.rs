@@ -185,6 +185,10 @@ fn yuy2_compared(args: &[&str]) {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
     // The WebGL 2 build's device is 10_0's, so both are made at 10_0 there.
     let args: &[&str] = if cfg!(feature = "webgl") {
@@ -267,21 +271,37 @@ fn level10(name: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn targets_blended_and_masked_each_their_own_way_at_10_0_as_direct3d_does() {
     level10("targets");
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn view_sizes_and_level_counts_at_10_0_as_direct3d_does() {
     level10("resinfo");
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does() {
     level10("resinfo_empty");
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
     level10("stream");
 }
@@ -292,6 +312,38 @@ fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
 #[test]
 fn b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them() {
     case("bgrx");
+}
+
+/// A pixel shader reads a stage's last shader resource view (t127) and last sampler (s15) beside
+/// 24 more views on a device of 10_0, as every 10_0 device reads them.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn a_stages_last_view_and_sampler_read_at_10_0_as_direct3d_reads_them() {
+    case_args(&["slots", "10_0"], "ours", &[]);
+}
+
+/// The WebGL 2 build's stages read 16 texture units, fewer than 10_0's 128 shader resource views,
+/// so a device of 10_0 is refused, with a warning naming them, and one of 9_3 is made.
+#[cfg(feature = "webgl")]
+#[test]
+fn no_device_of_10_0_where_a_stage_reads_fewer_than_128_views() {
+    let (code, got, errors) = run_logged(
+        "own_cases",
+        &place("slots-10_0-ours", true),
+        &["slots", "10_0"],
+        &[],
+    );
+    assert_ne!(code, 0, "{got}");
+    assert!(
+        errors.contains("feature level 0xa000 not reported: a stage of the back end reads fewer than its 128 shader resource views"),
+        "{errors}"
+    );
+    let (code, got) = run_with(
+        "own_cases",
+        &place("format_support-9_3-ours-webgl", true),
+        &["format_support", "9_3"],
+    );
+    assert_eq!(code, 0, "{got}");
 }
 
 /// `R10G10B10_XR_BIAS_A2_UNORM` textures take the shapes, bindings, CPU access and copies
@@ -334,14 +386,15 @@ fn colour_map_sampled_at_its_edges_as_direct3d_samples_it() {
     case("colour_map_edge");
 }
 
-/// atg-simplecomputepc's frames (its dispatch, then a sprite draw of the result and a second draw
-/// from another texture, each frame): the colour inside the set is the map's first texel, as WARP
-/// gives it in every frame and the RTX 3080 in the program once such frames have gone by. Compared
-/// with WARP, as the RTX 3080's first frames give either answer.
+/// atg-simplecomputepc's dispatch over 30 frames, each also drawing the result and 100 quads from
+/// another texture as the program does: the colour inside the set is the map's first texel, the
+/// correctly rounded quotient 1200 / 300 = 4, as WARP gives it in every frame. Compared with WARP
+/// alone: the draws change nothing on WARP, and the RTX 3080 gives ours' answer here and WARP's only
+/// inside the program, after its driver changes its division (Gap list).
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "ours divides 1200 by 300 to 3.9999998 (the map's last texel) where WARP and the RTX 3080's settled answer give 4 (Gap list)"]
-fn colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it() {
+#[ignore = "ours divides 1200 by 300 to 3.9999998, as the RTX 3080 does outside the program, where WARP gives the correctly rounded 4; which of the two to follow waits on the orchestrator's ruling (Gap list)"]
+fn colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it() {
     let args = ["colour_map_frames"];
     let warp = [("OWN_CASES_DRIVER", "warp")];
     let (code, want, _) = run_logged(
@@ -373,6 +426,10 @@ fn typed_storage_loads_as_direct3d_does() {
 /// textures of each dimension written, read back, loaded and sampled, and the two targets among
 /// them drawn, blended and their mips generated, on 10_0 devices, as on the RTX 3080.
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn small_formats_read_and_drawn_at_10_0_as_direct3d_does() {
     case_args(&["small_formats", "10_0"], "ours", &[]);
 }
@@ -713,6 +770,10 @@ fn normalised_targets_through_integer_twins_as_direct3d_draws_them() {
 /// and are reported as Direct3D's drivers report them for formats they do not multisample.
 #[cfg(feature = "webgl")]
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn no_multisampling_without_a_sample_mask_route_at_10_0() {
     let (code, got) = run_with(
         "own_cases",
@@ -1270,7 +1331,7 @@ fn interfaces_answer_as_direct3d_does() {
 #[test]
 #[cfg_attr(
     feature = "webgl",
-    ignore = "it makes an 11_0 device and a 10_1 state, and the WebGL 2 build reports 10_0 alone"
+    ignore = "it makes an 11_0 device and a 10_1 state, and the WebGL 2 build reports 9_3 alone"
 )]
 fn direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does() {
     let (code, want) = run("own_d3d10", &place("d3d10-system", false));
