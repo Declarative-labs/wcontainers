@@ -220,7 +220,18 @@ run:
   This found that 20 string forms' counted runs (the inside's run on the hardware) had been known failures under
   the meaning's name: the run's outcome was not read as the reference's through its signal frame (RF); it is now,
   and they pass with no known failure.
-- [minor] the unreproduced Copy failure: rerun below with every non-Transfer, non-Kernel failure printed.
+- [minor] the unreproduced Copy failure: the check's fuzz (scratch check-xn1b/xn1_tenth.rs, its seed 31415926,
+  1,500,000 cases) run three times more: each run had one or two Copy failures, each time a different instruction
+  (`cmpps`, `rcl`, then `psrld mm2, [rbp + 0x4570205c]`), so they do not repeat at a seed. The one printed is an
+  access to 0x89703a94, outside every region of the case: the native run faults there (nothing is mapped), the
+  reference's runner read it (something of the runner's own process was mapped there at that moment). The fuzz's
+  states do not keep addresses off the reference runner's memory as layer 1's generator does (`reaches_runner`),
+  so this is the harness, not the output. The same runs' other failures are also the harness's: 4,645 `rdtsc` and
+  `rdtscp` (the test clock against the meaning's; layer 1 leaves them out for that reason, checked by the clock's
+  edge test) and 435 branches into their own bytes (`jmp`, `jcc`, `loop` with a target inside the instruction:
+  the reference stops on landing, ours runs it again or never ends; layer 1's generator leaves these out,
+  `branches_into_itself`, and layer 2's `branches_into_an_instruction` runs them as programs). No Transfer case
+  failed otherwise: the 14,563 of the check's runs are gone.
 - [minor] the mmap failures past 10,000 programs: the cause recorded in gap item 6 (address space), owner the
   shared runner's.
 - [minor] the literal check: carry.rs's `WORD` is `AREA_WORD` (public; tests/native_output.rs imports it), `REL32`
@@ -242,6 +253,19 @@ run:
   Answered(Trap) 3,749, Exit 84,856, FarTarget 160, Fault 26,680, Lookup 27; the inside's answer checked in
   10,216 runs, its trap the meaning's in 7,498, a far transfer unlike the meaning 0.
 - The five string forms at 300 a form, counted (23:33): 0 failing, 0 known (1,006 runs on the hardware).
+- Native layer 1, new seed 20261124, 1,000 a form, 48 at once (23:33 to 23:42, load 5 rising to 45 with the fuzz
+  beside it): 0 failing, 2,059 known (the 5-level reference and the meaning's named differences; the ninth check's
+  run at 1,500 a form had 3,283, among them the string runs now read through their frame); ended: Answered(Answer)
+  83,500, Answered(Trap) 62,395, Exit 1,416,539, FarTarget 2,465, Fault 442,474, Lookup 627; the inside's answer
+  checked in 169,930 runs, its trap the meaning's in 124,790, the second call in 10,092, a string on the hardware
+  in 13,289, a far transfer unlike the meaning 0.
+- Native layer 2, seed 4242, 10,000 programs, 48 at once (23:42, load 40 to 45): 0 failing, 3,430 faulted, 114,916
+  blob runs.
+- Native layer 3, seed 1, 200 programs, 48 at once (00:10 UTC, load 20 to 30): 176 compared, 24 did not end in time
+  on Linux, 0 failing. The inside's answers against the meaning, the second call and the partial writes (6
+  tests), the branches into an instruction and the repeated strings (2 tests): pass.
+- Native layer 1, seed 77, 40 a form, and the shapes test, after the last change (00:13, load 7 to 13): 0 failing.
+- The literal check (00:13): no finding in this track's files.
 
 ## Round 3 run 2: the ninth check's findings, finding by finding
 

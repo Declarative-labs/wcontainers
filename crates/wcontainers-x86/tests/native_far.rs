@@ -3,6 +3,7 @@
 //! the reference applies it: general protection leaving the registers as they were, a call's return address
 //! written first (the Xeon's `call rax` to 2^63 writes it, as the meaning does).
 
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_x86::answer::{
     Consts, Fault, Memory, NearTransfer, Question, answer, near_transfer,
 };
@@ -14,13 +15,13 @@ use zerocopy::FromZeros;
 
 /// One page of stack below `STACK`, the only memory there is.
 const STACK: u64 = USER_TOP;
-const STACK_BYTES: usize = wcontainers_abi::PAGE_SIZE as usize;
+const STACK_BYTES: usize = PAGE_SIZE as usize;
 /// Where the instructions are: the last bytes below the end of user space.
 const AT: u64 = USER_END - 0x40;
 /// A target in the upper canonical half, and code near zero whose rel32 reaches it.
-const UPPER: u64 = !(USER_END - 1) + 0x1000;
-const LOW: u64 = 0x1000;
-const LOW_REACHES: u64 = 0u64.wrapping_sub(0x1000);
+const UPPER: u64 = !(USER_END - 1) + PAGE_SIZE;
+const LOW: u64 = PAGE_SIZE;
+const LOW_REACHES: u64 = 0u64.wrapping_sub(PAGE_SIZE);
 
 struct Stack(Vec<u8>);
 

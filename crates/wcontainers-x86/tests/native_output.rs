@@ -424,7 +424,10 @@ fn branch(rng: &mut fastrand::Rng, so_far: usize) -> Vec<u8> {
         1 => vec![0x70 | rng.u8(0..16), rng.u8(0..32)],
         2 => vec![0xe2, (back - 2) as u8],
         3 => vec![0xe3, rng.u8(0..16)],
-        4 => [&[0xe8][..], &rng.i32(-4096..4096).to_le_bytes()].concat(),
+        4 => {
+            let reach = wcontainers_abi::PAGE_SIZE as i32;
+            [&[0xe8][..], &rng.i32(-reach..reach).to_le_bytes()].concat()
+        }
         _ => vec![0xc3],
     }
 }

@@ -642,7 +642,7 @@ pub fn run_with_pointers(
         count_at(&host, span)?;
         // The trap after the jump into the piece stops at its first instruction at least.
         if stops.len() < 2 {
-            return Err("the trap flag stopped at no instruction of the piece".into());
+            Err::<(), _>("the trap flag stopped at no instruction of the piece")?;
         }
         let mut last = None;
         for (step, data, area) in &stops[..stops.len() - 1] {
@@ -789,13 +789,9 @@ fn differences(want: &State, got: &State) -> String {
         .iter()
         .zip(want.0.iter().zip(&got.0))
         .filter(|(_, (a, b))| a != b)
-        .map(|(name, (a, b))| format!("{name} {a:#x} became {b:#x}"))
-        .collect::<Vec<_>>()
-        .join(FIELDS_APART)
+        .map(|(name, (a, b))| format!("{name} {a:#x} became {b:#x}; "))
+        .collect()
 }
-
-/// What separates the named fields of a report.
-const FIELDS_APART: &str = ", ";
 
 /// The data area's bytes that differ from the case's start.
 fn changed_bytes(case: &Case, now: &[u8]) -> Vec<(u32, u8)> {
@@ -878,9 +874,7 @@ fn guest_state(
         (Side::Before, _) => span.guest,
         (Side::After, Resume::At(address)) => address,
         (Side::After, Resume::Through(at)) => held(at)?,
-        (Side::After, Resume::Slot(_)) => {
-            return Err("a slot of an entry, which this guest never makes".into());
-        }
+        (Side::After, Resume::Slot(_)) => Err("a slot of an entry, which this guest never makes")?,
     };
     let mut s = vec![0u128; FIELDS];
     for (to, from) in s.iter_mut().zip(general) {
