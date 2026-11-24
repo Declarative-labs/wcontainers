@@ -1070,10 +1070,11 @@ impl NativeCpu {
             })?;
             self.code_mapped += PAGE_SIZE;
         }
-        // SAFETY: the code area is mapped writable at this level, and nothing runs this range yet.
+        // SAFETY: not shown: the range from `code_next` on holds no code placed yet, but the frames under it come
+        // from take, which does not check that nothing else uses them (see the reason).
         #[expect(
             unsafe_code,
-            reason = "copies host code bytes into the code area just mapped writable at this level, which nothing runs yet; Words replaces it"
+            reason = "UNSOUND: copies host code bytes into the code area from code_next on, mapped writable at this level, where this CPU side placed no code yet; but the frames under it are frames from take, which hands out frames give takes back without checking that nothing uses them, so another view of such a frame (a copy of Table, frame_bytes, write_frame, the linear map) may still reach it while it is written; sound once take hands out owned frames that give cannot take back while anything uses them; Words replaces it"
         )]
         unsafe {
             ptr::copy_nonoverlapping(code_bytes.as_ptr(), start as *mut u8, code_bytes.len())
