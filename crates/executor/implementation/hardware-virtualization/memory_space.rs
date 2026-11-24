@@ -467,14 +467,20 @@ impl GuestMemorySpace {
         }
     }
 
-    /// Ends a change of the space's tables: once no guest runs on translations from before it, lets go of the frames.
-    fn finish_change<'space>(&'space self, mut pool: MutexGuard<'space, Pool>, released: Vec<u64>) {
+    /// Returns once no guest of this space runs on translations from before the call. It holds the pool's lock
+    /// while it waits, so no one sees the record changed while the virtual CPU still allows what it allowed: the
+    /// virtual CPU leaves the guest without the lock (`Running::leave` and the stop are atomics and hypervisor
+    /// calls only).
+    fn forget(&self, pool: &Pool) {
         if pool.running == Some(self.id) {
-            let runner = Arc::clone(&pool.runner);
-            drop(pool);
-            runner.wait_until_forgotten();
-            pool = self.lock();
+            pool.runner.wait_until_forgotten();
         }
+    }
+
+    /// Ends a change of the space's tables: once no guest runs on translations from before it, lets go of the
+    /// frames, all under the pool's lock.
+    fn finish_change(&self, mut pool: MutexGuard<'_, Pool>, released: Vec<u64>) {
+        self.forget(&pool);
         for frame in released {
             pool.frames.release(frame);
         }
@@ -614,6 +620,9 @@ impl MemorySpace for GuestMemorySpace {
         let mut pool = self.lock();
         let mut released = Vec::new();
         let mut outcome = Ok(());
+        // First what can fail: each frame held and the tables to each page made, so the pages before a want of
+        // frames are mapped and those after keep what they had.
+        let mut placed: Vec<(u64, u64)> = Vec::new();
         for (page, other_page) in list_pages(addresses).zip(list_pages(others)) {
             let (frames, source) = pool.split(other.id);
             let Some(frame) = source.find_or_take_frame(frames, other_page) else {
@@ -622,13 +631,29 @@ impl MemorySpace for GuestMemorySpace {
             };
             frames.hold(frame);
             let (frames, space) = pool.split(self.id);
-            if space
-                .back(frames, page, Backed { frame, mapped: true }, &mut released)
-                .is_none()
-            {
+            if space.make_tables(frames, page).is_none() {
+                frames.release(frame);
                 outcome = Err(MapMemoryError::OutOfMemory);
                 break;
             }
+            placed.push((page, frame));
+        }
+        // Break before make: a page that shows a frame shows nothing, and the virtual CPU forgets it, before it
+        // shows another.
+        let (frames, space) = pool.split(self.id);
+        let mut broke = false;
+        for &(page, _) in &placed {
+            broke |= space.backed.contains_key(&page);
+            space.unback(frames, page, &mut released);
+        }
+        if broke {
+            self.forget(&pool);
+        }
+        let (frames, space) = pool.split(self.id);
+        for (page, frame) in placed {
+            space
+                .back(frames, page, Backed { frame, mapped: true }, &mut released)
+                .expect("its tables were made above");
         }
         self.finish_change(pool, released);
         outcome
@@ -700,9 +725,15 @@ impl MemorySpace for GuestMemorySpace {
         let (frames, space) = pool.split(self.id);
         let old: Vec<u64> = space.backed.range(addresses.clone()).map(|(&page, _)| page).collect();
         let mut released = Vec::new();
+        let broke = !old.is_empty();
         for page in old {
             space.unback(frames, page, &mut released);
         }
+        // Break before make: the virtual CPU forgets the cleared pages before any shows its copy.
+        if broke {
+            self.forget(&pool);
+        }
+        let (frames, space) = pool.split(self.id);
         space.set_permissions(addresses.clone(), Permissions::empty());
         for (range, allowed) in permissions {
             space.set_permissions(shift(range.start)..shift(range.end), allowed);
