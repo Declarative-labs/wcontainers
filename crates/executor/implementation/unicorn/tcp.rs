@@ -33,6 +33,8 @@ use wcontainers_tcp_sockets::{
     TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest, TcpShutdown,
 };
 
+use wcontainers_volatile_bytes::VolatileBytes;
+
 use super::{TestHost, lock};
 use crate::replay::Entry;
 
@@ -148,15 +150,16 @@ impl<H: Send> TcpConnections for TestHost<H> {
         &self,
         connection: &Self::Connection,
         _request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
+        let bytes = super::copied(payload);
         self.answer(
             Entry::Sent,
             |entry| match entry {
                 Entry::Sent(result) => Ok(result),
                 other => Err(other),
             },
-            || lock(&self.network).tcp_send(connection.0, bytes),
+            || lock(&self.network).tcp_send(connection.0, &bytes),
         )
         .map(ByteCount)
     }
@@ -165,7 +168,7 @@ impl<H: Send> TcpConnections for TestHost<H> {
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let peek = match request {
             TcpReceiveRequest::Read => false,
@@ -177,17 +180,19 @@ impl<H: Send> TcpConnections for TestHost<H> {
         let (result, bytes) = self.answer(
             |(result, bytes)| Entry::Received(result, bytes),
             |entry| match entry {
-                Entry::Received(result, bytes) if bytes.len() <= into.len() => Ok((result, bytes)),
+                Entry::Received(result, bytes) if bytes.len() <= super::length(into) => {
+                    Ok((result, bytes))
+                }
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![0; into.len()];
+                let mut bytes = vec![0; super::length(into)];
                 let result = lock(&self.network).tcp_receive(connection.0, &mut bytes, peek);
                 bytes.truncate(*result.as_ref().unwrap_or(&0));
                 (result, bytes)
             },
         );
-        into[..bytes.len()].copy_from_slice(&bytes);
+        into.write(&bytes);
         Ok(TcpReceived {
             length: ByteCount(result?),
             timestamps: ReceiveTimestamps {

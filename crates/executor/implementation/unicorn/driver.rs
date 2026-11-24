@@ -29,12 +29,25 @@ use crate::replay::{Entry, MemoryDigests, Tape};
 use crate::standin::Unsupported;
 use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 #[path = "tcp.rs"]
 mod tcp;
 #[path = "udp.rs"]
 mod udp;
 use tcp::Readied;
+
+/// The number of bytes a system call's buffer holds.
+fn length(bytes: &impl VolatileBytes) -> usize {
+    usize::try_from(bytes.len()).expect("a buffer fits in memory")
+}
+
+/// A copy of a system call's buffer.
+fn copied(bytes: &impl VolatileBytes) -> Vec<u8> {
+    let mut copy = vec![u8::MIN; length(bytes)];
+    bytes.read(&mut copy);
+    copy
+}
 
 /// Why a run on our kernel gave no outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -804,20 +817,20 @@ impl<H: Send> wcontainers_clock::Clock for TestHost<H> {
 }
 
 impl<H: Send> wcontainers_random_source::RandomSource for TestHost<H> {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
         let bytes = self.answer(
             Entry::Random,
             |entry| match entry {
-                Entry::Random(bytes) if bytes.len() == into.len() => Ok(bytes),
+                Entry::Random(bytes) if bytes.len() == length(into) => Ok(bytes),
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![0; into.len()];
+                let mut bytes = vec![0; length(into)];
                 lock(&self.random).fill_bytes(&mut bytes);
                 bytes
             },
         );
-        into.copy_from_slice(&bytes);
+        into.write(&bytes);
         Ok(())
     }
 }
@@ -850,14 +863,19 @@ impl<H: Send> wcontainers_system::StreamTransport for TestHost<H> {
     type Endpoint = crate::streams::End;
 
     /// In a replay the client still shows what the record says was taken.
-    fn send_stream(&self, peer: &crate::streams::End, bytes: &[u8]) -> Result<usize, HostError> {
+    fn send_stream(
+        &self,
+        peer: &crate::streams::End,
+        payload: &impl VolatileBytes,
+    ) -> Result<usize, HostError> {
+        let bytes = copied(payload);
         let result = self.answer(
             Entry::StreamSent,
             |entry| match entry {
                 Entry::StreamSent(result) => Ok(result),
                 other => Err(other),
             },
-            || lock(&self.streams).send(*peer, bytes),
+            || lock(&self.streams).send(*peer, &bytes),
         );
         if let Ok(taken) = result
             && self.replaying()
@@ -870,24 +888,24 @@ impl<H: Send> wcontainers_system::StreamTransport for TestHost<H> {
     fn receive_stream(
         &self,
         peer: &crate::streams::End,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<usize, HostError> {
         let (result, bytes) = self.answer(
             |(result, bytes)| Entry::StreamReceived(result, bytes),
             |entry| match entry {
-                Entry::StreamReceived(result, bytes) if bytes.len() <= into.len() => {
+                Entry::StreamReceived(result, bytes) if bytes.len() <= length(into) => {
                     Ok((result, bytes))
                 }
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![u8::MIN; into.len()];
+                let mut bytes = vec![u8::MIN; length(into)];
                 let result = lock(&self.streams).receive(*peer, &mut bytes);
                 bytes.truncate(*result.as_ref().unwrap_or(&usize::MIN));
                 (result, bytes)
             },
         );
-        into[..bytes.len()].copy_from_slice(&bytes);
+        into.write(&bytes);
         result
     }
 

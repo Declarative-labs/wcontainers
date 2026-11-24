@@ -16,6 +16,7 @@ use wcontainers_runtime_single_kernel::udp::received;
 use wcontainers_udp_sockets::{
     UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived, UdpSocketSetting, UdpSockets,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use super::tcp::Readied;
 use super::{TestHost, lock};
@@ -102,21 +103,27 @@ impl<H: Send> UdpSockets for TestHost<H> {
         .map_err(SendError::Host)
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError> {
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError> {
         let (result, bytes) = self.answer(
             |(result, bytes)| Entry::Received(result, bytes),
             |entry| match entry {
-                Entry::Received(result, bytes) if bytes.len() <= into.len() => Ok((result, bytes)),
+                Entry::Received(result, bytes) if bytes.len() <= super::length(into) => {
+                    Ok((result, bytes))
+                }
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![u8::MIN; into.len()];
+                let mut bytes = vec![u8::MIN; super::length(into)];
                 let result = lock(&self.network).udp_receive(socket.0, &mut bytes);
                 bytes.truncate(*result.as_ref().unwrap_or(&usize::MIN));
                 (result, bytes)
             },
         );
-        into[..bytes.len()].copy_from_slice(&bytes);
+        into.write(&bytes);
         result.map(received)
     }
 
