@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use slab::Slab;
+use wcontainers_directx_graphics_infrastructure::stage_registers::OUTPUT_REGISTERS;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
@@ -21,7 +22,7 @@ use wcontainers_gpu::{
     Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
     VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
 };
-use wcontainers_shaders::{ConvertError, Converted, Source};
+use wcontainers_shaders::{ConvertError, Converted, Source, refusal};
 use zerocopy::FromZeros;
 
 use crate::Error;
@@ -1732,7 +1733,8 @@ impl<B: Backend> Device<B> {
 
     /// A pixel or compute shader in the common form with `key`; where the converter refuses
     /// atomics on storage textures, with its typed texture views (the slots `through`, from
-    /// `formats::typed_key`) read through buffers (`AtomicsThroughBuffer`), which `key` then says.
+    /// `formats::typed_key`) read through buffers (`AtomicsThroughBuffer`), and where a pixel
+    /// shader reads its clip or cull distances, with them linked; which `key` then says.
     fn convert_stage(
         &mut self,
         code: &[u8],
@@ -1751,6 +1753,28 @@ impl<B: Backend> Device<B> {
         {
             key.texels_through_buffer = through;
         }
+        // A pixel shader reading its clip or cull distances reads them as values the last vertex
+        // stage passes, past every register: converted so first, for its reflection, and linked
+        // to that stage's values later (`link_pixel_program`).
+        let first = crate::cache::convert(source, key);
+        let reads = match first {
+            Err(ConvertError::Unsupported(refusal::CLIP_DISTANCE)) => VariantFlags::CLIP_DISTANCE,
+            Err(ConvertError::Unsupported(refusal::CULL_DISTANCE)) => {
+                VariantFlags::CULL_DISTANCE_LINKED
+            }
+            _ => {
+                let converted = self.checked(first, &format!("{stage:?}"))?;
+                if converted.modules.len() != 1 || converted.modules[0].stage != stage {
+                    return Err(Error::Invalid("a shader of another stage"));
+                }
+                return Ok(converted);
+            }
+        };
+        key.flags |= reads;
+        key.linked = LinkedValues {
+            location: OUTPUT_REGISTERS,
+            clip_distances: MOST_DISTANCES,
+        };
         self.convert(code, stage, key.clone())
     }
 
@@ -1780,7 +1804,18 @@ impl<B: Backend> Device<B> {
         } else {
             Source::Dxbc(code)
         };
-        let converted = crate::cache::convert(source, &variant).map_err(|e| {
+        self.checked(crate::cache::convert(source, &variant), stage)
+    }
+
+    /// A conversion's result of a shader of `stage` (named in messages): the converter's refusal as
+    /// the front's, and kept as a message; refused where it reads helper constants the front does
+    /// not write.
+    fn checked(
+        &mut self,
+        result: Result<Converted, ConvertError>,
+        stage: &str,
+    ) -> Result<Converted, Error> {
+        let converted = result.map_err(|e| {
             let error = match e {
                 ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
                 ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
@@ -5123,6 +5158,9 @@ pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
 }
 
 /// The slow paths converted `programs` take by themselves, each once.
+/// `D3D12_CLIP_OR_CULL_DISTANCE_COUNT`: the most clip and cull distances a stage passes.
+const MOST_DISTANCES: u8 = 8;
+
 /// The refusal of clip distances the back end lacks where no pixel shader can apply them.
 /// The refusals of depth clamping the back end lacks where the programs cannot apply it.
 const CLAMP_BOUND_DEPTH: &str = "depth clamping the back end lacks, in a pipeline made with no \
