@@ -180,47 +180,11 @@ fn every_answered_format_ability_is_served() {
         "answered abilities used: {} by resources, {} by programs",
         used[0], used[1]
     );
-    // Each known misread is reported, and must still happen.
-    let mut known = Vec::new();
-    failures.retain(|f| {
-        let format = f
-            .strip_prefix(MISREADS)
-            .and_then(|r| r.trim_start().split(':').next())
-            .and_then(|n| n.parse::<u32>().ok());
-        match format.and_then(|n| KNOWN_MISREADS.iter().find(|(k, _)| *k == n)) {
-            Some((n, why)) => {
-                eprintln!("known misread of format {n} ({why}): {f}");
-                known.push(*n);
-                false
-            }
-            None => true,
-        }
-    });
-    for (n, _) in KNOWN_MISREADS {
-        if !known.contains(n) {
-            failures.push(format!("format {n}: a known misread no longer happens"));
-        }
-    }
     for f in &failures {
         eprintln!("not served: {f}");
     }
     assert!(failures.is_empty(), "not served as answered: {failures:?}");
 }
-
-/// How a format's misreads of varied texels begin.
-const MISREADS: &str = "misreads of varied texels of format";
-
-/// The formats whose varied texels programs read other than Direct3D's conversions give, and why:
-/// a gap of the back end, not an answer to withdraw (the format's reads are served, less exactly).
-const KNOWN_MISREADS: &[(u32, &str)] = &[
-    (dxgi::B5G6R5_UNORM, HELD_IN_EIGHT_BITS),
-    (dxgi::B5G5R5A1_UNORM, HELD_IN_EIGHT_BITS),
-];
-
-/// Why the two 5-bit packed formats misread.
-const HELD_IN_EIGHT_BITS: &str = "the WebGPU back end holds it in rgba8unorm with each channel \
-    widened to 8 bits (packed.rs), so a program reads a 5-bit value v as k/255, not v/31; owner \
-    the WebGPU back end";
 
 /// Uses every ability answered for DXGI format `format`; how many uses were made.
 fn uses_of(format: u32) -> usize {
@@ -992,9 +956,17 @@ fn packed_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
                 .to_bits(),
         };
     }
-    let tolerance = if let Unorm = read { 1 } else { 0 };
+    // Devices widen 5- and 6-bit fields to 8 bits by repeating their high bits (the RTX 3080) or
+    // read v as v / (2^n - 1) (WARP): within 1/255 of each other.
+    let near = match read {
+        Unorm if fields.iter().any(|f| matches!(f.1, 5 | 6)) => {
+            Near::Within(1.0 / f32::from(u8::MAX))
+        }
+        Unorm => Near::Bits(1),
+        _ => Near::Bits(0),
+    };
     let bytes = stored.to_le_bytes()[..(width / 8) as usize].to_vec();
-    Some((bytes, expected, Near::Bits(tolerance)))
+    Some((bytes, expected, near))
 }
 
 /// Whether the first three components a program read of `kind` are zero.
@@ -1008,7 +980,7 @@ fn reads_zero(kind: Kind, words: [u32; 4]) -> bool {
 /// [`varied_texel`] of the block-compressed formats but sRGB: a block whose sixteen texels are
 /// equal (every index names the first endpoint), decoded by bcdec. The 5- and 6-bit colour
 /// endpoints of `BC1` to `BC3` are widened each decoder its own way, so they read within 1/255;
-/// signed `BC4` and `BC5` within a 16-bit step, which decoders may keep (the RTX 3080 does).
+/// signed `BC4` and `BC5` within a 16-bit step, as the RTX 3080 and WARP differ.
 fn block_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
     use dxgi::*;
     // A 5:6:5 colour above the second endpoint (zero), so index 0 names it alone.
@@ -1767,7 +1739,7 @@ fn program_uses_of(format: u32) -> usize {
     device.destroy_descriptor_heap(programs.heap);
     assert!(
         misreads.is_empty(),
-        "{MISREADS} {format}: {}",
+        "format {format}: misreads of varied texels: {}",
         misreads.join("; ")
     );
     used
