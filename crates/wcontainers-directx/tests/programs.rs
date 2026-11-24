@@ -699,8 +699,52 @@ fn format_support_at_level_10_0_as_direct3d_reports_it_but_the_named_shortfalls(
 fn format_support_and_creations_below_10_0_as_direct3d_reports_them() {
     for level in ["9_1", "9_2", "9_3"] {
         format_support_compared(level, "ours", &[], &[]);
-        case_args(&["level9_make", level], "ours", &[]);
+        if cfg!(feature = "webgl") {
+            creations_without_multisampling(level);
+        } else {
+            case_args(&["level9_make", level], "ours", &[]);
+        }
     }
+}
+
+/// What a device of `level` makes and refuses, line by line, on a back end that reports no
+/// multisampling (the WebGL 2 build without a sample mask route, Gap list): a multisampled
+/// texture real Direct3D makes is refused with `E_INVALIDARG`, as on a device without it, and
+/// only where ours reports no quality level at 4 samples of `R8G8B8A8_UNORM`.
+fn creations_without_multisampling(level: &str) {
+    let args = ["level9_make", level];
+    let (code, want) = run_with(
+        "own_cases",
+        &place(&format!("level9_make-{level}-system"), false),
+        &args,
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with(
+        "own_cases",
+        &place(&format!("level9_make-{level}-ours"), true),
+        &args,
+    );
+    assert_eq!(code, 0, "{got}");
+    let (code, support) = run_with(
+        "own_cases",
+        &place(&format!("level9_support-{level}-ours"), true),
+        &["format_support", level],
+    );
+    assert_eq!(code, 0, "{support}");
+    let rgba8 = windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM.0;
+    let unsampled = support
+        .lines()
+        .filter_map(|l| l.strip_prefix("msq "))
+        .any(|l| l.split(' ').next() == Some(&rgba8.to_string()) && l.ends_with(" 0"));
+    for (w, g) in want.lines().zip(got.lines()) {
+        let refused_unsampled = unsampled
+            && w.starts_with("rgba8 four samples:")
+            && g == "rgba8 four samples: 0x80070057";
+        if !refused_unsampled {
+            assert_eq!(w, g, "the first line that differs");
+        }
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
 }
 
 /// Without 16-bit norm (a browser without `texture-formats-tier1`), the 16-bit normalised formats
