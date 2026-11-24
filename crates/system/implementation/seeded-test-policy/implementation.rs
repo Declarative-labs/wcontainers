@@ -24,6 +24,7 @@ use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
 use wcontainers_system::StreamTransport;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The services' stream endpoints this policy names for the first process's standard output and
 /// error; it gives no input.
@@ -215,7 +216,7 @@ impl<H> wcontainers_clock::Clock for TestPolicy<H> {
 
 /// Randomness is the services' own.
 impl<H: RandomSource> RandomSource for TestPolicy<H> {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
         self.services.fill_random_bytes(into)
     }
 }
@@ -230,11 +231,11 @@ impl<H: Host> Host for TestPolicy<H> {
 impl<H: StreamTransport<Endpoint = u32>> StreamTransport for TestPolicy<H> {
     type Endpoint = u32;
 
-    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
-        self.services.send_stream(peer, bytes)
+    fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
+        self.services.send_stream(peer, payload)
     }
 
-    fn receive_stream(&self, peer: &u32, into: &mut [u8]) -> Result<usize, HostError> {
+    fn receive_stream(&self, peer: &u32, into: &impl VolatileBytes) -> Result<usize, HostError> {
         self.services.receive_stream(peer, into)
     }
 

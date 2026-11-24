@@ -1,11 +1,14 @@
 //! Random bytes from a seed: the same bytes in the same order for the same seed, not fit for cryptography.
 
+use core::convert::Infallible;
 use std::sync::{Mutex, PoisonError};
 
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use wcontainers_abi::HostError;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_random_source::{RandomSource, StandaloneRandomSource};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 #[derive(Debug)]
 pub struct SeededRandomSource {
@@ -28,11 +31,26 @@ impl StandaloneRandomSource for SeededRandomSource {
 }
 
 impl RandomSource for SeededRandomSource {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
-        self.generator
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
+        let mut generator = self
+            .generator
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .fill_bytes(into);
-        Ok(())
+            .unwrap_or_else(PoisonError::into_inner);
+        match into.write_from(&mut GeneratedBytes(&mut generator)) {
+            Ok(_) => Ok(()),
+            Err(never) => match never {},
+        }
+    }
+}
+
+/// The generator's next bytes, generated in one call into the whole buffer.
+struct GeneratedBytes<'generator>(&'generator mut ChaCha8Rng);
+
+impl ByteSource for GeneratedBytes<'_> {
+    type Error = Infallible;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, Infallible> {
+        self.0.fill_bytes(into);
+        Ok(into.len())
     }
 }

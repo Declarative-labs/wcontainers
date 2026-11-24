@@ -24,6 +24,7 @@ use wcontainers_tcp_sockets::{
 
 use crate::TestPolicy;
 use wcontainers_abi::Host;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The port a binding asks for, 0 where the exit node chooses it.
 fn port_asked(local: &LocalBinding<'_>) -> u16 {
@@ -79,7 +80,7 @@ impl<H: Host> TcpConnections for TestPolicy<H> {
         &self,
         connection: &Self::Connection,
         _request: TcpSendRequest,
-        _bytes: &[u8],
+        _payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
         match *connection {}
     }
@@ -88,7 +89,7 @@ impl<H: Host> TcpConnections for TestPolicy<H> {
         &self,
         connection: &Self::Connection,
         _request: TcpReceiveRequest,
-        _into: &mut [u8],
+        _into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         match *connection {}
     }
