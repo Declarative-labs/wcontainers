@@ -117,7 +117,7 @@ out of the integer twins as BGRA is (targets and storage clears of it stay refus
 Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
 96's section).
 
-## G6 reported complete for its independent check (round 7, run 116): the gap list
+## G6 reported complete for its independent check (round 7, runs 116 and 117): the gap list
 
 G6 is reported complete on the crate as it stands, as round 7 of 2026-11-23 asks, with every item
 still open below under its cause and its owner. Run 113 settled the findings of G6's independent
@@ -133,7 +133,8 @@ the module route's NaN into a signed normalised typed view fixed and drawn, the 
 seed 8118 measured as A18's level decision (the device sampler route equal to Direct3D on the GPU
 in every texel), the line case of seed 8120 placed by the tests as A10's snap, and the check's
 minor items put on this list (A32's cause found, A36 new, the NIR track's G9 run 25 and 26 asks,
-A11's new figures).
+A11's new figures); its whole suite at the check's seed 8111 fails only where this list says.
+Run 117, given those findings again, found each settled and changed nothing.
 The pass bar item by item, with its figures, is the section "G6: the pass bar item by item"
 further down; the gap numbers (A1 to A36) are its entries, which hold each item's measurements.
 Bar items 1 (corpus), 2 (Chrome), 5 (built-in programs) and 6 (the cache) are met. Items 3
@@ -623,6 +624,32 @@ Logs and scripts in scratch `graphics-shaders/g6-r116` (the clone `tip` moved th
 - The NIR track's G9 run 25 ask (minor) and its G9 run 26 ask: on the gap list, this track's own.
 - A11 at seed 27183 (minor): its figures added; the fuzz test stays failing.
 - No unsafe code added; the count stays 94.
+- Whole suite, run 116, at f8b65a568 (the crate's last change). CPU, on the ARM64 machine
+  (arm2.log, 96 cores, load 11 to 16 at the time): rustfmt and clippy with warnings denied clean,
+  every test binary with every corpus but the mutation run passing (the corpus binary 13 tests in
+  202 s), the literal check with no finding in this crate. Drawn, on the RTX 3080 through the GPU
+  queue at the check's seed 8111, 20 cases a test (gpu-suite.log, task 71, 20 minutes, the desktop
+  shared with other tracks' jobs): every binary passes but `filter_draw` and `geometry_draw`, and
+  every failure there is placed on the gap list. `clamped_samples_match_direct3d` 8 failed (8118
+  `implicit`, `bias`, `gradients` and 8128 `bias`, both routes, each against WebGPU's own sampler,
+  every texel apart at a level decision or where the GPU and WARP differ: A18);
+  `filtering_in_the_program_matches_direct3d` 8 failed (8118 and 8121 `bias` against the own
+  sampler, A18 placed the same way; 8130 R16Unorm `gradients` on both routes and back ends, A36);
+  the geometry tests 12 failed each (`gs_clip` at 8119 and 8125, `vs_cull` and `vs_cull_read` at
+  8120 and 8122; 20 cases of 1 texel each within a subpixel step of a clipped edge, the 4 `vs_cull`
+  LineStrip cases of 8120 with their 4 texels within a snap's reach of a cut line's pixel decision:
+  A10); `depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does` 1 failed (8123 `gs_cut`
+  TriangleStrip, largest 7.2e-7 where WARP lies up to 2.0e-6 from the GPU: A12 under the
+  orchestrator's rule). Anisotropic cases are the listed known failures (Known gaps).
+
+## G6 run 30 (run 117, round 7 run 6): the fourth check's findings given again
+
+Given the same findings as run 116 (the check of run 115). Each was compared with the tip: all
+settled in run 116 (its section above), the two blocking ones by its fix of the typed NaN encode
+(drawn at seed 8117) and its measurement of seed 8118 as A18; run 116's whole suite, recorded
+above, places every drawn failure at the check's seed on the gap list. Nothing in this crate
+changed since; nothing built or drawn again (the inputs are those of run 116's suite). No unsafe
+code added; the count stays 94. G6 reported complete again.
 
 ## G6 run 28 (run 115, round 7 run 4): the third check's findings
 
