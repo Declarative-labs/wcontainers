@@ -3,6 +3,36 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 15 (2026-11-24, round 5 run 7): an address place written without an allocation, and where a program's time goes now
+
+Scratch w2/run15 (send.sh; profile.sh, the embedder's user time with call chains; whole.sh and ksys.sh, everything
+CPU 41 does, by who and by host call; strace.sh, the embedder's memfd reads and writes by size; compare.sh, the speed
+test in release with the change and with it reversed, `CHANGE_B64`, alternating on CPU 41, `ROUNDS`, `PROGRAMS`;
+check.sh with hp-test.sh; outputs *-arm.out). No primitive has landed (enforcement-primitive's FOR-THE-OWNER.md
+unchanged since 13:33) and `page-table-split` still holds only its interface commit, so form I's executor stays
+blocked. No line with `unsafe` added (host-process's count in the root manifest unchanged, 9).
+- Found: run 14's "not traced" busybox spread was the measurement, not a regression. Round 4's runs pinned the test to
+  CPU 41 (`taskset -c 41`, the stubs following it); run 14's did not. Pinned, today's tree takes 3.38 to 3.48 s for
+  1,000 programs in release (compare-a-arm.out, the "before" rounds), round 4's 3.33 to 3.67 s.
+- Built (arm64 crate, "Changes to the translator"): `encode::move_address_word` makes one word of an address's moves
+  alone, and `carry::write_place` uses it, so moving a piece no longer builds a vector of every word for each place
+  (the profile had `move_address`'s vector at 6.8% and `moved_bytes` at 12.5% of the embedder's user time). The
+  arm64 crate's encode test checks each word against `move_address`'s list.
+- Measured (compare-a-arm.out, Graviton4, CPU 41, load 20 to 28, 4 alternating rounds, release, second run of
+  1,000 programs): before 3.473, 3.422, 3.384, 3.477 s, after 3.392, 3.380, 3.307, 3.325 s; medians 3.448 and
+  3.353 s, 0.095 ms (2.8%) a program less; 4.46 to 4.70 times the model before, 4.36 to 4.44 after.
+- Where a program's time goes now (whole1-arm.out, ksys1-arm.out: CPU 41 sampled for 2 s mid-run, load 13 to 19;
+  shares of all its samples): the stubs' host kernel 37 to 40%, the embedder's host kernel 25%, the embedder's own
+  code 29% (its loading of pieces about a third of that), the guest's translated code 2.5%. In the stubs: process
+  exit 6.3%, installing the filter 5.4% (cBPF conversion and JIT, about 90 µs a stub), faults 5.8%, futex 4.4%,
+  mprotect 3.6%, mmap 2.8%, clone 1.9%, running the filter 1.4%. In the embedder: `pread64` 6.7%, `pwritev` 3.2%,
+  futex 3.2%, `pwrite64` 1.8%. By strace (strace1-arm.out, 200 programs twice): per program 67 reads of a 4 KiB
+  guest page, one read of 919,304 bytes (busybox's whole file at each exec: the kernel track's `program_of`,
+  Requests to other tracks), about 80 `pwritev` of code pages (about 120 pages), 46 writes of 8 bytes.
+- No change of design is left in this list that needs neither a ruling nor another track: the filter's install is
+  the owner's (plan 12, decision 15, new), the whole-file read the kernel track's, the 333 pieces loaded into each
+  exec'd program decision 16's exec half; the rest is spread thin (no other single item above 2% of the CPU).
+
 ## W2 run 14 (2026-11-24, round 5 run 6): four unsafe lines fewer, and a busybox model a slow stub cannot raise
 
 Scratch w2/run14 (send.sh, send-x86.sh; test.sh as run 13's with `LIST`; release.sh, the zygote test in the release
@@ -2079,7 +2109,8 @@ and its owner:
   each), two stubs a program (about 0.39 ms each against the model's 0.30), the kernel's read of the whole program file
   at each exec (0.37 ms a program, 9.9% of the CPU), the turns' host work (each turn 10 to 60 us of the stub's mmap,
   mprotect, futex and faults). The account at the top of this file: the design's floor is about 1.4 to 1.5 times the
-  model, so 1.25 cannot be met by this design; about 1.5 can. Owners: the owner (decision 16's exec half: an image kept
+  model, so 1.25 cannot be met by this design; about 1.5 can. W2 run 15, pinned to CPU 41 in release: 4.36 to 4.44
+  times the new model (3.31 to 3.39 s), the filter's install per stub 5.4% of the CPU (decision 15). Owners: the owner (decision 16's exec half: an image kept
   for a file at a base, which needs the kernel to keep a file's base across execs, or translated code that does not
   depend on the base, the translator's), the kernel track (`loader::program_of`, Requests to other tracks), the
   translator (the encoder's allocations, about 2%), this track (the rest of the per-piece cost, about 2 us against a
@@ -2134,10 +2165,11 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 10 marked uses (9 lines) left since W2 run 14 wait
   for the primitives (Needs a primitive); when they land, each use here becomes a call of one.
-- Not traced (W2 run 14): busybox `sh`'s 1,000 programs took 3.62 to 4.66 s in release at load 12 to 14, against
-  3.33 to 3.67 s in W1 round 4 run 2 (and 3.16 to 3.31 times the old model in round 4 run 5); the spread inside one
-  run is as wide as the gap, so whether anything since round 4 made a program slower needs alternating rounds of the
-  two trees on one quiet CPU.
+- Settled (W2 run 15): run 14's busybox spread (3.62 to 4.66 s) came from running unpinned; pinned to CPU 41 as
+  round 4 was, the tree takes 3.38 to 3.48 s (round 4: 3.33 to 3.67 s), 3.31 to 3.39 s with run 15's change. Every
+  busybox measurement pins (`taskset -c 41`, scratch w2/run15/compare.sh).
+- busybox's remaining host work by design (W2 run 15's profile): the filter's install per stub waits on the owner's
+  decision 15 (plan 12), the whole-file read at exec on the kernel track, the exec half of loading on decision 16.
 - W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2), and its stops
   resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
   access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
@@ -2389,6 +2421,13 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 Made by this track on 2026-11-23 with the orchestrator's leave; each commit kept the ARM64 translator suites and
 the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above).
+- 6fc04252e (W2 run 15): `encode::move_address_word(rd, value, part)` is word `part` of `move_address`'s moves, made
+  alone; `move_address` is built from it and `carry::write_place` calls it, so writing a place allocates nothing.
+  Output unchanged. Verified on Graviton4 (check1-arm.out, load 6 to 18): clippy with warnings denied on the arm64,
+  guest-cpu, x86, translator, stop, host-process and both VM crates; the arm64 (encode test checks every word against
+  the list), translator (with `--features native --lib`), guest-cpu and stop crates' tests; the VM executor's exits,
+  native (32,562 cases), floor, registers, host_branches, interrupts and probe with KVM, all exit 0; host-process's
+  pages, translated, run, kernel (12), busybox (56 commands) and floor with /dev/kvm denied.
 - 720a4f3f9 (W2 run 6): the in-process way's mark is `way::MARK` (window base + 2^32 + 4095, read by `ldrb wzr,
   [x15, #4095]` after `eor x15, x24, #2^32`); `way::OUTSIDE` stays the start of the never mapped bytes. The stop
   crate's `in_process::resolve` compares a fault with `window_base() + MARK`. Only the in-process way's code changes;
@@ -2509,6 +2548,10 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
+- Decision 15 (plan 12, W2 run 15): each stub installs the seccomp filter itself, about 90 µs a stub and 5.4% of
+  the CPU while busybox `sh` starts programs. Installed once by the zygote it would cost nothing per stub, but the
+  zygote's own calls (a fork's `clone`, a waiting `recvmsg`, `sendmsg`, `wait4`, `kill` and more) would then be
+  allowed to every stub, and so to a stub escaped from translation. Not built: your call.
 - The zygote is exec'd from its own image since W2 run 12 (plan 4.1), not forked from the embedder: six unsafe
   lines go and a start no longer grows with the embedder (measured on the Xeon: 19.7 ms from a 1 GiB embedder as a
   fork, 0.13 ms now). What it asks of the host instead: `execve` allowed in the embedder's process, /proc mounted

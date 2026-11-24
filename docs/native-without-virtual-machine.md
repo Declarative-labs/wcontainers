@@ -1631,6 +1631,12 @@ them.
     such a host (the evaluator then chooses I). On a host whose frames hold the record (Linux) the route can still
     be forged by a sibling rewriting the frame's record word, since the choice is made per frame; there the stubs'
     filters refuse `rt_sigreturn`, so a forged route kills the stub (found at each zygote's start, W1 round 4 run 5).
+15. P's stub filter installed once by the zygote and inherited by every stub at its fork, instead of by each stub
+    (W2 run 15): the install is about 90 µs a stub, 5.4% of the CPU while busybox `sh` starts programs (Graviton4
+    profile). The zygote would then run under it, so the filter would also allow the zygote's own calls (a fork's
+    `clone`, a waiting `recvmsg`, `sendmsg`, `wait4`, `kill`, `rt_sigaction`, `dup3`, `close_range`, `prctl`): a
+    stub escaped from translation could make them too. Accept that widening for the saving, or keep one install per
+    stub (today).
 
 ## 13. Milestones
 
