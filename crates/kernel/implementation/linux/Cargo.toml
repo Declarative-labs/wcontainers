@@ -54,6 +54,7 @@ path = "conformance.rs"
 [build-dependencies]
 flate2 = "1"
 
-# TODO: remove this crate's 331 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's last 5 uses of unsafe (executing.rs: its two `unsafe impl` and `unsafe fn new`
+# and `start`), then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
