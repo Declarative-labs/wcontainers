@@ -1934,12 +1934,12 @@ fn main() -> windows::core::Result<()> {
         // six divisors (atg-simplecomputepc's among them), and zeros, infinities, NaNs, overflows
         // and results below the normal range; each quotient's bits, a NaN as `nan`.
         "divisions" => {
-            const MULTIPLES: u16 = 64;
+            const QUOTIENTS_A_DIVISOR: u16 = 64;
             let divisors = [3.0, 7.0, 10.0, INSIDE_LOOPS / 4.0, 301.0, 999.0];
             let (inf, max, tiny) = (f32::INFINITY, f32::MAX, f32::MIN_POSITIVE);
             let mut pairs: Vec<[f32; 2]> = divisors
                 .iter()
-                .flat_map(|&b| (1..=MULTIPLES).map(move |k| [f32::from(k) * b, b]))
+                .flat_map(|&b| (1..=QUOTIENTS_A_DIVISOR).map(move |k| [f32::from(k) * b, b]))
                 .collect();
             pairs.extend([
                 [0.0, 0.0],
@@ -1963,7 +1963,7 @@ fn main() -> windows::core::Result<()> {
                 [-2.0, 3.0],
             ]);
             // Whole groups of the program's 64 threads, the rest dividing one by one.
-            let group = usize::from(MULTIPLES);
+            let group = usize::from(QUOTIENTS_A_DIVISOR);
             pairs.resize(pairs.len().div_ceil(group) * group, [1.0, 1.0]);
             let rows = pairs.len() as u32;
             let bytes: Vec<u8> = pairs
@@ -1994,7 +1994,7 @@ fn main() -> windows::core::Result<()> {
                 context.CSSetShader(program.as_ref(), None);
                 context.CSSetShaderResources(0, Some(&[srv(&p, DXGI_FORMAT_UNKNOWN)]));
                 context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
-                context.Dispatch(1, rows / u32::from(MULTIPLES), 1);
+                context.Dispatch(1, rows / u32::from(QUOTIENTS_A_DIVISOR), 1);
             }
             print_rows("divisions", &o, 4, &|row| {
                 let bits = u32::from_le_bytes([row[0], row[1], row[2], row[3]]);

@@ -389,14 +389,14 @@ fn words_of_either(got: &str, one: &str, other: &str) -> bool {
     else {
         return false;
     };
-    const WORD: usize = 8;
+    const DIGITS_A_WORD: usize = 8;
     gp == op
         && gp == tp
         && gv.len() == ov.len()
         && gv.len() == tv.len()
-        && gv.len() % WORD == 0
-        && (0..gv.len() / WORD).all(|i| {
-            let w = |v: &str| v[i * WORD..(i + 1) * WORD].to_string();
+        && gv.len() % DIGITS_A_WORD == 0
+        && (0..gv.len() / DIGITS_A_WORD).all(|i| {
+            let w = |v: &str| v[i * DIGITS_A_WORD..(i + 1) * DIGITS_A_WORD].to_string();
             w(&gv) == w(&ov) || w(&gv) == w(&tv)
         })
 }
