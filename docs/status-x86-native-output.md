@@ -12,10 +12,12 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   carried to XN2).
 - XN1 (the output with no memory check: the machine way and P): complete for its independent check, closed on the
   orchestrator's ruling of round 3. What is built is the next section; what is not is the gap list, each item with
-  its cause and owner. Fourteen independent checks of XN1 so far; round 3 run 7 answered the fourteenth (below).
-- XN2 (way I, the checked forms): not started. The eighth check's way I findings (0x67 strings, the exact form's
-  0x67 segment operand and `67 d7`, `maskmovq` in the window) and the ninth's crossing of offset 2^32 under 0x67 in
-  the exact form are fixed in the plan only; `carry::access` refuses the in-process way by an assertion until then.
+  its cause and owner. Fifteen independent checks of XN1; XN2 run 1 answered the fifteenth's five minor findings
+  in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
+  "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
+- XN2 (way I, the checked forms): run 1 in progress, see "XN2" below. Before it, `carry::carry_plain` refused the
+  in-process way by an assertion for every instruction, memory or not (the fifteenth check: `add rax, rcx` refused
+  as `mov rax, [rcx]` was).
 
 ## What XN1 built
 
@@ -157,7 +159,9 @@ run:
    i7-8750H); where it is false it sends all of them Kernel, for which `native::question` gives no question
    (`answer` has no twin of these meanings), so a host with it false cannot run them natively yet. That one flag
    also covers and, or, xor, test, the bit tests, bsf and bsr, which the EPYC sweep found equal to the Xeon: which
-   forms a chip's set holds is that design's to say. (Partial writes differ on AMD too, `fstp m80` and `fbstp`;
+   forms a chip's set holds is that design's to say (the fifteenth check confirmed it: with the flag false, `21
+   c8`, and, is routed Kernel with no question, as are `Shl_rm64_imm8`, `Imul_r64_rm64`, `Idiv_rm32`,
+   `Tzcnt_r64_rm64` and `Shld_rm64_r64_CL`). (Partial writes differ on AMD too, `fstp m80` and `fbstp`;
    the inside's answer for them is built and tested, run 10.)
 3. Built in round 3 run 5 (filed here by run 4 as this track's XN1 work): the translation side of P's stepping
    pieces and of the replay check. What is left of them is not this track's:
@@ -182,12 +186,15 @@ run:
    - The pool for a call through a register (`HostCode::pool`; today the return address is built in rax saved to
      the area, the plan's measured 1.146 form, not the pool's 1.120); it also needs the executor's pool range
      (native-without-virtual-machine 3.4).
-   - Counted speed (exact replay): interpret 1.66, the count's adds.
+   - Counted speed (exact replay): interpret 1.66, the count's adds (the fifteenth check: geometric mean 1.214,
+     interpret 1.645). Plan 8's speed bar does not limit itself to uncounted runs; holding it uncounted only is
+     a departure, listed under "Departures from the plan (XN1)".
    - The note of an MXCSR read while not kept for `xsave` (the meaning warns; `answer` is not told tracking).
 5. Way I (XN2, as written): the eighth check's way I findings (a string with the guest's 0x67 to the inside in
    both checked forms, the exact form's 0x67 segment operand and `67 d7`, `maskmovq` re-encoded in the window), and
    now the ninth check's crossing of offset 2^32 under 0x67 in the exact form (plan 4). Fixed in the plan; their
-   code and tests are XN2's. `carry::access` refuses the in-process way by an assertion.
+   code and tests are XN2's. `carry::carry_plain` refuses the in-process way by an assertion for every
+   instruction, memory or not.
 6. Not this track's: the native layer 2 harness past about 10,000 programs in one process (the ninth check: "state memory: mmap failed to reserve 0x104000000 bytes", runner.rs 455/461/1850, the
    WebAssembly runner's reservation, made by the WebAssembly runs that test compares the count with): the cause is
    address space (the tenth check's arithmetic): each run reserves 0x104000000 bytes, an mmap without a high hint
@@ -366,6 +373,10 @@ way.
   `translate_native_for`, whose signature host-process calls.
 - Plan 8 lists the replay check and P's stepping pieces as XN1's: their translation side is built (round 3 run 5);
   running them is the executor's (gap item 3).
+- Plan 8's speed bar (geometric mean at most 1.25, no program above 1.6) is held for uncounted runs only. Counted
+  (exact replay) the count's plain adds take interpret above 1.6 (1.658 in run 5, 1.645 in the fifteenth check's
+  run: Xeon 8488C, cores 0-9, best of 5, load 18.6 falling to 6.5; geometric mean 1.214). Lowering it is gap item
+  4's; the guest's own run, which replay does not ask for, is the one the bar was set for.
 
 ## Measured (the plan's probes)
 
@@ -605,6 +616,12 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   meaning's general protection (`3e 0f 01 0b`, sidt [rbx], rbx 0x992cc49e4400261e), or its stack fault with an rbp
   base (`40 0f 01 85 dc 7e 16 18`, sgdt [rbp+18167EDCh], rbp 0x7e5b20a044003415); 22 `Sgdt_m1664` and 24
   `Sidt_m1664` of its 2,000,000 byte-fuzz cases (seed 15151515). They belong beside `sldt`, `smsw` and `str`.
+  The fifteenth check (seed 16161616, 3,000,000 byte-shaped cases: only `Sgdt_m1664` 29 and `Sidt_m1664` 31 fail,
+  all routed Kernel, ours equal to the meaning, no new kind): `26 2e 36 45 0f 01 8c 3b b1 09 d2 6b` (three
+  segment prefixes: the reference's general protection, ours writes 10 bytes at data offset 11871); `26 4d 0f 01
+  04 12` (sgdt [r10+rdx], r10 0xd5311133c6d1170b, rdx 0x25ef5f42d75d30c9: the reference's memory fault at
+  0xfb2070769e2e47d4, ours general protection); `2e 3e 41 0f 01 87 b8 2d 0c cd` (the reference's general
+  protection, ours a memory fault at 0x4400338a).
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
   shared code changes (plan section 9) go in small commits that keep ARM64's suites passing. The x86 crate's core
   gains `Condition`, the x87 unit, the transcendental answers and their dependencies (plan 9), so the kernel,
