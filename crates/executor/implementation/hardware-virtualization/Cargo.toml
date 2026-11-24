@@ -143,6 +143,6 @@ name = "registers"
 harness = false
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
-# TODO: of this crate's 72 uses, remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
+# TODO: of this crate's 58 uses (counted on 2026-11-24), remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

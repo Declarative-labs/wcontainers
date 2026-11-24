@@ -31,10 +31,8 @@ use wcontainers_executor_hardware_virtualization_inside::boot::{
     BOOT_MAP_BYTES, BootRegisters, boot_registers, inside_attributes, write_boot_map,
 };
 use wcontainers_executor_hardware_virtualization_inside::layout::{
-    ATTRIBUTE_NORMAL, ENTRIES, ENTRY_BYTES, LEAF_LEVEL, MEMORY_BASE, TOP_LEVEL, VECTOR_BYTES,
-    VECTOR_TABLE_BYTES, level_index, linear,
+    ATTRIBUTE_NORMAL, ENTRIES, ENTRY_BYTES, LEAF_LEVEL, MEMORY_BASE, TOP_LEVEL, level_index, linear,
 };
-use wcontainers_executor_hardware_virtualization_inside::link::DOORBELL_FUNCTION;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_executor_hardware_virtualization_inside::syndrome::{
@@ -135,202 +133,284 @@ enum Ending {
     Unexpected,
 }
 
-/// Where the handler's code lies in this program.
-#[repr(C)]
-struct HandlerCode {
-    /// Its exception vectors, where it starts.
-    vectors: *const u8,
-    /// Where the host enters it to run the slot TPIDR_EL1 names.
-    entry: *const u8,
-    /// Where it starts to save a slot after an exception from EL0; from the entry to here it runs no guest code.
-    save: *const u8,
-    end: *const u8,
-}
-
-/// Gives where the handler's code lies; the code follows the return and never runs in this program.
+/// The handler's code, made from Arm's table: its exception vectors, an entry that runs the slot TPIDR_EL1 names,
+/// and a save after each exception from EL0.
 ///
 /// Every exception but a synchronous one from EL0 is unexpected. The handler keeps the current slot in
 /// TPIDR_EL1, and leaves the guest by the doorbell's hypervisor call once a slot's `next` is zero.
-#[unsafe(naked)]
-extern "C" fn find_handler_code() -> HandlerCode {
-    core::arch::naked_asm!(
-        "adr x9, 2f",
-        "str x9, [x8, #{vectors_field}]",
-        "adr x9, 4f",
-        "str x9, [x8, #{entry_field}]",
-        "adr x9, 5f",
-        "str x9, [x8, #{save_field}]",
-        "adr x9, 9f",
-        "str x9, [x8, #{end_field}]",
-        "ret",
+mod handler {
+    use std::mem::offset_of;
+
+    use wcontainers_arm64::{INSTRUCTION_BYTES, forms};
+    use wcontainers_executor_hardware_virtualization_inside::layout::{
+        VECTOR_BYTES, VECTOR_TABLE_BYTES,
+    };
+    use wcontainers_executor_hardware_virtualization_inside::link::DOORBELL_FUNCTION;
+
+    use super::{Ending, Registers, Slot};
+
+    /// The handler's words, and where its parts start in them.
+    pub(super) struct Handler {
+        /// Its instructions, from its exception vectors.
+        pub(super) words: Vec<u32>,
+        /// Bytes from the start to where the host enters it to run the slot TPIDR_EL1 names.
+        pub(super) entry: u64,
+        /// Bytes from the start to where it saves a slot after an exception from EL0; from the entry to here it
+        /// runs no guest code.
+        pub(super) save: u64,
+    }
+
+    /// A system register or instruction by its `op0`, `op1`, `CRn`, `CRm` and `op2`, as the Arm Architecture
+    /// Reference Manual's "Accessing" section of each gives them.
+    type System = [i64; 5];
+
+    const OSLAR_EL1: System = [2, 0, 1, 0, 4];
+    const TPIDR_EL1: System = [3, 0, 13, 0, 4];
+    const TTBR0_EL1: System = [3, 0, 2, 0, 0];
+    const SP_EL0: System = [3, 0, 4, 1, 0];
+    const ELR_EL1: System = [3, 0, 4, 0, 1];
+    const SPSR_EL1: System = [3, 0, 4, 0, 0];
+    const TPIDR_EL0: System = [3, 3, 13, 0, 2];
+    const FPCR: System = [3, 3, 4, 4, 0];
+    const FPSR: System = [3, 3, 4, 4, 1];
+    const ESR_EL1: System = [3, 0, 5, 2, 0];
+    const FAR_EL1: System = [3, 0, 6, 0, 0];
+    /// `tlbi vmalle1is`: every TLB entry of the EL1&0 regime, on every CPU of the inner shareable domain.
+    const TLBI_VMALLE1IS: System = [1, 0, 8, 3, 0];
+    /// `ic ialluis`: every instruction cache line, to the point of unification, of the inner shareable domain.
+    const IC_IALLUIS: System = [1, 0, 7, 1, 0];
+
+    /// A barrier's `CRm`: the inner shareable domain's reads and writes, and the whole system.
+    const INNER_SHAREABLE: i64 = 0b1011;
+    const FULL_SYSTEM: i64 = 0b1111;
+
+    /// The register number that is the zero register, or the stack pointer as a base.
+    const ZERO: i64 = 31;
+    const STACK_POINTER: i64 = 31;
+    /// The link register, the last general register.
+    const LINK: i64 = 30;
+
+    /// Bytes of a general register, and of a vector register.
+    const X: usize = size_of::<u64>();
+    const Q: usize = size_of::<u128>();
+
+    /// The word of Arm's form `name` with each named field set; a value too wide for its field panics, and a
+    /// negative one is written in the field's width.
+    fn arm(name: &str, fields: &[(&str, i64)]) -> u32 {
+        let form = (forms::all().iter())
+            .find(|form| form.name == name)
+            .unwrap_or_else(|| panic!("{name} is in Arm's table"));
+        fields.iter().fold(form.word(0), |word, &(field, value)| {
+            let &(_, low, width) = (form.fields.iter())
+                .find(|(named, ..)| named == field)
+                .unwrap_or_else(|| panic!("{name} has a field {field}"));
+            assert!(
+                (-(1 << (width - 1))..1 << width).contains(&value),
+                "{name}'s {field} holds {value}"
+            );
+            word | (value as u32 & ((1u64 << width) - 1) as u32) << low
+        })
+    }
+
+    fn mrs(rt: i64, [op0, op1, crn, crm, op2]: System) -> u32 {
+        arm(
+            "MRS_RS_systemmove",
+            &[("o0", op0 - 2), ("op1", op1), ("CRn", crn), ("CRm", crm), ("op2", op2), ("Rt", rt)],
+        )
+    }
+
+    fn msr([op0, op1, crn, crm, op2]: System, rt: i64) -> u32 {
+        arm(
+            "MSR_SR_systemmove",
+            &[("o0", op0 - 2), ("op1", op1), ("CRn", crn), ("CRm", crm), ("op2", op2), ("Rt", rt)],
+        )
+    }
+
+    /// A system instruction with no register.
+    fn system([_, op1, crn, crm, op2]: System) -> u32 {
+        arm(
+            "SYS_CR_systeminstrs",
+            &[("op1", op1), ("CRn", crn), ("CRm", crm), ("op2", op2), ("Rt", ZERO)],
+        )
+    }
+
+    /// `dsb` or `isb` by form, over the domain `crm` names.
+    fn barrier(name: &str, crm: i64) -> u32 {
+        arm(name, &[("CRm", crm)])
+    }
+
+    /// `ldp` or `stp` by form, of registers of `unit` bytes, at `offset` bytes from `rn`.
+    fn pair(name: &str, rt: i64, rt2: i64, rn: i64, offset: usize, unit: usize) -> u32 {
+        assert!(offset.is_multiple_of(unit), "a pair's offset is in its registers");
+        let scaled = (offset / unit) as i64;
+        arm(name, &[("Rt", rt), ("Rt2", rt2), ("Rn", rn), ("imm7", scaled)])
+    }
+
+    /// `ldr` or `str` by form, of a general register at `offset` bytes from `rn`.
+    fn single(name: &str, rt: i64, rn: i64, offset: usize) -> u32 {
+        assert!(offset.is_multiple_of(X), "a register's offset is in registers");
+        arm(name, &[("Rt", rt), ("Rn", rn), ("imm12", (offset / X) as i64)])
+    }
+
+    /// `add rd, rn, #value`.
+    fn add(rd: i64, rn: i64, value: usize) -> u32 {
+        arm("ADD_64_addsub_imm", &[("Rd", rd), ("Rn", rn), ("imm12", value as i64)])
+    }
+
+    /// `mov rd, #value`, as one `movz` of the half that holds every set bit.
+    fn mov(rd: i64, value: u64) -> u32 {
+        let half = value.checked_ilog2().unwrap_or(0) / u16::BITS;
+        assert!(
+            value >> (half * u16::BITS) <= u64::from(u16::MAX),
+            "{value:#x} is one half"
+        );
+        arm(
+            "MOVZ_64_movewide",
+            &[("Rd", rd), ("hw", half.into()), ("imm16", (value >> (half * u16::BITS)) as i64)],
+        )
+    }
+
+    /// Instructions from word `from` to word `to`.
+    fn reach(from: usize, to: usize) -> i64 {
+        to as i64 - from as i64
+    }
+
+    /// `b` at word `from` to word `to`.
+    fn branch(from: usize, to: usize) -> u32 {
+        arm("B_only_branch_imm", &[("imm26", reach(from, to))])
+    }
+
+    /// The handler, made once for each machine.
+    pub(super) fn handler() -> Handler {
+        let (before, after) = (offset_of!(Slot, before), offset_of!(Slot, after));
+        let stack_pointer = offset_of!(Registers, stack_pointer);
+        let saved_program_status = offset_of!(Registers, saved_program_status);
+        let floating_point_control = offset_of!(Registers, floating_point_control);
+        let syndrome = offset_of!(Registers, syndrome);
+        let vector = offset_of!(Registers, vector);
+        let link = offset_of!(Registers, general_purpose) + LINK as usize * X;
+        // The general registers after x1, in pairs: x2 and x3 to x28 and x29.
+        let general_pairs = (1..LINK / 2).map(|pair| (2 * pair, 2 * pair + 1, pair as usize * 2 * X));
+        let vector_pairs = (0..16).map(|pair| (2 * pair, 2 * pair + 1, pair as usize * 2 * Q));
+
         // The vectors: from EL1 (with SP_EL0, then SP_EL1), then from EL0 in AArch64, then in AArch32; each
-        // synchronous, IRQ, FIQ and SError.
-        ".balign {vector_table_bytes}",
-        "2:",
-        ".rept 8",
-        "b 8f",
-        ".balign {vector_bytes}",
-        ".endr",
-        "b 5f",
-        ".balign {vector_bytes}",
-        ".rept 7",
-        "b 8f",
-        ".balign {vector_bytes}",
-        ".endr",
+        // synchronous, IRQ, FIQ and SError. Each is one branch, filled in below, and the rest of its room.
+        let nop = arm("NOP_HI_hints", &[]);
+        let mut words = vec![nop; VECTOR_TABLE_BYTES as usize / INSTRUCTION_BYTES];
+
         // The entry: unlock the OS lock, which stops software step, forget the translations and instructions of
         // the frames the last batch used, then run the slot. Within a batch each slot has its own ASID and frames.
-        "4:",
-        "msr oslar_el1, xzr",
-        "tlbi vmalle1is",
-        "ic ialluis",
-        "dsb ish",
-        "isb",
-        "3:",
-        "mrs x0, tpidr_el1",
-        "ldr x1, [x0, #{translation_table}]",
-        "msr ttbr0_el1, x1",
-        "isb",
-        "add x1, x0, #{before}",
-        "ldp x2, x3, [x1, #{stack_pointer}]",
-        "msr sp_el0, x2",
-        "msr elr_el1, x3",
-        "ldp x2, x3, [x1, #{saved_program_status}]",
-        "msr spsr_el1, x2",
-        "msr tpidr_el0, x3",
-        "ldp x2, x3, [x1, #{floating_point_control}]",
-        "msr fpcr, x2",
-        "msr fpsr, x3",
-        "add x2, x1, #{vector}",
-        "ldp q0, q1, [x2, #0]",
-        "ldp q2, q3, [x2, #32]",
-        "ldp q4, q5, [x2, #64]",
-        "ldp q6, q7, [x2, #96]",
-        "ldp q8, q9, [x2, #128]",
-        "ldp q10, q11, [x2, #160]",
-        "ldp q12, q13, [x2, #192]",
-        "ldp q14, q15, [x2, #224]",
-        "ldp q16, q17, [x2, #256]",
-        "ldp q18, q19, [x2, #288]",
-        "ldp q20, q21, [x2, #320]",
-        "ldp q22, q23, [x2, #352]",
-        "ldp q24, q25, [x2, #384]",
-        "ldp q26, q27, [x2, #416]",
-        "ldp q28, q29, [x2, #448]",
-        "ldp q30, q31, [x2, #480]",
-        "ldp x2, x3, [x1, #16]",
-        "ldp x4, x5, [x1, #32]",
-        "ldp x6, x7, [x1, #48]",
-        "ldp x8, x9, [x1, #64]",
-        "ldp x10, x11, [x1, #80]",
-        "ldp x12, x13, [x1, #96]",
-        "ldp x14, x15, [x1, #112]",
-        "ldp x16, x17, [x1, #128]",
-        "ldp x18, x19, [x1, #144]",
-        "ldp x20, x21, [x1, #160]",
-        "ldp x22, x23, [x1, #176]",
-        "ldp x24, x25, [x1, #192]",
-        "ldp x26, x27, [x1, #208]",
-        "ldp x28, x29, [x1, #224]",
-        "ldr x30, [x1, #240]",
-        "ldp x0, x1, [x1, #0]",
-        "eret",
+        let entry = words.len();
+        words.extend([
+            msr(OSLAR_EL1, ZERO),
+            system(TLBI_VMALLE1IS),
+            system(IC_IALLUIS),
+            barrier("DSB_BO_barriers", INNER_SHAREABLE),
+            barrier("ISB_BI_barriers", FULL_SYSTEM),
+        ]);
+        let run = words.len();
+        words.extend([
+            mrs(0, TPIDR_EL1),
+            single("LDR_64_ldst_pos", 1, 0, offset_of!(Slot, translation_table)),
+            msr(TTBR0_EL1, 1),
+            barrier("ISB_BI_barriers", FULL_SYSTEM),
+            add(1, 0, before),
+            pair("LDP_64_ldstpair_off", 2, 3, 1, stack_pointer, X),
+            msr(SP_EL0, 2),
+            msr(ELR_EL1, 3),
+            pair("LDP_64_ldstpair_off", 2, 3, 1, saved_program_status, X),
+            msr(SPSR_EL1, 2),
+            msr(TPIDR_EL0, 3),
+            pair("LDP_64_ldstpair_off", 2, 3, 1, floating_point_control, X),
+            msr(FPCR, 2),
+            msr(FPSR, 3),
+            add(2, 1, vector),
+        ]);
+        words.extend(vector_pairs.clone().map(|(q, q2, at)| pair("LDP_Q_ldstpair_off", q, q2, 2, at, Q)));
+        words.extend(general_pairs.clone().map(|(x, x2, at)| pair("LDP_64_ldstpair_off", x, x2, 1, at, X)));
+        words.extend([
+            single("LDR_64_ldst_pos", LINK, 1, link),
+            pair("LDP_64_ldstpair_off", 0, 1, 1, 0, X),
+            arm("ERET_64E_branch_reg", &[]),
+        ]);
+
         // A synchronous exception from EL0: save everything into the slot, then run the next one.
-        "5:",
-        "str x0, [sp, #-16]!",
-        "mrs x0, tpidr_el1",
-        "add x0, x0, #{after}",
-        "stp x2, x3, [x0, #16]",
-        "stp x4, x5, [x0, #32]",
-        "stp x6, x7, [x0, #48]",
-        "stp x8, x9, [x0, #64]",
-        "stp x10, x11, [x0, #80]",
-        "stp x12, x13, [x0, #96]",
-        "stp x14, x15, [x0, #112]",
-        "stp x16, x17, [x0, #128]",
-        "stp x18, x19, [x0, #144]",
-        "stp x20, x21, [x0, #160]",
-        "stp x22, x23, [x0, #176]",
-        "stp x24, x25, [x0, #192]",
-        "stp x26, x27, [x0, #208]",
-        "stp x28, x29, [x0, #224]",
-        "str x30, [x0, #240]",
-        "ldr x2, [sp], #16",
-        "stp x2, x1, [x0, #0]",
-        "mrs x2, sp_el0",
-        "mrs x3, elr_el1",
-        "stp x2, x3, [x0, #{stack_pointer}]",
-        "mrs x2, spsr_el1",
-        "mrs x3, tpidr_el0",
-        "stp x2, x3, [x0, #{saved_program_status}]",
-        "mrs x2, fpcr",
-        "mrs x3, fpsr",
-        "stp x2, x3, [x0, #{floating_point_control}]",
-        "mrs x2, esr_el1",
-        "mrs x3, far_el1",
-        "stp x2, x3, [x0, #{syndrome}]",
-        "add x2, x0, #{vector}",
-        "stp q0, q1, [x2, #0]",
-        "stp q2, q3, [x2, #32]",
-        "stp q4, q5, [x2, #64]",
-        "stp q6, q7, [x2, #96]",
-        "stp q8, q9, [x2, #128]",
-        "stp q10, q11, [x2, #160]",
-        "stp q12, q13, [x2, #192]",
-        "stp q14, q15, [x2, #224]",
-        "stp q16, q17, [x2, #256]",
-        "stp q18, q19, [x2, #288]",
-        "stp q20, q21, [x2, #320]",
-        "stp q22, q23, [x2, #352]",
-        "stp q24, q25, [x2, #384]",
-        "stp q26, q27, [x2, #416]",
-        "stp q28, q29, [x2, #448]",
-        "stp q30, q31, [x2, #480]",
-        "mrs x0, tpidr_el1",
-        "mov x1, #{exception_from_el0}",
-        "str x1, [x0, #{ending}]",
-        "ldr x1, [x0, #{next}]",
-        "cbz x1, 6f",
-        "msr tpidr_el1, x1",
-        "b 3b",
+        let save = words.len();
+        words.extend([
+            arm("STR_64_ldst_immpre", &[("Rt", 0), ("Rn", STACK_POINTER), ("imm9", -(2 * X as i64))]),
+            mrs(0, TPIDR_EL1),
+            add(0, 0, after),
+        ]);
+        words.extend(general_pairs.map(|(x, x2, at)| pair("STP_64_ldstpair_off", x, x2, 0, at, X)));
+        words.extend([
+            single("STR_64_ldst_pos", LINK, 0, link),
+            arm("LDR_64_ldst_immpost", &[("Rt", 2), ("Rn", STACK_POINTER), ("imm9", 2 * X as i64)]),
+            pair("STP_64_ldstpair_off", 2, 1, 0, 0, X),
+            mrs(2, SP_EL0),
+            mrs(3, ELR_EL1),
+            pair("STP_64_ldstpair_off", 2, 3, 0, stack_pointer, X),
+            mrs(2, SPSR_EL1),
+            mrs(3, TPIDR_EL0),
+            pair("STP_64_ldstpair_off", 2, 3, 0, saved_program_status, X),
+            mrs(2, FPCR),
+            mrs(3, FPSR),
+            pair("STP_64_ldstpair_off", 2, 3, 0, floating_point_control, X),
+            mrs(2, ESR_EL1),
+            mrs(3, FAR_EL1),
+            pair("STP_64_ldstpair_off", 2, 3, 0, syndrome, X),
+            add(2, 0, vector),
+        ]);
+        words.extend(vector_pairs.map(|(q, q2, at)| pair("STP_Q_ldstpair_off", q, q2, 2, at, Q)));
+        words.extend([
+            mrs(0, TPIDR_EL1),
+            mov(1, Ending::ExceptionFromEl0 as u64),
+            single("STR_64_ldst_pos", 1, 0, offset_of!(Slot, ending)),
+            single("LDR_64_ldst_pos", 1, 0, offset_of!(Slot, next)),
+        ]);
+        // Filled in once the doorbell's place is known: the last slot's save goes there.
+        let last = words.len();
+        words.extend([nop, msr(TPIDR_EL1, 1)]);
+        words.push(branch(words.len(), run));
+
         // Any other exception: record what the syndrome registers say, and stop the batch.
-        "8:",
-        "mrs x0, tpidr_el1",
-        "mov x1, #{unexpected}",
-        "str x1, [x0, #{ending}]",
-        "add x0, x0, #{after}",
-        "mrs x2, esr_el1",
-        "mrs x3, far_el1",
-        "stp x2, x3, [x0, #{syndrome}]",
-        "mrs x2, spsr_el1",
-        "str x2, [x0, #{saved_program_status}]",
-        "mrs x2, elr_el1",
-        "str x2, [x0, #{program_counter}]",
-        "6:",
-        "mov x0, #{doorbell}",
-        "hvc #0",
-        "b 6b",
-        "9:",
-        vectors_field = const offset_of!(HandlerCode, vectors),
-        entry_field = const offset_of!(HandlerCode, entry),
-        save_field = const offset_of!(HandlerCode, save),
-        end_field = const offset_of!(HandlerCode, end),
-        vector_table_bytes = const VECTOR_TABLE_BYTES,
-        vector_bytes = const VECTOR_BYTES,
-        translation_table = const offset_of!(Slot, translation_table),
-        next = const offset_of!(Slot, next),
-        ending = const offset_of!(Slot, ending),
-        before = const offset_of!(Slot, before),
-        after = const offset_of!(Slot, after),
-        stack_pointer = const offset_of!(Registers, stack_pointer),
-        program_counter = const offset_of!(Registers, program_counter),
-        saved_program_status = const offset_of!(Registers, saved_program_status),
-        floating_point_control = const offset_of!(Registers, floating_point_control),
-        syndrome = const offset_of!(Registers, syndrome),
-        vector = const offset_of!(Registers, vector),
-        exception_from_el0 = const Ending::ExceptionFromEl0 as u64,
-        unexpected = const Ending::Unexpected as u64,
-        doorbell = const DOORBELL_FUNCTION,
-    );
+        let unexpected = words.len();
+        words.extend([
+            mrs(0, TPIDR_EL1),
+            mov(1, Ending::Unexpected as u64),
+            single("STR_64_ldst_pos", 1, 0, offset_of!(Slot, ending)),
+            add(0, 0, after),
+            mrs(2, ESR_EL1),
+            mrs(3, FAR_EL1),
+            pair("STP_64_ldstpair_off", 2, 3, 0, syndrome, X),
+            mrs(2, SPSR_EL1),
+            single("STR_64_ldst_pos", 2, 0, saved_program_status),
+            mrs(2, ELR_EL1),
+            single("STR_64_ldst_pos", 2, 0, offset_of!(Registers, program_counter)),
+        ]);
+
+        // The doorbell, rung again should the host ever resume after it.
+        let doorbell = words.len();
+        words.extend([
+            mov(0, DOORBELL_FUNCTION.into()),
+            arm("HVC_EX_exception", &[("imm16", 0)]),
+        ]);
+        words.push(branch(words.len(), doorbell));
+
+        words[last] = arm("CBZ_64_compbranch", &[("Rt", 1), ("imm19", reach(last, doorbell))]);
+        let vector_words = VECTOR_BYTES as usize / INSTRUCTION_BYTES;
+        /// The vector of a synchronous exception from EL0 in AArch64.
+        const FROM_EL0: usize = 8;
+        for v in 0..VECTOR_TABLE_BYTES as usize / VECTOR_BYTES as usize {
+            let at = v * vector_words;
+            words[at] = branch(at, if v == FROM_EL0 { save } else { unexpected });
+        }
+        let bytes = |word: usize| (word * INSTRUCTION_BYTES) as u64;
+        Handler {
+            entry: bytes(entry),
+            save: bytes(save),
+            words,
+        }
+    }
 }
 
 // The handler moves registers in pairs, and the general registers from the start of the block.
@@ -468,14 +548,13 @@ impl SingleStepMachine {
         write_boot_map(BOOT_MAP, MEMORY_BYTES, |at, entry| {
             self.write_entry(at, entry)
         });
-        let code = find_handler_code();
-        let length = code.end as u64 - code.vectors as u64;
+        let handler = handler::handler();
+        let bytes: Vec<u8> = handler.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let length = bytes.len() as u64;
         assert!(length <= PAGE_SIZE, "the handler fits its page");
-        // SAFETY: the handler's code lies between its first and last label in this program's own text.
-        let bytes = unsafe { std::slice::from_raw_parts(code.vectors, length as usize) };
-        self.write_bytes(HANDLER, length).copy_from_slice(bytes);
-        self.entry = linear(HANDLER + (code.entry as u64 - code.vectors as u64));
-        self.save = linear(HANDLER + (code.save as u64 - code.vectors as u64));
+        self.write_bytes(HANDLER, length).copy_from_slice(&bytes);
+        self.entry = linear(HANDLER + handler.entry);
+        self.save = linear(HANDLER + handler.save);
         for level in TOP_LEVEL + 1..=LEAF_LEVEL {
             self.fill_table(unmapped_table(level), to_unmapped_entry(level));
         }
