@@ -10,7 +10,7 @@ use wcontainers_abi::{
     Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume,
     SystemCallNumber, SystemCallRequest, ThreadId,
 };
-use wcontainers_arm64::carry::{LinkWords, link_words};
+use wcontainers_arm64::carry::{LinkWords, link_words, movable};
 use wcontainers_arm64::mirror::{
     LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_TEST, SLOT_MOVE_BITS, SLOT_MOVES,
 };
@@ -20,9 +20,9 @@ use wcontainers_executor_arm64_stop::{
     self as stop, FloatStatus, GENERAL, GuestState, Interrupted, Piece, Resolved, SYSCALL_NUMBER,
     Stop, Taken,
 };
-use wcontainers_guest_cpu::HostCode;
 use wcontainers_guest_cpu::position::NativeReason;
 use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN;
+use wcontainers_guest_cpu::{HostCode, Translation};
 use wcontainers_translator::{LookAhead, translate_native_for};
 
 use super::{FaultOwner, HostProcessExecutor, Then};
@@ -107,7 +107,7 @@ struct Site {
 struct Loaded {
     base: u64,
     /// Its code as translated, before any linking.
-    code: Arc<HostCode>,
+    code: Arc<Translation>,
     /// The guest code it was made from, as far as it covers.
     source: Vec<u8>,
     /// Its exits: their targets and host addresses.
@@ -165,7 +165,7 @@ struct Where {
     page: RegisterPage,
     start: u64,
     base: u64,
-    code: Arc<HostCode>,
+    code: Arc<Translation>,
 }
 
 /// A guest thread's state between its turns: the guest's own, as resolution gives it.
@@ -243,11 +243,27 @@ impl Guest {
     }
 }
 
-/// Translations already made, by guest address and the code they were made from: the process way's code depends on
-/// nothing else, so a fork child or another memory loads them again as they are.
+/// Translations already made, by the code they were made from, its offset in its page, and its page where the code
+/// does not move: the process way's code depends on nothing else, so a fork child, another memory or a program placed
+/// at another base loads them again, moved there.
 #[derive(Default)]
 pub(super) struct Translations {
-    kept: HashMap<(u64, Vec<u8>), Option<Arc<HostCode>>>,
+    kept: HashMap<Key, Option<Kept>>,
+}
+
+/// What a translation is kept by.
+#[derive(Hash, PartialEq, Eq)]
+struct Key {
+    code: Vec<u8>,
+    offset: u64,
+    /// The page, for code outside the pages translations move between.
+    page: Option<u64>,
+}
+
+/// A translation and the page it was made at.
+struct Kept {
+    translation: Arc<Translation>,
+    page: u64,
 }
 
 /// How a run of translated code came back.
@@ -322,21 +338,40 @@ impl HostProcessExecutor {
         }
     }
 
-    /// The guest translation of the code at `pc`, made or kept.
-    fn translate(&mut self, pc: u64, code: Vec<u8>) -> Option<Arc<HostCode>> {
-        let key = (pc, code);
+    /// The guest translation of the code at `pc`, made, kept, or kept and moved from another page.
+    fn translate(&mut self, pc: u64, code: Vec<u8>) -> Option<Arc<Translation>> {
+        let page = pc & !(PAGE_SIZE - 1);
+        let key = Key {
+            code,
+            offset: pc - page,
+            page: (!movable(WAY).contains(&page)).then_some(page),
+        };
         if let Some(kept) = self.translations.kept.get(&key) {
-            return kept.clone();
+            return kept.as_ref().map(|kept| {
+                if kept.page == page {
+                    Arc::clone(&kept.translation)
+                } else {
+                    let mut moved = Translation::clone(&kept.translation);
+                    moved.moved::<Arm64>(page.wrapping_sub(kept.page));
+                    Arc::new(moved)
+                }
+            });
         }
         let look_ahead = if self.single {
             LookAhead::Bounded(1)
         } else {
             LookAhead::Full
         };
-        let made =
-            translate_native_for::<Arm64>(&key.1, pc, look_ahead, true, &WAY, &()).map(Arc::new);
+        let made = translate_native_for::<Arm64>(&key.code, pc, look_ahead, true, &WAY, &())
+            .map(|made| Arc::new(HostCode::translation(made)));
         self.slow(reason::TRANSLATED, 1, pc);
-        self.translations.kept.insert(key, made.clone());
+        self.translations.kept.insert(
+            key,
+            made.as_ref().map(|translation| Kept {
+                translation: Arc::clone(translation),
+                page,
+            }),
+        );
         made
     }
 
@@ -1125,7 +1160,7 @@ impl HostProcessExecutor {
     }
 
     /// The loaded piece holding host address `pc`: its guest start, its base and its code.
-    fn piece_holding(&self, memory: MemoryId, pc: u64) -> Option<(u64, u64, Arc<HostCode>)> {
+    fn piece_holding(&self, memory: MemoryId, pc: u64) -> Option<(u64, u64, Arc<Translation>)> {
         let code = self.codes[memory.0 as usize].as_ref()?;
         let (&base, &start) = code.hosts.range(..=pc).next_back()?;
         let loaded = &code.pieces[&start];

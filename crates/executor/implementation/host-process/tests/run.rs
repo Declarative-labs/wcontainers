@@ -242,6 +242,116 @@ fn a_fork_child_runs_its_own_copy_and_leaves_the_parent_s_memory() {
     assert_eq!(read_word(&mut cpu, child, DATA), SUM);
 }
 
+/// A program that names its own addresses: a loop of 10 adds of 3, a call to a function that adds 1000, the next page's
+/// address by `adr` in x4, a store and a load of the sum there, getpid, exit.
+fn placed_program() -> Vec<u32> {
+    let add = |rd, rn, value| encode::add_immediate(rd, rn, value).expect("an add");
+    let mut words = vec![
+        encode::movz(0, 0, 0),
+        encode::movz(1, 10, 0),
+        add(0, 0, 3),
+        add(1, 1, -1),
+        encode::compare_branch(true, 1, -2 * INSTRUCTION).expect("cbnz"),
+    ];
+    let call_at = words.len();
+    words.push(0);
+    let adr_at = words.len();
+    words.push(encode::adr(4, PAGE as i64 - adr_at as i64 * INSTRUCTION).expect("adr"));
+    words.push(encode::load_store(form::STR, 0, 4, 0, WORD).expect("str"));
+    words.push(encode::load_store(form::LDR, 3, 4, 0, WORD).expect("ldr"));
+    words.extend(syscall(GETPID));
+    words.extend(syscall(EXIT));
+    let function = words.len();
+    words.push(add(0, 0, 1000));
+    words.push(encode::branch_register(form::RET, LINK));
+    words[call_at] = encode::branch(true, (function - call_at) as i64 * INSTRUCTION).expect("bl");
+    words
+}
+
+/// The placed program's sum, and the words before its call.
+const PLACED_SUM: u64 = 10 * 3 + 1000;
+const PLACED_CALL_AT: u64 = 5;
+
+/// How many times guest code was translated so far.
+fn translations(cpu: &HostProcessExecutor) -> u64 {
+    cpu.slow_paths()
+        .into_iter()
+        .find(|(reason, _)| *reason == "native code translated")
+        .map_or(0, |(_, count)| count)
+}
+
+/// Runs the placed program with its code at `base` and its data the page after, in a memory of its own; checks every
+/// address it named and its sum.
+fn run_placed_at(cpu: &mut HostProcessExecutor, base: u64) {
+    let memory = cpu.memory_new().expect("memory");
+    let bytes: Vec<u8> = placed_program()
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    cpu.set_permissions(memory, base, PAGE, Permissions::READ | Permissions::EXECUTE)
+        .expect("code");
+    cpu.set_permissions(
+        memory,
+        base + PAGE,
+        PAGE,
+        Permissions::READ | Permissions::WRITE,
+    )
+    .expect("data");
+    cpu.write(memory, base, &bytes).expect("the code");
+    cpu.code_changed(memory, base, PAGE, &[base]);
+    let thread = cpu.thread_new(memory).expect("thread");
+    let mut registers = RegisterBlock::ZERO;
+    registers.pc = base;
+    cpu.set_registers(thread, &registers);
+    let seen = run_to_exit(cpu, thread);
+    assert_eq!(seen.exits.len(), 2, "at {base:#x}: {:?}", seen.exits);
+    let (exit, registers, _) = &seen.exits[0];
+    assert!(
+        matches!(exit, Exit::Syscall(call) if call.number.0 == u64::from(GETPID)),
+        "at {base:#x}: {exit:?}"
+    );
+    assert_eq!(registers.x[0], PLACED_SUM, "at {base:#x}");
+    assert_eq!(registers.x[3], PLACED_SUM, "at {base:#x}");
+    assert_eq!(registers.x[4], base + PAGE, "adr at {base:#x}");
+    assert_eq!(
+        registers.x[usize::from(LINK)],
+        base + (PLACED_CALL_AT + 1) * INSTRUCTION as u64,
+        "the call's return at {base:#x}"
+    );
+    assert_eq!(
+        registers.pc,
+        base + 11 * INSTRUCTION as u64,
+        "after the svc at {base:#x}"
+    );
+    assert_eq!(
+        read_word(cpu, memory, base + PAGE),
+        PLACED_SUM,
+        "at {base:#x}"
+    );
+    cpu.thread_drop(thread);
+    cpu.memory_drop(memory);
+}
+
+#[test]
+fn code_placed_at_another_base_runs_from_its_kept_translation_moved_there() {
+    let mut cpu = executor();
+    // Pages translations move between, from 4 GiB to under the slots' reach of 2^44.
+    run_placed_at(&mut cpu, 0x2_0000_0000);
+    let made = translations(&cpu);
+    assert!(made > 0, "the first run translates");
+    for base in [0x7_1234_5000, 0x2_0000_0000, 0xaaa_aaaa_a000] {
+        run_placed_at(&mut cpu, base);
+        assert_eq!(
+            translations(&cpu),
+            made,
+            "moved to {base:#x}, not translated"
+        );
+    }
+    // Under 4 GiB an `adrp` of the code could name a page below zero, so code there keeps a translation of its own.
+    run_placed_at(&mut cpu, CODE);
+    assert!(translations(&cpu) > made, "translated again at {CODE:#x}");
+}
+
 /// Calls a function through a register 50 times, each adding its index to x0, then exits; the function's address in
 /// x9 and the count in x1.
 fn calling_program() -> Vec<u32> {
