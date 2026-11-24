@@ -5,6 +5,52 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 31 (2026-11-23, round 4's ninth run), from run 30's gap list. Built, each linted with
+warnings denied with and without Mesa and the nir crate's route test passed (25) on the x86-64
+machine; groups checked on the desktop (RTX 3080, one GPU job, 8 glcts at once):
+- Atomics of either signedness on one word (0986b2f4). Blocks of one layout share a NIR type
+  whatever their words' signedness (Mesa gives `buffer { uint a[4]; }` and `buffer { int b[4]; }`
+  one type): a block variable's signed words are now keyed by the variable, which gets a type of
+  its own. Workgroup memory, which the bridge makes one array of words, can hold both: an atomic
+  minimum or maximum of the other signedness than its word is a compare-exchange loop
+  (`SlowPath::AtomicExchangeLoop`, which the interface already named; each try compares with the
+  value the last gave; a fragment program's helper invocation leaves). The route's
+  `Routed::slow_paths` go into the reflection, and the driver now counts a program's reflected
+  slow paths at each use (`Built::slow_paths`, which it did not before for any). KHR-GLES31
+  `compute_shader.atomic-case2` and `-case3` pass (group run a). Test
+  `signed_and_unsigned_atomics_beside_each_other_keep_their_own_kinds`.
+- A centroid input also read another way (661a9ad7): the host interpolates the slot that other
+  way, and each centroid read is made from it and its slopes at the centroid's place: the centre
+  where every sample is covered (or for one sample), otherwise the first covered sample of
+  `gl_SampleMaskIn` (inside both pixel and primitive), a program run per sample its own sample.
+  dEQP-GLES31 `multisample_interpolation.interpolate_at_offset.centroid_qualifier` 11 pass (group
+  run b). Test `a_centroid_input_also_read_another_way_is_made_from_the_other_way`.
+- Points that are not rasterized are not drawn as squares (458438c4).
+- Fragment programs get their pixel extras from the route (1cbbae1d), every program forcing early
+  tests goes through the rewrite (c4b8743c; the plain route was refused "Capability
+  EARLY_DEPTH_TEST is not supported"), and the driver draws it where no test is made or its
+  results do not depend on when the tests run, refusing the rest by name (gap list). Test
+  `early_tests_a_fragment_program_forces_are_in_its_pixel_extras`.
+- The screen reports as many passed values for vertex, geometry and evaluation programs (and
+  fragment inputs, `max_varyings`) as the stage helper's pass-through vertex program takes beside
+  its position and the squares' point coordinate (`screen::passed_values`, the host's vertex
+  inputs less two: 28 on the RTX 3080's Direct3D 12, was 31); before, a geometry program passing
+  all 31 lost the device (KHR `geometry_shader.limits.max_output_components`).
+- Traced, not this track's: dEQP-GLES3 `fbo.color.tex3d` 2 device losses (WebGPU back end, asked).
+  Traced, this track's, not built: `vertex_ordering`'s time (gap list). Read, not proven: the
+  storage coherence family (gap list).
+- Unsafe code: unchanged (wcontainers-nir 116, wcontainers-opengl 370). No dependency or licence
+  was added.
+
+Run 31's group runs (scratch `results/g9r31/{a,b}`, logs `logs/g9r31/{a,b}.log`): a, at 0986b2f4's
+driver: dEQP-GLES3 `fbo.color`, `rasterization.fbo` 350 cases, 2 Crash (tex3d), 2 Fail
+(`rbo_multisample_max` lines: 18 pixels filled past the line with 8 samples, 4 samples pass; not
+yet traced); dEQP-GLES31 `early_fragment_tests` 6 Crash; KHR-GLES31 `compute_shader` 37 of 37. b,
+at 458438c4's: dEQP-GLES31, KHR-GLES31, KHR-GLES32 groups `multisample_interpolation`,
+`synchronization`, `geometry_shader.limits`, `vertex_ordering`, `image_load_store`,
+`vertex_transform_feedback`, `point_mode`, `wide_points`: 11 Crash to Pass, the storage family's
+fails and flakes moved among its cases, nothing else changed.
+
 G9 run 30 (2026-11-23, round 4's eighth run). Built this run, each linted with warnings denied
 with and without Mesa and the nir crate's route test passed (22) on the x86-64 machine:
 - Points of one pixel stay the back end's (51817d17): a vertex program whose every point size is
@@ -216,19 +262,31 @@ yet, which is this track's work. The earlier gap list, with its readings group b
 - dEQP-GLES31 `primitive_bounding_box.lines` and `.triangles` 28: the stage helper sizes a
   geometry program's output after tessellation for factor 64 on every patch, past
   `max_buffer_size` (the shaders track; asked).
-- dEQP-GLES31 `multisample_interpolation` 11: an input read at the centroid and at an offset (this
-  track: the value at a second location, not built).
+- dEQP-GLES31 `multisample_interpolation` 11: an input read at the centroid and at an offset. Built
+  in run 31 (661a9ad7): all 11 pass in its group run.
 - dEQP-GLES31 `synchronization` 11, `image_load_store.3d` 3 (flakes), KHR-GLES31
   `shader_image_load_store` 3 (`advanced-copyImage-cs`, `advanced-allMips-cs`,
   `advanced-sync-imageAccess2`): storage written by other invocations or through other bindings
-  read stale (this track: not yet traced).
+  read stale; which cases fail moves from run to run (run 31's group run: 12 fail, 4 flake,
+  `image_load_store.2d_array` qualifiers among them). Read in run 31, not proven: the route drops
+  GLSL's `coherent` and `volatile` (naga's `MemoryDecorations`, HLSL `globallycoherent`, which
+  wgpu gives only with its native feature `MEMORY_DECORATION_COHERENT` and the interface names
+  no capability for); the `alias` cases write through one binding and read through another of
+  the same buffer, which a host compiler may reorder where it takes bindings not to alias. This
+  track's to trace further, then the interface and WebGPU back end tracks' if the decoration is
+  the cause.
 - dEQP-GLES31 `builtin_functions` 6 (`texture_size.samples_*_2d_array`): the multisampled array
   split binds every layer whatever the program reads, `BindingsBeyondLimit` (the shaders track;
   asked).
-- dEQP-GLES31 `image_load_store.early_fragment_tests` 6: since the shaders track's run 115,
-  `rewrite` refuses a fragment program forcing early tests whose reflection has no pixel extras;
-  the driver must hand them over (this track), then forced early tests are absent on WebGPU
-  (a back end refuses them by its capabilities).
+- dEQP-GLES31 `image_load_store.early_fragment_tests` 6, KHR-GLES31
+  `shader_image_load_store.basic-glsl-earlyFragTests`: since run 31 the route gives fragment
+  programs their pixel extras (1cbbae1d) and every program forcing early tests goes through the
+  rewrite (c4b8743c); the driver draws it where no depth or stencil test is made or its results do
+  not depend on when the tests run, and refuses by name the rest ("early depth and stencil tests
+  ... (EarlyTestsInShader, not built)"): the program's tests before its storage writes, which the
+  interface's `VariantFlags::EARLY_TESTS` route makes (a read-only depth-stencil attachment at
+  `EARLY_DEPTH_BINDING`, `HelperValue::EarlyTests`, per-primitive draws where depth is written).
+  This track, not built.
 - dEQP-GLES31 `tessellation.common_edge` 6 and KHR `gpu_shader5.precise_qualifier`: `precise`
   has no form in naga's writers (the shaders track).
 - dEQP-GLES31 `geometry_shading.input` 5 and KHR `geometry_shader.adjacency` 4: strips with
@@ -239,14 +297,25 @@ yet, which is this track's work. The earlier gap list, with its readings group b
 - Device losses besides `packed_pixels`: dEQP-GLES3 `texture.specification` 3 (16-bit depth
   written from a buffer: the WebGPU back end track), KHR-GL33 and -GLES3 `packed_depth_stencil` 16
   (textures destroyed while a recorded pass uses them: the WebGPU back end track unless a trace
-  shows this driver's misuse), dEQP-GLES3 `fbo.color.tex3d` 2 (a 2D view of a 3D texture: this
-  track, not yet traced).
-- KHR-GLES31 `compute_shader` 2: an atomic minimum of unsigned kind on a signed value (this track's
-  route, not built).
-- Wide points (this track, run 30): KHR `geometry_shader.limits.max_output_components` 2 (a
-  geometry program writing every output component leaves no location for `gl_PointCoord`,
-  refused by name where it was NotSupported); `tessellation_shader.vertex.vertex_ordering` 2 time out
-  (KHR-GLES31's failed before run 30, KHR-GLES32's timed out in run 29 too; not yet traced).
+  shows this driver's misuse), dEQP-GLES3 `fbo.color.tex3d` 2 (traced in run 31: the WebGPU back
+  end's `PackedTargetQuantised` makes a 2D view of a 3D texture, "Invalid texture view dimension
+  `D2` with texture of dimension `D3`"; the WebGPU back end track, asked).
+- KHR-GLES31 `compute_shader` 2: an atomic unsigned minimum on a signed word. Built in run 31
+  (0986b2f4): both pass in its group run.
+- KHR `geometry_shader.limits.max_output_components` 2: traced in run 31, a device loss ("Vertex
+  attribute location 30 must be less than limit 30"): the stage helper's pass-through takes the
+  position and each passed value as vertex inputs, 30 on the host, where the screen reported 31
+  passed values (and the squares need one more). Fixed in c4b8743c: the screen reports at most the
+  pass-through's inputs less two.
+- KHR-GLES31 and -GLES32 `tessellation_shader.vertex.vertex_ordering` 2 time out: traced in run
+  31, alone with a 400 s limit KHR-GLES31's passes in 61.8 s (deqp-runner stops a case at 60 s;
+  desktop, RTX 3080, one GPU job). The test makes a new evaluation program for each of its 6,156
+  iterations; each is a new shader state, so its conversion and the stage helper's pipelines are
+  made anew (20,521 pipelines, every one a miss, `TessellationAsCompute` 12,312,
+  `StreamOutAsCompute` 6,156). Programs of equal content sharing their conversions and pipelines
+  (a cache keyed by the route's key and variant, held while any shader state uses it) would remove
+  most of it: this track, not built. Run 31 also stopped drawing points as squares where the
+  rasterizer discards (458438c4), which this test does in point mode.
 - Not yet read (this track): dEQP-GLES3 `rasterization.fbo` 2, dEQP-GLES31
   `geometry_shading.vertex_transform_feedback` 2, KHR `gpu_shader5` `texture_gather_offset_color`
   2 (gathers at run-time offsets at a texture's edges), and the 51 single cases in
@@ -1056,6 +1125,12 @@ None.
 
 ## Requests to other tracks
 
+- WebGPU back end track (G9 run 31): `fill.rs` `quantise` (`PackedTargetQuantised`) makes a view of
+  dimension `D2` of the target texture also when it is 3D, then sets `depth_slice` on its
+  attachment; WebGPU makes no 2D view of a 3D texture, so the device is lost. Read from dEQP-GLES3
+  `fbo.color.tex3d.rgb565` and `.rgb5_a1` (a 3D texture of a packed 16-bit format drawn into: the
+  only packed formats of that group, the others pass). Asked: a `D3` view for a 3D texture (its
+  `base_array_layer` 0, `depth_slice` as now); 2 device losses.
 - Shaders track (G9 run 28): the carried naga's HLSL writer writes `MathFunction::Sign` as HLSL's
   `sign`, which returns `int` (or `intN`) for a float argument; a float `sign` whose bits are then
   taken (`asuint(sign(x))`, as a storage write or an integer target's output inlines it) gives
