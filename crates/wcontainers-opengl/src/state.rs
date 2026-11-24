@@ -14,7 +14,7 @@ use wcontainers_gpu::{
     RenderTargetBlend, SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute,
     VertexFormat, VertexLayoutDesc, VertexStream,
 };
-use wcontainers_nir::mesa::{NearestSampler, Nir, Wrap};
+use wcontainers_nir::mesa::{Assembled, NearestSampler, Nir, Wrap};
 use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
 
 use crate::context::{self, Context};
@@ -443,10 +443,11 @@ pub struct Shader {
     /// A geometry program writing `gl_Layer`: the location after its outputs, where its
     /// pass-through passes the layer it names to the fragment program.
     pub named_layer: Option<u32>,
-    /// An evaluation program using storage: the geometry program drawn after it with no
-    /// geometry program bound, so that it runs as compute work, which writes storage
-    /// (`VertexStorageAsCompute`); or why none is made.
-    pub pass_through: Result<Option<Box<Shader>>, &'static str>,
+    /// A vertex or evaluation program using storage: the geometry programs drawn after it with
+    /// no geometry program bound, so that it runs as compute work, which writes storage
+    /// (`VertexStorageAsCompute`), by the primitive they take (`Assembled`; an evaluation
+    /// program's one at the primitive it makes); an entry is `None` where none could be made.
+    pub pass_through: Option<[Option<Box<Shader>>; Assembled::ALL.len()]>,
 }
 
 fn factor(f: pipe_blendfactor) -> BlendFactor {
@@ -1156,9 +1157,10 @@ fn create_shader<B: Backend>(
     let integer_sampled = nir.integer_sampled_units();
     let named_layer = nir.named_layer_location();
     // WebGPU writes no storage from a vertex program, which an evaluation program is drawn as
-    // without a geometry program after it; one using storage runs before a pass-through geometry
-    // program instead, passing it its point size at a location (the stage helper stages none).
-    let pass_through = if stage == Stage::TessEvaluation {
+    // without a geometry program after it; a vertex or evaluation program using storage runs
+    // before a pass-through geometry program instead, passing it its point size at a location
+    // (the stage helper stages none).
+    let pass_through = if matches!(stage, Stage::Vertex | Stage::TessEvaluation) {
         nir.storage_pass_through()
     } else {
         None
@@ -1167,15 +1169,16 @@ fn create_shader<B: Backend>(
         .key()
         .unwrap_or_else(|e| refuse(format_args!("a program whose content has no key: {e}")));
     driver.shader_made(id);
-    let pass_through = match pass_through {
-        Some(Some(geometry)) => {
+    let pass_through = pass_through.map(|made| {
+        made.map(|geometry| {
+            let geometry = geometry?;
             let id = geometry.key().unwrap_or_else(|e| {
                 refuse(format_args!(
                     "a pass-through program whose content has no key: {e}"
                 ))
             });
             driver.shader_made(id);
-            Ok(Some(Box::new(Shader {
+            Some(Box::new(Shader {
                 stage: Stage::Geometry,
                 id,
                 named_layer: geometry.named_layer_location(),
@@ -1186,15 +1189,10 @@ fn create_shader<B: Backend>(
                 fetches_target: false,
                 formatless_images: 0,
                 integer_sampled: 0,
-                pass_through: Ok(None),
-            })))
-        }
-        Some(None) => Err(
-            "an evaluation program using storage, writing outputs at offsets known only when run \
-             or a point size past the last location",
-        ),
-        None => Ok(None),
-    };
+                pass_through: None,
+            }))
+        })
+    });
     object(Shader {
         stage,
         id,
@@ -1356,7 +1354,7 @@ unsafe extern "C" fn delete_shader_state<B: Backend>(pipe: *mut pipe_context, st
         let (context, shader) = unsafe { (Context::<B>::of(pipe), drop_object::<Shader>(state)) };
         let Some(shader) = shader else { return };
         let screen = context.screen();
-        let pass_through = shader.pass_through.iter().flatten().map(|p| p.id);
+        let pass_through = shader.pass_through.iter().flatten().flatten().map(|p| p.id);
         for id in std::iter::once(shader.id).chain(pass_through) {
             if !screen.shader_deleted(&id) {
                 context.programs.deleted(screen, id);

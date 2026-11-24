@@ -6,7 +6,7 @@
 use wcontainers_gpu::{ShaderStage, SlotKind};
 use wcontainers_nir::ConvertError;
 use wcontainers_nir::bind::stage_set;
-use wcontainers_nir::mesa::{GlslNameKind, GlslStage, Nir, Stage};
+use wcontainers_nir::mesa::{Assembled, GlslNameKind, GlslStage, Nir, PositionTransform, Stage};
 use wcontainers_shaders::ENTRY_POINT;
 
 const COMPUTE: &str = "
@@ -1077,4 +1077,56 @@ fn points_written_as_one_pixel_are_known_as_such() {
     let one_pixel = 1.0;
     assert!(vertex(ONE_PIXEL_POINTS).point_size_at_most(one_pixel));
     assert!(!vertex(SIZED_POINTS).point_size_at_most(one_pixel));
+}
+
+const STORING_VERTICES: &str = "#version 450
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 colour;
+layout(std430, binding = 0) buffer Seen { uint seen[]; };
+void main() {
+    atomicAdd(seen[gl_VertexID], 1u);
+    gl_Position = at;
+    colour = at;
+}
+";
+
+#[test]
+fn a_vertex_program_using_storage_gets_a_pass_through_for_every_primitive_it_may_draw() {
+    let from = |source| {
+        Nir::from_glsl(&[(Stage::Vertex, source)])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .nir
+    };
+    assert!(from(ONE_PIXEL_POINTS).storage_pass_through().is_none());
+    let made = from(STORING_VERTICES).storage_pass_through().unwrap();
+    let point = 1;
+    let line = 2;
+    let triangle = 3;
+    let vertices = |a| match a {
+        Assembled::Points => point,
+        Assembled::Lines | Assembled::LinesAdjacency => line,
+        Assembled::Triangles | Assembled::TrianglesAdjacency => triangle,
+    };
+    for (&assembled, geometry) in Assembled::ALL.iter().zip(made) {
+        let mut geometry = geometry.unwrap();
+        assert_eq!(geometry.geometry_vertices_out(), vertices(assembled));
+        // WebGPU draws points of one size.
+        geometry.transform_position(PositionTransform {
+            fixed_point_size: true,
+            ..PositionTransform::default()
+        });
+        geometry.uniform_blocks_as_words();
+        // A geometry program runs as the stage helper's compute work.
+        let bindings = geometry.to_common_form(Stage::Compute).unwrap();
+        let key = geometry.key().unwrap();
+        let routed = wcontainers_nir::direct::route(&mut geometry).unwrap();
+        let unnamed = wcontainers_gpu::VariantKey::default();
+        let converted =
+            wcontainers_nir::direct::geometry(routed, bindings, &unnamed, &key).unwrap();
+        for form in &converted.modules {
+            wcontainers_nir::spirv::validate(&form.module).unwrap();
+        }
+    }
 }

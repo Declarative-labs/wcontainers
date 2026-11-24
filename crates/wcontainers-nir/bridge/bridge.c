@@ -2501,12 +2501,29 @@ uses_storage(const struct nir_shader *nir)
    return false;
 }
 
-static struct nir_shader *
-pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
+/* The primitives a pass-through geometry program takes, at their index in
+ * `wc_nir_storage_pass_through`'s results. */
+static const enum mesa_prim pass_through_inputs[WC_PASS_THROUGH_INPUTS] = {
+   MESA_PRIM_POINTS,           MESA_PRIM_LINES,
+   MESA_PRIM_TRIANGLES,        MESA_PRIM_LINES_ADJACENCY,
+   MESA_PRIM_TRIANGLES_ADJACENCY,
+};
+
+/* The primitive an evaluation program makes. */
+static enum mesa_prim
+evaluated_primitive(const struct nir_shader *tes)
 {
-   if (tes->info.stage != MESA_SHADER_TESS_EVAL)
-      return NULL;
-   nir_shader *lowered = nir_shader_clone(NULL, tes);
+   if (tes->info.tess.point_mode)
+      return MESA_PRIM_POINTS;
+   if (tes->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES)
+      return MESA_PRIM_LINES;
+   return MESA_PRIM_TRIANGLES;
+}
+
+static struct nir_shader *
+pass_through_geometry(const struct nir_shader *last, enum mesa_prim in, uint32_t size_at)
+{
+   nir_shader *lowered = nir_shader_clone(NULL, last);
    wc_nir_lower_io(lowered);
    nir_shader_gather_info(lowered, nir_shader_get_entrypoint(lowered));
    struct written_slots *written = calloc(1, sizeof(*written));
@@ -2523,31 +2540,45 @@ pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
       free(written);
       return NULL;
    }
-   enum mesa_prim in, out;
-   if (tes->info.tess.point_mode) {
-      in = MESA_PRIM_POINTS;
+   /* The vertices passed on, of those taken: an adjacency primitive's own, without its
+    * neighbours. */
+   static const unsigned own_lines[] = {1, 2}, own_triangles[] = {0, 2, 4}, every[] = {0, 1, 2};
+   const unsigned *passed = every;
+   enum mesa_prim out = MESA_PRIM_TRIANGLE_STRIP;
+   unsigned vertices = ARRAY_SIZE(own_triangles);
+   switch (in) {
+   case MESA_PRIM_POINTS:
       out = MESA_PRIM_POINTS;
-   } else if (tes->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES) {
-      in = MESA_PRIM_LINES;
+      vertices = 1;
+      break;
+   case MESA_PRIM_LINES:
       out = MESA_PRIM_LINE_STRIP;
-   } else {
-      in = MESA_PRIM_TRIANGLES;
-      out = MESA_PRIM_TRIANGLE_STRIP;
+      vertices = ARRAY_SIZE(own_lines);
+      break;
+   case MESA_PRIM_LINES_ADJACENCY:
+      out = MESA_PRIM_LINE_STRIP;
+      vertices = ARRAY_SIZE(own_lines);
+      passed = own_lines;
+      break;
+   case MESA_PRIM_TRIANGLES_ADJACENCY:
+      passed = own_triangles;
+      break;
+   default:
+      break;
    }
-   const unsigned vertices = mesa_vertices_per_prim(in);
 
    nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, tes->options, "pass-through");
+      nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, last->options, "pass-through");
    nir_shader *nir = b.shader;
    nir->info.io_lowered = true;
    nir->info.gs.input_primitive = in;
    nir->info.gs.output_primitive = out;
-   nir->info.gs.vertices_in = vertices;
+   nir->info.gs.vertices_in = mesa_vertices_per_prim(in);
    nir->info.gs.vertices_out = vertices;
    nir->info.gs.invocations = 1;
    nir->info.gs.active_stream_mask = 1;
    for (unsigned v = 0; v < vertices; v++) {
-      nir_def *vertex = nir_imm_int(&b, v);
+      nir_def *vertex = nir_imm_int(&b, passed[v]);
       for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
          const struct written_slot *s = &written->slots[slot];
          if (slot == VARYING_SLOT_EDGE || (sized && slot == size_slot))
@@ -2556,6 +2587,15 @@ pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
          const struct written_slot *from =
             slot == VARYING_SLOT_PSIZ ? &written->slots[size_slot] : s;
          nir_def *offset = nir_imm_int(&b, s->offset);
+         /* The position whole, as the position's transform takes it (`transform_position`). */
+         if (slot == VARYING_SLOT_POS && s->components == BITFIELD_MASK(4)) {
+            nir_def *value = nir_load_per_vertex_input(
+               &b, 4, nir_alu_type_get_type_size(s->types[0]), vertex, offset,
+               .dest_type = s->types[0], .io_semantics = s->semantics);
+            nir_store_output(&b, value, offset, .write_mask = BITFIELD_MASK(4),
+                             .src_type = s->types[0], .io_semantics = s->semantics);
+            continue;
+         }
          u_foreach_bit(c, s->components) {
             nir_def *value = nir_load_per_vertex_input(
                &b, 1, nir_alu_type_get_type_size(from->types[c]), vertex,
@@ -2575,15 +2615,21 @@ pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
    return nir;
 }
 
-struct nir_shader *
-wc_nir_storage_pass_through(struct nir_shader *tes, bool *wanted)
+bool
+wc_nir_storage_pass_through(struct nir_shader *last, struct nir_shader *made[WC_PASS_THROUGH_INPUTS])
 {
-   *wanted = tes->info.stage == MESA_SHADER_TESS_EVAL && uses_storage(tes);
-   if (!*wanted)
-      return NULL;
-   const uint32_t at = wc_nir_generic_end(tes);
-   wc_nir_point_size_also_at(tes, at);
-   return pass_through_geometry(tes, at);
+   for (unsigned i = 0; i < WC_PASS_THROUGH_INPUTS; i++)
+      made[i] = NULL;
+   const bool evaluation = last->info.stage == MESA_SHADER_TESS_EVAL;
+   if ((!evaluation && last->info.stage != MESA_SHADER_VERTEX) || !uses_storage(last))
+      return false;
+   const uint32_t at = wc_nir_generic_end(last);
+   wc_nir_point_size_also_at(last, at);
+   for (unsigned i = 0; i < WC_PASS_THROUGH_INPUTS; i++) {
+      if (!evaluation || pass_through_inputs[i] == evaluated_primitive(last))
+         made[i] = pass_through_geometry(last, pass_through_inputs[i], at);
+   }
+   return true;
 }
 
 uint32_t

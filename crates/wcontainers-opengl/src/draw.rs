@@ -18,7 +18,9 @@ use wcontainers_gpu::{
     cut_scissors, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
-use wcontainers_nir::mesa::{NearestSampler, Nir, PositionTransform, TextureSwizzle, Wrap};
+use wcontainers_nir::mesa::{
+    Assembled, NearestSampler, Nir, PositionTransform, TextureSwizzle, Wrap,
+};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
     DomainSets, FinalDraw, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
@@ -1203,6 +1205,22 @@ fn without_adjacency(mode: mesa_prim) -> Option<Topology> {
     })
 }
 
+/// The primitive a geometry program takes for a draw of `mode`.
+fn assembled(mode: mesa_prim) -> Option<Assembled> {
+    Some(match mode {
+        MESA_PRIM_POINTS => Assembled::Points,
+        MESA_PRIM_LINES | MESA_PRIM_LINE_STRIP | MESA_PRIM_LINE_LOOP => Assembled::Lines,
+        MESA_PRIM_TRIANGLES | MESA_PRIM_TRIANGLE_STRIP | MESA_PRIM_TRIANGLE_FAN => {
+            Assembled::Triangles
+        }
+        MESA_PRIM_LINES_ADJACENCY | MESA_PRIM_LINE_STRIP_ADJACENCY => Assembled::LinesAdjacency,
+        MESA_PRIM_TRIANGLES_ADJACENCY | MESA_PRIM_TRIANGLE_STRIP_ADJACENCY => {
+            Assembled::TrianglesAdjacency
+        }
+        _ => return None,
+    })
+}
+
 fn index_format(size: u16) -> IndexFormat {
     match u32::from(size) {
         s if s == IndexFormat::U8.size() => IndexFormat::U8,
@@ -2230,25 +2248,42 @@ fn draw<B: Backend>(
     draws: &[pipe_draw_start_count_bias],
 ) -> Result<(), String> {
     let mut gs = context.stages.get(Stage::Geometry).shader;
-    let [tcs, tes] =
-        [Stage::TessControl, Stage::TessEvaluation].map(|s| context.stages.get(s).shader);
+    let [vs, tcs, tes] = [Stage::Vertex, Stage::TessControl, Stage::TessEvaluation]
+        .map(|s| context.stages.get(s).shader);
     let tessellated = !tes.is_null();
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    let (evaluation_shader, mut geometry_shader) = unsafe { (tes.as_ref(), gs.as_ref()) };
-    if let Some(evaluation) = evaluation_shader.filter(|_| gs.is_null()) {
-        match &evaluation.pass_through {
-            Ok(Some(pass_through)) => {
-                context
-                    .screen()
-                    .backend()
-                    .slow_paths()
-                    .hit(SlowPath::VertexStorageAsCompute);
-                gs = &**pass_through;
-                geometry_shader = Some(&**pass_through);
-            }
-            Ok(None) => {}
-            Err(why) => return refused(format_args!("{why}")),
-        }
+    let (vertex_shader, evaluation_shader, mut geometry_shader) =
+        unsafe { (vs.as_ref(), tes.as_ref(), gs.as_ref()) };
+    // The last program before the geometry stage, which runs before a pass-through geometry
+    // program where it uses storage.
+    let last = if tessellated {
+        evaluation_shader
+    } else {
+        vertex_shader
+    };
+    if let Some(made) = last
+        .filter(|_| gs.is_null())
+        .and_then(|s| s.pass_through.as_ref())
+    {
+        let pass_through = if tessellated {
+            made.iter().flatten().next()
+        } else {
+            assembled(mesa_prim::from(info.mode)).and_then(|a| made[a as usize].as_ref())
+        };
+        let Some(pass_through) = pass_through else {
+            return refused(format_args!(
+                "a program using storage, writing outputs at offsets known only when run or a \
+                 point size past the last location, or drawing a primitive no geometry program \
+                 takes"
+            ));
+        };
+        context
+            .screen()
+            .backend()
+            .slow_paths()
+            .hit(SlowPath::VertexStorageAsCompute);
+        gs = &**pass_through;
+        geometry_shader = Some(&**pass_through);
     }
     if tessellated {
         // OpenGL draws nothing through tessellation but patches (the API refuses others).
@@ -3276,7 +3311,7 @@ fn squares_for<B: Backend>(
                     formatless_images: vs.formatless_images,
                     integer_sampled: vs.integer_sampled,
                     named_layer: None,
-                    pass_through: Ok(None),
+                    pass_through: None,
                 })
             };
             let before = if sized {
@@ -3356,7 +3391,7 @@ fn geometry_squares_for<B: Backend>(
                     formatless_images: gs.formatless_images,
                     integer_sampled: gs.integer_sampled,
                     named_layer: gs.named_layer,
-                    pass_through: Ok(None),
+                    pass_through: None,
                 }),
                 None => None,
             };

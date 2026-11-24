@@ -235,7 +235,7 @@ unsafe extern "C" {
         largest: f32,
         block: u32,
     ) -> *mut NirShader;
-    fn wc_nir_storage_pass_through(tes: *mut NirShader, wanted: *mut bool) -> *mut NirShader;
+    fn wc_nir_storage_pass_through(last: *mut NirShader, made: *mut *mut NirShader) -> bool;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -310,6 +310,28 @@ pub struct NearestSampler {
     pub min_lod: u32,
     pub max_lod: u32,
     pub border: [u32; naga::VectorSize::MAX],
+}
+
+/// The primitive a pass-through geometry program takes (`Nir::storage_pass_through`), in the
+/// bridge's order (`WC_PASS_THROUGH_INPUTS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Assembled {
+    Points,
+    Lines,
+    Triangles,
+    LinesAdjacency,
+    TrianglesAdjacency,
+}
+
+impl Assembled {
+    /// Every one, in the bridge's order.
+    pub const ALL: &[Assembled] = &[
+        Assembled::Points,
+        Assembled::Lines,
+        Assembled::Triangles,
+        Assembled::LinesAdjacency,
+        Assembled::TrianglesAdjacency,
+    ];
 }
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space,
@@ -530,17 +552,20 @@ impl Nir {
         (!squares.is_null()).then_some(Nir(squares))
     }
 
-    /// For an evaluation program using storage buffers or images, which runs as compute work
-    /// before a geometry program passing each of its primitives on unchanged, every output as
-    /// written: that geometry program, with this program's point size also written at the generic
-    /// location after its outputs, where the geometry program reads it and does not pass it on.
-    /// `None` for a program of another stage or using no storage; `Some(None)` for one writing
-    /// outputs at offsets known only when run, or a point size the geometry program cannot read.
-    pub fn storage_pass_through(&mut self) -> Option<Option<Nir>> {
-        let mut wanted = false;
-        // SAFETY: self.0 is a live shader; the result is a new shader or null.
-        let geometry = unsafe { wc_nir_storage_pass_through(self.0, &mut wanted) };
-        wanted.then(|| (!geometry.is_null()).then_some(Nir(geometry)))
+    /// For a vertex or evaluation program using storage buffers or images, which runs as compute
+    /// work before a geometry program passing each of its primitives' own vertices on unchanged,
+    /// every output as written: those geometry programs, by the primitive taken (`Assembled`),
+    /// with this program's point size also written at the generic location after its outputs,
+    /// where the geometry program reads it and does not pass it on. An evaluation program has
+    /// one, for the primitive it makes. `None` for a program of another stage or using no
+    /// storage; an entry is `None` for one writing outputs at offsets known only when run, or a
+    /// point size the geometry program cannot read.
+    pub fn storage_pass_through(&mut self) -> Option<[Option<Nir>; Assembled::ALL.len()]> {
+        let mut made = [std::ptr::null_mut(); Assembled::ALL.len()];
+        // SAFETY: self.0 is a live shader; the bridge writes `made`'s entries, each a new shader
+        // or null.
+        let wanted = unsafe { wc_nir_storage_pass_through(self.0, made.as_mut_ptr()) };
+        wanted.then(|| made.map(|geometry| (!geometry.is_null()).then_some(Nir(geometry))))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the
