@@ -85,6 +85,16 @@ fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
 }
 
+/// One embedder process has one zygote place, so tests running at once start theirs one at a time.
+static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn zygote(probe: &HostProbe) -> Zygote {
+    let _one_at_a_time = STARTING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Zygote::start(probe).expect("zygote")
+}
+
 /// The guest address a target's window address is: its low 32 bits, whatever its tag.
 fn in_window(target: u64) -> u64 {
     target % WINDOW
@@ -355,7 +365,7 @@ fn a_jump_through_a_register_reaches_only_its_target_s_slot_or_the_floor() {
     let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
     let mut rng = fastrand::Rng::with_seed(seed);
     let probe = HostProbe::new().expect("the host is refused");
-    let zygote = Zygote::start(&probe).expect("zygote");
+    let zygote = zygote(&probe);
     let stub = zygote.fork_stub().expect("fork");
     let mut area = CodeArea::new().expect("code area");
     for landing in LANDINGS {
@@ -950,7 +960,7 @@ fn an_access_reaches_only_the_window_s_mapped_pages_as_linux_does() {
     let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
     let mut rng = fastrand::Rng::with_seed(seed);
     let probe = HostProbe::new().expect("the host is refused");
-    let zygote = Zygote::start(&probe).expect("zygote");
+    let zygote = zygote(&probe);
     let stub = zygote.fork_stub().expect("fork");
     let mut area = CodeArea::new().expect("code area");
     area.write_slots(&probe, WAY.slot(GUEST + INSTRUCTION) as usize, &ending());
