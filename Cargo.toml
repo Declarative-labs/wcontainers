@@ -37,7 +37,7 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/wcontainers-directx (1091)
 #   crates/wcontainers-direct3d-12 (495)
 #   crates/wcontainers-graphics-test (342)
-#   crates/kernel/implementation/linux (336)
+#   crates/kernel/implementation/linux (331, counted on 2026-11-24)
 #   crates/wcontainers-opengl (370, counted on 2026-11-23)
 #   crates/wcontainers-graphics-test-forward (197)
 #   crates/wcontainers-gpu-webgl (167)
