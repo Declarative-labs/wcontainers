@@ -1,15 +1,21 @@
 //! A container's first process run in the kernel's loop with the seeded test policy, on any executor of the loop.
 
+use core::convert::Infallible;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Host, HostError, Warning};
+use wcontainers_byte_source::ByteSource;
 use wcontainers_kernel_linux::{ARM64_ADDRESS_SPACE_BYTES, FileRecord, Start, StartOptions};
 use wcontainers_runtime_single_kernel::{Ending, Execution, Kernel, System, drive};
 use wcontainers_system_seeded_test_policy::{ERROR, TestPolicy};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The clocks the test host reads; the wall clock's is also a run's start where the guest is not shown the machine's.
 const MONOTONIC_NANOSECONDS: u64 = 1_234_567;
 pub const REALTIME_NANOSECONDS: u64 = 1_763_500_000_000_000_000;
+
+/// Why an output end's bytes can always be kept.
+const OUTPUT_KEPT: &str = "the test's output fits in memory";
 
 /// What the host was asked to write to each output end.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -33,12 +39,22 @@ impl wcontainers_clock::Clock for Recording {
     }
 }
 
+/// The seeded random bytes, which fill whatever they are read into.
+struct Seeded<'random>(&'random mut fastrand::Rng);
+
+impl ByteSource for Seeded<'_> {
+    type Error = Infallible;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, Infallible> {
+        self.0.fill(into);
+        Ok(into.len())
+    }
+}
+
 impl wcontainers_random_source::RandomSource for Recording {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
-        self.random
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .fill(into);
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
+        let mut random = self.random.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok(_) = into.write_from(&mut Seeded(&mut random));
         Ok(())
     }
 }
@@ -50,16 +66,15 @@ impl Host for Recording {
 impl wcontainers_system::StreamTransport for Recording {
     type Endpoint = u32;
 
-    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+    fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
         let mut output = self.output.lock().unwrap_or_else(PoisonError::into_inner);
-        match *peer {
+        let end = match *peer {
             ERROR => &mut output.stderr,
             _ => &mut output.stdout,
-        }
-        .extend_from_slice(bytes);
-        Ok(bytes.len())
+        };
+        Ok(payload.read_to(end).expect(OUTPUT_KEPT))
     }
-    fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+    fn receive_stream(&self, _peer: &u32, _into: &impl VolatileBytes) -> Result<usize, HostError> {
         Err(HostError::NotSupported)
     }
     fn close_stream(&self, _peer: &u32) {}
