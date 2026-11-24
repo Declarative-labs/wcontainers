@@ -308,7 +308,7 @@ fn direct3d12(
         d3d12::element(s!("TEXCOORD"), DXGI_FORMAT_R32G32_FLOAT, TEXCOORD_OFFSET),
     ];
     let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+        pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
         VS: d3d12::bytecode(&vs),
         PS: d3d12::bytecode(&ps),
         SampleMask: u32::MAX,
@@ -334,6 +334,7 @@ fn direct3d12(
     desc.RTVFormats[0] = dxgi(TARGET);
     let pipeline: ID3D12PipelineState =
         unsafe { gpu.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    drop(std::mem::ManuallyDrop::into_inner(desc.pRootSignature));
     let map = gpu
         .committed(
             D3D12_HEAP_TYPE_DEFAULT,

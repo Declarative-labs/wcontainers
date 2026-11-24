@@ -87,12 +87,13 @@ fn direct3d12(gpu: &d3d12::Gpu, shader: &Shader, code: &[u8], constants: &Consta
         })
         .unwrap();
     let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-        pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+        pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
         CS: d3d12::bytecode(code),
         ..Default::default()
     };
     let pipeline: ID3D12PipelineState =
         unsafe { gpu.device.CreateComputePipelineState(&desc) }.unwrap();
+    drop(std::mem::ManuallyDrop::into_inner(desc.pRootSignature));
     let buffers = constants.each_ref().map(|c| gpu.upload(c).unwrap());
     let output = gpu
         .committed(

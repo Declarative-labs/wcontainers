@@ -1978,7 +1978,7 @@ fn direct3d12_streamed(
         d3d12::element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 12),
     ];
     let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+        pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
         VS: d3d12::bytecode(&vs),
         GS: gs.as_deref().map(d3d12::bytecode).unwrap_or_default(),
         StreamOutput: D3D12_STREAM_OUTPUT_DESC {
@@ -2013,6 +2013,7 @@ fn direct3d12_streamed(
     };
     let pipeline: ID3D12PipelineState =
         unsafe { gpu.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    drop(std::mem::ManuallyDrop::into_inner(desc.pRootSignature));
     let mut heap: Option<ID3D12QueryHeap> = None;
     unsafe {
         gpu.device.CreateQueryHeap(
