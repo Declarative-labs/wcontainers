@@ -4,8 +4,11 @@
 
 use std::sync::Arc;
 
-use wcontainers_abi::{Cpu, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning};
+use wcontainers_abi::{
+    Access, Cpu, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning,
+};
 use wcontainers_arm64::encode::{self, form};
+use wcontainers_arm64::{Address, Instruction, Reg};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
@@ -316,6 +319,69 @@ fn a_counted_turn_of_a_loop_without_exits_ends_by_a_stop_and_goes_on() {
             registers.pc
         );
         last = registers.x[0];
+    }
+}
+
+/// `stp x0, x0, [sp, #8]`, a form the encoder lacks (the test checks the decoder reads it so).
+const STORE_PAIR_PAST_SP: u32 = 0xa900_83e0;
+/// The stack pointer's register number where `add` names it.
+const SP: u8 = 31;
+
+/// Runs `words` to their first exit, which must be their second instruction's.
+fn first_exit_at_the_second_instruction(words: &[u32]) -> (Exit, HostProcessExecutor, MemoryId) {
+    let mut cpu = executor();
+    let (memory, thread) = guest(&mut cpu, words);
+    let seen = run_to_exit(&mut cpu, thread);
+    assert_eq!(seen.exits.len(), 1, "{:?}", seen.exits);
+    let (exit, registers, _) = seen.exits[0];
+    assert_eq!(registers.pc, CODE + INSTRUCTION as u64, "{exit:?}");
+    (exit, cpu, memory)
+}
+
+#[test]
+fn a_store_probed_before_it_crosses_a_page_faults_as_a_write_and_a_misaligned_stack_an_alignment() {
+    // A store whose last bytes fall on the unmapped page after the data: the access is probed first.
+    let (exit, mut cpu, memory) = first_exit_at_the_second_instruction(&[
+        encode::add_immediate(0, 2, (PAGE - WORD / 2) as i64).expect("an add"),
+        encode::load_store(form::STR, 1, 0, 0, WORD).expect("str"),
+    ]);
+    assert_eq!(
+        exit,
+        Exit::MemoryFault {
+            address: DATA + PAGE,
+            access: Access::Write,
+        }
+    );
+    assert_eq!(
+        read_word(&mut cpu, memory, DATA + PAGE - WORD),
+        0,
+        "nothing stored"
+    );
+    // A pair through a stack pointer that is not a multiple of 16: in a page the hardware checks it, and where the
+    // pair may cross into the next page the check runs among the probes.
+    assert!(matches!(
+        wcontainers_arm64::decode(STORE_PAIR_PAST_SP),
+        Instruction::StorePair {
+            bytes: 8,
+            address: Address::Offset {
+                base: Reg::Sp,
+                offset: 8
+            },
+            ..
+        }
+    ));
+    for offset in [WORD, PAGE - WORD] {
+        let (exit, _, _) = first_exit_at_the_second_instruction(&[
+            encode::add_immediate(SP, 2, offset as i64).expect("an add"),
+            STORE_PAIR_PAST_SP,
+        ]);
+        assert_eq!(
+            exit,
+            Exit::AlignmentFault {
+                address: DATA + offset
+            },
+            "sp {offset:#x} into the data"
+        );
     }
 }
 

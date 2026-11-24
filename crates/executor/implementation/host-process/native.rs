@@ -15,7 +15,7 @@ use wcontainers_arm64::mirror::{
     LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_TEST, SLOT_MOVE_BITS, SLOT_MOVES,
 };
 use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
-use wcontainers_arm64::{Arm64, Way};
+use wcontainers_arm64::{Arm64, Instruction, Way};
 use wcontainers_executor_arm64_stop::{
     self as stop, FloatStatus, GENERAL, GuestState, Interrupted, Piece, Resolved, SYSCALL_NUMBER,
     Stop, Taken,
@@ -580,6 +580,18 @@ impl HostProcessExecutor {
         Some(back - INSTRUCTION)
     }
 
+    /// The word of loaded code at host address `pc`.
+    fn host_word(&self, memory: MemoryId, pc: u64) -> Option<u32> {
+        let code = self.codes[memory.0 as usize].as_ref()?;
+        let (&base, guest) = code.hosts.range(..=pc).next_back()?;
+        let from = usize::try_from(pc - base).ok()?;
+        let bytes = code.pieces[guest]
+            .code
+            .bytes
+            .get(from..from + size_of::<u32>())?;
+        Some(u32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
     /// Makes guest `target` the last target of the jump whose call into the floor has its `blr` at host address
     /// `call`. A target no piece can be at is not made one, so the call comes again at the next miss.
     fn make_last_target(&mut self, memory: MemoryId, call: u64, target: u64) {
@@ -735,30 +747,35 @@ impl HostProcessExecutor {
         }
     }
 
-    /// What a fault in translated code was, from its syndrome where the frame gave one.
+    /// What a fault in translated code at host `pc` was, from its syndrome where the frame gave one.
     fn taken(
         &mut self,
         memory: MemoryId,
+        pc: u64,
         address: u64,
         signal: u32,
         code: u32,
         syndrome: u64,
     ) -> Taken {
+        // Linux records no syndrome for a `brk` (a frame may hold an earlier fault's): its call is the word at pc.
+        if signal as i32 == libc::SIGTRAP {
+            return match self.host_word(memory, pc).map(wcontainers_arm64::decode) {
+                Some(Instruction::Breakpoint { comment }) => Taken::Call(comment),
+                _ => Taken::Other,
+            };
+        }
         /// The syndrome's exception classes (Arm ARM, ESR_EL1.EC).
         const CLASS_SHIFT: u32 = 26;
         const INSTRUCTION_ABORT: u64 = 0x20;
         const PC_ALIGNMENT: u64 = 0x22;
         const DATA_ABORT: u64 = 0x24;
         const SP_ALIGNMENT: u64 = 0x26;
-        const BREAKPOINT: u64 = 0x3c;
         /// A data abort's write-not-read and cache-maintenance bits and its status code of an alignment fault (ISS.WnR,
         /// ISS.CM, ISS.DFSC); a cache maintenance fault sets WnR but reads.
         const WRITE_NOT_READ: u64 = 1 << 6;
         const CACHE_MAINTENANCE: u64 = 1 << 8;
         const STATUS: u64 = 0x3f;
         const ALIGNMENT_STATUS: u64 = 0x21;
-        /// A breakpoint's comment (ISS.Comment), which is a call's code where translated code calls by `brk`.
-        const COMMENT: u64 = 0xffff;
         if syndrome != 0 {
             return match syndrome >> CLASS_SHIFT {
                 DATA_ABORT => Taken::Access {
@@ -768,7 +785,6 @@ impl HostProcessExecutor {
                 },
                 SP_ALIGNMENT => Taken::StackAlignment,
                 PC_ALIGNMENT => Taken::JumpAlignment,
-                BREAKPOINT => Taken::Call((syndrome & COMMENT) as u16),
                 INSTRUCTION_ABORT => Taken::Other,
                 _ => Taken::Other,
             };
@@ -920,7 +936,7 @@ impl HostProcessExecutor {
                         code,
                     } => {
                         let syndrome = self.memory(memory).stub.fault_syndrome(index);
-                        self.taken(memory, address, signal, code, syndrome)
+                        self.taken(memory, h.pc, address, signal, code, syndrome)
                     }
                     TurnEnd::Interrupted { at } => {
                         h.pc = at;
@@ -1028,6 +1044,7 @@ impl HostProcessExecutor {
                         break Ended::LastTarget { call, target };
                     }
                     Some(Resolved::Stop(stop, state)) => {
+                        let stop = self.store_faults_as_write(memory, stop, state.pc);
                         t.state = state;
                         t.page = held;
                         break Ended::Stopped(stop);
@@ -1121,6 +1138,30 @@ impl HostProcessExecutor {
         self.slow(reason::EXIT_NOT_UNDERSTOOD, 1, pc);
         let _ = self.host.kill(&self.memory(memory).stub);
         Ended::Killed
+    }
+
+    /// A fault of a plain store, as Linux reports it: a write, also where the probe in front of an access that may
+    /// cross a page took it as an atomic that reads first (the syndrome's WnR clear where a read would fault too).
+    fn store_faults_as_write(&self, memory: MemoryId, stop: Stop, pc: u64) -> Stop {
+        let Stop::MemoryFault {
+            address,
+            write: false,
+        } = stop
+        else {
+            return stop;
+        };
+        let mut word = [0; INSTRUCTION as usize];
+        if self.read_guest(memory, pc, &mut word).is_err() {
+            return stop;
+        }
+        let write = matches!(
+            wcontainers_arm64::decode(u32::from_le_bytes(word)),
+            Instruction::Store { .. }
+                | Instruction::StorePair { .. }
+                | Instruction::StoreVector { .. }
+                | Instruction::StoreVectorPair { .. }
+        );
+        Stop::MemoryFault { address, write }
     }
 
     /// Whether the guest may read the byte at `address`.
