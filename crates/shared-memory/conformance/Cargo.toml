@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-shared-memory-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-shared-memory = { path = ".." }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
+
+[lints]
+workspace = true
