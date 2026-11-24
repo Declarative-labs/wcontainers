@@ -12,6 +12,25 @@ track was idle (f9ecca97, extended-range swap chains in the blit models; c387985
 
 ## Where things stand
 
+Run 58 (2026-11-24, milestone G5r, its fourth run): the eighth independent check (scratch
+icheck58) found 11_0's 32 registers to the pixel stage not built behind the stage helper and
+beside the values the front links: a geometry shader writing the position and 31 values was
+refused (E_NOTIMPL), and a vertex shader passing 29 values beside clip distances the pixel shader
+reads lost the device (wgpu refused location 31). Built (bc98cbd4): the moves are taken from the
+two modules drawn, the vertex program, the domain program or the stage helper's pass-through, and
+the pixel program, every location each passes counted, the linked ones too
+(`stage_registers::passed_locations`); the refusal "values between the stages past the back end's
+locations behind a geometry, hull or domain shader or stream output, or beside values the front
+links" is gone. On the RTX 3080 (scratch run58/own2.log) the check's cases and a domain shader
+case of this run draw what real Direct3D 12 and WARP draw: 32 registers behind a geometry shader
+and behind a domain shader, 20, 29 and 30 values beside linked clip distances. Tests:
+`registers_behind_geometry_and_domain_shaders_and_beside_linked_values_draw_as_direct3d_12`
+(tests/registers.rs, GPU, real's hashes) and
+`values_behind_the_stage_helper_and_beside_linked_ones_move_or_are_refused_by_name` (no GPU). The
+check's minor findings: the 11_1 format table's differences named (Departures), run 56's commit
+stated exactly ("Results of runs 56 and 57"), the runner's extra checks recorded as open ("Shader
+runner"), the half-way stores measured again by the check (gap list).
+
 Runs 56 and 57 (2026-11-23, milestone G5r): the fresh run of every figure at 1d583db4 (run 56's
 chain, "Results of run 56") and the shader runner's failing files each sorted with its owner
 ("Shader runner"). What that sort showed of this front's own was built: a pixel shader reading
@@ -108,7 +127,10 @@ The pass bar, item by item (results under "Results of runs 56 and 57"):
 
 2026-11-23, RTX 3080, desktop shared (the OpenGL track's conformance runs held the GPU queue for
 most of the evening; jobs waited up to 50 minutes). Run 56's chain (scratch bin/rest56.sh, logs
-run56/) on code at 1d583db4; run 57's checks (run57/) on its own clone `tip2`, branch
+run56/) on da1fd6e7 with bind.rs and through.rs uncommitted, which 1d583db4 then committed
+unchanged; the front's last commit of run 57, 38d99d9c (convert_stage), went only through the
+crates' tests and two runner files, and the eighth check's fresh run at 6cbc878c, which holds it,
+gave the same figures (scratch icheck58); run 57's checks (run57/) on its own clone `tip2`, branch
 `phase-2-graphics-direct3d-12b` (its own desktop copy, C:\wc\src and C:\wc\target of that name).
 - Test files (run56/full1.log): 189 of 198, the same 9 as runs 52 to 54.
 - Own program (run56/check1.log): draw 0 of 4096 pixels beyond 1; 35 of 35 cases equal;
@@ -304,7 +326,7 @@ and resolve bits (Departures: no resource they apply to can be made).
   alpha 2 where it gives 3); WARP differs from the RTX 3080 in more channels (400010f3 400020d9
   ... where it gives 400010f2 400020d8). Within the 2026-11-22 bar (two real implementations
   already differ there by a code); every other byte of the 13 formats and of 2-layer arrays equal
-  (the check's numbers, not measured again).
+  (the check's numbers; the eighth check measured them again, the same, scratch icheck58/own1.log).
 
 Also absent, with no failing test file: conservative rasterisation, raster order views, ray
 tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, depth bounds,
@@ -419,11 +441,17 @@ on some adapters, and WebGL 2 makes no Direct3D 12 device:
   "storage textures read through a buffer in a vertex or geometry shader", "multisampled storage
   textures read through a buffer", "a storage texture read through a buffer at a slot past 63",
   "storage textures read through buffers behind a geometry or domain shader".
-- Values between the stages past the back end's inter-stage locations (run 55, Departures): "more
-  values between the stages than the back end passes" (`VaryingsBeyondLimit`: more than its
-  locations after moving, impossible for a valid Direct3D pair where 11_0 is reported) and
-  "values between the stages past the back end's locations behind a geometry, hull or domain
-  shader or stream output, or beside values the front links".
+- Values between the stages past the back end's inter-stage locations (runs 55 and 58,
+  Departures): "more values between the stages than the back end passes" (`VaryingsBeyondLimit`:
+  more than its locations after moving). Where 11_0 is reported (31 locations or more) a valid
+  Direct3D pipeline meets it only where the front adds a value Direct3D passes in no register
+  beside all 31 of the program's: the coverage of alpha-antialiased lines, a depth clamped in the
+  program (back ends without depth clamping) or the primitive's number from the stage helper
+  (back ends without the primitive index); refused by name and counted (owner: this track; no
+  test, case or program meets it). Clip and cull distances take no more locations than their
+  registers: fxc gives them registers of their own (run 58, case r58-packed-clip: a `float3`
+  beside `SV_ClipDistance0` in 31 registers is refused by fxc itself, "output limit (32)
+  exceeded").
 - Vertex input fetched in the program: "a vertex input fetched in the program from no vertex
   buffer", "a per-instance element beyond 4 GiB", "an indirect draw of a per-instance stream
   fetched in the program that steps other than once an instance", "a per-instance stream that
@@ -577,6 +605,15 @@ run56/classify-runner1.txt), with its owner:
     distances was converted with only the first one refused linked. Fixed in run 57 (38d99d9c;
     scratch run57/verify2.log): it now fails no check and runs 3,874 of real's 3,919, the rest
     sections above shader model 6.0, so it joins the first group (58 there, 13 here).
+- clip-cull-distance-2 passes with 685 checks where real runs 676 (the eighth check's minor
+  finding): both fail none and skip one. Not explained yet; what is known (run 58): the two logs
+  differ only in the caps and shader models the runner prints for its Direct3D 12 parts (real:
+  dxc models 6.0 to 6.5, float64, 64-bit integers, the layer and viewport index from any stage;
+  ours: 6.0 and none of those), and the file's probes at shader model 6 carry Windows bug marks
+  (`winbug(sm>=6 ...)`), so which sections each runs differs. A trace of every check outside the
+  rig's launcher (scratch run58/runner.cmd, `VKD3D_TEST_DEBUG=2`) ends after the runner's
+  Direct3D 11 part for both, equal there (146 checks); the trace through the rig's every-check
+  mode is the next step (owner: this track).
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
@@ -700,7 +737,8 @@ and 120 compared with real Direct3D 12's at 8 of 255.
    desktop copy needs the submodule step the script carries.
 2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
-   capture), stage register moves behind the stage helper and beside linked values, Godot's 3D
+   capture), a value the front adds beside all 31 of a program's (gap list), the shader
+   runner's clip-cull-distance-2 check count, Godot's 3D
    platformer's one pixel (trace which draw writes it, on real and ours; Godot offers no WARP
    adapter choice the rig uses), the use test's multisampled and typed buffer loads of varied
    texels, and reads of the packed and block formats, against a decode of their own (no crate in the tree decodes every
@@ -875,10 +913,13 @@ merges.
   the design the Direct3D 11 front built in its own crate; its copy could use this one), a pixel
   program's inputs in order from location 0 and the vertex program's outputs to meet them, and
   every program the pipeline makes later follows the same moves (`StageMoves`). Plan section 9
-  names the requirement, not the route. Not built: moves behind the stage helper (geometry, hull
-  and domain shaders, stream output, the cull and line routes) and beside values the front links
-  (clip distances or depth clamped in the program), each refused by name where a value lies past
-  the back end's locations; no counted test, case or program meets either on the RTX 3080.
+  names the requirement, not the route. Since run 58 the moves are taken from the two modules
+  drawn (`passed_locations`), not from the reflections: the vertex program, the domain program or
+  the stage helper's pass-through (geometry shaders, stream output, the cull and line routes) and
+  the pixel program, with every value the front links beside theirs (clip and cull distances, a
+  depth clamped in the program, a named layer). One limit stays (gap list): a value the front
+  adds that Direct3D passes in no register (line coverage, a depth clamped in the program, the
+  primitive's number) beside all 31 of the program's is refused by name.
 - Wireframe without the back end's polygon mode is refused by name, not converted
   (`FillModeConverted`): Direct3D culls triangles before drawing their edges, so the route needs
   positions after the vertex shader through the stage helper's capture (the Direct3D 11 front
@@ -922,8 +963,14 @@ merges.
   target-independent rasterisation and unordered access view only rendering with a forced sample
   count (refused by name: "forced sample counts and conservative rasterization"), unordered access
   views in every stage (WebGPU stores from fragment and compute programs only) and 64 of them
-  bound at once (beyond WebGPU's storage limits), and the 11_1 format table, which the
-  infrastructure crate's `required` table does not hold yet.
+  bound at once (beyond WebGPU's storage limits), and of the 11_1 format table (run 58: every
+  row of Microsoft's 11_1 page against its 11_0 page, scratch run58/tablediff.py) the output
+  merger's logic operations (`D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP`) on the 11 unsigned
+  integer formats `R32G32B32A32_UINT`, `R32G32B32_UINT`, `R16G16B16A16_UINT`, `R32G32_UINT`,
+  `R10G10B10A2_UINT`, `R8G8B8A8_UINT`, `R16G16_UINT`, `R32_UINT`, `R8G8_UINT`, `R16_UINT` and
+  `R8_UINT`; it requires nothing else of any format beyond 11_0 (the two pages differ otherwise
+  only in a note on `B8G8R8A8_UNORM`'s optional typed views). The infrastructure crate's
+  `required` table holds no 11_1 row until a device can meet one.
   `ARCHITECTURE` answers a discrete adapter. Wave lane counts are WebGPU's bounds (4 to 128).
   `CheckFeatureSupport` answers E_INVALIDARG past feature 34 and for values naming no shader
   model, as this desktop's runtime does; check_d3d12 asks no shader model 6.7 or root signature
