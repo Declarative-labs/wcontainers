@@ -1,10 +1,10 @@
 //! The stand-in CPU comes back for each reason the abi names, with exact registers.
 
 use wcontainers_abi::{
-    Access, Cpu, Exit, LOWEST_ADDRESS, PAGE_SIZE, Permissions, RegisterBlock, Resume,
-    SystemCallNumber, SystemCallRequest,
+    Access, Cpu, Exit, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume,
+    SharedId, SystemCallNumber, SystemCallRequest,
 };
-use wcontainers_executor_unicorn::standin::{StandIn, Unsupported};
+use wcontainers_executor_unicorn::standin::{Refused, StandIn, Unsupported};
 
 // Instruction words.
 const SVC_0: u32 = 0xd400_0001;
@@ -192,10 +192,10 @@ fn unaligned_exclusive_is_reported_as_unsupported() {
     );
 }
 
-/// A block a memory still shows is not freed under it. Before, the block's host memory was unmapped
-/// here and the read below reached it, which ended the test process with SIGSEGV.
+/// A block a memory still shows is not freed under it: the drop is refused by name and the block kept.
+/// Before, the block's host memory was unmapped here and the read below reached it, which ended the
+/// test process with SIGSEGV.
 #[test]
-#[should_panic(expected = "a block of shared pages is dropped while a memory still shows it")]
 fn a_block_a_memory_shows_is_not_dropped() {
     let mut cpu = StandIn::new();
     let memory = cpu.memory_new().unwrap();
@@ -205,9 +205,49 @@ fn a_block_a_memory_shows_is_not_dropped() {
     cpu.set_permissions(memory, 0x20000, PAGE_SIZE, Permissions::READ)
         .unwrap();
     cpu.shared_drop(block);
+    assert_eq!(
+        cpu.refused(),
+        [Refused::DroppingAShownBlock {
+            block,
+            shown_in: vec![memory]
+        }]
+    );
     let mut byte = [0];
     cpu.read(memory, 0x20000, &mut byte).unwrap();
-    assert_eq!(byte, [7], "the read reached the block");
+    assert_eq!(byte, [7], "the read reached the kept block");
+    assert!(cpu.shared_read(block, 0, &mut byte).is_err(), "the kernel's handle is gone");
+    // A copy, as bringing back a saved container makes, keeps the block under its memory too.
+    let mut copy = cpu.restored();
+    copy.read(memory, 0x20000, &mut byte).unwrap();
+    assert_eq!(byte, [7]);
+    // Once its memory goes, so does the kept block.
+    cpu.memory_drop(memory);
+    assert_eq!(cpu.refused().len(), 1);
+}
+
+/// The drop's check counts only ranges a memory shows now: each way of ending the sharing (unmapping
+/// it, zeroing over it, mapping another block over it, dropping the memory) lets the block go with
+/// nothing refused.
+#[test]
+fn a_block_whose_sharing_ended_is_dropped_without_a_refusal() {
+    let mut cpu = StandIn::new();
+    let other = cpu.shared_new(PAGE_SIZE).unwrap();
+    type End = fn(&mut StandIn, MemoryId, SharedId);
+    let ends: [End; 4] = [
+        |cpu, memory, _| cpu.shared_unmap(memory, 0x20000, PAGE_SIZE).unwrap(),
+        |cpu, memory, _| cpu.zero(memory, 0x20000, PAGE_SIZE).unwrap(),
+        |cpu, memory, other| cpu.shared_map(other, 0, memory, 0x20000, PAGE_SIZE).unwrap(),
+        |cpu, memory, _| cpu.memory_drop(memory),
+    ];
+    for end in ends {
+        let memory = cpu.memory_new().unwrap();
+        let block = cpu.shared_new(2 * PAGE_SIZE).unwrap();
+        cpu.shared_map(block, PAGE_SIZE, memory, 0x20000, PAGE_SIZE)
+            .unwrap();
+        end(&mut cpu, memory, other);
+        cpu.shared_drop(block);
+        assert_eq!(cpu.refused(), [], "the block's sharing had ended");
+    }
 }
 
 /// Once no memory shows it, a block goes, and a memory that showed it keeps a copy of its bytes.

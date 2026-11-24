@@ -143,6 +143,18 @@ struct Block {
     bytes: MmapMut,
 }
 
+/// A request of the kernel's that breaks the [`Cpu`] contract, which the stand-in refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// `shared_drop` of a block these memories still show, where the contract says nothing maps it any more
+    /// (abi/cpu.rs:88). The block's host memory is kept until none of them shows it, since unicorn and the
+    /// stand-in's own copies reach it through them.
+    DroppingAShownBlock {
+        block: SharedId,
+        shown_in: Vec<MemoryId>,
+    },
+}
+
 struct Thread {
     memory: MemoryId,
     registers: RegisterBlock,
@@ -172,6 +184,10 @@ pub struct StandIn {
     memories: HashMap<MemoryId, Memory>,
     threads: HashMap<ThreadId, Thread>,
     blocks: HashMap<SharedId, Block>,
+    /// Blocks the kernel dropped while a memory still showed them, kept until none does.
+    kept: Vec<Block>,
+    /// What the stand-in refused, in order.
+    refused: Vec<Refused>,
     last_memory: u32,
     last_thread: u32,
     last_block: u32,
@@ -189,7 +205,7 @@ pub struct StandIn {
 // So all of it moves to another host thread together, and it is used by one at a time.
 #[expect(
     unsafe_code,
-    reason = "unicorn's engine handle holds raw pointers, so the stand-in that owns it is not Send by itself"
+    reason = "UNEXPLAINED: promises the stand-in, which owns unicorn handles, may move between threads on the claim that unicorn keeps no per-thread state, which rests on unicorn's internals nobody has read; no primitive replaces it"
 )]
 unsafe impl Send for StandIn {}
 
@@ -385,10 +401,12 @@ impl Memory {
             let chunk = contiguous.min(length - done);
             // SAFETY: `host` says this many bytes from the pointer are one allocation, and nothing else
             // touches them while the stand-in is not running a thread.
-            f(
-                unsafe { std::slice::from_raw_parts_mut(pointer, chunk as usize) },
-                done as usize,
-            );
+            #[expect(
+                unsafe_code,
+                reason = "a slice of a memory's own bytes or of a block it shows, bounded by range and host; a shown block outlives it, as shared_drop keeps it; unicorn's mem_read replaces it in step one"
+            )]
+            let piece = unsafe { std::slice::from_raw_parts_mut(pointer, chunk as usize) };
+            f(piece, done as usize);
             done += chunk;
         }
         Ok(())
@@ -474,7 +492,7 @@ impl Memory {
             // and unicorn only touches them while the stand-in runs a thread or is asked to.
             #[expect(
                 unsafe_code,
-                reason = "unicorn reaches a guest's bytes only through host memory it is given; its safe mem_map copies nothing in and shares nothing between spaces"
+                reason = "lends a memory's own bytes or a block's to unicorn as guest memory; both outlive the mapping, since unicorn drops before bytes and shared_drop keeps a shown block; Lend replaces it"
             )]
             unsafe {
                 self.unicorn
@@ -581,6 +599,8 @@ impl StandIn {
             memories: HashMap::new(),
             threads: HashMap::new(),
             blocks: HashMap::new(),
+            kept: Vec::new(),
+            refused: Vec::new(),
             last_memory: 0,
             last_thread: 0,
             last_block: 0,
@@ -605,7 +625,7 @@ impl StandIn {
     pub fn restored(&self) -> Self {
         let mut blocks = HashMap::new();
         let mut moved = Vec::new();
-        for (id, block) in &self.blocks {
+        let mut copy = |block: &Block| {
             let mut bytes = MmapMut::map_anon(block.bytes.len()).expect("host memory for a block");
             copy_touched(&block.bytes, &mut bytes);
             moved.push((
@@ -613,8 +633,12 @@ impl StandIn {
                 block.bytes.len(),
                 bytes.as_mut_ptr(),
             ));
-            blocks.insert(*id, Block { bytes });
+            Block { bytes }
+        };
+        for (id, block) in &self.blocks {
+            blocks.insert(*id, copy(block));
         }
+        let kept: Vec<Block> = self.kept.iter().map(&mut copy).collect();
         let translate = |pointer: *mut u8| {
             let address = pointer as usize;
             let (old, _, new) = moved
@@ -655,6 +679,8 @@ impl StandIn {
             memories,
             threads,
             blocks,
+            kept,
+            refused: self.refused.clone(),
             last_memory: self.last_memory,
             last_thread: self.last_thread,
             last_block: self.last_block,
@@ -662,6 +688,42 @@ impl StandIn {
             wall_clock: self.wall_clock,
             digests: None,
         }
+    }
+
+    /// What the stand-in refused of the kernel's requests so far, in order.
+    pub fn refused(&self) -> &[Refused] {
+        &self.refused
+    }
+
+    /// The memories that show any of the block's bytes, in order.
+    fn showing(&self, block: &Block) -> Vec<MemoryId> {
+        let start = block.bytes.as_ptr().addr();
+        let held = start..start + block.bytes.len();
+        let mut shown_in: Vec<MemoryId> = self
+            .memories
+            .iter()
+            .filter(|(_, memory)| {
+                memory
+                    .shared
+                    .values()
+                    .any(|(_, base)| held.contains(&base.addr()))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        shown_in.sort();
+        shown_in
+    }
+
+    /// Frees the kept blocks no memory shows any more.
+    fn let_go_of_kept(&mut self) {
+        if self.kept.is_empty() {
+            return;
+        }
+        let kept = std::mem::take(&mut self.kept);
+        self.kept = kept
+            .into_iter()
+            .filter(|block| !self.showing(block).is_empty())
+            .collect();
     }
 
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
@@ -1242,6 +1304,7 @@ impl Cpu for StandIn {
         {
             digests.push((memory, dropped.digest()));
         }
+        self.let_go_of_kept();
     }
 
     fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
@@ -1268,6 +1331,7 @@ impl Cpu for StandIn {
             memory.remap(address, address + length);
         }
         memory.bytes[range].fill(0);
+        self.let_go_of_kept();
         Ok(())
     }
 
@@ -1326,6 +1390,7 @@ impl Cpu for StandIn {
         memory.unshare(address, address + length);
         memory.shared.insert(address, (address + length, base));
         memory.remap(address, address + length);
+        self.let_go_of_kept();
         Ok(())
     }
 
@@ -1339,11 +1404,16 @@ impl Cpu for StandIn {
         memory.range(address, length)?;
         for (start, end, base) in memory.unshare(address, address + length) {
             // SAFETY: the block holds `end - start` bytes from `base`.
+            #[expect(
+                unsafe_code,
+                reason = "a slice of the part of a block a memory showed until now, its length from shared_map's check; the block lives, as shared_drop keeps a shown one; unicorn's mem_read replaces it in step one"
+            )]
             let bytes = unsafe { std::slice::from_raw_parts(base, (end - start) as usize) };
             memory.bytes[start as usize..end as usize].copy_from_slice(bytes);
             memory.touch(start, end);
         }
         memory.remap(address, address + length);
+        self.let_go_of_kept();
         Ok(())
     }
 
@@ -1372,22 +1442,24 @@ impl Cpu for StandIn {
         Ok(())
     }
 
-    /// The block's host memory is unmapped, so a memory that still shows it is refused: unicorn and
-    /// the stand-in's own copies would reach freed memory through it.
+    /// The block's host memory is unmapped, unless a memory still shows it: unicorn and the stand-in's own
+    /// copies would reach freed memory through that memory, so the drop is refused ([`Refused`]) and the
+    /// block kept until no memory shows it.
     fn shared_drop(&mut self, shared: SharedId) {
-        let Some(block) = self.blocks.get(&shared) else {
+        let Some(block) = self.blocks.remove(&shared) else {
             return;
         };
-        let start = block.bytes.as_ptr().addr();
-        let held = start..start + block.bytes.len();
-        let shown = self.memories.values().any(|memory| {
-            memory
-                .shared
-                .values()
-                .any(|(_, base)| held.contains(&base.addr()))
-        });
-        assert!(!shown, "a block of shared pages is dropped while a memory still shows it");
-        self.blocks.remove(&shared);
+        let shown_in = self.showing(&block);
+        if shown_in.is_empty() {
+            return;
+        }
+        let refused = Refused::DroppingAShownBlock {
+            block: shared,
+            shown_in,
+        };
+        eprintln!("the stand-in refused the kernel's request (abi/cpu.rs:88): {refused:?}");
+        self.refused.push(refused);
+        self.kept.push(block);
     }
 
     fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
