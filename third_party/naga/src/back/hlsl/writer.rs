@@ -31,6 +31,8 @@ const SPECIAL_FIRST_VERTEX: &str = "first_vertex";
 const SPECIAL_FIRST_INSTANCE: &str = "first_instance";
 const SPECIAL_OTHER: &str = "other";
 
+/// HLSL's sign function, which gives an integer of its argument's shape.
+const SIGN_FUNCTION: &str = "sign";
 pub(crate) const MODF_FUNCTION: &str = "naga_modf";
 pub(crate) const FREXP_FUNCTION: &str = "naga_frexp";
 pub(crate) const EXTRACT_BITS_FUNCTION: &str = "naga_extractBits";
@@ -3171,6 +3173,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             MissingIntReturnType(&'static str),
             CountTrailingZeros,
             CountLeadingZeros,
+            Sign,
         }
 
         let fun = match fun {
@@ -3227,7 +3230,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             Mf::Reflect => Function::Regular("reflect"),
             Mf::Refract => Function::Regular("refract"),
             // computational
-            Mf::Sign => Function::Regular("sign"),
+            Mf::Sign => Function::Sign,
             Mf::Fma => Function::Regular("mad"),
             Mf::Mix => Function::Regular("lerp"),
             Mf::Step => Function::Regular("step"),
@@ -3544,6 +3547,23 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             }
             // These overloads are only missing on FXC, so this is only needed for 32bit types,
             // as non-32bit types are DXC only.
+            Function::Sign => {
+                // HLSL's `sign` gives an integer whatever its argument; a float's sign is converted
+                // back to the argument's type.
+                let inner = func_ctx.resolve_type(arg, &module.types);
+                let float = inner.scalar_kind() == Some(ScalarKind::Float);
+                if float {
+                    self.write_value_type(module, inner)?;
+                    self.out.write_str(back::OPEN)?;
+                }
+                self.out.write_str(SIGN_FUNCTION)?;
+                self.out.write_str(back::OPEN)?;
+                self.write_expr(module, arg, func_ctx)?;
+                self.out.write_str(back::CLOSE)?;
+                if float {
+                    self.out.write_str(back::CLOSE)?;
+                }
+            }
             Function::MissingIntReturnType(fun_name) => {
                 let scalar_kind = func_ctx.resolve_type(arg, &module.types).scalar();
                 if let Some(Scalar::I32) = scalar_kind {
