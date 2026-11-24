@@ -20,6 +20,7 @@ for %%u in (atomic_add atomic_bitwise atomic_compare atomic_exchange atomic_sign
 call :stages f float4 || exit /b 1
 call :stages u uint4 || exit /b 1
 call :stages i int4 || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E main /Fo bindings.dxbc bindings.hlsl || exit /b 1
 exit /b 0
 
 :cs

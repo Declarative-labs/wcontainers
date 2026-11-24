@@ -6,31 +6,36 @@
 //! comparison, gathering, multisampled loads, typed buffer views, typed storage stores, loads and
 //! atomics, vertex and index input, and drawing into targets (blended where answered) and depth
 //! targets; loads of a texel of varied components, of the formats of whole-byte components alike,
-//! checked against Direct3D's conversions. Needs a GPU: run it through `tools/graphics-rig/gpu-job`. `WEBGPU_API` picks wgpu's
+//! checked against Direct3D's conversions; and resource binding tier 1's counts bound at once. Needs a GPU: run it through `tools/graphics-rig/gpu-job`. `WEBGPU_API` picks wgpu's
 //! API (dx12, vulkan, metal).
 
 use std::sync::Arc;
 
-use wcontainers_direct3d_12::features::{format_support, quality_levels};
+use wcontainers_direct3d_12::features::{
+    TIER_1_CONSTANT_BUFFERS, TIER_1_SAMPLERS, TIER_1_SHADER_RESOURCES,
+    TIER_1_UNORDERED_ACCESS_AT_11_0, format_support, options, quality_levels,
+};
 use wcontainers_direct3d_12::list::{
     Command, CommandList, CopyLocation, Descriptor, IndexBufferView, ResourceView, RootArgument,
-    SRV_DIMENSION_BUFFER, SRV_DIMENSION_TEXTURE2D, SRV_DIMENSION_TEXTURE2DMS, TargetView,
-    UAV_DIMENSION_BUFFER, UAV_DIMENSION_TEXTURE2D, VertexBufferView, ViewportF,
+    SRV_DIMENSION_BUFFER, SRV_DIMENSION_TEXTURE2D, SRV_DIMENSION_TEXTURE2DMS, SamplerView,
+    TargetView, UAV_DIMENSION_BUFFER, UAV_DIMENSION_TEXTURE2D, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{
-    DIMENSION_BUFFER, DIMENSION_TEXTURE1D, DIMENSION_TEXTURE2D, DIMENSION_TEXTURE3D,
-    FLAG_DEPTH_STENCIL, FLAG_RENDER_TARGET, FLAG_UNORDERED_ACCESS, FootprintInfo, HeapType,
-    LAYOUT_ROW_MAJOR, ResourceDesc,
+    CONSTANT_BUFFER_ALIGNMENT, DIMENSION_BUFFER, DIMENSION_TEXTURE1D, DIMENSION_TEXTURE2D,
+    DIMENSION_TEXTURE3D, FLAG_DEPTH_STENCIL, FLAG_RENDER_TARGET, FLAG_UNORDERED_ACCESS,
+    FootprintInfo, HeapType, LAYOUT_ROW_MAJOR, ResourceDesc,
 };
 use wcontainers_direct3d_12::root::{
-    DescriptorRange, FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RANGE_SRV, RANGE_UAV, RootParameter,
-    RootParameterKind, RootSignature, RootSignatureDesc, StaticSampler, VERSION_1_0, serialize,
+    DescriptorRange, FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RANGE_CBV, RANGE_SAMPLER, RANGE_SRV,
+    RANGE_UAV, RootParameter, RootParameterKind, RootSignature, RootSignatureDesc, StaticSampler,
+    VERSION_1_0, serialize,
 };
 use wcontainers_direct3d_12::state::{
     Blend, COMPARISON_ALWAYS, COMPARISON_LESS_EQUAL, CULL_MODE_NONE, DepthStencil, FILL_MODE_SOLID,
     InputElement, Raster, TOPOLOGY_TRIANGLELIST, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_direct3d_12::{Device, GraphicsPipelineDesc, PipelineId, ResourceId};
+use wcontainers_directx_graphics_infrastructure::d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT;
 use wcontainers_directx_graphics_infrastructure::required::MOST_SAMPLES;
 use wcontainers_directx_graphics_infrastructure::{
     dxgi, dxgi_format, support1, support2, typeless_group,
@@ -350,6 +355,8 @@ mod programs {
     pub const COMPARE: &[u8] = one!("compare_f");
     pub const GATHER: &[u8] = one!("gather_f");
     pub const GATHER_COMPARE: &[u8] = one!("gather_compare_f");
+    /// Resource binding tier 1's counts read at once (bindings.hlsl).
+    pub const BINDINGS: &[u8] = one!("bindings");
     /// A program of each kind, or none.
     pub type ByKind = [Option<&'static [u8]>; 3];
     /// Each atomic program by the kind of the view it is used on (none where Direct3D has no
@@ -1406,4 +1413,214 @@ fn program_uses_of(format: u32) -> usize {
     device.destroy_resource(zeros);
     device.destroy_descriptor_heap(programs.heap);
     used
+}
+
+/// What each unordered access view past the result holds, by its register: this times it.
+const STORED_STEP: u32 = 10;
+
+/// Resource binding tier 1, which `CheckFeatureSupport` answers and feature level 11_0 counts on:
+/// its full counts bound at once in one compute program (128 shader resource views, 14 constant
+/// buffers, 16 samplers, 8 unordered access views), each read.
+#[test]
+fn binding_tier_1_counts_bound_at_once_are_read() {
+    let mut device = Device::new(webgpu());
+    assert_eq!(options(device.backend().caps()).resource_binding_tier, 1);
+    let (views, constants, samplers, storage) = (
+        TIER_1_SHADER_RESOURCES,
+        TIER_1_CONSTANT_BUFFERS,
+        TIER_1_SAMPLERS,
+        TIER_1_UNORDERED_ACCESS_AT_11_0,
+    );
+    let range = |kind, count, offset| DescriptorRange {
+        kind,
+        count,
+        register: 0,
+        space: 0,
+        flags: 0,
+        offset,
+    };
+    let root = device
+        .create_root_signature(&serialize(&RootSignatureDesc {
+            version: VERSION_1_0,
+            parameters: vec![
+                RootParameter {
+                    kind: RootParameterKind::Table(vec![
+                        range(RANGE_SRV, views, 0),
+                        range(RANGE_CBV, constants, views),
+                        range(RANGE_UAV, storage, views + constants),
+                    ]),
+                    visibility: 0,
+                },
+                RootParameter {
+                    kind: RootParameterKind::Table(vec![range(RANGE_SAMPLER, samplers, 0)]),
+                    visibility: 0,
+                },
+            ],
+            samplers: vec![],
+            flags: 0,
+        }))
+        .unwrap();
+    let pso = device
+        .create_compute_pipeline(Some(&root), programs::BINDINGS)
+        .unwrap();
+
+    // Texture i holds i + 1; constant buffer n holds (n + 1) / 2; view k past the result holds
+    // STORED_STEP * k.
+    let texture = ResourceDesc {
+        dimension: DIMENSION_TEXTURE2D,
+        width: 1,
+        height: 1,
+        depth_or_array_size: 1,
+        mip_levels: 1,
+        format: dxgi::R32_FLOAT,
+        sample_count: 1,
+        ..Default::default()
+    };
+    let placement = TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+    let mut texels = vec![0u8; (u64::from(views) * placement) as usize];
+    for i in 0..views {
+        let at = (u64::from(i) * placement) as usize;
+        texels[at..at + 4].copy_from_slice(&(i as f32 + 1.0).to_le_bytes());
+    }
+    let texel_upload = uploaded(&mut device, &texels);
+    let mut before = Vec::new();
+    let mut textures = Vec::new();
+    for i in 0..views {
+        let id = device
+            .create_committed(HeapType::Default, &texture)
+            .unwrap();
+        let (f, _) = texture.footprints(0, 1, u64::from(i) * placement).unwrap();
+        before.push(Command::CopyTexture {
+            dst: CopyLocation::Subresource {
+                resource: id,
+                index: 0,
+            },
+            at: [0; 3],
+            src: CopyLocation::Footprint {
+                resource: texel_upload,
+                footprint: f[0].footprint,
+            },
+            area: None,
+        });
+        textures.push(id);
+    }
+    let mut constant_bytes = vec![0u8; (u64::from(constants) * CONSTANT_BUFFER_ALIGNMENT) as usize];
+    for n in 0..constants {
+        let at = (u64::from(n) * CONSTANT_BUFFER_ALIGNMENT) as usize;
+        constant_bytes[at..at + 4].copy_from_slice(&((n as f32 + 1.0) * 0.5).to_le_bytes());
+    }
+    let constant_upload = uploaded(&mut device, &constant_bytes);
+    let word = size_of::<u32>() as u64;
+    let view_bytes = RESULT_BYTES;
+    let stored: Vec<u8> = (0..storage)
+        .flat_map(|k| (STORED_STEP * k).to_le_bytes())
+        .collect();
+    let stored_upload = uploaded(&mut device, &stored);
+    let mut buffers = Vec::new();
+    for k in 0..storage {
+        let id = device
+            .create_committed(
+                HeapType::Default,
+                &buffer(view_bytes, FLAG_UNORDERED_ACCESS),
+            )
+            .unwrap();
+        before.push(Command::CopyBuffer {
+            dst: id,
+            dst_offset: 0,
+            src: stored_upload,
+            src_offset: u64::from(k) * word,
+            size: word,
+        });
+        buffers.push(id);
+    }
+
+    let constant_base = device.address(constant_upload);
+    let (heap, _, table) = device.create_descriptor_heap(views + constants + storage);
+    let slots = device.descriptor_slots(heap).unwrap();
+    let srv = |resource| ResourceView {
+        resource,
+        format: dxgi::R32_FLOAT,
+        dimension: SRV_DIMENSION_TEXTURE2D,
+        mapping: DEFAULT_MAPPING,
+        first_element: 0,
+        count: 1,
+        stride: 0,
+        mip: 0,
+        first_layer: 0,
+        layers: 1,
+        flags: 0,
+        min_lod: 0,
+    };
+    let uav = |resource| ResourceView {
+        format: dxgi::R32_UINT,
+        dimension: UAV_DIMENSION_BUFFER,
+        mapping: 0,
+        count: (RESULT_BYTES / word) as u32,
+        ..srv(resource)
+    };
+    let descriptors = textures
+        .iter()
+        .map(|&t| Descriptor::ShaderResource(srv(t)))
+        .chain((0..constants).map(|n| Descriptor::ConstantBuffer {
+            address: constant_base + u64::from(n) * CONSTANT_BUFFER_ALIGNMENT,
+            size: CONSTANT_BUFFER_ALIGNMENT as u32,
+        }))
+        .chain(buffers.iter().map(|&b| Descriptor::UnorderedAccess(uav(b))));
+    slots.iter().zip(descriptors).for_each(|(s, d)| s.set(d));
+    let (sampler_heap, _, sampler_table) = device.create_descriptor_heap(samplers);
+    // `D3D12_FILTER_MIN_MAG_MIP_POINT`.
+    let sampler = Descriptor::Sampler(SamplerView {
+        filter: 0,
+        address: [ADDRESS_CLAMP; 3],
+        lod_bias: 0,
+        anisotropy: 1,
+        compare: 0,
+        border: [0; 4],
+        min_lod: 0,
+        max_lod: f32::MAX.to_bits(),
+    });
+    let sampler_slots = device.descriptor_slots(sampler_heap).unwrap();
+    sampler_slots.iter().for_each(|s| s.set(sampler));
+
+    let readback = device
+        .create_committed(HeapType::Readback, &buffer(view_bytes, 0))
+        .unwrap();
+    let mut commands = before;
+    commands.extend([
+        Command::RootSignature {
+            compute: true,
+            root: Some(root),
+        },
+        Command::Pipeline(pso),
+        Command::RootArgument {
+            compute: true,
+            index: 0,
+            argument: RootArgument::Table(table),
+        },
+        Command::RootArgument {
+            compute: true,
+            index: 1,
+            argument: RootArgument::Table(sampler_table),
+        },
+        Command::Dispatch([1, 1, 1]),
+        Command::CopyBuffer {
+            dst: readback,
+            dst_offset: 0,
+            src: buffers[0],
+            src_offset: 0,
+            size: view_bytes,
+        },
+    ]);
+    run(&mut device, commands, "binding tier 1's counts");
+    let words = read_words(&mut device, readback);
+    // Sums of 1 to n: every texture, a sample through each sampler (of the first textures), the
+    // constants (halves), and the other views.
+    let sum = |n: u32| n * (n + 1) / 2;
+    let expected = [
+        (sum(views) as f32).to_bits(),
+        (sum(samplers) as f32).to_bits(),
+        (sum(constants) as f32 * 0.5).to_bits(),
+        STORED_STEP * sum(storage - 1),
+    ];
+    assert_eq!(words, expected);
 }
