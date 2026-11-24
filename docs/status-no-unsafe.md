@@ -49,19 +49,16 @@ Fewer uses, still on the list (counts are the `unsafe` words left in the crate's
   needs a wrapper crate (safe_arch, Zlib/MIT/Apache, which `wide` uses) or stays; the change was undone.
 
 ## What is left, by call, and why no vetted library offers it
-- Raw `setsockopt`/`getsockopt` with option bytes (linux-socket-options set_raw and get_bytes, 2; route-resolver
-  suite: IP_OPTIONS and IP_UNICAST_IF/IPV6_UNICAST_IF, 2; icmp suite: IPV6_ADDR_PREFERENCES, 1). rustix, socket2
-  and nix wrap typed options only (nix's SetSockOpt cannot be implemented without the raw call); none offers raw
-  bytes, rightly, as some options (SO_ATTACH_FILTER) carry pointers. Options the code sets that no vetted crate
-  wraps include TCP_REPAIR_QUEUE, TCP_QUEUE_SEQ, TCP_REPAIR_WINDOW, TCP_REPAIR_OPTIONS, TCP_AO_*, TCP_MD5SIG,
-  TCP_SAVED_SYN, TCP_CC_INFO, MPTCP_INFO, SO_MEMINFO, MCAST_MSFILTER, MCAST_JOIN_GROUP, IP_LOCAL_PORT_RANGE,
-  SO_BUF_LOCK, SO_TXREHASH, SO_WIFI_STATUS, TCP_FASTOPEN_KEY, TCP_FASTOPEN_NO_COOKIE, IP_MINTTL, IP_ROUTER_ALERT,
-  IP_OPTIONS, IP_UNICAST_IF, IPV6_ADDR_PREFERENCES. Cost of removing: a typed wrapper per option in a vetted crate
-  (upstream to rustix); otherwise these two calls are the one marked place.
-- `ioctl` SIOCOUTQ, SIOCOUTQNSD and SIOCATMARK (tcp host ioctl_count): rustix's safe ioctls are FIONREAD and a few
-  others, not these; its generic `ioctl` and `Getter::new` are unsafe; libc's sockatmark is unsafe. tcp_info's
-  tcpi_notsent_bytes equals SIOCOUTQNSD for an established socket but nothing in it gives SIOCOUTQ (write_seq -
-  snd_una, which only sock_diag's idiag_wqueue gives) or the urgent mark. Cost: stays, or a typed wrapper upstream.
+- Socket options and queue counts (2026-11-24, branch unsafe-primitives-sockets, not merged: the owner reads the
+  primitive first). The six uses of linux-socket-options (2), the tcp host (1), the route-resolver suite (2) and the
+  icmp suite (1) are gone; those four crates inherit the workspace lints. Options a typed call covers go through it
+  (socket2, rustix, nix: linux-socket-options options.rs `set_int` and `get_int`, filters through socket2's
+  `attach_filter` and nix's `AttachReusePortCbpf`, FIONREAD through rustix's `ioctl_fionread`, the congestion name
+  through socket2). The rest go through the primitive crates/socket-options: a closed list of 88 options whose values
+  hold no address (`PlainOption`, each with its value length from the uapi type), the three queue counts
+  (`QueuedCount`) and `MPTCP_FULL_INFO`, whose request holds two addresses the primitive makes itself. Its four unsafe
+  calls are in crates/socket-options/implementation/linux, each under its own `#[expect(unsafe_code)]`. An option not
+  listed is refused with `ENOPROTOOPT`.
 - Runtime StopFlag `entered`/`raise` (2): the flag word is in the wasmtime executor's guest memory and the runtime
   holds its address. Needs an API change with the executor (another track's crate), see For the owner.
 - translator-test (not started): wasmtime SharedMemory is `&[UnsafeCell<u8>]` with no safe read or write

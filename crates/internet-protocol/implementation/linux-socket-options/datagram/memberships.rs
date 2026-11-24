@@ -13,7 +13,8 @@ use wcontainers_internet_protocol::{
 };
 use zerocopy::IntoBytes;
 
-use crate::datagram::addresses::{StorageBytes, in6_addr, storage, storage_bytes};
+use crate::datagram::addresses::{StorageBytes, storage_bytes};
+use crate::requests::{AnycastRequest, GroupRequest};
 use crate::{io_host_error, set_bytes, set_option};
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
@@ -26,8 +27,8 @@ impl AnycastMemberships {
         let interface = anycast.interface.map_or(u32::MIN, |index| index.0.get());
         let key = (anycast.address, interface);
         let joined = self.0.contains(&key);
-        let request = uapi::ipv6_mreq {
-            ipv6mr_multiaddr: in6_addr(anycast.address),
+        let request = AnycastRequest {
+            ipv6mr_multiaddr: anycast.address.octets(),
             ipv6mr_ifindex: interface as c_int,
         };
         match anycast.membership {
@@ -53,15 +54,12 @@ fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
         IpAddr::V6(_) => Domain::IPV6,
     };
     let probe = Socket::new(domain, Type::DGRAM, None).map_err(|error| io_host_error(&error))?;
-    let mut request = uapi::group_req {
-        gr_interface: u32::MIN,
-        gr_group: storage(group),
-    };
+    let mut request = GroupRequest::new(u32::MIN, group);
     set_option(probe.as_fd(), level, uapi::MCAST_JOIN_GROUP, &request)?;
     let interfaces =
         nix::net::if_::if_nameindex().map_err(|error| HostError::Errno(error as i32))?;
     for interface in &interfaces {
-        request.gr_interface = interface.index();
+        request = GroupRequest::new(interface.index(), group);
         if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
             return Ok(interface.index());
         }
@@ -78,13 +76,12 @@ pub fn set_multicast_group<A: Copy>(
     setting: &MulticastGroup<'_, A>,
     address: impl Fn(&A) -> IpAddr,
 ) -> Result<(), HostError> {
-    let mut request = uapi::group_req {
-        gr_interface: u32::MIN,
-        gr_group: storage(group),
-    };
     let filter = match setting.membership {
         MulticastMembership::Left => {
-            request.gr_interface = setting.interface.map_or(u32::MIN, |index| index.0.get());
+            let request = GroupRequest::new(
+                setting.interface.map_or(u32::MIN, |index| index.0.get()),
+                group,
+            );
             return match set_option(fd, level, uapi::MCAST_LEAVE_GROUP, &request) {
                 Err(HostError::Errno(libc::EADDRNOTAVAIL)) => Ok(()),
                 other => other,
@@ -96,7 +93,7 @@ pub fn set_multicast_group<A: Copy>(
         Some(index) => index.0.get(),
         None => chosen_interface(level, group)?,
     };
-    request.gr_interface = interface;
+    let request = GroupRequest::new(interface, group);
     match set_option(fd, level, uapi::MCAST_JOIN_GROUP, &request) {
         Ok(()) | Err(HostError::Errno(libc::EADDRINUSE)) => {}
         Err(error) => return Err(error),

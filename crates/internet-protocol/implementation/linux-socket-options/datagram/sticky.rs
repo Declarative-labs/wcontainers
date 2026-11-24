@@ -7,7 +7,7 @@ use linux_raw_sys::net as uapi;
 use wcontainers_abi::HostError;
 use zerocopy::{Immutable, IntoBytes};
 
-use crate::{io_host_error, set_bytes, sock};
+use crate::{io_host_error, set_bytes, set_int, sock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
@@ -49,10 +49,10 @@ enum Start {
 
 const SLOTS: usize = Slot::ChecksumCoverage as usize + 1;
 
-/// `UDPLITE_SEND_CSCOV` of `linux/udp.h`, which neither libc nor linux-raw-sys carries.
-pub const UDP_LITE_SEND_COVERAGE: u32 = 10;
-/// `UDPLITE_RECV_CSCOV` of `linux/udp.h`.
-pub const UDP_LITE_RECEIVE_COVERAGE: u32 = 11;
+use wcontainers_socket_options as options;
+pub use wcontainers_socket_options::{
+    UDPLITE_RECV_CSCOV as UDP_LITE_RECEIVE_COVERAGE, UDPLITE_SEND_CSCOV as UDP_LITE_SEND_COVERAGE,
+};
 
 impl Slot {
     fn option(self) -> (u32, u32, Start) {
@@ -84,8 +84,8 @@ impl Slot {
             Slot::Timestamping => (socket, uapi::SO_TIMESTAMPING, Unknown),
             Slot::TransmitTime => (socket, uapi::SO_TXTIME, Empty),
             Slot::NoChecksum => (socket, uapi::SO_NO_CHECK, Zero),
-            Slot::NoChecksumIpv6 => (libc::SOL_UDP as u32, libc::UDP_NO_CHECK6_TX as u32, Zero),
-            Slot::ChecksumCoverage => (uapi::IPPROTO_UDPLITE as u32, UDP_LITE_SEND_COVERAGE, Zero),
+            Slot::NoChecksumIpv6 => (options::SOL_UDP, options::UDP_NO_CHECK6_TX, Zero),
+            Slot::ChecksumCoverage => (options::SOL_UDPLITE, options::UDPLITE_SEND_CSCOV, Zero),
         }
     }
 }
@@ -195,7 +195,7 @@ fn write_int(fd: BorrowedFd<'_>, slot: Slot, value: c_int) -> Result<(), HostErr
         Slot::Ipv6Transparent => socket.set_ip_transparent_v6(on),
         _ => {
             let (level, name, _) = slot.option();
-            return set_bytes(fd, level, name, value.as_bytes());
+            return set_int(fd, level, name, value);
         }
     }
     .map_err(|error| io_host_error(&error))

@@ -1,6 +1,6 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use std::io::IoSliceMut;
 use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
@@ -15,15 +15,17 @@ use rustix::net::{Protocol, SocketType};
 use socket2::{Domain, SockAddr, Socket};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, BindAddress, BindingSetting, FilterInstruction, FlowLabelChoice,
-    IpPacketSetting, IpSocketSetting, IpVersion, Ipv6Families, LocalBinding, LocalPort,
-    MobileAddressPreference, NonlocalAddresses, PathMtuDiscovery, Port, PortChoice, PortRange,
-    PortSharing, RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
+    AddressSharing, BindAddress, BindingSetting, FlowLabelChoice, IpPacketSetting, IpSocketSetting,
+    IpVersion, Ipv6Families, LocalBinding, LocalPort, MobileAddressPreference, NonlocalAddresses,
+    PathMtuDiscovery, Port, PortChoice, PortRange, PortSharing, RouteScope, SocketFilter,
+    TemporaryAddressPreference, Timestamping,
 };
 use wcontainers_kernel::UserId;
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::IntoBytes;
 
-use crate::{Shortfalls, host_error, io_host_error, last_host_error, sock};
+use crate::{
+    Shortfalls, host_error, io_host_error, set_bytes, set_flag, set_int, set_option, sock,
+};
 
 const NO_MEMBERSHIPS: &str = "multicast and anycast memberships are not mapped to the host";
 
@@ -37,110 +39,6 @@ pub fn bind_to(socket: BorrowedFd<'_>, address: SocketAddr) -> Result<(), Errno>
     sock(&socket)
         .bind(&SockAddr::from(address))
         .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::IO))
-}
-
-/// Sets a socket option to the bytes of a value.
-pub fn set_option<T>(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    value: &T,
-) -> Result<(), HostError> {
-    set_raw(
-        socket,
-        level,
-        name,
-        (value as *const T).cast(),
-        size_of::<T>(),
-    )
-}
-
-pub fn set_bytes(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    bytes: &[u8],
-) -> Result<(), HostError> {
-    set_raw(socket, level, name, bytes.as_ptr().cast(), bytes.len())
-}
-
-pub fn set_int(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    value: c_int,
-) -> Result<(), HostError> {
-    set_option(socket, level, name, &value)
-}
-
-pub fn set_flag(socket: BorrowedFd<'_>, level: u32, name: u32, on: bool) -> Result<(), HostError> {
-    set_int(socket, level, name, c_int::from(on))
-}
-
-fn set_raw(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    value: *const c_void,
-    length: usize,
-) -> Result<(), HostError> {
-    let length = libc::socklen_t::try_from(length).map_err(|_| HostError::Errno(libc::EINVAL))?;
-    // SAFETY: the callers give a pointer to `length` readable bytes; the descriptor is borrowed and open.
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            level as c_int,
-            name as c_int,
-            value,
-            length,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(last_host_error())
-    }
-}
-
-/// Reads a socket option into the buffer, returning the length the kernel gave.
-pub fn get_bytes(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    into: &mut [u8],
-) -> Result<usize, HostError> {
-    let mut length =
-        libc::socklen_t::try_from(into.len()).map_err(|_| HostError::Errno(libc::EINVAL))?;
-    // SAFETY: the buffer is writable for `length` bytes and the kernel writes no more than that.
-    let result = unsafe {
-        libc::getsockopt(
-            socket.as_raw_fd(),
-            level as c_int,
-            name as c_int,
-            into.as_mut_ptr().cast(),
-            &mut length,
-        )
-    };
-    if result == 0 {
-        Ok(length as usize)
-    } else {
-        Err(last_host_error())
-    }
-}
-
-/// Reads a socket option whose value is plain data that every bit pattern is valid for.
-pub fn get_option<T: FromBytes + IntoBytes>(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-) -> Result<T, HostError> {
-    let mut value = T::new_zeroed();
-    get_bytes(socket, level, name, value.as_mut_bytes())?;
-    Ok(value)
-}
-
-pub fn get_int(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<c_int, HostError> {
-    get_option(socket, level, name)
 }
 
 /// Gives the flags of `SO_TIMESTAMPING` that a socket's receive timestamping asks for.
@@ -174,7 +72,7 @@ pub fn set_timestamping(
         ),
         None => (flags, NO_HARDWARE_CLOCK),
     };
-    let value = uapi::so_timestamping {
+    let value = crate::datagram::send::Timestamping {
         flags: flags as c_int,
         bind_phc,
     };
@@ -182,38 +80,57 @@ pub fn set_timestamping(
 }
 
 /// Attaches the classic BPF program with one option or detaches it with the other, detaching none being no error.
+///
+/// The options are `SO_ATTACH_FILTER` and `SO_DETACH_FILTER`, through socket2, or `SO_ATTACH_REUSEPORT_CBPF`, through
+/// nix, and `SO_DETACH_REUSEPORT_BPF`.
 pub fn set_filter(
     socket: BorrowedFd<'_>,
     attach: u32,
     detach: u32,
     filter: Option<SocketFilter<'_>>,
 ) -> Result<(), HostError> {
+    let io = |error: std::io::Error| io_host_error(&error);
     match filter {
+        Some(SocketFilter(instructions)) if attach == uapi::SO_ATTACH_FILTER => {
+            let program: Vec<socket2::SockFilter> = instructions
+                .iter()
+                .map(|instruction| {
+                    socket2::SockFilter::new(
+                        instruction.operation.0,
+                        instruction.jump_if_true.0,
+                        instruction.jump_if_false.0,
+                        instruction.operand.0,
+                    )
+                })
+                .collect();
+            sock(&socket).attach_filter(&program).map_err(io)
+        }
         Some(SocketFilter(instructions)) => {
             let program: Vec<libc::sock_filter> = instructions
                 .iter()
-                .map(
-                    |&FilterInstruction {
-                         operation,
-                         jump_if_true,
-                         jump_if_false,
-                         operand,
-                     }| {
-                        libc::sock_filter {
-                            code: operation.0,
-                            jt: jump_if_true.0,
-                            jf: jump_if_false.0,
-                            k: operand.0,
-                        }
-                    },
-                )
+                .map(|instruction| libc::sock_filter {
+                    code: instruction.operation.0,
+                    jt: instruction.jump_if_true.0,
+                    jf: instruction.jump_if_false.0,
+                    k: instruction.operand.0,
+                })
                 .collect();
+            // nix's typed call takes the program's address in the structure; `program` outlives the call.
             let value = libc::sock_fprog {
                 len: u16::try_from(program.len()).map_err(|_| HostError::Errno(libc::EINVAL))?,
                 filter: program.as_ptr().cast_mut(),
             };
-            set_option(socket, uapi::SOL_SOCKET, attach, &value)
+            nix::sys::socket::setsockopt(
+                &socket,
+                nix::sys::socket::sockopt::AttachReusePortCbpf,
+                &value,
+            )
+            .map_err(|errno| HostError::Errno(errno as i32))
         }
+        None if detach == uapi::SO_DETACH_FILTER => match sock(&socket).detach_filter() {
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(()),
+            other => other.map_err(io),
+        },
         None => match set_int(socket, uapi::SOL_SOCKET, detach, DETACH_VALUE) {
             Err(HostError::Errno(libc::ENOENT)) => Ok(()),
             other => other,
@@ -369,11 +286,12 @@ pub fn set_packet_setting(
             default_or(*limit),
         ),
         IpPacketSetting::TrafficClass { version, dscp } => {
-            let class = c_int::from(dscp.value()) << ECN_FIELD_BITS;
+            let class = u32::from(dscp.value()) << ECN_FIELD_BITS;
             match version {
-                IpVersion::V4 => set_int(socket, uapi::SOL_IP, uapi::IP_TOS, class),
-                IpVersion::V6 => set_int(socket, uapi::SOL_IPV6, uapi::IPV6_TCLASS, class),
+                IpVersion::V4 => sock(&socket).set_tos_v4(class),
+                IpVersion::V6 => sock(&socket).set_tclass_v6(class),
             }
+            .map_err(|error| io_host_error(&error))
         }
         IpPacketSetting::PathMtuDiscovery {
             version: IpVersion::V4,
@@ -432,10 +350,12 @@ pub fn set_packet_setting(
                 *choice == FlowLabelChoice::Automatic,
             )
         }
-        IpPacketSetting::Mark(mark) => set_option(socket, uapi::SOL_SOCKET, uapi::SO_MARK, &mark.0),
-        IpPacketSetting::Priority(priority) => {
-            set_option(socket, uapi::SOL_SOCKET, uapi::SO_PRIORITY, &priority.0)
-        }
+        IpPacketSetting::Mark(mark) => sock(&socket)
+            .set_mark(mark.0)
+            .map_err(|error| io_host_error(&error)),
+        IpPacketSetting::Priority(priority) => sock(&socket)
+            .set_priority(priority.0)
+            .map_err(|error| io_host_error(&error)),
         IpPacketSetting::RouteScope(scope) => set_flag(
             socket,
             uapi::SOL_SOCKET,

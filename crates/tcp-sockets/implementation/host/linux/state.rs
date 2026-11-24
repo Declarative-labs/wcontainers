@@ -3,11 +3,10 @@
 use std::ffi::c_int;
 use std::mem::size_of;
 use std::net::IpAddr;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use linux_raw_sys::ioctl as requests;
 use linux_raw_sys::net as uapi;
 use rustix::net::{ipproto, sockopt};
 use wcontainers_abi::HostError;
@@ -19,7 +18,8 @@ use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::receive::Ancillary;
 use wcontainers_internet_protocol_linux_socket_options::{
-    self as options, NO_PROCESSOR, Shortfalls, get_int, last_host_error, set_int, set_option,
+    self as options, NO_PROCESSOR, QueuedCount, Shortfalls, get_int, host_error, set_int,
+    set_option,
 };
 use wcontainers_tcp_sockets::authentication::{
     SequenceNumberExtension, TcpAuthenticationCounters, TcpAuthenticationIcmpErrors,
@@ -268,7 +268,7 @@ options::uapi_mirror! {
 options::uapi_mirror! {
     /// `struct tcp_ao_info_opt`, given as linux-raw-sys's by [`authentication_information`] for its bit field accessors.
     #[derive(IntoBytes)]
-    struct AuthenticationInformation mirrors uapi::tcp_ao_info_opt {
+    pub(super) struct AuthenticationInformation mirrors uapi::tcp_ao_info_opt {
         _bitfield_1: [u8; 4],
         reserved2: u16,
         current_key: u8,
@@ -278,6 +278,22 @@ options::uapi_mirror! {
         pkt_key_not_found: u64,
         pkt_ao_required: u64,
         pkt_dropped_icmp: u64,
+    }
+}
+
+impl From<&uapi::tcp_ao_info_opt> for AuthenticationInformation {
+    fn from(held: &uapi::tcp_ao_info_opt) -> Self {
+        Self {
+            _bitfield_1: options::requests::bit_field_bytes(&held._bitfield_1),
+            reserved2: held.reserved2,
+            current_key: held.current_key,
+            rnext: held.rnext,
+            pkt_good: held.pkt_good,
+            pkt_bad: held.pkt_bad,
+            pkt_key_not_found: held.pkt_key_not_found,
+            pkt_ao_required: held.pkt_ao_required,
+            pkt_dropped_icmp: held.pkt_dropped_icmp,
+        }
     }
 }
 
@@ -357,11 +373,6 @@ struct InformationBytes {
 /// The length of the whole `TCP_INFO` the contract reads.
 const INFORMATION_LENGTH: usize = size_of::<InformationBytes>();
 
-/// The longest congestion control name, `TCP_CA_NAME_MAX`.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/include/net/tcp.h
-const CONGESTION_NAME_ROOM: usize = 16;
-
 /// The `TCP_CC_INFO` forms of `tcp_cc_info`: Vegas's (also Westwood's and Illinois'), DCTCP's and BBR's.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/inet_diag.h
@@ -405,15 +416,6 @@ const CONGESTION_INFORMATION_ROOM: usize = size_of::<BottleneckBandwidthInformat
 
 /// The congestion control whose information has DCTCP's form, which has the length of Vegas's.
 const DATA_CENTER: &str = "dctcp";
-
-/// The option of level `SOL_MPTCP` that reads a multipath connection's information.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-const MPTCP_INFO: u32 = 1;
-/// The option of level `SOL_MPTCP` that reads a multipath connection's information with its subflows'.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-const MPTCP_FULL_INFO: u32 = 4;
 
 /// How many subflows one `MPTCP_FULL_INFO` read on the stack holds: the first and the eight more the in-kernel path manager allows.
 ///
@@ -500,23 +502,6 @@ struct MptcpSubflowInfo {
     remote: StorageBytes,
 }
 
-/// `struct mptcp_full_info`, whose arrays of subflows and their `TCP_INFO` the caller gives, its `mptcp_info` as bytes.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-#[repr(C)]
-#[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
-struct MptcpFullInfo {
-    size_tcpinfo_kernel: u32,
-    size_tcpinfo_user: u32,
-    size_sfinfo_kernel: u32,
-    size_sfinfo_user: u32,
-    num_subflows: u32,
-    size_arrays_user: u32,
-    subflow_info: u64,
-    tcp_info: u64,
-    mptcp_info: [u8; size_of::<MptcpInfo>()],
-}
-
 /// The shift of the receive scale in a `TCPOPT_WINDOW` repair option's value, the send scale being below it.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp.c
@@ -556,16 +541,6 @@ fn microseconds(value: impl Into<u64>) -> Duration {
 
 fn milliseconds(value: impl Into<u64>) -> Duration {
     Duration::from_millis(value.into())
-}
-
-/// Reads one of the socket's ioctl counts.
-fn ioctl_count(socket: BorrowedFd<'_>, request: u32) -> Result<c_int, HostError> {
-    let mut value = c_int::MIN;
-    // SAFETY: each request used writes one int.
-    if unsafe { libc::ioctl(socket.as_raw_fd(), request as _, &mut value) } < 0 {
-        return Err(last_host_error());
-    }
-    Ok(value)
 }
 
 fn congestion_state(state: u8) -> Option<TcpCongestionAvoidanceState> {
@@ -781,12 +756,13 @@ pub(super) fn congestion_control<'a>(
     into: &'a mut [u8],
     shortfalls: &Shortfalls,
 ) -> Result<(&'a str, Option<CongestionControlInformation>), HostError> {
-    let mut name = [u8::MIN; CONGESTION_NAME_ROOM];
-    let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_CONGESTION, &mut name)?;
-    let length = name[..length]
+    let name = socket2::SockRef::from(&socket)
+        .tcp_congestion()
+        .map_err(|error| options::io_host_error(&error))?;
+    let length = name
         .iter()
         .position(|&byte| byte == u8::MIN)
-        .unwrap_or(length);
+        .unwrap_or(name.len());
     let mut bytes = [u8::MIN; CONGESTION_INFORMATION_ROOM];
     let size = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_CC_INFO, &mut bytes)?;
     let information = match (&name[..length], size) {
@@ -840,14 +816,15 @@ pub(super) fn queues(
     socket: BorrowedFd<'_>,
     shortfalls: &Shortfalls,
 ) -> Result<TcpQueues, HostError> {
-    let count = |request| ioctl_count(socket, request).and_then(narrow::<usize>);
-    let queued = count(requests::TIOCOUTQ)?;
-    let unsent = count(libc::SIOCOUTQNSD as u32)?;
+    let count = |count| options::count_queued(socket, count).and_then(narrow::<usize>);
+    let queued = count(QueuedCount::SendQueue)?;
+    let unsent = count(QueuedCount::Unsent)?;
+    let unread = rustix::io::ioctl_fionread(socket).map_err(host_error)?;
     Ok(TcpQueues {
-        unread: ByteCount(count(requests::FIONREAD)?),
+        unread: ByteCount(narrow(unread)?),
         unacknowledged: ByteCount(queued.saturating_sub(unsent)),
         unsent: ByteCount(unsent),
-        urgent_mark: match ioctl_count(socket, requests::SIOCATMARK) {
+        urgent_mark: match options::count_queued(socket, QueuedCount::AtUrgentMark) {
             Ok(NOT_AT_MARK) => UrgentMark::NotReached,
             Ok(_) => UrgentMark::Reached,
             Err(_) if is_multipath(socket) => {
@@ -1006,7 +983,7 @@ pub(super) fn set_repair_window(
     socket: BorrowedFd<'_>,
     window: &TcpRepairWindow,
 ) -> Result<(), HostError> {
-    let written = uapi::tcp_repair_window {
+    let written = RepairWindow {
         snd_wl1: window.send_update_sequence.0,
         snd_wnd: window.send_window.0,
         max_window: window.maximum_window.0,
@@ -1021,7 +998,7 @@ pub(super) fn set_authentication_repair(
     socket: BorrowedFd<'_>,
     repair: &TcpAuthenticationRepair,
 ) -> Result<(), HostError> {
-    let written = uapi::tcp_ao_repair {
+    let written = AuthenticationRepair {
         snt_isn: repair.sent_initial_sequence.0.to_be(),
         rcv_isn: repair.received_initial_sequence.0.to_be(),
         snd_sne: repair.send_extension.0,
@@ -1117,7 +1094,7 @@ pub(super) fn multipath(
     shortfalls: &Shortfalls,
 ) -> Result<MultipathInformation, HostError> {
     let mut bytes = [u8::MIN; size_of::<MptcpInfo>()];
-    let length = options::get_bytes(socket, uapi::SOL_MPTCP, MPTCP_INFO, &mut bytes)?;
+    let length = options::get_bytes(socket, uapi::SOL_MPTCP, options::MPTCP_INFO, &mut bytes)?;
     let found = MptcpInfo::read_from_bytes(&bytes).map_err(|_| invalid())?;
     if length < size_of::<MptcpInfo>() {
         shortfalls.count(SHORT_MULTIPATH_INFORMATION);
@@ -1137,26 +1114,15 @@ fn full_information(
     information: &mut [InformationBytes],
     shortfalls: &Shortfalls,
 ) -> Result<(u32, Option<AccurateEcnLayout>), HostError> {
-    let mut full = MptcpFullInfo {
-        size_tcpinfo_user: narrow(size_of::<InformationBytes>() as u64)?,
-        size_sfinfo_user: narrow(size_of::<MptcpSubflowInfo>() as u64)?,
-        size_arrays_user: narrow(subflows.len() as u64)?,
-        subflow_info: subflows.as_mut_ptr() as u64,
-        tcp_info: information.as_mut_ptr() as u64,
-        ..MptcpFullInfo::new_zeroed()
-    };
-    options::get_bytes(
-        socket,
-        uapi::SOL_MPTCP,
-        MPTCP_FULL_INFO,
-        full.as_mut_bytes(),
-    )?;
-    if usize::try_from(full.size_tcpinfo_kernel).map_err(|_| overflow())? < INFORMATION_LENGTH {
+    let mut connection = [u8::MIN; size_of::<MptcpInfo>()];
+    let full =
+        options::get_multipath_full_information(socket, &mut connection, subflows, information)?;
+    if usize::try_from(full.tcp_info_size).map_err(|_| overflow())? < INFORMATION_LENGTH {
         shortfalls.count(SHORT_INFORMATION);
-        return Ok((full.num_subflows, None));
+        return Ok((full.subflows, None));
     }
     let layout = accurate_ecn_layout().ok_or_else(|| shortfalls.refuse(NO_KERNEL_VERSION))?;
-    Ok((full.num_subflows, Some(layout)))
+    Ok((full.subflows, Some(layout)))
 }
 
 /// Reads the subflow at the position through `MPTCP_FULL_INFO`, none past the last.

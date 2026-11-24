@@ -19,9 +19,12 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1.6", features = ["net"] }
+# Binding a socket to an interface by its index.
+socket2 = { version = "0.6.5", features = ["all"] }
+wcontainers-socket-options = { path = "../../socket-options" }
+wcontainers-socket-options-linux = { path = "../../socket-options/implementation/linux" }
 # The network namespace of each check and the index of a link by its name.
 nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
 
-# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

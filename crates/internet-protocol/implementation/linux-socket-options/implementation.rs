@@ -13,8 +13,14 @@ pub mod icmp_error;
 mod linux;
 #[cfg(target_os = "linux")]
 mod mirror;
+#[cfg(target_os = "linux")]
+mod options;
 pub mod readiness;
+#[cfg(target_os = "linux")]
+pub mod requests;
 
 pub use host::*;
 #[cfg(target_os = "linux")]
 pub use linux::*;
+#[cfg(target_os = "linux")]
+pub use options::*;

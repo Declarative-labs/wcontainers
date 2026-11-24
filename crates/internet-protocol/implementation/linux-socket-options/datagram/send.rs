@@ -15,16 +15,16 @@ use wcontainers_internet_protocol::{
 };
 use zerocopy::{Immutable, IntoBytes};
 
-use crate::datagram::addresses::{Ipv4PacketInformation, Ipv6PacketInformation, in6_addr};
+use crate::datagram::addresses::{Ipv4PacketInformation, Ipv6PacketInformation};
 use crate::datagram::sticky::{Slot, Sticky};
 use crate::{set_option, uapi_mirror};
 
 uapi_mirror! {
     /// `struct so_timestamping`, as `SO_TIMESTAMPING` takes it.
     #[derive(IntoBytes)]
-    struct Timestamping mirrors uapi::so_timestamping {
-        flags: c_int,
-        bind_phc: c_int,
+    pub(crate) struct Timestamping mirrors uapi::so_timestamping {
+        pub(crate) flags: c_int,
+        pub(crate) bind_phc: c_int,
     }
 }
 
@@ -200,7 +200,7 @@ impl SendState {
                 sticky.ensure_int(fd, Slot::TypeOfService, c_int::from(tos))?;
                 let interface = selected_interface(route.interface);
                 sticky.ensure(fd, Slot::Ipv4UnicastInterface, &interface.to_be())?;
-                sticky.ensure(fd, Slot::Mark, &route.mark.0)?;
+                sticky.ensure_int(fd, Slot::Mark, route.mark.0.cast_signed())?;
                 sticky.ensure_flag(fd, Slot::DontRoute, route.scope == RouteScope::Link)?;
                 sticky.ensure_flag(
                     fd,
@@ -224,7 +224,7 @@ impl SendState {
                 let interface = selected_interface(route.interface);
                 // Linux takes this index in network byte order, as it takes IP_UNICAST_IF's.
                 sticky.ensure_int(fd, Slot::Ipv6UnicastInterface, interface.to_be() as c_int)?;
-                sticky.ensure(fd, Slot::Mark, &route.mark.0)?;
+                sticky.ensure_int(fd, Slot::Mark, route.mark.0.cast_signed())?;
                 sticky.ensure(fd, Slot::AddressPreferences, &address_preferences(route))?;
                 sticky.ensure_bytes(
                     fd,
@@ -354,7 +354,8 @@ impl SendState {
         if fields.neighbour == NeighbourConfirmation::Confirmed {
             flags |= libc::MSG_CONFIRM;
         }
-        self.sticky.ensure(fd, Slot::Priority, &fields.priority.0)?;
+        self.sticky
+            .ensure_int(fd, Slot::Priority, fields.priority.0.cast_signed())?;
         if let Some(time) = fields.transmit_time {
             let mut configuration = TransmitTime {
                 clockid: match time.clock {
@@ -445,16 +446,13 @@ fn lease_flow_label(
     destination: std::net::Ipv6Addr,
     label: u32,
 ) -> Result<(), HostError> {
-    let request = uapi::in6_flowlabel_req {
-        flr_dst: in6_addr(destination),
-        flr_label: label.to_be(),
-        flr_action: uapi::IPV6_FL_A_GET as u8,
-        flr_share: uapi::IPV6_FL_S_ANY as u8,
-        flr_flags: uapi::IPV6_FL_F_CREATE as u16,
-        flr_expires: u16::MIN,
-        flr_linger: u16::MIN,
-        __flr_pad: u32::MIN,
-    };
+    let request = crate::requests::FlowLabelRequest::new(
+        destination,
+        label.to_be(),
+        uapi::IPV6_FL_A_GET,
+        uapi::IPV6_FL_S_ANY,
+        uapi::IPV6_FL_F_CREATE,
+    );
     set_option(fd, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request)
 }
 

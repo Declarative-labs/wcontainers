@@ -10,8 +10,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::{NonZeroU16, NonZeroU32};
 use std::future::Future;
 use std::io::Write;
-use std::mem::size_of;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::pin::{Pin, pin};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -44,6 +43,8 @@ use wcontainers_internet_protocol::{
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
+use wcontainers_socket_options::{PlainOption, SocketOptions};
+use wcontainers_socket_options_linux::LinuxSocketOptions;
 use wcontainers_volatile_bytes::VolatileBytes;
 
 #[doc(hidden)]
@@ -2360,17 +2361,12 @@ pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
     let socket =
         std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, u16::MIN)).expect("a UDP socket");
     let flags: libc::c_int = temporary | mobile;
-    // SAFETY: the value is a c_int of its own size.
-    let set = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::IPPROTO_IPV6,
-            libc::IPV6_ADDR_PREFERENCES,
-            (&flags as *const libc::c_int).cast(),
-            size_of::<libc::c_int>() as u32,
-        )
-    };
-    assert!(!set.is_negative(), "the source preferences are set");
+    let set = LinuxSocketOptions.set_option(
+        socket.as_fd(),
+        PlainOption::Ipv6AddrPreferences,
+        &flags.to_ne_bytes(),
+    );
+    assert_eq!(set, Ok(()), "the source preferences are set");
     socket
         .connect((to, DISCARD_PORT))
         .expect("the socket connects");

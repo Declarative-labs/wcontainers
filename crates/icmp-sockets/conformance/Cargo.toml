@@ -23,6 +23,9 @@ etherparse.workspace = true
 mitsein.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The source preferences of the host's own socket, set as a listed option.
+wcontainers-socket-options = { path = "../../socket-options" }
+wcontainers-socket-options-linux = { path = "../../socket-options/implementation/linux" }
 # The packet types of a packet socket and the errno values of Linux.
 libc = "0.2.191"
 # The type number of a segment routing header.
@@ -32,6 +35,5 @@ rustix = { version = "1.1.6", features = ["net", "time", "linux_4_11"] }
 # The network namespace of each check and the packet socket that sees what leaves a link.
 nix = { version = "0.31.3", default-features = false, features = ["net", "sched", "socket"] }
 
-# TODO: remove this crate's 1 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

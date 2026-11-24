@@ -28,7 +28,7 @@ use wcontainers_internet_protocol::{
     WirelessAcknowledgement,
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{
-    StorageBytes, in6_addr, kernel_storage, storage, storage_bytes,
+    StorageBytes, kernel_storage, storage_bytes,
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::exchange::NO_ARRIVAL_INTERFACE;
 use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::{
@@ -39,6 +39,9 @@ use wcontainers_internet_protocol_linux_socket_options::datagram::send::Control;
 use wcontainers_internet_protocol_linux_socket_options::errno::errno_of;
 use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
 use wcontainers_internet_protocol_linux_socket_options::readiness::Watched;
+use wcontainers_internet_protocol_linux_socket_options::requests::{
+    FlowLabelRequest, bit_field_bytes,
+};
 use wcontainers_internet_protocol_linux_socket_options::{
     self as options, ControlBuffer, bind, family_of, get_int, host_error, open_socket, peer_for,
     set_flag, set_int, set_option,
@@ -593,17 +596,8 @@ fn flow_label_request(
     action: u32,
     share: u32,
     flags: u32,
-) -> uapi::in6_flowlabel_req {
-    uapi::in6_flowlabel_req {
-        flr_dst: in6_addr(destination),
-        flr_label: label,
-        flr_action: action as u8,
-        flr_share: share as u8,
-        flr_flags: flags as u16,
-        flr_expires: u16::MIN,
-        flr_linger: u16::MIN,
-        __flr_pad: u32::MIN,
-    }
+) -> FlowLabelRequest {
+    FlowLabelRequest::new(destination, label, action, share, flags)
 }
 
 /// Sets or removes the MD5 signature key of the peers a prefix holds, through `TCP_MD5SIG_EXT`.
@@ -618,8 +612,12 @@ fn set_md5_key(
         TcpMd5KeyChange::Set { peer, key } => (peer, key),
         TcpMd5KeyChange::Removed(peer) => (peer, &[][..]),
     };
+    let address = storage_bytes(SocketAddr::new(
+        key_address(family, peer.prefix.address),
+        u16::MIN,
+    ));
     let mut request = uapi::tcp_md5sig {
-        tcpm_addr: storage(key_address(family, peer.prefix.address)),
+        tcpm_addr: kernel_storage(&address),
         tcpm_flags: uapi::TCP_MD5SIG_FLAG_PREFIX as u8,
         tcpm_prefixlen: peer.prefix.length.0,
         tcpm_keylen: u16::MIN,
@@ -636,7 +634,12 @@ fn set_md5_key(
         .ok_or_else(invalid)?
         .copy_from_slice(key);
     request.tcpm_keylen = key.len() as u16;
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, &request) {
+    match set_option(
+        socket,
+        uapi::SOL_TCP,
+        uapi::TCP_MD5SIG_EXT,
+        &Md5Signature::of(&request, address),
+    ) {
         Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),
         other => other,
     }
@@ -671,6 +674,107 @@ struct AuthenticationKeyName {
     interface: i32,
     send: u8,
     receive: u8,
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_md5sig`, as `TCP_MD5SIG_EXT` takes it.
+    #[derive(IntoBytes)]
+    struct Md5Signature mirrors uapi::tcp_md5sig {
+        tcpm_addr: StorageBytes,
+        tcpm_flags: u8,
+        tcpm_prefixlen: u8,
+        tcpm_keylen: u16,
+        tcpm_ifindex: c_int,
+        tcpm_key: [u8; uapi::TCP_MD5SIG_MAXKEYLEN as usize],
+    }
+}
+
+impl Md5Signature {
+    /// The request's bytes, its address given as the bytes it was made from.
+    fn of(request: &uapi::tcp_md5sig, address: StorageBytes) -> Self {
+        Self {
+            tcpm_addr: address,
+            tcpm_flags: request.tcpm_flags,
+            tcpm_prefixlen: request.tcpm_prefixlen,
+            tcpm_keylen: request.tcpm_keylen,
+            tcpm_ifindex: request.tcpm_ifindex,
+            tcpm_key: request.tcpm_key,
+        }
+    }
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_ao_add`, as `TCP_AO_ADD_KEY` takes it.
+    #[derive(IntoBytes)]
+    struct KeyAddition mirrors uapi::tcp_ao_add {
+        addr: StorageBytes,
+        alg_name: [libc::c_char; 64],
+        ifindex: i32,
+        _bitfield_1: [u8; 4],
+        reserved2: u16,
+        prefix: u8,
+        sndid: u8,
+        rcvid: u8,
+        maclen: u8,
+        keyflags: u8,
+        keylen: u8,
+        key: [u8; uapi::TCP_AO_MAXKEYLEN as usize],
+    }
+}
+
+impl KeyAddition {
+    /// The request's bytes, its address given as the bytes it was made from.
+    fn of(request: &uapi::tcp_ao_add, address: StorageBytes) -> Self {
+        Self {
+            addr: address,
+            alg_name: request.alg_name,
+            ifindex: request.ifindex,
+            _bitfield_1: bit_field_bytes(&request._bitfield_1),
+            reserved2: request.reserved2,
+            prefix: request.prefix,
+            sndid: request.sndid,
+            rcvid: request.rcvid,
+            maclen: request.maclen,
+            keyflags: request.keyflags,
+            keylen: request.keylen,
+            key: request.key,
+        }
+    }
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_ao_del`, as `TCP_AO_DEL_KEY` takes it.
+    #[derive(IntoBytes)]
+    struct KeyRemoval mirrors uapi::tcp_ao_del {
+        addr: StorageBytes,
+        ifindex: i32,
+        _bitfield_1: [u8; 4],
+        reserved2: u16,
+        prefix: u8,
+        sndid: u8,
+        rcvid: u8,
+        current_key: u8,
+        rnext: u8,
+        keyflags: u8,
+    }
+}
+
+impl KeyRemoval {
+    /// The request's bytes, its address given as the bytes it was made from.
+    fn of(request: &uapi::tcp_ao_del, address: StorageBytes) -> Self {
+        Self {
+            addr: address,
+            ifindex: request.ifindex,
+            _bitfield_1: bit_field_bytes(&request._bitfield_1),
+            reserved2: request.reserved2,
+            prefix: request.prefix,
+            sndid: request.sndid,
+            rcvid: request.rcvid,
+            current_key: request.current_key,
+            rnext: request.rnext,
+            keyflags: request.keyflags,
+        }
+    }
 }
 
 options::uapi_mirror! {
@@ -779,7 +883,12 @@ fn add_authentication_key(
     };
     request.set_set_current(u32::from(current));
     request.set_set_rnext(u32::from(next));
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, &request) {
+    match set_option(
+        socket,
+        uapi::SOL_TCP,
+        uapi::TCP_AO_ADD_KEY,
+        &KeyAddition::of(&request, name.address),
+    ) {
         Err(HostError::Errno(libc::EEXIST))
             if holds_authentication_key(socket, &name, &request) =>
         {
@@ -851,7 +960,12 @@ fn remove_authentication_key(
         request.rnext = key.0;
     }
     request.set_del_async(u32::from(asynchronously));
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, &request) {
+    match set_option(
+        socket,
+        uapi::SOL_TCP,
+        uapi::TCP_AO_DEL_KEY,
+        &KeyRemoval::of(&request, name.address),
+    ) {
         Err(HostError::Errno(libc::ENOENT)) => {
             if removal.current.is_none() && removal.requested_next.is_none() {
                 return Ok(());
@@ -894,7 +1008,12 @@ fn change_authentication_options(
     options.set_set_rnext(u32::from(false));
     options.set_set_counters(u32::from(false));
     change(&mut options);
-    set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO, &options)
+    set_option(
+        socket,
+        uapi::SOL_TCP,
+        uapi::TCP_AO_INFO,
+        &state::AuthenticationInformation::from(&options),
+    )
 }
 
 fn set_authentication_options(
@@ -1463,16 +1582,8 @@ impl HostTcpSockets {
                 software: None,
                 hardware: None,
             },
-            mark: PacketMark(options::get_option(
-                socket,
-                uapi::SOL_SOCKET,
-                uapi::SO_MARK,
-            )?),
-            priority: PacketPriority(options::get_option(
-                socket,
-                uapi::SOL_SOCKET,
-                uapi::SO_PRIORITY,
-            )?),
+            mark: PacketMark(SockRef::from(&socket).mark().map_err(io_host_error)?),
+            priority: PacketPriority(SockRef::from(&socket).priority().map_err(io_host_error)?),
             drops_since_previous: DropCount(u32::MIN),
         })
     }
