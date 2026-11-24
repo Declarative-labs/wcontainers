@@ -1011,6 +1011,41 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     opened (all1-arm.out, Graviton4, load 19 to 25): 115 passed, 2 failed (the known precise-set test, and jumptables'
     count above); clippy with warnings denied clean on every target on Graviton4 and on the Xeon. No new unsafe code.
 
+- W1 round 7 run 2 (2026-11-24, 08:20 UTC on), scratch w1/r7run2, Graviton4, every run with /dev/kvm denied:
+  - Conforming: nothing new (no change to the executor, memory space or volatile bytes interfaces since round 4).
+  - jumptables' two missing returns found (p-pos.sh and vm-pos.sh print every return's count, pc and exit on each side
+    in a remote copy; vm.pos and p.pos): the program's two jumps to a misaligned target (`br` to an odd offset). The VM
+    executor's single step ends the limited turn after the `br`, at the target (count 3707 and 3929), and its next turn
+    gives the alignment fault; form P returned the fault at once, from the jump's exit. The VM's is the definition (the
+    hardware takes the fault at the target's fetch), so P now ends a limited turn there too: an alignment stop at the
+    thread's own pc is an instruction's end, like a landing (native.rs). Everything else on both lists is equal (the
+    system calls' stack addresses differ, waiting on K2, as recorded). `count_at_every_stop`: bench, calls and
+    jumptables now all equal the VM executor's returns and hash (jumptables 5,484, 17339527552300285948).
+  - `differential` built (tests/differential.rs): the VM form's differential test under P. Every covered form's layer 1
+    cases (proptest's ChaCha from the seed and the form's name, as the VM's), each drawn load or store's edge case
+    (across a refusing page, tagged, bit 55, misaligned), the words layer 1 leaves out (register collisions and swept
+    forms), every float status word, and each drawn exclusive with its partner, run under the exact executor (lone
+    pieces) and the ordinary one (full look-ahead) on one memory laid out as layer 1's (the data area, and the code
+    area of 2 x 128 MiB holding `udf #0` apart from the words), a new thread per case; compared whole (stop,
+    registers, vectors, FPSR and FPCR, changed data bytes) with the WebAssembly output, and the count each made with the
+    counting rule. A case whose float flags are kept has its thread write FPSR first (`msr fpsr, x0`), as a program
+    does. Knobs `WCHP_DIFFERENTIAL_CASES` (16), `WCHP_SEED`, `WCHP_DIFFERENTIAL_FORMS`, `WCHP_DIFFERENTIAL_JOBS` (3).
+    Seed 0x2545f4914f6cdd1d at 16 cases: 1,215 forms, 8,114 edge cases, 4,528 left-out words, 96 float status words,
+    384 pairs (550 storing), 65,124 runs, none failing, 68 s (load 5 to 7).
+  - At 64 cases, seeds 1 to 3 (diff-seeds-arm.out), it found a bug of the process way: `br`, `blr` and `ret` through
+    x30, or `blr` through a withheld register (x18, x23), to a target no piece can be at (past the reach, or
+    misaligned) stopped at a host address, or left x30 unchanged after `blr` (2 to 14 of 128 runs of BR, BLR and RET
+    per seed). The call into the floor is a `blr`, which overwrites x30: the call's code keeps the guest's x30 in the
+    page and says so for the guest's registers, but the jump's target was still read from x30, and a fix-up giving x30
+    the return address was overridden by the page's old x30 (diag-br.sh prints each lone turn's way out). Fixed in the
+    process way's call (wcontainers-arm64 carry.rs, below under the translator changes); after it seeds 1 to 3 at 64
+    cases pass: 251,344, 251,218 and 251,476 runs, none failing, 137 to 139 s each (xlink-arm.out, load 16 to 31).
+  - The test sees faults (mutate-diff.sh, remote copy): FPCR not taken from `set_registers` fails it (every form with
+    a nonzero FPCR), the stack-alignment syndrome taken as unknown fails it (LD1R and others). Two breaks it does not
+    see: a data abort's alignment status ignored (the native output checks alignment itself where the form needs it,
+    so the path is not reached on Graviton4), and the PC-alignment syndrome taken as unknown (the stop crate then
+    answers a landing at the misaligned target, and P's load of that pc gives the same alignment fault).
+
 ## W1 not complete: the gap list
 
 W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
@@ -1033,11 +1068,10 @@ known:
   tests/kernel.rs); hello, getppid, forks, mappings, jumptables and layout equal whole, blocks and code differ only
   where the WebAssembly side has its recorded faults and equal the program run on the host (round 6); busybox's 56
   `text` and `files` commands give the reference's output (run 3). Turns limited to one counted event change
-  nothing (round 6's name). NOT BUILT, so the bar is not met: `differential` (exits, registers and memory at every
-  look-ahead; P translates at one look-ahead, or lone pieces under the exact executor; per instruction, the executor
-  suite's precise-set test compares P with the WebAssembly translator's meaning). `count_at_every_stop` is built
-  (round 7 run 1): bench and calls equal the VM executor's returns and hash; jumptables does not (5,482 returns
-  against 5,484, the count itself following the definition at every instruction): NOT MET until that is found.
+  nothing (round 6's name). `differential` is built (round 7 run 2): every form's layer 1 cases, edges,
+  left-out words, float status words and exclusive pairs equal the WebAssembly output's under both of P's look-aheads,
+  with the count the rule's; met for what it compares. `count_at_every_stop` is met (round 7 run 2): bench, calls and
+  jumptables equal the VM executor's returns and hash of positions.
 - `Execution::restored` (the runtime's save of a process) is `unimplemented!` under P: a save panics. Not built;
   For the owner.
 - x86-64: the executor, kernel and busybox suites build no tests on the Xeon (0 tests in conformance, kernel, run,
@@ -1069,10 +1103,8 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## Next
 
-- W1 is not complete (gap list). In order: jumptables' two missing returns under `count_at_every_stop` (find which
-  exits the VM side gives: its inside can print through the link's Print request in a remote copy; compare its exit
-  list with diag-count.py's), busybox `sh`'s bar, the round trip's margin, the adversarial fork with a writing sibling,
-  `differential`, `Execution::restored`; x86-64 and form I are W3's and W2's.
+- W1 is not complete (gap list). In order: busybox `sh`'s bar, the round trip's margin, the adversarial fork with a
+  writing sibling, `Execution::restored`; x86-64 and form I are W3's and W2's.
 - busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
   the key's hash, comparing the code, cloning and moving a moved translation, placing, the slot) and the memory calls
   (new, fork and drop beyond the model's process creation, about 0.9 ms a program), then the turns that are left (59 a
@@ -1101,6 +1133,10 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## How to run
 
+- Since round 7 run 2: scratch w1/r7run2. `cargo test -p wcontainers-executor-host-process --test differential` (knobs
+  above); diff.sh runs clippy and it with /dev/kvm denied (`EXTRA_ENV='WCHP_DIFFERENTIAL_CASES=16'` before it),
+  diff-seeds.sh three seeds at `CASES`, mutate-diff.sh its breaks. p-pos.sh and vm-pos.sh print every return of
+  jumptables under P's exact executor and the VM executor (send vm-pos.sh with `--name nwvmvm`; it needs KVM).
 - Since round 7 run 1: scratch w1/r7run1. check.sh is round 6's; `set -- kernel:count_at_every_stop` runs the three
   count tests. vm-positions.sh runs the VM executor's kernel test with KVM (send under another name, e.g. `--name
   nwvmvm`) and prints its stops and hashes. diag-count.py patches a remote copy's native.rs to check the count at every
@@ -1293,6 +1329,14 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   as a write whatever the probe's syndrome says), unless it already takes write from the guest instruction; the
   machine way's `brk` syndrome comes from the hardware, so the second fix (P reading a SIGTRAP's call from the loaded
   word) does not concern it.
+- 9d7c1d79 (W1 round 7 run 2), crates/wcontainers-arm64/src/carry.rs, the process way only: its call into the floor
+  (`process_call`) now also moves a resume held in x30 (`Resume::Through` or `Slot` of `Held::Register(30)`) to the
+  page's `link` word after storing x30 there, and does not relocate the guest's x30 to that word where the span's
+  fix-ups give x30 its whole value (`Constant`, `Address` or `Move`), so the fix-up's value stands. Found by
+  host-process's differential test (above). Verified on Graviton4 (xlink-arm.out, xlink-vm-arm.out): the arm64,
+  translator, guest-cpu and stop crate tests pass; the VM executor's exits, native (32,562 cases, 0 failing), floor,
+  registers, host_branches, interrupts and probe tests pass with KVM; host-process's differential, floor, step,
+  translated, run and kernel tests pass with /dev/kvm denied. The machine way is unchanged (its call is one `brk`).
 - For the translator track, not done: the InProcess way (plan 3.2 item 1 and two more withheld registers), W2's.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
@@ -1378,6 +1422,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 round 7 run 2: tests/differential.rs carries copies of the VM executor's test helpers that draw the cases
+  (`edge`, `across`, `collisions`, `swept`, `paired` and the WebAssembly side of a pair), because they live in that
+  crate's test files; the arm64 crate's `words_of` is included by path as the VM's test does. One shared home for them
+  (the translator test crate) would be the clean form; that crate is not this track's.
 
 - W1 round 5 run 2 (commit 944f8917) changed plan 13's W1 bar without recording it here: the two tests the fourth
   check listed as waiting on K2 (`differential`, `count_at_every_stop`) were written up as "not built" with a
@@ -1513,6 +1562,9 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since round 7 run 2, for the differential test only (ARM64): proptest 1.12.0 (MIT OR Apache-2.0, already in the lock
+file, the VM executor's tests' version) to draw layer 1's cases.
 
 Since round 7 run 1, ARM64 only: rustc-hash 2.1.3 (Apache-2.0 OR MIT, already in the lock file, the VM inside's
 version) for the hash of positions, so it equals the VM executor's.

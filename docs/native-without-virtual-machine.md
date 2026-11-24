@@ -234,8 +234,9 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
    is absolute (`PROCESS_ENTRIES` + code · 16, the zygote's code at 2^45), so a piece needs no relocation where it
    is loaded; `bl` would. The return address names the call (the floor reports it at the `blr`, as the VM form's
    exception address names the `brk`), and a call the kernel's side answers in place goes on at the `ldr`. The
-   position map records x30 (and any register x30 stood in for) as held in the page's `link` word from the store
-   on. Each entry keeps x23 in the stub's register page before naming itself there (`str x23, [x28,
+   position map records x30 (and any register x30 stood in for, and a jump's target x30 held) as held in the page's
+   `link` word from the store on, except where the stop's fix-ups give x30 its whole value (a `blr`'s return
+   address), which then stands (W1 round 7 run 2, found by `differential`). Each entry keeps x23 in the stub's register page before naming itself there (`str x23, [x28,
    #call_scratch]; movz x23, #n; b save`), since a jump's last-target call leaves its target in x23; the embedder
    puts it back into the block. The native output's register page is the first 128 bytes of the stub's register
    page, so x28 is the same address for both.
@@ -487,7 +488,9 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   (`HostProcessExecutor::exact`, a stand-in for the embedder's choice) translates every piece as one instruction,
   never linked and never given a slot, as the VM form's look-ahead none: every way out lands on an empty slot, the
   thread comes back at every instruction's end, and a limited turn ends at the first end where the count reached the
-  limit, with no slice. That costs a turn per guest instruction, the slow path "turn with a count limit run in
+  limit, with no slice. A jump to a misaligned target ends at that target too, as on the hardware, which takes the
+  fault at the target's fetch: where its count reached the limit the turn ends there, and the next turn's load gives
+  the fault (the VM executor's single step does the same). That costs a turn per guest instruction, the slow path "turn with a count limit run in
   steps", counted per limited turn. An ordinary executor (linked pieces) ends a limited turn past its count, as 4.6
   says, counted "turn limit passed".
 
@@ -1448,9 +1451,11 @@ them.
 the slot table's base (10), and, for the comparisons of addresses, memory size and the count with the WebAssembly
 output, the kernel's K2 (3.1), which is in the kernel: the kernel test gives both outputs the WebAssembly output's
 ceiling and memory size and compares wait status, output, root files, addresses, memory size and the turns of
-one-thread programs. `differential` at every look-ahead is not built, and W1 is not met without it (status file, gap
-list; per instruction, the executor suite's precise-set test compares P's lone pieces with the WebAssembly
-translator's meaning). `count_at_every_stop` is built on 3.6's exact executor (pieces of one instruction, as the VM
+one-thread programs. `differential` is built (tests/differential.rs, W1 round 7 run 2): the VM form's differential
+test, every presented form's layer 1 cases with the bar's own edges, the words layer 1 leaves out, the float status
+words and the exclusive pairs, each run under P's two look-aheads (the exact executor's lone pieces and the ordinary
+executor's full look-ahead) and compared whole with the WebAssembly output, with the count against the counting rule;
+P has no translation without the count, so "with and without the count" is the VM form's alone. `count_at_every_stop` is built on 3.6's exact executor (pieces of one instruction, as the VM
 form's look-ahead none) and compares the returns and the hash of their positions (count and pc) with the VM executor's,
 which shares the native output and the count's definition (the WebAssembly output ends a limited turn at its own stop
 checks, another quantity): one test per program of the VM form's set, bench, calls and jumptables. Also kept: turns of
@@ -1463,8 +1468,8 @@ filter. Pass bar, every item on the rented ARM64 machine:
   programs: hello, the fork, exec and signal program, and busybox's `text` and `files` commands, as N3's bar) give
   the reference's output and status, and the same verdicts as the WebAssembly output; once K2 lands, exits,
   registers and memory equal the WebAssembly output's at every look-ahead, with and without the count
-  (`differential`, the VM form's differential test, seeded, with its case knob; cases run recorded; not built, see
-  this milestone's opening);
+  (`differential`, the VM form's differential test, seeded, with its case knob; cases run recorded in the status
+  file);
 - the count at every stop is identical to the reference's (`count_at_every_stop`, a stop at every counted event,
   under the exact executor, against the VM executor's returns and hash of positions);
 - the zygote survives its own migration between CPUs (the fourth check's case: moved 200 times, answering after
