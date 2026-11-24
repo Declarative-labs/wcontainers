@@ -832,9 +832,17 @@ impl Device_Impl {
         init: *const D3D10_SUBRESOURCE_DATA,
     ) -> Result<ID3D10Texture1D> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let mut d: D3D11_TEXTURE1D_DESC = unsafe { convert::same_fields(d) };
-        d.MiscFlags = misc11(d.MiscFlags);
-        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
+        let usage = D3D11_USAGE(d.Usage.0);
+        let d = D3D11_TEXTURE1D_DESC {
+            Width: d.Width,
+            MipLevels: d.MipLevels,
+            ArraySize: d.ArraySize,
+            Format: d.Format,
+            Usage: usage,
+            BindFlags: d.BindFlags,
+            CPUAccessFlags: cpu_access10(usage, d.BindFlags, d.CPUAccessFlags),
+            MiscFlags: misc11(d.MiscFlags),
+        };
         let mut t = None;
         self.create_texture1_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -846,9 +854,19 @@ impl Device_Impl {
         init: *const D3D10_SUBRESOURCE_DATA,
     ) -> Result<ID3D10Texture2D> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let mut d: D3D11_TEXTURE2D_DESC = unsafe { convert::same_fields(d) };
-        d.MiscFlags = misc11(d.MiscFlags);
-        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
+        let usage = D3D11_USAGE(d.Usage.0);
+        let d = D3D11_TEXTURE2D_DESC {
+            Width: d.Width,
+            Height: d.Height,
+            MipLevels: d.MipLevels,
+            ArraySize: d.ArraySize,
+            Format: d.Format,
+            SampleDesc: d.SampleDesc,
+            Usage: usage,
+            BindFlags: d.BindFlags,
+            CPUAccessFlags: cpu_access10(usage, d.BindFlags, d.CPUAccessFlags),
+            MiscFlags: misc11(d.MiscFlags),
+        };
         let mut t = None;
         self.create_texture2_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -860,9 +878,18 @@ impl Device_Impl {
         init: *const D3D10_SUBRESOURCE_DATA,
     ) -> Result<ID3D10Texture3D> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let mut d: D3D11_TEXTURE3D_DESC = unsafe { convert::same_fields(d) };
-        d.MiscFlags = misc11(d.MiscFlags);
-        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
+        let usage = D3D11_USAGE(d.Usage.0);
+        let d = D3D11_TEXTURE3D_DESC {
+            Width: d.Width,
+            Height: d.Height,
+            Depth: d.Depth,
+            MipLevels: d.MipLevels,
+            Format: d.Format,
+            Usage: usage,
+            BindFlags: d.BindFlags,
+            CPUAccessFlags: cpu_access10(usage, d.BindFlags, d.CPUAccessFlags),
+            MiscFlags: misc11(d.MiscFlags),
+        };
         let mut t = None;
         self.create_texture3_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()

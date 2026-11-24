@@ -488,7 +488,7 @@ impl Device_Impl {
         if d1.TextureLayout != D3D11_TEXTURE_LAYOUT_UNDEFINED {
             return Err(E_INVALIDARG.into());
         }
-        let d = convert::texture2d(&unsafe { convert::same_fields(d1) });
+        let d = convert::texture2d_of1(d1);
         let front = self.texture(d, init)?;
         give(out, Texture2D::made(front, self.me()).into())
     }
@@ -503,7 +503,7 @@ impl Device_Impl {
         if d1.TextureLayout != D3D11_TEXTURE_LAYOUT_UNDEFINED {
             return Err(E_INVALIDARG.into());
         }
-        let d = convert::texture3d(&unsafe { convert::same_fields(d1) });
+        let d = convert::texture3d_of1(d1);
         let front = self.texture(d, init)?;
         give(out, Texture3D::made(front, self.me()).into())
     }
