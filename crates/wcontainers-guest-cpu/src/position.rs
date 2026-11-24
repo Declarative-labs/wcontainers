@@ -129,6 +129,8 @@ pub enum Fixup {
     FloatStatus,
     /// The register page's last x87 instruction pointer gets this guest address, not yet stored there (x86).
     X87Pointer(u64),
+    /// The host register, by number, moves by `by` bytes (x86-64's stack pointer after a push's store).
+    Offset { register: u8, by: i32 },
 }
 
 /// What a stop at one host instruction means for the guest. A span holds from its start to the next span.
