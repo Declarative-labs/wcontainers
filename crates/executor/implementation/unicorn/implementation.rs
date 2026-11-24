@@ -15,6 +15,7 @@ pub mod network;
 pub mod reference;
 pub mod replay;
 pub mod runtimes;
+pub mod space;
 pub mod standin;
 pub mod streams;
 

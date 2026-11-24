@@ -40,6 +40,8 @@ wcontainers-negative-route-advisable = { path = "../../../negative-route-advisab
 wcontainers-executor = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The exception classes of ESR_EL1 a stopped processor's syndrome is built from, the version the architecture uses.
+aarch64-cpu = "12.0.0"
 # Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
 wcontainers-executor-wasmtime = { path = "../wasmtime" }
 wcontainers-arm64 = { path = "../../../wcontainers-arm64", optional = true }

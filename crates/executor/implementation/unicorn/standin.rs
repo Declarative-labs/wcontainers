@@ -8,6 +8,8 @@
 //! memory that shows the block sees the same bytes at once.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use memmap2::MmapMut;
 use unicorn_engine::{
@@ -18,11 +20,24 @@ use wcontainers_abi::{
     Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId,
 };
 
-use wcontainers_executor_wasmtime::single_instruction::execute_on_cpu;
+use aarch64_cpu::registers::ESR_EL1;
+use wcontainers_executor::memory_space::{MemorySpace, VolatileBytes};
+use wcontainers_executor::{
+    ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
+};
 use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::{Arm64, Processor};
+use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_processor_architecture_arm64::syndrome::{
+    FaultStatus, WRITE_NOT_READ, encode_syndrome,
+};
+use wcontainers_processor_architecture_arm64::{
+    Arm64, ConditionFlags, DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch,
+    PagePermission, Processor,
+};
 
 use crate::replay::{DigestMemories, MemoryDigests, digest_pages};
+use crate::space::UnicornSpace;
 
 /// A process's address space on a host with 32 bit memories.
 pub const SPACE_32_BIT: u64 = 1 << 32;
@@ -35,6 +50,15 @@ const EXCEPTION_UNDEFINED: u32 = 1;
 const EXCEPTION_SYSCALL: u32 = 2;
 const EXCEPTION_DATA_ABORT: u32 = 4;
 const EXCEPTION_BREAKPOINT: u32 = 7;
+
+/// The most a guest space maps in unicorn as one region: unicorn flushes each page of a region it unmaps, so a
+/// change of one page costs this much at most. A level 2 block of 4 KiB pages, 2 MiB.
+const LARGEST_GUEST_REGION: u64 = PAGE_SIZE * (PAGE_SIZE / size_of::<u64>() as u64);
+
+/// The register a system call's result goes in, x0 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
+const RESULT_REGISTER: usize = 0;
+/// A page's length as an index into host memory.
+const PAGE_BYTES: usize = PAGE_SIZE as usize;
 
 /// Something the stand-in cannot run as the reference's CPU does. It is reported instead of an [`Exit`],
 /// because no exit would be true.
@@ -53,7 +77,7 @@ pub enum Unsupported {
 
 /// What stopped the emulator, recorded by its hooks.
 #[derive(Default)]
-struct Stopped {
+pub(crate) struct Stopped {
     exception: Option<u32>,
     fault: Option<(u64, Access)>,
     /// Instructions of the blocks entered, for how long the turn took.
@@ -62,21 +86,23 @@ struct Stopped {
     /// resolution of the machine's tick, which is cheap to read at every block, as Linux looks at
     /// CPU time at its tick.
     deadline: Option<coarsetime::Instant>,
+    /// Raised from another thread to end the turn at the next block.
+    interrupt: Option<Arc<AtomicBool>>,
 }
 
-struct Memory {
-    unicorn: Unicorn<'static, Stopped>,
+pub(crate) struct Memory {
+    pub(crate) unicorn: Unicorn<'static, Stopped>,
     /// The CPU state as made, with the exclusive monitor clear, put back before each turn: a return to
     /// a program clears the monitor (`ClearExclusiveLocal` at exception return), and nothing of one
     /// thread's turn may reach another's.
     fresh: Context,
     bytes: MmapMut,
     /// What each page allows, as the kernel last said.
-    pages: Vec<Permissions>,
+    pub(crate) pages: Vec<Permissions>,
     /// The ranges currently mapped in unicorn: start to (end, permissions).
     mapped: BTreeMap<u64, (u64, Permissions)>,
     /// Ranges that show a block: start to (end, the block's host memory for the start).
-    shared: BTreeMap<u64, (u64, *mut u8)>,
+    pub(crate) shared: BTreeMap<u64, (u64, *mut u8)>,
     /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
     touched: Vec<u64>,
     /// Whether its translated blocks count instructions. Unicorn adds its counting hook without
@@ -84,6 +110,13 @@ struct Memory {
     counting: bool,
     /// Where its address space ends.
     end: u64,
+    /// For a guest space, the pages that allow nothing that are mapped in unicorn all the same, without access,
+    /// so that its own reads and writes reach them: one bit each. They are unmapped again before its guest runs,
+    /// since unicorn lets an access that crosses into a page mapped without access through. A guest space's
+    /// mappings are also cut to [`LARGEST_GUEST_REGION`], so a change to one page remaps only that much around it.
+    pub(crate) reachable: Option<Vec<u64>>,
+    /// The addresses of the pages reached since the guest last ran.
+    reached: Vec<(u64, u64)>,
 }
 
 /// A block of shared pages, in host memory that lives until the block is dropped.
@@ -173,7 +206,7 @@ fn register_at(id: i32) -> RegisterARM64 {
 }
 
 impl Memory {
-    fn new(end: u64) -> Result<Self, CpuError> {
+    pub(crate) fn new(end: u64) -> Result<Self, CpuError> {
         let mut unicorn = Unicorn::new_with_data(Arch::ARM64, Mode::ARM, Stopped::default())
             .map_err(|_| CpuError::NotSupported)?;
         unicorn
@@ -192,6 +225,10 @@ impl Memory {
                 if stopped
                     .deadline
                     .is_some_and(|deadline| coarsetime::Instant::now() >= deadline)
+                    || stopped
+                        .interrupt
+                        .as_ref()
+                        .is_some_and(|interrupt| interrupt.load(Ordering::Acquire))
                 {
                     unicorn.emu_stop().expect("stopping unicorn");
                 }
@@ -235,6 +272,8 @@ impl Memory {
             touched: vec![0; (end / PAGE_SIZE / 64) as usize],
             counting: false,
             end,
+            reachable: None,
+            reached: Vec::new(),
         })
     }
 
@@ -344,7 +383,7 @@ impl Memory {
 
     /// Takes `[start, end)` out of the shared ranges, splitting those at its ends, and returns the parts
     /// taken with their host memory.
-    fn unshare(&mut self, start: u64, end: u64) -> Vec<(u64, u64, *mut u8)> {
+    pub(crate) fn unshare(&mut self, start: u64, end: u64) -> Vec<(u64, u64, *mut u8)> {
         let overlapping: Vec<u64> = self
             .shared
             .range(..end)
@@ -368,7 +407,7 @@ impl Memory {
         taken
     }
 
-    fn range(&self, address: u64, length: u64) -> Result<std::ops::Range<usize>, CpuError> {
+    pub(crate) fn range(&self, address: u64, length: u64) -> Result<std::ops::Range<usize>, CpuError> {
         let end = address.checked_add(length).ok_or(CpuError::BadAddress)?;
         if end > self.end {
             return Err(CpuError::BadAddress);
@@ -377,7 +416,7 @@ impl Memory {
     }
 
     /// Makes unicorn's mappings over `[start, end)` match the page table again.
-    fn remap(&mut self, start: u64, end: u64) {
+    pub(crate) fn remap(&mut self, start: u64, end: u64) {
         let mut low = start;
         let mut high = end;
         let overlapping: Vec<u64> = self
@@ -396,15 +435,25 @@ impl Memory {
         }
         let mut page = low / PAGE_SIZE;
         let last = high / PAGE_SIZE;
+        let largest = match self.reachable {
+            Some(_) => LARGEST_GUEST_REGION / PAGE_SIZE,
+            None => u64::MAX,
+        };
         while page < last {
             let permissions = self.pages[page as usize];
+            let shown = self.is_shown(page);
             let run_start = page;
             let (pointer, contiguous) = self.host(page * PAGE_SIZE);
-            let run_last = last.min(page + contiguous / PAGE_SIZE);
-            while page < run_last && self.pages[page as usize] == permissions {
+            let run_last = last
+                .min(page + contiguous / PAGE_SIZE)
+                .min(page.saturating_add(largest));
+            while page < run_last
+                && self.pages[page as usize] == permissions
+                && self.is_shown(page) == shown
+            {
                 page += 1;
             }
-            if permissions.is_empty() {
+            if !shown {
                 continue;
             }
             let address = run_start * PAGE_SIZE;
@@ -417,6 +466,47 @@ impl Memory {
                     .expect("mapping host memory into unicorn");
             }
             self.mapped.insert(address, (address + length, permissions));
+        }
+    }
+
+    /// Returns whether unicorn maps the page.
+    fn is_shown(&self, page: u64) -> bool {
+        !self.pages[page as usize].is_empty()
+            || self.reachable.as_ref().is_some_and(|reachable| {
+                reachable[(page / u64::from(u64::BITS)) as usize] & (1 << (page % u64::from(u64::BITS))) != 0
+            })
+    }
+
+    /// Maps the pages over the addresses in unicorn, those that allow nothing without access, so that its own
+    /// reads and writes reach them; a memory that is not a guest space has them all mapped already or never.
+    pub(crate) fn reach(&mut self, start: u64, end: u64) {
+        let Some(reachable) = &mut self.reachable else {
+            return;
+        };
+        let mut missing = false;
+        for page in start / PAGE_SIZE..end.div_ceil(PAGE_SIZE) {
+            let (word, bit) = (
+                (page / u64::from(u64::BITS)) as usize,
+                1 << (page % u64::from(u64::BITS)),
+            );
+            missing |= reachable[word] & bit == 0;
+            reachable[word] |= bit;
+        }
+        if missing {
+            let pages = (start - start % PAGE_SIZE, end.div_ceil(PAGE_SIZE) * PAGE_SIZE);
+            self.reached.push(pages);
+            self.remap(pages.0, pages.1);
+        }
+    }
+
+    /// Unmaps from unicorn again the pages that allow nothing it was given to reach.
+    fn unreach(&mut self) {
+        let Some(reachable) = &mut self.reachable else {
+            return;
+        };
+        reachable.fill(u64::MIN);
+        for (start, end) in std::mem::take(&mut self.reached) {
+            self.remap(start, end);
         }
     }
 
@@ -578,36 +668,61 @@ impl StandIn {
             .memories
             .get_mut(&state.memory)
             .expect("thread's memory");
-        memory
-            .load_registers(&state.registers)
+        let deadline = slice_nanoseconds
+            .filter(|_| self.wall_clock)
+            .map(|nanoseconds| {
+                coarsetime::Instant::now()
+                    + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
+            });
+        let (exit, instructions) =
+            memory.run_turn(&mut state.registers, slice_nanoseconds, deadline, None);
+        self.last_instructions = instructions;
+        exit
+    }
+}
+
+impl Memory {
+    /// Runs the registers on this memory until they come back, and returns why with the number of instructions
+    /// run, counted in whole blocks. With a slice, it stops after that many instructions; with a deadline, also
+    /// once the machine's clock passes it; with an interrupt, also once it is raised.
+    pub(crate) fn run_turn(
+        &mut self,
+        registers: &mut RegisterBlock,
+        slice_nanoseconds: Option<u64>,
+        deadline: Option<coarsetime::Instant>,
+        interrupt: Option<Arc<AtomicBool>>,
+    ) -> (Result<Exit, Unsupported>, u64) {
+        self.unreach();
+        self.load_registers(registers)
             .expect("loading registers into unicorn");
-        *memory.unicorn.get_data_mut() = Stopped {
-            deadline: slice_nanoseconds
-                .filter(|_| self.wall_clock)
-                .map(|nanoseconds| {
-                    coarsetime::Instant::now()
-                        + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
-                }),
+        *self.unicorn.get_data_mut() = Stopped {
+            deadline,
+            interrupt,
             ..Stopped::default()
         };
         // Zero means no limit.
         let count = slice_nanoseconds.map_or(0, |nanoseconds| nanoseconds.max(1) as usize);
-        if count > 0 && !memory.counting {
-            memory
-                .unicorn
+        if count > 0 && !self.counting {
+            self.unicorn
                 .ctl_flush_tb()
                 .expect("flushing unicorn's translated blocks");
         }
         // Unicorn drops its blocks itself when counting stops.
-        memory.counting = count > 0;
-        let result = memory
-            .unicorn
-            .emu_start(state.registers.pc, u64::MAX, 0, count);
-        memory
-            .save_registers(&mut state.registers)
+        self.counting = count > 0;
+        let result = self.unicorn.emu_start(registers.pc, u64::MAX, 0, count);
+        self.save_registers(registers)
             .expect("reading registers from unicorn");
-        let stopped = std::mem::take(memory.unicorn.get_data_mut());
-        self.last_instructions = stopped.instructions;
+        let stopped = std::mem::take(self.unicorn.get_data_mut());
+        (self.to_exit(result, &stopped, registers), stopped.instructions)
+    }
+
+    /// Returns what the hooks recorded and unicorn's result as the exit they are.
+    fn to_exit(
+        &self,
+        result: Result<(), uc_error>,
+        stopped: &Stopped,
+        registers: &RegisterBlock,
+    ) -> Result<Exit, Unsupported> {
         // A jump to an address that is not a multiple of 4 faults on alignment before any fetch.
         if let Some((address, access)) = stopped.fault {
             if access == Access::Execute && !address.is_multiple_of(4) {
@@ -615,10 +730,10 @@ impl StandIn {
             }
             return Ok(Exit::MemoryFault { address, access });
         }
-        let pc = state.registers.pc;
+        let pc = registers.pc;
         Ok(match (result, stopped.exception) {
             (_, Some(EXCEPTION_SYSCALL)) => {
-                let x = &state.registers.x;
+                let x = &registers.x;
                 Exit::Syscall(SystemCallRequest {
                     number: SystemCallNumber(x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER]),
                     arguments: [x[0], x[1], x[2], x[3], x[4], x[5]],
@@ -626,11 +741,9 @@ impl StandIn {
             }
             (_, Some(EXCEPTION_BREAKPOINT)) => {
                 let mut instruction = [0u8; 4];
-                memory
-                    .pieces(pc, 4, |piece, at| {
-                        instruction[at..at + piece.len()].copy_from_slice(piece);
-                    })
-                    .expect("the instruction is in the address space");
+                self.unicorn
+                    .mem_read(pc, &mut instruction)
+                    .expect("the breakpoint's instruction is mapped");
                 let comment = (u32::from_le_bytes(instruction) >> 5) as u16;
                 Exit::Breakpoint { comment }
             }
@@ -699,26 +812,315 @@ impl Default for StandIn {
 impl wcontainers_executor::Executor for StandIn {
     type Architecture = Arm64;
     type TranslatorConfig = ();
+    type GuestMemory = UnicornSpace;
+    type CreateGuestMemoryError = CpuError;
+    type Interrupter = StandInInterrupter;
+
+    fn create_guest_memory(&self) -> Result<UnicornSpace, CpuError> {
+        UnicornSpace::new(self.end)
+    }
+
+    /// Panics where unicorn stops for a reason the stand-in cannot give as the processor's ([`Unsupported`]).
+    ///
+    /// The execution blocks: it is ready at its first poll.
+    fn execute<'execution>(
+        &'execution mut self,
+        processor: Processor,
+        memory: &'execution UnicornSpace,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (impl Future<Output = Processor> + 'execution, StandInInterrupter) {
+        let raised = Arc::new(AtomicBool::new(false));
+        let interrupter = StandInInterrupter {
+            raised: Arc::clone(&raised),
+        };
+        let execution = async move {
+            let mut registers = to_register_block(&processor);
+            loop {
+                if raised.swap(false, Ordering::AcqRel) {
+                    match handler.handle_interrupt() {
+                        InterruptResponse::Continue => {}
+                        InterruptResponse::Terminate => return to_processor(&registers, None),
+                    }
+                }
+                let (exit, instructions) =
+                    memory.run_turn(&mut registers, None, Some(Arc::clone(&raised)));
+                self.last_instructions = instructions;
+                let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
+                let permission_at =
+                    |address| to_page_permission(memory.read_permissions(address));
+                match exit {
+                    Exit::Syscall(request) => match handler.handle_system_call(request) {
+                        SystemCallResponse::Return(value) => registers.x[RESULT_REGISTER] = value,
+                        SystemCallResponse::Terminate => {
+                            // The abi leaves the program counter after a system call; an exception leaves it on
+                            // the instruction.
+                            registers.pc -= INSTRUCTION_BYTES;
+                            let word = read_instruction(memory, registers.pc);
+                            let exception = to_exception(exit, word, registers.pc, permission_at);
+                            return to_processor(&registers, exception);
+                        }
+                    },
+                    Exit::MemoryFault { address, access } => {
+                        match handler.handle_memory_fault(address, access) {
+                            MemoryFaultResponse::Retry => {}
+                            MemoryFaultResponse::Terminate => {
+                                let exception =
+                                    to_exception(exit, u32::MIN, registers.pc, permission_at);
+                                return to_processor(&registers, exception);
+                            }
+                        }
+                    }
+                    // Only an interrupt stops a turn with no limit; it is answered at the top.
+                    Exit::Stop => {}
+                    _ => {
+                        let exception = to_exception(exit, u32::MIN, registers.pc, permission_at);
+                        return to_processor(&registers, exception);
+                    }
+                }
+            }
+        };
+        (execution, interrupter)
+    }
 
     /// Panics where unicorn stops for a reason the stand-in cannot give as the processor's ([`Unsupported`]).
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor,
         memory: &[MemoryDelta<'_, Arm64>],
-        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+        mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
     ) {
-        execute_on_cpu(
-            self,
-            processor,
-            memory,
-            on_memory_mutated,
-            |stand_in, thread| {
-                stand_in
-                    .run(thread, Resume::FromRegisters, Some(1))
-                    .unwrap_or_else(|unsupported| panic!("{unsupported:?}"))
-            },
-        );
+        // The space ends after the last byte the state names, so a state costs no more than it holds.
+        let named_end = memory
+            .iter()
+            .map(|delta| match delta {
+                MemoryDelta::PermissionAssignment { addresses, .. } => addresses.end,
+                MemoryDelta::ValueAssignment { start, bytes } => {
+                    start + u64::try_from(bytes.len()).expect("a count of bytes fits in an address")
+                }
+            })
+            .fold(processor.program_counter + INSTRUCTION_BYTES, u64::max);
+        let end = named_end.div_ceil(PAGE_SIZE).saturating_mul(PAGE_SIZE).min(self.end);
+        let space = UnicornSpace::new(end).expect("host memory for one more space");
+        let mut pages: BTreeMap<u64, PagePermission> = BTreeMap::new();
+        for delta in memory {
+            match delta {
+                MemoryDelta::PermissionAssignment {
+                    addresses,
+                    permission,
+                } => {
+                    space
+                        .set_permissions(addresses.clone(), to_permissions(*permission))
+                        .expect("a permission is given to whole pages inside the space");
+                    for page in addresses.clone().step_by(PAGE_BYTES) {
+                        pages.insert(page, *permission);
+                    }
+                }
+                MemoryDelta::ValueAssignment { start, bytes } => {
+                    let end = start + u64::try_from(bytes.len()).expect("a count of bytes fits in an address");
+                    let written = space
+                        .borrow(*start..end)
+                        .expect("the bytes lie inside the space")
+                        .write(bytes);
+                    assert_eq!(written, bytes.len(), "the bytes written");
+                }
+            }
+        }
+        let pc = processor.program_counter;
+        let word = read_instruction(&space, pc);
+        let writable: Vec<u64> = pages
+            .iter()
+            .filter(|(_, permission)| {
+                matches!(
+                    permission,
+                    PagePermission::Mapped {
+                        data_access: DataAccess::ReadWrite,
+                        ..
+                    }
+                )
+            })
+            .map(|(page, _)| *page)
+            .collect();
+        let read_page = |page: u64| {
+            let mut bytes = vec![u8::MIN; PAGE_BYTES];
+            space
+                .borrow(page..page + PAGE_SIZE)
+                .expect("a page the state gave a permission")
+                .read(&mut bytes);
+            bytes
+        };
+        let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
+        let mut registers = to_register_block(processor);
+        let (exit, instructions) = space.run_turn(&mut registers, Some(1), None);
+        self.last_instructions = instructions;
+        let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
+        // The abi leaves the program counter after a system call; an exception leaves it on the instruction.
+        if let Exit::Syscall(_) = exit {
+            registers.pc = pc;
+        }
+        let exception = to_exception(exit, word, pc, |address| {
+            pages
+                .get(&(address - address % PAGE_SIZE))
+                .copied()
+                .unwrap_or(PagePermission::Unmapped)
+        });
+        *processor = to_processor(&registers, exception);
+        for (page, before) in writable.iter().zip(before) {
+            report_changed_bytes(*page, &before, &read_page(*page), &mut on_memory_mutated);
+        }
     }
+}
+
+/// Raises an interrupt in the one execution it was made with.
+pub struct StandInInterrupter {
+    raised: Arc<AtomicBool>,
+}
+
+impl ExecutionInterrupter for StandInInterrupter {
+    fn interrupt(&self) {
+        self.raised.store(true, Ordering::Release);
+    }
+}
+
+/// Returns the instruction word at the address.
+fn read_instruction(space: &UnicornSpace, address: u64) -> u32 {
+    let mut word = [u8::MIN; INSTRUCTION_BYTES as usize];
+    space
+        .borrow(address..address + INSTRUCTION_BYTES)
+        .expect("the program counter lies inside the space")
+        .read(&mut word);
+    u32::from_le_bytes(word)
+}
+
+fn to_permissions(permission: PagePermission) -> Permissions {
+    match permission {
+        PagePermission::Unmapped => Permissions::empty(),
+        PagePermission::Mapped {
+            data_access,
+            instruction_fetch,
+        } => {
+            let data = match data_access {
+                DataAccess::Forbidden => Permissions::empty(),
+                DataAccess::ReadOnly => Permissions::READ,
+                DataAccess::ReadWrite => Permissions::READ | Permissions::WRITE,
+            };
+            let fetch = match instruction_fetch {
+                InstructionFetch::Forbidden => Permissions::empty(),
+                InstructionFetch::Allowed => Permissions::EXECUTE,
+            };
+            data | fetch
+        }
+    }
+}
+
+/// Returns the page permission a space's page holds as the architecture names it: a page that allows nothing is
+/// held unmapped.
+fn to_page_permission(allowed: Permissions) -> PagePermission {
+    if allowed.is_empty() {
+        return PagePermission::Unmapped;
+    }
+    let data_access = if allowed.contains(Permissions::WRITE) {
+        DataAccess::ReadWrite
+    } else if allowed.contains(Permissions::READ) {
+        DataAccess::ReadOnly
+    } else {
+        DataAccess::Forbidden
+    };
+    let instruction_fetch = if allowed.contains(Permissions::EXECUTE) {
+        InstructionFetch::Allowed
+    } else {
+        InstructionFetch::Forbidden
+    };
+    PagePermission::Mapped {
+        data_access,
+        instruction_fetch,
+    }
+}
+
+fn to_register_block(processor: &Processor) -> RegisterBlock {
+    RegisterBlock {
+        x: processor.general_purpose_registers,
+        sp: processor.stack_pointer,
+        pc: processor.program_counter,
+        pstate: u64::from(processor.condition_flags.bits()),
+        v: processor
+            .vector_registers
+            .map(|value| [value as u64, (value >> u64::BITS) as u64]),
+        fpsr: u32::try_from(processor.floating_point_status)
+            .expect("FPSR's upper half is reserved as zero"),
+        fpcr: u32::try_from(processor.floating_point_control)
+            .expect("FPCR's upper half is reserved as zero"),
+        tpidr_el0: processor.software_thread_id,
+    }
+}
+
+fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor {
+    Processor {
+        general_purpose_registers: registers.x,
+        stack_pointer: registers.sp,
+        program_counter: registers.pc,
+        condition_flags: ConditionFlags::from_bits_truncate(registers.pstate as u32),
+        vector_registers: registers
+            .v
+            .map(|[low, high]| u128::from(low) | u128::from(high) << u64::BITS),
+        floating_point_control: u64::from(registers.fpcr),
+        floating_point_status: u64::from(registers.fpsr),
+        software_thread_id: registers.tpidr_el0,
+        exception,
+    }
+}
+
+/// Returns the exception an exit is, or none when the instruction completed; `word` is the instruction at `pc`.
+fn to_exception(
+    exit: Exit,
+    word: u32,
+    pc: u64,
+    permission_at: impl Fn(u64) -> PagePermission,
+) -> Option<Exception> {
+    let fault_status = |address| match permission_at(address) {
+        PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3 as u64,
+        PagePermission::Mapped { .. } => FaultStatus::PermissionFaultLevel3 as u64,
+    };
+    let (class, specific, fault_address) = match exit {
+        Exit::Stop => return None,
+        Exit::Syscall(_) => (ESR_EL1::EC::Value::SVC64, u64::from(IMM16.read(word)), None),
+        Exit::MemoryFault {
+            address,
+            access: Access::Execute,
+        } => (
+            ESR_EL1::EC::Value::InstrAbortLowerEL,
+            fault_status(address),
+            Some(address),
+        ),
+        Exit::MemoryFault {
+            address,
+            access: Access::Read,
+        } => (
+            ESR_EL1::EC::Value::DataAbortLowerEL,
+            fault_status(address),
+            Some(address),
+        ),
+        Exit::MemoryFault {
+            address,
+            access: Access::Write,
+        } => (
+            ESR_EL1::EC::Value::DataAbortLowerEL,
+            WRITE_NOT_READ | fault_status(address),
+            Some(address),
+        ),
+        Exit::AlignmentFault { address } if address == pc => {
+            (ESR_EL1::EC::Value::PCAlignmentFault, u64::MIN, Some(pc))
+        }
+        Exit::AlignmentFault { .. } => (ESR_EL1::EC::Value::SPAlignmentFault, u64::MIN, None),
+        Exit::IllegalInstruction => (ESR_EL1::EC::Value::Unknown, u64::MIN, None),
+        Exit::Breakpoint { comment } => (ESR_EL1::EC::Value::Brk64, u64::from(comment), None),
+        Exit::MemoryFaultWithoutRegisters => {
+            panic!("the instruction at {pc:#x} reached beyond the space")
+        }
+    };
+    Some(Exception {
+        syndrome: encode_syndrome(class, specific),
+        fault_address,
+    })
 }
 
 impl Cpu for StandIn {
