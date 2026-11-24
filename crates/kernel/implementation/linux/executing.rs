@@ -653,9 +653,12 @@ where
 mod tests {
     use super::*;
 
+    use wcontainers_byte_sink::ByteSink;
+    use wcontainers_byte_source::ByteSource;
     use wcontainers_executor::memory_space::{
-        CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+        CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
     };
+    use wcontainers_volatile_bytes::VolatileBytes;
 
     /// An executor with nothing to configure, which has no memory to run on.
     struct Plain;
@@ -718,6 +721,17 @@ mod tests {
         }
 
         fn write(&self, _bytes: &[u8]) -> usize {
+            match *self {}
+        }
+
+        fn read_to<Sink: ByteSink>(&self, _sink: &mut Sink) -> Result<usize, Sink::Error> {
+            match *self {}
+        }
+
+        fn write_from<Source: ByteSource>(
+            &self,
+            _source: &mut Source,
+        ) -> Result<usize, Source::Error> {
             match *self {}
         }
     }

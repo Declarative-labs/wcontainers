@@ -38,6 +38,9 @@ wcontainers-kernel-conformance = { path = "../../conformance" }
 wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 
 [[test]]
 name = "conformance"
