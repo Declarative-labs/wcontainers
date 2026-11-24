@@ -931,13 +931,31 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     about a sixth of a round trip (about 500 ns) is ours to cut; the rest is the host's switch.
   - Final verdict after the last code commit (9593baba), shared tree, every binary once with /dev/kvm denied
     (final-arm.out, load 8 to 12): 111 passed, 1 failed (the known precise-set test). No new unsafe code this run.
+- W1 round 5, run 3 (2026-11-24, 06:30 UTC on), scratch w1/r5run3, both machines:
+  - Conforming: nothing left. The notice's executor, memory space, interrupter and volatile bytes changes (167cffce,
+    1dd2684e, 9b572652) were conformed to in round 3 runs 4 and 5 and round 4; host-process writes no register_tool
+    lines; form I (crates/executor/implementation/in-process) does not exist yet (W2). The executor suite runs on P
+    in tests/conformance.rs and tests/interrupt.rs: 20 of 21 pass, the precise-set test fails as before (For the
+    owner).
+  - The round trip's per-exit register copies (round 5 run 2's profile): a translated thread's registers but its
+    vectors are now written and read word by word (`Stub::set_scalars`, `Stub::scalars`), with no 800-byte register
+    block built, zeroed and copied at each exit. Measured A/B (ab-rt.sh, ab-rt1-arm.out; Graviton4 CPU 41, /dev/kvm
+    denied, load 2 to 9, 5 rounds alternating with W0's futex slot): before 2,928 to 2,983 ns, after 2,904 to 2,975
+    ns, slot 2,394 to 2,409 ns. No measurable difference (means 2,957 and 2,950 ns); kept as the smaller work. Every
+    one of the ten runs is under the bar: 1.215 to 1.241 times the slot before, 1.213 to 1.241 after.
+  - Verdicts from 9de60558, every binary with /dev/kvm denied, each run first proving the device cannot be opened:
+    Graviton4 3 rounds (verdict1-arm.out, verdict2-arm.out; load 3 to 7), 111 passed and 1 failed (the known
+    precise-set test) in each; Xeon 2 rounds (verdict2-x86.out; load 23 to 81, other tracks' jobs) 53 passed in each,
+    and 1 round before the change (verdict1-x86.out) 53 passed. Clippy with warnings denied clean on every target on
+    both. No new unsafe code.
 
 ## W1 complete, with its gap list (for the independent check)
 
-W1 is reported complete at round 3 run 5 so that its independent check runs; these items of plan 13's bar are not
-met, each with what is known:
-- Speed, not met: the getppid round trip is 1.23 to 1.31 times W0's futex slot (bar under 1.25; 1.23 to 1.27 in round
-  4 run 2; 1.215 to 1.234 in round 5 run 1, the same code on a quieter machine). busybox `sh` starting 1,000
+W1 is reported complete at round 3 run 5 so that its independent check runs, and again at round 5 run 3 with the
+verdicts of that run; these items of plan 13's bar are not met, each with what is known:
+- Speed: the getppid round trip met its bar in rounds 5 run 1 and run 3 on a quiet Graviton4 (1.213 to 1.241 times W0's
+  futex slot in ten runs at load 2 to 9; bar under 1.25) but not at higher load before (1.23 to 1.31 in rounds 3 and 4,
+  load 9 to 30); about five sixths of a round trip is the host's task switch (round 5 run 2's profile). Not met: busybox `sh` starting 1,000
   programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
   1): 4.36 times the model (bar 1.25; 9.25 before); per program about 1.45 ms of memory calls (about 0.6 ms of it the
   model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
@@ -982,8 +1000,8 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## Next
 
-- W1's independent check runs on the report above. Every binary passed 3 times with /dev/kvm denied on both machines
-  from committed code in round 5 run 1 (but the known precise-set test).
+- W1's independent check runs on the report above. Every binary passed with /dev/kvm denied from committed code
+  (9de60558) in round 5 run 3, 3 rounds on Graviton4 and 2 on the Xeon (but the known precise-set test).
 - busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
   the key's hash, comparing the code, cloning and moving a moved translation, placing, the slot) and the memory calls
   (new, fork and drop beyond the model's process creation, about 0.9 ms a program), then the turns that are left (59 a
@@ -991,9 +1009,10 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   (the owner's). A fork child copying its parent's code was measured slower (round 5 run 1). Scratch
   w1/r5run1/turns-bb.sh counts turns, landings, loads and last targets in a remote copy (its native.rs patches follow
   the code as of 9dc2f309; one failing assertion leaves the native counters at zero).
-- The other bars: the round trip (1.215 to 1.27 times the slot across runs) needs the embedder's per-exit work cut;
-  round 5 run 2's profile puts all of ours at about a sixth of a round trip (placement's two clock reads, the
-  register block built with its vectors to be written without them, `give`, `stop::resolve`); bench's matrix (3.8 times plain) needs the withheld
+- The other bars: the round trip (1.213 to 1.27 times the slot across runs, under the bar when the machine is quiet);
+  round 5 run 2's profile puts all of ours at about a sixth of a round trip, and cutting the register block's copies
+  (round 5 run 3) changed nothing measurable; placement's two clock reads, `give` and `stop::resolve` are what is
+  left of ours; bench's matrix (3.8 times plain) needs the withheld
   x18 renamed in hot loops (round 4 run 1, the native track's ruling first).
 - Then: the gVisor kernel test's blocks and jumptables (which side hangs).
 - x86-64's stub answers `Enter` as `BadTurn`; its floor and translated code are W3's (plan 3.10).
@@ -1011,6 +1030,9 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## How to run
 
+- Since round 5 run 3: scratch w1/r5run3. before.sh keeps a release build of tests/speed.rs as
+  /work/target/nwvm/speed-before; ab-rt.sh (`set -- <rounds>`) runs clippy, builds this tree's, and alternates the
+  getppid round trip of both with W0's futex slot on CPU 41 with /dev/kvm denied. nokvm.sh is round 5 run 2's.
 - Since round 5 run 2: scratch w1/r5run2. kernel.sh runs clippy on every target, then the kernel test with /dev/kvm
   denied and its output shown (`FILTER=<name>` for one test); mutate-layout.sh gives form P its own ceiling in the
   remote copy, which must fail the layout test; perf.sh profiles CPU 41 during the round trip by process, binary and
