@@ -566,6 +566,27 @@ where
     assert_stops_at_first_instruction::<Chip::Architecture>(&store, fault, &stopped);
 }
 
+/// Checks that the permissions query returns what was set on a page, and nothing on a new one.
+pub fn permissions_returns_what_was_set<Chip: Executor>(executor: Chip) {
+    let memory = create_memory(&executor);
+    assert_eq!(
+        memory.permissions(DATA, Tracked::assume_new()),
+        Permissions::empty()
+    );
+    assert_eq!(
+        memory.set_permissions(page(DATA), DATA_PERMISSIONS, Tracked::assume_new()),
+        Ok(())
+    );
+    assert_eq!(
+        memory.permissions(DATA + 1, Tracked::assume_new()),
+        DATA_PERMISSIONS
+    );
+    assert_eq!(
+        memory.permissions(DATA + PAGE_SIZE, Tracked::assume_new()),
+        Permissions::empty()
+    );
+}
+
 /// Checks that after a space maps another's page, a write on either side, borrowed or by a guest, is seen on both.
 pub fn map_from_shares_the_bytes_both_ways<Chip: Executor>(mut executor: Chip)
 where
@@ -1234,6 +1255,11 @@ macro_rules! tests {
         #[test]
         fn zero_clears_only_its_addresses() {
             $crate::zero_clears_only_its_addresses($executor);
+        }
+
+        #[test]
+        fn permissions_returns_what_was_set() {
+            $crate::permissions_returns_what_was_set($executor);
         }
 
         #[test]
