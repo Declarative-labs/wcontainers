@@ -8,7 +8,7 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
-## KC, thirteenth run: the three files fixed, the workspace builds, the quiet suite
+## KC, thirteenth run: the three files fixed, the workspace builds, the quiet suite and LTP
 
 Started about 07:50 UTC on 2026-11-24 at b80efb96. Every build and test ran on the rented
 machines; the Mac only edited, formatted single files and committed. Scratch kernel/kc13 (arm.sh,
@@ -55,9 +55,11 @@ x86.sh, whole.sh, t1.sh to t3.sh, ltp30.sh, logs beside them).
     and its binary 10 of 10 (t3.log, load 35; 2.6 s a run against 11 s in the suite). A timing
     defect of the kernel's: the guest learns of the reset through a second connection 300 ms
     later, and the kernel settles every woken wait before a thread runs, so the host reported
-    the data connection's reset after the signal connection's bytes. The kernel answers poll and
-    SO_ERROR from what its waits last reported, never asking the host at the call; asking there
-    (polling the connection's live wait once) is the fix, not made in this run. Listed.
+    the data connection's reset after the signal connection's bytes. The kernel answered poll and
+    SO_ERROR from what its waits had reported. The fix: poll the connection's live wait once at
+    such a call (the host's future asks the socket itself when polled, linux-socket-options
+    readiness.rs), at the cost of a host call per guest poll of an outside connection; not made
+    in this run. Listed.
   The 35 of the ARM list: the reference here is the machine's own kernel (Linux
   7.0.0-1018-aws, bare metal: SVE, no /proc/config.gz, its own cgroup and tmpfs options), and
   these tests' outcomes were settled against Docker Desktop's 7.0.14-linuxkit, where they pass
@@ -108,8 +110,18 @@ x86.sh, whole.sh, t1.sh to t3.sh, ltp30.sh, logs beside them).
   the committed reference; against the reference run now on the machine 29 match and eventfd01
   differs (reference broken: "Cannot parse kernel .config", the machine's kernel has no
   /proc/config.gz, the same machine difference as busybox `system`).
-- The whole LTP comparison in the same job started at 09:34 UTC (LTP_JOBS 8, LTP_LIMIT 900);
-  LTP_RESULT
+- No interface file differs from main (8c32fdc8): `git diff main HEAD` over every
+  crates/<name>/*.rs and foreign_implementation shows only crates/abi/host.rs (this track's abi
+  crate) and wcontainers-opengl's build.rs, as before.
+- The whole LTP comparison in the same job (09:34 to 11:03 UTC, load 17 to 53, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts /work/kernel-kc13/whole.tsv on the machine): 4169 of 4226 match the
+  reference and 57 differ (16 a part not built, 32 a wrong answer, 9 slower than the limit), the
+  K6c bar's count, and all 4226 match 376fba71's verdicts: no worse than before the merges.
+
+Not done, for KC:
+- The two `unsafe impl`s (above): they need the owner's ruling (a `Send` bound on the system's
+  waiting calls and on `MemorySpace`, and the kernel's state made shareable).
+- `a_full_connection_hears_a_reset` fails under the suite's load (above); the fix is named there.
 
 
 
