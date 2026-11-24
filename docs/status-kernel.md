@@ -8,6 +8,57 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## Guest memory on the executor's memory spaces, first run
+
+Started about 03:00 UTC on 2026-11-24 at 533f6bde. Builds and tests ran on the ARM64 machine
+(name kernel-mem); the Mac only edited, formatted single files and committed. Scratch kernel/km1
+(m1.sh, m1b.log).
+
+- The run's task text named milestone KC and a list of K6c findings. KC is done (its four runs
+  are below), and every finding in that list was settled in the K6c fourteenth run (see there).
+  So this run did the first job of the notice of 2026-11-23: the kernel's guest memory on the
+  executor's `MemorySpace`.
+- Done (df746f1b): new guest_machine.rs, `GuestMachine<C>`. It holds the executor, one
+  `C::GuestMemory` per memory, one per block of shared pages (its pages from address 0) and each
+  thread's registers, and it is the abi `Cpu` the rest of the kernel calls. `memory_new` is
+  `create_guest_memory`; `memory_duplicate` (fork) is `copy_from` over the whole space; `read`,
+  `write` and `shared_read`/`shared_write` are `borrow` with `read`/`write`; `zero` and
+  `set_permissions` are the space's; `shared_map` is `map_from`; `shared_unmap` copies the bytes
+  out, `unmap_from`, and writes them back in 64 KiB pieces (the space zeroes what it unmaps, the
+  abi keeps a private copy); `code_changed` does nothing (the space's executor sees writes made
+  through it). `KernelWithExecutor` holds a `GuestMachine` and `with_parts` hands it out.
+- The stand-in's driver runs a thread of such a kernel with `StandIn::run_on` (the kernel's
+  registers and `UnicornSpace`); `UnicornSpace::run_turn` takes the machine-clock deadline too.
+- Measured on the ARM64 machine (03:17 to 03:21 UTC, load 28 to 39): clippy over abi, kernel,
+  kernel suite, stand-in and inside, all targets, warnings denied, status 0 (the wasmtime
+  executor, another track's, still imports `VolatileBytes` from `memory_space`: kf9's
+  wasmtime-vb.patch, now km1/wasmtime-vb.patch, conformed the remote copy only); kernel unit
+  tests 22, kernel conformance 17, embedder 36, processors 1, round_trips 6, startoptions 16
+  pass. My hunks in standin.rs and space.rs were formatted by hand after the run (layout only);
+  the rest of those two files is another agent's and not rustfmt-clean.
+
+Not done yet, in order:
+- `Runner::run` on `Executor::execute` (conform-runner, the executors job's last stage) was not
+  written at 03:00. Next run: if it still is not, write it on `GuestMachine` (registers to the
+  arm64 `Processor` and back, a trap handler that records the trap and terminates, `pc` after
+  the `svc`, `Next::Idle` as `StopReason::Idle`). Open for it: `execute` takes no slice, so a
+  thread that spins never yields; the stand-in would need a budget it is made with.
+- `GuestMachine` still takes `address_space` from the executor's `Cpu`, so `C: Cpu` stays.
+- The runtime's drive loop, layer 1 and every other user of the bare `Kernel` still pass their
+  own `Cpu` (its memories); they move when they drive through the runner.
+- `code_changed` doing nothing relies on unicorn dropping translations on `mem_write`; nothing
+  in the tests run checks the kernel writing over code that has already run.
+- The ninth KF run's whole suite and LTP comparison (job kernel/20261124-024108-1615225) were
+  still running at 03:20; read them next (they ran before df746f1b, which changes only
+  `KernelWithExecutor`'s path).
+
+For the owner (also under "For the owner"): `KernelWithExecutor`'s `unsafe impl Sync` now also
+covers the guest memory spaces, which the executor interface does not require to be `Send`
+(`UnicornSpace` holds `Rc` and `RefCell`). The argument written beside it: they are reached only
+through the `GuestMachine` under the kernel's lock. The sound form is a `GuestMemory: Send`
+bound, which the stand-in's space does not meet without a new marked `unsafe impl Send`, or the
+runner design with each process's memory behind its own lock.
+
 ## KF, ninth run: the whole suite on volatile bytes
 
 Started about 02:30 UTC on 2026-11-24 at b6763a53. Every build and test ran on the ARM64 machine;
@@ -590,6 +641,11 @@ its renamed part.
 
 ## For the owner
 
+- Guest memory, first run: `KernelWithExecutor`'s `unsafe impl Sync` now also covers the guest
+  memory spaces, which need not be `Send` (the stand-in's holds `Rc` and `RefCell`); they are
+  reached only under the kernel's lock. Sound forms: a `GuestMemory: Send` bound (the stand-in's
+  space would need a new marked `unsafe impl Send`, which I did not add) or the runner design
+  with each process's memory behind its own lock. Which one?
 - KC, second run: `UnknownErrno` takes 134 to 511, but a FUSE server may answer any error from 1
   to 511, and Linux leaves 41 and 58 unnamed below 134. Such an answer cannot be `WellKnown` (no
   `Errno` names it) nor `Unknown`, so the embedder's response hook sees it as `Ok` of the raw
