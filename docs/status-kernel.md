@@ -8,6 +8,62 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KF, seventh run: the third check's findings
+
+The seventh run made the fixes (commits b7524554 to 376fba71) and started the whole suite; the
+eighth (from 23:07 UTC on 2026-11-23) read its results and wrote this section. Every build and
+test ran on the ARM64 machine; the Mac only edited, formatted single files and committed. Scratch
+kernel/kf7 (a1.sh, a2.sh, whole.sh, literals.sh, logs beside them).
+
+The check's findings:
+- The sixth run's whole suite count: 399 passed, 36 failed, 8 ignored, the sum of suite6.log's
+  result lines (d09725ac).
+- No fallback when nothing fits below the mmap base: placement now searches bottom-up from
+  Linux's share of the space (a quarter of the lowest range's top) to fill the gap above the mmap
+  base, below the stack, as Linux's `vm_unmapped_area` fallback does, for the PMD-padded search
+  and the plain one (b7524554, c4761680). `placeable`, and so the ceiling's distance, count that
+  gap. New unit test `a_full_space_below_the_mmap_base_falls_back_to_the_gap_above_it`; the PMD
+  unit test fills the gap first so it still tests what it was written for; the embedder's
+  outgrow test asserts a distance under two pieces, as the space left can now be in two places.
+- A hint below the lowest address is moved up to it (Linux's `round_hint_to_min`), and
+  `/proc/sys/vm/mmap_min_addr` exists (9f249272). New guest spaceedges.c and test
+  `placement::the_edges_of_the_space_match_reference`: the hint moved up, the same hint again,
+  two fixed cases, and the stack's gap filled once the space is full, against the reference.
+- Widths (8bf5b240): a width of part pages is cut to whole ones, counted and warned of
+  ("address space narrowed"); the first program is always checked against the space, so a width
+  too small for it fails the start with ENOMEM and counts `PROCESS_OUTGROWN`. New tests
+  machine.rs `a_width_of_part_pages_is_cut_to_whole_ones` and
+  `a_width_too_small_for_the_program_fails_the_start`.
+- `Start::ceiling` with no embedder that sets it: For the orchestrator (KF, seventh run).
+- The lowest address (65536 against the reference's 32768) and the fallback's range: Departures
+  (KF, seventh run).
+
+The literal check at c4761680 (kf7/literals.sh, lit1.log): baseline 27616 lines; it exits 1, on
+other tracks' files and the interfaces', and in this track's files only on the 15 lines For the
+orchestrator already names (the fifth run's four, the sixth run's); this run added none.
+
+Measured on the ARM64 machine (load 14 to 22): kernel unit tests 22 pass; placement 2, machine 4,
+embedder 36, memory 2, layout, linux_layouts, privatemap, startoptions 16 pass; mapflags 1 of 2,
+its failure on the ARM list.
+
+The whole suite at 376fba71's code (23:04 to 00:33 UTC, load 22 falling to 3, 8 test threads;
+kf7/whole.sh, log kf7/suite7b.log, job kernel/20261123-230410-1025094): clippy with warnings
+denied status 0, fmt no diff; 405 passed, 35 failed, 8 ignored (the sum of the log's 133 result
+lines). The 35 are exactly the ARM list (kf7/fails7.txt is kf6/fails6.txt less backend
+`mapped_pages_read_when_touched_match_reference`, whose reference run hung in the sixth run and
+passed here). The six more passing than the sixth run: that test, b49c49e5's and this run's unit
+tests, placement's edges test and machine's two. The workspace's `cargo check --all-targets` in
+the same job stopped only on the translator test's layer1.rs (an import another track removed).
+
+The whole LTP comparison at the same code (same job, 00:33 to 02:00 UTC on the 24th, load 4 to
+17, LTP_JOBS 8, LTP_LIMIT 900; verdicts ltp/ours-20260930-376fba71.tsv, log kf7/suite7c.log):
+4169 of 4226 match the reference and 57 differ (16 a part not built, 32 a wrong answer, 9 slower
+than the limit), the K6c bar's count, and all 4226 match ba9f009e's verdicts. So neither the
+fallback to the stack's gap, the hint moved up, nor the width checks changed any verdict.
+
+Verdicts changed on purpose: none of the old tests; new are the unit test, placement's edges test
+and machine's two.
+
 ## KF, sixth run: the second check's findings
 
 Started about 16:00 UTC on 2026-11-23 at 9aa56cb0. Every build and test ran on the ARM64 machine;
@@ -906,6 +962,15 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, seventh run: every finding of the third check is fixed or recorded (see "KF, seventh run"):
+placement falls back to the gap below the stack when nothing fits below the mmap base, a hint
+below the lowest address is moved up to it and `/proc/sys/vm/mmap_min_addr` shows it, a width of
+part pages is cut and counted, and a width too small for the first program fails the start. The
+whole suite at 376fba71's code fails only the ARM list (405 passed, 35 failed, 8 ignored) and the
+whole LTP comparison matches the K6c bar with every verdict as before. The literal check still
+exits 1 only on the lines For the orchestrator names in this track's files. KF goes to its
+independent check.
 
 KF, sixth run: every finding of the second check is fixed or recorded (see "KF, sixth run"):
 `execCPUAffinity` is built, placement is compared with the reference and anonymous memory of
