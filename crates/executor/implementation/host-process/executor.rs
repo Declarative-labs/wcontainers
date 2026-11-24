@@ -1203,7 +1203,6 @@ impl Cpu for HostProcessExecutor {
         Ok(())
     }
 
-    /// Nothing is translated here yet, so there is nothing to drop.
     /// Drops the pieces made from the range (ARM64; elsewhere nothing is translated yet).
     fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
         #[cfg(target_arch = "aarch64")]

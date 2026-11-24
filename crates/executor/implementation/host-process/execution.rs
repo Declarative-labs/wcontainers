@@ -154,6 +154,53 @@ impl HostProcessExecutor {
         Ok(())
     }
 
+    /// Lends `borrower` every private page of `owner` in `range` that may hold bytes, at the same addresses; a page
+    /// `owner` borrows is borrowed from its own owner.
+    fn lend_private(
+        &mut self,
+        owner: MemoryId,
+        borrower: MemoryId,
+        range: Range<u64>,
+    ) -> Result<(), CpuError> {
+        let data: Vec<Range<u64>> = self.private_data(owner, range)?.into_iter().collect();
+        for part in data {
+            for (pages, state) in pieces(&self.memory(owner).pages, page_cover(&part)) {
+                let from = match state {
+                    Some(super::PageState::Borrowed(from)) => from,
+                    _ => owner,
+                };
+                self.add_borrower(from, pages.clone(), borrower);
+                self.memory_mut(borrower)
+                    .pages
+                    .insert(pages, super::PageState::Borrowed(from));
+            }
+        }
+        Ok(())
+    }
+
+    /// Queues the loss of write in the view of every writable range of `id` inside `range`; true when one was queued.
+    fn take_write_from_lent(&mut self, id: MemoryId, range: Range<u64>) -> Result<bool, CpuError> {
+        let writable: Vec<(Range<u64>, Permissions)> = self
+            .memory(id)
+            .permissions
+            .overlapping(range.clone())
+            .filter(|(_, granted)| granted.contains(Permissions::WRITE))
+            .map(|(part, granted)| {
+                (
+                    part.start.max(range.start)..part.end.min(range.end),
+                    *granted,
+                )
+            })
+            .collect();
+        self.room(id, writable.len())?;
+        for (part, granted) in &writable {
+            let view = self.view_bound(id, part.clone(), *granted);
+            self.memory_mut(id)
+                .push(super::protect(part.clone(), view), None);
+        }
+        Ok(!writable.is_empty())
+    }
+
     /// Zeroes the parts of `range` that show a block.
     fn unmap_pages(&mut self, id: MemoryId, range: Range<u64>) -> Result<(), CpuError> {
         for (piece, shared) in pieces(&self.memory(id).shared, range) {
@@ -164,7 +211,8 @@ impl HostProcessExecutor {
         Ok(())
     }
 
-    /// Makes `to` of `id` what `other` holds from `from`: its private bytes copied, its blocks mapped, its permissions.
+    /// Makes `to` of `id` what `other` holds from `from`: its private bytes lent at the same addresses (as a fork lends
+    /// them) or else copied, its blocks mapped, its permissions.
     fn copy_pages(
         &mut self,
         id: MemoryId,
@@ -175,6 +223,18 @@ impl HostProcessExecutor {
         let length = to.end - to.start;
         let shift = to.start.wrapping_sub(from);
         let source = from..from + length;
+        if id == other {
+            if shift == 0 {
+                return Ok(());
+            }
+            // The source's bytes are first lent to a memory of their own, since the destination may overlap them.
+            let held = self.memory_new()?;
+            let copied = self
+                .copy_pages(held, source.clone(), other, from)
+                .and_then(|()| self.copy_pages(id, to, held, from));
+            self.memory_drop(held);
+            return copied;
+        }
         self.zero(id, to.start, length)?;
         self.set_permissions(id, to.start, length, Permissions::empty())?;
         let mut buffer = vec![0; COPY_CHUNK];
@@ -188,6 +248,7 @@ impl HostProcessExecutor {
                     piece.start.wrapping_add(shift),
                     length,
                 )?,
+                None if shift == 0 => self.lend_private(other, id, piece)?,
                 None => {
                     for part in self.private_data(other, piece)?.iter() {
                         for at in part.clone().step_by(COPY_CHUNK) {
@@ -201,6 +262,9 @@ impl HostProcessExecutor {
                     }
                 }
             }
+        }
+        if shift == 0 && self.take_write_from_lent(other, source.clone())? {
+            self.apply_now(other)?;
         }
         let granted: Vec<(Range<u64>, Permissions)> = self
             .memory(other)
