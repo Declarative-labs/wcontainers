@@ -287,6 +287,104 @@ fn placement_with_every_cpu_contended_moves_at_most_once_a_second() {
     );
 }
 
+/// The bytes of a guest word.
+const WORD: u64 = size_of::<u64>() as u64;
+
+/// Where the copy unit measurement's written pages start, and its table of addresses.
+const PAGES_AT: u64 = 0x1000_0000;
+const TABLE_AT: u64 = 0x800_0000;
+
+/// A fork child's translated stores to its parent's written pages, one store per page: in order over `WCHP_PAGES`
+/// pages (default 16,384), then to every `WCHP_STRIDE`th page (default 16) in a seeded order (`WCHP_SEED`); each the
+/// time a store, the pages copied and the child's host mappings, for the copy unit (plan 3.5).
+#[test]
+#[ignore = "a measurement, run on its own"]
+fn copy_unit_on_translated_stores() {
+    let pages = knob("WCHP_PAGES", 16_384);
+    let stride = knob("WCHP_STRIDE", 16);
+    let mut random = fastrand::Rng::with_seed(knob("WCHP_SEED", 1));
+    let (address, value, left, table) = (5, 6, 2, 4);
+    let words = [
+        encode::load_store(form::LDR, address, table, 0, WORD).expect("ldr"),
+        encode::add_immediate(table, table, WORD as i64).expect("an add"),
+        encode::load_store(form::STR, value, address, 0, WORD).expect("str"),
+        encode::add_immediate(left, left, -1).expect("an add"),
+        encode::compare_branch(true, left, -4 * INSTRUCTION).expect("cbnz"),
+        encode::movz(SYSCALL_NUMBER, EXIT, 0),
+        encode::exception(form::SVC, 0),
+    ];
+    let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut cpu = HostProcessExecutor::new(host());
+    let parent = cpu.memory_new().expect("memory");
+    cpu.set_permissions(parent, CODE, PAGE, Permissions::READ | Permissions::EXECUTE)
+        .expect("code");
+    cpu.write(parent, CODE, &code).expect("the code");
+    cpu.code_changed(parent, CODE, PAGE, &[CODE]);
+    let rw = Permissions::READ | Permissions::WRITE;
+    cpu.set_permissions(parent, PAGES_AT, pages * PAGE, rw)
+        .expect("pages");
+    for index in 0..pages {
+        cpu.write(parent, PAGES_AT + index * PAGE, &index.to_le_bytes())
+            .expect("a page");
+    }
+    let mut scattered: Vec<u64> = (0..pages).step_by(stride as usize).collect();
+    random.shuffle(&mut scattered);
+    for (name, order) in [
+        ("in order", (0..pages).collect::<Vec<_>>()),
+        ("scattered", scattered),
+    ] {
+        let addresses: Vec<u8> = order
+            .iter()
+            .flat_map(|index| (PAGES_AT + index * PAGE).to_le_bytes())
+            .collect();
+        let table_pages = (addresses.len() as u64).div_ceil(PAGE);
+        cpu.set_permissions(parent, TABLE_AT, table_pages * PAGE, Permissions::READ)
+            .expect("table");
+        cpu.write(parent, TABLE_AT, &addresses).expect("the table");
+        let child = cpu.memory_duplicate(parent).expect("fork");
+        let thread = cpu.thread_new(child).expect("thread");
+        let mut registers = RegisterBlock::ZERO;
+        registers.pc = CODE;
+        registers.x[usize::from(table)] = TABLE_AT;
+        registers.x[usize::from(left)] = order.len() as u64;
+        registers.x[usize::from(value)] = 1;
+        cpu.set_registers(thread, &registers);
+        let copied = cpu.counters().pages_copied;
+        let mut timed = Timed {
+            last: Instant::now(),
+            samples: Vec::new(),
+        };
+        let started = Instant::now();
+        let Ok(()) = cpu.run(thread, Resume::FromRegisters, Turn::Free, &mut timed);
+        let took = started.elapsed();
+        for (at, index) in [order[0], order[order.len() - 1]]
+            .into_iter()
+            .map(|index| (PAGES_AT + index * PAGE, index))
+        {
+            let mut word = [0; 8];
+            cpu.read(child, at, &mut word).expect("read");
+            assert_eq!(
+                u64::from_le_bytes(word),
+                1,
+                "the child's store to page {index}"
+            );
+            cpu.read(parent, at, &mut word).expect("read");
+            assert_eq!(u64::from_le_bytes(word), index, "the parent's page {index}");
+        }
+        println!(
+            "copy unit, {name}: {} stores, {:.2} us each, {} pages copied, host mappings child {}; load {}",
+            order.len(),
+            took.as_secs_f64() * 1e6 / order.len() as f64,
+            cpu.counters().pages_copied - copied,
+            cpu.host_mappings(child),
+            load().trim()
+        );
+        cpu.thread_drop(thread);
+        cpu.memory_drop(child);
+    }
+    cpu.memory_drop(parent);
+}
+
 /// The guest's getppid round trip: the median over batches of the mean per call (as W0's futex slot reports it),
 /// and the per-call median, tail and largest, with the count over 1 ms.
 #[test]

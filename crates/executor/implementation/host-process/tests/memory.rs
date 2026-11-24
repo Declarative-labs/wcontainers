@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use wcontainers_abi::{Access, Cpu, CpuError, MemoryId, Permissions, RegisterBlock, ThreadId};
 use wcontainers_executor_host_process::executor::{
-    FaultOwner, HostProcessExecutor, Touch, Touched,
+    COPY_UNIT, FaultOwner, HostProcessExecutor, Touch, Touched,
 };
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_host_process::layout::OUR_AREA;
@@ -32,6 +32,12 @@ const READ_WRITE: Permissions = Permissions::READ.union(Permissions::WRITE);
 
 fn page(index: u64) -> u64 {
     BASE + index * PAGE
+}
+
+/// The first page of the copy unit at `index` from `BASE`: a fault copies a whole unit of lent pages at once, so the
+/// copy-counting tests write one page per unit.
+fn unit(index: u64) -> u64 {
+    BASE + index * COPY_UNIT
 }
 
 fn word(cpu: &mut HostProcessExecutor, memory: MemoryId, address: u64) -> u64 {
@@ -60,6 +66,11 @@ fn host_mappings(process: rustix::process::Pid) -> usize {
 
 fn fault(address: u64, access: Access) -> Touched {
     Touched::Fault { address, access }
+}
+
+/// A memory with one thread, read-write over `units` copy units from `BASE`.
+fn process_units(cpu: &mut HostProcessExecutor, units: u64) -> (MemoryId, ThreadId) {
+    process(cpu, units * COPY_UNIT / PAGE)
 }
 
 /// A memory with one thread, read-write over `pages` pages from `BASE`.
@@ -185,93 +196,93 @@ fn threads_keep_their_own_registers_and_a_dropped_one_is_made_again() {
 #[test]
 fn a_fork_child_and_its_parent_each_keep_the_bytes_of_the_fork_s_instant() {
     let mut cpu = executor();
-    let (parent, parent_thread) = process(&mut cpu, 4);
+    let (parent, parent_thread) = process_units(&mut cpu, 4);
     for index in 0..2 {
-        cpu.write(parent, page(index), &(10 + index).to_le_bytes())
+        cpu.write(parent, unit(index), &(10 + index).to_le_bytes())
             .expect("write");
     }
     for index in 2..4 {
         assert_eq!(
-            store(&mut cpu, parent_thread, page(index), 10 + index),
+            store(&mut cpu, parent_thread, unit(index), 10 + index),
             Touched::Stored
         );
     }
     let (child, child_thread) = fork(&mut cpu, parent);
     assert_eq!(cpu.counters().pages_copied, 0, "a fork copies nothing");
-    assert_eq!(load(&mut cpu, child_thread, page(0)), Touched::Loaded(10));
+    assert_eq!(load(&mut cpu, child_thread, unit(0)), Touched::Loaded(10));
     assert_eq!(cpu.counters().pages_copied, 1, "the child's read copies");
-    assert_eq!(store(&mut cpu, parent_thread, page(1), 21), Touched::Stored);
+    assert_eq!(store(&mut cpu, parent_thread, unit(1), 21), Touched::Stored);
     assert_eq!(
         cpu.counters().pages_copied,
         2,
         "the parent's write gives the page away"
     );
-    assert_eq!(store(&mut cpu, parent_thread, page(0), 20), Touched::Stored);
+    assert_eq!(store(&mut cpu, parent_thread, unit(0), 20), Touched::Stored);
     assert_eq!(
         cpu.counters().pages_copied,
         2,
         "a page no one borrows any more"
     );
-    assert_eq!(load(&mut cpu, child_thread, page(1)), Touched::Loaded(11));
+    assert_eq!(load(&mut cpu, child_thread, unit(1)), Touched::Loaded(11));
     assert_eq!(
         cpu.counters().pages_copied,
         2,
         "the child owns the page it was given"
     );
-    assert_eq!(store(&mut cpu, child_thread, page(2), 32), Touched::Stored);
+    assert_eq!(store(&mut cpu, child_thread, unit(2), 32), Touched::Stored);
     assert_eq!(cpu.counters().pages_copied, 3);
-    assert_eq!(load(&mut cpu, parent_thread, page(2)), Touched::Loaded(12));
+    assert_eq!(load(&mut cpu, parent_thread, unit(2)), Touched::Loaded(12));
     assert_eq!(
-        word(&mut cpu, child, page(3)),
+        word(&mut cpu, child, unit(3)),
         13,
         "the kernel reads a borrowed page from its owner"
     );
     assert_eq!(cpu.counters().pages_copied, 3);
     for (memory, expected) in [(parent, [20, 21, 12, 13]), (child, [10, 11, 32, 13])] {
         for (index, value) in expected.into_iter().enumerate() {
-            assert_eq!(word(&mut cpu, memory, page(index as u64)), value);
+            assert_eq!(word(&mut cpu, memory, unit(index as u64)), value);
         }
     }
-    assert_eq!(store(&mut cpu, child_thread, page(1), 41), Touched::Stored);
-    assert_eq!(word(&mut cpu, parent, page(1)), 21);
+    assert_eq!(store(&mut cpu, child_thread, unit(1), 41), Touched::Stored);
+    assert_eq!(word(&mut cpu, parent, unit(1)), 21);
     end(&mut cpu, (child, child_thread));
     end(&mut cpu, (parent, parent_thread));
 }
 
 #[test]
-fn a_parent_that_forks_twice_and_a_child_that_forks_before_copying_keep_one_owner_per_page() {
+fn a_parent_that_forks_twice_and_a_child_that_forks_before_copying_keep_one_owner_per_unit() {
     let mut cpu = executor();
-    let a = process(&mut cpu, 2);
+    let a = process_units(&mut cpu, 2);
     for index in 0..2 {
         assert_eq!(
-            store(&mut cpu, a.1, page(index), 100 + index),
+            store(&mut cpu, a.1, unit(index), 100 + index),
             Touched::Stored
         );
     }
     let b = fork(&mut cpu, a.0);
     let c = fork(&mut cpu, a.0);
-    assert_eq!(store(&mut cpu, a.1, page(0), 200), Touched::Stored);
+    assert_eq!(store(&mut cpu, a.1, unit(0), 200), Touched::Stored);
     assert_eq!(cpu.counters().pages_copied, 1, "one copy for two borrowers");
-    assert_eq!(load(&mut cpu, c.1, page(0)), Touched::Loaded(100));
+    assert_eq!(load(&mut cpu, c.1, unit(0)), Touched::Loaded(100));
     assert_eq!(
         cpu.counters().pages_copied,
         2,
         "the other borrower copies from the new owner"
     );
-    assert_eq!(store(&mut cpu, b.1, page(0), 300), Touched::Stored);
+    assert_eq!(store(&mut cpu, b.1, unit(0), 300), Touched::Stored);
     assert_eq!(cpu.counters().pages_copied, 2);
     // B forks D before copying page 1: D borrows it from A, its owner, not from B.
     let d = fork(&mut cpu, b.0);
-    assert_eq!(store(&mut cpu, a.1, page(1), 201), Touched::Stored);
+    assert_eq!(store(&mut cpu, a.1, unit(1), 201), Touched::Stored);
     assert_eq!(
         cpu.counters().pages_copied,
         3,
         "one copy for three borrowers"
     );
-    assert_eq!(load(&mut cpu, d.1, page(1)), Touched::Loaded(101));
-    assert_eq!(load(&mut cpu, c.1, page(1)), Touched::Loaded(101));
+    assert_eq!(load(&mut cpu, d.1, unit(1)), Touched::Loaded(101));
+    assert_eq!(load(&mut cpu, c.1, unit(1)), Touched::Loaded(101));
     assert_eq!(cpu.counters().pages_copied, 5);
-    assert_eq!(store(&mut cpu, d.1, page(0), 400), Touched::Stored);
+    assert_eq!(store(&mut cpu, d.1, unit(0), 400), Touched::Stored);
     for (process, expected) in [
         (a, [200, 201]),
         (b, [300, 101]),
@@ -280,10 +291,10 @@ fn a_parent_that_forks_twice_and_a_child_that_forks_before_copying_keep_one_owne
     ] {
         for (index, value) in expected.into_iter().enumerate() {
             assert_eq!(
-                load(&mut cpu, process.1, page(index as u64)),
+                load(&mut cpu, process.1, unit(index as u64)),
                 Touched::Loaded(value)
             );
-            assert_eq!(word(&mut cpu, process.0, page(index as u64)), value);
+            assert_eq!(word(&mut cpu, process.0, unit(index as u64)), value);
         }
     }
     for process in [d, c, b, a] {
@@ -291,14 +302,49 @@ fn a_parent_that_forks_twice_and_a_child_that_forks_before_copying_keep_one_owne
     }
 }
 
+/// A fault copies the whole aligned copy unit around the page of the lent pages in it, and the unit's other pages are
+/// then the toucher's own.
+#[test]
+fn a_fault_copies_the_lent_pages_of_its_copy_unit_at_once() {
+    let mut cpu = executor();
+    let pages = 2 * COPY_UNIT / PAGE;
+    let a = process(&mut cpu, pages);
+    for index in 0..pages {
+        assert_eq!(store(&mut cpu, a.1, page(index), index), Touched::Stored);
+    }
+    let b = fork(&mut cpu, a.0);
+    let in_unit = COPY_UNIT / PAGE;
+    assert_eq!(store(&mut cpu, b.1, page(in_unit + 1), 99), Touched::Stored);
+    assert_eq!(cpu.counters().pages_copied, in_unit, "the second unit");
+    for index in in_unit..pages {
+        let value = if index == in_unit + 1 { 99 } else { index };
+        assert_eq!(load(&mut cpu, b.1, page(index)), Touched::Loaded(value));
+        assert_eq!(store(&mut cpu, b.1, page(index), 7), Touched::Stored);
+    }
+    assert_eq!(
+        cpu.counters().pages_copied,
+        in_unit,
+        "the unit's pages are the child's"
+    );
+    for index in 0..pages {
+        assert_eq!(
+            word(&mut cpu, a.0, page(index)),
+            index,
+            "the parent's page {index}"
+        );
+    }
+    end(&mut cpu, b);
+    end(&mut cpu, a);
+}
+
 /// A parent that ends while its child still borrows keeps its file, not its process: nothing is copied for it.
 #[test]
 fn an_owner_that_ends_while_lending_keeps_its_pages_for_its_borrowers() {
     let mut cpu = executor();
-    let a = process(&mut cpu, 3);
+    let a = process_units(&mut cpu, 3);
     for index in 0..3 {
         assert_eq!(
-            store(&mut cpu, a.1, page(index), 50 + index),
+            store(&mut cpu, a.1, unit(index), 50 + index),
             Touched::Stored
         );
     }
@@ -307,23 +353,23 @@ fn an_owner_that_ends_while_lending_keeps_its_pages_for_its_borrowers() {
     end(&mut cpu, a);
     assert_eq!(cpu.counters().retired_owners, 1);
     assert_eq!(cpu.counters().pages_copied, 0);
-    assert_eq!(load(&mut cpu, b.1, page(0)), Touched::Loaded(50));
-    assert_eq!(store(&mut cpu, c.1, page(0), 60), Touched::Stored);
+    assert_eq!(load(&mut cpu, b.1, unit(0)), Touched::Loaded(50));
+    assert_eq!(store(&mut cpu, c.1, unit(0), 60), Touched::Stored);
     assert_eq!(cpu.counters().pages_copied, 2);
     for index in 1..3 {
         assert_eq!(
-            load(&mut cpu, b.1, page(index)),
+            load(&mut cpu, b.1, unit(index)),
             Touched::Loaded(50 + index)
         );
-        assert_eq!(word(&mut cpu, c.0, page(index)), 50 + index);
+        assert_eq!(word(&mut cpu, c.0, unit(index)), 50 + index);
     }
     // A grandchild borrows from the ended owner too.
     let d = fork(&mut cpu, c.0);
     end(&mut cpu, c);
-    assert_eq!(load(&mut cpu, d.1, page(0)), Touched::Loaded(60));
-    assert_eq!(load(&mut cpu, d.1, page(2)), Touched::Loaded(52));
+    assert_eq!(load(&mut cpu, d.1, unit(0)), Touched::Loaded(60));
+    assert_eq!(load(&mut cpu, d.1, unit(2)), Touched::Loaded(52));
     end(&mut cpu, b);
-    assert_eq!(load(&mut cpu, d.1, page(1)), Touched::Loaded(51));
+    assert_eq!(load(&mut cpu, d.1, unit(1)), Touched::Loaded(51));
     end(&mut cpu, d);
 }
 

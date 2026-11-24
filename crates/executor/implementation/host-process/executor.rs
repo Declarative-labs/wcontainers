@@ -107,8 +107,8 @@ struct Thread {
 }
 
 /// The pages a fault the executor settles copies or gives away at once: the aligned unit around the page, within the
-/// range of one permission (plan 3.5's 2^u).
-const COPY_UNIT: u64 = PAGE_SIZE;
+/// range of one permission (plan 3.5's 2^u, u = 3 as measured on translated stores).
+pub const COPY_UNIT: u64 = PAGE_SIZE << 3;
 
 /// The bytes of zeros written at a time where the host refuses to punch a hole.
 const ZEROS: usize = 64 * KIB as usize;
