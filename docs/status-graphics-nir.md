@@ -52,8 +52,14 @@ failed the measure is under the floor (below). Done this run:
   110,431 of 110,703, 99.75%). With KHR-GL33's 9,364 counted as failed: 110,691 of 120,376, 91.95%,
   UNDER the 92.9% floor.
 - Against round 5 run 6 (`scripts/g9r25-table.py r6b/full g9c6/full3`): 298 Skip to Pass (above);
-  198 Crash to Fail and 23 Crash to Pass (a refused call now ends its case as a failure, not a
-  crash); 54 dEQP-GLES3 and 6 KHR-GLES3 Pass to Fail; the dEQP-GLES3 ones fall in five batches
+  198 Crash to Fail and 23 Crash to Pass (a refused call no longer crashes its case; CORRECTED in
+  run 3: the 23 passes, and any pass in a batch with refusals, were not true passes, since the
+  refused work was dropped and glcts's ES packages never asked whether the context was reset; the
+  independent check found 16 `border_clamp.depth_compare_mode` passes with 80
+  `BorderInShaderOnComparison` refusals and `basic-glsl-earlyFragTests` passing with its
+  refusal. The table above therefore overstates the measure; run 3's table replaces it); also, not
+  said here before: `ssbo_atomic_overwrite` Pass to Fail, `3d.qualifiers.volatile_r32ui` Pass to
+  Flake, `advanced-sync-imageAccess2` Flake to Fail, `image_op_compute_sh` flaky both ways; 54 dEQP-GLES3 and 6 KHR-GLES3 Pass to Fail; the dEQP-GLES3 ones fall in five batches
   (`c41`, `c65`, `c66`, `c77`, `c82`, each failing alike on deqp-runner's second try), read case by
   case in `c41`: after `fbo.color.tex3d.rgb5_a1`'s loss, the
   WebGPU back end's 2D view of a 3D texture, the next 13 cases fail with GL_OUT_OF_MEMORY or an
@@ -851,6 +857,37 @@ below, each this track's:
   validation refuses at the vertex stage, though behind the stage helper it runs as compute work.
 - "device lost: Unexpected error variant (driver implementation is at fault)" in those batches: not
   yet traced to its call.
+- dEQP-GLES31 `texture.multisample.samples_2.use_texture_uint_2d` 1 (Fail; Pass in round 5 run 6;
+  the RTX 3080's OpenGL passes it): not yet traced (this track's). Left out of run 2's list; found
+  by the independent check (`g9c1-gaps.py r6b/full`: 70 unassigned, 69 taken by the items above).
+
+Found by the independent check of run 2, each this track's unless said:
+- The screen reports occlusion queries (`caps.occlusion_query`, a 64-bit counter) but an exact
+  count (`SAMPLES_PASSED`) is not built: `glBeginQuery` answers `GL_OUT_OF_MEMORY`. A capability
+  reported that the driver lacks, AGAINST THE STANDING RULE. It cannot simply be withdrawn: the cap
+  also carries `ANY_SAMPLES_PASSED`, which OpenGL ES 3.0 needs and which is built, and OpenGL 1.5's
+  occlusion queries. To build: the interface's `OcclusionCounter` (`OcclusionCountReplay`), which
+  needs a counting variant of each fragment program from the route (writes 1.0 at location 0, its
+  storage writes removed). Also `TIME_ELAPSED` answered 0 ns for a draw (the RTX 3080: 2,048 ns);
+  the timer closes the pass before each timestamp; not yet traced.
+- Vertex programs that only read storage take the compute route too (`uses_storage` in
+  `bridge.c` counts any storage buffer or image): read-only storage is allowed in a WebGPU vertex
+  entry, so they pay the compute pass and the pass-through for nothing (the check's probe: 30
+  vertex runs where the RTX 3080 makes 12). To route only `info.writes_memory`, the route must first
+  declare unwritten storage read-only in a vertex entry and the screen report vertex storage
+  within the back end's own vertex limits. Not built.
+- `GL_TRIANGLE_STRIP_ADJACENCY` drawn without a geometry program: Mesa's index generator gave the
+  last triangle, when odd, the adjacent vertex one past the strip (a vertex program run for vertex
+  12 of a 12-vertex draw, never for 11; indexed, a read past the draw's indices). FIXED in run 3 by
+  a Mesa patch (`strip-adjacency-last-triangle.patch`: the strip's last vertex there, as OpenGL's
+  table says). Only the generator's vertex set matters there (no geometry program reads its
+  adjacency; strips with a geometry program go through the stage helper's own `strips.wgsl`).
+- NotSupported groups that the RTX 3080's OpenGL runs (the check's skip-system): absent for want
+  of work, not by the plan, wherever the plan names a route: `EXT_clip_cull_distance` (about 205 of
+  KHR-GLES3's 227, `CullDistanceAsGeometry`), `viewport_array` 16 (`MultiViewportSplit`), wide
+  lines (dEQP-GLES3 and -GLES31, 40 and more), `KHR_blend_equation_advanced_coherent` 35;
+  `shader_group_vote` 5, `program_binary` 14, `sRGB_R8` and multiview have no route in the plan.
+  Listed work, not started.
 
 At round 5 run 6's whole run (`results/g9c6/full3`): 272 failing cases, every one assigned to an
 item below by `scripts/g9c1-gaps.py` (none left over); new item: the evaluation storage
@@ -1812,6 +1849,26 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## Departures from the plan
 
+- G9 round 6 run 3: glcts is patched for the conformance runs (testing only;
+  `crates/wcontainers-opengl/cts/patches/case-ends-on-reset.patch`, applied by
+  `cts/build-windows.ps1` from the pinned commit). Its WGL contexts made with no stated reset
+  strategy are made `LOSE_CONTEXT_ON_RESET`, and after each iteration of every case glcts asks
+  `glGetGraphicsResetStatus` and ends a reset case as a resource error, which ends its process
+  (deqp-runner runs the rest of the batch in a new one and counts it Fail). The suite's desktop
+  package already asks after each case; its ES packages did not, so a case whose call the driver
+  refused and dropped could pass (the independent check of run 2: 23 such passes, and every pass in
+  a batch with refusals in doubt), and the cases after a device loss in the same process failed
+  for it (run 2's 60). No test is changed; a refusal that the guest's draw needed can only turn a
+  case's result from Pass to Fail. A refusal in a case's `deinit` is charged to the case after it.
+- G9 round 6 run 2 lifted the quarantine of `run-windows.ps1 -Driver wcontainers` before the case
+  that hung the GPU was named, against run 1's plan (find the case, fix it, then lift); the
+  independent check found this. The evidence it was lifted on: 107 runs of the command since
+  2026-11-20 with no reset before run 1's build, the first where a lost device no longer ended its
+  glcts and two batches then ran on for minutes refusing millions of calls; e6e5061e refuses every
+  call into a lost back end; since then three whole runs and the check's jobs ran with no reset.
+  The hanging case is still not named. With this run's glcts a lost device ends its process, so a
+  batch no longer runs on past it.
+
 - G9 runs 17 to 31: the bar's item "bgfx's and Godot's OpenGL renderers match the RTX 3080's
   OpenGL or llvmpipe within the rig's allowance", planned in runs 7 to 16 ("bgfx's and Godot's
   OpenGL renderers on the rig, with every slow path counted"), was dropped from the Next list
@@ -2060,6 +2117,18 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## Needs a primitive (round 6 rule: no new line with `unsafe`)
 
+- Telling the guest at once that a call was refused (independent check of run 2: a refused draw is
+  dropped and a guest that did not ask for reset notification is never told). Gallium's way is the
+  context's reset callback: implement `pipe_context::set_device_reset_callback` (read the
+  `pipe_device_reset_callback` it is given: a raw read) and, at a refusal, call
+  `cb.reset(cb.data, PIPE_GUILTY_CONTEXT_RESET)` (a call through a C function pointer), after which
+  st/mesa sets its lost-context dispatch and every later call answers `GL_CONTEXT_LOST`. st/mesa
+  installs the callback only for contexts made with `LOSE_CONTEXT_ON_RESET`; for the others the same
+  callback would need a Mesa patch (C, no line of ours) that installs it for every context and
+  records `GL_OUT_OF_MEMORY` there ("the command could not be done"), which is OpenGL's error for
+  every version. Until then such a guest learns of the refusal only from
+  `glGetGraphicsResetStatus` on a context made to be told, and the warning on standard error; the
+  conformance runs end the case by glcts's own query after each iteration (Departures).
 - Counting maps of multisampled textures (`SlowPath::MultisampleCopyResolved` is the interface's
   name for a copy made from the resolved source): `pipe_context::texture_map` is Mesa's
   `u_transfer_helper_transfer_map` itself; counting the multisampled ones needs a Rust entry that
@@ -2343,6 +2412,20 @@ None.
   through it.
 
 ## Literal check
+
+G9 round 6 run 3: NO finding in this track's files (x86-64 machine, a copy of the working tree with
+a fresh git index, scratch `scripts/g9r6c-literals.sh`). The `include!` finding went as the
+independent check said it could: the build script hands the bindings' whole path to the crate
+(`cargo::rustc-env=WCONTAINERS_GALLIUM_BINDINGS=...`) and `src/gallium.rs` is
+`include!(env!("WCONTAINERS_GALLIUM_BINDINGS"))`, the variable named once on each side (a
+constant of it in the build script was read as a restatement, so the build script writes the name
+in its one `println!`). Run 1's two reasons for keeping it were wrong: a form that names it once
+exists, and at that tip the workspace exited 1 on this track's finding alone. The geometry limits
+are now Mesa's own constants (`MAX_GEOMETRY_OUTPUT_VERTICES`, `MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS`,
+`MAX_GEOMETRY_SHADER_INVOCATIONS` of `main/config.h`, through the bindings), so the 1,024 output
+components are named, not written as 256 times 4 with a derivation that is not the real one (run
+2's form, a finding of the check). The check exits 1 in this run's working tree only on another
+track's uncommitted lines (`hardware-virtualization/single_step.rs`, 4 strings).
 
 G9 round 6 run 1: 1 finding left in this track's files, of the check's 21 (x86-64 machine, on a
 copy of the working tree with a fresh git index, as the check of round 5 run 6 ran it; output in
