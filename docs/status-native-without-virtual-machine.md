@@ -779,21 +779,59 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Found by it and fixed (stub.rs): a forged `CommandRefused` whose error number is outside 1 to 4,095 panicked the
     embedder in rustix's `Errno::from_raw_os_error` (forged4-arm.out); it is now a forged exit, which ends the stub.
     Not asserted: that no host code runs that we did not translate (nothing observes it from outside).
-  - The shared tree built every host-process test binary again at about 04:00 UTC (with other jobs' uncommitted
-    wasmtime and Unicorn edits in it).
+  - The shared tree built every host-process test binary again at about 03:45 UTC (with other jobs' uncommitted
+    wasmtime and Unicorn edits in it). Every binary once with /dev/kvm denied, no overlay, kernel (7 of 7) and
+    busybox (Docker's reference) included (03:50 to 03:53 UTC, load 15 to 22, scratch w1/r4run2/all2-arm.out): all
+    pass but the known `agrees_with_precise_instruction_set` at 0x1000. An earlier attempt (all1-arm.out) lost its
+    job after busybox's reference failed with "docker could not run the container"; Docker ran again a minute later.
+  - The x86-64 machine was not reachable for this run (x86-run: "the machine answers but is not set up (no /work,
+    Docker or Nix)"), so nothing ran there; this run's code changes on x86-64 are stub.rs's refusal check only.
+  - busybox `sh` showed the movable range alone did nothing (scratch w1/r4run2/diag1-arm.out): every translation was
+    under 4 GiB (busybox at 0xab0e_7000 and up, musl near 0xf7xx_xxxx), because the kernel now places a process's
+    mappings low first (`first_tier_top`), below `movable(Way::Process)`. So a kept translation now also moves
+    between pages in [128 MiB + a page, the movable range's end) when every guest address it names (its places, exit
+    targets and table entries) is under 2^44 both before and after (`moves`, native.rs). Proved against translating
+    there: a seeded test of random code naming addresses (the VM form's generator), pages under 128 MiB, under 4 GiB
+    and movable (`WCHP_MOVED_CASES`, default 2,000; `WCHP_SEED`): seeds 1 to 3 at 100,000 cases each, about 43,000
+    moved each (208,000 address places), none differing; with the check reduced to "both pages above the first" it
+    fails at once (moves2-arm.out). tests/run.rs's moving test adds two bases under 4 GiB.
+  - Speed after it (release, CPU 41, /dev/kvm denied, scratch w1/r4run2/speed1-arm.out, speed-bb1-arm.out; load 15
+    to 30 from other tracks):
+    - getppid round trip, 3 rounds against W0's futex slot in the same run: 2,948 / 2,400, 3,009 / 2,377 and 3,013 /
+      2,431 ns median of batch means, 1.23, 1.27 and 1.24 times (bar under 1.25: not met in every round); per call
+      median 2,917 to 2,930 ns; 1 call over 1 ms in the first round's 999,999 (1.65 ms, at load 30), none in the others.
+    - getppid in the kernel's loop 3,346 ns per call.
+    - bench.c against plain (medians of 3): fib 1.318, sieve 1.015, hash 1.003, sort 1.361, interpret 1.293, matrix
+      3.845, walk 0.999, search 1.161, geometric mean 1.342 (WebAssembly 25.4).
+    - busybox `sh` starting 1,000 programs: translations 243,918 to 1,052, first run 13.96 s to 9.30 s, the second
+      9.0 to 9.35 s (moved translations are cloned at each load, not kept). The model is now 1.0 to 1.36 s (no
+      translation time left), so the first run is 9.25 times it (bar 1.25: far from met).
+  - Where busybox `sh`'s 10 ms per program goes (remote-only timing, timing-bb3-arm.out, 2,000 programs): creating,
+    forking and dropping memories 1.45 ms (drop 0.72, of which waiting for the stub's end 0.33); loading 415 pieces
+    1.2 ms and placing and linking them 0.7 ms (each process loads every piece again into its own code area); the
+    rest, about 6.6 ms, in turns (guest code, its faults and the kernel's work). A profile (perf-bb1-arm.out) has the
+    host's task switches first (11%), then hashing the translation keys (3%, the whole rest of a page per lookup) and
+    cloning moved translations (4%). Next for this bar: one code area shared by an executor's memories, so a fork or an
+    exec of the same program places nothing again, then a profile of the turns.
+  - Final verdicts after the last code commit (341f0ef8), shared tree, every binary once with /dev/kvm denied, each
+    run first proving the device cannot be opened (04:20 to 04:23 UTC, Graviton4, load 6 to 14, scratch
+    w1/r4run2/final-arm.out): 23 binaries, 101 tests passed, 1 failed (the precise-set test at 0x1000), the kernel's
+    7 and busybox included; clippy with warnings denied clean on every target. One round only, not three; x86-64 not
+    run (machine not set up).
+  - No new unsafe code.
 
 ## W1 complete, with its gap list (for the independent check)
 
 W1 is reported complete at round 3 run 5 so that its independent check runs; these items of plan 13's bar are not
 met, each with what is known:
-- Speed, not met: the getppid round trip is 1.23 to 1.31 times W0's futex slot (bar under 1.25; run 4), and busybox
-  `sh` starting 1,000 programs is 2.02 times the model (bar 1.25; run 3), because alpine's busybox is position
-  independent and each exec gets a new base, so translations kept by guest address never match again (243,918
-  translations); keeping them by bytes and moving them (`wcontainers_arm64::carry::movable(Way::Process)`) is the
-  fix. bench's matrix runs 4.0 times plain under P (other workloads 0.998 to 1.36): its inner loop's counter is the
-  guest's x18, a withheld register kept in the register page (round 4 run 1); the translator's register choice is
-  the fix. No round
-  trip over 1 ms in 1,000,000 (met, run 3).
+- Speed, not met: the getppid round trip is 1.23 to 1.31 times W0's futex slot (bar under 1.25; 1.23 to 1.27 in round
+  4 run 2). busybox `sh` starting 1,000 programs: translations now move across execs (243,918 to 1,052, round 4
+  run 2) and the first run fell from 13.96 to 9.30 s, but with translation gone from the model it is 9.25 times the
+  model (bar 1.25); per program 1.45 ms of memory calls, 1.9 ms loading and placing pieces again in each process's
+  own code area, 6.6 ms in turns (round 4 run 2). bench's matrix runs 3.8 to 4.0 times plain under P (other
+  workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
+  page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
+  machine (run 3; one of 1.65 ms at load 30 in round 4 run 2).
 - The executor suite's precise-set test fails as committed: its input domain puts code at 0x1000, below
   `vm.mmap_min_addr` (For the owner). Every other test of the suite passes, and with the code at 64 KiB this one
   passes too (run 5).
@@ -811,8 +849,9 @@ met, each with what is known:
   at most one move a second with every CPU contended) are not measured; the move itself is tested (tests/
   placement.rs).
 - The copy unit is one page, not yet measured on translated stores (8 pages the candidate).
-- The shared tree builds host-process's library again (round 4 run 1); its kernel, busybox and speed tests wait on
-  the WebAssembly executor following the volatile bytes crate (its conforming job's).
+- The shared tree builds every host-process test binary again (round 4 run 2, with the conforming jobs' wasmtime and
+  Unicorn edits uncommitted in it): kernel and busybox pass with /dev/kvm denied, once on Graviton4; the three rounds
+  on both machines from committed code are still to run (the Xeon was not set up during round 4 run 2).
 - gVisor: P runs there with known failures (plan 6; Decision 14 is with the owner); in its kernel test, blocks and
   jumptables pass the 300 s limit (which side was not found).
 - x86-64: everything that needs translated code is W3's (the x86 native output's way); on the Xeon the 156 tests of
@@ -828,10 +867,13 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## Next
 
-- W1's independent check runs on the report above. FIRST for whoever comes next, once the kernel follows the volatile
-  bytes (45dc7425): run every binary (kernel, busybox and speed included) 3 times with /dev/kvm denied on both
-  machines from the shared tree with no overlay (scratch w1/r3run4/nokvm.sh); if the shared executor suite still
-  imports `VolatileBytes` from the executor crate, scratch w1/r3run5/suite-overlay.sh fixes that in the remote copy.
+- W1's independent check runs on the report above. FIRST for whoever comes next: once the wasmtime and Unicorn
+  executors' conforming edits are committed, run every binary 3 times with /dev/kvm denied on both machines (scratch
+  w1/r4run2/nokvm.sh, sent inline with `set -- 3`); the Xeon needs its setup again (x86-run said so in round 4 run 2).
+- busybox `sh`'s bar: one code area shared by an executor's memories (a fork child and every exec of the same
+  program place and link their pieces again today, 1.9 ms per program), keep moved translations instead of cloning
+  them at every load, a cheaper key than hashing the rest of the page, then a profile of the turns (6.6 ms per
+  program; scratch w1/r4run2/timing-bb.sh times the memory calls and loads in a remote copy).
 - Then the gap list's items, the speed bars first: busybox `sh` needs translations kept across execs at new bases
   (moved translations, above); the round trip needs the embedder's per-exit work cut (the translated page's
   copies, `stop::resolve` and `rejoin`, placement's two clock reads per turn); bench's matrix needs the withheld
@@ -867,6 +909,15 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 4 run 2: scratch w1/r4run2. nokvm.sh (run 4's) runs every binary with /dev/kvm denied; speed.sh is
+  run 3's speed3.sh without the VM part, speed-bb.sh busybox `sh` alone; forged.sh runs tests/forged.rs (its
+  `--nocapture` prints what each forged exit did); moves2.sh runs the moving test at 100,000 cases for three seeds,
+  then with the check removed (must fail); perf-bb.sh profiles CPU 41 during busybox `sh`; timing-bb.sh times the
+  memory calls, loads and placings in a remote copy; diag.sh prints every translation's pc (remote copy);
+  wasm-overlay.sh makes the committed wasmtime executor follow the volatile bytes crate in a remote copy (not needed
+  while the shared tree builds). The new unit test: `cargo test -p wcontainers-executor-host-process --lib` (knobs
+  `WCHP_MOVED_CASES`, `WCHP_SEED`).
 
 - Since round 3 run 5: scratch w1/r3run5. agrees.sh runs the executor suite's precise-set test with the input
   domain's code at 64 KiB (remote copy only); mutate.sh runs tests/run.rs, then undoes each of run 5's two fixes in
