@@ -169,6 +169,13 @@ fn cache_type() -> u64 {
     value
 }
 
+// The probe's system call lets Linux zero the bits of z0 to z31 above their low 128, which its assembly does not name
+// as changed. That is sound only while the compiler keeps nothing there: while this crate is built without SVE.
+#[cfg(all(target_arch = "aarch64", target_feature = "sve"))]
+compile_error!(
+    "the SVE probe's system call may clear Z register bits that code built with SVE keeps values in"
+);
+
 /// The largest predicate register: an SVE vector of 2048 bits has predicates of 256 bits.
 #[cfg(target_arch = "aarch64")]
 const LARGEST_PREDICATE: usize = 2048 / 8 / 8;
@@ -186,7 +193,8 @@ fn sve_at_system_call() -> SveAtSystemCall {
             unsafe_code,
             reason = "SVE state across a system call can only be set and read by its own instructions"
         )]
-        // SAFETY: writes at most one predicate register's bytes to each buffer, and touches only clobbered registers.
+        // SAFETY: writes at most one predicate register's bytes to each buffer, and touches only clobbered registers
+        // and the Z bits above 128, which code built without SVE never keeps (the `compile_error!` above).
         unsafe {
             core::arch::asm!(
                 ".arch_extension sve",
