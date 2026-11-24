@@ -3,6 +3,31 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 8 (2026-11-24): the two more withheld registers chosen per piece
+
+Scratch w2/run8 (check.sh with `SEEDS`, `CASES`, `PIECES`, `ACASES`, `STAGE=build`; check-vm.sh; crossover.sh,
+way.patch, test.patch and cross-command.txt, which carries them to the machine; outputs *-arm.out). Graviton4. Form
+I's executor is still not built: no primitive has landed (branch `unsafe-primitives` is unmerged) and the rule of
+2026-11-24 (no new unsafe) stands. Nothing of this run adds unsafe code. No interface notice since run 7 touches
+this track's crates.
+- Built: a piece that names x15 or x24 keeps u or the base in the highest register it does not name, entered and
+  left as plan 3.2 says (the translator, guest-cpu, arm64 and stop crates; "Changes to the translator and the stop
+  crate" below lists the new names). The in_process_way test counts such pieces (`kept_elsewhere`: 1,563 to 1,630 of
+  each seed's 4,000 pieces); way.rs has four unit tests of the choice.
+- Verified on Graviton4 (check-arm.out, check-vm-arm.out): clippy with warnings denied clean on the arm64,
+  guest-cpu, x86, translator, stop and host-process crates; the arm64, translator, guest-cpu and stop crates' tests
+  pass; in_process_way seeds 1 to 3 at 16 cases a form and 4,000 pieces and in_process_attacks seeds 1 to 3 at 400
+  pass; the VM executor's exits, native (32,562 cases, 0 failing), floor, registers, host_branches, interrupts and
+  probe pass with KVM; the x86 crate's tests pass.
+- Measured, as run 7 (way.patch now also moves P's stub's request words to byte 2048 of the thread page, as four
+  words after the register page no longer fit before its register block; scratch only): whole programs, outputs
+  equal to the host's, 7 alternating rounds, medians of the rounds' ratios I's code to P's (cross2-arm.out, 19:16 to
+  19:19 UTC, load 9 to 16): fib 1.059, sieve 1.141, hash 1.002, sort 1.238, interpret 1.295 (was 1.628), matrix
+  1.103, walk 1.105, search 3.918 (was 3.922), busybox sh 0.968 and 1.010. The guest's stand-in sites for x15 and
+  x24 went from 12 to 0 in interpret and from 37 to 30 in search (the "withheld register named" counter less P's).
+  search is unchanged because its function is one piece naming every general register (vectorised, unrolled):
+  choosing per loop of a piece is the next remedy, not built. The crossover from these figures: plan section 7.
+
 ## W2 run 7 (2026-11-24): form I's translated code measured on whole programs
 
 Scratch w2/run7 (crossover.sh with `ROUNDS`, `PROGRAMS`, `WCHP_FIXED`; perf.sh with `WORKLOADS`, `FIXED`;
@@ -1859,10 +1884,11 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   runs natively in a stub at window base 0, its cost per access shape measured and the bounds-check-bypass test
   run on it (W2 run 5); the independent check's attacks on jumps and accesses run on hardware in slot 1, and the
   mark has its own byte (W2 run 6); the way's code is measured on whole programs under P's stubs, f per workload and
-  the crossover from it (W2 run 7). Next without unsafe: the two more withheld registers chosen per piece (the
-  translator; W2 run 7 found them the largest cost where a hot loop names x15 or x24), measured with crossover.sh;
-  it changes the way's register rules, so the in_process_way, in_process_attacks and stop tests must follow. The
-  in-process executor itself waits for
+  the crossover from it (W2 run 7); the two more withheld registers are chosen per piece (W2 run 8: interpret 1.63
+  to 1.30). Next without unsafe: choosing them per loop of a piece, which search needs (its one piece names every
+  register), measured with w2/run8's crossover command; and drawing jumps and conditional branches into
+  in_process_way's pieces, which today hold only accesses and stack pointer instructions, so a moved piece's jump
+  and branch exits are checked only by the whole programs. The in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
   when sp is back in the window, never link displaced pieces), its last-target rule (W2 run 6), the attack by
@@ -1904,6 +1930,12 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since W2 run 8: scratch w2/run8. check.sh as run 6's, with `STAGE=build` for clippy alone; check-vm.sh also runs
+  the x86 crate's tests. Send a script as the command itself: `arm-run <checkout> --name nwvm -- "SEEDS='1 2 3';
+  $(cat check.sh)"`. The crossover: `arm-run <checkout> --name nwvm -- "ROUNDS=7; $(cat cross-command.txt)"`, then
+  `python3 summarise.py <output>`; cross-command.txt embeds way.patch, test.patch and crossover.sh in base64,
+  so make it again when one of them changes (the patch makes P run slot 0's in-process code; never commit it).
 
 - Since W2 run 6: scratch w2/run6. check.sh runs clippy, the crates' tests, in_process_way and in_process_attacks
   (`SEEDS`, `CASES`, `PIECES`, `ACASES`); check-vm.sh the VM executor's tests with KVM (`--name nwvmvm`);
@@ -2181,6 +2213,21 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   stop crate's `in_process::{resolve, interrupted, rejoin, set_register}` take the `Way` instead of a slot, and
   the guest sp is the host's less `stack_base`. The machine and process ways' output and the stop crate's answers
   for them are unchanged. Verified on Graviton4 (W2 run 4 below).
+- W2 run 8, crates/wcontainers-guest-cpu (native.rs), crates/wcontainers-translator (native.rs), crates/wcontainers-arm64
+  (way.rs, carry.rs, native.rs) and crates/executor/implementation/arm64-stop, the in-process way only in effect:
+  `Native` has two provided methods, `piece_way` (the way one piece is written for, given its instructions; the
+  way itself by default) and `enter` (code a piece starts with when entered from outside it; none by default),
+  which the translator calls once a piece. `HostCode` has `keep` (a relocation every later instruction of the
+  piece starts with; `home` goes back to it), `release` (drops one for the rest of the instruction), `leaving`
+  (bytes of an exit only leaving the piece runs: a loader links after them, linking within the code before them,
+  through the new `for_within`, which the translator now uses where it used `for_loader` for a part entered with the
+  guest's count) and `local` (a branch only linking within the code may point elsewhere). ARM64:
+  `Way::InProcess` has a third field, `kept: Kept` (embedders pass `Kept::USUAL`, x15 and x24); `Way::withheld`
+  returns a `Withheld` (a slice by `Deref`) instead of a static slice; `Way::{check, base, for_piece, usual,
+  moves_kept}` and `way::AFTER_PAGE_WORDS` (4) are new. A piece naming x15 or x24 keeps u or the base in the
+  highest register it does not name (section 3.2 of the plan). The stop crate's `AFTER_PAGE` is 4 words and
+  `in_process::set_register` takes the span (a relocation decides where the value goes). The machine and process
+  ways' output and every answer for them are unchanged; the x86 native output keeps the defaults.
 - For the translator track, not done: the InProcess way's wrapping form.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once

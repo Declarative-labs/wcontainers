@@ -259,8 +259,21 @@ that names one of them pays a stand-in's save, load, store and restore through t
 instruction, and those memory round trips serialise the loop. bench.c's search took 3.92 times form P's time
 with the compiler's own register choice and 1.46 times with x15 and x24 kept out of the program (instructions
 +42% but cycles +154%, against +20% and +23% without them); interpret took 1.63 and 1.15. The two registers, not the
-check, are form I's largest cost where a hot loop names them; choosing them per piece (two the piece does not
-name, their guest values moved at the piece's entry and exits) is the remedy to measure, and is not built.
+check, are form I's largest cost where a hot loop names them. As built since W2 run 8 (`Way::for_piece`, the
+`kept` field of `Way::InProcess`): a piece that names x15 or x24 keeps u or the base in the highest register it
+does not name (never x18, x23 or x28, withheld in every way, or x30, the floor call's link), so none of its
+instructions pays a stand-in for them; where no register is free it keeps x15 and x24 and their stand-ins. Entered
+from outside, such a piece first stores the guest value of the register it keeps u or the base in at the third or
+fourth word after the page, moves the base there, and loads the guest's x15 and x24 from the first two; every way
+out of it that reaches code entered as from outside gives them back first: a direct exit stores x15 and x24, moves
+the base back and loads the register again, in bytes that linking within the piece skips and a loader's link runs
+(`HostCode::leaving`); a jump through a register does the same before its last target's compare, then goes on as
+any piece's; a conditional branch's own word is linked only within the piece (its out-of-line exit leaves as any
+direct exit does), and a jump table's known targets are not used in such a piece. The position map holds the moved
+values throughout the piece (`HostCode::keep`), so every stop resolves through the stop crate as before. Measured
+(section 7): interpret 1.63 to 1.30, the others unchanged; search stays 3.92 because its function, one piece, names
+every general register (its loops are vectorised and unrolled). Choosing the two per loop of a piece rather than per
+piece is the next remedy, not built.
 Every failed check, and every new stack pointer outside the window by (d), reads one byte
 at the window's base plus 2^32 plus 4095 (`way::MARK`, unmapped by 3.1; 4095 being `ldrb`'s largest offset) out of
 line. It is not the first byte past the window because an access whose bytes cross the window's top faults there on
@@ -1234,7 +1247,13 @@ search); with x15 and x24 kept out of the programs by the compiler, 1.058, 1.150
 is 0.00 to 0.63 on these programs as compiled, 2.92 on one, against section 11's 0.214, and k > f / c with
 c = 2.50 to 2.63 µs gives I the win above about 400 (hash) to 250,000 (interpret) kernel entries per second of
 guest CPU time, 1,100,000 for search; with the registers kept out, 0 to 72,000, 184,000 for search. I's own call
-cost (not measured: the executor) is taken as nothing against c.
+cost (not measured: the executor) is taken as nothing against c. With the two registers chosen per piece (W2 run 8,
+Graviton4 19:16 to 19:19 UTC, one-minute load 9 to 16, the same 7 alternating rounds, outputs equal to the host
+run's): fib 1.059, sieve 1.141, hash 1.002, sort 1.238, interpret 1.295, matrix 1.103, walk 1.105, search 3.918
+(geometric mean 1.321; 1.131 without search), busybox sh 0.968 and 1.010 (two runs of it in one round; within the
+rounds' spread of 0.93 to 1.08). I wins above about 800 (hash), 22,000 to 24,000 (fib), 39,000 to 42,000 (matrix,
+walk), 54,000 to 56,000 (sieve), 91,000 to 95,000 (sort), 112,000 to 118,000 (interpret) and 1,110,000 to
+1,170,000 (search) kernel entries per second of guest CPU time.
 Rule given to the embedder (it chooses, not us): with no history, P (the owner's default for agentic workloads);
 with history, the form whose arithmetic above is lower at the recorded rates on this host's measured c and f (s
 and c_busy when the probe found no free CPU); P whatever the arithmetic when the container needs the line between
