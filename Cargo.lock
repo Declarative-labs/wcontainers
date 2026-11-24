@@ -4590,6 +4590,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4918,6 +4919,7 @@ name = "wcontainers-random-source"
 version = "0.1.0"
 dependencies = [
  "wcontainers-abi",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4958,6 +4960,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5152,6 +5155,7 @@ dependencies = [
  "wcontainers-route-resolver",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5195,6 +5199,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5294,6 +5299,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
