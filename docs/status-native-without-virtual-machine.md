@@ -732,8 +732,21 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     because wasmtime does not yet build against the volatile bytes crate: its conforming job's): all pass but the
     precise-set test above; Xeon: all 156 pass. Clippy with warnings denied clean on the library on both and on every
     target on Graviton4.
-  - Not done this run: the kernel, busybox and speed tests on the shared tree (they wait on wasmtime), bench's matrix
-    profile (scratch w1/r3run6/perf-matrix.sh, ready; it failed only on that build).
+  - Why bench's matrix runs 4 times plain under P (scratch w1/r3run6/perf-matrix.sh, perf-matrix3-arm.out, dump.sh,
+    dump4-arm.out; Graviton4, release, load 17 to 28; the remote copy alone leaves out the WebAssembly and Unicorn
+    dev-dependencies): matrix 115 ms plain, 474 ms under P (4.12; 3.90 and 4.04 in other runs). perf: 88% of the
+    samples in the code area, 74% on two instructions of one 11-instruction loop. That loop is matrix's innermost
+    (`ldr x6; ldr x7; subs x18, x18, #1; add; add; madd; b.ne`, 6 instructions plainly), whose counter is the guest's
+    x18. x18 is one of the native output's three withheld registers (the count's, `thread_state::COUNT`), so the
+    translated loop keeps it in the register page: `ldr x23, [x28]; subs x23, x23, #1; str x23, [x28]` every
+    iteration, a dependency carried through memory. The machine way withholds the same registers, so the VM form pays
+    it too wherever a hot loop names x18. Not the stops, the count's adds or the page-crossing probes (the aligned copy
+    of the loop has none). The fix is the translator's register choice (docs/native.md 3.3), shared with the VM form:
+    for example a piece that names a withheld register in a loop renames it to a host register the piece leaves free,
+    loaded at the piece's entry and stored at its exits. Not built: it changes both ways, so it is for the native
+    track to rule (the ask is under "Changes to the translator and the stop crate"). A rebuild of bench with
+    `-ffixed-x18` to confirm it did not take effect (zig's C compiler still used x18).
+  - Not done this run: the kernel, busybox and speed tests on the shared tree (they wait on wasmtime).
   - No new unsafe code; two uses fewer.
 
 ## W1 complete, with its gap list (for the independent check)
@@ -744,7 +757,9 @@ met, each with what is known:
   `sh` starting 1,000 programs is 2.02 times the model (bar 1.25; run 3), because alpine's busybox is position
   independent and each exec gets a new base, so translations kept by guest address never match again (243,918
   translations); keeping them by bytes and moving them (`wcontainers_arm64::carry::movable(Way::Process)`) is the
-  fix. bench's matrix runs 4.0 times plain under P (other workloads 0.998 to 1.36), not yet profiled. No round
+  fix. bench's matrix runs 4.0 times plain under P (other workloads 0.998 to 1.36): its inner loop's counter is the
+  guest's x18, a withheld register kept in the register page (round 4 run 1); the translator's register choice is
+  the fix. No round
   trip over 1 ms in 1,000,000 (met, run 3).
 - The executor suite's precise-set test fails as committed: its input domain puts code at 0x1000, below
   `vm.mmap_min_addr` (For the owner). Every other test of the suite passes, and with the code at 64 KiB this one
@@ -786,12 +801,13 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   imports `VolatileBytes` from the executor crate, scratch w1/r3run5/suite-overlay.sh fixes that in the remote copy.
 - Then the gap list's items, the speed bars first: busybox `sh` needs translations kept across execs at new bases
   (moved translations, above); the round trip needs the embedder's per-exit work cut (the translated page's
-  copies, `stop::resolve` and `rejoin`, placement's two clock reads per turn); bench's matrix needs a profile.
+  copies, `stop::resolve` and `rejoin`, placement's two clock reads per turn); bench's matrix needs the withheld
+  x18 renamed in hot loops (round 4 run 1, the native track's ruling first).
 - The speed bars (scratch w1/r3run3/speed3.sh measures all of them): busybox `sh` needs translations kept
   across execs at new bases (moved translations, above); the round trip (1.23 to 1.31 times the slot after run 4's vectors change) needs
   the embedder's per-exit work cut (the translated page's copies, `stop::resolve` and `rejoin`, placement's two clock
   reads per turn); bench's
-  matrix (4.0 times plain) needs a profile.
+  matrix (4.0 times plain) needs the withheld x18 renamed (round 4 run 1).
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
 - Then: the copy unit on translated stores; placement's getppid item; the gVisor kernel test's blocks and jumptables
   (which side hangs); the gap list and the W1-complete report (due by the fifth run).
@@ -943,6 +959,11 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 Made by this track on 2026-11-23 with the orchestrator's leave; each commit kept the ARM64 translator suites and
 the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above).
+- ASKED, not made (round 4 run 1): a guest loop that names a withheld register (x18, x23 or x28) keeps it in the
+  register page, a load and a store per use; in bench's matrix the innermost loop's counter is x18 and the loop runs 4
+  times plain under P (both ways withhold the same registers, so the VM form pays it in such loops too). Proposed:
+  rename a withheld register a hot piece names to a host register the piece leaves free, at the piece's entry and
+  exits. For the native track to rule, since it changes the machine way as well.
 - 89a6818e: `Native::Way` for ARM64 is `wcontainers_arm64::Way` (`Machine`, the default, as before; `Process`).
   `translate_native` keeps making the machine way's code. `Holds::EntrySlot` (crates/wcontainers-guest-cpu) carries
   its slot table's base, so `write_place` needs no way; x86 never uses it. `RegisterPage` has a `link` word
