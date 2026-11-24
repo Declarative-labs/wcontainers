@@ -46,11 +46,11 @@ wgpu = { path = "third_party/wgpu" }
 # TODO: not yet done; each inherits these lints once it is free of it:
 #   crates/wcontainers-directx (1076)
 #   crates/wcontainers-direct3d-12 (483)
-#   crates/wcontainers-opengl (368)
+#   crates/wcontainers-opengl (369)
 #   crates/wcontainers-graphics-test (337)
 #   crates/wcontainers-graphics-test-forward (184)
 #   crates/wcontainers-gpu-webgl (162)
-#   crates/wcontainers-nir (117)
+#   crates/wcontainers-nir (119)
 #   crates/wcontainers-translator-test (101)
 #   crates/wcontainers-shaders (75: 4 in the linked converters of its WebAssembly build, 71 in its Windows tests calling real Direct3D)
 #   crates/wcontainers-gpu-webgpu (30)
