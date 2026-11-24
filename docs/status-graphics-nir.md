@@ -5,6 +5,74 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 5 run 3 (2026-11-24). G9'S FIRST PART IS STILL NOT COMPLETE: its bar asks that bgfx's
+and Godot's OpenGL renderers match the RTX 3080's OpenGL or llvmpipe, and neither starts on this
+driver, because each asks for a version the driver does not report there (below; For the owner).
+Done this run, from the check's two blocking findings:
+- The programs' comparison is built: `crates/wcontainers-opengl/cts/programs-windows.ps1` (one GPU
+  job; How to run) runs each program live on the driver (its error output and Mesa's own frame
+  counter, `GALLIUM_HUD=fps` written to files), records it on the RTX 3080's OpenGL with apitrace
+  14.0, cuts the recording to its first 150 frames, replays it on the RTX 3080's OpenGL, llvmpipe
+  and the driver (every frame saved), and `compare-frames.py` holds each frame to the owner's rule:
+  the driver's frame passes when it differs from one real implementation's in no more pixels
+  (any channel beyond the rig's 8) than the two real ones differ from each other. One recording
+  replayed everywhere gives each implementation the same calls at the same times. The programs are
+  the rig's builds: bgfx's six art-free examples (`--gl`) and Godot 4.7.2's two platformer demos
+  (`--rendering-method gl_compatibility --rendering-driver opengl3`, every fallback off, in a copy
+  of each demo under `C:\wc\graphics-nir\programs`).
+- Its result (desktop, job 73 at 02:38 desktop time, bgfx-01-cubes and godot-platformer-3d-gl;
+  scratch `logs/g9c3/programs-c.log`): Godot asks for an OpenGL 3.3 core context and stops ("Failed
+  to create native OpenGL window"); bgfx at the rig's commit 3aab3201 asks for 4.3 core
+  (`BGFX_CONFIG_RENDERER_OPENGL_MIN_VERSION 43` in its config.h) and ends with 0xC0000409 when the
+  context is refused; their replays on the driver stop at "wglCreateContextAttribsARB failed". The
+  driver reports OpenGL 3.1 core on the RTX 3080 since round 5 run 2 (the passed-value limit, For
+  the owner). Godot's replay on llvmpipe against the RTX 3080's OpenGL, the distance the driver
+  will be held to: frames 10, 60 and 120 differ in 61,089, 62,443 and 62,587 of 518,400 pixels
+  beyond 8 (largest channel difference 49, 46, 46). Not yet working in the tool: bgfx's recording
+  crashes glretrace on the RTX 3080's own OpenGL and on llvmpipe alike (an access violation at
+  call 8,586, the third frame, after bgfx's NV-suffixed entry points apitrace does not know were
+  asked for), so bgfx's frames cannot be compared yet even between the two real implementations.
+- Slow paths: the driver now warns of each slow path the first time it is taken ("wcontainers: slow
+  path: <reason>") and lists every one taken with its count when its screen ends (ac9ae476, test
+  `each_slow_path_taken_is_warned_once_and_counted_every_time`); it counted them before but showed
+  only the back end's counts, which the WebGPU back end prints when each process ends.
+- The untraced failures, run beside the RTX 3080's OpenGL (job 73 then 74, scratch
+  `logs/g9c3/untraced-{wcontainers,system}.log`, results `results/g9c3/untraced`): all 29 cases of
+  the "not yet traced" items of the five GLES lists pass there. On the driver:
+  - `vertex_array_objects.all_attributes`: traced and fixed (b298b5ee). An input whose stream holds
+    another kind than the program reads is fetched by the program, but the draw bound the streams
+    of the other fetched inputs only. Passes.
+  - `polygon_offset.*_render_with_units` 5: traced and fixed (abd98862). The host's depth step is
+    2^-n of an n-bit format (Direct3D's rule); a +1 offset at depth 0.5 (8,388,607.5 steps of a
+    24-bit format) rounds to the value it had without it, so the yellow draw after it fails its
+    LESS test. One OpenGL unit is now two host steps, as Mesa's own Direct3D 12 (`DepthBias =
+    offset_units * 2`) and Zink drivers take it. A group run (job 75, scratch
+    `logs/g9c3/group-a.log`): dEQP-GLES2 `polygon_offset` 49 of 49 with `vertex_array_objects`,
+    dEQP-GLES3 `polygon_offset` 20, `vertex_array_objects` 10 and `depth_stencil_clear` 11, all pass.
+  - Read, not fixed (each in the gap list with what was seen): `pbo_bounds_2d` (a pass samples and
+    draws one texture; which draw, not yet read), the geometry feedback overflow (the first
+    triangle's values are -1 where 1.0 was expected), `separable_tess_ctrl.empty` (Mesa's resource
+    list lacks `gl_InvocationID`), `InteractionFunctionCalls1_var_type_index_8` ("Invalid array size
+    was returned"), `gpu_shader5.uniform_blocks_array_indexing` (expected (-1, -1, 0, 1), got (-1, 1,
+    0, 1)), `texture.units.2_units.only_cube.7` (difference 0.00147 against a threshold of 0.001),
+    `rbo_multisample_max` lines (7 pixels), gather offsets and buffer texture atomics (failing
+    values, cause not read).
+- Built and tested: the suite of both crates on the x86-64 machine (load 3 to 28): fmt clean,
+  clippy with warnings denied clean with and without Mesa, the nir crate's route 26 pass,
+  wcontainers-opengl 7 pass. Unsafe code unchanged (wcontainers-nir 116, wcontainers-opengl 370;
+  no `unsafe` was added). Tools added for testing only (Licences): apitrace 14.0 (MIT), Pillow
+  12.0.0 (MIT-CMU), py7zr 1.0.0 (LGPL-2.1, only to unpack apitrace's archive on the desktop).
+
+Next, in order (replacing round 5 run 2's list below):
+1. The owner's answer on the version (For the owner): Godot needs OpenGL 3.3, which needs 3.2's 32
+   passed values the host's 31 cannot give without values fetched from storage. bgfx needs 4.3,
+   G9's second part. Until then the programs part of the bar cannot pass, whatever is built here.
+2. bgfx's recording replaying on the real implementations (the glretrace crash above), so that its
+   comparison works when the version allows.
+3. The causes still not read (gap list), cull distances (436 NotSupported), the storage coherence
+   family proven by a test, forced early fragment tests, shared conversions, as round 5 run 2's
+   list says.
+
 G9 round 5 run 2 (2026-11-24): the independent check of G9's first part (the orchestrator's job 77
 at 89db3cd0, run 31's driver) found seven blocking findings and seven minor ones. G9'S FIRST PART
 IS NOT COMPLETE (the statement of run 27 is withdrawn below). Each finding, and what was done:
@@ -401,7 +469,8 @@ run 31's log unless said otherwise):
   a 16-bit depth level written from a buffer" (the WebGPU back end track).
 - dEQP-GLES3 `texture.specification.texsubimage2d_pbo.pbo_bounds_2d` 1: "conflicting usages ...
   RESOURCE and COLOR_TARGET" in one pass. Not yet traced (this track: whether the driver's upload
-  draw reads and writes one texture, or the back end).
+  draw reads and writes one texture, or the back end). Round 5 run 3: it comes after the case's
+  first draws (three slow paths were warned before it); which draw makes it is not yet read.
 - dEQP-GLES3 `fbo.color.tex3d` 2: the WebGPU back end's `PackedTargetQuantised` makes a 2D view of
   a 3D texture ("Invalid texture view dimension `D2` with texture of dimension `D3`"); the WebGPU
   back end track, asked.
@@ -421,8 +490,9 @@ Refused by this track (each refusal named; this track's work):
   their conversions and pipelines would remove most of it. Not built.
 - KHR-GLES31 and -GLES32 `tessellation_shader_tessellation.gl_InvocationID_PatchVerticesIn
   _PrimitiveID` 2: "patches from indices in memory or of single bytes (not built)" (draw.rs).
-- dEQP-GLES3 `vertex_array_objects.all_attributes` 1: "a fetched input without its stream"
-  (draw.rs, the pulled vertex input path). Not yet traced why the stream is missing.
+- dEQP-GLES3 `vertex_array_objects.all_attributes` 1: "a fetched input without its stream". FIXED
+  in round 5 run 3 (b298b5ee: the draw bound the streams of inputs fetched for their offset, not of
+  those fetched for their kind); passes in its group run.
 - KHR-GL33 (not run since round 5 run 2) `clip_distance.coverage` 1: "clip distances read by a fragment program" (the route's
   refusal in direct.rs; WGSL has clip distances as a vertex output only, so they would be passed
   as values). Not built. `clip_distance.functional` 1: the WebGPU back end refuses the vertex
@@ -508,20 +578,33 @@ Not yet traced (this track):
   route the driver needs is the same rectangles without the diamond test. The driver takes neither
   today: this track's (with the shaders track if the rectangle needs a variant of its own).
 - KHR-GLES31 and -GLES32 `gpu_shader5.texture_gather_offset_color_*` 4 (gathers at run-time
-  offsets at a texture's edges) and `gpu_shader5.uniform_blocks_array_indexing` 2.
+  offsets at a texture's edges; round 5 run 3: the gathered values are logged, what the test
+  expects of them not yet read) and `gpu_shader5.uniform_blocks_array_indexing` 2 (round 5 run 3:
+  "Expected Data (-1, -1, 0, 1) Result Data (-1, 1, 0, 1)", one component read from another
+  element of the block array). All 6 pass on the RTX 3080's OpenGL (round 5 run 3).
 - KHR-GL33 (not run since round 5 run 2) `texture_swizzle` formats 55 and 56, targets 7 and 8, 4 Fail (target 8 is the
   multisampled array).
 - KHR-GL33 (not run since round 5 run 2) `transform_feedback.geometry` 1 and `transform_feedback3` `multiple_streams`,
   `skip_components`, `skip_multiple_buffers` 3.
 - KHR-GL33 (not run since round 5 run 2) `texture_size_promotion.functional` 1.
 - dEQP-GLES2 `polygon_offset` `default_render_with_units`, `fixed16_render_with_units` 2, dEQP-GLES3
-  the same and `fixed24_render_with_units` 3.
+  the same and `fixed24_render_with_units` 3: FIXED in round 5 run 3 (abd98862: one OpenGL unit is
+  two host depth steps; the Where it stands section); all 5 pass in its group run.
 - dEQP-GLES31 `geometry_shading.vertex_transform_feedback.capture_vertex_draw_*_overflow
-  _single_buffer` 2.
-- KHR-GLES31 and -GLES32 `texture_buffer.texture_buffer_atomic_functions` 2.
-- dEQP-GLES3 `texture.units.2_units.only_cube.7` 1, dEQP-GLES31
-  `program_interface_query.program_input.resource_list.separable_tess_ctrl.empty` 1, KHR-GLES31
-  `arrays_of_arrays.InteractionFunctionCalls1_var_type_index_8` 1.
+  _single_buffer` 2 (round 5 run 3: "Feedback buffer vertex 0, component 1: unexpected value,
+  expected 1.0, got -1" for the first three vertices: the buffer holds another primitive's values
+  where the first triangle's were expected).
+- KHR-GLES31 and -GLES32 `texture_buffer.texture_buffer_atomic_functions` 2 (the log names no
+  value).
+- dEQP-GLES3 `texture.units.2_units.only_cube.7` 1 (round 5 run 3: "difference = 0.0014732,
+  threshold = 0.001"), dEQP-GLES31
+  `program_interface_query.program_input.resource_list.separable_tess_ctrl.empty` 1 (round 5 run
+  3: the program's input list lacks `gl_InvocationID`, which Mesa's front end lists from what the
+  driver's compiled program reads), KHR-GLES31
+  `arrays_of_arrays.InteractionFunctionCalls1_var_type_index_8` 1 ("Invalid array size was
+  returned", es31cArrayOfArraysTests.cpp:4707).
+- Each case of this list passes on the RTX 3080's OpenGL: the round 5 run 2 check ran them all,
+  and round 5 run 3 ran the five GLES lists' 29 again (all pass) beside this driver.
 
 NotSupported, case by case (the bar asks that every NotSupported case ask for something the
 driver does not report). Read from every case's reason at run 31's driver (the independent check's
@@ -594,6 +677,14 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## For the owner
 
+- The programs part of G9's first bar cannot pass on the RTX 3080 as things stand (round 5 run
+  3): Godot 4.7.2's compatibility renderer asks for an OpenGL 3.3 core context and bgfx's OpenGL
+  renderer (at the rig's commit) for 4.3 core, and the driver reports 3.1 there, by the rule that
+  no version is reported whose minimums are not met (the next item). The comparison is built and
+  runs (How to run); it will compare them as soon as the driver reports their versions. Asked:
+  whether the first part's bar keeps the programs (then it waits on the next item for Godot and
+  on G9's second part for bgfx), or moves them to where those versions are reported.
+
 - KHR-GL33 no longer starts (round 5 run 2), by the rule that no version is reported whose
   minimums are not met. OpenGL 3.2 requires 128 fragment input components (32 values) and 128
   geometry output components. On the RTX 3080 the host is Direct3D 12 through wgpu, which passes
@@ -622,6 +713,18 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   allows, or which of the two the owner wants.
 
 ## How to run
+
+- The programs' comparison (G9 round 5 run 3): scratch `scripts/g9c3-programs.sh <log>
+  [<programs>]` builds Mesa with the driver and runs `crates/wcontainers-opengl/cts/programs-windows.ps1`
+  as one GPU job; `scripts/g9c3-programs-nobuild.sh` the same with the desktop's install as it is.
+  Programs: `bgfx-01-cubes`, `-24-nbody`, `-26-occlusion`, `-35-dynamic`, `-37-gpudrivenrendering`,
+  `-38-bloom`, `godot-platformer-3d-gl`, `godot-platformer-2d-gl` (all when none is named). It
+  fetches its tools once (apitrace, Pillow, py7zr; Licences). Results in
+  `C:\wc\graphics-nir\programs\results\<program>`: `live.log` and `hud\fps` (the live run),
+  `program.trace`, `replay-<implementation>.log`, `comparison.txt` (every frame's pixel counts and
+  verdict), and frames 10, 60, 120 and the driver's furthest frame of each implementation. The
+  rig's programs must be built first (`programs.ps1 -Mode build`, the rig track's).
+  `scripts/g9c3-run.sh` and `scripts/g9c3-lint.sh` are round 5 run 2's under their names.
 
 - G9 round 5 run 2: `scripts/g9c2-run.sh <log> [<lists> [<regexes>]]` is run 31's under its name;
   `scripts/g9c2-lint.sh [<nir test args>]` formats, lints both crates with warnings denied with and
@@ -1057,6 +1160,12 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 round 5 run 3, testing tools on the desktop only, never linked into or shipped with anything:
+  apitrace 14.0 for Windows (MIT, `doc\LICENSE.txt` of its release; its bundled Qt 5 libraries,
+  LGPL, belong to its viewer, which is not used), downloaded at SHA-256
+  32c702683770ba00b06a12a95fe1afdd7d7353cf519adf2073e6433f78147dc3; Pillow 12.0.0 (MIT-CMU), to
+  compare frames; py7zr 1.0.0 (LGPL-2.1-or-later), only to unpack apitrace's 7z archive, which
+  Windows' tar cannot. All under `C:\wc\graphics-nir\tools`.
 - G9 round 5 run 2: the Windows driver's linked files, listed from the build's own dependency
   lists by `crates/wcontainers-nir/mesa/linked-licences-windows.py` (run on the desktop through
   `tools/graphics-rig/remote`; How to run), over the build of run 31's driver; the listing is in
