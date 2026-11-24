@@ -109,6 +109,8 @@ const CONTROL: [Op; 11] = [
     Op::Line,
     Op::NoLine,
 ];
+/// The name the GLSL.std.450 extended instruction set is imported by.
+const GLSL_STD_450: &str = "GLSL.std.450";
 /// GLSL.std.450 instructions reading their operands as signed.
 const GLSL_SIGNED: [GLOp; 6] = [
     GLOp::SAbs,
@@ -227,7 +229,7 @@ pub(crate) fn widen(spirv: &mut dr::Module) -> Result<(), ConvertError> {
     let glsl = spirv
         .ext_inst_imports
         .iter()
-        .find(|i| i.operands.first() == Some(&Operand::LiteralString("GLSL.std.450".into())))
+        .find(|i| i.operands.first() == Some(&Operand::LiteralString(GLSL_STD_450.into())))
         .and_then(|i| i.result_id);
     let laid_out = spirv
         .annotations

@@ -1897,6 +1897,7 @@ const ABSENT_EXTENSIONS: [(&str, &str); 3] = [
 /// works on, which naga's reader makes a compare-exchange loop.
 fn atomic_signedness_differs(spirv: &rspirv::dr::Module) -> bool {
     use spirv::Op;
+    use staged::SIGNEDNESS;
     use std::collections::HashMap;
     const SIGNED: [Op; 2] = [Op::AtomicSMin, Op::AtomicSMax];
     const UNSIGNED: [Op; 2] = [Op::AtomicUMin, Op::AtomicUMax];
@@ -1909,8 +1910,7 @@ fn atomic_signedness_differs(spirv: &rspirv::dr::Module) -> bool {
         Op::ImageTexelPointer,
         Op::FunctionParameter,
     ];
-    /// `OpTypeInt`'s signedness, after its width; an atomic instruction's pointer.
-    const SIGNEDNESS: usize = 1;
+    /// An atomic instruction's pointer.
     const ATOMIC_POINTER: usize = 0;
     // Signedness of integer types, pointee of pointer types, type of each result.
     let mut signed = HashMap::new();

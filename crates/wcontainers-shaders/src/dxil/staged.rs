@@ -34,6 +34,8 @@ const FUNCTION_TYPE: usize = 1;
 /// `OpTypePointer`'s and `OpVariable`'s storage class, and the pointer's pointee.
 pub(super) const STORAGE_CLASS: usize = 0;
 pub(super) const POINTEE: usize = 1;
+/// `OpTypeInt`'s signedness, after its width.
+pub(super) const SIGNEDNESS: usize = 1;
 /// A compute program's one invocation a group.
 const LOCAL_SIZE: [u32; 3] = [1, 1, 1];
 
