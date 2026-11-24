@@ -5712,19 +5712,12 @@ code	crates/wcontainers-arm64/src/vector.rs	int	emit	8
 code	crates/wcontainers-arm64/src/vector.rs	int	low_bytes	16
 code	crates/wcontainers-arm64/src/vector.rs	int	low_bytes	8
 code	crates/wcontainers-arm64/src/vector.rs	int	narrow	8
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bias_step	16
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bias_step	24
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bound_as_target	22
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::bound_as_target	47
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::check_indirect	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::clear_uav	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_resource	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_structure_count	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_structure_count	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_structure_count	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_subresource_region	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::copy_subresource_region	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::dispatch	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::draw_once	4
@@ -5735,19 +5728,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::indexed_strip	
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::pulled_stream	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_dispatch	12
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_dispatch	12
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_dispatch	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_dispatch	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_dispatch	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_dispatch	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	20
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	4
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::read_indirect	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::refresh	3
@@ -5772,7 +5752,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::stage_variant	
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::stage_variant	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::stage_variant	5
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::try_dispatch	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::try_dispatch	3
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::unmap	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	Device<B>::update_set	4
@@ -5792,8 +5771,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	adjacency_indices	6
 code	crates/wcontainers-direct3d-11/src/context.rs	int	adjacency_indices	6
 code	crates/wcontainers-direct3d-11/src/context.rs	int	adjacency_indices	6
 code	crates/wcontainers-direct3d-11/src/context.rs	int	even	3
-code	crates/wcontainers-direct3d-11/src/context.rs	int	indirect_bytes	16
-code	crates/wcontainers-direct3d-11/src/context.rs	int	indirect_bytes	20
 code	crates/wcontainers-direct3d-11/src/context.rs	int	layout_desc	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	layout_desc	32
 code	crates/wcontainers-direct3d-11/src/context.rs	int	layout_desc	32
@@ -5814,7 +5791,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	int	split_depth_stencil	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	uint_element	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	window_of	16
 code	crates/wcontainers-direct3d-11/src/context.rs	int	window_of	16
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::bias_step	"a depth bias clamp on float depth without the back end's"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::clear_uav	"a float clear of a typed buffer view"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::clear_uav	"a float clear of an unordered access view of an integer format"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_early_per_primitive	"early depth-stencil tests per primitive of indirect draws"
