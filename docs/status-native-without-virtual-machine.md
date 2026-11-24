@@ -3,6 +3,52 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 4 (2026-11-24): the cut at the base, pieces of several instructions, displaced code
+
+Scratch w2/run4 (check.sh and check2.sh with `SEEDS`, `CASES`, `PIECES`; pieces.sh; check-vm.sh; mutate-base.sh,
+mutate-pieces.sh, mutate-displaced.sh; outputs *-arm.out; `tree` is a git repository of HEAD plus this run's files,
+sent because another track's uncommitted edit of the unicorn executor stopped the shared tree's build). Graviton4.
+- Form I's executor is still not built: no primitive has landed, and the rule of 2026-11-24 (no new unsafe)
+  stands (Needs a primitive, "Form I"). Nothing of this run adds unsafe code.
+- Built, fa9cc61d2: an access at its base with no offset is cut by its own addressing, `[base, wA, uxtw]`, no `add`
+  (where no page probe needs the host address, as the register-offset cut). The unit test
+  `an_access_at_its_base_is_made_register_offset_uxtw` makes every presented form of the two immediate-offset
+  groups with an immediate of 0 (16 drawn words each) and checks the made word's group, access kind, register,
+  decoded address `[x24, w23, uxtw]`, size and direction, and that an immediate of 1 is refused. The in-process
+  test now draws a quarter of its words with the immediate zero (`at_base` in its tally: about 5,100 of 8,880).
+  Indexing the cut by xzr instead of the base register in the remote copy fails 6 forms at 4 cases a form
+  (check-arm.out), so the cut path is the one run.
+- Built, d20137a45 and this run's last commit: the in-process test runs pieces of 2 to 8 instructions
+  (`in_process_pieces_of_several_instructions_agree_with_the_reference`, knob `WCHP_IN_PROCESS_PIECES`, default
+  1,000), drawn as the single instructions are, translated as one piece (`LookAhead::Bounded`) and run against the
+  reference one instruction at a time with every word in the guest's code page: the piece must stop at the
+  instruction where the reference stops, with its outcome and resolved state, or end with the reference's state.
+  Seeds 1 to 6 at 8,000 pieces pass (pieces4-arm.out: about 220 of 8,000 run to their end, about 2,600 stop after
+  their first instruction, the rest at it). Its first run found a fault of the test (the reference had only its own
+  instruction in the code page), none of the translator. An access through a stack pointer an earlier instruction
+  left unaligned is the emulator's limit (it makes no SA0 check): only the floor's misaligned call is checked
+  there, counted `stack_unaligned` (about 90 a seed at 4,000), so sp not 16-aligned is now reached and checked
+  where the translated code calls the floor.
+- Built: displaced code (rule e), `Way::InProcess { slot, displaced: true }` (plan 3.2 "As built for I"). The test
+  `displaced_code_agrees_with_the_reference_and_stays_in_its_window` runs every form from a stack pointer outside the
+  window: just above it, just below 0, far outside, tagged over a window address, and at the host addresses of the
+  translated code, the register page and the other slot's stack, where an unchecked access through sp would succeed
+  silently. Seeds 1 to 6 at 16 cases a form pass (displaced2-arm.out: 8,880 cases a seed, about 3,700 outside
+  marks resolved to the instruction's fault, about 380 tagged). With the displaced code keeping sp accesses as
+  ordinary code does, in the remote copy, 340 forms fail at 4 cases a form (strays outside the window, wrong faults,
+  silent reads of the planted addresses).
+- Found by the displaced test, a fault of the test, not of the translator: an access whose first byte is exactly
+  the window's top (`ldtrsh x24, [x3, #237]` with x3 = 0xffffff13) faults at the mark's own host address, which
+  the stop crate already resolves as the guest's fault at 2^32; the test now accepts that case and checks the
+  resolved address.
+- Verdicts at the end, Graviton4, 17:00 to 17:20 UTC, load 10 to 17 on 96 cores: clippy with warnings denied clean
+  on the arm64, translator, stop, host-process, VM executor and inside crates (all targets); the arm64, translator,
+  guest-cpu and stop crates' tests pass; the in-process test's three functions pass for seeds 1 to 6
+  (displaced2-arm.out); the VM executor's seven tests with KVM: check-vm-arm.out (after the at-base cut) and
+  check-vm2-arm.out (after displaced code).
+- Next without unsafe: the floor's part of rule e is the executor's; what is left is the wrapping form (the owner's
+  decision 2) and collisions in the test (the meaning's choice, which the emulator does not make).
+
 ## W2 run 3 (2026-11-24): the in-process way's stops resolved
 
 Scratch w2/run3 (check.sh with `SEEDS`, `CASES`, `MORE`; check-vm.sh; mutate.sh; outputs *-arm.out; `tree` is a git
@@ -1662,10 +1708,11 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   primitive); when they land, each use here becomes a call of one.
 - W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2), and its stops
   resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
-  access is cut by its own addressing (W2 run 3). Next without unsafe: the same cut for an access with no offset
-  (W2 run 3's last item says what the encoder needs), then longer pieces in the test. The in-process executor itself waits for the primitives named under Needs a primitive, "Form I"; with it
-  come the floor's handling of `Outside`, `Displaced` and `Probed`, the displaced mode (rule e) and every measured
-  item of W2's bar.
+  access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
+  checked, and displaced code (rule e) is built and checked (W2 run 4). The in-process executor itself waits for
+  the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
+  `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
+  when sp is back in the window, never link displaced pieces) and every measured item of W2's bar.
 - W3 now also carries the x86 native output track's in-process tests (interface-changes.md, 2026-11-24): the link,
   register-group and hostile-guest tests in the in-process way, the ymm upper halves across a call into the inside,
   the X9 programs natively in that way with figures, and 0x67 string instructions through the inside
@@ -1950,8 +1997,20 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   `field::S` and `form::LDR_64_REGISTER` are new. The machine and process ways' output is unchanged. Verified on
   Graviton4 (W2 run 3 above): the arm64, translator, guest-cpu and stop crates' tests and the VM executor's seven
   tests pass.
-- For the translator track, not done: the InProcess way's wrapping form, and its cut by the access's own
-  addressing for an access with no offset.
+- fa9cc61d2 (W2 run 4), crates/wcontainers-arm64 (carry.rs, encode.rs), the in-process way only: an access at its
+  base with no offset (an immediate of 0) is cut by `[base, wA, uxtw]` by the register-offset form of the same
+  access, found in Arm's table by its `size`, `VR` and `opc` fields (`encode::register_offset_at_base`;
+  `field::SIZE`, `VR`, `OPC` are new); a prefetch whose operation the register-offset form gives to another
+  instruction (RPRFM) is refused, and prefetches are dropped by the native output anyway. The machine and process
+  ways' output is unchanged. Verified on Graviton4 (W2 run 4 below): the arm64, translator, guest-cpu and stop
+  crates' tests and the VM executor's seven tests pass.
+- W2 run 4, crates/wcontainers-arm64 (way.rs, carry.rs) and crates/executor/implementation/arm64-stop: `Way::InProcess`
+  has a second field, `displaced: bool` (rule e's code: the hardware sp holds the guest's own; every access through
+  it checked and cut; exits to `way::DISPLACED_SLOTS`, slot 0's never-mapped table); `Way::stack_base` is new. The
+  stop crate's `in_process::{resolve, interrupted, rejoin, set_register}` take the `Way` instead of a slot, and
+  the guest sp is the host's less `stack_base`. The machine and process ways' output and the stop crate's answers
+  for them are unchanged. Verified on Graviton4 (W2 run 4 below).
+- For the translator track, not done: the InProcess way's wrapping form.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
   for `ThreadOrdering::Parallel`; calling the stopper (plan 8 item 3) from `suspend_tasks`, `suspend_threads`,
@@ -2030,6 +2089,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## Departures from the plan
 
+- W2 run 4: rule e keeps a displaced thread's stack pointer in the hardware sp, not in its register block. No
+  access goes through it in displaced code and every handler runs on its own signal stack, so the guest's own value
+  there is harmless, and the instructions that read or write sp as a value stay one instruction each (with the
+  block, each would need a load or a store and a scratch register). Its exits go to slot 0's slot table, never
+  mapped, so a displaced piece can never fall into ordinary code.
 - W1 round 8 run 1: the window cache of plan 4.2 is gone. The embedder reads and writes the stubs' memfds by position
   (files.rs, rustix's `pread` and `pwrite`) and maps no guest memory; the code area is written by `pwrite` and mapped
   only for its cache maintenance. Five of the crate's unsafe uses went with the cache and five more with memmap2

@@ -204,7 +204,8 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
      computes the new guest value into u, checks it as an access address is checked, and then writes `add sp, base,
      wU, uxtw` (cut to the window, as an access is); a value outside the window makes the thread displaced (e).
      (e) **Displaced**: the guest's sp is outside its window, which Linux allows until an access through it. The
-     floor keeps the guest's sp in the thread's register block and runs the thread one guest instruction at a time,
+     floor keeps the guest's sp in the thread's register block (as built, in the hardware sp: "As built for I"
+     below) and runs the thread one guest instruction at a time,
      each translated alone with sp read from and written to the block and every access through it checked like any
      other register (so it faults at the guest address Linux faults at). When an instruction brings sp back inside
      the window, the thread re-enters ordinary translated code. A slow path: counted "stack pointer outside its
@@ -252,8 +253,9 @@ at the window's base plus 2^32 (`way::OUTSIDE`, unmapped by 3.1) out of line: th
 instruction's own fault (the access's address from its operand) or a stack pointer to take displaced (e), by the
 span's instruction; no new call code. An access with an immediate is `add t, base, wA, uxtw` then the copied word
 on t; a register offset's sum, once checked, is cut by the access itself, `[base, wT, uxtw]` (the measured form;
-W2 run 3), except where a page probe in front of it needs the host address, which then becomes `add t, base, wT,
-uxtw; <access> [t, xzr, <its extend>]`; a written back base gets its new value in u before the access and from
+W2 run 3), and so is an access at its base with no offset, `[base, wA, uxtw]` for `[xA]` (no `add`; W2 run 4,
+by the register-offset form of the same access in Arm's table), except where a page probe in front of it needs
+the host address, which then becomes `add t, base, wT, uxtw; <access> [t, xzr, <its extend>]`; a written back base gets its new value in u before the access and from
 u after it, with a fix-up between, so the copied word's own writeback lands on t and a base that collides with a
 data register needs no other rule. A literal outside the window is known when translated. Exclusives keep and
 compare guest addresses and access through u. The direct exits' slot table is the slot's (`2^46 | k << 35`), so
@@ -263,9 +265,17 @@ guest sp is the host's less the base, the guest x15 and x24 the two words after 
 the same way; a read of the mark is the access's own fault at its first byte (`Outside`, whose read or write the floor
 takes from the instruction, as the mark is a read) where the access's address before or after its immediate is
 outside the window, else a stack pointer leaving it (`Displaced`, the state before the instruction); a fault or an
-alignment fault of a rule (c) probe is `Probed`, the state after the instruction. Not built: the displaced mode (e)
-and the floor itself, the cut by the access's own addressing for an access with no offset (`[base, wA, uxtw]` for
-`[xA]`, which needs the encoder to turn an immediate form into a register-offset one), and the wrapping form.
+alignment fault of a rule (c) probe is `Probed`, the state after the instruction. Displaced code (rule e; W2 run 4,
+`Way::InProcess { slot, displaced: true }`, a cache key of its own): the hardware sp holds the guest's own stack
+pointer, not the host's (no access goes through it, and handlers run on their own signal stacks), so a read or
+write of sp as a value is the instruction itself, and every access through sp is made as through any other
+register (`mov t, sp`, the test SA0 would make, the check and the cut; a written back sp from u by `add sp, u,
+#0`). Its direct and register exits go to slot 0's table (`way::DISPLACED_SLOTS`), which no window has and which
+is never mapped, so every exit of a displaced piece reaches the floor as a fault there and never ordinary code,
+which would take sp as the host's; displaced pieces are never linked. The stop crate takes the way: the guest sp is
+the host's less `Way::stack_base` (0 when displaced), and displaced code makes no probe. The floor decides, after
+each displaced instruction, whether sp is back in the window (rejoin with the ordinary way) or not. Not built: the
+floor itself, and the wrapping form.
 The slot table's base and reach, the entries' address and size are `wcontainers_arm64::way`'s constants, which the
 host-process layout asserts; stops resolve through `wcontainers-executor-arm64-stop` with the way as a parameter.
 Withheld registers: the VM form's three (count x18, scratch x23, register page x28) in P; two more in I (`base`
