@@ -1066,7 +1066,18 @@ mod record {
                 }
                 Err(_) => None,
             };
-            Ok(Traced {
+            Ok(Self::with_file(inner, file))
+        }
+
+        /// Records `inner`'s calls into the file at `path`, whatever `WEBGL_TRACE` says.
+        pub fn into_file(inner: B, path: &std::path::Path) -> Result<Self, String> {
+            let file =
+                std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(Self::with_file(inner, Some(file)))
+        }
+
+        fn with_file(inner: B, file: Option<std::fs::File>) -> Self {
+            Traced {
                 inner,
                 table: Table::default(),
                 file,
@@ -1074,7 +1085,7 @@ mod record {
                 next: 0,
                 scratch: Vec::new(),
                 helpers: Helpers::default(),
-            })
+            }
         }
 
         fn id(&mut self) -> H {
