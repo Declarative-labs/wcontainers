@@ -770,8 +770,11 @@ fn convert<B: Backend>(
     if transform != PositionTransform::default() {
         nir.transform_position(transform);
     }
-    if !variant.nearest.is_empty() {
-        nir.nearest_integer_textures(&variant.nearest);
+    if !variant.nearest.is_empty() && !nir.nearest_integer_textures(&variant.nearest) {
+        return refused(format_args!(
+            "a gather of an integer cube map the program also samples (texels across its faces' \
+             edges not built)"
+        ));
     }
     if !variant.swizzles.is_empty() {
         nir.swizzle_textures(&variant.swizzles);

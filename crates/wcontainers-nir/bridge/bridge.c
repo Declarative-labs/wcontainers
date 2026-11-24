@@ -1152,6 +1152,8 @@ wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle 
 struct nearest_samplers {
    const struct wc_nearest_sampler *data;
    size_t count;
+   /* A gather of a cube map made a 2D array of its faces was rewritten. */
+   bool cube_gathered;
 };
 
 /* The texel `i` of a side of `size` texels lands on, wrapped. */
@@ -1422,8 +1424,10 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
                      glsl_get_sampler_dim(texture->type) == GLSL_SAMPLER_DIM_2D;
    nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
    bool sampled = sampling(tex);
-   if (cube && tex->op == nir_texop_tg4)
+   if (cube && tex->op == nir_texop_tg4) {
+      ((struct nearest_samplers *)data)->cube_gathered = true;
       return cube_layers_gather(b, tex, texture);
+   }
    if (cube && !sampled)
       return cube_layers_query(b, tex);
    uint32_t unit, units;
@@ -1517,13 +1521,14 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
-void
+bool
 wc_nir_nearest_integer_textures(struct nir_shader *nir, const struct wc_nearest_sampler *samplers,
                                 size_t count)
 {
-   struct nearest_samplers s = {samplers, count};
+   struct nearest_samplers s = {samplers, count, false};
    integer_cubes_as_layers(nir, &s);
    nir_shader_instructions_pass(nir, nearest_integer_texture, nir_metadata_control_flow, &s);
+   return !s.cube_gathered;
 }
 
 uint64_t

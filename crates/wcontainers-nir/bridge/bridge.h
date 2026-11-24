@@ -312,8 +312,10 @@ struct wc_nearest_sampler {
 
 /* Every sampling of an integer texture at the units listed made a load of its nearest texel, as
  * OpenGL samples them (the host only loads and gathers them); a cube map or cube map array among
- * them becomes a 2D array of its faces, six a cube, which the driver binds such a view of. */
-void wc_nir_nearest_integer_textures(struct nir_shader *nir,
+ * them becomes a 2D array of its faces, six a cube, which the driver binds such a view of. False
+ * where the program also gathers such a cube: its gathers then read their own face's edge texels
+ * past the edge, not the next face's, which is not built. */
+bool wc_nir_nearest_integer_textures(struct nir_shader *nir,
                                      const struct wc_nearest_sampler *samplers, size_t count);
 
 /* The texture units a program samples integers at (not loads, gathers or queries), a bit each. */

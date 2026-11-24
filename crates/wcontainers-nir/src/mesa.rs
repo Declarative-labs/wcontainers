@@ -222,7 +222,7 @@ unsafe extern "C" {
         nir: *mut NirShader,
         samplers: *const NearestSampler,
         count: usize,
-    );
+    ) -> bool;
     fn wc_nir_integer_sampled_units(nir: *mut NirShader) -> u64;
     fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
     fn wc_nir_generic_end(nir: *const NirShader) -> u32;
@@ -459,8 +459,11 @@ impl Nir {
 
     /// Every sampling of an integer texture at the units of `samplers` made a load of its
     /// nearest texel, as OpenGL samples them; a sampled cube map or cube map array becomes a 2D
-    /// array of its faces, six a cube, which the driver binds such a view of.
-    pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) {
+    /// array of its faces, six a cube, which the driver binds such a view of. False where the
+    /// program also gathers such a cube: its gathers then read their own face's edge texels past
+    /// the edge, not the next face's, which is not built.
+    #[must_use]
+    pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) -> bool {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }
     }

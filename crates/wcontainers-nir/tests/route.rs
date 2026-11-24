@@ -612,7 +612,8 @@ fn an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces() {
         .unwrap()
         .pop()
         .unwrap();
-    stage.nir.nearest_integer_textures(&[NearestSampler {
+    // Its gather, of a cube made a 2D array of faces, reads no texel of the next face: reported.
+    let all_built = stage.nir.nearest_integer_textures(&[NearestSampler {
         unit: 0,
         wrap: [Wrap::Repeat; naga::VectorSize::Tri as usize],
         mipmapped: true,
@@ -620,6 +621,7 @@ fn an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces() {
         max_lod: f32::MAX.to_bits(),
         border: [0; naga::VectorSize::MAX],
     }]);
+    assert!(!all_built);
     stage.nir.to_common_form(Stage::Fragment).unwrap();
     let module = wcontainers_nir::direct::module(&mut stage.nir).unwrap();
     wcontainers_nir::spirv::validate(&module).unwrap();
@@ -888,7 +890,7 @@ fn an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_ever
         border: [0; naga::VectorSize::MAX],
     };
     let mut alike = stage().nir;
-    alike.nearest_integer_textures(&[sampler(0), sampler(1)]);
+    assert!(alike.nearest_integer_textures(&[sampler(0), sampler(1)]));
     let key = alike.key().unwrap();
     let bindings = alike.to_common_form(Stage::Fragment).unwrap();
     let routed = wcontainers_nir::direct::route(&mut alike).unwrap();
@@ -902,7 +904,7 @@ fn an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_ever
         wrap: [Wrap::ClampToEdge; naga::VectorSize::Tri as usize],
         ..sampler(1)
     };
-    unlike.nearest_integer_textures(&[sampler(0), clamped]);
+    assert!(unlike.nearest_integer_textures(&[sampler(0), clamped]));
     unlike.to_common_form(Stage::Fragment).unwrap();
     assert!(wcontainers_nir::direct::route(&mut unlike).is_err());
 }
