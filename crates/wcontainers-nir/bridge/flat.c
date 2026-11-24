@@ -356,6 +356,8 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
       return WC_BUILTIN_TESS_LEVEL_OUTER;
    case VARYING_SLOT_TESS_LEVEL_INNER:
       return WC_BUILTIN_TESS_LEVEL_INNER;
+   case VARYING_SLOT_PNTC:
+      return WC_BUILTIN_POINT_COORD;
    case VARYING_SLOT_COL0:
    case VARYING_SLOT_COL1:
    case VARYING_SLOT_BFC0:

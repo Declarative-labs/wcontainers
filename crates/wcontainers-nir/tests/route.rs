@@ -777,3 +777,90 @@ fn a_fragment_programs_layer_is_a_flat_input_the_driver_places() {
         });
     assert_eq!(layer, Some(Some(naga::Interpolation::Flat)));
 }
+
+const SIZED_POINTS: &str = "#version 450
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 colour;
+layout(location = 1) flat out ivec2 cell;
+void main() {
+    gl_Position = at;
+    gl_PointSize = at.z;
+    colour = at.wzyx;
+    cell = ivec2(at.xy);
+}
+";
+
+const SPRITE: &str = "#version 450
+layout(location = 0) in vec4 colour;
+layout(location = 1) flat in ivec2 cell;
+layout(location = 0) out vec4 result;
+void main() {
+    result = colour * vec4(gl_PointCoord, float(cell.x), 1.0);
+}
+";
+
+const CLIPPED_POINTS: &str = "#version 450
+layout(location = 0) in vec4 at;
+void main() {
+    gl_Position = at;
+    gl_PointSize = at.z;
+    gl_ClipDistance[0] = at.w;
+}
+";
+
+#[test]
+fn points_are_drawn_as_squares_passing_their_coordinate_after_every_location() {
+    let mut stages = Nir::from_glsl(&[(Stage::Vertex, SIZED_POINTS), (Stage::Fragment, SPRITE)])
+        .unwrap()
+        .into_iter()
+        .map(|s| s.nir);
+    let (mut vertex, mut fragment) = (stages.next().unwrap(), stages.next().unwrap());
+    let at = vertex.generic_end().max(fragment.generic_end());
+    let locations = 2;
+    assert_eq!(at, locations);
+    fragment.to_common_form(Stage::Fragment).unwrap();
+    let module = wcontainers_nir::direct::module(&mut fragment).unwrap();
+    let coord = module.entry_points[0]
+        .function
+        .arguments
+        .iter()
+        .find_map(|a| match a.binding {
+            Some(naga::Binding::Location {
+                location: wcontainers_nir::direct::POINT_COORD_INPUT,
+                interpolation,
+                ..
+            }) => Some(interpolation),
+            _ => None,
+        });
+    assert_eq!(coord, Some(Some(naga::Interpolation::Linear)));
+    let largest = 64.0;
+    assert!(vertex.point_size_also_at(at));
+    let mut square = vertex.point_square(at, largest).unwrap();
+    square.uniform_blocks_as_words();
+    // A geometry program runs as the stage helper's compute work.
+    let bindings = square.to_common_form(Stage::Compute).unwrap();
+    // The block of the size, the step of half a pixel and the coordinate's direction.
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Uniform)
+            .count(),
+        1
+    );
+    assert_eq!(square.geometry_vertices_out(), 4);
+    let key = square.key().unwrap();
+    let routed = wcontainers_nir::direct::route(&mut square).unwrap();
+    let unnamed = wcontainers_gpu::VariantKey::default();
+    let converted = wcontainers_nir::direct::geometry(routed, bindings, &unnamed, &key).unwrap();
+    for form in &converted.modules {
+        wcontainers_nir::spirv::validate(&form.module).unwrap();
+    }
+    let mut clipped = Nir::from_glsl(&[(Stage::Vertex, CLIPPED_POINTS)])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .nir;
+    let at = clipped.generic_end();
+    assert!(clipped.point_size_also_at(at));
+    assert!(clipped.point_square(at, largest).is_none());
+}

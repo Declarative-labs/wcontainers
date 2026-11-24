@@ -41,6 +41,17 @@ pub const TEXEL_LAYOUT_WORDS: usize = 5;
 /// moves it to where a geometry program's pass-through passes the layer it names, or replaces it
 /// with zero where no earlier stage names one.
 pub const NAMED_LAYER_INPUT: u32 = u32::MAX;
+/// The location a fragment program's `gl_PointCoord` input is routed at, interpolated without
+/// perspective: the driver moves it to where a point's square passes it, or replaces it with the
+/// centre's coordinate where points are drawn as one pixel.
+pub const POINT_COORD_INPUT: u32 = NAMED_LAYER_INPUT - 1;
+const POINT_COORD_BINDING: Binding = Binding::Location {
+    location: POINT_COORD_INPUT,
+    interpolation: Some(Interpolation::Linear),
+    sampling: Some(Sampling::Center),
+    blend_src: None,
+    per_primitive: false,
+};
 const TEXEL_LAYOUT_ROWS: u32 = TEXEL_LAYOUT_WORDS.div_ceil(VectorSize::Quad as usize) as u32;
 /// The source of a compare-and-swap holding the value compared (after the pointer); the value
 /// stored follows it, and is the only one of the other atomics.
@@ -148,6 +159,7 @@ enum FlatBuiltIn {
     PrimitiveId,
     TessLevelOuter,
     TessLevelInner,
+    PointCoord,
     Other,
 }
 
@@ -1749,6 +1761,16 @@ impl Builder<'_> {
     }
 
     fn builtin(&mut self, builtin: BuiltIn, inner: TypeInner) -> Handle<Expression> {
+        self.argument(builtin, Binding::BuiltIn(builtin), inner)
+    }
+
+    /// The entry point's argument for `builtin`, bound at `binding`, made the first time.
+    fn argument(
+        &mut self,
+        builtin: BuiltIn,
+        binding: Binding,
+        inner: TypeInner,
+    ) -> Handle<Expression> {
         if let Some(&(_, h)) = self.builtins.iter().find(|(b, _)| *b == builtin) {
             return h;
         }
@@ -1757,7 +1779,7 @@ impl Builder<'_> {
         self.function.arguments.push(FunctionArgument {
             name: None,
             ty,
-            binding: Some(Binding::BuiltIn(builtin)),
+            binding: Some(binding),
         });
         let h = self.add(Expression::FunctionArgument(index));
         self.builtins.push((builtin, h));
@@ -1837,6 +1859,16 @@ impl Builder<'_> {
                     blend_src: None,
                     per_primitive: false,
                 }
+            }
+            FlatBuiltIn::PointCoord
+                if self.stage == ShaderStage::Fragment && var.mode == VarMode::Input =>
+            {
+                POINT_COORD_BINDING
+            }
+            FlatBuiltIn::PointCoord => {
+                return Err(unsupported(format_args!(
+                    "gl_PointCoord outside a fragment program"
+                )));
             }
             FlatBuiltIn::Layer | FlatBuiltIn::ViewportIndex | FlatBuiltIn::PrimitiveId => {
                 return Err(unsupported(format_args!(
@@ -3557,6 +3589,14 @@ impl Builder<'_> {
                 };
                 let (expr, _) = self.whole(i.src[0].def, Float)?;
                 let e = self.add(Expression::Derivative { axis, ctrl, expr });
+                self.set(i, Value::Expr(e, Float));
+            }
+            Intrinsic::LoadPointCoord if self.stage == ShaderStage::Fragment => {
+                let inner = TypeInner::Vector {
+                    size: VectorSize::Bi,
+                    scalar: Scalar::F32,
+                };
+                let e = self.argument(BuiltIn::PointCoord, POINT_COORD_BINDING, inner);
                 self.set(i, Value::Expr(e, Float));
             }
             Intrinsic::LoadPointCoord => self.system_value(i, BuiltIn::PointCoord, Float)?,

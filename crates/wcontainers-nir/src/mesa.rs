@@ -223,6 +223,9 @@ unsafe extern "C" {
     );
     fn wc_nir_integer_sampled_units(nir: *mut NirShader) -> u64;
     fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
+    fn wc_nir_generic_end(nir: *const NirShader) -> u32;
+    fn wc_nir_point_size_also_at(nir: *mut NirShader, at: u32) -> bool;
+    fn wc_nir_point_square(vs: *const NirShader, at: u32, largest: f32) -> *mut NirShader;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -451,6 +454,34 @@ impl Nir {
     pub fn stream_point_size_at_a_location(&mut self) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_stream_point_size_at_a_location(self.0) }
+    }
+
+    /// Where the generic locations a fragment program reads, or another stage's program writes,
+    /// end.
+    pub fn generic_end(&self) -> u32 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_generic_end(self.0) }
+    }
+
+    /// A vertex program's point size also written at the generic location `at`; false where it
+    /// writes none.
+    pub fn point_size_also_at(&mut self, at: u32) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_point_size_also_at(self.0, at) }
+    }
+
+    /// A geometry program drawing each point of this vertex program as a square of two triangles
+    /// (`SlowPath::PointsAsQuads`), each corner with every output and `gl_PointCoord` at the
+    /// generic location `at`. Its size is the point size the program also writes at `at`
+    /// ([`Self::point_size_also_at`]), clamped to 1..`largest`, or else the first word of uniform
+    /// block 0, whose next three are half a pixel's clip-space length over w in x and in y (signed
+    /// as the viewport's scale) and the direction of `gl_PointCoord`'s t (1 where it grows with the
+    /// rows, -1 where it falls). `None` for a program writing clip distances or outputs at offsets
+    /// known only when run.
+    pub fn point_square(&self, at: u32, largest: f32) -> Option<Nir> {
+        // SAFETY: self.0 is a live shader; the result is a new shader or null.
+        let square = unsafe { wc_nir_point_square(self.0, at, largest) };
+        (!square.is_null()).then_some(Nir(square))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the

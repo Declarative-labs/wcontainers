@@ -328,6 +328,20 @@ struct wc_stream_output {
  * stream) also written at a location no output takes, which the stream names instead. */
 void wc_nir_stream_point_size_at_a_location(struct nir_shader *nir);
 
+/* The generic slots a fragment program reads, or another stage's program writes, end here. */
+uint32_t wc_nir_generic_end(const struct nir_shader *nir);
+/* A vertex program's point size also written at the generic slot `at`; false where it writes
+ * none. */
+bool wc_nir_point_size_also_at(struct nir_shader *nir, uint32_t at);
+/* A geometry program drawing each point of `vs` as a square of two triangles (the slow path
+ * PointsAsQuads), each corner with every output of `vs` and gl_PointCoord at the generic slot
+ * `at`. Its size is the point size `vs` also writes at `at` (`wc_nir_point_size_also_at`),
+ * clamped to 1..`largest`, or else uniform block 0's first word; the block's next words are the
+ * clip-space step of half a pixel over w in x and y and gl_PointCoord's t direction (1 where t
+ * grows with the rows, -1 where it falls). NULL for a program writing clip distances, or outputs
+ * at offsets known only when run. */
+struct nir_shader *wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest);
+
 /* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
  * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,
  * or UINT32_MAX when one is a value the route places neither at a location nor as the position. */
