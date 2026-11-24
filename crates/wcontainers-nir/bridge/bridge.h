@@ -359,6 +359,12 @@ struct nir_shader *wc_nir_point_square(const struct nir_shader *vs, uint32_t at,
  * than one stream. */
 struct nir_shader *wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest,
                                            uint32_t block);
+/* A program that reads or writes storage buffers or images. */
+bool wc_nir_uses_storage(const struct nir_shader *nir);
+/* A geometry program passing each primitive of the evaluation program `tes` on unchanged (its
+ * points, lines or triangles, every output as written), so that `tes` runs before it. NULL for
+ * another stage, or a program writing outputs at offsets known only when run. */
+struct nir_shader *wc_nir_pass_through_geometry(const struct nir_shader *tes);
 
 /* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
  * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,

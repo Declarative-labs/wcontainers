@@ -477,10 +477,12 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
         .min(PIPE_MAX_SHADER_IMAGES)
         .min(SlotKind::Storage.slots() - buffers);
     // Geometry and control programs run as compute work in the stage helper (`GeometryAsCompute`,
-    // `TessellationAsCompute`), which reads and writes storage as compute programs do.
+    // `TessellationAsCompute`), which reads and writes storage as compute programs do; an
+    // evaluation program using storage too, before a pass-through geometry program
+    // (`VertexStorageAsCompute`).
     if matches!(
         stage,
-        MESA_SHADER_COMPUTE | MESA_SHADER_GEOMETRY | MESA_SHADER_TESS_CTRL
+        MESA_SHADER_COMPUTE | MESA_SHADER_GEOMETRY | MESA_SHADER_TESS_CTRL | MESA_SHADER_TESS_EVAL
     ) {
         caps.max_shader_buffers = buffers;
         caps.max_shader_images = images;

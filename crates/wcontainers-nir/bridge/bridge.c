@@ -2486,6 +2486,83 @@ wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest,
    return nir;
 }
 
+bool
+wc_nir_uses_storage(const struct nir_shader *nir)
+{
+   if (nir->info.num_ssbos || nir->info.num_images)
+      return true;
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ssbo | nir_var_image)
+      return true;
+   return false;
+}
+
+struct nir_shader *
+wc_nir_pass_through_geometry(const struct nir_shader *tes)
+{
+   if (tes->info.stage != MESA_SHADER_TESS_EVAL)
+      return NULL;
+   nir_shader *lowered = nir_shader_clone(NULL, tes);
+   wc_nir_lower_io(lowered);
+   nir_shader_gather_info(lowered, nir_shader_get_entrypoint(lowered));
+   struct written_slots *written = calloc(1, sizeof(*written));
+   if (!written) {
+      ralloc_free(lowered);
+      return NULL;
+   }
+   nir_shader_intrinsics_pass(lowered, note_written, nir_metadata_all, written);
+   ralloc_free(lowered);
+   if (written->indirect) {
+      free(written);
+      return NULL;
+   }
+   enum mesa_prim in, out;
+   if (tes->info.tess.point_mode) {
+      in = MESA_PRIM_POINTS;
+      out = MESA_PRIM_POINTS;
+   } else if (tes->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES) {
+      in = MESA_PRIM_LINES;
+      out = MESA_PRIM_LINE_STRIP;
+   } else {
+      in = MESA_PRIM_TRIANGLES;
+      out = MESA_PRIM_TRIANGLE_STRIP;
+   }
+   const unsigned vertices = mesa_vertices_per_prim(in);
+
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, tes->options, "pass-through");
+   nir_shader *nir = b.shader;
+   nir->info.io_lowered = true;
+   nir->info.gs.input_primitive = in;
+   nir->info.gs.output_primitive = out;
+   nir->info.gs.vertices_in = vertices;
+   nir->info.gs.vertices_out = vertices;
+   nir->info.gs.invocations = 1;
+   nir->info.gs.active_stream_mask = 1;
+   for (unsigned v = 0; v < vertices; v++) {
+      nir_def *vertex = nir_imm_int(&b, v);
+      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+         const struct written_slot *s = &written->slots[slot];
+         if (slot == VARYING_SLOT_EDGE)
+            continue;
+         nir_def *offset = nir_imm_int(&b, s->offset);
+         u_foreach_bit(c, s->components) {
+            nir_def *value = nir_load_per_vertex_input(
+               &b, 1, nir_alu_type_get_type_size(s->types[c]), vertex, offset, .component = c,
+               .dest_type = s->types[c], .io_semantics = s->semantics);
+            nir_store_output(&b, value, offset, .component = c, .src_type = s->types[c],
+                             .io_semantics = s->semantics);
+         }
+      }
+      nir_emit_vertex(&b, 0);
+   }
+   nir_end_primitive(&b, 0);
+   free(written);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_in | nir_var_shader_out);
+   nir_validate_shader(nir, "pass-through");
+   return nir;
+}
+
 uint32_t
 wc_nir_stream_outputs(const nir_shader *nir, struct wc_stream_output *outputs, uint32_t capacity,
                       uint32_t *strides, uint32_t buffers)

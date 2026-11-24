@@ -384,6 +384,10 @@ pub struct Shader {
     /// A geometry program writing `gl_Layer`: the location after its outputs, where its
     /// pass-through passes the layer it names to the fragment program.
     pub named_layer: Option<u32>,
+    /// An evaluation program using storage: the geometry program drawn after it with no
+    /// geometry program bound, so that it runs as compute work, which writes storage
+    /// (`VertexStorageAsCompute`); or why none is made.
+    pub pass_through: Result<Option<Box<Shader>>, &'static str>,
 }
 
 fn factor(f: pipe_blendfactor) -> BlendFactor {
@@ -1056,6 +1060,38 @@ fn create_shader<B: Backend>(
         .key()
         .unwrap_or_else(|e| refuse(format_args!("a program whose content has no key: {e}")));
     driver.shader_made(id);
+    // WebGPU writes no storage from a vertex program, which an evaluation program is drawn as
+    // without a geometry program after it.
+    let pass_through = if stage == Stage::TessEvaluation && nir.uses_storage() {
+        match nir.pass_through_geometry() {
+            Some(geometry) => {
+                let id = geometry.key().unwrap_or_else(|e| {
+                    refuse(format_args!(
+                        "a pass-through program whose content has no key: {e}"
+                    ))
+                });
+                driver.shader_made(id);
+                Ok(Some(Box::new(Shader {
+                    stage: Stage::Geometry,
+                    id,
+                    named_layer: geometry.named_layer_location(),
+                    nir: geometry,
+                    streamed: streamed.clone(),
+                    reads_sample_positions: false,
+                    writes_sample_mask: false,
+                    fetches_target: false,
+                    formatless_images: 0,
+                    integer_sampled: 0,
+                    pass_through: Ok(None),
+                })))
+            }
+            None => Err(
+                "an evaluation program using storage, writing outputs at offsets known only when run",
+            ),
+        }
+    } else {
+        Ok(None)
+    };
     object(Shader {
         stage,
         id,
@@ -1067,6 +1103,7 @@ fn create_shader<B: Backend>(
         formatless_images,
         integer_sampled,
         named_layer,
+        pass_through,
     })
 }
 
@@ -1188,8 +1225,11 @@ unsafe extern "C" fn delete_shader_state<B: Backend>(pipe: *mut pipe_context, st
     // SAFETY: Mesa passes this driver's context and a shader it made, deleted once.
     let (context, shader) = unsafe { (Context::<B>::of(pipe), drop_object::<Shader>(state)) };
     let screen = context.screen();
-    if !screen.shader_deleted(&shader.id) {
-        context.programs.deleted(screen, shader.id);
+    let pass_through = shader.pass_through.iter().flatten().map(|p| p.id);
+    for id in std::iter::once(shader.id).chain(pass_through) {
+        if !screen.shader_deleted(&id) {
+            context.programs.deleted(screen, id);
+        }
     }
 }
 

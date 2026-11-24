@@ -235,6 +235,8 @@ unsafe extern "C" {
         largest: f32,
         block: u32,
     ) -> *mut NirShader;
+    fn wc_nir_uses_storage(nir: *const NirShader) -> bool;
+    fn wc_nir_pass_through_geometry(tes: *const NirShader) -> *mut NirShader;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -524,6 +526,21 @@ impl Nir {
         // SAFETY: self.0 is a live shader; the result is a new shader or null.
         let squares = unsafe { wc_nir_geometry_squares(self.0, at, largest, block) };
         (!squares.is_null()).then_some(Nir(squares))
+    }
+
+    /// A program that reads or writes storage buffers or images.
+    pub fn uses_storage(&self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_uses_storage(self.0) }
+    }
+
+    /// A geometry program passing each primitive of this evaluation program on unchanged, every
+    /// output as written, so that this program runs before it. `None` for another stage, or a
+    /// program writing outputs at offsets known only when run.
+    pub fn pass_through_geometry(&self) -> Option<Nir> {
+        // SAFETY: self.0 is a live shader; the result is a new shader or null.
+        let geometry = unsafe { wc_nir_pass_through_geometry(self.0) };
+        (!geometry.is_null()).then_some(Nir(geometry))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the

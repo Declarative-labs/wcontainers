@@ -2224,10 +2224,26 @@ fn draw<B: Backend>(
     info: &pipe_draw_info,
     draws: &[pipe_draw_start_count_bias],
 ) -> Result<(), String> {
-    let gs = context.stages.get(Stage::Geometry).shader;
+    let mut gs = context.stages.get(Stage::Geometry).shader;
     let [tcs, tes] =
         [Stage::TessControl, Stage::TessEvaluation].map(|s| context.stages.get(s).shader);
     let tessellated = !tes.is_null();
+    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+    let evaluation_shader = unsafe { tes.as_ref() };
+    if let Some(evaluation) = evaluation_shader.filter(|_| gs.is_null()) {
+        match &evaluation.pass_through {
+            Ok(Some(pass_through)) => {
+                context
+                    .screen()
+                    .backend()
+                    .slow_paths()
+                    .hit(SlowPath::VertexStorageAsCompute);
+                gs = &**pass_through;
+            }
+            Ok(None) => {}
+            Err(why) => return refused(format_args!("{why}")),
+        }
+    }
     if tessellated {
         // OpenGL draws nothing through tessellation but patches (the API refuses others).
         if mesa_prim::from(info.mode) != MESA_PRIM_PATCHES {
@@ -3256,6 +3272,7 @@ fn squares_for<B: Backend>(
                     formatless_images: vs.formatless_images,
                     integer_sampled: vs.integer_sampled,
                     named_layer: None,
+                    pass_through: Ok(None),
                 })
             };
             let before = if sized {
@@ -3335,6 +3352,7 @@ fn geometry_squares_for<B: Backend>(
                     formatless_images: gs.formatless_images,
                     integer_sampled: gs.integer_sampled,
                     named_layer: gs.named_layer,
+                    pass_through: Ok(None),
                 }),
                 None => None,
             };
@@ -3760,7 +3778,8 @@ fn run_tessellated<B: Backend>(
         StageSet::COMPUTE,
         &mut images,
     )?;
-    // The evaluation program runs as compute work too when a stage follows it.
+    // The evaluation program runs as compute work too when a stage follows it, and only so
+    // before a geometry program (whose pass-through draws), so that it may write storage.
     let evaluation_sets = if later {
         binding_sets(
             backend,
@@ -3768,7 +3787,11 @@ fn run_tessellated<B: Backend>(
             &[(Stage::TessEvaluation, built_evaluation)],
             &[],
             info.start_instance,
-            StageSet::VERTEX.union(StageSet::COMPUTE),
+            if built_geometry.is_some() {
+                StageSet::COMPUTE
+            } else {
+                StageSet::VERTEX.union(StageSet::COMPUTE)
+            },
             &mut images,
         )?
     } else {
