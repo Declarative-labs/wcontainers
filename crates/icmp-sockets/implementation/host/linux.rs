@@ -30,7 +30,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use crate::{HostIcmpSocket, HostIcmpSockets};
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
-    ErrorQueue, buffer_sizes, dropped_packets, note_packet_wish, receive_in_order,
+    ErrorQueue, OWN_DESCRIPTOR, buffer_sizes, dropped_packets, note_packet_wish, receive_in_order,
     reports_requested, send_message, unsent_bytes,
 };
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
@@ -103,9 +103,6 @@ const DROPS_ASKED: &str = "linux gives a ping socket's packets no drop count, so
      for its count, one more system call, and tells every drop so far with the packet, even those after it came";
 const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket an icmp error without the identification and \
      fragment flags of an ipv4 one or the quoted header's fields but its addresses: each is written as zero";
-
-/// Why reading the send queue or the buffer sizes of a socket cannot fail.
-const OWN_DESCRIPTOR: &str = "getsockopt on the socket's own open descriptor";
 
 /// The largest ICMP message an IP packet carries, the limit of its payload length.
 const LARGEST_MESSAGE: usize = u16::MAX as usize;

@@ -31,8 +31,8 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use crate::{HostRawSocket, HostRawSockets};
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
-    ErrorQueue, buffer_sizes, note_packet_wish, receive_in_order, reports_requested, send_message,
-    unsent_bytes,
+    ErrorQueue, OWN_DESCRIPTOR, buffer_sizes, note_packet_wish, receive_in_order,
+    reports_requested, send_message, unsent_bytes,
 };
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
@@ -65,9 +65,6 @@ const FORWARDED_BY_ITS_BYTES: &str = "linux does not tell a packet it forwards t
      alert socket of ipproto_raw from a local one: taken as forwarded, and given whole, by its bytes";
 const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a raw socket an icmp error without the identification and \
      fragment flags of an ipv4 one, nor under a payload the quoted header's fields but its addresses: written as zero";
-
-/// Why reading the send queue or the buffer sizes of a socket cannot fail.
-const OWN_DESCRIPTOR: &str = "getsockopt on the socket's own open descriptor";
 
 /// The value that takes a socket off the IPv6 router alert chain: any negative one.
 ///

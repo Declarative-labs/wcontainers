@@ -358,6 +358,9 @@ fn memory_information(fd: BorrowedFd<'_>, count: c_int) -> Result<u32, HostError
     Ok(words[count as usize])
 }
 
+/// Why [`unsent_bytes`] and [`buffer_sizes`] cannot fail on a socket the caller holds open.
+pub const OWN_DESCRIPTOR: &str = "getsockopt on the socket's own open descriptor";
+
 /// The bytes the socket's sends hold in the host until they leave, which is what `SIOCOUTQ` gives a UDP socket.
 pub fn unsent_bytes(fd: BorrowedFd<'_>) -> Result<ByteCount, HostError> {
     memory_information(fd, libc::SK_MEMINFO_WMEM_ALLOC).map(|bytes| ByteCount(bytes as usize))

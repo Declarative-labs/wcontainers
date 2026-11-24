@@ -40,8 +40,7 @@ where
     }
 }
 
-/// Makes the call on all of the payload, or on no bytes where the payload never reaches it, and returns the
-/// number of bytes the call took.
+/// Makes the call on all of the payload, or on none where it never reaches the call, and returns the bytes taken.
 pub(crate) fn send_from<Error>(
     payload: &impl VolatileBytes,
     call: impl FnMut(&[u8]) -> Result<usize, Error>,
@@ -54,8 +53,7 @@ pub(crate) fn send_from<Error>(
     }
 }
 
-/// Makes the call into all of the bytes, or into no bytes where the bytes never reach it, and returns the
-/// number of bytes the call gave.
+/// Makes the call into all of the bytes, or into none where they never reach it, and returns the bytes given.
 pub(crate) fn receive_into<Error>(
     into: &impl VolatileBytes,
     call: impl FnMut(&mut [u8]) -> Result<usize, Error>,
