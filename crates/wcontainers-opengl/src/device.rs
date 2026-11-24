@@ -92,6 +92,12 @@ impl HostWindows for WebGpu {
 fn stay_loaded() -> Option<()> {
     libloading::os::windows::Library::open_already_loaded(DRIVER_MODULE)
         .and_then(|module| module.pin())
+        .map_err(|e| {
+            eprintln!(
+                "{}: no back end: the module {DRIVER_MODULE} could not be kept loaded: {e}",
+                crate::screen::DRIVER_NAME.to_string_lossy()
+            );
+        })
         .ok()
 }
 
