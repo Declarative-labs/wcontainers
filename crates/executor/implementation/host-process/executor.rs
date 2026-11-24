@@ -163,6 +163,8 @@ pub struct Counters {
     pub kernel_entries: u64,
     /// Pieces loaded after one a thread stopped for, as an earlier memory starting from the same piece loaded them.
     pub pieces_loaded_ahead: u64,
+    /// Last targets of jumps made at a piece's load, as an earlier memory starting from the same piece made them.
+    pub last_targets_made_ahead: u64,
 }
 
 /// How a guest fault the executor was told of is settled.

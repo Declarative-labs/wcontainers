@@ -549,6 +549,60 @@ fn jumps_through_registers_find_their_slots_and_returns_their_last_targets() {
     assert_eq!(registers.x[1], 0);
 }
 
+/// Calls the function whose address is at x2's data 50 times through a register, then exits; of its two functions the
+/// first adds 1 to x0 and the second 2. Where each function is.
+fn calling_from_data_program() -> (Vec<u32>, [u64; 2]) {
+    let add = |rd, rn, value| encode::add_immediate(rd, rn, value).expect("an add");
+    let mut words = vec![
+        encode::movz(0, 0, 0),
+        encode::movz(1, 50, 0),
+        encode::load_store(form::LDR, 9, 2, 0, WORD).expect("ldr"),
+    ];
+    let call = words.len();
+    words.push(encode::branch_register(form::BLR, 9));
+    words.push(add(1, 1, -1));
+    words.push(
+        encode::compare_branch(true, 1, (call as i64 - words.len() as i64) * INSTRUCTION)
+            .expect("cbnz"),
+    );
+    words.extend(syscall(EXIT));
+    let mut functions = [0; 2];
+    for (function, added) in functions.iter_mut().zip([1, 2]) {
+        *function = CODE + words.len() as u64 * INSTRUCTION as u64;
+        words.push(add(0, 0, added));
+        words.push(encode::branch_register(form::RET, LINK));
+    }
+    (words, functions)
+}
+
+#[test]
+fn last_targets_an_earlier_memory_made_are_made_ahead_and_a_jump_elsewhere_still_goes_where_it_jumps()
+ {
+    let mut cpu = executor();
+    let (words, functions) = calling_from_data_program();
+    let mut made = Vec::new();
+    for (function, sum) in [(functions[0], 50), (functions[0], 50), (functions[1], 100)] {
+        let before = cpu.counters().last_targets_made_ahead;
+        let (memory, thread) = guest(&mut cpu, &words);
+        cpu.write(memory, DATA, &function.to_le_bytes())
+            .expect("the function's address");
+        let seen = run_to_exit(&mut cpu, thread);
+        let (exit, registers, _) = &seen.exits[0];
+        assert!(
+            matches!(exit, Exit::Syscall(call) if call.number.0 == u64::from(EXIT)),
+            "{exit:?}"
+        );
+        assert_eq!(registers.x[0], sum, "calling {function:#x}");
+        made.push(cpu.counters().last_targets_made_ahead - before);
+        cpu.thread_drop(thread);
+        cpu.memory_drop(memory);
+    }
+    // The call's and the return's, made ahead in the second and the third memory, the third's call's wrong.
+    assert_eq!(made[0], 0);
+    assert!(made[1] >= 2, "{made:?}");
+    assert!(made[2] >= 2, "{made:?}");
+}
+
 #[test]
 fn a_counted_turn_of_a_loop_without_exits_ends_by_a_stop_and_goes_on() {
     let mut cpu = executor();

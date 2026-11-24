@@ -113,6 +113,8 @@ struct Loaded {
     source: Vec<u8>,
     /// Its exits: their targets and host addresses.
     exits: Vec<(u64, u64)>,
+    /// Where its translation is kept.
+    kept: KeptAt,
 }
 
 /// One memory's translated code: its code area, its slot pages and its pieces.
@@ -253,9 +255,17 @@ impl Guest {
 #[derive(Default)]
 pub(super) struct Translations {
     kept: HashMap<Key, Vec<Kept>>,
-    /// For the piece a memory loaded first and a piece it loaded later, how far from the later one's address the next
-    /// piece that memory had to load was, the last time one starting so did.
-    next: HashMap<(KeptAt, KeptAt), u64>,
+    /// What a memory that loaded the first piece loaded after the second, the last time one did.
+    after: HashMap<(KeptAt, KeptAt), After>,
+}
+
+/// What a memory did after loading a piece, all of it relative to the piece's guest address and its base.
+#[derive(Default)]
+struct After {
+    /// How far from the piece the next piece it had to load was; none where it loaded no other.
+    next: Option<u64>,
+    /// The last targets it made for the piece's jumps: each jump's call into the floor and its target.
+    targets: Vec<(u64, u64)>,
 }
 
 /// The bytes of the code a translation is found by; the rest of the page is compared only with what was found.
@@ -390,7 +400,9 @@ impl HostProcessExecutor {
             && let Some(code) = code.take()
             && let Some((first, last, _)) = code.loaded_last
         {
-            self.translations.next.remove(&(first, last));
+            if let Some(after) = self.translations.after.get_mut(&(first, last)) {
+                after.next = None;
+            }
         }
     }
 
@@ -466,15 +478,32 @@ impl HostProcessExecutor {
         let first = match code.loaded_last.take() {
             Some((first, last, from)) => {
                 self.translations
-                    .next
-                    .insert((first.clone(), last), pc.wrapping_sub(from));
+                    .after
+                    .entry((first.clone(), last))
+                    .or_default()
+                    .next = Some(pc.wrapping_sub(from));
                 first
             }
             None => at.clone(),
         };
         let mut at_pc = pc;
         for _ in 0..AHEAD {
-            let Some(&next) = self.translations.next.get(&(first.clone(), at.clone())) else {
+            let Some(after) = self.translations.after.get(&(first.clone(), at.clone())) else {
+                break;
+            };
+            let (next, targets) = (after.next, after.targets.clone());
+            if !targets.is_empty() {
+                let base = self.codes[memory.0 as usize]
+                    .as_ref()
+                    .expect("made above")
+                    .pieces[&at_pc]
+                    .base;
+                for (call, target) in targets {
+                    self.make_last_target(memory, base + call, at_pc.wrapping_add(target));
+                    self.counters.last_targets_made_ahead += 1;
+                }
+            }
+            let Some(next) = next else {
                 break;
             };
             let next = at_pc.wrapping_add(next);
@@ -595,6 +624,7 @@ impl HostProcessExecutor {
                     .iter()
                     .map(|(target, site)| (*target, site.at))
                     .collect(),
+                kept: at.clone(),
             },
         );
         code.hosts.insert(base, pc);
@@ -807,6 +837,28 @@ impl HostProcessExecutor {
             piece.exits.push((target, site.at));
         }
         code.exits_to.entry(target).or_default().push(site);
+    }
+
+    /// Records a last target made in `memory` for the memory loading the same pieces next.
+    fn record_last_target(&mut self, memory: MemoryId, call: u64, target: u64) {
+        let Some(code) = self.codes[memory.0 as usize].as_ref() else {
+            return;
+        };
+        let (Some((first, _, _)), Some((&base, &start))) =
+            (&code.loaded_last, code.hosts.range(..=call).next_back())
+        else {
+            return;
+        };
+        let after = self
+            .translations
+            .after
+            .entry((first.clone(), code.pieces[&start].kept.clone()))
+            .or_default();
+        let (call, target) = (call - base, target.wrapping_sub(start));
+        match after.targets.iter_mut().find(|(at, _)| *at == call) {
+            Some(made) => made.1 = target,
+            None => after.targets.push((call, target)),
+        }
     }
 
     /// Drops the pieces of `memory` made from guest code overlapping `range`; whether one was dropped, and whether the
@@ -1230,6 +1282,7 @@ impl HostProcessExecutor {
                 }
                 Ended::LastTarget { call, target } => {
                     self.make_last_target(memory, call, target);
+                    self.record_last_target(memory, call, target);
                     continue;
                 }
                 Ended::Stopped(stop) => stop,
