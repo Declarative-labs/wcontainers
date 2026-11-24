@@ -5016,7 +5016,9 @@ const NO_MODULE: &str = "the shaders crate's rewrite gave no module";
 /// time moved into their coordinates, and each storage texture whose slot `variant` names given
 /// the bound view's format; vertex inputs fetched in the program (`VariantKey::pulled`), which
 /// find their inputs by location; and border colours applied in the program
-/// (`VariantKey::border_in_shader`), which read the sampler's state from helper constants. A slot declared without a format that `variant` does not name is
+/// (`VariantKey::border_in_shader`), which read the sampler's state from helper constants, and
+/// level-of-detail biases added in the program (`VariantKey::lod_bias`). A slot declared without a
+/// format that `variant` does not name is
 /// refused by name, as is a variant asking for more than these (its rewrites read the program's
 /// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
 /// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it;
@@ -5038,6 +5040,7 @@ pub fn rewrite(
         texels_through_buffer: variant.texels_through_buffer,
         pulled: variant.pulled.clone(),
         border_in_shader: variant.border_in_shader,
+        lod_bias: variant.lod_bias,
         texture_layers: variant.texture_layers.clone(),
         ..VariantKey::default()
     };

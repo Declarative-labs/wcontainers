@@ -1362,10 +1362,10 @@ wc_nir_flatten(struct nir_shader *nir, uint32_t points_in, struct wc_flat *out)
 {
    memset(out, 0, sizeof(*out));
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
-   /* Constants as locals stored on entry (the linker makes an evaluation program's
-    * `gl_PatchVerticesIn` one), made values below. */
+   /* Constants, and every variable with an initialiser, as variables stored on entry (the
+    * linker makes an evaluation program's `gl_PatchVerticesIn` a constant), made values below. */
    nir_lower_constant_to_temp(nir);
-   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
+   NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp | nir_var_shader_temp);
    wc_nir_lower_io(nir);
    if (nir->info.stage == MESA_SHADER_TESS_CTRL || nir->info.stage == MESA_SHADER_TESS_EVAL)
       nir_shader_intrinsics_pass(nir, missing_point_reads_zero, nir_metadata_control_flow, &points_in);
