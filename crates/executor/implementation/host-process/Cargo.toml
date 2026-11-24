@@ -149,6 +149,9 @@ name = "interrupt"
 [[test]]
 name = "copy"
 
+[[test]]
+name = "forged"
+
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
 unsafe_code = "deny"
