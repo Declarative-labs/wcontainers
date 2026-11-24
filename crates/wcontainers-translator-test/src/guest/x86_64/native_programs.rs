@@ -659,6 +659,8 @@ fn harness(blob: &Blob, laid: &Laid) -> Result<Vec<u8>, IcedError> {
     let fixed = FixedPart {
         entries: routines.entries,
         stop: NO_STOP,
+        window: 0,
+        window_negated: 0,
     };
     put(at.area + FIXED as u64, fixed.as_bytes());
     Ok(bytes)

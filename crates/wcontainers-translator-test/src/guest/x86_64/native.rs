@@ -949,6 +949,7 @@ fn guest_state(
                 .get(usize::from(at)..usize::from(at) + WORD as usize)
                 .map(|w| u64::from_le_bytes(w.try_into().expect("a word")))
                 .ok_or_else(|| format!("a word past the register area at {at}")),
+            Held::Rebased(r) => Err(format!("register {r} rebased outside the in-process way")),
         }
     };
     let mut general = registers;
@@ -1112,6 +1113,8 @@ fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
             _ => ENTRY_TRAPS + k as u64 * ENTRY_STRIDE,
         }),
         stop: stop_word,
+        window: 0,
+        window_negated: 0,
     };
     put(AREA + FIXED as u64, fixed.as_bytes());
     bytes

@@ -41,6 +41,10 @@ pub struct FixedPart {
     /// The thread's stop word: the count at which a replay check stops it, a value no count reaches on every
     /// other thread (docs/native.md 5.7).
     pub stop: u64,
+    /// The in-process way's window base B, where the guest's memory starts on the host (0 in the other ways).
+    pub window: u64,
+    /// -B modulo 2^64, which takes a rebased register back without writing a flag.
+    pub window_negated: u64,
 }
 
 /// How many registers translated code keeps for itself: the count and two scratch registers (section 3.4).
@@ -73,6 +77,10 @@ pub const ENTRIES: usize = FIXED + core::mem::offset_of!(FixedPart, entries);
 pub const NO_STOP: u64 = u64::MAX;
 /// The stop word, as an offset from the segment base.
 pub const STOP_WORD: usize = FIXED + core::mem::offset_of!(FixedPart, stop);
+/// The window's base B, as an offset from the segment base.
+pub const WINDOW: usize = FIXED + core::mem::offset_of!(FixedPart, window);
+/// -B, as an offset from the segment base.
+pub const WINDOW_NEGATED: usize = FIXED + core::mem::offset_of!(FixedPart, window_negated);
 /// The lookup's first level (section 3.3): 2^32 words, word m the second-level table of guest region m (bits 32
 /// to 63 of a target) less m << 35.
 pub const FIRST_LEVEL: usize = FIXED + PAGE_SIZE as usize;

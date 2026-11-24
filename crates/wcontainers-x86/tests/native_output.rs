@@ -282,6 +282,11 @@ fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
             start.registers[usize::from(n)] = Some(n);
         }
     }
+    // A rebased register holds its guest value less the window's base: the value's holder all the same.
+    let holder = |h: Held| match h {
+        Held::Rebased(r) => Held::Register(r),
+        other => other,
+    };
     let mut seen = std::collections::HashSet::new();
     let mut work = vec![(0usize, start)];
     while let Some((at, mut holders)) = work.pop() {
@@ -293,9 +298,13 @@ fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
         }
         let span = piece.span(at as u32)?;
         for g in 0..16u8 {
-            let held = span.relocated.iter().find(|r| r.guest == g).map(|r| r.held);
+            let held = span
+                .relocated
+                .iter()
+                .find(|r| r.guest == g)
+                .map(|r| holder(r.held));
             let found = match held {
-                Some(Held::Register(h)) => holders.registers[usize::from(h)],
+                Some(Held::Register(h) | Held::Rebased(h)) => holders.registers[usize::from(h)],
                 Some(Held::Page(p)) => holders.area.get(&u64::from(p)).copied(),
                 None => match WITHHELD.iter().position(|&w| w == g) {
                     Some(k) => holders.area.get(&slot(k)).copied(),
@@ -333,7 +342,7 @@ fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
                         .relocated
                         .iter()
                         .find(|r| r.guest == g)
-                        .map(|r| r.held);
+                        .map(|r| holder(r.held));
                     mapped.unwrap_or_else(|| match WITHHELD.iter().position(|&w| w == g) {
                         Some(k) => Held::Page(slot(k) as u16),
                         None => Held::Register(g),
@@ -378,7 +387,9 @@ fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
                     holders.area.retain(|_, v| *v != g);
                 }
                 match (held, now) {
-                    (Held::Register(n), _) => holders.registers[usize::from(n)] = now,
+                    (Held::Register(n) | Held::Rebased(n), _) => {
+                        holders.registers[usize::from(n)] = now;
+                    }
                     (Held::Page(p), Some(g)) => {
                         holders.area.insert(u64::from(p), g);
                     }

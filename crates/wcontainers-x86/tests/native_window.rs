@@ -9,7 +9,7 @@ use iced_x86::{
 use wcontainers_guest_cpu::HostCode;
 use wcontainers_guest_cpu::position::{Held, Side};
 use wcontainers_translator::{LookAhead, translate_native_for};
-use wcontainers_x86::area::PROBE_PAGE;
+use wcontainers_x86::area::{PROBE_PAGE, WINDOW};
 use wcontainers_x86::carry::{T, U};
 use wcontainers_x86::native::{Check, HostMatches, Target, Way};
 use wcontainers_x86::{Offer, V3, X86_64, decode};
@@ -84,9 +84,92 @@ fn is_32(r: Register) -> bool {
     r.is_gpr32()
 }
 
+/// What the sweep knows of rsi and rdi before a host instruction: cut to 32 bits since last written, rdi then moved
+/// by the window's base, and t holding that base.
+#[derive(Clone, Copy, Default)]
+struct Starts {
+    rsi_cut: bool,
+    rdi_cut: bool,
+    rdi_rebased: bool,
+    t_window: bool,
+}
+
+impl Starts {
+    fn after(mut self, i: &Iced) -> Self {
+        let same = |r: Register| {
+            i.code() == Code::Mov_r32_rm32
+                && i.op1_kind() == OpKind::Register
+                && i.op0_register() == r
+                && i.op1_register() == r
+        };
+        let window = i.code() == Code::Mov_r64_rm64
+            && i.op0_register() == T
+            && i.op1_kind() == OpKind::Memory
+            && i.memory_segment() == Register::FS
+            && i.memory_base() == Register::None
+            && i.memory_displacement64() == WINDOW as u64;
+        let rebase = i.code() == Code::Lea_r64_m
+            && i.op0_register() == Register::RDI
+            && i.memory_base() == Register::RDI
+            && i.memory_index() == T
+            && i.memory_index_scale() == 1
+            && i.memory_displacement64() == 0;
+        let rebased = rebase && self.t_window && self.rdi_cut && !self.rdi_rebased;
+        let mut info = InstructionInfoFactory::new();
+        let used = info.info(i).used_registers().to_vec();
+        let written = |r: Register| {
+            used.iter().any(|u| {
+                u.register().full_register() == r
+                    && matches!(
+                        u.access(),
+                        OpAccess::Write
+                            | OpAccess::ReadWrite
+                            | OpAccess::CondWrite
+                            | OpAccess::ReadCondWrite
+                    )
+            })
+        };
+        let (rsi, rdi, t) = (written(Register::RSI), written(Register::RDI), written(T));
+        self.rsi_cut = same(Register::ESI) || self.rsi_cut && !rsi;
+        self.rdi_cut = same(Register::EDI) || self.rdi_cut && !rdi;
+        self.rdi_rebased = rebased || self.rdi_rebased && !rdi;
+        if same(Register::EDI) {
+            self.rdi_rebased = false;
+        }
+        if rebased {
+            self.rdi_cut = true;
+        }
+        self.t_window = window || self.t_window && !t;
+        self
+    }
+}
+
+/// What is wrong with a string's accesses, if anything: its rsi side on GS at an rsi cut to 32 bits, its rdi side at
+/// an rdi cut and then moved by the window's base.
+fn string_outside(i: &Iced, starts: Starts) -> Option<&'static str> {
+    let kinds: Vec<OpKind> = (0..i.op_count()).map(|n| i.op_kind(n)).collect();
+    if kinds.contains(&OpKind::MemorySegRSI)
+        && !(i.memory_segment() == Register::GS && starts.rsi_cut)
+    {
+        return Some("a string's rsi side not on GS at a cut rsi");
+    }
+    if kinds.contains(&OpKind::MemoryESRDI) && !starts.rdi_rebased {
+        return Some("a string's rdi side not at a cut and rebased rdi");
+    }
+    if kinds.iter().any(|k| {
+        matches!(
+            k,
+            OpKind::MemorySegSI | OpKind::MemorySegESI | OpKind::MemoryESDI | OpKind::MemoryESEDI
+        )
+    }) {
+        return Some("a string with the guest's 0x67 not answered by the inside");
+    }
+    None
+}
+
 /// What is wrong with host instruction `i`'s memory access under the window's rule, if anything: guest memory only
 /// on GS at a 32-bit address; else the thread area on FS, the lookup's second level, or the exact form's probe.
-fn outside(i: &Iced) -> Option<&'static str> {
+fn outside(i: &Iced, starts: Starts) -> Option<&'static str> {
     let mut info = InstructionInfoFactory::new();
     let touches = info
         .info(i)
@@ -98,6 +181,9 @@ fn outside(i: &Iced) -> Option<&'static str> {
     }
     if i.mnemonic() == Mnemonic::Jmp && i.memory_base() == U && i.memory_index() == T {
         return None;
+    }
+    if string(i) {
+        return string_outside(i, starts);
     }
     let memory = (0..i.op_count()).find(|&n| {
         matches!(
@@ -167,31 +253,35 @@ fn instruction_like(rng: &mut fastrand::Rng) -> [u8; 16] {
     code
 }
 
+/// The string instructions, each with a rep prefix or none, with 0x66 or REX.W or neither.
+fn a_string(rng: &mut fastrand::Rng) -> Vec<u8> {
+    const OPCODES: [u8; 10] = [0xa4, 0xa5, 0xa6, 0xa7, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf];
+    const PREFIXES: [&[u8]; 6] = [&[], &[0xf3], &[0xf2], &[0x66], &[0xf3, 0x48], &[0x48]];
+    let mut out = PREFIXES[rng.usize(..PREFIXES.len())].to_vec();
+    out.push(OPCODES[rng.usize(..OPCODES.len())]);
+    out
+}
+
 /// A seeded sweep of instruction mixes in both forms, counted and not: every host access to memory keeps to the
-/// window's rule (the speculation rule of section 4). Strings are not made: their forms come later in XN2.
+/// window's rule (the speculation rule of section 4).
 #[test]
 fn every_guest_access_is_cut_to_the_window() {
     let seed = knob("X86_WINDOW_SEED", 0x5eed);
     let cases = knob("X86_WINDOW_CASES", 20_000);
     let mut rng = fastrand::Rng::with_seed(seed);
-    let (mut pieces, mut accesses) = (0u64, 0u64);
+    let (mut pieces, mut accesses, mut strings) = (0u64, 0u64, 0u64);
     for case in 0..cases {
         let mut guest = Vec::new();
         for _ in 0..rng.usize(1..12) {
+            if rng.usize(..6) == 0 {
+                guest.extend(a_string(&mut rng));
+                continue;
+            }
             let candidate = instruction_like(&mut rng);
-            let Some((decoded, length)) = decode(&candidate) else {
+            let Some((_, length)) = decode(&candidate) else {
                 continue;
             };
             let one = &candidate[..usize::from(length)];
-            let i = decoded.iced;
-            // A direct branch may land inside another instruction, where a string may start.
-            let direct = matches!(
-                i.op0_kind(),
-                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
-            );
-            if string(&i) || direct {
-                continue;
-            }
             guest.extend_from_slice(one);
         }
         for way in WAYS {
@@ -203,8 +293,10 @@ fn every_guest_access_is_cut_to_the_window() {
                     continue;
                 };
                 pieces += 1;
+                let mut starts = Starts::default();
                 for (at, i) in host(&piece.bytes) {
-                    if let Some(what) = outside(&i) {
+                    strings += u64::from(string(&i));
+                    if let Some(what) = outside(&i, starts) {
                         panic!(
                             "case {case} of seed {seed:#x} ({way:?}, counted {counted}): {what} at {at}\nguest \
                              {guest:02x?}\n{}",
@@ -212,12 +304,13 @@ fn every_guest_access_is_cut_to_the_window() {
                         );
                     }
                     accesses += u64::from(i.op_count() > 0);
+                    starts = starts.after(&i);
                 }
             }
         }
     }
     println!(
-        "seed {seed:#x}: {cases} cases, {pieces} pieces, {accesses} host instructions, 0 outside"
+        "seed {seed:#x}: {cases} cases, {pieces} pieces, {accesses} host instructions, {strings} strings, 0 outside"
     );
 }
 
@@ -423,4 +516,44 @@ fn an_image_in_parts_is_probed_at_both_ends() {
         .collect();
     let probes = before.iter().filter(|&&m| m == Mnemonic::Rorx).count();
     assert_eq!(probes, 2, "{exact:?}");
+}
+
+#[test]
+fn a_string_is_probed_cut_and_rebased() {
+    use Mnemonic::*;
+    // rep movsb: both starts probed (in both forms), cut, rdi moved by B around the copy on GS, then back.
+    for way in WAYS {
+        let host = decoded("f3 a4 c3", way);
+        let mnemonics: Vec<Mnemonic> = host.iter().map(|i| i.mnemonic()).collect();
+        assert_eq!(mnemonics[..5], PROBE, "{way:?}");
+        assert_eq!(mnemonics[5..10], PROBE, "{way:?}");
+        assert_eq!(mnemonics[10..15], [Mov, Mov, Mov, Lea, Movsb], "{way:?}");
+        assert_eq!(host[0].op1_register(), Register::RSI);
+        assert_eq!(host[5].op1_register(), Register::RDI);
+        assert_eq!(host[14].memory_segment(), Register::GS);
+        assert!(host[14].has_rep_prefix());
+        assert_eq!(mnemonics[15..17], [Mov, Lea], "{way:?}");
+        // While rebased the map holds rdi as the host's less B.
+        let piece = piece(&bytes("f3 a4 c3"), way, false).expect("a piece");
+        let at: usize = host[..14].iter().map(|i| i.len()).sum();
+        let span = piece.span(at as u32).expect("a span");
+        assert!(
+            span.relocated
+                .iter()
+                .any(|r| r.guest == wcontainers_x86::RDI
+                    && r.held == Held::Rebased(wcontainers_x86::RDI)),
+            "{span:?}"
+        );
+    }
+    // stos: rdi alone; lods: rsi alone, and no rebase.
+    let stos = shape("aa c3", EXACT);
+    assert_eq!(stos[5..9], [Mov, Mov, Lea, Stosb]);
+    let lods = decoded("ac c3", EXACT);
+    assert_eq!(lods[5].mnemonic(), Mov);
+    assert_eq!(
+        (lods[6].mnemonic(), lods[6].memory_segment()),
+        (Lodsb, Register::GS)
+    );
+    // With the guest's 0x67 the inside answers it.
+    assert!(!shape("67 aa c3", EXACT).contains(&Stosb));
 }

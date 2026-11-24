@@ -12,9 +12,11 @@ use wcontainers_guest_cpu::position::{Held, Resume};
 use super::{
     AREA_WORD, T, T_LOW, T_NUMBER, U, U_LOW, bytes_of, full, load_area, put, sized, store_area,
 };
-use crate::area::{GUEST_FS_BASE, GUEST_GS_BASE, KEPT_T, PROBE_PAGE, STAND_IN_VALUES};
+use crate::area::{
+    GUEST_FS_BASE, GUEST_GS_BASE, KEPT_T, PROBE_PAGE, STAND_IN_VALUES, WINDOW, WINDOW_NEGATED,
+};
 use crate::native::{Check, Way};
-use crate::operand::{R8, RAX, RBP, RBX, RDI, RSP, W16, W32, W64, general};
+use crate::operand::{R8, RAX, RBP, RBX, RDI, RSI, RSP, W16, W32, W64, general};
 
 /// t's and u's low 16 bits, for a 16-bit push or pop.
 const T_WORD: Register = Register::R11W;
@@ -47,7 +49,7 @@ pub(super) fn access(check: Check, code: &mut HostCode, i: &Iced, resume: Option
         Bt | Bts | Btr | Btc if form.exact && i.op1_kind() == OpKind::Register => {
             bit_test(form, code, i, resume)
         }
-        _ if string(i) => panic!("the in-process way's strings are written later in XN2: {i}"),
+        _ if is_string(i) => string(form, code, i, resume),
         _ => explicit(form, code, i, resume),
     }
 }
@@ -58,7 +60,7 @@ struct Form {
     way: Way,
 }
 
-fn string(i: &Iced) -> bool {
+fn is_string(i: &Iced) -> bool {
     (0..i.op_count()).any(|n| {
         matches!(
             i.op_kind(n),
@@ -658,4 +660,60 @@ fn bit_test(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     put(code, &load_area(form.way, U, KEPT_T));
     put(code, &sum(T));
     finish(code, &at, resume);
+}
+
+/// A string instruction without the guest's 0x67 or a segment prefix (the inside answers those): each start
+/// probed in both forms, so that one at or above 2^32 goes to the inside, then cut to 32 bits, the rsi side on GS and
+/// rdi rebased by B around it, since its ES side takes no override (section 4). A run from a start in the window
+/// meets a guard page before it leaves.
+fn string(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
+    let kinds: Vec<OpKind> = (0..i.op_count()).map(|n| i.op_kind(n)).collect();
+    assert!(
+        !kinds.iter().any(|k| matches!(
+            k,
+            OpKind::MemorySegSI | OpKind::MemorySegESI | OpKind::MemoryESDI | OpKind::MemoryESEDI
+        )) && i.segment_prefix() == Register::None,
+        "a string the inside answers: {i}"
+    );
+    let source = kinds.contains(&OpKind::MemorySegRSI);
+    let destination = kinds.contains(&OpKind::MemoryESRDI);
+    let starts: Vec<u8> = [(source, RSI), (destination, RDI)]
+        .into_iter()
+        .filter_map(|(used, r)| used.then_some(r))
+        .collect();
+    for &r in &starts {
+        probe(code, full(r));
+    }
+    for &r in &starts {
+        let low = sized(r, W32);
+        put(
+            code,
+            &Iced::with2(Code::Mov_r32_rm32, low, low).expect("the start cut"),
+        );
+    }
+    let rebase = |code: &mut HostCode, by: usize| {
+        put(code, &load_area(form.way, T, by));
+        put(
+            code,
+            &Iced::with2(
+                Code::Lea_r64_m,
+                full(RDI),
+                MemoryOperand::with_base_index(full(RDI), T),
+            )
+            .expect("rdi moved by the window's base"),
+        );
+    };
+    if destination {
+        rebase(code, WINDOW);
+        code.relocate(RDI, Held::Rebased(RDI));
+    }
+    let mut out = *i;
+    if source {
+        out.set_segment_prefix(Register::GS);
+    }
+    finish(code, &out, resume);
+    if destination {
+        rebase(code, WINDOW_NEGATED);
+        code.home(RDI);
+    }
 }
