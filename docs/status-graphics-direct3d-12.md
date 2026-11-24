@@ -12,10 +12,43 @@ track was idle (f9ecca97, extended-range swap chains in the blit models; c387985
 
 ## Where things stand
 
-Runs 53 and 54 (2026-11-23, milestone G5r: the fifth check's three findings and the owner's
-ruling of 2026-11-22 on feature levels). The seventh check had passed G5 on 2026-11-20; the ruling
-then made the level a hard requirement.
-- Finding 1, feature answers that do not match what is served: atomics were answered present in
+Run 55 (2026-11-23, milestone G5r, its third run): the sixth independent check (scratch
+icheck55) found finding 2 open again and the gap list naming wrong owners; both are closed below,
+and its seven minor findings are each closed or recorded. Runs 53 and 54 closed the fifth check's
+three findings; the seventh check had passed G5 on 2026-11-20 before the owner's ruling of
+2026-11-22 made the level a hard requirement.
+- Finding 2 reopened, 11_0's 32 input slots and elements and 32 registers from the vertex to the
+  pixel stage (plan section 9): neither was built nor counted, and a valid 32-slot layout aborted
+  the process inside wgpu (16 vertex buffers, `MAX_VERTEX_BUFFERS`). Built in run 55: elements of
+  slots past the back end's vertex buffers, or of input registers past its attribute locations,
+  are fetched in the vertex program (`VertexPulledInShader`, pull.rs `pulled_streams`); values
+  between the vertex and pixel programs past its inter-stage locations move onto free ones after
+  conversion, both programs alike (Departures, `stage_registers` in the infrastructure crate). The
+  level counts both (`serves_stage_registers`), and, also unread before, resource binding tier 1's
+  counts and 8 targets (`binds_tier_1`, test `no_device_without_binding_tier_1_counts_or_eight_targets`).
+  Test `no_device_without_32_input_slots_and_stage_registers`
+  (no GPU); test `thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12` (tests/registers.rs,
+  GPU) draws the check's own case (programs from fxc, tests/registers/) and must give real
+  Direct3D 12's values (the check's runs on the RTX 3080 and on WARP, equal).
+- The gap list's owners: the shader runner's failing files sorted again from a fresh run (each
+  file's owner under "Shader runner"); the shaders track's delivered items moved to done ("Asked of
+  other tracks"); what they unblocked of this front built in run 55: the level-of-detail query and
+  a sample's clamp read the bound sampler's values, which the front wrote only where it applies
+  the sampler in the program (calculate-lod, sampler: "a helper value the front does not write");
+  a pixel shader reading its clip or cull distances gets them as values of the last vertex stage
+  (clip-cull-distance-1 and -2); DXIL programs declaring arrays without a length get the root
+  signature's ranges (unbounded-array-5.1).
+- The minor findings: `R10G10B10_XR_BIAS_A2_UNORM` textures allowing target and unordered access
+  views are made, as real makes them (no view of them can be made); the 11_0 table's link points
+  at the page where it now is; the declared containers test holds every container to its recorded
+  answers again (the corpora's 8 new containers recorded, every one declaring no typed view or
+  multisampled array); the stale use count corrected; the scenes beyond the bar compared with
+  WARP's pictures and their owner named ("Scenes"); the unorm half-way stores recorded with their
+  numbers, within the bar; the use test loads a texel of varied components of 42 plain formats
+  against Direct3D's conversions, and what it still reads only as zeros is named as this track's
+  ("Gap list", formats); Godot's 3D pixel named as this track's, untraced.
+
+- Finding 1 (runs 53 and 54), feature answers that do not match what is served: atomics were answered present in
   run 51. Test `every_answered_format_ability_is_served` (tests/answers.rs, GPU) asks and then uses
   every format answer, each DXGI format up to `B4G4R4A4_UNORM` on a device of its own. Resources
   (run 53): textures of every answered shape with and without mip chains, targets and depth
@@ -38,7 +71,7 @@ then made the level a hard requirement.
   into); storage writes to `B8G8R8A8_UNORM` lost the device (the adapter's flags gave storage the
   device was not asked for; now asked, and refused without it). Run 53's found storage views of
   `A8_UNORM` answered and not built, now served through a buffer.
-- Finding 2, the level: the device reports 11_0 only where every requirement is built
+- Finding 2 as runs 53 and 54 left it, the level: the device reports 11_0 only where every format requirement is built
   (Departures, first item; `D3D12CreateDevice` fails otherwise, naming each format short), from
   Microsoft's 11_0 format table, which now lives in the infrastructure crate (`required`). On the
   RTX 3080 every requirement is met (test `the_adapter_meets_every_format_requirement_of_11_0`); the
@@ -48,10 +81,12 @@ then made the level a hard requirement.
   meets the table (Departures).
 - Finding 3, bgfx 26-occlusion frame 10: closed in run 54, real Direct3D 12 on WARP and on the
   RTX 3080 itself drawing the same failure ("Real programs").
-- Nothing on the gap list waited on another track's item that has since been delivered, but the
-  formats above, which the Direct3D 11 track's back end and infrastructure work served.
+- What other tracks delivered since 2026-11-20 and this front took: the formats above (the
+  Direct3D 11 track's back end and infrastructure work, runs 53 and 54), and the shaders track's
+  converter items, keyed by this front in run 55 (second item of this list).
 
-The pass bar, item by item (results under "Results of run 54"):
+The pass bar, item by item (results under "Results of run 55", where measured, and "Results of
+run 54"):
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080: 189 of
   198; every failing file is on the gap list.
 - Real programs: Microsoft's D3D12HelloTriangle and D3D12HelloConstBuffers, bgfx 01-cubes,
@@ -59,6 +94,24 @@ The pass bar, item by item (results under "Results of run 54"):
 - CheckFeatureSupport: the own program's `features` against real, every differing answer listed
   in features-differing.txt under its cause; the level and use tests above.
 - The own program's 35 cases equal to real Direct3D 12.
+
+## Results of run 55
+
+2026-11-23, scratch run55/; the desktop's GPU queue was held by the OpenGL track's conformance
+runs and the shaders track's seeded runs for most of the run (each of this run's jobs waited 20 to
+60 minutes for them).
+- Lint with warnings denied: the infrastructure crate, this front and the Direct3D 11 front clean
+  on the rented x86 machine (run55/x86-3.log and later runs at 2453a26e's tree); this front with
+  its Windows library on the desktop (lint2.log).
+- Tests without a GPU, x86: infrastructure 1, front unit 20, cache 1, declared 1, device 19, front
+  14, all pass. With the GPU (RTX 3080, Vulkan): test2.log at ae6cd91d's tree, every binary passes
+  but registers.rs, whose read-back slice was wrong (fixed); gpu1.log at 83c563d9's tree:
+  `every_answered_format_ability_is_served` (931 uses by resources, 787 by programs, none
+  failing) and `thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12` pass.
+- Literal check (x86, 2453a26e's tree): in this track's files none; in the Direct3D 11 front's,
+  the two redefinitions of `stage_registers`' names ("Asked of other tracks").
+- The counted test files, the own program, the shader runner, the real programs, bgfx and the
+  scenes: run55/rest1.out's chain (bin/rest55.sh 1), started 15:25 on code at 83c563d9.
 
 ## Results of run 54
 
@@ -155,7 +208,8 @@ Failing test files:
 Formats CheckFeatureSupport answers below real (run 53, features-differing.txt names each line
 under its cause). Every ability Microsoft's 11_0 format table requires is answered on the RTX 3080
 (test `the_adapter_meets_every_format_requirement_of_11_0`), and every answered texture ability is
-used by test `every_answered_format_ability_is_served` (915 uses, below). What stays below real is
+used by test `every_answered_format_ability_is_served` (run 54: 931 uses by resources and 745 by
+programs, below). What stays below real is
 none of the table's requirements:
 - The other video formats (`AYUV`, `Y410`, `Y416`, `P010`, `P016`, `Y210`, `Y216`, `NV11`,
   `AI44`, `IA44`, `P8`, `A8P8`): answered absent; the table leaves each format optional, the plan
@@ -184,6 +238,24 @@ and resolve bits (Departures: no resource they apply to can be made).
   every answer through resources and programs (above) with none failing (run 54). It leaves out
   stream output buffers, swap chain formats and program uses of 1D, 3D and cube views; those are
   compared with real Direct3D 12 by the counted test files, the own program and the shader runner.
+  Since run 55 it also loads a texel of varied components (of either sign) of each of the 42
+  formats of whole-byte components alike, checked against Direct3D's conversions (normalised
+  ones within a bit): run55/gpu1.log, 931 uses by resources and 787 by programs, none failing.
+  Its other reads (samples, gathers, comparisons, multisampled and typed buffer loads) read
+  textures of zeros, so they prove a use is accepted and keeps the device whole, not that a
+  filter or swizzle is right (the sixth check's own cases filled varied texels and bound resource
+  binding tier 1's full counts: every word equal to the RTX 3080's); and
+  `CheckFeatureSupport`'s answers other than formats (wave lane counts, binding tiers, typed
+  storage load formats) are compared with real by the own program's `features`, not asked and
+  used by a test. Both this track's own open part ("Next" 2).
+- Typed storage stores of unorm formats rounding a value exactly half-way between two codes
+  (the sixth check's case, texel = v * 0.5 + (0.25, -0.125, 0.0625, 0.5) stored and read back):
+  ours gives one code off the RTX 3080's in a few channels (`R8G8B8A8_UNORM` d9 where it gives d8;
+  the same in `B8G8R8A8_UNORM`, `A8_UNORM` through a buffer, and `R10G10B10A2_UNORM`'s 2-bit
+  alpha 2 where it gives 3); WARP differs from the RTX 3080 in more channels (400010f3 400020d9
+  ... where it gives 400010f2 400020d8). Within the 2026-11-22 bar (two real implementations
+  already differ there by a code); every other byte of the 13 formats and of 2-layer arrays equal
+  (the check's numbers, not measured again).
 
 Also absent, with no failing test file: conservative rasterisation, raster order views, ray
 tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, depth bounds,
@@ -295,6 +367,11 @@ on some adapters, and WebGL 2 makes no Direct3D 12 device:
   "storage textures read through a buffer in a vertex or geometry shader", "multisampled storage
   textures read through a buffer", "a storage texture read through a buffer at a slot past 63",
   "storage textures read through buffers behind a geometry or domain shader".
+- Values between the stages past the back end's inter-stage locations (run 55, Departures): "more
+  values between the stages than the back end passes" (`VaryingsBeyondLimit`: more than its
+  locations after moving, impossible for a valid Direct3D pair where 11_0 is reported) and
+  "values between the stages past the back end's locations behind a geometry, hull or domain
+  shader or stream output, or beside values the front links".
 - Vertex input fetched in the program: "a vertex input fetched in the program from no vertex
   buffer", "a per-instance element beyond 4 GiB", "an indirect draw of a per-instance stream
   fetched in the program that steps other than once an instance", "a per-instance stream that
@@ -365,11 +442,13 @@ implemented" (87 names, `unsupported` in examples/directx; list them with `grep 
   `ResizeBuffers1`; `ClearState`; `AtomicCopyBufferUINT`, `AtomicCopyBufferUINT64`;
   `ResolveSubresourceRegion`; `SetStablePowerState`.
 
-Other differences beyond the bar, each named: the shader runner's failing files ("Shader
-runner"), the scenes' failing outputs ("Scenes"), Wine's two dxgi tests that need a software
-adapter (none is offered; `EnumWarpAdapter` answers E_NOTIMPL), and Godot's 3D platformer's one
-pixel (1 of 518,400 beyond 8, difference 48 at 921,317 in frames 10, 60 and 120; not traced, the
-front's own open part).
+Other differences beyond the bar, each named with its owner: the shader runner's failing files
+("Shader runner", each file's owner there), the scenes' failing outputs ("Scenes": the WebGPU back
+end's Vulkan line rule, and the NVIDIA driver's Vulkan path for the anisotropy and alpha to
+coverage cells), Wine's two dxgi tests that need a software adapter (none is offered;
+`EnumWarpAdapter` answers E_NOTIMPL; this track's, no route in a browser), and Godot's 3D
+platformer's one pixel (1 of 518,400 beyond 8, difference 48 at 921,317 in frames 10, 60 and 120;
+not traced; this track's own open part: Godot offers the rig no WARP adapter to compare with).
 
 ## CheckFeatureSupport
 
@@ -440,9 +519,16 @@ line cells: the aliased line listed loss), samplers-filters (anisotropy cells) a
 msaa-alpha_to_coverage, as before (each draws with largest difference 0 on wgpu's Direct3D 12 path,
 run 36: the NVIDIA driver's Vulkan path this library draws on, "Next" 4); new among the scenes that
 now run, raster-fill (64 of 16,384 pixels beyond 1 in 20 tiles, largest difference 229) and
-tessellation (310 of 32,768 beyond 4 in 87 tiles, largest difference 228): a few pixels in each of
-many tiles. Neither is traced yet, nor compared with WARP's picture of the same scene, which the
-2026-11-22 bar asks for ("Next" 2). Absent: minimum and maximum filtering.
+tessellation (310 of 32,768 beyond 4 in 87 tiles, largest difference 228). WARP's pictures of the
+same scenes (the rig's references/d3d12/tolerances.txt): raster-fill 1,921 pixels differing, by 1
+at most; tessellation 768, by 4 at most. So both are beyond the bar. Their differing pixels are
+line pixels (the shaders track counted them per cell, its status A6: both differ only in cells
+drawn as lines, and 308 of tessellation's 310 are pixels real left at the clear colour and ours
+drew; raster-fill's cells drawn as lines are its three wireframe ones): wgpu's Vulkan path draws polygon-mode lines by Vulkan's line
+rule, as the topology scene's line cells and the WebGPU back end's own test
+`wireframe_fill_matches_direct3d` (214 pixels on Vulkan, none on wgpu's Direct3D 12 path) show.
+Owner: the WebGPU back end's Vulkan path, a listed loss (plan 15.1); removed for this front by
+drawing on wgpu's Direct3D 12 path ("Next" 4). Absent: minimum and maximum filtering.
 
 ## Real programs
 
@@ -505,16 +591,32 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   what the back end answers on adapters whose own format flags claimed more than WebGPU allows
   (the RTX 3080 through Vulkan: `rgb9e5ufloat` loses its resolve use, which the front never
   answered); the Direct3D 11 and OpenGL fronts' answers may move with them.
-- Shaders (G6), earlier and still open (evidence in the record at cf55bbe8): the converter
-  refusals the runner prints (`TypedBufferFormatKind`, `ClipDistance` read by a pixel shader,
-  DXIL `InterpolateAt`, `DxilGeometryShader`, `DxilHullShader`, `CalculateLevelOfDetail`,
-  `DepthGatherComponent`, `SwizzledDepth` moving red, `PrimitiveId`, `SampleClamp`,
-  `SparseFeedback`, `globallycoherent` memory operands, unbounded arrays on the DXIL route); values
-  differing from Direct3D's (a centroid `SV_Position` per sample, `min16float` constants, float
-  subnormals in shader models 4 and 5, DXIL `frexp` of a NaN, the shader model 4.0 multisampled
-  load in a loop). (The pixel program for a variant alone, `DEPTH_CLAMP` on the pass-throughs, a
-  texture view read in another component kind and clip distances through the cull route were
-  delivered and are used since run 52.)
+- Shaders (G6), still open, each with the runner file it fails (run 55's sort, "Shader runner"):
+  `DepthGatherComponent` (gather-cmp; their A4), `globallycoherent` views and DXIL memory
+  operands wider than the workgroup (uav-rwbuffer, uav-rwbyteaddressbuffer,
+  uav-rwstructuredbuffer, uav-rwtexture), a centroid `SV_Position` in a program run per sample,
+  refused by name (`CentroidPositionPerSample`, eval-attrib).
+- Shaders (G6), delivered and taken (their status lines 186 to 192 asked this list to move them):
+  `TypedBufferFormatKind` (run 55 there; srv-buffers, tgsm and wave-ops-float now run every check
+  but those of absent features), DXIL `InterpolateAt` (run 94), `DxilGeometryShader` and
+  `DxilHullShader` (G6b; geometry, tessellation and tessellation-patch-vars pass),
+  `CalculateLevelOfDetail` (runs 91 and 92) and `SampleClamp` (run 93), which then met this
+  front's own unwritten sampler values, built in run 55 (calculate-lod, sampler), `PrimitiveId`
+  (runs 97 and 107; primitive-id passes), `min16float` constants and DXIL `frexp` of a NaN (run
+  111; arithmetic-float-uniform and minimum-precision fail no check), a clip or cull distance read
+  by a pixel shader (`CLIP_DISTANCE` with `linked`, run 102; `CULL_DISTANCE_LINKED`, run 110),
+  which this front keys since run 55 (clip-cull-distance-1 and -2), unbounded arrays on the DXIL
+  route (`register_ranges`), keyed since run 55 (unbounded-array-5.1). Earlier: the pixel program
+  for a variant alone, `DEPTH_CLAMP` on the pass-throughs, a texture view read in another
+  component kind and clip distances through the cull route (used since run 52). Not theirs: float
+  subnormals in shader models 4 and 5 are plan 4.12's listed loss (frexp line 57), the shader model
+  4.0 multisampled load in a loop is a view the program does not declare (not to be matched).
+- Direct3D 11 (G4), run 55: the infrastructure crate's `stage_registers` holds `input_moves`,
+  `output_moves` and `relocate` as the Direct3D 11 front's src/shader.rs has them (taken from
+  there, returning the refusal's name); that front could use it and drop its copy. Until then the
+  literal check finds its `MOVED_ONTO_A_TYPE` and `MOVED_INVALID` (src/shader.rs:317 and 319)
+  redefinitions of the infrastructure crate's (run 55, x86: the only findings in either front's
+  or this crate's files).
 - WebGPU back end (G2), on wgpu's Direct3D 12 path: clears through a float that keeps the bits
   (an `R32_FLOAT` denormal), and buffer-to-texture copies of several slices whose
   `rows_per_image` exceeds the copy's height (wgpu-hal 30's placed footprint).
@@ -522,16 +624,21 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 ## Next, in this order
 
 1. Keep the crates building after each merge the orchestrator makes into `agents`; keep the
-   literal check free of this track's findings. Apply the rig patch (sync54.sh does, in the
+   literal check free of this track's findings. Apply the rig patch (sync55.sh does, in the
    clone only) for test file runs.
 2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
-   capture), Godot's 3D platformer's one pixel (trace which draw writes it, on real and ours; Godot
-   offers no WARP adapter choice the rig uses), the raster-fill and tessellation scenes' scattered
-   pixels (compare with WARP's pictures), the other refusals of the gap list.
+   capture), stage register moves behind the stage helper and beside linked values, Godot's 3D
+   platformer's one pixel (trace which draw writes it, on real and ours; Godot offers no WARP
+   adapter choice the rig uses), the use test's other reads of varied texels, and loads of the
+   packed and block formats, against a decode of their own (no crate in the tree decodes every
+   DXGI format on the CPU), a test asking and using the
+   answers other than formats (wave lane counts need a shader model 6 program: no dxc on the
+   desktop), the other refusals of the gap list.
 3. Feature level 11_1 (Departures names what it lacks) and the 11_1 format table in `required`.
 4. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
-   run36/dx12-path.patch; it broke three things, each another track's).
+   run36/dx12-path.patch; it broke three things, each another track's). It also removes the
+   scenes' line differences (wgpu's Vulkan line rule).
 5. Plan section 10's one library (`crates/wcontainers-directx`): by the orchestrator's ruling of
    2026-11-20, one joint step with the Direct3D 11 track after both G4 and G5 have passed their
    checks, not part of G5.
@@ -669,7 +776,16 @@ merges.
   2026-11-22 the missing ability is built in the crate that owns it ("Asked of other tracks").
 - The feature level (run 53, the owner's ruling of 2026-11-22 that no level is reported whose
   requirements are not met): `D3D12CreateDevice` makes its 11_0 device only where the back end has
-  11_0's abilities (`has_abilities_of_11_0`) and the front answers every ability Microsoft's 11_0
+  11_0's abilities (`has_abilities_of_11_0`; since run 55 with its 32 input slots and elements and
+  32 stage registers, `serves_stage_registers`: the back end's vertex buffers and attribute
+  locations plus a storage buffer per stream fetched in the program reach 32, its inter-stage
+  locations plus the position reach 32; the test recorder's Chrome-like limits, 8 vertex
+  buffers, 10 storage buffers and 28 locations, do not, expected of browsers, not measured; and
+  since run 55 resource binding tier 1's counts in a stage, 128 shader resource views, 14 constant
+  buffers beside the helper block's uniform buffer, 16 samplers, 8 unordered access views of
+  either kind, and 8 targets, `binds_tier_1`; a back end of 14 uniform buffers a stage, as wgpu's
+  Direct3D 12 path is expected to have, makes no device: the helper block takes one) and
+  the front answers every ability Microsoft's 11_0
   format table requires (`unmet_format_requirements`, from the infrastructure crate's
   `required` table, which Direct3D 11 shares the source of); otherwise it fails with
   `DXGI_ERROR_UNSUPPORTED` and prints each format short and the bits it lacks. Direct3D 12 has no
@@ -681,6 +797,16 @@ merges.
   Refusals by name of 11_0 abilities where the back end lacks a feature (depth clamping of
   alpha-antialiased lines and three other routes, wireframe without polygon modes) stay on the gap
   list as the front's own open parts: no counted test, case or program meets them on the RTX 3080.
+- Direct3D's 32 registers between the vertex and pixel stages (run 55) where the back end has
+  fewer inter-stage locations (wgpu: 31 on the RTX 3080 through Vulkan): the values both programs
+  pass move onto free locations after conversion (the infrastructure crate's `stage_registers`,
+  the design the Direct3D 11 front built in its own crate; its copy could use this one), a pixel
+  program's inputs in order from location 0 and the vertex program's outputs to meet them, and
+  every program the pipeline makes later follows the same moves (`StageMoves`). Plan section 9
+  names the requirement, not the route. Not built: moves behind the stage helper (geometry, hull
+  and domain shaders, stream output, the cull and line routes) and beside values the front links
+  (clip distances or depth clamped in the program), each refused by name where a value lies past
+  the back end's locations; no counted test, case or program meets either on the RTX 3080.
 - Wireframe without the back end's polygon mode is refused by name, not converted
   (`FillModeConverted`): Direct3D culls triangles before drawing their edges, so the route needs
   positions after the vertex shader through the stage helper's capture (the Direct3D 11 front
