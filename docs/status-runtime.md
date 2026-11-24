@@ -73,6 +73,31 @@ no incremental folder, to fit the machine's disk (Departures).
   (ours "Got only SIGKILL after reaching both limit", the cpulimit test's failure). Follow-ups below.
 - Against the kernel track's stand-in LTP verdicts at 60cb4fe1 (ltp/ours-20260930-60cb4fe1.tsv) the back
   end's differ in the same 4.
+- At the tip itself (no patch, full, each test binary that saves given 900 s; scratch j5c/arm/copies): saving,
+  procsignals, outside, threads, backend, rootbackend and repeats each hung to the limit, and in each the
+  forked copy's thread was in `in_worker_cross` under `translate_within` at 840 s (gdb, `*.stacks`);
+  counterclock passed (its one saving test is ignored as before). So at the tip every test of those seven
+  binaries waits on the translator's pool, and no other cause shows there.
+
+Follow-ups (patched, ARM64 machine, load 10 to 14; scratch j5c/arm-patched, `follow-bar.sh`):
+- cpulimit at full alone, from an empty cache for its translations and then warm: 3 runs of 3 pass. LTP
+  setrlimit06 (same check: SIGXCPU at the soft limit before SIGKILL at the hard) fails at none, bounded and
+  full, 6 runs of 6 (8.5 s to 58 s). Both tests run on the driver's wall clock (cpulimit.rs
+  `assert_same_output_on_wall_clock`, ltp.rs `wall_clock = true`), whose turns are sized in units of progress
+  as nanoseconds (driver.rs `turn_live`: `Turn::Counted { limit }`), and with the back end a unit is a stop
+  check passed, not an instruction (every failing run's log has "progress counted by stop checks"): a turn
+  sized to end at the soft limit runs longer than that on the wall clock and is charged past the hard limit
+  at once, so the kernel sends SIGKILL alone. Cause: the progress count (the translator's C1, waiting for
+  its check, and its use by the wasmtime executor, which still compiles with `ProgressCount::Absent`).
+- LTP clock_gettime04 at full: fails on both runs whose translations were made then (the whole run, where
+  two CLOCK_REALTIME readings were 18 ms apart, against a bound of 5 ms; and the first follow-up run), and
+  passes 2 of 2 once they are in the cache (1.2 s). The pause is the back end's counted slow path "translated at run time".
+- LTP mem02: passes at none (24.3 s), and at full (3 runs) and bounded (1 run) no turn ends for 120 s
+  (the harness's hang). It passed at full in J5 run 5, so the translated code at full and bounded changed
+  since: for the translator track (not looked at further here).
+- outside `a_full_connection_hears_a_reset` at bounded alone: 6 runs of 6 pass, and 6 of 6 on the stand-in;
+  it failed once in the whole bounded run (ours saw the peer's reset before Docker's side did): a timing
+  dependent test under load, for the kernel track, as splice_holds_the_pipe was.
 
 ## JR, third run (2026-11-23): nothing it waits on has changed; nothing built or run
 
