@@ -293,8 +293,9 @@ fn main() {
             let recorded = std::fs::read_to_string(MODULE_SOURCES).unwrap_or_default();
             assert!(
                 recorded.trim() == sources,
-                "the converters' sources changed since {MODULE} was built: build the crate natively \
-                 with the environment naming wasi-sdk 25 as for WebAssembly, which says what to copy"
+                "the converters' sources changed since {} was built: build the crate natively with \
+                 the environment naming wasi-sdk 25 as for WebAssembly, which says what to copy",
+                MODULE
             );
         }
     }

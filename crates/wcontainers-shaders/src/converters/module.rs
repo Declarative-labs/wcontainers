@@ -19,10 +19,9 @@ use wasmtime::{
 /// The module, built by `build.rs` from the converters' sources.
 const MODULE: &[u8] = include_bytes!("../../converters.wasm");
 
-/// The most memory one shader's instance may grow to: 26 times the most any shader of the corpora
-/// reaches (9.9 MB).
-// standalone 256: the bound in MiB, chosen as above
-const MEMORY_BOUND: usize = 256 << 20;
+/// The most memory one shader's instance may grow to, 256 MiB: 26 times the most any shader of the
+/// corpora reaches (9.9 MB).
+const MEMORY_BOUND: usize = 1 << 28;
 
 /// The first bytes of a pooled memory kept mapped and zeroed between instances: the module's stack,
 /// its data and the heap a typical conversion reaches.
