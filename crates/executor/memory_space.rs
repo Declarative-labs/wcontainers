@@ -1,12 +1,19 @@
 use core::ops::Range;
 
 use creusot_std::prelude::{
-    DeepModel, Ghost, Int, ensures, extern_spec, invariant, logic, requires,
+    DeepModel, Ghost, Int, PartialEq, check, ensures, extern_spec, invariant, logic, requires,
+    variant,
 };
 use thiserror::Error;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_volatile_bytes::VolatileBytes;
+
+/// What a page allows when it allows nothing: what `Permissions::empty()` returns (the trusted line below says so).
+#[logic(opaque)]
+pub fn nothing() -> Permissions {
+    dead
+}
 
 /// One page of a space as the contract sees it. Only proofs use it.
 ///
@@ -54,7 +61,33 @@ pub trait MemorySpace: Sized {
     #[logic]
     fn page(self, holder: Self::Holder, start: Int) -> Page<Self::Frame>;
 
+    /// Whether a map or a copy may fail for want of host memory. An implementation that says no may never fail so.
+    #[logic]
+    fn can_run_out() -> bool;
+
+    /// Returns a holder of no spaces. It exists only in proofs; `Executor::create_guest_memory` gives it spaces.
+    #[check(ghost)]
+    #[ensures(forall<space: Self> !space.held(result))]
+    fn new_holder() -> Self::Holder;
+
     // The rules. Sealed: no implementation can change them.
+
+    /// A page that was never given bytes, a mapping or permissions: no frame, not mapped, allowing nothing.
+    #[logic(open, sealed, inline)]
+    fn blank() -> Page<Self::Frame> {
+        pearlite! { Page { frame: None, mapped: false, permissions: nothing() } }
+    }
+
+    /// Whether the space is one the holder did not hold before and holds now, with every page blank, while every
+    /// other space is as it was.
+    #[logic(open, sealed, inline)]
+    fn new_space(before: Self::Holder, after: Self::Holder, space: Self) -> bool {
+        pearlite! {
+            !space.held(before) && space.held(after) && Self::still_held(before, after)
+            && (forall<page: Int> space.page(after, page) == Self::blank())
+            && forall<other: Self, page: Int> other != space ==> Self::kept(before, after, other, page)
+        }
+    }
 
     /// The addresses a program may use: the architecture's, the same in every space.
     #[logic(open, sealed, inline)]
@@ -238,6 +271,7 @@ pub trait MemorySpace: Sized {
     }
 
     /// Fails exactly when the addresses do not lie inside the space.
+    #[check(terminates)]
     #[ensures(match result { Ok(_) => Self::inside(addresses.start@, addresses.end@), Err(_) => !Self::inside(addresses.start@, addresses.end@) })]
     fn borrow(&self, addresses: Range<u64>) -> Result<Self::Bytes<'_>, InvalidAddressError>;
 
@@ -245,6 +279,7 @@ pub trait MemorySpace: Sized {
     ///
     /// Fails exactly when there are addresses and they do not lie inside the space; the bytes are the guest's and the
     /// contract says nothing of them.
+    #[check(terminates)]
     #[ensures(match result {
         Ok(()) => addresses.start@ >= addresses.end@ || Self::inside(addresses.start@, addresses.end@),
         Err(_) => addresses.start@ < addresses.end@ && !Self::inside(addresses.start@, addresses.end@),
@@ -254,9 +289,19 @@ pub trait MemorySpace: Sized {
         let mut start = addresses.start;
         #[invariant(addresses.start@ <= start@)]
         #[invariant(start@ == addresses.start@ || start@ <= addresses.end@ && Self::inside(addresses.start@, start@))]
+        #[variant(addresses.end@ - start@)]
         while start < addresses.end {
-            let end = addresses.end.min(start.saturating_add(PAGE_SIZE));
-            let bytes = self.borrow(start..end)?;
+            // Changed: `if` and `match` rather than `min` and `?`, which Creusot does not know to return.
+            let next = start.saturating_add(PAGE_SIZE);
+            let end = if next < addresses.end {
+                next
+            } else {
+                addresses.end
+            };
+            let bytes = match self.borrow(start..end) {
+                Ok(bytes) => bytes,
+                Err(error) => return Err(error),
+            };
             // Changed: Creusot has no contract for a range of an array, but has one for a range of a slice.
             let zeros: &[u8] = &ZEROS;
             bytes.write(&zeros[..(end - start) as usize]);
@@ -266,6 +311,7 @@ pub trait MemorySpace: Sized {
     }
 
     /// Sets what the pages any of the addresses lie on allow. Fails exactly when they are not whole pages inside the space.
+    #[check(terminates)]
     #[requires(self.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -283,6 +329,7 @@ pub trait MemorySpace: Sized {
     /// Maps the pages of the other space that start at the given address into the addresses in this space.
     ///
     /// Fails with an invalid address exactly when the addresses here or there are not whole pages inside the space.
+    #[check(terminates)]
     #[requires(self.held(**holder) && other.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -292,7 +339,7 @@ pub trait MemorySpace: Sized {
         Err(MapMemoryError::InvalidAddress(_)) => ^*holder == **holder
             && !(Self::whole_pages(addresses.start@, addresses.end@)
                 && Self::whole_pages(other_start@, other_start@ + addresses.end@ - addresses.start@)),
-        Err(MapMemoryError::OutOfMemory) => ^*holder == **holder,
+        Err(MapMemoryError::OutOfMemory) => Self::can_run_out() && ^*holder == **holder,
     })]
     fn map_from(
         &self,
@@ -305,6 +352,7 @@ pub trait MemorySpace: Sized {
     /// Ends the mapping of the addresses, which become zeroed out wherever they were previously mapped from.
     ///
     /// Fails exactly when they are not whole pages inside the space.
+    #[check(terminates)]
     #[requires(self.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -321,6 +369,7 @@ pub trait MemorySpace: Sized {
     /// Copies the bytes, permissions and mappings of the other space that start at the given address into the addresses of this space.
     ///
     /// Fails with an invalid address exactly when the addresses here or there are not whole pages inside the space.
+    #[check(terminates)]
     #[requires(self.held(**holder) && other.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -330,7 +379,7 @@ pub trait MemorySpace: Sized {
         Err(CopyMemoryError::InvalidAddress(_)) => ^*holder == **holder
             && !(Self::whole_pages(addresses.start@, addresses.end@)
                 && Self::whole_pages(other_start@, other_start@ + addresses.end@ - addresses.start@)),
-        Err(CopyMemoryError::OutOfMemory) => ^*holder == **holder,
+        Err(CopyMemoryError::OutOfMemory) => Self::can_run_out() && ^*holder == **holder,
     })]
     fn copy_from(
         &self,
@@ -342,23 +391,35 @@ pub trait MemorySpace: Sized {
 }
 
 // Trusted: `VolatileBytes` has no contract yet, and Creusot gives a method without one a precondition no caller can
-// meet. This says `write` may be called with any bytes, and promises nothing of what it does.
+// meet. This says `write` may be called with any bytes and returns, and promises nothing of what it does.
 extern_spec! {
     mod wcontainers_volatile_bytes {
         trait VolatileBytes {
+            #[check(terminates)]
             #[ensures(true)]
             fn write(&self, bytes: &[u8]) -> usize;
         }
     }
 }
 
+// Trusted: names what `Permissions::empty()` returns, so that "allows nothing" in the rules is that value.
+extern_spec! {
+    impl Permissions {
+        #[check(ghost)]
+        #[ensures(result == nothing())]
+        fn empty() -> Permissions;
+    }
+}
+
+// Changed: Creusot's `PartialEq` derive, whose `eq` Creusot can prove; and the inner error's message in place of
+// `transparent`, which shows the same message and gives the same `source()` (none) without calling the inner error's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error, DeepModel)]
 #[error("the addresses do not all lie inside the space")]
 pub struct InvalidAddressError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error, DeepModel)]
 pub enum MapMemoryError {
-    #[error(transparent)]
+    #[error("the addresses do not all lie inside the space")]
     InvalidAddress(InvalidAddressError),
     #[error("the host has no memory left for the mapping")]
     OutOfMemory,
@@ -366,7 +427,7 @@ pub enum MapMemoryError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error, DeepModel)]
 pub enum CopyMemoryError {
-    #[error(transparent)]
+    #[error("the addresses do not all lie inside the space")]
     InvalidAddress(InvalidAddressError),
     #[error("the host has no memory left for the copy")]
     OutOfMemory,

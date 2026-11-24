@@ -10,7 +10,34 @@ use creusot_std::prelude::{
 };
 use wcontainers_abi::Permissions;
 
-use crate::memory_space::MemorySpace;
+use crate::Executor;
+use crate::memory_space::{MemorySpace, nothing};
+
+/// Spaces an executor makes start blank and apart: two are different, and setting permissions in one leaves every
+/// page of the other blank. An implementation whose model holds no space cannot prove `create_guest_memory`.
+#[requires(<E::GuestMemory as MemorySpace>::covers(addresses, *page))]
+pub fn new_spaces_start_blank_and_apart<E: Executor>(
+    executor: &E,
+    addresses: Range<u64>,
+    allowed: Permissions,
+    page: Snapshot<Int>,
+) {
+    let mut holder = ghost!(<E::GuestMemory as MemorySpace>::new_holder());
+    let first = match executor.create_guest_memory(ghost!(&mut *holder)) {
+        Ok(space) => space,
+        Err(_) => return,
+    };
+    let second = match executor.create_guest_memory(ghost!(&mut *holder)) {
+        Ok(space) => space,
+        Err(_) => return,
+    };
+    proof_assert!(first != second);
+    proof_assert!(first.held(*holder) && second.held(*holder));
+    let set = first.set_permissions(addresses, allowed, ghost!(&mut *holder));
+    proof_assert!(set == Ok(()) ==> first.page(*holder, *page).permissions == allowed);
+    proof_assert!(second.page(*holder, *page).permissions == nothing());
+    proof_assert!(!second.page(*holder, *page).mapped);
+}
 
 /// After a space sets the permissions of whole pages, each of those pages allows exactly them.
 #[requires(space.held(**holder))]

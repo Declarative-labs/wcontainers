@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aarch64_cpu::registers::ESR_EL1;
+use creusot_std::prelude::{Ghost, check, ensures, trusted};
 use wcontainers_abi::{
     Access, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber,
     SystemCallRequest,
@@ -25,7 +26,7 @@ mod memory;
 #[cfg(test)]
 mod tests;
 
-use memory::{SimulatedMemory, SpaceCopy};
+use memory::{SimulatedMemory, SpaceCopy, Tables};
 
 /// A chip that runs each instruction as the set's precise instruction simulates it.
 pub struct Simulation<Set> {
@@ -49,6 +50,8 @@ pub struct SimulationInterrupter {
 }
 
 impl ExecutionInterrupter for SimulationInterrupter {
+    // Trusted: outside the memory contract; Creusot has no contract for this atomic store.
+    #[trusted]
     fn interrupt(&self) {
         self.raised.store(true, Ordering::Release);
     }
@@ -65,8 +68,6 @@ enum Trap {
     Final,
 }
 
-// Left out of the proof build: Creusot cannot translate the `async` block `execute` returns, even when trusted.
-#[cfg(not(creusot))]
 impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     type Architecture = Arm64;
     type TranslatorConfig = ();
@@ -74,17 +75,26 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     type Interrupter = SimulationInterrupter;
     type CreateGuestMemoryError = Infallible;
 
-    fn create_guest_memory(&self) -> Result<SimulatedMemory, Infallible> {
-        Ok(SimulatedMemory::default())
+    #[check(terminates)]
+    #[ensures(match result {
+        Ok(space) => <SimulatedMemory as wcontainers_executor::memory_space::MemorySpace>::new_space(**holder, ^*holder, space),
+        Err(_) => ^*holder == **holder,
+    })]
+    fn create_guest_memory(
+        &self,
+        holder: Ghost<&mut Tables>,
+    ) -> Result<SimulatedMemory, Infallible> {
+        Ok(SimulatedMemory::create(holder))
     }
 
     /// Runs one instruction at a time on a copy of the memory, taken anew whenever anything but the instruction
     /// before changed a space, so that each instruction sees what other threads wrote.
     ///
     /// The execution blocks: it runs to its end in its first poll, answering an interrupt between two instructions.
+    #[cfg(not(creusot))]
     fn execute<'execution>(
         &'execution mut self,
-        mut processor: Processor,
+        processor: Processor,
         memory: &'execution SimulatedMemory,
         handler: &'execution mut impl TrapHandler,
     ) -> (
@@ -93,54 +103,29 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     ) {
         let interrupter = SimulationInterrupter::default();
         let raised = Arc::clone(&interrupter.raised);
-        let execution = async move {
-            let mut copy = SpaceCopy::default();
-            let mut changes = Vec::new();
-            loop {
-                if raised.swap(false, Ordering::Acquire) {
-                    match handler.handle_interrupt() {
-                        InterruptResponse::Continue => {}
-                        InterruptResponse::Terminate => return processor,
-                    }
-                }
-                let before = processor.clone();
-                memory.refresh(&mut copy);
-                self.execute_single_instruction_in_place(&mut processor, copy.deltas(), |delta| {
-                    changes.push(delta.into_owned())
-                });
-                for delta in changes.drain(..) {
-                    memory.apply(delta, &mut copy);
-                }
-                let Some(exception) = processor.exception else {
-                    continue;
-                };
-                match to_trap(exception) {
-                    Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
-                        SystemCallResponse::Return(value) => {
-                            // x0 holds the result: https://man7.org/linux/man-pages/man2/syscall.2.html
-                            if let Some(result) = processor.general_purpose_registers.first_mut() {
-                                *result = value;
-                            }
-                            processor.program_counter =
-                                processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
-                            processor.exception = None;
-                        }
-                        SystemCallResponse::Terminate => return processor,
-                    },
-                    Trap::MemoryFault { address, access } => {
-                        match handler.handle_memory_fault(address, access) {
-                            MemoryFaultResponse::Retry => processor = before,
-                            MemoryFaultResponse::Terminate => return processor,
-                        }
-                    }
-                    Trap::Final => return processor,
-                }
-            }
-        };
-        (execution, interrupter)
+        (run(self, processor, memory, handler, raised), interrupter)
+    }
+
+    /// The proof build's stand-in for `execute`, outside the memory contract: Creusot cannot translate the `async`
+    /// block of `run`, even in a trusted function.
+    #[cfg(creusot)]
+    #[trusted]
+    fn execute<'execution>(
+        &'execution mut self,
+        processor: Processor,
+        memory: &'execution SimulatedMemory,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (core::future::Ready<Processor>, SimulationInterrupter) {
+        let _ = (memory, handler);
+        (
+            core::future::ready(processor),
+            SimulationInterrupter::default(),
+        )
     }
 
     /// Runs the instruction at the program counter, taking a word none of the listed instructions match as undefined.
+    // Trusted: outside the memory contract; Creusot has no contract for the instruction list's iterator.
+    #[trusted]
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor,
@@ -173,10 +158,67 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     }
 }
 
+/// The execution `execute` returns.
+#[cfg(not(creusot))]
+async fn run<'execution, Set: PreciseInstructionSet<Arm64>>(
+    chip: &'execution mut Simulation<Set>,
+    mut processor: Processor,
+    memory: &'execution SimulatedMemory,
+    handler: &'execution mut impl TrapHandler,
+    raised: Arc<AtomicBool>,
+) -> Processor {
+    let mut copy = SpaceCopy::default();
+    let mut changes = Vec::new();
+    loop {
+        if raised.swap(false, Ordering::Acquire) {
+            match handler.handle_interrupt() {
+                InterruptResponse::Continue => {}
+                InterruptResponse::Terminate => return processor,
+            }
+        }
+        let before = processor.clone();
+        memory.refresh(&mut copy);
+        chip.execute_single_instruction_in_place(&mut processor, copy.deltas(), |delta| {
+            changes.push(delta.into_owned())
+        });
+        for delta in changes.drain(..) {
+            memory.apply(delta, &mut copy);
+        }
+        let Some(exception) = processor.exception else {
+            continue;
+        };
+        match to_trap(exception) {
+            Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
+                SystemCallResponse::Return(value) => {
+                    // x0 holds the result: https://man7.org/linux/man-pages/man2/syscall.2.html
+                    if let Some(result) = processor.general_purpose_registers.first_mut() {
+                        *result = value;
+                    }
+                    processor.program_counter =
+                        processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
+                    processor.exception = None;
+                }
+                SystemCallResponse::Terminate => return processor,
+            },
+            Trap::MemoryFault { address, access } => {
+                match handler.handle_memory_fault(address, access) {
+                    MemoryFaultResponse::Retry => processor = before,
+                    MemoryFaultResponse::Terminate => return processor,
+                }
+            }
+            Trap::Final => return processor,
+        }
+    }
+}
+
+// Trusted: outside the memory contract (only `run` calls it).
+#[trusted]
 fn has_class(exception: Exception, class: ESR_EL1::EC::Value) -> bool {
     ESR_EL1::EC.read(exception.syndrome) == class as u64
 }
 
+// Trusted: outside the memory contract (only `run` calls it).
+#[trusted]
 fn to_trap(exception: Exception) -> Trap {
     let writes = exception.syndrome & WRITE_NOT_READ == WRITE_NOT_READ;
     let access = match ESR_EL1::EC.read_as_enum(exception.syndrome) {
@@ -192,6 +234,8 @@ fn to_trap(exception: Exception) -> Trap {
     }
 }
 
+// Trusted: outside the memory contract (only `run` calls it).
+#[trusted]
 fn to_request(processor: &Processor) -> SystemCallRequest {
     let registers = &processor.general_purpose_registers;
     // The arguments are x0 onwards: https://man7.org/linux/man-pages/man2/syscall.2.html

@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::ops::Range;
 
+use creusot_std::prelude::{Ghost, check, ensures, trusted};
 use wcontainers_abi::{Access, CpuError, Permissions, SystemCallRequest, ThreadId};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 
@@ -23,7 +24,17 @@ pub trait Executor {
     type Interrupter: ExecutionInterrupter + 'static;
 
     type CreateGuestMemoryError;
-    fn create_guest_memory(&self) -> Result<Self::GuestMemory, Self::CreateGuestMemoryError>;
+
+    /// Returns a new space, which the holder holds from now on. It is blank: zeros, no mapping, allowing nothing.
+    #[check(terminates)]
+    #[ensures(match result {
+        Ok(space) => Self::GuestMemory::new_space(**holder, ^*holder, space),
+        Err(_) => ^*holder == **holder,
+    })]
+    fn create_guest_memory(
+        &self,
+        holder: Ghost<&mut <Self::GuestMemory as MemorySpace>::Holder>,
+    ) -> Result<Self::GuestMemory, Self::CreateGuestMemoryError>;
 
     /// Returns the execution from the given processor state on the given memory, and its interrupter.
     ///
@@ -49,6 +60,8 @@ pub trait Executor {
     );
 
     /// Executes exactly one instruction from the before state.
+    // Trusted: outside the memory contract; Creusot has no contract for `MemoryDelta::into_owned` or `Vec::append`.
+    #[trusted]
     fn execute_single_instruction<'memory>(
         &mut self,
         mut before: ExecutionState<'memory, Self::Architecture>,

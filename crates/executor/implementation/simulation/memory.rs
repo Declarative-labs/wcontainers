@@ -1,17 +1,18 @@
 //! Guest memory as owned pages, shared between spaces only where a mapping shares them.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::{Deref, DerefMut, Range};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use creusot_std::invariant::Invariant;
 use creusot_std::logic::FMap;
 use creusot_std::prelude::{
-    Ghost, Int, Resolve, Seq, Snapshot, check, ensures, ghost, invariant, logic, opaque,
-    proof_assert, requires, snapshot, trusted,
+    Ghost, Int, Resolve, Seq, Snapshot, check, ensures, extern_spec, ghost, invariant, logic,
+    opaque, proof_assert, requires, snapshot, trusted, variant,
 };
-use wcontainers_abi::{PAGE_MASK, PAGE_SIZE, Permissions};
+use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
@@ -49,6 +50,8 @@ impl SpaceCopy {
     }
 
     /// Writes the bytes into the copy's pages, adding a page of zeros where the copy had no bytes.
+    // Trusted: outside the memory contract (only the trusted `apply` calls it); Creusot has no contract for `Cow`.
+    #[trusted]
     fn write_at(&mut self, start: u64, bytes: &[u8]) {
         for (page, within, buffer) in split_at_pages(start, bytes.len()) {
             let deltas = &mut self.deltas;
@@ -70,7 +73,8 @@ impl SpaceCopy {
 }
 
 /// The bytes of one page, held by every space that maps it.
-type Frame = Arc<Mutex<Box<[u8]>>>;
+// Changed: an array rather than a slice, so that the page's length is in the type and the proofs know it.
+type Frame = Arc<Mutex<Box<[u8; PAGE_BYTES]>>>;
 
 /// One page of a space; a page with no entry reads as zeros and allows nothing.
 #[derive(Clone)]
@@ -106,6 +110,14 @@ pub struct SimulatedMemory {
 pub struct SimulatedBytes<'space> {
     space: &'space SimulatedMemory,
     addresses: Range<u64>,
+}
+
+impl Invariant for SimulatedBytes<'_> {
+    /// The addresses run forward: `borrow` refuses any others.
+    #[logic(open(self))]
+    fn invariant(self) -> bool {
+        pearlite! { self.addresses.start@ <= self.addresses.end@ }
+    }
 }
 
 impl SimulatedMemory {
@@ -176,10 +188,15 @@ impl SimulatedMemory {
         copy
     }
 
+    // Trusted: Creusot has no contract for `Mutex`. Assumes the lock is given, at last.
+    #[trusted]
+    #[check(terminates)]
     fn lock_pages(&self) -> MutexGuard<'_, BTreeMap<u64, Page>> {
         self.pages.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    // Trusted: Creusot has no contract for `Mutex` or `BTreeMap`. Promises nothing.
+    #[trusted]
     fn find_frame(&self, page: u64) -> Option<Frame> {
         self.lock_pages()
             .get(&page)
@@ -187,6 +204,11 @@ impl SimulatedMemory {
     }
 
     /// Returns the frame of the page, given one of zeros if it had none.
+    ///
+    /// Trusted: Creusot has no contract for `Mutex` or `BTreeMap`. Promises nothing here; `lock_held` assumes what it
+    /// does to the table: it gives a page with no frame a new frame.
+    #[trusted]
+    #[check(terminates)]
     fn make_frame(&self, page: u64) -> Frame {
         self.lock_pages()
             .entry(page)
@@ -197,28 +219,59 @@ impl SimulatedMemory {
     }
 
     /// Returns the number of bytes read, starting at the address.
+    #[requires(start@ + into@.len() <= u64::MAX@ + 1)]
     fn read_at(&self, start: u64, into: &mut [u8]) -> usize {
-        for (page, within, buffer) in split_at_pages(start, into.len()) {
+        // Changed: the parts are taken from the front of a queue, for which Creusot needs no iterator contract.
+        let mut parts = split_at_pages(start, into.len());
+        let length = snapshot!(into@.len());
+        #[invariant(into@.len() == *length)]
+        #[invariant(forall<i: Int> 0 <= i && i < parts@.len() ==> fits(parts@[i], *length))]
+        #[variant(parts@.len())]
+        while let Some((page, within, buffer)) = parts.pop_front() {
             match self.find_frame(page) {
-                Some(frame) => into[buffer].copy_from_slice(&lock_frame(&frame)[within]),
-                None => into[buffer].fill(u8::MIN),
+                Some(frame) => read_frame(&frame, within, &mut into[buffer]),
+                // Changed: zeros copied in, for which Creusot has a contract, rather than `fill`, for which it has none.
+                None => {
+                    let zeros: &[u8] = &ZEROS;
+                    into[buffer].copy_from_slice(&zeros[within]);
+                }
             }
         }
         into.len()
     }
 
     /// Returns the number of bytes written, starting at the address.
+    #[check(terminates)]
+    #[requires(start@ + bytes@.len() <= u64::MAX@ + 1)]
     fn write_at(&self, start: u64, bytes: &[u8]) -> usize {
         self.write_counted(start, bytes);
         bytes.len()
     }
 
     /// Writes the bytes, starting at the address, and returns the count of changes before the write.
+    #[check(terminates)]
+    #[requires(start@ + bytes@.len() <= u64::MAX@ + 1)]
     fn write_counted(&self, start: u64, bytes: &[u8]) -> u64 {
-        for (page, within, buffer) in split_at_pages(start, bytes.len()) {
-            lock_frame(&self.make_frame(page))[within].copy_from_slice(&bytes[buffer]);
+        let mut parts = split_at_pages(start, bytes.len());
+        #[invariant(forall<i: Int> 0 <= i && i < parts@.len() ==> fits(parts@[i], bytes@.len()))]
+        #[variant(parts@.len())]
+        while let Some((page, within, buffer)) = parts.pop_front() {
+            write_frame(&self.make_frame(page), within, &bytes[buffer]);
         }
         count_change()
+    }
+}
+
+/// A page of zeros, copied where a page has no frame.
+const ZEROS: [u8; PAGE_BYTES] = [u8::MIN; PAGE_BYTES];
+
+/// Whether a part of the bytes lies inside its page and inside the bytes, as long in each.
+#[logic(inline)]
+fn fits(part: (u64, Range<usize>, Range<usize>), length: Int) -> bool {
+    pearlite! {
+        part.1.start@ <= part.1.end@ && part.1.end@ <= PAGE_BYTES@
+        && part.2.start@ <= part.2.end@ && part.2.end@ <= length
+        && part.1.end@ - part.1.start@ == part.2.end@ - part.2.start@
     }
 }
 
@@ -230,7 +283,7 @@ impl MemorySpace for SimulatedMemory {
 
     #[logic]
     fn held(self, holder: Tables) -> bool {
-        pearlite! { holder.holds(self) && holder.sound() }
+        pearlite! { holder.holds(self) && table_sound(holder.table(self)) }
     }
 
     #[logic]
@@ -240,15 +293,32 @@ impl MemorySpace for SimulatedMemory {
         }
     }
 
+    /// The simulation never fails for want of memory: an allocation that fails stops the host.
+    #[logic]
+    fn can_run_out() -> bool {
+        pearlite! { false }
+    }
+
+    #[check(ghost)]
+    #[ensures(forall<space: SimulatedMemory> !space.held(result))]
+    fn new_holder() -> Tables {
+        Tables::new()
+    }
+
+    #[check(terminates)]
     #[ensures(match result { Ok(_) => Self::inside(addresses.start@, addresses.end@), Err(_) => !Self::inside(addresses.start@, addresses.end@) })]
     fn borrow(&self, addresses: Range<u64>) -> Result<SimulatedBytes<'_>, InvalidAddressError> {
-        check_inside(&addresses)?;
+        // Changed: `if let` rather than `?`, which Creusot does not know to return.
+        if let Err(error) = check_inside(&addresses) {
+            return Err(error);
+        }
         Ok(SimulatedBytes {
             space: self,
             addresses,
         })
     }
 
+    #[check(terminates)]
     #[requires(self.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -262,7 +332,10 @@ impl MemorySpace for SimulatedMemory {
         allowed: Permissions,
         holder: Ghost<&mut Tables>,
     ) -> Result<(), InvalidAddressError> {
-        check_pages(&addresses)?;
+        // Changed: `if let` rather than `?`, which Creusot does not know to return.
+        if let Err(error) = check_pages(&addresses) {
+            return Err(error);
+        }
         let before = snapshot!(**holder);
         proof_assert!(table_sound((*before).table(*self)));
         let mut pages = self.lock_held(holder, snapshot!(Seq::empty()));
@@ -279,6 +352,7 @@ impl MemorySpace for SimulatedMemory {
         // Changed: a loop over the page starts, for which Creusot needs no iterator contract.
         let mut start = addresses.start;
         #[invariant(addresses.start@ <= start@ && start@ <= addresses.end@ && start@ % PAGE_SIZE@ == 0)]
+        #[variant(addresses.end@ - start@)]
         #[invariant(forall<key: Int> page_in(entries(*table), key) == if addresses.start@ <= key && key < start@ && key % PAGE_SIZE@ == 0 {
             Page { frame: page_in(*found, key).frame, mapped: page_in(*found, key).mapped, permissions: allowed }
         } else {
@@ -293,6 +367,7 @@ impl MemorySpace for SimulatedMemory {
         Ok(())
     }
 
+    #[check(terminates)]
     #[requires(self.held(**holder) && other.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -302,7 +377,7 @@ impl MemorySpace for SimulatedMemory {
         Err(MapMemoryError::InvalidAddress(_)) => ^*holder == **holder
             && !(Self::whole_pages(addresses.start@, addresses.end@)
                 && Self::whole_pages(other_start@, other_start@ + addresses.end@ - addresses.start@)),
-        Err(MapMemoryError::OutOfMemory) => ^*holder == **holder,
+        Err(MapMemoryError::OutOfMemory) => Self::can_run_out() && ^*holder == **holder,
     })]
     fn map_from(
         &self,
@@ -321,8 +396,10 @@ impl MemorySpace for SimulatedMemory {
         };
         let before = snapshot!(**holder);
         // Changed: the other space's frames are made in one locked loop rather than one lock per page.
-        let mut frames: Vec<Frame> = Vec::new();
+        // Changed: a queue rather than a vector, taken from the front, for which Creusot needs no iterator contract.
+        let mut frames: VecDeque<Frame> = VecDeque::new();
         let mut left = snapshot!(FMap::empty());
+        let mut found_other = snapshot!(FMap::empty());
         {
             let mut other_pages = other.lock_held(ghost!(&mut **holder), snapshot!(Seq::empty()));
             // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
@@ -331,6 +408,7 @@ impl MemorySpace for SimulatedMemory {
             proof_assert!(table_sound(*found));
             let mut start = other_addresses.start;
             #[invariant(other_addresses.start@ <= start@ && start@ <= other_addresses.end@ && start@ % PAGE_SIZE@ == 0)]
+            #[variant(other_addresses.end@ - start@)]
             #[invariant(frames@.len() * PAGE_SIZE@ == start@ - other_addresses.start@)]
             #[invariant(forall<i: Int> 0 <= i && i < frames@.len() ==>
                 page_in(entries(*table), other_addresses.start@ + i * PAGE_SIZE@).frame == Some(frames@[i])
@@ -356,7 +434,7 @@ impl MemorySpace for SimulatedMemory {
                         frame
                     }
                 };
-                frames.push(frame);
+                frames.push_back(frame);
                 start += PAGE_SIZE;
             }
             proof_assert!(written_since(
@@ -370,6 +448,18 @@ impl MemorySpace for SimulatedMemory {
                 || page_in((*before).table(*other), other_addresses.start@ + i * PAGE_SIZE@).frame == None
                     && new_to(*before, frames@[i]));
             left = snapshot!(entries(*table));
+            found_other = found;
+            proof_assert!(forall<key: Int> other_addresses.start@ <= key && key % PAGE_SIZE@ == 0
+                ==> key == other_addresses.start@ + (key - other_addresses.start@) / PAGE_SIZE@ * PAGE_SIZE@);
+            proof_assert!(forall<key: Int> other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0
+                ==> 0 <= (key - other_addresses.start@) / PAGE_SIZE@ && (key - other_addresses.start@) / PAGE_SIZE@ < frames@.len());
+            proof_assert!(forall<key: Int> other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0
+                ==> page_in(*left, key).frame == Some(frames@[(key - other_addresses.start@) / PAGE_SIZE@]));
+            proof_assert!(forall<key: Int> !(other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0)
+                ==> page_in(*left, key) == page_in(*found, key));
+            proof_assert!(forall<key: Int, x: Frame> !(other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0)
+                && page_in(*left, key).frame == Some(x) && page_in((*before).table(*other), key).frame != Some(x)
+                ==> new_to(*before, x) && forall<at: Int> at != key ==> page_in(*left, at).frame != Some(x));
             proof_assert!(forall<key: Int> other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0 ==>
             match page_in(*left, key).frame {
                 None => false,
@@ -384,14 +474,24 @@ impl MemorySpace for SimulatedMemory {
         // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
         let table = &mut *pages;
         let found = snapshot!(entries(*table));
+        proof_assert!(written_since(
+            (*middle).table(*self),
+            *found,
+            *middle,
+            Seq::empty()
+        ));
         proof_assert!(table_sound(*found));
+        // A page of this space that a write gave a frame since the first lock shows a frame the other table does not.
+        proof_assert!(forall<at: Int, y: Frame> page_in(*found, at).frame == Some(y)
+            && page_in((*middle).table(*self), at).frame != Some(y)
+            ==> !shows(*left, y) && forall<b: Int> b != at ==> page_in(*found, b).frame != Some(y));
         let all = snapshot!(frames@);
         proof_assert!(forall<key: Int> addresses.start@ <= key && key % PAGE_SIZE@ == 0
             ==> key - addresses.start@ == (key - addresses.start@) / PAGE_SIZE@ * PAGE_SIZE@);
-        let mut frames = frames.into_iter();
         let mut start = addresses.start;
         let mut index = snapshot!(0);
         #[invariant(0 <= *index && start@ == addresses.start@ + *index * PAGE_SIZE@ && start@ <= addresses.end@)]
+        #[variant(addresses.end@ - start@)]
         #[invariant((*all).len() * PAGE_SIZE@ == addresses.end@ - addresses.start@)]
         #[invariant(frames@.len() == (*all).len() - *index)]
         #[invariant(forall<j: Int> 0 <= j && j < frames@.len() ==> frames@[j] == (*all)[*index + j])]
@@ -401,7 +501,7 @@ impl MemorySpace for SimulatedMemory {
             ==> page_in(entries(*table), key) == page_in(*found, key))]
         while start < addresses.end {
             let rest = snapshot!(frames@);
-            if let Some(frame) = frames.next() {
+            if let Some(frame) = frames.pop_front() {
                 proof_assert!(frame == (*rest)[0] && forall<j: Int> 0 <= j && j < frames@.len() ==> frames@[j] == (*rest)[j + 1]);
                 let page = page_at(table, start);
                 page.frame = Some(frame);
@@ -433,11 +533,37 @@ impl MemorySpace for SimulatedMemory {
             Some(frame) => page_in((*middle).table(*self), key).frame == Some(frame)
                 || new_to(*middle, frame) && forall<other_key: Int> other_key != key ==> page_in(entries(*table), other_key).frame != Some(frame),
         });
+        // The pages outside both ranges: as they were, or with a frame a write gave them, which no other page shows.
+        proof_assert!(forall<at: Int> addresses.start@ <= at && at < addresses.end@ && at % PAGE_SIZE@ == 0
+            ==> page_in(entries(*table), at).frame == page_in(*left, at - addresses.start@ + other_start@).frame);
+        proof_assert!(*self != *other ==> forall<at: Int, x: Frame>
+            !(addresses.start@ <= at && at < addresses.end@ && at % PAGE_SIZE@ == 0)
+            && page_in(entries(*table), at).frame == Some(x)
+            ==> page_in((*before).table(*self), at).frame == Some(x) || !shows(*left, x));
+        proof_assert!(*self != *other ==> forall<key: Int, x: Frame>
+            !(other_start@ <= key && key < other_start@ + addresses.end@ - addresses.start@ && key % PAGE_SIZE@ == 0)
+            && page_in(*left, key).frame == Some(x) && page_in((*before).table(*other), key).frame != Some(x)
+            ==> forall<at: Int> page_in(entries(*table), at).frame != Some(x));
+        proof_assert!(*self == *other ==> forall<key: Int, x: Frame>
+            !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0)
+            && !(other_start@ <= key && key < other_start@ + addresses.end@ - addresses.start@ && key % PAGE_SIZE@ == 0)
+            && page_in(entries(*table), key).frame == Some(x) && page_in((*before).table(*self), key).frame != Some(x)
+            ==> page_in((*before).table(*self), key).frame == None
+                && page_in(entries(*table), key).mapped == page_in((*before).table(*self), key).mapped
+                && page_in(entries(*table), key).permissions == page_in((*before).table(*self), key).permissions
+                && (forall<space: SimulatedMemory> space != *self && (*before).holds(space) ==> !shows((*before).table(space), x))
+                && forall<at: Int> at != key ==> page_in(entries(*table), at).frame != Some(x));
+        proof_assert!(*self == *other ==> forall<key: Int>
+            !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0)
+            && !(other_start@ <= key && key < other_start@ + addresses.end@ - addresses.start@ && key % PAGE_SIZE@ == 0)
+            && page_in(entries(*table), key).frame == page_in((*before).table(*self), key).frame
+            ==> page_in(entries(*table), key) == page_in((*before).table(*self), key));
         proof_assert!(table_sound(entries(*table)));
         count_change();
         Ok(())
     }
 
+    #[check(terminates)]
     #[requires(self.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -450,7 +576,10 @@ impl MemorySpace for SimulatedMemory {
         addresses: Range<u64>,
         holder: Ghost<&mut Tables>,
     ) -> Result<(), InvalidAddressError> {
-        check_pages(&addresses)?;
+        // Changed: `if let` rather than `?`, which Creusot does not know to return.
+        if let Err(error) = check_pages(&addresses) {
+            return Err(error);
+        }
         let before = snapshot!(**holder);
         proof_assert!(table_sound((*before).table(*self)));
         let mut pages = self.lock_held(holder, snapshot!(Seq::empty()));
@@ -468,6 +597,7 @@ impl MemorySpace for SimulatedMemory {
         // iterator contract; the pages visited are the same.
         let mut cursor = addresses.start;
         #[invariant(addresses.start@ <= cursor@ && cursor@ <= addresses.end@)]
+        #[variant(addresses.end@ - cursor@)]
         #[invariant(forall<key: Int> page_in(entries(*table), key) == if addresses.start@ <= key && key < cursor@ && page_in(*found, key).mapped {
             Page { frame: None, mapped: false, permissions: page_in(*found, key).permissions }
         } else {
@@ -496,6 +626,7 @@ impl MemorySpace for SimulatedMemory {
         Ok(())
     }
 
+    #[check(terminates)]
     #[requires(self.held(**holder) && other.held(**holder))]
     #[ensures(Self::still_held(**holder, ^*holder))]
     #[ensures(match result {
@@ -505,7 +636,7 @@ impl MemorySpace for SimulatedMemory {
         Err(CopyMemoryError::InvalidAddress(_)) => ^*holder == **holder
             && !(Self::whole_pages(addresses.start@, addresses.end@)
                 && Self::whole_pages(other_start@, other_start@ + addresses.end@ - addresses.start@)),
-        Err(CopyMemoryError::OutOfMemory) => ^*holder == **holder,
+        Err(CopyMemoryError::OutOfMemory) => Self::can_run_out() && ^*holder == **holder,
     })]
     fn copy_from(
         &self,
@@ -525,7 +656,8 @@ impl MemorySpace for SimulatedMemory {
         let before = snapshot!(**holder);
         let mut made = snapshot!(Seq::<Frame>::empty());
         // Changed: loops over the page starts, for which Creusot needs no iterator contract.
-        let mut copied: Vec<Option<Page>> = Vec::new();
+        // Changed: a queue rather than a vector, taken from the front, for which Creusot needs no iterator contract.
+        let mut copied: VecDeque<Option<Page>> = VecDeque::new();
         let mut left = snapshot!(FMap::empty());
         {
             let other_pages = other.lock_held(ghost!(&mut **holder), snapshot!(Seq::empty()));
@@ -534,6 +666,7 @@ impl MemorySpace for SimulatedMemory {
             proof_assert!(table_sound(*found));
             let mut start = other_addresses.start;
             #[invariant(other_addresses.start@ <= start@ && start@ <= other_addresses.end@ && start@ % PAGE_SIZE@ == 0)]
+            #[variant(other_addresses.end@ - start@)]
             #[invariant(entries(*table) == *found)]
             #[invariant(copied@.len() * PAGE_SIZE@ == start@ - other_addresses.start@)]
             #[invariant(forall<i: Int> 0 <= i && i < copied@.len() ==> copied_as(page_in(*found, other_addresses.start@ + i * PAGE_SIZE@), copied@[i], *made))]
@@ -564,7 +697,7 @@ impl MemorySpace for SimulatedMemory {
                     }
                     None => None,
                 };
-                copied.push(page);
+                copied.push_back(page);
                 start += PAGE_SIZE;
             }
             left = snapshot!(*found);
@@ -581,10 +714,10 @@ impl MemorySpace for SimulatedMemory {
         let all = snapshot!(copied@);
         proof_assert!(forall<key: Int> addresses.start@ <= key && key % PAGE_SIZE@ == 0
             ==> key - addresses.start@ == (key - addresses.start@) / PAGE_SIZE@ * PAGE_SIZE@);
-        let mut copied = copied.into_iter();
         let mut start = addresses.start;
         let mut index = snapshot!(0);
         #[invariant(0 <= *index && start@ == addresses.start@ + *index * PAGE_SIZE@ && start@ <= addresses.end@)]
+        #[variant(addresses.end@ - start@)]
         #[invariant((*all).len() * PAGE_SIZE@ == addresses.end@ - addresses.start@)]
         #[invariant(copied@.len() == (*all).len() - *index)]
         #[invariant(forall<j: Int> 0 <= j && j < copied@.len() ==> copied@[j] == (*all)[*index + j])]
@@ -594,7 +727,7 @@ impl MemorySpace for SimulatedMemory {
             ==> page_in(entries(*table), key) == page_in(*found, key))]
         while start < addresses.end {
             let rest = snapshot!(copied@);
-            if let Some(page) = copied.next() {
+            if let Some(page) = copied.pop_front() {
                 proof_assert!(page == (*rest)[0] && forall<j: Int> 0 <= j && j < copied@.len() ==> copied@[j] == (*rest)[j + 1]);
                 match page {
                     Some(page) => put(table, start, page),
@@ -615,24 +748,28 @@ impl MemorySpace for SimulatedMemory {
 }
 
 impl VolatileBytes for SimulatedBytes<'_> {
+    #[check(terminates)]
+    #[ensures(result@ == self.addresses.end@ - self.addresses.start@)]
     fn len(&self) -> u64 {
         self.addresses.end - self.addresses.start
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        let count = into.len().min(to_count(self.len()));
+        let count = shorter(into.len(), to_count(self.len()));
         self.space.read_at(self.addresses.start, &mut into[..count])
     }
 
+    #[check(terminates)]
     fn write(&self, bytes: &[u8]) -> usize {
-        let count = bytes.len().min(to_count(self.len()));
+        let count = shorter(bytes.len(), to_count(self.len()));
         self.space.write_at(self.addresses.start, &bytes[..count])
     }
 
     /// Copies all the bytes out and hands them to the sink, since a slice of the guest's bytes may not be lent.
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
         let mut copied = vec![u8::MIN; to_count(self.len())];
-        self.read(&mut copied);
+        // Changed: `read_at` rather than `read`, the same call, since `VolatileBytes::read` has no contract.
+        self.space.read_at(self.addresses.start, &mut copied);
         sink.write(&copied)
     }
 
@@ -640,27 +777,60 @@ impl VolatileBytes for SimulatedBytes<'_> {
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
         let mut buffer = vec![u8::MIN; to_count(self.len())];
         let count = source.read(&mut buffer)?;
-        Ok(self.write(&buffer[..count]))
+        // Changed: a source that says it read more than the buffer holds cannot stop the host; `write_at` rather than
+        // `write`, the same call, since `VolatileBytes::write` promises nothing.
+        let written = shorter(count, buffer.len());
+        Ok(self
+            .space
+            .write_at(self.addresses.start, &buffer[..written]))
     }
 }
 
 /// Counts a change now in place, and returns the count of changes before it.
 ///
-/// Trusted: Creusot has no contract for the standard atomic integers; this one promises nothing.
+/// Trusted: Creusot cannot translate a `static`; this one returns and promises nothing else.
 #[trusted]
+#[check(terminates)]
 fn count_change() -> u64 {
     CHANGES.fetch_add(1, Ordering::AcqRel)
 }
 
+// Trusted: Creusot has no contract for `Mutex`. Returns and promises nothing else.
+#[trusted]
+#[check(terminates)]
 fn new_frame() -> Frame {
-    Arc::new(Mutex::new(vec![u8::MIN; PAGE_BYTES].into_boxed_slice()))
+    Arc::new(Mutex::new(Box::new(ZEROS)))
 }
 
-fn lock_frame(frame: &Frame) -> MutexGuard<'_, Box<[u8]>> {
+// Trusted: Creusot has no contract for `Mutex`. Assumes the lock is given, at last.
+#[trusted]
+#[check(terminates)]
+fn lock_frame(frame: &Frame) -> MutexGuard<'_, Box<[u8; PAGE_BYTES]>> {
     frame.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Copies the bytes of the frame at the addresses within its page into the buffer.
+///
+/// Trusted: Creusot has no contract for `Mutex`; the copy is safe for every input its precondition allows, since a
+/// frame holds a whole page.
+#[trusted]
+#[requires(within.start@ <= within.end@ && within.end@ <= PAGE_BYTES@ && into@.len() == within.end@ - within.start@)]
+fn read_frame(frame: &Frame, within: Range<usize>, into: &mut [u8]) {
+    into.copy_from_slice(&lock_frame(frame)[within]);
+}
+
+/// Copies the bytes into the frame at the addresses within its page.
+///
+/// Trusted: as `read_frame`.
+#[trusted]
+#[check(terminates)]
+#[requires(within.start@ <= within.end@ && within.end@ <= PAGE_BYTES@ && bytes@.len() == within.end@ - within.start@)]
+fn write_frame(frame: &Frame, within: Range<usize>, bytes: &[u8]) {
+    lock_frame(frame)[within].copy_from_slice(bytes);
+}
+
 /// Returns the page as a copy carries it: a mapped frame shared, an owned one copied.
+#[check(terminates)]
 #[ensures(page.mapped ==> result == *page)]
 #[ensures(!page.mapped ==> !result.mapped && result.permissions == page.permissions
     && match result.frame { None => page.frame == None, Some(frame) => fresh(*before, *found, *made, frame) })]
@@ -683,6 +853,7 @@ fn copy_page(
     }
 }
 
+#[check(terminates)]
 #[ensures(match result { Ok(()) => SimulatedMemory::inside(addresses.start@, addresses.end@), Err(_) => !SimulatedMemory::inside(addresses.start@, addresses.end@) })]
 fn check_inside(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
     // Changed: Creusot has no contract for `RangeInclusive::contains`; these comparisons say the same.
@@ -697,9 +868,13 @@ fn check_inside(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
     }
 }
 
+#[check(terminates)]
 #[ensures(match result { Ok(()) => SimulatedMemory::whole_pages(addresses.start@, addresses.end@), Err(_) => !SimulatedMemory::whole_pages(addresses.start@, addresses.end@) })]
 fn check_pages(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
-    check_inside(addresses)?;
+    // Changed: `if let` rather than `?`, which Creusot does not know to return.
+    if let Err(error) = check_inside(addresses) {
+        return Err(error);
+    }
     // Changed: the remainder rather than the mask, the same test, which Creusot relates to the contract's `%`.
     if addresses.start % PAGE_SIZE == u64::MIN && addresses.end % PAGE_SIZE == u64::MIN {
         Ok(())
@@ -709,6 +884,7 @@ fn check_pages(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
 }
 
 /// Returns the addresses as long as the given ones that start at the start, refused unless they are whole pages.
+#[check(terminates)]
 #[requires(addresses.start@ <= addresses.end@)]
 #[ensures(match result {
     Ok(shifted) => shifted.start == start && shifted.end@ == start@ + addresses.end@ - addresses.start@
@@ -716,28 +892,40 @@ fn check_pages(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
     Err(_) => !SimulatedMemory::whole_pages(start@, start@ + addresses.end@ - addresses.start@),
 })]
 fn shift(addresses: &Range<u64>, start: u64) -> Result<Range<u64>, InvalidAddressError> {
-    let end = start
-        .checked_add(addresses.end - addresses.start)
-        .ok_or(InvalidAddressError)?;
-    check_pages(&(start..end))?;
-    Ok(start..end)
+    // Changed: `match` rather than `ok_or` and `?`, which Creusot does not know to return.
+    let Some(end) = start.checked_add(addresses.end - addresses.start) else {
+        return Err(InvalidAddressError);
+    };
+    match check_pages(&(start..end)) {
+        Ok(()) => Ok(start..end),
+        Err(error) => Err(error),
+    }
 }
 
 /// Returns the first address of each page of addresses that start a page.
+// Trusted: outside the memory contract (only the trusted `apply` calls it); Creusot has no contract for `step_by`.
+#[trusted]
 fn page_starts(addresses: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
     addresses.clone().step_by(PAGE_BYTES)
 }
 
 /// Returns each page the bytes from the start touch, with the bytes' place in the page and in the buffer.
-fn split_at_pages(start: u64, length: usize) -> Vec<(u64, Range<usize>, Range<usize>)> {
-    let mut parts = Vec::new();
+// Changed: a queue rather than a vector, and the remainder rather than the mask (the same numbers), for the proofs.
+#[check(terminates)]
+#[requires(start@ + length@ <= u64::MAX@ + 1)]
+#[ensures(forall<i: Int> 0 <= i && i < result@.len() ==> fits(result@[i], length@))]
+fn split_at_pages(start: u64, length: usize) -> VecDeque<(u64, Range<usize>, Range<usize>)> {
+    let mut parts = VecDeque::new();
     let mut done = usize::MIN;
+    #[invariant(done@ <= length@)]
+    #[invariant(forall<i: Int> 0 <= i && i < parts@.len() ==> fits(parts@[i], length@))]
+    #[variant(length@ - done@)]
     while done < length {
         let address = start + done as u64;
-        let within = to_count(address & PAGE_MASK);
-        let count = (PAGE_BYTES - within).min(length - done);
-        parts.push((
-            address & !PAGE_MASK,
+        let within = to_count(address % PAGE_SIZE);
+        let count = shorter(PAGE_BYTES - within, length - done);
+        parts.push_back((
+            address - address % PAGE_SIZE,
             within..within + count,
             done..done + count,
         ));
@@ -746,12 +934,27 @@ fn split_at_pages(start: u64, length: usize) -> Vec<(u64, Range<usize>, Range<us
     parts
 }
 
+/// Returns the smaller of the two counts.
+// Changed: in place of `min`, which Creusot does not know to return.
+#[check(terminates)]
+#[ensures(result@ == if first@ <= second@ { first@ } else { second@ })]
+fn shorter(first: usize, second: usize) -> usize {
+    if first <= second { first } else { second }
+}
+
 /// Returns the length as a count of host bytes, at most the most the host can count.
+// Trusted: Creusot has no contract for `usize::try_from` of a `u64`. Assumes what the standard library documents.
+#[trusted]
+#[check(terminates)]
+#[ensures(result@ == if length@ <= usize::MAX@ { length@ } else { usize::MAX@ })]
 fn to_count(length: u64) -> usize {
     usize::try_from(length).unwrap_or(usize::MAX)
 }
 
 /// Returns what the page allows as ARM64 sees it; a page that allows nothing is held unmapped.
+// Trusted: outside the memory contract (only the trusted `take_copy` calls it); Creusot has no contract for the
+// methods `bitflags` gives `Permissions`. The suite's `permissions_bind_guest_code_and_not_borrowed_bytes` tests it.
+#[trusted]
 fn to_page_permission(permissions: Permissions) -> Option<PagePermission> {
     if permissions.is_empty() {
         return None;
@@ -775,6 +978,8 @@ fn to_page_permission(permissions: Permissions) -> Option<PagePermission> {
     })
 }
 
+// Trusted: as `to_page_permission` (only the trusted `apply` calls it).
+#[trusted]
 fn to_permissions(permission: PagePermission) -> Permissions {
     match permission {
         PagePermission::Unmapped => Permissions::empty(),
@@ -798,16 +1003,10 @@ fn to_permissions(permission: PagePermission) -> Permissions {
 // ---------------------------------------------------------------------------------------------------------------
 // The model of a page table, for the proofs only.
 
-/// What a page that was never given permissions allows. Only its name matters to the proofs.
-#[logic(opaque)]
-fn nothing() -> Permissions {
-    dead
-}
-
 /// The page a key with no entry stands for: no frame, not mapped, allowing nothing.
 #[logic(inline)]
 fn blank() -> Page {
-    pearlite! { Page { frame: None, mapped: false, permissions: nothing() } }
+    pearlite! { Page { frame: None, mapped: false, permissions: memory_space::nothing() } }
 }
 
 /// The page that starts at the address in a table.
@@ -895,16 +1094,28 @@ fn table_sound(table: FMap<Int, Page>) -> bool {
     pearlite! { forall<start: Int> page_in(table, start).mapped ==> page_in(table, start).frame != None }
 }
 
-impl Tables {
-    /// Whether the table of each space held is sound.
-    #[logic]
-    pub(crate) fn sound(self) -> bool {
-        pearlite! { forall<space: SimulatedMemory> self.holds(space) ==> table_sound(self.table(space)) }
+// ---------------------------------------------------------------------------------------------------------------
+// Trusted: what Creusot cannot see into, with what each assumes. Every body here is the original standard call.
+
+// `ByteSink` and `ByteSource` have no contracts yet, and Creusot gives a method without one a precondition no caller
+// can meet. These say each may be called with any buffer, and promise nothing of what it does.
+extern_spec! {
+    mod wcontainers_byte_sink {
+        trait ByteSink {
+            #[ensures(true)]
+            fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error>;
+        }
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Trusted: what Creusot cannot see into, with what each assumes. Every body here is the original standard call.
+extern_spec! {
+    mod wcontainers_byte_source {
+        trait ByteSource {
+            #[ensures(true)]
+            fn read(&mut self, into: &mut [u8]) -> Result<usize, Self::Error>;
+        }
+    }
+}
 
 /// The right to change spaces, as `MemorySpace::Holder`: each held space's page table as the holder last saw it.
 /// It exists only in proofs and is never made when the program runs. Opaque: without it every holder would be equal.
@@ -934,13 +1145,23 @@ impl Tables {
 }
 
 impl SimulatedMemory {
+    /// Returns a new space with no pages, which the holder holds from now on.
+    #[check(terminates)]
+    #[ensures(SimulatedMemory::new_space(**holder, ^*holder, result))]
+    pub(crate) fn create(holder: Ghost<&mut Tables>) -> Self {
+        Self::new_held(holder)
+    }
+}
+
+impl SimulatedMemory {
     /// Returns a new space with no pages, held by the holder.
     ///
     /// Trusted: assumes a new space is none of those the holder holds, as a new value is.
     #[trusted]
+    #[check(terminates)]
     #[ensures(!(**holder).holds(result) && (^*holder).holds(result) && (^*holder).table(result) == FMap::empty())]
     #[ensures(forall<other: SimulatedMemory> other != result ==> (^*holder).holds(other) == (**holder).holds(other) && (^*holder).table(other) == (**holder).table(other))]
-    pub fn new_held(holder: Ghost<&mut Tables>) -> Self {
+    fn new_held(holder: Ghost<&mut Tables>) -> Self {
         let _ = holder;
         Self::default()
     }
@@ -951,6 +1172,7 @@ impl SimulatedMemory {
     /// frame a new frame (`make_frame`, through `VolatileBytes::write`), new to every space and to the frames alive;
     /// and that when the lock ends the holder sees the table as it is left.
     #[trusted]
+    #[check(terminates)]
     #[requires((**holder).holds(*self))]
     #[ensures(written_since((**holder).table(*self), entries(result.now()), **holder, *alive))]
     #[ensures((^*holder).table(*self) == entries(result.last()))]
@@ -1024,6 +1246,7 @@ fn entries(table: BTreeMap<u64, Page>) -> FMap<Int, Page> {
 
 /// Returns the page that starts at the address, made with nothing in it if there was none.
 #[trusted]
+#[check(terminates)]
 #[ensures(*result == page_in(entries(*pages), start@))]
 #[ensures(entries(^pages) == entries(*pages).add(start@, ^result))]
 fn page_at(pages: &mut BTreeMap<u64, Page>, start: u64) -> &mut Page {
@@ -1032,6 +1255,7 @@ fn page_at(pages: &mut BTreeMap<u64, Page>, start: u64) -> &mut Page {
 
 /// Returns the page that starts at the address, if it has an entry.
 #[trusted]
+#[check(terminates)]
 #[ensures(match result { Some(page) => entries(*pages).lookup(start@) == Some(*page), None => entries(*pages).lookup(start@) == None })]
 fn page_of(pages: &BTreeMap<u64, Page>, start: u64) -> Option<&Page> {
     pages.get(&start)
@@ -1039,6 +1263,7 @@ fn page_of(pages: &BTreeMap<u64, Page>, start: u64) -> Option<&Page> {
 
 /// Sets the page that starts at the address.
 #[trusted]
+#[check(terminates)]
 #[ensures(entries(^pages) == entries(*pages).add(start@, page))]
 fn put(pages: &mut BTreeMap<u64, Page>, start: u64, page: Page) {
     pages.insert(start, page);
@@ -1046,6 +1271,7 @@ fn put(pages: &mut BTreeMap<u64, Page>, start: u64, page: Page) {
 
 /// Removes the page that starts at the address.
 #[trusted]
+#[check(terminates)]
 #[ensures(entries(^pages) == entries(*pages).remove(start@))]
 fn clear(pages: &mut BTreeMap<u64, Page>, start: u64) {
     pages.remove(&start);
@@ -1053,6 +1279,7 @@ fn clear(pages: &mut BTreeMap<u64, Page>, start: u64) {
 
 /// Returns the first address of the addresses that has an entry.
 #[trusted]
+#[check(terminates)]
 #[ensures(match result {
     Some(start) => addresses.start@ <= start@ && start@ < addresses.end@ && entries(*pages).lookup(start@) != None
         && forall<key: Int> addresses.start@ <= key && key < start@ ==> entries(*pages).lookup(key) == None,
@@ -1066,6 +1293,7 @@ fn first_entry(pages: &BTreeMap<u64, Page>, addresses: Range<u64>) -> Option<u64
 ///
 /// Trusted: assumes a new frame is none of the frames alive: those of the spaces held, of the table, and made.
 #[trusted]
+#[check(terminates)]
 #[ensures(fresh(*holder, *table, *made, result))]
 fn new_frame_for(
     holder: Snapshot<Tables>,
@@ -1080,6 +1308,7 @@ fn new_frame_for(
 ///
 /// Trusted: as `new_frame_for`.
 #[trusted]
+#[check(terminates)]
 #[ensures(fresh(*holder, *table, *made, result))]
 fn copy_frame(
     frame: &Frame,

@@ -410,6 +410,25 @@ where
     assert_stops_at_first_instruction::<Chip::Architecture>(&guest, fault, &stopped);
 }
 
+/// Checks that two spaces do not share bytes until one maps the other's: a write to either leaves the other as it was.
+pub fn spaces_do_not_share_bytes_unless_mapped<Chip: Executor>(executor: Chip) {
+    let first = create_memory(&executor);
+    let second = create_memory(&executor);
+    let written = pattern(SECOND_PATTERN, length(&(CODE..END)));
+    write_bytes(&first, CODE, &written);
+    assert_eq!(
+        read_bytes(&second, CODE..END),
+        zeros(CODE..END),
+        "the bytes of the other space after a write to the first"
+    );
+    write_bytes(&second, CODE, &pattern(THIRD_PATTERN, length(&(CODE..END))));
+    assert_eq!(
+        read_bytes(&first, CODE..END),
+        written,
+        "the bytes of the first space after a write to the other"
+    );
+}
+
 /// Checks that every method of the space refuses addresses that end past those a program can use.
 pub fn addresses_outside_the_space_are_refused<Chip: Executor>(executor: Chip) {
     let memory = create_memory(&executor);
@@ -1005,7 +1024,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 fn create_memory<Chip: Executor>(executor: &Chip) -> Chip::GuestMemory {
-    match executor.create_guest_memory() {
+    match executor.create_guest_memory(Ghost::conjure()) {
         Ok(memory) => memory,
         Err(_) => panic!("the executor made no guest memory"),
     }
@@ -1176,6 +1195,11 @@ macro_rules! tests {
         #[test]
         fn new_space_reads_as_zeros_and_allows_nothing() {
             $crate::new_space_reads_as_zeros_and_allows_nothing($executor);
+        }
+
+        #[test]
+        fn spaces_do_not_share_bytes_unless_mapped() {
+            $crate::spaces_do_not_share_bytes_unless_mapped($executor);
         }
 
         #[test]
