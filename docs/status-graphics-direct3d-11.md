@@ -45,6 +45,13 @@ G4h round 6 run 2 (2026-11-23, from about 14:20 Pacific), the sixth round's chec
   the root manifest's 1091 (c5be9197). The lifetimes test now writes its seeds and steps past the
   harness's capture (f0fe1e5b), so a passing run's log records them ("lifetimes: seeds 1..9 of
   300 steps each", logs/r6d-lib.log).
+- The whole bar at a93c8576, this run's last code (logs/r6g-*, Measurements): every result as at
+  run 9 (Wine d3d11 152 of 166, d3d10core 110 of 111, scenes 137 pass, programs as listed in the
+  Gap list); with `--ignored`, exactly the ten known failures fail (logs/r6g-ignored.log).
+- Found by that bar: through the WebGL 2 build, d3d10core test_clip_distance crashes since G4h
+  run 9 (96 of 111, not 97): the shaders crate's capture program refuses a geometry shader that
+  reads no clip distance behind a vertex shader writing one (Gap list, asked of the shaders track).
+  The 97 and 96 this file gave are now each placed by run.
 
 G4h round 6 run 1 (2026-11-23, from about 08:50 Pacific), the orchestrator's two rulings:
 - atg-simplecomputepc read as explained and counted passing; the check showed that wrong (the
@@ -1227,6 +1234,8 @@ wine10gl, logs/r6g-*), 17:06 to 21:45:
   atg-simplecomputepc 154,515 beyond in frames 10, 60 and 120 (Gap list); atg-simplemsaa_pc frame 10
   8 beyond (largest 11), as at run 8. bgfx: 01, 24, 35, 37, 38 pass, 26-occlusion 6,458 beyond in
   each frame (the overlay's memory line, Gap list).
+- The library with `--ignored` (r6d/final.sh, 21:45 to 22:21, logs/r6g-ignored.log): com 1 and
+  programs 9 fail, exactly the ten known failures.
 - The front's tests (front 60, unit, cache) were not rerun: no commit of this run touches
   crates/wcontainers-direct3d-11 (last tested at 3fe49ed3, round 6 run 1).
 - Sizes, load times and building ahead were not rerun: no code of this run is in the shipped
