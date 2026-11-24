@@ -7,12 +7,12 @@ use std::path::PathBuf;
 #[path = "../wcontainers-nir/mesa/meson_build.rs"]
 mod meson_build;
 use meson_build::{
-    ASSIGN, CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, RUSTC_ENV,
-    mesa_defines, mesa_flags, source_folder,
+    CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, mesa_defines,
+    mesa_flags, source_folder,
 };
 
 /// The Gallium headers the driver is written against, and the bindings made of them in `OUT_DIR`
-/// (`src/gallium.rs` includes them, by the path this gives it in `WCONTAINERS_GALLIUM_BINDINGS`).
+/// (`src/gallium.rs` includes them from there by their file name).
 const GALLIUM_HEADER: &str = "bridge/gallium.h";
 /// The bit fields bindgen cannot lay out as Visual C++ does, read in C (`bridge/fields.h`).
 const FIELDS: &str = "bridge/fields.c";
@@ -91,9 +91,5 @@ fn main() {
     bindings
         .write_to_file(&file)
         .expect("the bindings are written");
-    println!(
-        "{RUSTC_ENV}WCONTAINERS_GALLIUM_BINDINGS{ASSIGN}{}",
-        file.display()
-    );
     println!("{CFG}");
 }
