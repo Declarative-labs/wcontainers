@@ -8,10 +8,13 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use wcontainers_abi::{Cpu, CpuError, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, SharedId};
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
 };
 use wcontainers_guest_cpu::Guest;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::{CpuSide, Shown};
 
@@ -186,9 +189,7 @@ impl<G: Guest<Block = RegisterBlock>> VolatileBytes for GuestBytes<'_, G> {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        let count = usize::try_from(self.len())
-            .unwrap_or(usize::MAX)
-            .min(into.len());
+        let count = self.host_length().min(into.len());
         let space = self.space;
         space
             .world
@@ -199,9 +200,7 @@ impl<G: Guest<Block = RegisterBlock>> VolatileBytes for GuestBytes<'_, G> {
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
-        let count = usize::try_from(self.len())
-            .unwrap_or(usize::MAX)
-            .min(bytes.len());
+        let count = self.host_length().min(bytes.len());
         let space = self.space;
         let mut side = space.world.borrow_mut();
         side.write(space.memory, self.addresses.start, &bytes[..count])
@@ -209,6 +208,27 @@ impl<G: Guest<Block = RegisterBlock>> VolatileBytes for GuestBytes<'_, G> {
         let end = self.addresses.start + count as u64;
         side.code_touched(space.memory, self.addresses.start..end);
         count
+    }
+
+    /// Hands the sink a copy of all the bytes, since a slice of the guest's bytes may not be lent.
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        let mut copied = vec![u8::MIN; self.host_length()];
+        self.read(&mut copied);
+        sink.write(&copied)
+    }
+
+    /// Has the source fill a buffer as long as all the bytes and writes what it gave, since a slice of the guest's bytes may not be lent.
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut buffer = vec![u8::MIN; self.host_length()];
+        let count = source.read(&mut buffer)?;
+        Ok(self.write(&buffer[..count]))
+    }
+}
+
+impl<G: Guest<Block = RegisterBlock>> GuestBytes<'_, G> {
+    /// Returns the number of bytes, which lie in a space the host addresses whole.
+    fn host_length(&self) -> usize {
+        usize::try_from(self.len()).expect("a space's addresses fit in host memory")
     }
 }
 

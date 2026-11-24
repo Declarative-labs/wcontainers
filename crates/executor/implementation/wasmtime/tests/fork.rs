@@ -2,6 +2,7 @@
 //! same translated code, and goes its own way afterwards; an executor brought back from another holds
 //! the same memories and threads and translates again.
 
+use rustix::process::{Pid, Signal, WaitOptions, kill_process, waitpid};
 use wcontainers_abi::{
     Cpu, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, SharedId, ThreadId, Warning,
 };
@@ -177,6 +178,10 @@ fn an_executor_brought_back_in_a_copy_of_the_process_compiles_there() {
     // Rayon's global pool has threads here, which the copy will not have.
     rayon::join(|| {}, || {});
     // SAFETY: the copy only runs the executor and leaves with `_exit`.
+    #[expect(
+        unsafe_code,
+        reason = "the test copies its process with fork, which neither std nor rustix offers safely"
+    )]
     let child = unsafe { libc::fork() };
     assert!(child >= 0, "fork");
     if child == 0 {
@@ -187,32 +192,33 @@ fn an_executor_brought_back_in_a_copy_of_the_process_compiles_there() {
             .iter()
             .any(|t| matches!(t.origin, Origin::Made { .. }));
         // SAFETY: ends the copy without running anything of the parent's.
-        unsafe { libc::_exit(if value == 12 && compiled { 0 } else { 1 }) };
+        #[expect(
+            unsafe_code,
+            reason = "the copy leaves with _exit, since exit would run the parent's handlers in it"
+        )]
+        unsafe {
+            libc::_exit(if value == 12 && compiled { 0 } else { 1 })
+        };
     }
     wait(child);
 }
 
 /// Waits up to 120 s for a copy of this process to exit with 0.
 fn wait(child: libc::pid_t) {
+    let child = Pid::from_raw(child).expect("the copy's process");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    let mut status = 0;
-    loop {
-        // SAFETY: waits for the caller's copy.
-        let done = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
-        if done == child {
-            break;
+    let status = loop {
+        let waited = waitpid(Some(child), WaitOptions::NOHANG).expect("waiting for the copy");
+        if let Some((_, status)) = waited {
+            break status;
         }
         if std::time::Instant::now() > deadline {
-            // SAFETY: the caller's copy.
-            unsafe { libc::kill(child, libc::SIGKILL) };
+            kill_process(child, Signal::KILL).expect("killing the copy");
             panic!("the copy did not finish in 120 s");
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(
-        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-        "status {status:#x}"
-    );
+    };
+    assert_eq!(status.exit_status(), Some(0), "status {status:?}");
 }
 
 /// After the host process has forked, a duplicate made in the copy of memory written only there is
@@ -224,6 +230,10 @@ fn a_duplicate_made_after_the_host_process_forked_is_exact() {
     let (memory, _) = parent(&mut cpu);
     cpu.memory_duplicate(memory).unwrap();
     // SAFETY: the copy only uses the executor and leaves with `_exit`.
+    #[expect(
+        unsafe_code,
+        reason = "the test copies its process with fork, which neither std nor rustix offers safely"
+    )]
     let child = unsafe { libc::fork() };
     assert!(child >= 0, "fork");
     if child == 0 {
@@ -239,7 +249,13 @@ fn a_duplicate_made_after_the_host_process_forked_is_exact() {
             .filter(|page| word(&mut cpu, copy, HIDDEN + page * PAGE_SIZE) != page + 7)
             .count();
         // SAFETY: ends the copy without running anything of the parent's.
-        unsafe { libc::_exit(i32::from(wrong != 0)) };
+        #[expect(
+            unsafe_code,
+            reason = "the copy leaves with _exit, since exit would run the parent's handlers in it"
+        )]
+        unsafe {
+            libc::_exit(i32::from(wrong != 0))
+        };
     }
     wait(child);
 }

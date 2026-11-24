@@ -3,10 +3,11 @@
 use wcontainers_abi::LOWEST_ADDRESS as OWN;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_executor::Executor;
-use wcontainers_executor::memory_space::{MemorySpace, VolatileBytes};
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_executor_wasmtime::{Arm64Executor, TranslatorConfig};
 use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_processor_architecture_arm64::Arm64;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 type Space = <Arm64Executor as Executor>::GuestMemory;
 

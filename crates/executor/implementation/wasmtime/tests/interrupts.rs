@@ -7,13 +7,14 @@ use std::time::Duration;
 use wcontainers_abi::LOWEST_ADDRESS as CODE;
 use wcontainers_abi::{Access, PAGE_SIZE, Permissions, SystemCallRequest};
 use wcontainers_arm64::encode::{self, Register, form};
-use wcontainers_executor::memory_space::{MemorySpace, VolatileBytes};
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_executor::{
     ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
     TrapHandler,
 };
 use wcontainers_executor_wasmtime::{Arm64Executor, TranslatorConfig};
 use wcontainers_processor_architecture_arm64::{INSTRUCTION_BYTES, Processor, ZERO_PROCESSOR};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The register the guest counts down in, x0.
 const COUNTER: Register = Register::MIN;
