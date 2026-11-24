@@ -157,6 +157,8 @@ pub struct Counters {
     pub extents_unknown: u64,
     /// Ranges zeroed by writing zeros, the host refusing to punch them out ("hole punch refused").
     pub zeros_written: u64,
+    /// Exits handed to the kernel other than a turn's end: system calls, faults and the rest (plan 7's k).
+    pub kernel_entries: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -274,6 +276,15 @@ impl HostProcessExecutor {
     /// The counts so far.
     pub fn counters(&self) -> Counters {
         self.counters
+    }
+
+    /// Each slow path of running translated code taken so far, with its count.
+    #[cfg(target_arch = "aarch64")]
+    pub fn slow_paths(&self) -> Vec<(&'static str, u64)> {
+        self.slow
+            .iter()
+            .map(|(reason, (count, _))| (*reason, *count))
+            .collect()
     }
 
     /// The process id of a memory's stub.

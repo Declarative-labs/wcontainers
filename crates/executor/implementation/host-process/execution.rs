@@ -4,7 +4,7 @@
 use core::convert::Infallible;
 use std::time::Duration;
 
-use wcontainers_abi::{ThreadId, Warning};
+use wcontainers_abi::{Exit, ThreadId, Warning};
 use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Turn};
 
 use super::HostProcessExecutor;
@@ -53,6 +53,9 @@ impl Execution for HostProcessExecutor {
                 });
             }
             let progress = self.guest_count(thread) - before;
+            if exit != Exit::Stop {
+                self.counters.kernel_entries += 1;
+            }
             match answer.exit(self, exit, progress) {
                 Carry::On {
                     resume: next,
