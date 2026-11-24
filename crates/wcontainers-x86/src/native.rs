@@ -5,7 +5,9 @@ use std::ops::Range;
 
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand, Segment};
-use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
+use wcontainers_guest_cpu::{
+    HostCode, InsideCall, Native, NativeClass, NativeReason, Route, Stopping,
+};
 
 use crate::answer::{
     DescriptorRead, FloatStatus, NearTransfer, Place, Question, Reciprocal, SegmentName, Taken,
@@ -150,6 +152,9 @@ impl Native for X86_64 {
         code: &mut HostCode,
     ) {
         let route = route(*way, i, &target.host, &target.offer);
+        if route == Route::Kernel && host_differs(*way, i, &target.host) {
+            code.slow(NativeReason::HostModelResultRouted);
+        }
         carry::carry(*way, route, i, bytes, address, homes, code);
     }
 
@@ -607,9 +612,6 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
             | Vpgatherqd
             | Vpgatherqq
     );
-    let partial = m == Enter && ins.immediate8_2nd() != 0
-        || m == Fstp && ins.memory_size() == MemorySize::Float80
-        || m == Fbstp;
     segment_register
         || far
         || implicit_on_area
@@ -653,9 +655,22 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
         )
         || crate::x87::transcendental(m)
         || m == Syscall && way != Way::Machine
-        || m == Wrfsbase && (in_process || way == Way::Process && host.five_level_paging)
+        || m == Wrfsbase && in_process
         || in_process && is_string(i) && i.address32
         || way == Way::InProcess(Check::Exact) && gather
+        || host_differs(way, i, host)
+}
+
+/// Whether the inside answers the instruction only because the host's model differs from the meaning there: the
+/// slow path "host-model result routed".
+pub fn host_differs(way: Way, i: &Instruction, host: &HostMatches) -> bool {
+    use Mnemonic::*;
+    let ins = &i.iced;
+    let m = ins.mnemonic();
+    let partial = m == Enter && ins.immediate8_2nd() != 0
+        || m == Fstp && ins.memory_size() == MemorySize::Float80
+        || m == Fbstp;
+    m == Wrfsbase && way == Way::Process && host.five_level_paging
         || partial && !host.partial_writes
         || undefined_result(m) && !host.undefined_results
 }

@@ -876,6 +876,43 @@ fn a_rep_string_is_copied_or_counted_by_the_inside() {
     }
 }
 
+/// A form the inside answers only because the host differs from the meaning is a counted slow path; one it answers
+/// on every host is not.
+#[test]
+fn a_form_routed_for_the_host_is_counted() {
+    use wcontainers_guest_cpu::NativeReason;
+    let matching = target();
+    let differing = Target {
+        host: HostMatches {
+            five_level_paging: true,
+            partial_writes: false,
+            undefined_results: false,
+        },
+        ..matching
+    };
+    let sites = |hex: &str, way: Way, target: &Target| {
+        translate_native_for::<X86_64>(&bytes(hex), AT, LookAhead::Full, false, &way, target)
+            .expect("a piece")
+            .sites_of(NativeReason::HostModelResultRouted)
+    };
+    // enter 16, 2; fstp tbyte [rbx]; fbstp [rbx]; shl rax, cl; imul rax, rbx.
+    for hex in ["c8 10 00 02", "db 3b", "df 33", "48 d3 e0", "48 0f af c3"] {
+        for way in WAYS {
+            assert_eq!(sites(hex, way, &differing), 1, "{hex} in {way:?}");
+            assert_eq!(sites(hex, way, &matching), 0, "{hex} in {way:?}");
+        }
+    }
+    // wrfsbase rax: the 5-level host takes bases the meaning refuses, which only P's copy would let through.
+    assert_eq!(sites("f3 48 0f ae d0", Way::Process, &differing), 1);
+    assert_eq!(sites("f3 48 0f ae d0", Way::Machine, &differing), 0);
+    // cpuid and enter 16, 0 go the same way on every host.
+    for hex in ["0f a2", "c8 10 00 00"] {
+        for way in WAYS {
+            assert_eq!(sites(hex, way, &differing), 0, "{hex} in {way:?}");
+        }
+    }
+}
+
 /// A copied `fldcw` is followed by the flag-free check of the control word the hardware loaded, which calls the
 /// inside only when an exception is unmasked.
 #[test]

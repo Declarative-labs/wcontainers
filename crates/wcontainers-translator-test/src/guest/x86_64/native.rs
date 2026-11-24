@@ -287,7 +287,7 @@ fn transfers_far(case: &Case, ended: Ended) -> bool {
             .is_some_and(|q| matches!(q, Question::NearBranch { .. }))
 }
 
-/// The counted runs that called the inside for a repeated string, which it runs on the hardware.
+/// The counted runs that called the inside for a repeated string, whose outcome the CPU's own run gives.
 pub static STRINGS_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The runs that reached the Float status route's second call, which the inside's `float_status_after` finished.
@@ -702,8 +702,9 @@ pub fn run_with_pointers(
             if ended == Ended::Answered(InsideCall::Answer) && answered.is_none() {
                 let (i, _) = wcontainers_x86::decode(case.code.code()).ok_or("no instruction")?;
                 if checked && repeated_string(case) {
-                    // Under the count the inside runs a repeated string on the hardware and adds the meaning's
-                    // passes (`string_passes`, checked against the WebAssembly output's count elsewhere).
+                    // Under the count no inside of this crate runs a repeated string: the CPU's own run stands in
+                    // for it, so only the state at the call is checked here (the count by `string_passes` is
+                    // checked against the WebAssembly output's in layers 2 and 3).
                     STRINGS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok((on_reference::<X86_64>(reference, case), ended, None));
                 }

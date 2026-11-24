@@ -428,8 +428,8 @@ fn every_form_matches_the_cpu_natively_x86_64() {
         });
     eprintln!(
         "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}; \
-         the float status route's second call made in {}; a repeated string under the count run by the inside on \
-         the hardware in {}; the inside's trap the meaning's in {}; a far transfer answered unlike the meaning (and \
+         the float status route's second call made in {}; a repeated string under the count calling the inside \
+         correctly (its outcome the CPU's own) in {}; the inside's trap the meaning's in {}; a far transfer answered unlike the meaning (and \
          judged against the CPU) in {}",
         ended.into_inner().unwrap(),
         ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
