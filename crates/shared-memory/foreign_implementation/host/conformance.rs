@@ -122,7 +122,8 @@ mod file {
     use std::os::fd::{AsFd, OwnedFd};
 
     use rustix::fs::{
-        FallocateFlags, MemfdFlags, SealFlags, fallocate, fcntl_add_seals, ftruncate, memfd_create,
+        FallocateFlags, MemfdFlags, SealFlags, fallocate, fcntl_add_seals, fcntl_get_seals, ftruncate,
+        memfd_create,
     };
     use rustix::io::Errno;
     use wcontainers_shared_memory::FileError;
@@ -212,6 +213,12 @@ mod file {
         assert!(matches!(mapped, Err(FileError::Unsealed)));
     }
 
+    /// Refuses a memory file made without sealing, and a file whose seals cannot be read at all.
+    ///
+    /// The second is a pipe: the kernel keeps seals only for memory files, and a pipe is not one on any host, wherever
+    /// the temporary folder lives (an ordinary file there has readable seals when the folder is on tmpfs, so it cannot
+    /// stand in). Were unreadable seals taken as a seal, the pipe would pass the check and be refused later, as too
+    /// short, and this test fails. If a host ever reads a pipe's seals, the test fails rather than pass untried.
     #[test]
     fn refuses_a_file_that_cannot_be_sealed() {
         let file = memfd_create("words", MemfdFlags::CLOEXEC).expect("a memory file");
@@ -220,19 +227,27 @@ mod file {
             HostMapping::file(file.as_fd(), 0, page()),
             Err(FileError::Unsealed)
         ));
-        let path = std::env::temp_dir().join(format!("words-{}", std::process::id()));
-        let ordinary = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .expect("an ordinary file");
-        std::fs::remove_file(&path).expect("the file's name goes");
-        ordinary.set_len(page() as u64).expect("the file grows");
+        let (pipe, _writer) = std::io::pipe().expect("a pipe");
+        assert!(
+            fcntl_get_seals(&pipe).is_err(),
+            "this host reads a pipe's seals, so the test has no file whose seals cannot be read"
+        );
         assert!(matches!(
-            HostMapping::file(ordinary.as_fd(), 0, page()),
+            HostMapping::file(pipe.as_fd(), 0, page()),
             Err(FileError::Unsealed)
         ));
+    }
+
+    /// Refuses a length of zero at every offset, aligned or not.
+    #[test]
+    fn refuses_no_length() {
+        let file = memory_file(page() as u64, SealFlags::SHRINK);
+        for offset in [0, WORD as u64, 4] {
+            assert!(
+                matches!(HostMapping::file(file.as_fd(), offset, 0), Err(FileError::Length)),
+                "{offset}"
+            );
+        }
     }
 
     #[test]
@@ -265,6 +280,7 @@ mod file {
         ));
     }
 
+    /// Maps any length from an offset that is a multiple of 8, whole words or not, up to the file's last byte.
     #[test]
     fn counts_only_the_bytes_asked_when_they_are_not_whole_pages() {
         let file = memory_file(3 * page() as u64, SealFlags::SHRINK);
@@ -274,6 +290,12 @@ mod file {
             (WORD as u64, page() - 2 * WORD),
             (page() as u64 - WORD as u64, page() + 2 * WORD),
             (page() as u64 + 3 * WORD as u64, page()),
+            (0, 1),
+            (0, WORD - 1),
+            (2 * WORD as u64, WORD + 3),
+            (WORD as u64, page() + 1),
+            (2 * page() as u64 + WORD as u64, page() - WORD),
+            (2 * page() as u64 + 5 * WORD as u64, page() - 5 * WORD - 1),
         ] {
             let memory =
                 HostMapping::file(file.as_fd(), offset, length).expect("the host maps the file");
@@ -284,18 +306,25 @@ mod file {
     #[test]
     fn refuses_offsets_past_the_end_of_the_file() {
         let file = memory_file(page() as u64, SealFlags::SHRINK);
-        assert!(matches!(
-            HostMapping::file(file.as_fd(), 8, page()),
-            Err(FileError::Short)
-        ));
-        assert!(matches!(
-            HostMapping::file(file.as_fd(), u64::MAX - 7, 8),
-            Err(FileError::Short)
-        ));
-        assert!(matches!(
-            HostMapping::file(file.as_fd(), 4, 8),
-            Err(FileError::Length)
-        ));
+        for (offset, length) in [
+            (8, page()),
+            (0, page() + 1),
+            (8, page() - 7),
+            (page() as u64, 1),
+            (u64::MAX - 7, 8),
+            (8, usize::MAX),
+        ] {
+            assert!(
+                matches!(HostMapping::file(file.as_fd(), offset, length), Err(FileError::Short)),
+                "{offset} {length}"
+            );
+        }
+        for offset in [1, 2, 4, 7, WORD as u64 + 4] {
+            assert!(
+                matches!(HostMapping::file(file.as_fd(), offset, 8), Err(FileError::Length)),
+                "{offset}"
+            );
+        }
     }
 
     #[test]

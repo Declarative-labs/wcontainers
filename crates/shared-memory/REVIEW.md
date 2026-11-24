@@ -75,7 +75,18 @@ All in foreign_implementation/region/implementation.rs unless named.
    }
    ```
 9. `libc::syscall(SYS_futex, word, ...)` in `futex`: rustix takes the word only as `&AtomicU32`.
-10. host/implementation.rs: `unsafe { Region::new(base, map.len()) }` over memmap2's `MmapRaw`.
+10. host/implementation.rs: `unsafe { Region::new(base, map.len()) }` over memmap2's `MmapRaw`. For a memory file it
+    rests on three things done in order on one borrowed descriptor: the seals are read and hold `F_SEAL_SHRINK`, then
+    the size is read, then the file is mapped. Two limits:
+    - The type does not enforce the order. `ShrinkSealedFile::new` reads the seals and `map` reads the size, but code
+      in that module could read the size in `new` first and keep it. What catches that order is the test
+      `a_shrink_then_seal_racing_the_checks_never_maps_past_the_end` (the wrong change `size-read-before-the-seals`
+      fails it, checks/x86.log and arm.log).
+    - It holds only while no code in the process breaks I/O safety. An `unsafe` `dup2` over the borrowed descriptor,
+      between the checks and the mapping, maps a file never seen sealed; shrinking it then ends the process with
+      SIGBUS (MEASURED on x86-64 by the check of the older branch `unsafe-primitives`, scratch
+      executor-unsafe-primitives/report4-check.md: mapped after 4 100 to 8 232 tries, SIGBUS 3 of 3). A safe `dup2`
+      over a borrowed descriptor does not compile (E0502, same check).
 
 Built only under Miri and Kani: the heap mapping's `Region::new` and Kani's stand-in for `copy` (heap/proofs.rs, on
 `copy_nonoverlapping`). The assembly files are gone: no `asm!` in the crate.
@@ -175,7 +186,7 @@ Where there is no C library (the floor, `no_std`): another implementation of the
 Every log names the code it ran on: `checks/tree.sh` hashes every file of the crate but the logs and this page, and
 native.sh, miri.sh and kani.sh print it first. `checks/review.sh` (run on the Mac before each commit) fails when a log
 names other code, when this page's unsafe count differs from the code's, when a cited `checks/` file is missing, or
-when a comment cites this page for a measurement. Final run: code 80f6725968215b3f, both machines, in one job each
+when a comment cites this page for a measurement. Final run: code e8a20ce18811b34d, both machines, in one job each; the host suite has 51 tests
 (MEASURED, checks/x86.log, arm.log; review.sh: "10 unsafe items, 0 failed").
 
 MEASURED, both machines, debug and release:
@@ -195,8 +206,23 @@ MEASURED, both machines, debug and release:
   ends within 30 s. A planted one-byte-long copy fails the process test on both machines; 3 s later, without the
   signal, 4 (x86) and 2 (ARM) other processes were still running; with it, 0.
 - Wrong changes caught on both, each in checks/x86.log and arm.log: memcpy one byte long or one early (guard
-  SIGSEGV); swap, or compare-and-exchange, as a load then a store (both counting tests fail); the ten range, seal and
-  base changes; and the parent-death signal unset ("the writer ... outlived the process that started it").
+  SIGSEGV); swap, or compare-and-exchange, as a load then a store (both counting tests fail); the range, seal, length,
+  offset and base changes below; and the parent-death signal unset ("the writer ... outlived the process that started it").
+- The seal check, `fcntl_get_seals(file).is_ok_and(...)`: a file whose seals cannot be read must be refused. The test
+  `refuses_a_file_that_cannot_be_sealed` used an ordinary file in the temporary folder; with `TMPDIR` on tmpfs that
+  file's seals ARE readable, so the wrong change `.map_or(true, ...)` passed every test there and then mapped an ext4
+  file that shrank and raised SIGBUS (MEASURED, both machines, at 80f6725968215b3f; scratch guest-memory-copy/seal-and-lengths/run1-x86.log and
+  run1-arm.log). The test now uses a pipe, whose
+  seals no host reads (the kernel keeps seals only for memory files), asserts that they cannot be read, and so fails
+  rather than pass untried. The wrong change fails it with `TMPDIR` on tmpfs and on ext4, both machines.
+- Lengths and offsets: the file mapping refuses a length of zero, an offset that is not a multiple of 8, and bytes
+  past the file's end, and maps every other length, whole words or not (the anonymous one refuses only zero). Each
+  check fails a test when removed, weakened or made stricter, both machines: anonymous and file length zero accepted,
+  anonymous and file mapping one byte more, file offset unchecked or checked to 4 or to 16, file lengths limited to
+  whole words, the end allowed one byte past the file or refused at it, the end wrapping, the file mapped from one word
+  on, the region one byte long or short. Two checks sit behind others and no input reaches them, so their removal
+  passes every test: the fallback that reads a negative size as 0 (`fstat` gives none), and the alignment assert in
+  `new` (the offset check already refuses every offset it would catch).
 - The 8 compile refusals each fail to compile.
 - Miri, both machines, both borrow models, on the final code: host 13, heap 12, attacks 5 pass (the 7 tests with
   threads in each suite are ignored there). Miri runs its own memcpy for the foreign call and checks both ranges lie in their allocations;

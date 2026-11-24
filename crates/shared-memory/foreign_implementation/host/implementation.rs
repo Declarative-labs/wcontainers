@@ -55,7 +55,9 @@ impl HostMapping {
         Ok(HostMapping::new(map))
     }
 
-    /// Maps the memory file's bytes from the offset for the length, shared with whatever else maps the file.
+    /// Maps the memory file's bytes from the offset for the length, shared with whatever else maps the file. Refuses a
+    /// length of zero, an offset that is not a multiple of 8, and bytes past the file's end; maps any other length,
+    /// whole words or not.
     #[cfg(target_os = "linux")]
     pub fn file(
         file: BorrowedFd<'_>,
@@ -86,7 +88,9 @@ impl HostMapping {
         // one-word borrows its promise allows, so the bytes lie outside every Rust allocation. Anonymous memory never traps; a file is sealed against shrinking, which no
         // descriptor of it can undo, and was at least as long as the range when mapped, so it stays so, and it is not on
         // the huge-page file system. The order matters: the seal was seen BEFORE the size was read (`ShrinkSealedFile`),
-        // since a size read first can be shrunk away and the file sealed after. memmap2 returns the address of the offset
+        // since a size read first can be shrunk away and the file sealed after. The seals, the size and the mapping are
+        // all of one file only while no code in this process breaks I/O safety: an `unsafe` `dup2` over the borrowed
+        // descriptor between the checks and the mapping maps a file never seen sealed. memmap2 returns the address of the offset
         // asked, not of its page, so the bytes from `base` are the file's bytes from the offset, and the length is the
         // mapping's own. The start is aligned (asserted above). Whatever else reaches the bytes (another mapping of the
         // file, another process, a guest, or the kernel through the file) does so on the hardware's terms, not Rust's.
@@ -111,9 +115,11 @@ mod shrink_sealed {
 
     // The order is the point. A seal, once seen, holds for good, so a size read after it is a size the file never goes
     // below. A size read before it may be gone by the time the seal is seen (another descriptor shrinks the file and
-    // then seals it), and a mapping made on that size faults past the end. The field is private to this module, `new`
-    // reads the seals before it makes the value, and only `map` reads the size, so every size was read after the seals.
-    // The checks and the mapping all use the one borrowed descriptor, which I/O safety keeps naming the same file.
+    // then seals it), and a mapping made on that size faults past the end. `new` reads the seals before it makes the
+    // value, and `map` reads the size. The type does not enforce that order: code in this module could read the size in
+    // `new` before the seals and keep it in a field. The test `a_shrink_then_seal_racing_the_checks_never_maps_past_the_end`
+    // is what catches that order. The checks and the mapping all use the one borrowed descriptor, which names the same
+    // file only while no code in this process breaks I/O safety (an `unsafe` `dup2` over it would swap the file).
 
     /// A memory file this program saw sealed against shrinking, not on the huge-page file system.
     pub(super) struct ShrinkSealedFile<'fd> {

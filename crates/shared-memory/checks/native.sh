@@ -95,6 +95,35 @@ mutate size-read-before-the-seals "$H" "--test host" "        file: BorrowedFd<'
 mutate huge-pages-allowed "$H" "--test host" 'if fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32' 'if false && fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32'
 mutate base-one-word-late "$H" "--test host" 'let base = map.as_mut_ptr();' 'let base = map.as_mut_ptr().wrapping_add(8);'
 mutate base-at-the-page-start "$H" "--test host" 'let base = map.as_mut_ptr();' 'let base = map.as_mut_ptr().wrapping_sub(map.as_ptr() as usize % 4096);'
+mkdir -p /work/target/gmc-disk
+echo "===== the seal check accepting seals that cannot be read, with TMPDIR on tmpfs (/dev/shm: $(stat -f -c %T /dev/shm)) and on disk (/work/target/gmc-disk: $(stat -f -c %T /work/target/gmc-disk))"
+TMPDIR=/dev/shm mutate unreadable-seals-accepted-tmpdir-on-tmpfs "$H" "--test host" 'fcntl_get_seals(file).is_ok_and(' 'fcntl_get_seals(file).map_or(true, '
+TMPDIR=/work/target/gmc-disk mutate unreadable-seals-accepted-tmpdir-on-disk "$H" "--test host" 'fcntl_get_seals(file).is_ok_and(' 'fcntl_get_seals(file).map_or(true, '
+rm -rf /work/target/gmc-disk
+echo "===== every other length and offset check of the host mapping"
+mutate anonymous-zero-length-accepted "$H" "--test host" '        if length == 0 {
+            return Err(AnonymousError::Length);' '        if false {
+            return Err(AnonymousError::Length);'
+mutate anonymous-maps-one-byte-more "$H" "--test host" 'MmapOptions::new().len(length).map_anon()' 'MmapOptions::new().len(length + 1).map_anon()'
+mutate file-zero-length-accepted "$H" "--test host" 'if length == 0 || !offset.is_multiple_of' 'if !offset.is_multiple_of'
+mutate file-offset-any "$H" "--test host" 'if length == 0 || !offset.is_multiple_of(size_of::<u64>() as u64) {' 'if length == 0 {'
+mutate file-offset-multiple-of-4 "$H" "--test host" '!offset.is_multiple_of(size_of::<u64>() as u64)' '!offset.is_multiple_of(4)'
+mutate file-offset-multiple-of-16 "$H" "--test host" '!offset.is_multiple_of(size_of::<u64>() as u64)' '!offset.is_multiple_of(16)'
+mutate file-length-whole-words-only "$H" "--test host" 'if length == 0 || !offset' 'if length == 0 || length % 8 != 0 || !offset'
+mutate file-end-one-byte-past-the-file "$H" "--test host" '.is_none_or(|end| end > size)' '.is_none_or(|end| end > size + 1)'
+mutate file-end-at-the-file-end-refused "$H" "--test host" '.is_none_or(|end| end > size)' '.is_none_or(|end| end >= size)'
+mutate file-end-wraps "$H" "--test host" '.checked_add(length as u64)' '.checked_add(0).map(|offset| offset.wrapping_add(length as u64))'
+mutate file-maps-one-byte-more "$H" "--test host" '.offset(offset)
+                .len(length)' '.offset(offset)
+                .len(length + 1)'
+mutate file-maps-from-one-word-on "$H" "--test host" '.offset(offset)
+                .len(length)' '.offset(offset + 8)
+                .len(length)'
+mutate region-one-byte-long "$H" "--test host" 'Region::new(base, map.len())' 'Region::new(base, map.len() + 1)'
+mutate region-one-byte-short "$H" "--test host" 'Region::new(base, map.len())' 'Region::new(base, map.len() - 1)'
+echo "===== two checks behind others, which no input reaches, so no test can fail: these two pass"
+mutate behind-a-negative-size-taken-as-huge "$H" "--test host" '.unwrap_or(u64::MIN)' '.unwrap_or(u64::MAX)'
+mutate behind-the-alignment-assert-removed "$H" "--test host" 'base.cast::<u64>().is_aligned() && !base.is_null()' 'true'
 P=crates/shared-memory/foreign_implementation/host/process.rs
 mutate parent-death-signal-unset $P "--test process -- the_other_process_ends_when" '    set_parent_process_death_signal(Some(Signal::KILL)).expect("the parent-death signal is set");' ''
 
