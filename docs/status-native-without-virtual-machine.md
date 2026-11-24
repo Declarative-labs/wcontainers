@@ -667,20 +667,99 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     2,397, 2,427 and 2,397: 1.31, 1.23 and 1.25 times; per call median 3,024, 2,949, 2,934 ns against 2,325, 2,352,
     2,319 (1.25 to 1.30). Not clearly under the bar of 1.25; before the change 1.26 to 1.29.
   - No new unsafe code.
-- Not built yet (W1's bar is not met): the getppid round trip under 1.25 times the slot and busybox `sh` within 1.25 times the model, measured
-  after this run's fixes; placement's remaining items; the copy unit on translated code; the VM executor's figures
-  beside P's; the x86-64 rounds of this run's code.
+- W1 round 3, run 5 (2026-11-24, 02:05 to 02:45 UTC):
+  - The shared tree built again at the start (the suite following b01ba0d8, Unicorn conformed, others' edits in
+    progress included): every test binary 3 times with /dev/kvm denied, with no overlay, kernel, busybox (its Docker
+    reference) and conformance included (scratch w1/r3run5/all1-*.out, run 4's nokvm.sh): Graviton4 285 passed, 3
+    failed (02:10 UTC, load 8.7 to 17.8), the 3 being `agrees_with_precise_instruction_set` at the input domain's
+    0x1000 (For the owner); Xeon 156 of 156 (02:10 UTC, load 37 at the start, 494 at the end from other tracks).
+  - The two process-way gaps the precise-set test showed, fixed in host-process (native.rs):
+    - A store that may cross a page is probed by an atomic add of zero, whose syndrome says read where a read would
+      fault too; a fault of a plain store (`str`, `stp` and their vector forms, read from the guest's instruction)
+      is now always a write, as Linux reports it.
+    - Linux puts no syndrome of its own in a `brk`'s signal frame (it records one for aborts and undefined
+      instructions only, so a frame can carry an earlier fault's): a SIGTRAP in translated code is now read from the
+      loaded word at the pc. The misalignment check among a pair's probes (sp not a multiple of 16 where the pair may
+      cross a page) calls by `brk #5`, which before ended the process as "stub exit not understood".
+    - tests/run.rs (+1): a store crossing into the unmapped page after the data faults there as a write and stores
+      nothing; `stp x0, x0, [sp, #8]` with sp 8 past a multiple of 16, in a page and at a page's end, is an
+      alignment fault at sp. With either fix undone in the remote copy, it fails (scratch w1/r3run5/mutate4-arm.out).
+    - With the input domain's code at 64 KiB (remote copy only), the precise-set test now passes: every generated
+      instruction on every state agrees (scratch w1/r3run5/treeA-arm.out; before: `str` 180 of 1,728 and `stp` 3,474
+      of 8,640 states disagreed).
+  - The owner's volatile bytes (45dc7425, merged at 02:20 UTC): `VolatileBytes` is its own crate and `read_to` and
+    `write_from` are required; host-process imports it from there, and gives a sink all the bytes in one write and
+    a source one read into all of them, through a buffer (execution.rs).
+  - After that merge the shared tree does not build host-process at all: the kernel (and the ICMP and raw socket
+    implementations) do not yet follow the volatile bytes, and host-process's library depends on the kernel through
+    the runtime crate. So this run's code was verified on two scratch trees, each the commit before the merge
+    (a7b0b008) with the executor suite's executions polled to their end:
+    - tree A, with this run's native.rs and tests/run.rs (scratch w1/r3run5/treeA): every test binary 3 times with
+      /dev/kvm denied; Graviton4 285 passed, 3 failed (02:27 UTC, load 4.1 to 4.5), the 3 being the precise-set test
+      at 0x1000, once per round; Xeon 156 of 156 (02:27 UTC, load 24 to 48). Then the precise-set test with the code
+      at 64 KiB: passes.
+    - tree B, tree A with the volatile bytes crate and the executor's memory space of 45dc7425 and this run's
+      host-process (scratch w1/r3run5/treeB): clippy with warnings denied clean on all targets; the conformance
+      binary 17 of 18 (the 0x1000 one), interrupt 2 of 2, run 6 of 6 (Graviton4, 02:33 UTC, load 5 to 8). The
+      kernel, busybox and speed tests were left out there (they need the WebAssembly and Unicorn executors, which
+      did not follow the merge in that tree).
+  - The rented ARM64 machine's disk filled at 02:16 UTC (581 GB used of 581); this track's build folder was 69 GB,
+    and removing its incremental data (19 GB) let the runs go on. The machine's /work is no longer the 5 TB stripe
+    arm-machine.md names.
+  - No new unsafe code.
+
+## W1 complete, with its gap list (for the independent check)
+
+W1 is reported complete at round 3 run 5 so that its independent check runs; these items of plan 13's bar are not
+met, each with what is known:
+- Speed, not met: the getppid round trip is 1.23 to 1.31 times W0's futex slot (bar under 1.25; run 4), and busybox
+  `sh` starting 1,000 programs is 2.02 times the model (bar 1.25; run 3), because alpine's busybox is position
+  independent and each exec gets a new base, so translations kept by guest address never match again (243,918
+  translations); keeping them by bytes and moving them (`wcontainers_arm64::carry::movable(Way::Process)`) is the
+  fix. bench's matrix runs 4.0 times plain under P (other workloads 0.998 to 1.36), not yet profiled. No round
+  trip over 1 ms in 1,000,000 (met, run 3).
+- The executor suite's precise-set test fails as committed: its input domain puts code at 0x1000, below
+  `vm.mmap_min_addr` (For the owner). Every other test of the suite passes, and with the code at 64 KiB this one
+  passes too (run 5).
+- `differential` and `count_at_every_stop` are not built: they wait on the kernel's K2 (placement low first, memory
+  size at start), which has not landed. The bar until then, equal verdicts with the WebAssembly output, is met for
+  the kernel test programs (hello, getppid, forks, mappings, jumptables equal; blocks and code differ only where
+  the WebAssembly side has its recorded faults) and busybox's 56 `text` and `files` commands give the reference's
+  output (run 3).
+- Adversarial cases not built: the fork while a sibling is in a system call and another writes (needs several guest
+  threads running at once, which today's kernel loop never does); the forged-exit case is built at the stub level
+  (tests/memory.rs, forged fault reports) but not as translated guest code after two forks; the 32,769th thread is
+  refused at the stub (tests/threads.rs) but not yet as a guest `clone` counted; one P and two I containers in one
+  embedder is W2's.
+- Placement's two measured items (a getppid loop with work between calls within 5% of a free CPU's after its move;
+  at most one move a second with every CPU contended) are not measured; the move itself is tested (tests/
+  placement.rs).
+- The copy unit is one page, not yet measured on translated stores (8 pages the candidate).
+- `MemorySpace::copy_from` at the same addresses copies eagerly instead of lending pages as a fork does.
+- The shared tree does not build host-process since 45dc7425 until the kernel follows the volatile bytes (above).
+- gVisor: P runs there with known failures (plan 6; Decision 14 is with the owner); in its kernel test, blocks and
+  jumptables pass the 300 s limit (which side was not found).
+- x86-64: everything that needs translated code is W3's (the x86 native output's way); on the Xeon the 156 tests of
+  the stub, zygote, stops, threads, memory, placement and embedder pass with /dev/kvm denied.
+
+Met, each with its run: the zygote's migration and no restartable sequences left (run 1); the stop landing at every
+instruction of the stub's windows and handler (runs 8, 9); the control and register pages' escapes and the filter's
+kills (runs 2, 3, 7); a stub killed from outside and the embedder killed (run 4); threads made and ended under
+random stops (run 3); 10,000 maps of one block holding no fd (run 4); 64 memories of 2^43 bytes through the window
+cache (run 2); register isolation on stub pieces and on translated threads (runs 7 and round 3 run 2); the SVE probe
+(run 1); Docker's default profile (runs 5, 9, 10 and round 3 run 3); form I's bounds-check bypass as a host program
+(run 6); every slow path counted and warned.
 
 ## Next
 
-- FIRST, once the shared tree builds again: run every binary (kernel, busybox and speed included) 3 times with
-  /dev/kvm denied on both machines from the shared tree with no overlay (scratch w1/r3run4/nokvm.sh, which now fails
-  when nothing was built); if the suite still calls `execute` as returning the state, keep using fixes.sh's overlay and
-  say so. The x86 machine has not run this round's code.
-- Then the W1 gap list and the W1-complete report (due by the fifth run): the gaps known now are the speed bars
-  below, the two process-way translation gaps the precise-set test shows, `copy_from` at the same addresses copying
-  eagerly instead of lending, the gVisor kernel test's blocks and jumptables, placement's getppid item and the copy unit.
-- Then the speed bars (scratch w1/r3run3/speed3.sh measures all of them): busybox `sh` needs translations kept
+- W1's independent check runs on the report above. FIRST for whoever comes next, once the kernel follows the volatile
+  bytes (45dc7425): run every binary (kernel, busybox and speed included) 3 times with /dev/kvm denied on both
+  machines from the shared tree with no overlay (scratch w1/r3run4/nokvm.sh); if the shared executor suite still
+  imports `VolatileBytes` from the executor crate, scratch w1/r3run5/suite-overlay.sh fixes that in the remote copy.
+- Then the gap list's items, the speed bars first: busybox `sh` needs translations kept across execs at new bases
+  (moved translations, above); the round trip needs the embedder's per-exit work cut (the translated page's
+  copies, `stop::resolve` and `rejoin`, placement's two clock reads per turn); bench's matrix needs a profile.
+- The speed bars (scratch w1/r3run3/speed3.sh measures all of them): busybox `sh` needs translations kept
   across execs at new bases (moved translations, above); the round trip (1.23 to 1.31 times the slot after run 4's vectors change) needs
   the embedder's per-exit work cut (the translated page's copies, `stop::resolve` and `rejoin`, placement's two clock
   reads per turn); bench's
@@ -711,6 +790,13 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 3 run 5: scratch w1/r3run5. agrees.sh runs the executor suite's precise-set test with the input
+  domain's code at 64 KiB (remote copy only); mutate.sh runs tests/run.rs, then undoes each of run 5's two fixes in
+  the remote copy, each of which must fail it; suite-overlay.sh imports `VolatileBytes` from its crate in the remote
+  copy of the suite; drop-kernel.sh leaves out the tests that need the kernel. treeA and treeB are the scratch trees
+  of the commit before the volatile-bytes merge (git repositories of their own, so `arm-run` takes them as
+  checkouts; run them with `--name nwvm` to reuse the build folder).
 
 - Since round 3 run 4: tests/conformance.rs runs the executor suite on form P, tests/interrupt.rs the interrupter.
   Scratch w1/r3run4: nokvm.sh (as before, but it fails when no test binary was built); fixes.sh overlays, in the
@@ -856,6 +942,12 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   instruction. Also `stp` with its base near the top of the address space reaches the process way's misalignment
   check, which still calls by `brk #5`; P now takes that as a call, but the stop crate finds no access operand there
   and P ends the process ("stub exit not understood"), so those states fail too.
+- Round 3 run 5, fixed in host-process only (the stop crate is unchanged): the precise-set gaps above. For the VM
+  form: the probe in front of a store that may cross a page is an atomic add of zero, whose syndrome has WnR clear
+  where a read would fault too, so the VM inside should give the same answer for the same states (a store faulting
+  as a write whatever the probe's syndrome says), unless it already takes write from the guest instruction; the
+  machine way's `brk` syndrome comes from the hardware, so the second fix (P reading a SIGTRAP's call from the loaded
+  word) does not concern it.
 - For the translator track, not done: the InProcess way (plan 3.2 item 1 and two more withheld registers), W2's.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
@@ -923,6 +1015,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 round 3 run 5: `HostProcessBytes::read_to` and `write_from` copy through a buffer as long as the bytes (one
+  allocation per call), since a borrowed range of a stub's memory can span windows and shared blocks; lending the
+  window's own mapping where the range lies in one window is the faster form, not built. W1 is reported complete
+  with the gap list above instead of with every bar met, as the orchestrator asked for this run.
 
 - W1 round 3 run 3: the busybox test (and the kernel test, now) runs with /dev/kvm denied but the docker group kept,
   since its reference runs in Docker; the earlier test binaries' runs cleared every group. The executor suite is not
@@ -1039,6 +1136,9 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since round 3 run 5, ARM64 only: wcontainers-volatile-bytes, wcontainers-byte-sink and wcontainers-byte-source, all
+this workspace's (the owner's interfaces the memory space's bytes implement).
 
 Since round 3 run 3, for the busybox and speed tests only (ARM64): wcontainers-executor-unicorn (this workspace's:
 the reference image, the busybox command lists and the Docker reference), which brings unicorn-engine 2.1.5
