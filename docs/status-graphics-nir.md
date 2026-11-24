@@ -62,7 +62,7 @@ machine; groups checked on the desktop (RTX 3080, one GPU job, 8 glcts at once):
   was added.
 - The suite of both crates at 01b20b68 (x86-64 machine, load 1 to 36): fmt clean; clippy with
   warnings denied clean with and without Mesa; with Mesa the nir crate's route 25, glsl_reference
-  10 and 2 ignored, glsl_buffers 2 and narrow 1 pass; wcontainers-opengl has no tests of its own.
+  10 and 2 ignored, glsl_buffers 1 and narrow 2 pass; wcontainers-opengl has no tests of its own.
 
 Run 31's group runs (scratch `results/g9r31/{a,b}`, logs `logs/g9r31/{a,b}.log`): a, at 0986b2f4's
 driver: dEQP-GLES3 `fbo.color`, `rasterization.fbo` 350 cases, 2 Crash (tex3d), 2 Fail
@@ -135,7 +135,7 @@ with and without Mesa and the nir crate's route test passed (22) on the x86-64 m
   dependency or licence was added.
 - The suite of both crates at 0d2108df (x86-64 machine, load 63 to 72, the shaders crate as
   committed): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa the nir
-  crate's route 22, glsl_reference 10 and 2 ignored, glsl_buffers 2 and narrow 1 pass;
+  crate's route 22, glsl_reference 10 and 2 ignored, glsl_buffers 1 and narrow 2 pass;
   wcontainers-opengl has no tests of its own.
 
 THE TABLE, run 30's whole run at 1ae22774's driver (every change above, the shaders crate as
@@ -262,32 +262,31 @@ job that built and ran, 8 glcts at once, about 19:30 to 19:41 Mac time; scratch
 G9 runs 23 to 28 (their whole runs, readings and lists) are told in full in `git show
 fcbbdf19:docs/status-graphics-nir.md`, as run 29 left this file.
 
-G9's FIRST PART IS COMPLETE for its independent check, stated in run 27 and unchanged since: every
-list that starts runs whole at one driver, the bar's measure is above the 92.9% floor, and every
-failing group is in the gap list below with its cause and owner (those not yet traced named as
-such). No independent check has run yet. The table to check against is the newest whole run at
-the top of this file (run 31's). The check asked for: a sample of each list on the rig against that table,
-the NotSupported groups case by case, and the RTX 3080's own OpenGL (`run-windows.ps1 -Driver
-system`) on the failing groups. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) follows that
-check.
+G9's FIRST PART IS NOT COMPLETE. Run 27's statement that it was (kept since) is withdrawn after
+its independent check (round 5 run 2, the section at the top): bgfx's and Godot's OpenGL renderers
+were never compared with a reference, about 78 failing cases that the RTX 3080's OpenGL passes have
+no established cause, and several NotSupported groups are absent for want of work, not by the plan.
+The table to check against is the newest whole run at the top of this file.
 
-Next, in order (round 5):
-1. The independent check of G9's first part against run 31's table and the gap list below (not
-   this track's to run), then settle its findings.
-2. The passed-value limit: never report a version whose minimums are not met. Report the version
-   the limits allow, or build this track's side of a pass-through reading its records from
-   storage (the shaders track, asked), and say which.
-3. Forced early fragment tests inside the program (`VariantFlags::EARLY_TESTS`, 4 dEQP and 1 KHR
-   case).
-4. Programs of equal content sharing their conversions and the stage helper's pipelines (KHR
-   `vertex_ordering`'s 2 timeouts).
-5. The storage coherence family, proven by a test before any claim.
-6. Then the gap list's other items of this track (refusals, device loss `pbo_bounds_2d`, not yet
-   traced), and the wide points still refused by name (a geometry program emitting with counters,
-   writing clip distances or to several streams; squares while streaming or counting primitives).
-7. Waiting on other tracks: as the gap list says (WebGPU back end, shaders track; the stencil
-   blit's slow-path name, interface track).
-8. G9's second part (OpenGL 4.0, so that KHR-GL46 starts), after the check.
+Next, in order:
+1. bgfx's and Godot's OpenGL renderers against the RTX 3080's OpenGL and llvmpipe within the rig's
+   allowance, every slow path counted: an OpenGL frame capture on the rig (asked of the rig track;
+   built by this track if the rig track cannot), then the two programs.
+2. A cause for every failing case still "not yet traced" in the gap list, each run beside the RTX
+   3080's OpenGL (`run-windows.ps1 -Driver system`): `rbo_multisample_max` lines (take
+   `AliasedLinesAsQuads`), `texture_swizzle` 55, 56, 64 to 68, gather offsets, uniform block array
+   indexing, KHR-GL33 stream output, `polygon_offset` units, the geometry feedback overflow,
+   buffer texture atomics, the "texture has been destroyed" device losses (to the object),
+   `pbo_bounds_2d`, `all_attributes`, `clip_distance.functional`, the singles.
+3. Cull distances through the stage helper's cull route (`CullDistanceAsGeometry`,
+   `stage::cull_programs`): 436 NotSupported cases.
+4. The storage coherence family, proven by a test before any claim.
+5. Forced early fragment tests inside the program (`VariantFlags::EARLY_TESTS`).
+6. Programs of equal content sharing their conversions and pipelines (`vertex_ordering`).
+7. The other groups NotSupported for want of work (storage in evaluation programs, group votes,
+   multisampled render to texture, program binaries), and the refusals of this track.
+8. The owner's answer on KHR-GL33 (For the owner); waiting on other tracks as the gap list says.
+9. G9's second part (OpenGL 4.0, so that KHR-GL46 starts), after the first part's check passes.
 
 ## Gap list (G9's first part, at run 31's whole run)
 
@@ -307,7 +306,10 @@ run 31's log unless said otherwise):
 - KHR-GL33 `packed_pixels` 246: BC textures whose first level is not whole blocks ("Width 7 is
   not a multiple of Bc4RSnorm's block width (4)" at `create_texture`): the WebGPU back end track,
   asked in G9 run 17.
-- KHR-GL33 `texture_swizzle` 10 (formats 64 to 68, targets 5 and 6) and `packed_depth_stencil` 10,
+- KHR-GL33 `texture_swizzle` 10 (formats 64 to 68, targets 5 and 6: the RTX 3080's OpenGL reports
+  these 10 NotSupported, "Format not supported" or "Target not supported", while this screen
+  reports them; this track's to trace whether the screen reports a format and target the host
+  cannot draw) and `packed_depth_stencil` 10,
   KHR-GLES3 `packed_depth_stencil` 6: "Texture has been destroyed" at submit, a texture a recorded
   pass uses. The interface's `destroy` keeps recorded work's objects alive; the WebGPU back end
   track's unless a trace shows this driver using a texture after destroying it (not yet traced to
@@ -374,7 +376,10 @@ Another track's (asked unless said otherwise):
   `max_buffer_size` (the shaders track).
 - dEQP-GLES31 `shaders.builtin_functions.texture_size.samples_*_2d_array` 6: the multisampled
   array split binds every layer whatever the program reads, `BindingsBeyondLimit` (the shaders
-  track).
+  track). In run 31 they crashed on that refusal after 4 to 20 s; in the independent check's run
+  at the same driver 4 timed out at deqp-runner's 60 s and 1 flaked with no refusal printed (the
+  desktop log ends after `webgpu: frames=8`), so the time before the refusal varies. To run alone
+  with `-Seconds 200` (this track).
 - dEQP-GLES31 `geometry_shading.input.triangle_strip_adjacency` 5, KHR-GLES31 and -GLES32
   `geometry_shader.adjacency` 4: strips with adjacency, `gl_in[]` in Direct3D's order where OpenGL
   swaps the first two (the shaders track).
@@ -383,21 +388,27 @@ Another track's (asked unless said otherwise):
 - KHR-GLES31 and -GLES32 `gpu_shader5.sampler_array_indexing` 2: "rewrite: unsupported:
   ResourceArrayPair" (the shaders track's rewrite).
 
-Absent on a back end by the plan (WebGPU has no form of it):
-- dEQP-GLES2 and -GLES3 `shaders.invariance` 40: `invariant` has no WGSL or naga form and the
-  host's compiler reorders arithmetic (the shaders track's naga writers if a form appears).
+Absent on WebGPU, not named by the plan (run 31 filed these as "absent by the plan", which was
+wrong: the plan names none of them; the RTX 3080's OpenGL passes all):
+- dEQP-GLES2 and -GLES3 `shaders.invariance` 40: THIS TRACK'S, not absent. naga has
+  `BuiltIn::Position { invariant }`, written as WGSL's `@invariant` and HLSL's `precise`, and the
+  route wrote `invariant: false` for every position. Built in round 5 run 2 (the route writes an
+  invariant or precise position invariant).
 - KHR-GLES31 `shader_multisample_interpolation.render.interpolate_at_offset_check.rgba8i` 3:
-  `interpolateAtOffset` compared bit for bit with the host's own interpolation; WGSL has no
-  interpolation at an offset.
+  `interpolateAtOffset` compared bit for bit with the host's own interpolation at the centre. WGSL
+  has no interpolation at an offset; the route makes it from the value and its slopes, which is not
+  bit-equal. This track's: no exact route is known; for the owner if none is found.
 - KHR-GLES31 `shader_image_load_store.basic-glsl-misc-fs` 1: `memoryBarrier()` in a fragment
-  program; WGSL has storage barriers only in compute work ("Uses operations forbidden at this
-  stage"). Left refused.
+  program. WGSL has storage barriers only in compute work ("Uses operations forbidden at this
+  stage"; Direct3D has `DeviceMemoryBarrier` in every stage). Left refused; for the owner.
 
 The storage coherence family, 20 (Fail 15, Flake 5; which cases fail moves from run to run):
 dEQP-GLES31 `synchronization.in_invocation` 3 and `.inter_invocation` 10, `image_load_store.3d
 .qualifiers` 2 and `2d_array.qualifiers` 1 (flakes), `compute.basic.image_barrier_single` 1
 (flake), KHR-GLES31 `shader_image_load_store.advanced-copyImage-cs` and `advanced-allMips-cs`,
-`shader_storage_buffer_object.advanced-readWrite-case1-cs`. Storage written by other invocations
+`shader_storage_buffer_object.advanced-readWrite-case1-cs`; and, flaking in the independent
+check's sample (fraction 12, start 7, seed 29) though it passed in run 31,
+`shader_image_load_store.advanced-sync-imageAccess2`. Storage written by other invocations
 or through other bindings reads stale. Read in run 31, not proven: the route drops GLSL's
 `coherent` and `volatile` (naga's `MemoryDecorations`; HLSL `globallycoherent`, which wgpu gives
 only with its native feature `MEMORY_DECORATION_COHERENT` and the interface names no capability
@@ -407,9 +418,15 @@ prove by a test, then the interface and WebGPU back end tracks' if the decoratio
 
 Not yet traced (this track):
 - dEQP-GLES3 `rasterization.fbo.rbo_multisample_max` `interpolation.lines` and `primitives.lines`
-  2 (8 samples; 4 pass): 18 pixels filled beside the line, none missing. Read in run 31, not
-  proven: wgpu's Direct3D 12 back end sets `MultisampleEnable` for multisampled pipelines, under
-  which Direct3D draws lines as quadrilaterals wider than a pixel. To prove on `-Driver system`.
+  2 (8 samples; 4 pass): 18 pixels filled beside the line, none missing (the RTX 3080's OpenGL
+  passes both). Read in run 31, not proven: wgpu's Direct3D 12 back end sets `MultisampleEnable`
+  for multisampled pipelines, under which Direct3D draws lines as quadrilaterals wider than a
+  pixel (1.4 wide, if the Direct3D functional specification is remembered right: not checked).
+  The interface's `SlowPath::AliasedLinesAsQuads` draws such lines as the stage helper's
+  rectangles, but its pixel program keeps the pixels of Direct3D's aliased rule (`LINE_DIAMOND`),
+  where OpenGL's multisampled line is a rectangle one pixel wide sampled at each sample; so the
+  route the driver needs is the same rectangles without the diamond test. The driver takes neither
+  today: this track's (with the shaders track if the rectangle needs a variant of its own).
 - KHR-GLES31 and -GLES32 `gpu_shader5.texture_gather_offset_color_*` 4 (gathers at run-time
   offsets at a texture's edges) and `gpu_shader5.uniform_blocks_array_indexing` 2.
 - KHR-GL33 `texture_swizzle` formats 55 and 56, targets 7 and 8, 4 Fail (target 8 is the
@@ -426,14 +443,89 @@ Not yet traced (this track):
   `program_interface_query.program_input.resource_list.separable_tess_ctrl.empty` 1, KHR-GLES31
   `arrays_of_arrays.InteractionFunctionCalls1_var_type_index_8` 1.
 
-Not failures but in the check:
-- NotSupported: KHR-GLES32's 251 (storage blocks in evaluation programs, `constant_expressions`,
-  waiting on the shaders track's cull route for a domain program writing storage), and each list's
-  Skip count in the table, read case by case in run 23's and 27's sections of `git show
-  fcbbdf19:docs/status-graphics-nir.md`.
+NotSupported, case by case (the bar asks that every NotSupported case ask for something the
+driver does not report). Read from every case's reason at run 31's driver (the independent check's
+`results/skip-reasons`, 3,081 cases; scratch `scripts/g9c2-skips.py check-g9c1/results`, output
+`results/g9c2/skips-by-group.txt`), with the RTX 3080 OpenGL's result for each. Each group is one of:
+"as NVIDIA" (the RTX 3080's OpenGL skips it too: the test's own condition), "by the plan" (the
+plan names the absence), "absent on WebGPU" (the host has no form; the plan does not name it, for
+the owner), or "for want of work" (the interface gives a way: this track's, or the owner named).
+- dEQP-GLES2 (128): `fbo.render` 91 "Not supported", `multisample` 16 (no multisample default
+  framebuffer), `debug_marker` 3: as NVIDIA. Wide lines 17 (`rasterization` 9, `clipping.line` 8):
+  by the plan (1-pixel lines on WebGPU). `multisampled_render_to_texture.readpixels` 1
+  (EXT_multisampled_render_to_texture): for want of work (this track; a multisampled twin resolved
+  at the pass's end would give it).
+- dEQP-GLES3 (470): `transform_feedback` 333 (implementation limits), sRGB RG8 32, `multisample
+  .default_framebuffer` 16, `fbo.blit` separate depth and stencil 12: as NVIDIA. Wide lines 28: by
+  the plan. sRGB R8 32 (`texture.filtering` 24, `.format` 8; EXT_texture_sRGB_R8): absent on WebGPU
+  (no `r8unorm-srgb`; a twin of another format would be a slow path the interface does not name).
+  `shader_api.program_binary` 14 (no binary formats): for want of work (this track; Mesa's own
+  program binaries need the driver's shader cache key). `fbo.multiview` 3 (OVR_multiview): absent
+  on WebGPU core (no multiview), for want of work by drawing each view.
+- dEQP-GLES31 (1,112): storage blocks in evaluation programs 498 (`builtin_functions` 418,
+  `opaque_type_indexing` 80, asking for 2 where the screen reports 0): for want of work (the stage
+  helper runs evaluation programs as compute work, which writes storage; this track and the shaders
+  track). `program_interface_query` 228 "one or more resource limits exceeded" (152
+  `buffer_variable`, 36 `shader_storage_block`, 28 `uniform`, ...: storage and atomic counters in
+  vertex and evaluation programs): vertex ones absent on WebGPU (no storage writes in vertex
+  programs; `VERTEX_STORAGE_WRITE` is absent there), evaluation ones for want of work as above.
+  Sample counts 121 (`sample_variables`, `multisample_interpolation`, `min_sample_shading`,
+  `texture.multisample`), `framebuffer_fetch` 56, sRGB RG8 15, `multisample.default_framebuffer`
+  8, sample mask words 5, multisampled default framebuffer 2, `geometry_shading` 2048 components
+  1, `srgb_write_control` 1: as NVIDIA. Wide lines 40 (`primitive_bounding_box.wide_lines`): by the
+  plan. Coherent advanced blending 35 (KHR_blend_equation_advanced_coherent): absent on WebGPU (no
+  ordered access to the target in fragment programs). `layout_binding` 45 ("not enough uniforms":
+  storage and images in vertex and evaluation programs), `shaders.linkage` 30 and
+  `opaque_type_indexing` 12 (storage, atomic counters and images in vertex and evaluation
+  programs): as the two storage groups above. sRGB R8 13 and `texture.format` "srgb rg8" 4 (NVIDIA runs 2): absent on WebGPU, as NVIDIA for the other 2.
+- KHR-GLES2 (35): HDR ASTC 30, `core.internalformat` 4: as NVIDIA; `core.internalformat
+  .renderbuffer` 1 "Required extension is not supported" (NVIDIA runs): not yet read which
+  extension (this track).
+- KHR-GLES3 (228): cull distances 221 (EXT_clip_cull_distance; NVIDIA runs 205, skips 16): FOR
+  WANT OF WORK, this track's: the interface names `SlowPath::CullDistanceAsGeometry` and the shaders
+  crate's `stage::cull_programs` makes the stage helper's cull route from a converted vertex program;
+  the route does not write `gl_CullDistance` and the screen does not report it. `texture_shadow_lod`
+  3: the shaders track's common form (comparisons with a bias or level). Stencil texturing 2,
+  `shader_integer_mix.prototypes` 1: as NVIDIA. `texture_filter_anisotropic.queries` 1 (NVIDIA
+  runs): not yet read why EXT_texture_filter_anisotropic is absent (this track).
+- KHR-GLES31 (335): evaluation-program storage 233 (`constant_expressions` and the like): as in
+  dEQP-GLES31. "Not supported" 78: storage, atomic counters and images in vertex programs 66
+  (`shader_storage_buffer_object` `-vs` and `-vsfs` cases, `shader_atomic_counters`,
+  `shader_image_load_store` and `shader_image_size` vertex cases): absent on WebGPU as above;
+  `shader_group_vote` 5 (EXT_shader_group_vote): for want of work (the interface's `SUBGROUPS`;
+  the route has no vote operations); `polygon_offset_clamp` 3: reported since round 5 run 2
+  (`DEPTH_BIAS_CLAMP`); `compute_shader` 3 (shared contexts, draw commands made by compute work,
+  after stream output) and `vertex_attrib_binding.advanced-largeStrideAndOffsetsNewAndLegacyAPI` 1:
+  not yet read (this track). `viewport_array` 16 (OES_viewport_array): absent on WebGPU (one
+  viewport a pass) unless drawn once per viewport; for the owner. `layout_binding` vertex 3,
+  `texture_cube_map_array` vertex and evaluation images 2: as the storage groups. Coherent
+  advanced blending 1: absent on WebGPU. TCS and TES together 1, subroutines 1: as NVIDIA.
+- KHR-GLES32 (251): evaluation-program storage 233: as above. `ext_texture_shadow_lod` 15: the
+  shaders track's common form. Images 2: as above. TCS and TES together 1: as NVIDIA.
+- KHR-GL33 (522; the list no longer starts since round 5 run 2, For the owner): cull distances
+  218: for want of work as in KHR-GLES3. `texture_swizzle` targets 154 and formats 99, stencil
+  texturing 2, OpenGL 4.1 1, `shader_integer_mix.prototypes` 1: as NVIDIA.
+  `ext_texture_shadow_lod` 15: the shaders track's common form. OpenGL 4.x extensions
+  `transform_feedback_overflow_query` 13, `pipeline_statistics_query` 10 (the interface names no
+  pipeline statistics), `gpu_shader5` 3, `transform_feedback2` 1, `texture_filter_minmax` 5
+  (absent on WebGPU: no min or max reduction): G9's second part or absent as said.
 - KHR-GL46 19,714: OpenGL 4.0 to 4.6 (this track, G9's second part).
 
 ## For the owner
+
+- KHR-GL33 no longer starts (round 5 run 2), by the rule that no version is reported whose
+  minimums are not met. OpenGL 3.2 requires 128 fragment input components (32 values) and 128
+  geometry output components. On the RTX 3080 the host is Direct3D 12 through wgpu, which passes
+  31 values beside the position between a vertex and a fragment program
+  (`D3D12_VS_OUTPUT_REGISTER_COUNT` less one), 124 components. No pass-through of the stage
+  helper changes that, since the limit is the host's own between its two drawing stages. The core
+  profile is now OpenGL 3.1 there (`screen::glsl_version`). The plan's measure is "over the GLES
+  lists and the KHR-GL33 list together". Without KHR-GL33 the GLES lists alone are above the
+  floor (table at the top). Counted as failed whole (9,364 cases run before), they are below
+  it. Asked: whether G9's measure takes the GLES lists alone on such a host, or whether OpenGL 3.2's
+  fragment inputs must be built beyond the host's limit (values past the 31st fetched in the
+  fragment program from storage the vertex stage writes, which needs the vertex program run as
+  compute work and each fragment's barycentric weights: WebGPU has neither in core).
 
 - Unsafe code (the 2026-11-22 rule): wcontainers-opengl (370 uses, counted on 2026-11-23 as the
   root list counts them: every `unsafe` word outside comments) and wcontainers-nir (116) stay on
@@ -480,6 +572,10 @@ Not failures but in the check:
   sample with such programs takes longer.
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
   the Mesa build; the route test linked with a map, each kept object traced to its source).
+  For the Windows driver, after its build on the desktop: `tools/graphics-rig/remote
+  'C:\wc\graphics-nir\tools\python-3.13.1\tools\python.exe
+  crates\wcontainers-nir\mesa\linked-licences-windows.py C:\wc\graphics-nir\mesa\build .
+  C:\wc\graphics-nir\linked-licences-windows.txt'`, then scp the file back (about a minute).
 
 - Stopping this track's own CTS run on the desktop (a run on a build known to be broken, which
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
@@ -873,6 +969,33 @@ Not failures but in the check:
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 round 5 run 2: the Windows driver's linked files, listed from the build's own dependency
+  lists by `crates/wcontainers-nir/mesa/linked-licences-windows.py` (run on the desktop through
+  `tools/graphics-rig/remote`; How to run), over the build of run 31's driver; the listing is in
+  scratch `results/g9c2/linked-licences-windows.txt` (1,392 lines). No GPL, LGPL or SGI file is
+  among them.
+  - Mesa, every source ninja builds `opengl32.dll` and `libgallium_wgl.dll` from (whole archives,
+    so files the linker drops are listed too), 981 files: 877 MIT (97 by SPDX tag, 780 by the
+    permission text), 73 generated by Mesa's build, 15 zlib 1.3.1 (Meson's zlib subproject, the
+    Zlib licence of `zlib.h`), 1 BSL-1.0 (`c11/impl/threads_win32.c`), 1 BSD-3-Clause text
+    (`util/softfloat.c`), and 14 with no licence text in the file: `util/blake3` 3 (and its 4
+    `.masm` files, which the script counts as generator inputs; BLAKE3 1.8.2 copied verbatim, its
+    README says; upstream's licence CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception),
+    `u_format_etc.c` (MIT text in the header it includes), zlib's `win32/zlib1.rc` and
+    `zlib.def`, and 8 of Mesa's own (`nir_shader_bisect.c`, `tr_video.c`, `pb_bufmgr_slab.c`,
+    `u_transfer.c`, `vl_stubs.c`, `lp_rast_debug.c`, `es1_conversion.c`, `querymatrix.c`), which
+    Mesa's `docs/license.rst` puts under the core library's MIT licence.
+  - What Mesa's generators read at build time (not linked): 74 MIT, `gl.xml` Apache-2.0,
+    `float64.glsl` BSD text, and 145 data and script files without a tag (132 of them XML).
+  - LLVM 21.1.8 for llvmpipe, 75 static libraries from Meson's dependency list:
+    Apache-2.0 WITH LLVM-exception (the SPDX tag of LLVM's own headers).
+  - `wcontainers_opengl.lib`: 107 crates Cargo links for `x86_64-pc-windows-msvc` from
+    wcontainers-opengl's normal dependencies, all permissive (77 MIT OR Apache-2.0; the others
+    MIT, Apache-2.0, ISC (`libloading`), Zlib (`foldhash`), Unlicense OR MIT, BSD-2-Clause OR
+    Apache-2.0 OR MIT, CC0-1.0 or Unicode-3.0 choices); vendored native sources in
+    wcontainers-shaders: dxbc-spirv and dxil-spirv MIT, SPIRV-Cross and SPIRV-Tools Apache-2.0
+    text, spirv-headers MIT text (every licence file under the crate, compiled or not).
+
 - G9 run 15: nothing new; the driver now also uses Gallium's `util_blitter` render condition
   fields (`u_blitter.h`, MIT, already linked).
 
@@ -923,9 +1046,8 @@ Not failures but in the check:
   Four of the MIT files are generated and carry a second notice: `glsl_parser.cpp` and
   `glcpp-parse.c` are Bison's output (Bison's skeleton is GPL-3.0-or-later with the Bison special
   exception, which lets the output be distributed under any terms), `glsl_lexer.cpp` and
-  `glcpp-lex.c` flex's (flex's own BSD-style licence). All permissive. The Windows build
-  (`mesa/build-windows.ps1`, G9) links nothing into anything of ours yet; G9 lists the driver's
-  linked files when there is one.
+  `glcpp-lex.c` flex's (flex's own BSD-style licence). All permissive. The Windows driver's
+  linked files are listed in round 5 run 2's entry above.
 - G9 run 2, wcontainers-opengl's dependencies: `pollster` 1 (Apache-2.0 OR MIT), `wgpu` 30.0.2
   (MIT OR Apache-2.0, the workspace's patched copy), `wcontainers-gpu` and `wcontainers-gpu-webgpu`
   (ours); build-dependencies `cc` (MIT OR Apache-2.0), `serde` and `serde_json` (MIT OR
@@ -1003,9 +1125,15 @@ Not failures but in the check:
 
 ## Departures from the plan
 
-- G9 run 25: the stencil of a blit written a bit at a time takes the slow way without a counter
-  or warning of its own, since the interface names no such slow path and this round makes no
-  interface change; the name is asked of the interface track. Maps of multisampled textures
+- G9 runs 17 to 31: the bar's item "bgfx's and Godot's OpenGL renderers match the RTX 3080's
+  OpenGL or llvmpipe within the rig's allowance", planned in runs 7 to 16 ("bgfx's and Godot's
+  OpenGL renderers on the rig, with every slow path counted"), was dropped from the Next list
+  without a word, and run 27 to round 5 run 1 called the first part complete without it. Found by
+  the independent check; it is item 1 of Next again (round 5 run 2).
+
+- G9 run 25 (counted since round 5 run 2): the stencil of a blit written a bit at a time is
+  counted and warned under `SlowPath::StencilWrittenByDraw`, the interface's name for stencil
+  written by one draw a bit (`blit::stencil_by_bits`); run 25 to 31 took it uncounted. Maps of multisampled textures
   through a single-sampled one are not counted as a slow path: no faster route exists on any
   back end, and only Mesa's own code makes such maps (OpenGL gives programs none).
 
@@ -1041,9 +1169,11 @@ Not failures but in the check:
   (`IndirectReadBack`), so every rewrite a direct draw takes (fans, restart, provoking vertex,
   stream output) applies; the direct host draw from the buffer is a later fast path for draws
   that need no rewrite.
-- G9 run 11: storage buffers and images are reported in compute programs only (vertex and
-  fragment report none, which OpenGL ES 3.1 allows): a fragment program's storage writes need
-  the pass tracker told of each draw's storage uses, not built yet.
+- G9 run 11 (no longer so since run 17 and later): storage buffers and images were reported in
+  compute programs only. Now storage buffers are reported for fragment, geometry and control
+  programs too, and images for geometry and control programs and, where the back end writes
+  storage there (`FRAGMENT_STORAGE_WRITE`), fragment programs (`screen::fill_shader_caps`);
+  vertex and evaluation programs report none (NotSupported listing below).
 - G9 run 11: every single-sample colour texture whose format the back end can store to is made
   with storage use (OpenGL binds any texture as an image later and st/mesa names no image use at
   creation). Its cost on the RTX 3080 (a texture that may lose compression) is not measured; a
@@ -1242,6 +1372,15 @@ None.
 
 ## Requests to other tracks
 
+- Rig track (G9 round 5 run 2): the programs' frame capture for OpenGL. G9's bar compares bgfx's
+  OpenGL renderer and Godot's Compatibility renderer on native OpenGL (bgfx `--gl`, Godot
+  `--rendering-driver opengl3` with ANGLE off) with the RTX 3080's own OpenGL and llvmpipe, held to
+  the rig's per-picture allowance. `programs run` captures frames only through the Direct3D
+  forwarding library. Asked: the same for OpenGL (an `opengl32.dll` beside the program forwarding
+  to the one under test, our Mesa build's or the system's, saving the frames WC_CAPTURE lists at
+  `wglSwapBuffers`/`SwapBuffers` and giving the frame clock), and the two programs on it. If the
+  rig track cannot, this track builds it in a crate of its own and says so here.
+
 - Shaders track (G9 run 31): the stage helper's pass-through vertex program
   (`stage::passthrough`) takes a geometry or evaluation program's every passed value as a vertex
   input beside the position; the host has 30 (wgpu's Direct3D 12: 32 input slots less vertex and
@@ -1302,10 +1441,8 @@ None.
   and a location the device's inter-stage limit leaves free, which only the helper knows. Since
   run 30 wide points after tessellation or from a geometry program no longer need it (drawn as
   squares by this driver); programs reading `gl_in[].gl_PointSize` still do.
-- Interface track (G9 run 25): a slow path name for a blit's stencil written by one draw per bit
-  and sample (`util_blitter_stencil_fallback`, eight draws a sample where a program could write
-  stencil, which WebGPU's language cannot), e.g. `SlowPath::StencilWrittenByBits`; the driver
-  takes that route since run 25 without a counter of its own.
+- Interface track (G9 run 25): withdrawn in round 5 run 2. A blit's stencil written one draw a bit
+  is counted under the interface's existing `SlowPath::StencilWrittenByDraw`.
 
 - Shaders track (G9 run 24): the stage helper sizes a geometry stage's output after tessellation
   for the largest factor of every patch (`patch_bounds(h.tessellation.max_factor)`, 64 where the
