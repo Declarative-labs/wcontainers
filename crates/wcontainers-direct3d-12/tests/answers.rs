@@ -1362,8 +1362,9 @@ fn program_uses_of(format: u32) -> usize {
 
     // Reads of a texture whose every texel has varied components, of the formats `varied_texel`
     // decodes: a load gives the texel; a linear sample and a gather of equal texels give its
-    // components and its red ones, a comparison with 0.5 whether 0.5 is at most its red.
-    let varied_read = varied_texel(format).filter(|_| format == view);
+    // components and its red ones, a comparison with 0.5 whether 0.5 is at most its red. A video
+    // format holds its view's texels (`NV12`'s first plane, `YUY2`'s pixel pairs).
+    let varied_read = varied_texel(view);
     let varied_upload = varied_read
         .as_ref()
         .map(|(bytes, ..)| filled(&mut device, format, bytes, zero_bytes));
