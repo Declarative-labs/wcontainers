@@ -133,20 +133,8 @@ fn resetting_server() -> u16 {
             };
             // The program's queue has taken what fits by now.
             std::thread::sleep(Duration::from_millis(500));
-            let linger = libc::linger {
-                l_onoff: 1,
-                l_linger: 0,
-            };
-            // SAFETY: a setsockopt with a value of its own size, on a socket this thread owns.
-            unsafe {
-                libc::setsockopt(
-                    std::os::fd::AsRawFd::as_raw_fd(&data),
-                    libc::SOL_SOCKET,
-                    libc::SO_LINGER,
-                    (&raw const linger).cast(),
-                    size_of::<libc::linger>() as libc::socklen_t,
-                );
-            }
+            // A linger of zero makes the close a reset.
+            let _ = socket2::SockRef::from(&data).set_linger(Some(Duration::ZERO));
             drop(data);
             std::thread::sleep(TOLD_AFTER_RESET);
             let _ = signal.write_all(b"reset");
