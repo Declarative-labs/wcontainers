@@ -37,8 +37,14 @@ by piece; arm-tree/ is the tip, arm-patched/ the tip with j5e/translator-pool.pa
   new since the second run (ours "stime increased > 2000us", with "progress counted by stop checks"; it
   passed at full on c07e21cd). The stand-in's verdicts equal the second run's but fsx22 (timeout both) and
   getrusage04 (pass both): no stand-in verdict changed.
-- Still running when this was written: none, bounded, the runtimes at none, the surface tests and the
-  follow-ups (busybox `files` and the five LTP tests again at each look-ahead).
+- None (2,113 s, load 15 to 24; the eight runtimes' tests left out by name and run apart): equal to full
+  but busybox `files` (passes) and cpulimit's wall clock test (fails: ours "handled: killed by 9", theirs
+  "handled: SIGXCPU 1, soft now 2 hard 2", with "progress counted by stop checks").
+- Bounded (6,656 s, load 7 to 20; N 237 for seed 0): equal to full but busybox `files` (passes), cpulimit's
+  wall clock test (fails as at none) and outside `a_full_connection_hears_a_reset` (ours "after reset: poll
+  1 in out err hup rdhup" and "so_error Connection reset by peer", theirs "poll 1 in out" and "so_error
+  none"), the same three as the second record's bounded run.
+- Still running when this was written: the runtimes at none, the surface tests and the follow-ups.
 
 ## J5c, second run (2026-11-24, from 03:05 UTC): J5's bar again after the owner's interface changes
 
