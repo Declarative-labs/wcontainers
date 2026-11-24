@@ -5726,7 +5726,10 @@ dependencies = [
 name = "wcontainers-random-source-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5735,8 +5738,10 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5746,8 +5751,10 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5976,8 +5983,12 @@ name = "wcontainers-system-conformance"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-kernel",
+ "wcontainers-readiness",
  "wcontainers-system",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5998,8 +6009,10 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system",
+ "wcontainers-system-conformance",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
