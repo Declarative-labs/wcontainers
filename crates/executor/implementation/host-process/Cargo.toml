@@ -83,6 +83,8 @@ wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-inpu
 wcontainers-executor = { path = "../.." }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The differential test's draws of layer 1's cases.
+proptest = "1.12.0"
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 # Finding the host call a traced stub thread is about to make, in the step test.
@@ -153,6 +155,9 @@ name = "copy"
 
 [[test]]
 name = "forged"
+
+[[test]]
+name = "differential"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
