@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-volatile-bytes-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[[test]]
+name = "ref_cell"
+path = "../foreign_implementation/ref_cell/conformance.rs"
+
+[dependencies]
+wcontainers-volatile-bytes = { path = ".." }
+
+[lints]
+workspace = true

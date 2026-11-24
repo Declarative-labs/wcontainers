@@ -6,12 +6,14 @@ use core::num::NonZeroU16;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BufferSizes, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, BindingSetting,
-    ProcessorIndex, ReceivedPacketFields, RouteSelectors, SendError, TransmitReport,
+    BindingSetting, BufferSizes, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
+    IpVersion, LocalBinding, ProcessorIndex, ReceivedPacketFields, RouteSelectors, SendError,
+    TransmitReport,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::Readiness;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.
 pub trait UdpSockets:
@@ -45,7 +47,11 @@ pub trait UdpSockets:
         fields: IpSendFields,
         datagram: UdpDatagram<'_>,
     ) -> Result<(), SendError>;
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError>;
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
     fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError>;

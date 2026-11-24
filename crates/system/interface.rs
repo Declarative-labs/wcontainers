@@ -21,6 +21,7 @@ use wcontainers_readiness::Readiness;
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_tcp_sockets::TcpSockets;
 use wcontainers_udp_sockets::UdpSockets;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 pub trait System:
     ProcessTracer
@@ -185,8 +186,16 @@ pub const FIRST_TASK_ID_AFTER_WRAPPING: u32 = 300;
 pub trait StreamTransport: Readiness<Self::Endpoint> {
     type Endpoint: Ord;
 
-    fn send_stream(&self, peer: &Self::Endpoint, bytes: &[u8]) -> Result<usize, HostError>;
-    fn receive_stream(&self, peer: &Self::Endpoint, into: &mut [u8]) -> Result<usize, HostError>;
+    fn send_stream(
+        &self,
+        peer: &Self::Endpoint,
+        payload: &impl VolatileBytes,
+    ) -> Result<usize, HostError>;
+    fn receive_stream(
+        &self,
+        peer: &Self::Endpoint,
+        into: &impl VolatileBytes,
+    ) -> Result<usize, HostError>;
     fn close_stream(&self, peer: &Self::Endpoint);
 }
 

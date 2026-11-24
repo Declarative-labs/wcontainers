@@ -18,6 +18,7 @@ use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::Readiness;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::authentication::TcpAuthenticationCounters;
 use crate::repair::TcpTimestampClock;
@@ -56,13 +57,13 @@ pub trait TcpConnections:
         &self,
         connection: &Self::Connection,
         request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError>;
     fn receive(
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError>;
     /// Takes the oldest entry of the connection's error queue, writing any ICMP packet it holds into the buffer.
     fn take_error_queue_entry(

@@ -5002,9 +5002,8 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-processor-architecture",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5387,6 +5386,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5719,6 +5719,7 @@ name = "wcontainers-random-source"
 version = "0.1.0"
 dependencies = [
  "wcontainers-abi",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5759,6 +5760,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5966,6 +5968,7 @@ dependencies = [
  "wcontainers-route-resolver",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -6009,6 +6012,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -6114,6 +6118,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -6154,6 +6159,21 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]

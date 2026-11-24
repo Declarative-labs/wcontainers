@@ -8,6 +8,7 @@ path = "interface.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 
 [lints]
 workspace = true
