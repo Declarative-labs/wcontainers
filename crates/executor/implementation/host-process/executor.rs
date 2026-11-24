@@ -799,6 +799,10 @@ impl HostProcessExecutor {
 
     /// Gives a thread turns that apply `commands`, a page at a time, each `MapShared`'s memfd sent just before its
     /// turn, the last with the touch if there is one; how the last ended, or the first that did not end `Done`.
+    ///
+    /// The commands were taken from the memory's queue and the record already holds them applied, so where they
+    /// were not all applied (a command refused, a turn that failed or was forged) the stub's view may allow more than
+    /// the record: the stub is killed and waited for, so nothing runs on that view again.
     fn run_turn(
         &mut self,
         id: MemoryId,
@@ -807,6 +811,29 @@ impl HostProcessExecutor {
         blocks: &[Arc<OwnedFd>],
         then: Option<(Then, StopWhen<'_>)>,
     ) -> Result<TurnEnd, CpuError> {
+        let ended = self.run_rounds(id, index, commands, blocks, then);
+        if !matches!(ended, Ok((_, true))) {
+            self.end_stub(id);
+        }
+        ended.map(|(end, _)| end)
+    }
+
+    /// Kills a memory's stub and waits until no thread of it runs, as long as `STOP_IGNORED` at most.
+    fn end_stub(&self, id: MemoryId) {
+        let stub = &self.memory(id).stub;
+        let _ = self.host.kill(stub);
+        let _ = stub.wait_hung_up(crate::stub::STOP_IGNORED);
+    }
+
+    /// `run_turn`'s rounds: how the last ended, and whether every command was applied.
+    fn run_rounds(
+        &mut self,
+        id: MemoryId,
+        index: usize,
+        commands: &[Command],
+        blocks: &[Arc<OwnedFd>],
+        then: Option<(Then, StopWhen<'_>)>,
+    ) -> Result<(TurnEnd, bool), CpuError> {
         #[cfg(target_arch = "aarch64")]
         self.flush_code(id);
         let rounds = commands.len().div_ceil(MAX_COMMANDS).max(1);
@@ -864,11 +891,20 @@ impl HostProcessExecutor {
                 }
             };
             if last {
-                return Ok(end);
+                let applied = matches!(
+                    end,
+                    TurnEnd::Done { .. }
+                        | TurnEnd::Stopped { .. }
+                        | TurnEnd::Fault { .. }
+                        | TurnEnd::Loaded { .. }
+                        | TurnEnd::Called { .. }
+                        | TurnEnd::Interrupted { .. }
+                );
+                return Ok((end, applied));
             }
             self.counters.commands_past_one_page += 1;
             if !matches!(end, TurnEnd::Done { .. }) {
-                return Ok(end);
+                return Ok((end, false));
             }
         }
         unreachable!("at least one round")

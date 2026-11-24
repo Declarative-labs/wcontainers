@@ -622,6 +622,39 @@ fn a_change_past_the_host_s_mapping_limit_is_refused_up_front() {
     end(&mut cpu, (memory, thread));
 }
 
+/// A command the host refuses at a turn never leaves the stub allowing more than the kernel: a page made read-only
+/// after a refused mapping is not written by the next turn, though the host takes mappings again by then.
+#[test]
+fn a_refused_command_never_leaves_a_narrowed_page_writable() {
+    use rustix::process::{Resource, Rlimit, prlimit};
+    let mut cpu = executor();
+    let (memory, thread) = process(&mut cpu, 8);
+    assert_eq!(store(&mut cpu, thread, page(4), 1), Touched::Stored);
+    let block = cpu.shared_new(PAGE).expect("a block");
+    cpu.shared_map(block, 0, memory, page(0), PAGE)
+        .expect("the block mapped");
+    cpu.set_permissions(memory, page(4), PAGE, Permissions::READ)
+        .expect("read only");
+    // The host refuses the block's mapping: the stub's address space is past the limit it is given now.
+    let stub = cpu.stub_process(memory);
+    let limit = |current| Rlimit {
+        current,
+        maximum: None,
+    };
+    prlimit(Some(stub), Resource::As, limit(Some(1 << 20))).expect("the stub's limit");
+    assert_eq!(
+        cpu.touch(thread, Touch::Store(page(4), 2), None),
+        Err(CpuError::OutOfMemory)
+    );
+    // A stub that ended has no limit to put back.
+    let _ = prlimit(Some(stub), Resource::As, limit(None));
+    let after = cpu.touch(thread, Touch::Store(page(4), 3), None);
+    assert_ne!(after, Ok(Touched::Stored), "the read-only page was written");
+    assert_eq!(word(&mut cpu, memory, page(4)), 1);
+    end(&mut cpu, (memory, thread));
+    cpu.shared_drop(block);
+}
+
 /// The cost of a fork's copies to its child, one store per page over `WCHP_PAGES` written pages, in order and in a
 /// seeded order touching every `WCHP_STRIDE`th page (`WCHP_SEED`), and the host mappings each side holds after.
 #[test]

@@ -794,6 +794,24 @@ impl Stub {
         let ready = rustix::event::poll(&mut socket, Some(&Timespec::default()))?;
         Ok(ready > 0 && socket[0].revents().contains(PollFlags::HUP))
     }
+
+    /// Waits up to `limit` for the stub's socket to hang up; whether it did. Linux closes a process's files only after
+    /// every thread of it has left its address space (do_exit releases the memory before the files), so once it has,
+    /// no guest code runs on the stub's mappings.
+    pub(crate) fn wait_hung_up(&self, limit: Duration) -> Result<bool, Errno> {
+        let until = Instant::now() + limit;
+        loop {
+            if self.hung_up()? {
+                return Ok(true);
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            let mut socket = [PollFd::new(&self.socket, PollFlags::IN)];
+            rustix::event::poll(&mut socket, Some(&timespec(left.min(LOOK_FOR_END))))?;
+        }
+    }
 }
 
 fn timeout() -> Timespec {
