@@ -5091,9 +5091,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_SUB | c::I_SUB => bin(self, b, B::Subtract, rs)?,
             c::F_MUL | c::I_MUL => bin(self, b, B::Multiply, rs)?,
             c::F_DIV if rs == Scalar::F32 => {
-                // Direct3D's `div` correctly rounded, as WARP gives it: the device's quotient
-                // refined once by its fused remainder, kept where it or the refined one is zero,
-                // infinite or NaN.
+                // Direct3D's `div` as WARP gives it: the device's quotient refined once by its
+                // fused remainder, kept where it or the refined one is zero, infinite or NaN.
+                // Correctly rounded except where the remainder is below the normal range and
+                // flushed (quotients just above the range's bottom), which keeps the device's.
                 let a = self.get_as(b, r[0], rs)?;
                 let d = self.get_as(b, r[1], rs)?;
                 let q = self.bin(b, B::Divide, a, d);
