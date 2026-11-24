@@ -5,6 +5,21 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 6 run 3 (2026-11-24), STOPPED BEFORE ITS GPU RUN. Settled from the independent check of
+run 2: the literal check (no finding in this track's files), refused cases counted as passes (glcts
+patched to end a case whose context the driver reports reset: Departures), the strip-adjacency
+index past the strip (Mesa patch), the geometry minimums named from Mesa's `config.h`, the
+`cts-windows.ps1` comment, the unassigned case and the left-out moves, the quarantine lift and the
+NotSupported groups (Departures, gap list). Listed, not built: the guest's notice of a refused call
+(Needs a primitive), the exact occlusion count and the zero time elapsed, read-only vertex storage
+off the compute route, the `packed_depth_stencil` loss. Built and linted on the x86-64 machine
+(clippy with Mesa, wcontainers-opengl 11 pass). NOT YET RUN ON THE GPU: the patched glcts build
+(`logs/r6c/cts-build.log`) waited behind another track's GPU job, and the whole run that follows it
+(`scripts/g9r6c-run.sh logs/r6c/full.log`) had not started; the table below is run 2's and
+OVERSTATES the measure (its refused passes). Next: build glcts (`cts/build-windows.ps1` through
+`remote`), the whole run alone, the new table, then round 6's order (memoryBarrier in vertex
+programs, the device losses, the 32nd passed value and KHR-GL33).
+
 G9 round 6 run 2 (2026-11-24). G9'S FIRST PART IS REPORTED READY FOR ITS CHECK: the round's first
 three items (the two security defects, unsafe, the literal check) are confirmed on the GPU by a
 whole run with no display reset, and the fourth (vertex-stage storage) is built. THE BAR IS STILL
