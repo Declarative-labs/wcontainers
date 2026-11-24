@@ -26,10 +26,9 @@ with and without Mesa and the nir crate's route tests passed on the x86-64 machi
   (240 failures; run 25's reading, "ASTC against 128-bit formats", was wrong: every failure is a
   copy from a compressed texture into a renderbuffer cleared just before, the second of the case's
   two passes, the first of which reads the renderbuffer back between and passes).
-- Blits seen in three 32-bit channels (st/mesa's canonical `R32G32B32_UINT` of its copies between
-  GL's RGB32 formats, whose textures it holds in four channels where the host has none of three)
-  copy the four-channel texels (0a8c3ed1; dEQP-GLES31 `copy_image.non_compressed.viewclass_96_bits`
-  32 crashes, "a blit Gallium's blitter does not make").
+- Tried and taken back: blits seen in three 32-bit channels copied as the four-channel texels
+  (0a8c3ed1, undone in a5de181d: the whole run below shows it turned 32 passing integer copies into
+  crashes and fixed none).
 - Unsafe code: wcontainers-opengl 365 (eight more: a layer's resource, making and releasing the
   layers, a blit and a copy a layer, the views' layer counts and bindings), wcontainers-nir 108;
   the root list carries both (fb3eaf0f). No dependency or licence was added.
@@ -384,8 +383,11 @@ Run 26's changes to the rows below (the groups run 25 left not yet read, read fr
 `.qpa` files, copied to scratch `results/g9r25/qpa`):
 - Done in run 26: dEQP-GLES31 `state_query` of `texture_2d_multisample_array` 89 and
   `texture.multisample.negative` 10 (multisampled arrays), `copy_image.mixed
-  .viewclass_128_bits_mixed` 240 (a write after a waiting clear; not ASTC), `copy_image
-  .non_compressed.viewclass_96_bits` 32 (blits in three 32-bit channels).
+  .viewclass_128_bits_mixed` 240 (a write after a waiting clear; not ASTC).
+- dEQP-GLES31 `copy_image.non_compressed.viewclass_96_bits`: still 32 crashes (rgb32f to rgb32i
+  and rgb32ui), "a blit Gallium's blitter does not make"; the four-channel bit copy tried this run
+  failed the integer pairs too and was taken back. Not yet traced past the blit's formats (this
+  track): the next step is to print the blit's formats and the resources' formats at the refusal.
 - dEQP-GLES31 `geometry_shading.layered` 20 (5 more with multisampled arrays) and the other
   layered rows below: layered geometry output, this track's, not built. What it takes, as the
   Direct3D 11 front does it (`draw_runs`, `SlowPath::LayerSplit`): the stage helper's records
