@@ -11,7 +11,7 @@ use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::HostCode;
 use wcontainers_guest_cpu::position::{Held, Side};
 use wcontainers_translator::{LookAhead, translate_native_for};
-use wcontainers_x86::area::{PROBE_PAGE, WINDOW};
+use wcontainers_x86::area::{PROBE_PAGE, WINDOW, WINDOW_NEGATED};
 use wcontainers_x86::carry::{T, U};
 use wcontainers_x86::native::{Check, HostMatches, Target, Way};
 use wcontainers_x86::{Offer, V3, X86_64, decode};
@@ -747,11 +747,12 @@ fn stack_and_withheld_forms_are_made() {
     }
 }
 
-/// The emitted code of three guest sequences in the exact form, up to the piece's first call into the inside, as
-/// gadgets for the speculation probe (docs/x86-native-output.md section 4, Speculation): each reads a byte or bit at
-/// a refused address and loads the probe array's line it picks. Printed as `name form hex` lines, the form `cut`
-/// as emitted or `uncut` with each guest access's address-size prefix and `mov esi, esi` taken out, the control
-/// that must leak. Run by the scratch folder's probe on an x86-64 machine.
+/// The emitted code of guest sequences in the exact form, up to the piece's first call into the inside, as gadgets
+/// for the speculation probe (docs/x86-native-output.md section 4, Speculation): each reads a byte or bit at a
+/// refused address (or stores there) and loads the probe array's line it picks. Printed after the fixed part's
+/// offsets of B and -B as `name form hex` lines, the form `cut` as emitted or `uncut` with each guest access's
+/// address-size prefix and each cut of a register to its low half taken out, the control that must leak. Run by
+/// the scratch folder's probe on an x86-64 machine.
 #[test]
 #[ignore = "prints the gadgets for the speculation probe"]
 fn speculation_gadgets() {
@@ -766,7 +767,24 @@ fn speculation_gadgets() {
             "bt",
             "48 0f a3 08 0f 92 c0 0f b6 c0 c1 e0 0c 8b 80 00 00 14 00 0f 0b",
         ),
+        // mov al, cl; scasb; setz al; movzx eax, al; shl eax, 12; mov eax, [rax + 140000h]; ud2
+        (
+            "scas",
+            "88 c8 ae 0f 94 c0 0f b6 c0 c1 e0 0c 8b 80 00 00 14 00 0f 0b",
+        ),
+        // xor eax, eax; xlat; movzx eax, al; shl eax, 12; mov eax, [rax + 100000h]; ud2
+        ("xlat", "31 c0 d7 0f b6 c0 c1 e0 0c 8b 80 00 00 10 00 0f 0b"),
+        // mov rsp, rbx; pop rax; movzx eax, al; shl eax, 12; mov eax, [rax + 100000h]; ud2
+        (
+            "pop",
+            "48 89 dc 58 0f b6 c0 c1 e0 0c 8b 80 00 00 10 00 0f 0b",
+        ),
+        // mov [rbx], al; ud2
+        ("store", "88 03 0f 0b"),
+        // pcmpeqb xmm1, xmm1; maskmovdqu xmm0, xmm1; ud2
+        ("maskmov", "66 0f 76 c9 66 0f f7 c1 0f 0b"),
     ];
+    println!("area {WINDOW:#x} {WINDOW_NEGATED:#x}");
     for (name, hex) in gadgets {
         let piece = piece(&bytes(hex), EXACT, false).expect("a piece");
         let emitted: Vec<Iced> = host(&piece.bytes)
@@ -779,15 +797,20 @@ fn speculation_gadgets() {
             for i in &emitted {
                 let mut i = *i;
                 if form == "uncut" {
-                    let cut_start = i.code() == Code::Mov_r32_rm32
+                    // A register cut to its low half (a string's start, the guest's rsp before the base is added),
+                    // other than the probe's own.
+                    let cut = i.code() == Code::Mov_r32_rm32
                         && i.op1_kind() == OpKind::Register
-                        && i.op0_register() == Register::ESI
-                        && i.op1_register() == Register::ESI;
-                    if cut_start {
+                        && i.op0_register() == i.op1_register()
+                        && i.op0_register().full_register() != U;
+                    if cut {
                         continue;
                     }
                     if i.memory_segment() == Register::GS && i.memory_base().is_gpr32() {
                         i.set_memory_base(i.memory_base().full_register());
+                    }
+                    if i.op0_kind() == OpKind::MemorySegEDI {
+                        i.set_op0_kind(OpKind::MemorySegRDI);
                     }
                 }
                 let mut encoder = Encoder::new(64);

@@ -495,15 +495,17 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
 /// access one byte past the data and across it, at 2^32 - 1 with 8 bytes and at 2^32, a far-reaching SIB form, an
 /// `fs:` operand with a negative offset, strings with a large count upward and downward and with rsi or rdi at
 /// 2^32, 2^32 + 2^35, 2^40 and -1, bit tests whose offset reaches below the data or past 2^32, a push at the
-/// stack's bottom and at rsp 0, `call r` with rsp at 2^32 and 0, the guest's 0x67 forms (an operand, `stos`, a
-/// bit test, `xlat`), `fxsave64` across 2^32 with and without 0x67, and `maskmovq`. Every case ends as the CPU's, or as a named known difference (the wrapping
-/// form's landing modulo 2^32 among them).
+/// stack's bottom and at rsp 0, `call r`, `call m` and `pushf` with rsp at 2^32 and 0, `enter` with a deep level,
+/// the guest's 0x67 forms (an operand, every string plain and repeated, a bit test, `xlat`, `fs:` and `gs:` with
+/// a base past 2^32), every bit test with the plan's offsets, `fxsave64` across 2^32 with and without 0x67, and the
+/// masked stores. Every case ends as the CPU's, or as a named known difference (the wrapping form's landing modulo
+/// 2^32 among them).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
     use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare_in_process};
-    use wcontainers_translator_test::guest::x86_64::{FS, RFLAGS, RSP, plain};
-    use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES};
+    use wcontainers_translator_test::guest::x86_64::{FS, GS, RFLAGS, RSP, plain};
+    use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
     use wcontainers_x86::native::Check;
     use wcontainers_x86::{DF, RAX, RBX, RCX, RDI, RSI};
     const WINDOW: u64 = 1 << u32::BITS;
@@ -630,9 +632,115 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
         cases.push(with(&[0x48, 0x0f, 0xae, 0x00], &[(r(RAX), at)]));
         cases.push(with(&[0x67, 0x48, 0x0f, 0xae, 0x00], &[(r(RAX), at)]));
     }
-    // maskmovq mm0, mm1 at rdi in the data and past 2^32.
-    for at in [DATA, DATA + (1 << 40)] {
-        cases.push(with(&[0x0f, 0xf7, 0xc1], &[(r(RDI), at)]));
+    // maskmovq, maskmovdqu and vmaskmovdqu at rdi in the data and at each start past it.
+    for &at in [DATA, DATA + (1 << 40)].iter().chain(&starts) {
+        for code in [
+            &[0x0f, 0xf7, 0xc1][..],
+            &[0x66, 0x0f, 0xf7, 0xc1],
+            &[0xc5, 0xf9, 0xf7, 0xc1],
+        ] {
+            cases.push(with(code, &[(r(RDI), at)]));
+        }
+    }
+    // cmpsb, scasb and xlat with a start at or past 2^32.
+    for &at in &starts {
+        cases.push(with(&[0xa6], &[(r(RSI), at), (r(RDI), DATA)]));
+        cases.push(with(&[0xa6], &[(r(RSI), DATA), (r(RDI), at)]));
+        cases.push(with(&[0xae], &[(r(RDI), at)]));
+        cases.push(with(&[0xd7], &[(r(RBX), at)]));
+    }
+    // The guest's 0x67 strings, plain and repeated, with edi and esi in the data and the upper halves set: the CPU
+    // uses the low halves alone and leaves them zero-extended.
+    let high = 0x1234_5678 << u32::BITS;
+    for code in [
+        &[0x67, 0xaa][..],
+        &[0x67, 0xa4],
+        &[0x67, 0xa6],
+        &[0x67, 0xae],
+        &[0x67, 0xac],
+        &[0x67, 0xf3, 0xaa],
+        &[0x67, 0xf3, 0xa4],
+        &[0x67, 0xf3, 0xa6],
+        &[0x67, 0xf2, 0xae],
+        &[0x67, 0xf3, 0x48, 0xab],
+    ] {
+        cases.push(with(
+            code,
+            &[
+                (r(RSI), high | (DATA + 0x800)),
+                (r(RDI), high | (DATA + 0x10)),
+                (r(RCX), (1 << u32::BITS) | 16),
+            ],
+        ));
+    }
+    // An `fs:` or `gs:` operand under 0x67 with a base at or past 2^32 (the meaning's fault in the exact form), with
+    // one inside whose 32-bit offset wraps back into the data, and the plan's `65 67 8b 00`.
+    for (field, prefix) in [(FS, 0x64), (GS, 0x65)] {
+        for (base, offset) in [
+            (WINDOW, 0x10),
+            (WINDOW + DATA, 0),
+            (DATA - 0x10, 0xffff_ffff_0000_0020),
+            (DATA + 0x20, 0xffff_fff0),
+        ] {
+            cases.push(with(
+                &[0x67, prefix, 0x48, 0x8b, 0x03],
+                &[(field, base), (r(RBX), offset)],
+            ));
+        }
+    }
+    cases.push(with(
+        &[0x65, 0x67, 0x8b, 0x00],
+        &[(GS, 0x3_0000_0000), (r(RAX), 0x1_0000_0010)],
+    ));
+    // bt, bts, btr and btc (the last three also locked) of each operand size with a register bit offset of 0, -1, w,
+    // -w - 1, 2^31 - 1, -2^31, 2^35, 2^60 and -2^63 (each taken at the operand size), from operands at the data's
+    // first byte, its middle, the last of its writable bytes and the last of its read-only page.
+    for (size, prefix) in [(16u64, &[0x66][..]), (32, &[]), (64, &[0x48])] {
+        for op in [0xa3u8, 0xab, 0xb3, 0xbb] {
+            for lock in [false, true] {
+                if lock && op == 0xa3 {
+                    continue;
+                }
+                let mut code = Vec::new();
+                if lock {
+                    code.push(0xf0);
+                }
+                code.extend_from_slice(prefix);
+                code.extend_from_slice(&[0x0f, op, 0x08]);
+                for offset in [
+                    0,
+                    -1,
+                    size as i64,
+                    -(size as i64) - 1,
+                    i64::from(i32::MAX),
+                    i64::from(i32::MIN),
+                    1 << 35,
+                    1 << 60,
+                    i64::MIN,
+                ] {
+                    let offset = (offset as u64) & (u64::MAX >> (64 - size));
+                    for at in [
+                        DATA,
+                        DATA + DATA_WRITABLE / 2,
+                        DATA + DATA_WRITABLE - size / 8,
+                        end - size / 8,
+                    ] {
+                        cases.push(with(&code, &[(r(RAX), at), (r(RCX), offset)]));
+                    }
+                }
+            }
+        }
+    }
+    // enter 16, 31 (a deep level) near the stack's bottom; call [rbx] and pushf with rsp at 2^32, 0 and the data.
+    for rsp in [DATA + 0x100, 0x40, WINDOW] {
+        cases.push(with(
+            &[0xc8, 0x10, 0x00, 0x1f],
+            &[(RSP, rsp), (rbp, DATA + 0x800)],
+        ));
+    }
+    for rsp in [WINDOW, 0, DATA + 0x100] {
+        cases.push(with(&[0xff, 0x13], &[(RSP, rsp), (r(RBX), DATA)]));
+        cases.push(with(&[0x9c], &[(RSP, rsp)]));
     }
     let mut reference = Reference::start(&X86_64::REFERENCE);
     let mut failures = Vec::new();
