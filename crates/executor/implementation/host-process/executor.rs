@@ -785,6 +785,8 @@ impl HostProcessExecutor {
         blocks: &[Arc<OwnedFd>],
         then: Option<(Then, StopWhen<'_>)>,
     ) -> Result<TurnEnd, CpuError> {
+        #[cfg(target_arch = "aarch64")]
+        self.flush_code(id);
         let rounds = commands.len().div_ceil(MAX_COMMANDS).max(1);
         let mut blocks = blocks.iter();
         for round in 0..rounds {

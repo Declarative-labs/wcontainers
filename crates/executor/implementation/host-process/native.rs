@@ -663,13 +663,20 @@ impl HostProcessExecutor {
         Ok(Some(at))
     }
 
-    /// Writes host words into a memory's code area.
+    /// Stages host words for a memory's code area, written before its next turn.
     fn write_code(&mut self, memory: MemoryId, at: u64, words: &[u32]) {
-        let probe = *self.host.probe();
         let code = self.codes[memory.0 as usize]
             .as_mut()
             .expect("a memory with code");
-        code.area.write(&probe, at as usize, words);
+        code.area.stage(at as usize, words);
+    }
+
+    /// Writes a memory's staged code, before one of its threads takes a turn.
+    pub(super) fn flush_code(&mut self, memory: MemoryId) {
+        let probe = *self.host.probe();
+        if let Some(Some(code)) = self.codes.get_mut(memory.0 as usize) {
+            code.area.flush(&probe);
+        }
     }
 
     /// Writes host code into the next free bytes of the code area, giving its address; none when it does not fit.
@@ -693,7 +700,6 @@ impl HostProcessExecutor {
 
     /// Drops every piece of a memory and starts its code area again; its slot pages stay its own, every slot empty.
     fn empty_code_area(&mut self, memory: MemoryId) {
-        let probe = *self.host.probe();
         let empty = words().empty;
         let code = self.codes[memory.0 as usize]
             .as_mut()
@@ -706,7 +712,7 @@ impl HostProcessExecutor {
         let page = vec![empty; THREAD_PAGE_SIZE / size_of::<u32>()];
         let offsets: Vec<usize> = code.slot_pages.values().copied().collect();
         for offset in offsets {
-            code.area.write_slots(&probe, offset, &page);
+            code.area.stage_slots(offset, &page);
         }
         self.slow(reason::CODE_AREA_EMPTIED, 1, dropped);
     }
@@ -727,7 +733,6 @@ impl HostProcessExecutor {
     /// Fills the entry slot of guest `guest` with a jump to the piece at `base`, its page mapped in the stub at its
     /// first use; none when no slot page is free.
     fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Option<()> {
-        let probe = *self.host.probe();
         let words_of = words();
         let at = WAY.slot(guest);
         let page = at & !(THREAD_PAGE_SIZE as u64 - 1);
@@ -757,8 +762,7 @@ impl HostProcessExecutor {
             *word = Field::new(field).with(base >> (k as u32 * SLOT_MOVE_BITS));
         }
         let code = self.codes[memory.0 as usize].as_mut()?;
-        code.area
-            .write_slots(&probe, offset + (at - page) as usize, &words);
+        code.area.stage_slots(offset + (at - page) as usize, &words);
         Some(())
     }
 
@@ -937,7 +941,6 @@ impl HostProcessExecutor {
 
     /// Drops the piece at guest `at`: its slot emptied, the exits linked to it unlinked, its own exits forgotten.
     fn drop_piece(&mut self, memory: MemoryId, at: u64, empty: u32) {
-        let probe = *self.host.probe();
         let code = self.codes[memory.0 as usize]
             .as_mut()
             .expect("a memory with code");
@@ -949,11 +952,11 @@ impl HostProcessExecutor {
         let page = slot & !(THREAD_PAGE_SIZE as u64 - 1);
         if let Some(&offset) = code.slot_pages.get(&page) {
             code.area
-                .write_slots(&probe, offset + (slot - page) as usize, &[empty]);
+                .stage_slots(offset + (slot - page) as usize, &[empty]);
         }
         let unlink: Vec<Site> = code.exits_to.get(&at).cloned().unwrap_or_default();
         for site in unlink {
-            code.area.write(&probe, site.at as usize, &[site.word]);
+            code.area.stage(site.at as usize, &[site.word]);
         }
         for (target, site) in loaded.exits {
             if let Some(sites) = code.exits_to.get_mut(&target) {
