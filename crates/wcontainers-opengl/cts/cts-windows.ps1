@@ -37,18 +37,22 @@ function Get-Lists {
 }
 
 # The CTS's own arguments for a list: its first configuration in its folder's mustpass.xml, with
-# the folder glcts reads its data from. Stopping on a lost device is turned off because glcts's
-# desktop packages then call glGetGraphicsResetStatus after every case, an entry point they load
-# only from GL_KHR_robustness or OpenGL 4.5, so a 3.3 context without it calls a null pointer
-# (glcts gl3cTestPackages.cpp, TestCaseWrapper::iterate). A lost device still ends its cases as
-# crashes or failures in deqp-runner's results.
+# the folder glcts reads its data from. The ES lists keep glcts's default, stopping on a lost
+# context: glcts asks for a context told of resets and asks after each case, and the driver
+# reports a context one of whose calls it refused, or whose device was lost, as reset by its own
+# fault, so that case ends the process and deqp-runner runs the rest in a new one. The desktop
+# lists turn it off: glcts's desktop packages call glGetGraphicsResetStatus after every case, an
+# entry point they load only from GL_KHR_robustness or OpenGL 4.5, so a 3.3 context without it
+# calls a null pointer (glcts gl3cTestPackages.cpp, TestCaseWrapper::iterate).
 $KeepRunningOnDeviceLost = '--deqp-terminate-on-device-lost=disable'
+$DesktopLists = 'gl/'
 function Get-ListArguments([string]$List) {
     $caselist = Join-Path $Mustpass $List
     [xml]$described = Get-Content (Join-Path (Split-Path $caselist) 'mustpass.xml')
     $configuration = $described.SelectNodes('//Configuration') |
         Where-Object { $_.caseListFile -eq (Split-Path -Leaf $List) } | Select-Object -First 1
     if (-not $configuration) { throw "cts: mustpass.xml has no configuration for $List" }
-    @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$GlctsDir" +
-        $KeepRunningOnDeviceLost
+    $arguments = @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$GlctsDir"
+    if ($List.StartsWith($DesktopLists)) { $arguments += $KeepRunningOnDeviceLost }
+    $arguments
 }
