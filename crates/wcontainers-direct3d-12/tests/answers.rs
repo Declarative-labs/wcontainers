@@ -47,7 +47,7 @@ use wcontainers_directx_graphics_infrastructure::{
     dxgi, dxgi_format, support1, support2, typeless_group,
 };
 use wcontainers_gpu::{Backend, CUBE_FACES, ColorWrites, DeviceStatus, FormatKind};
-use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
 /// The DXGI format values up to `B4G4R4A4_UNORM`, the last Direct3D 12 defines below its video
 /// and sampler feedback formats.
@@ -869,7 +869,13 @@ fn varied_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
         A8_UNORM => (1, Unorm, A),
         B8G8R8A8_UNORM => (1, Unorm, BGRA),
         B8G8R8X8_UNORM => (1, Unorm, BGRX),
-        _ => return packed_texel(format).or_else(|| block_texel(format)),
+        _ => {
+            return packed_texel(format)
+                .or_else(|| block_texel(format))
+                .or_else(|| srgb_texel(format))
+                .or_else(|| pair_texel(format))
+                .or_else(|| depth_texel(format));
+        }
     };
     // Stored values of either sign, the floats' as their bits.
     let raw = |i: usize| -> u32 {
@@ -1042,6 +1048,83 @@ fn block_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
     Some((block, texels[0].map(f32::to_bits), near))
 }
 
+/// [`varied_texel`] of the sRGB formats: their linear partner's texel, its red, green and blue
+/// taken through Direct3D's sRGB curve (alpha is stored linear).
+fn srgb_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
+    use dxgi::*;
+    let linear = match format {
+        R8G8B8A8_UNORM_SRGB => R8G8B8A8_UNORM,
+        B8G8R8A8_UNORM_SRGB => B8G8R8A8_UNORM,
+        B8G8R8X8_UNORM_SRGB => B8G8R8X8_UNORM,
+        BC1_UNORM_SRGB => BC1_UNORM,
+        BC2_UNORM_SRGB => BC2_UNORM,
+        BC3_UNORM_SRGB => BC3_UNORM,
+        BC7_UNORM_SRGB => BC7_UNORM,
+        _ => return None,
+    };
+    let (bytes, mut expected, _) = varied_texel(linear)?;
+    for w in &mut expected[..3] {
+        let c = f64::from(f32::from_bits(*w));
+        let l = match c <= SRGB_LINEAR_BELOW {
+            true => c / SRGB_LINEAR_SLOPE,
+            false => ((c + SRGB_OFFSET) / (1.0 + SRGB_OFFSET)).powf(SRGB_EXPONENT),
+        };
+        *w = (l as f32).to_bits();
+    }
+    Some((bytes, expected, SRGB_NEAR))
+}
+
+/// [`varied_texel`] of the depth formats' views, each the texel of the plane it reads
+/// ([`plane_of`]): the depth views read the depth in red (the 24-bit depth's high byte not read),
+/// the stencil views the stencil in green.
+fn depth_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
+    use dxgi::*;
+    const DEPTH24: u32 = 0x93_62c140;
+    const DEPTH32: f32 = 0.375;
+    const STENCIL: u8 = 0x93;
+    let one = 1.0f32.to_bits();
+    let (bytes, expected, near) = match format {
+        R24_UNORM_X8_TYPELESS => {
+            let depth = f64::from(DEPTH24 & UNORM24_MAX) / f64::from(UNORM24_MAX);
+            let words = [(depth as f32).to_bits(), 0, 0, one];
+            (DEPTH24.to_le_bytes().to_vec(), words, Near::Bits(1))
+        }
+        R32_FLOAT_X8X24_TYPELESS => {
+            let words = [DEPTH32.to_bits(), 0, 0, one];
+            (DEPTH32.to_le_bytes().to_vec(), words, Near::Bits(0))
+        }
+        X24_TYPELESS_G8_UINT | X32_TYPELESS_G8X24_UINT => {
+            (vec![STENCIL], [0, u32::from(STENCIL), 0, 1], Near::Bits(0))
+        }
+        _ => return None,
+    };
+    Some((bytes, expected, near))
+}
+
+/// The sRGB curve's constants (IEC 61966-2-1, as Direct3D's conversion rules give them).
+const SRGB_LINEAR_BELOW: f64 = 0.04045;
+const SRGB_LINEAR_SLOPE: f64 = 12.92;
+const SRGB_OFFSET: f64 = 0.055;
+const SRGB_EXPONENT: f64 = 2.4;
+/// How near an sRGB read must be: the RTX 3080 gives the curve with its words' low 16 bits zero
+/// (193 as 0.53515625, where the curve gives 0.5332764), WARP within a float's last bits, and the
+/// 5- and 6-bit block endpoints are widened each decoder its own way before the curve.
+const SRGB_NEAR: Near = Near::Within(1.0 / 255.0);
+
+/// [`varied_texel`] of the two-pixel formats, each pair's two greens equal so that every texel is.
+fn pair_texel(format: u32) -> Option<(Vec<u8>, [u32; 4], Near)> {
+    use dxgi::*;
+    let (r, g, b) = (0x40u8, 0xc1u8, 0x62u8);
+    let bytes = match format {
+        R8G8_B8G8_UNORM => vec![r, g, b, g],
+        G8R8_G8B8_UNORM => vec![g, r, g, b],
+        _ => return None,
+    };
+    let unorm = |v: u8| (f32::from(v) / f32::from(u8::MAX)).to_bits();
+    let expected = [unorm(r), unorm(g), unorm(b), 1.0f32.to_bits()];
+    Some((bytes, expected, Near::Bits(1)))
+}
+
 /// How far a word read may be from the one Direct3D's conversions give.
 #[derive(Clone, Copy, Debug)]
 enum Near {
@@ -1069,10 +1152,11 @@ fn read_varied(words: [u32; 4], want: [Option<u32>; 4], near: Near) -> bool {
 }
 
 /// An upload buffer of `size` bytes holding texel or block `bytes` in every texel or block of the
-/// first subresource of a 2D texture of `format`, laid out for a copy from its start.
+/// first subresource of a 2D texture of `format` that its views read ([`plane_of`]), laid out for
+/// a copy from its start.
 fn filled(device: &mut Device<WebGpu>, format: u32, bytes: &[u8], size: u64) -> ResourceId {
     let desc = texture(format, DIMENSION_TEXTURE2D, 1, 1, 1, 0);
-    let (f, _) = desc.footprints(0, 1, 0).unwrap();
+    let (f, _) = desc.footprints(plane_of(format), 1, 0).unwrap();
     let pitch = f[0].footprint.row_pitch as usize;
     let block = dxgi_format(format).map_or(1, |(f, _)| f.block().0);
     let mut fill = vec![0; size as usize];
@@ -1104,8 +1188,17 @@ fn clear_of(kind: Kind, expected: [u32; 4]) -> ([f32; 4], [Option<u32>; 4]) {
     (pairs.map(|p| p.0), pairs.map(|p| p.1))
 }
 
-/// A single-sampled 2D texture of `format` with `flags`, and the commands copying zeros into its
-/// first subresource from `zeros`, an upload buffer of zeros as large as any footprint needs.
+/// The plane a view of `format` reads: the stencil's for the stencil views of the depth formats.
+fn plane_of(format: u32) -> u32 {
+    match format {
+        dxgi::X24_TYPELESS_G8_UINT | dxgi::X32_TYPELESS_G8X24_UINT => 1,
+        _ => 0,
+    }
+}
+
+/// A single-sampled 2D texture of `format` with `flags`, and the commands copying zeros into the
+/// first subresource its views read ([`plane_of`]) from `zeros`, an upload buffer of zeros as
+/// large as any footprint needs.
 fn zeroed(
     device: &mut Device<WebGpu>,
     format: u32,
@@ -1115,11 +1208,12 @@ fn zeroed(
 ) -> (ResourceId, Command, FootprintInfo) {
     let desc = texture(format, DIMENSION_TEXTURE2D, 1, 1, 1, flags);
     let id = make(device, &desc, what);
-    let (f, _) = desc.footprints(0, 1, 0).unwrap();
+    let plane = plane_of(format);
+    let (f, _) = desc.footprints(plane, 1, 0).unwrap();
     let copy = Command::CopyTexture {
         dst: CopyLocation::Subresource {
             resource: id,
-            index: 0,
+            index: plane,
         },
         at: [0; 3],
         src: CopyLocation::Footprint {
