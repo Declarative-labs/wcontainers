@@ -19,6 +19,16 @@ const SHOWN: u64 = 0x80_0000;
 const HIDDEN: u64 = 0xc0_0000;
 const RW: Permissions = Permissions::READ.union(Permissions::WRITE);
 
+/// Held by each test for its whole run: a thread another test starts at the moment of a fork holds std's
+/// lock of thread records in the copy, where no new thread can then start.
+static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    ALONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Default)]
 struct Recorder {
     exits: Vec<Exit>,
@@ -96,6 +106,7 @@ fn parent(cpu: &mut CpuSide<Arm64>) -> (MemoryId, SharedId) {
 }
 
 fn duplicate(look_ahead: LookAhead) {
+    let _alone = alone();
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
     let (memory, _) = parent(&mut cpu);
     let child = cpu.memory_duplicate(memory).unwrap();
@@ -140,6 +151,7 @@ fn a_duplicate_is_exact_and_its_own_none() {
 
 #[test]
 fn an_executor_brought_back_holds_the_same_and_translates_again() {
+    let _alone = alone();
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
     let (memory, block) = parent(&mut cpu);
     let thread = cpu.thread_new(memory).unwrap();
@@ -172,11 +184,12 @@ fn an_executor_brought_back_holds_the_same_and_translates_again() {
 /// back translates and compiles new code in its own pool and runs it.
 #[test]
 fn an_executor_brought_back_in_a_copy_of_the_process_compiles_there() {
+    let _alone = alone();
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
     let (memory, _) = parent(&mut cpu);
     let thread = cpu.thread_new(memory).unwrap();
-    // Rayon's global pool has threads here, which the copy will not have.
-    rayon::join(|| {}, || {});
+    // Rayon's global pool has threads here, which the copy will not have, each started before the fork.
+    rayon::broadcast(|_| ());
     // SAFETY: the copy only runs the executor and leaves with `_exit`.
     #[expect(
         unsafe_code,
@@ -226,6 +239,7 @@ fn wait(child: libc::pid_t) {
 #[test]
 fn a_duplicate_made_after_the_host_process_forked_is_exact() {
     const PAGES: u64 = 256;
+    let _alone = alone();
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
     let (memory, _) = parent(&mut cpu);
     cpu.memory_duplicate(memory).unwrap();
