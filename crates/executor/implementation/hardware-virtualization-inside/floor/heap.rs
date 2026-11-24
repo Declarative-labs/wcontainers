@@ -24,7 +24,7 @@ pub struct Blocks;
 unsafe impl Source for Blocks {
     #[expect(
         unsafe_code,
-        reason = "UNSOUND: hands talc a run of frames take_blocks gave, never given before, as memory only the heap reaches, which safe code can break: tables.rs give and clear, Table's public root, native.rs frame_bytes and write_page, and floor write_frame take any frame number; Words over the linear map (GuestFrame) replaces those, and this line then stays a one-off"
+        reason = "UNSOUND: hands talc a run of frames take_blocks gave, never given before, as memory only the heap reaches, which safe code can break: tables.rs give and clear, Table (its root private now, but Copy, so a copy walks tables free gave back), native.rs frame_bytes and write_page, and floor write_frame take any frame number; Words over the linear map (GuestFrame) replaces those, and this line then stays a one-off"
     )]
     fn acquire<B: Binning>(talc: &mut Talc<Self, B>, layout: Layout) -> Result<(), ()> {
         // The allocation with its worst alignment, and talc's own chunk on either side of a claim.

@@ -149,6 +149,7 @@ impl Frames {
 
     /// Takes back one frame.
     pub fn give(&mut self, frame: u64) {
+        let frame = checked_frame(frame);
         // SAFETY: the frame is no longer used by anyone and is reached through the linear map.
         #[expect(
             unsafe_code,
@@ -169,11 +170,27 @@ pub fn clear(frame: u64) {
     unsafe { ptr::write_bytes(linear(frame) as *mut u8, 0, PAGE_SIZE as usize) };
 }
 
+/// A frame number an entry may hold: page aligned and within the output address field, so that no bit of it
+/// lands in an attribute.
+fn checked_frame(frame: u64) -> u64 {
+    assert_eq!(
+        frame & !OUTPUT_ADDRESS,
+        0,
+        "a frame is page aligned and within the output address"
+    );
+    frame
+}
+
+/// The attributes an entry may hold: none in the output address field, where they would change the frame.
+fn attributes_only(attributes: El1Attributes) -> El1Attributes {
+    El1Attributes::from_bits_retain(attributes.bits() & !(OUTPUT_ADDRESS as usize))
+}
+
 /// One set of translation tables for one half, from its top-level table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Table {
-    /// The top-level table's guest-physical address.
-    pub root: u64,
+    /// The top-level table's guest-physical address: a frame [`Table::new`] took, or the boot map's root.
+    root: u64,
 }
 
 /// The entry kinds below a table: one that points to the next table, and a page at the leaf level.
@@ -190,6 +207,19 @@ fn valid(entry: u64) -> bool {
 }
 
 impl Table {
+    /// The boot map's tables, which the monitor wrote at `root` (crate::boot::write_boot_map). Only the floor's
+    /// boot names them.
+    pub(crate) fn boot_map(root: u64) -> Table {
+        Table {
+            root: checked_frame(root),
+        }
+    }
+
+    /// The top-level table's guest-physical address, for the translation table base registers.
+    pub fn root(&self) -> u64 {
+        self.root
+    }
+
     /// An empty table.
     pub fn new(frames: &mut Frames) -> Result<Table, Full> {
         Ok(Table {
@@ -205,7 +235,7 @@ impl Table {
             // SAFETY: table entries are reached through the linear map.
             #[expect(
                 unsafe_code,
-                reason = "UNSOUND: reads an entry while walking down in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+                reason = "UNSOUND: reads an entry while walking down in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
             )]
             let value = unsafe { ptr::read_volatile(entry) };
             table = if valid(value) {
@@ -215,7 +245,7 @@ impl Table {
                 // SAFETY: as above.
                 #[expect(
                     unsafe_code,
-                    reason = "UNSOUND: writes an entry pointing at a fresh table frame in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+                    reason = "UNSOUND: writes an entry pointing at a fresh table frame in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
                 )]
                 unsafe { ptr::write_volatile(entry, next | table_or_page()) };
                 next
@@ -231,7 +261,7 @@ impl Table {
             // SAFETY: table entries are reached through the linear map.
             #[expect(
                 unsafe_code,
-                reason = "UNSOUND: reads an entry while finding a mapping in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+                reason = "UNSOUND: reads an entry while finding a mapping in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
             )]
             let value = unsafe { ptr::read_volatile(entry_at(table, va, level)) };
             if !valid(value) {
@@ -261,19 +291,20 @@ impl Table {
         frame: u64,
         attributes: El1Attributes,
     ) -> Result<(), Full> {
-        let entry = frame | attributes.bits() as u64 | table_or_page();
+        let attributes = attributes_only(attributes);
+        let entry = checked_frame(frame) | attributes.bits() as u64 | table_or_page();
         let slot = self.slot(frames, va, LEAF_LEVEL)?;
         // SAFETY: the entry is ours, reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: reads a leaf entry to check it is empty in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: reads a leaf entry to check it is empty in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         let present = unsafe { ptr::read_volatile(slot) };
         assert!(!valid(present), "mapping a mapped page");
         // SAFETY: as above.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: writes a page entry in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: writes a page entry in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, entry) };
         barrier();
@@ -288,20 +319,24 @@ impl Table {
         block: u64,
         attributes: El1Attributes,
     ) -> Result<(), Full> {
-        let entry = (block | attributes.bits() as u64 | El1Attributes::VALID.bits() as u64)
+        assert!(block.is_multiple_of(BLOCK_SIZE), "a block entry maps an aligned run");
+        let attributes = attributes_only(attributes);
+        let entry = (checked_frame(block)
+            | attributes.bits() as u64
+            | El1Attributes::VALID.bits() as u64)
             & !(El1Attributes::TABLE_OR_PAGE.bits() as u64);
         let slot = self.slot(frames, va, BLOCK_LEVEL)?;
         // SAFETY: as in `map`.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: reads a block entry to check it is empty in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: reads a block entry to check it is empty in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         let present = unsafe { ptr::read_volatile(slot) };
         assert!(!valid(present), "mapping a mapped block");
         // SAFETY: as in `map`.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: writes a block entry in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: writes a block entry in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, entry) };
         barrier();
@@ -350,11 +385,12 @@ impl Table {
             self.split(frames, va, entry)?;
         }
         let frame = self.find(va).expect("split").0 & OUTPUT_ADDRESS;
+        let attributes = attributes_only(attributes);
         let slot = self.slot(frames, va, LEAF_LEVEL)?;
         // SAFETY: the entry is ours, reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: rewrites a page entry with new attributes in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: rewrites a page entry with new attributes in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, frame | attributes.bits() as u64 | table_or_page()) };
         invalidate(va);
@@ -369,6 +405,8 @@ impl Table {
         frame: u64,
         attributes: El1Attributes,
     ) -> Result<(), Full> {
+        let frame = checked_frame(frame);
+        let attributes = attributes_only(attributes);
         let (entry, level) = self.find(va).expect("replacing an unmapped page");
         if level == BLOCK_LEVEL {
             self.split(frames, va, entry)?;
@@ -377,14 +415,14 @@ impl Table {
         // SAFETY: the entry is ours, reached through the linear map: made invalid, invalidated, then written.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: clears a page entry, the break step of replace, in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: clears a page entry, the break step of replace, in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, 0) };
         invalidate(va);
         // SAFETY: as above.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: writes the replacing page entry in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: writes the replacing page entry in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, frame | attributes.bits() as u64 | table_or_page()) };
         barrier();
@@ -400,7 +438,7 @@ impl Table {
             // SAFETY: table entries are reached through the linear map; `find` saw each level valid.
             #[expect(
                 unsafe_code,
-                reason = "UNSOUND: reads an entry while walking down to unmap in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+                reason = "UNSOUND: reads an entry while walking down to unmap in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
             )]
             let entry = unsafe { ptr::read_volatile(entry_at(table, va, above)) };
             table = entry & OUTPUT_ADDRESS;
@@ -408,7 +446,7 @@ impl Table {
         // SAFETY: as above.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: clears a page entry in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: clears a page entry in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(entry_at(table, va, LEAF_LEVEL), 0) };
         invalidate(va);
@@ -429,6 +467,7 @@ impl Table {
 
     /// Gives the block entry at `base` new attributes, keeping its frames, and invalidates it as `protect` does.
     pub fn protect_block(&self, base: u64, attributes: El1Attributes) {
+        let attributes = attributes_only(attributes);
         let (entry, level) = self.find(base).expect("protecting an unmapped block");
         assert_eq!(level, BLOCK_LEVEL, "protecting a block that is not one");
         let slot = self.entry(base, BLOCK_LEVEL);
@@ -438,7 +477,7 @@ impl Table {
         // SAFETY: the entry is ours, reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: rewrites a block entry with new attributes in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: rewrites a block entry with new attributes in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, block) };
         invalidate(base);
@@ -450,7 +489,7 @@ impl Table {
         // SAFETY: the entry is ours, reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: clears a block entry in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: clears a block entry in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(self.entry(base, BLOCK_LEVEL), 0) };
         invalidate(base);
@@ -459,11 +498,14 @@ impl Table {
     /// Replaces the table of page entries at `base`, which map the run of frames at `run` in order, by one block
     /// entry over the run with `attributes`, break before make, and gives the table's frame back.
     pub fn promote(&self, frames: &mut Frames, base: u64, run: u64, attributes: El1Attributes) {
+        assert!(run.is_multiple_of(BLOCK_SIZE), "a block entry maps an aligned run");
+        let run = checked_frame(run);
+        let attributes = attributes_only(attributes);
         let slot = self.entry(base, BLOCK_LEVEL);
         // SAFETY: the entry is ours, reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: reads the entry a promotion replaces in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: reads the entry a promotion replaces in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         let table = unsafe { ptr::read_volatile(slot) };
         assert!(
@@ -473,7 +515,7 @@ impl Table {
         // SAFETY: as above: made invalid, every page's entry invalidated, then the block written.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: clears that entry, the break step of a promotion, in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: clears that entry, the break step of a promotion, in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, 0) };
         barrier::dsb(ISHST);
@@ -487,7 +529,7 @@ impl Table {
         // SAFETY: as above.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: writes the promoted block entry in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: writes the promoted block entry in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, block) };
         barrier();
@@ -501,7 +543,7 @@ impl Table {
             // SAFETY: table entries are reached through the linear map.
             #[expect(
                 unsafe_code,
-                reason = "UNSOUND: reads an entry while walking down to one whose tables exist in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+                reason = "UNSOUND: reads an entry while walking down to one whose tables exist in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
             )]
             let value = unsafe { ptr::read_volatile(entry_at(table, va, above)) };
             assert!(valid(value), "a table above the entry is missing");
@@ -530,14 +572,14 @@ impl Table {
         // the table written.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: clears a block entry, the break step of a split, in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: clears a block entry, the break step of a split, in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, 0) };
         invalidate(base);
         // SAFETY: as above.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: writes the table entry of a split block in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: writes the table entry of a split block in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe { ptr::write_volatile(slot, pages | table_or_page()) };
         barrier();
@@ -550,7 +592,7 @@ impl Table {
         // SAFETY: both top-level tables are reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: copies another root's top-level entry into this root, both reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: copies another root's top-level entry into this root, both reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         unsafe {
             ptr::write_volatile(
@@ -569,7 +611,7 @@ impl Table {
     /// The top-level entry at `index`.
     #[expect(
         unsafe_code,
-        reason = "UNSOUND: reads a top-level entry by a checked index in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+        reason = "UNSOUND: reads a top-level entry by a checked index in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
     )]
     pub fn top_entry(&self, index: u64) -> u64 {
         assert!(index < ENTRIES, "an entry of the table");
@@ -598,7 +640,7 @@ fn free_below(frames: &mut Frames, entry: u64, level: u32) {
         // SAFETY: table entries are reached through the linear map.
         #[expect(
             unsafe_code,
-            reason = "UNSOUND: reads the entries of a table being freed in a table reached from Table's public root, which safe code can set to any address; Words over the linear map, or aarch64-paging, replaces it"
+            reason = "UNSOUND: reads the entries of a table being freed in a table reached from Table's root, which is private now but Table is Copy, and give and free take a table's frames back while a copy may still walk them, as give takes any frame number; Words over the linear map, or aarch64-paging, replaces it"
         )]
         let below =
             unsafe { ptr::read_volatile((linear(table) + index * ENTRY_BYTES) as *const u64) };

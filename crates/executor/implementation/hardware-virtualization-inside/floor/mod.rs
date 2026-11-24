@@ -183,9 +183,7 @@ impl Floor {
         VBAR_EL1.set(entry::vectors());
         barrier::isb(SY);
         FIRST_LINK.store(start.link - start.cpu * PAGE_SIZE, Ordering::Relaxed);
-        let global = Table {
-            root: start.boot_root,
-        };
+        let global = Table::boot_map(start.boot_root);
         if start.cpu == 0 {
             *FRAMES.lock() = Some(Frames::new(start.free, MEMORY_BASE + start.memory));
             with_frames(|frames| global.reserve_top(frames, Region::Code.base()))
@@ -311,10 +309,10 @@ impl AddressSpace {
     pub fn switch(&self) {
         let asid = u64::from(self.asid);
         let user = (TTBR0_EL1::ASID.val(asid)
-            + TTBR0_EL1::BADDR.val(self.user.root >> TTBR0_EL1::BADDR.shift))
+            + TTBR0_EL1::BADDR.val(self.user.root() >> TTBR0_EL1::BADDR.shift))
         .value;
         let inside = (TTBR1_EL1::ASID.val(asid)
-            + TTBR1_EL1::BADDR.val(self.inside.root >> TTBR1_EL1::BADDR.shift))
+            + TTBR1_EL1::BADDR.val(self.inside.root() >> TTBR1_EL1::BADDR.shift))
         .value;
         if TTBR0_EL1.get() == user && TTBR1_EL1.get() == inside {
             return;
