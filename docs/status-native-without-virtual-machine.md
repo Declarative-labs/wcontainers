@@ -96,6 +96,62 @@ What neither removes: the per-piece cost of whatever is still loaded (3.6 us aga
 kernel's whole-file read (the kernel track's). Runs 2 to 4 build 2, then the fork-child half of 1, each measured
 before and after, alternating, on a quiet machine.
 
+## Round 4 run 3 (2026-11-24): the load path, profiled and cut; a cross-mapping fix measured and not kept
+
+Graviton4, CPU 41, /dev/kvm denied in every run. Scratch w1/r4c-run3 (prof5.sh, under.py, stubs.py, ab-patch.sh,
+diag.py to diag3.py, block.patch; outputs *-arm.out).
+
+- Where a program's time goes now, by a cycles profile with call chains of a frame-pointer build (prof5-arm.out,
+  4,000 programs, 3.72 ms a program, load 8.5; shares of CPU 41): the embedder 59%, the stubs and the zygote 33%.
+  In the embedder: loading pieces 17.5% (about 0.65 ms, 2.0 us a piece over 333), of which moving a kept
+  translation's bytes 3.9% (about half of it the ARM64 encoder allocating a vector for every address place:
+  Requests to other tracks), comparing the guest's code with the kept code 1.8%, reading guest pages 1.4%, the move
+  check 1.0%, the piece's maps 1.5%, its slot 0.9%, its links 0.8%; the kernel reading the whole program file at
+  each exec 9.9% (0.37 ms, larger than the account's 5.5%; the kernel track's, Requests to other tracks); writing
+  code areas to their memfds 4.1% (new shmem pages, a floor of this design); the turns' wakes and waits 4.7%;
+  dropping memories 4.9% (freeing what the process held, as Linux's exit does); moving a whole translation for a
+  stop 0.9%. In the stubs: installing the seccomp filter 4.7% (the host's JIT of it 2.4%), page faults 5.1%,
+  mprotect 3.4%, futex 3.4%, mmap 2.4%, the zygote's clone 2.0%, signal delivery 1.7%, the filter run on every stub
+  call 1.3%. Inheriting the filter from the zygote would remove its install but would let every stub make the
+  zygote's calls (fork, kill, wait4): not done.
+- Built (commit 3fe230313): kept translations found by index (no 72-byte keys hashed twice a piece in the
+  loading-ahead walk), only the code a piece covers copied (not the rest of its page), placed code staged as bytes
+  (no word vector), a translation's covered length kept with it (the moving test now also checks it is the same
+  moved). Alternating with the build before, 7 rounds at load 6 to 16 (ab1-arm.out), second runs: saved -0.19,
+  0.12, -0.06, 0.40, 0.07, 0.26, 0.21 ms a program, median 0.12 (3%).
+- Built (commit d6c406b6c): each kept translation's lowest and highest named address, so the move check is two
+  comparisons (the moving test checks it answers as the old one, address by address: 2,000 cases of seed 1 and
+  40,000 of seeds 2 and 3 equal); links written without a list; a piece's page skipped at once where every user
+  already protects it. 7 rounds at load 8 to 14 (ab2-arm.out): saved 0.08, 0.03, 0.05, 0.04, 0.02, -0.27, -0.12 ms,
+  median 0.03: within the noise.
+- After both: 3.33 to 3.67 s for 1,000 programs against models of 1.03 to 1.14 s: 3.0 to 3.4 times, median about
+  3.2.
+- Found, measured, not kept: the loads that a stop asks for. Second run, per program (diag-arm.out, diag2-arm.out):
+  17 loads at a stop, 300 pieces loaded ahead, 78 last targets made ahead; 15 of the 17 walks ahead ended at an
+  address nothing maps (diag3-arm.out). The walk records the next piece by its distance from the one before, and
+  busybox's own code (near 0xaa000000) and the libraries' (near 0xf7000000) are placed apart differently at every
+  exec, so every step between them misses. Finding the next piece and each last target at its offset in its shared
+  block instead (block.patch, with a test that fails without it) gave 1 load a program, but 1,041 pieces loaded
+  ahead and 245 last targets: `sh`'s own pieces, appended to the same walk by `sh`'s memory (which starts at the
+  same entry piece), were loaded into every `true`. 7 rounds at load 15 to 22 (ab3-arm.out): 4.90 to 6.11 s against
+  3.36 to 3.96 s, 1.5 to 2.2 ms a program slower. Undone. The misses only end when a walk is one program's: that
+  needs the program a memory runs (its file and arguments, which the kernel has and the executor interface does not
+  pass), or a way to drop pieces no thread entered (we count no entries). Expected gain if done: the 16 stops a
+  program (each a turn, about 10 to 20 us; not measured part by part), 0.15 to 0.3 ms.
+- Verdicts. Graviton4, /dev/kvm denied, from this run's tree (check3, check4, ab3-arm.out; 12:00 to 12:35 UTC, load
+  8 to 25): the library's unit tests, run 12, translated 2, kernel 12, busybox 1, floor 6, forged 3, copy 2, memory
+  12, interrupt 3, differential 1, stub 7, step 9 passed; conformance 20 of 21, the known precise-set test at
+  0x1000; clippy with warnings denied clean on every target. Xeon, /dev/kvm denied (check-x86.out, 12:42 UTC, load
+  3 to 4), the first x86 verdicts since round 4 run 2's commands and layout: the library's 5, stub 6, zygote 8,
+  touch 3, threads 4, stop 3, memory 12, host 1, embedder 2, files 4, slice 3, step 6 passed; clippy clean; placement
+  1 of 2: `the_runners_of_two_containers_take_different_cpus_and_their_threads_follow` failed once (a guest thread
+  not on its runner's CPU; it passed on the Xeon in every round before). The machine went down ("not set up") a
+  minute later, before it could be run again: open, on the gap list.
+- Next (run 4, then the gap list and W1 reported complete by run 5): the placement test on the Xeon again; the
+  loading walk per program (above) only if the owner wants the executor told which program a memory runs; the rest
+  of the load path is at its floor for this design except the encoder's allocations (translator's) and the file
+  read (kernel's).
+
 ## Round 4 run 2 (2026-11-24): the account's change 2 built and measured
 
 - Built (commits 7c765bfd0, 2529908da): the code area's memfd is the code area then the whole slot table (2^46 bytes,
@@ -181,6 +237,18 @@ What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
 - Aliasing instruction caches: settled, plan dec511ab (3.4); the probe reads `CTR_EL0` (Graviton4: DIC and IDC set,
   L1Ip PIPT).
 
+## Findings of W1's last independent check (before round 3), each settled or open
+
+- An interrupt sent between a run's internal turns was lost: settled, d734ec81f (tests/interrupt.rs
+  `an_interrupt_at_any_early_moment_reaches_the_handler`, fails with the fix undone).
+- The test named as stopping at every counted event stopped at none: settled, renamed in round 6, and
+  `count_at_every_stop` built in round 7 run 2 (9593baba9).
+- `blocks` and `code` compared with the WebAssembly output's known faults: settled, a345863c2 (compared with the
+  program run on the host).
+- Register isolation from outside at the moment a thread enters its code: settled, a345863c2 (tests/step.rs).
+- Each seed compared with the first seed's run: settled, a345863c2.
+- Open, on the gap list: the precise-set test at 0x1000 (owner's), `Execution::restored`, the busybox `sh` bar.
+
 ## Requests to other tracks
 
 - Kernel track: `loader::program_of` (crates/kernel/implementation/linux/loader.rs) copies a regular file whole with
@@ -188,7 +256,13 @@ What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
   time starting programs (and the same copy under every executor). Wanted: keep the file in `Program` (as the
   backend case keeps its handle), put only its first bytes in `Program::bytes` (Linux's `prepare_binprm` reads 256
   for the `#!` check and the header), and have `file_bytes` read just the range asked through `Regular::read`; the
-  segments themselves are mapped from the file's blocks and need no copy.
+  segments themselves are mapped from the file's blocks and need no copy. Measured again in round 4 run 3 with call
+  chains: 9.9% of the CPU starting programs under P (0.37 ms a program), 7.7% of it the host-process executor's
+  `shared_read` serving the copy.
+- Translator (wcontainers-arm64): `encode::move_address` returns a `Vec<u32>` and `carry::write_place` builds one for
+  every address place it writes; moving a kept translation to a new base (every exec at a random base) writes every
+  place, so this is about 2% of the CPU starting programs under P (round 4 run 3's profile). Wanted: a fixed array
+  (four words at most) or writing into the bytes directly.
 
 ## Where things stand
 
@@ -1321,8 +1395,9 @@ known:
   programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
   1): 4.36 times the model (bar 1.25; 9.25 before), 4.29 to 5.01 since round 8 run 1 read guest memory by position
   instead of through mapped windows (Departures), 3.78 to 4.44 since round 8 run 2 loaded moved pieces by their bytes
-  alone and read each page once a load (the account at the top of this file: the design's floor is about 1.4 times
-  the model, so this bar cannot be met by it; about 1.5 can); per program about 1.45 ms of memory calls (about 0.6 ms of it the
+  alone and read each page once a load, about 3.2 (3.0 to 3.4) since round 4 runs 2 and 3 (the slot table mapped
+  once, a fork child running its parent's code, a cheaper load) (the account at the top of this file: the design's
+  floor is about 1.4 times the model, so this bar cannot be met by it; about 1.5 can); per program about 1.45 ms of memory calls (about 0.6 ms of it the
   model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
   workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
   page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
@@ -1356,6 +1431,8 @@ known:
   on both machines from committed code are still to run (the Xeon was not set up during round 4 run 2).
 - gVisor: P runs there with known failures (plan 6; Decision 14 is with the owner); in its kernel test, blocks and
   jumptables pass the 300 s limit (which side was not found).
+- Xeon placement: `the_runners_of_two_containers_take_different_cpus_and_their_threads_follow` failed once in round 4
+  run 3 (12:42 UTC, load 3 to 4), the machine gone before a second run; not yet known whether it is new.
 - x86-64: everything that needs translated code is W3's (the x86 native output's way); on the Xeon the 156 tests of
   the stub, zygote, stops, threads, memory, placement and embedder pass with /dev/kvm denied.
 
