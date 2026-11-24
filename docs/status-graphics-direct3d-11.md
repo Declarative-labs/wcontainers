@@ -798,7 +798,10 @@ In order:
 1. atg-simplecomputepc: once the shaders crate refines its division (Asked), un-ignore
    `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it`, run it and
    the program through the rig.
+   The trial patch (scratch r6h/div.patch) shows what that gives.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
+   Once the shaders crate accepts unread clip distances behind a geometry shader (Asked), run
+   d3d10core test_clip_distance through the WebGL 2 build again.
 3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
    with other usages (Asked), un-ignore the counters test and run it.
