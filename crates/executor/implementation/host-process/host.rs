@@ -139,25 +139,28 @@ impl HostProcessHost {
         self.zygote_ends.load(Ordering::Relaxed)
     }
 
-    /// Forks a stub; a zygote that has ended is reaped, counted, warned, and started anew first.
+    /// Forks a stub; where the fork fails and the zygote no longer answers, the zygote is reaped, counted, warned,
+    /// started anew, and asked again.
     pub fn fork_stub(&self) -> Result<Stub, Unavailable> {
-        let mut held = self
-            .zygote
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ended = match &*held {
+        let mut held = self.lock();
+        let forked = match &*held {
             Err(why) => return Err(*why),
-            Ok(zygote) => zygote.ping().is_err(),
+            Ok(zygote) => zygote.fork_stub(),
         };
-        if ended {
-            let new = Zygote::start(&self.probe);
-            if let Ok(old) = core::mem::replace(&mut *held, new) {
-                let end = old.end();
-                let times = self.zygote_ends.fetch_add(1, Ordering::Relaxed) + 1;
-                eprintln!(
-                    "wcontainers warning: zygote ended ({end:?}), every guest process it held ended as killed, {times} so far"
-                );
-            }
+        let ended = match (&forked, &*held) {
+            (Err(_), Ok(zygote)) => zygote.ping().is_err(),
+            _ => false,
+        };
+        if !ended {
+            return forked;
+        }
+        let new = Zygote::start(&self.probe);
+        if let Ok(old) = core::mem::replace(&mut *held, new) {
+            let end = old.end();
+            let times = self.zygote_ends.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!(
+                "wcontainers warning: zygote ended ({end:?}), every guest process it held ended as killed, {times} so far"
+            );
         }
         match &*held {
             Ok(zygote) => zygote.fork_stub(),
