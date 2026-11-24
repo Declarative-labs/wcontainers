@@ -155,7 +155,7 @@ impl<B: Backend> Stages<B> {
         &self.0[stage as usize]
     }
 
-    fn get_mut(&mut self, stage: Stage) -> &mut StageState<B> {
+    pub(crate) fn get_mut(&mut self, stage: Stage) -> &mut StageState<B> {
         &mut self.0[stage as usize]
     }
 
@@ -251,6 +251,10 @@ pub struct Raster<B: Backend> {
     pub provoking: ProvokingVertex,
     /// The vertex the block takes them from: `provoking` where the back end has it.
     pub host_provoking: ProvokingVertex,
+    /// The points' size where the vertex program writes none.
+    pub point_size: f32,
+    /// `gl_PointCoord`'s t grows with the rows (Gallium's upper-left sprite origin).
+    pub point_coord_down: bool,
 }
 
 pub struct Sampler<B: Backend> {
@@ -724,6 +728,8 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         scissor: desc.scissor,
         provoking,
         host_provoking,
+        point_size: state.point_size,
+        point_coord_down: state.sprite_coord_mode() == PIPE_SPRITE_COORD_UPPER_LEFT,
     })
 }
 

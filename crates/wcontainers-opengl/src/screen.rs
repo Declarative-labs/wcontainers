@@ -152,6 +152,17 @@ fn stream_output(ours: &Caps) -> (c_uint, c_uint) {
     }
 }
 
+/// The largest point the screen reports: the back end's, or where it draws points of one size,
+/// the largest target's side, as each point is then drawn as a square (`PointsAsQuads`), which
+/// covers any target whole at that size.
+pub(crate) fn largest_point_size(caps: &Caps) -> f32 {
+    if caps.has(Features::POINT_SIZE) {
+        caps.limits.max_point_size
+    } else {
+        caps.limits.max_texture_2d as f32
+    }
+}
+
 /// Gallium's screen caps: its defaults, with the interface's limits over them and what the
 /// context does and does not do.
 fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
@@ -163,7 +174,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_render_targets = limits.color_targets;
     caps.max_vertex_buffers = limits.vertex_streams;
     caps.max_vertex_attrib_stride = limits.max_vertex_stride;
-    caps.max_point_size = limits.max_point_size;
+    caps.max_point_size = largest_point_size(ours);
     caps.max_texture_lod_bias = MAX_LOD_BIAS;
     caps.max_line_width = limits.max_line_width;
     caps.max_line_width_aa = limits.max_line_width;

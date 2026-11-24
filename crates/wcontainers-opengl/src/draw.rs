@@ -8,14 +8,14 @@ use std::ffi::c_uint;
 use wcontainers_gpu::{
     AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
     BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DOMAIN_PATCHES_BINDING,
-    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, Filter, Format, FormatKind,
-    FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource,
-    Interpolation, LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object,
-    PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
-    RingKind, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
-    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, cut_scissors,
-    helper_binding,
+    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, FillMode, Filter, Format,
+    FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot, HelperValue, IndexBinding,
+    IndexFormat, IndexSource, Interpolation, LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS,
+    MapIntent, Object, PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource,
+    ReflectedBinding, Reflection, RingKind, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule,
+    ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology,
+    VariantFlags, VariantKey, VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode,
+    cut_scissors, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle, Wrap};
@@ -71,6 +71,16 @@ pub(crate) type ShaderId = usize;
 /// variants (no geometry program: zero), and whether it has a stream stage.
 type TessellatedKey = ([(ShaderId, Variant); TESSELLATED_GEOMETRY + 1], bool);
 
+/// `gl_PointCoord` at a point's centre, as a point of one pixel reads it.
+const POINT_CENTRE: f32 = 0.5;
+/// The words of a point's square's uniform block (`Nir::point_square`).
+const SQUARE_WORDS: usize = 4;
+/// A point's size where it is drawn as one pixel.
+const ONE_PIXEL: f32 = 1.0;
+/// Half a pixel, which a point's square's half side counts in.
+const HALF_PIXEL: f32 = 0.5;
+/// `gl_PointCoord`'s t growing with the rows, in a square's block; its negation falls.
+const COORD_T_DOWN: f32 = 1.0;
 /// The stages a draw through tessellation runs before a geometry program, in that order.
 const TESSELLATED: &[Stage] = &[Stage::Vertex, Stage::TessControl, Stage::TessEvaluation];
 
@@ -135,6 +145,9 @@ pub(crate) struct Variant {
     /// (geometry programs, and fragment programs, which read their `gl_Layer` there; zero
     /// without one).
     named_layer: Option<u32>,
+    /// Where a point's square passes `gl_PointCoord` (fragment programs, which read the centre's
+    /// without one).
+    point_coord: Option<u32>,
 }
 
 impl Variant {
@@ -186,6 +199,16 @@ pub struct Programs<B: Backend> {
     staged: HashMap<StagedKey, Staged<B>>,
     /// The stage helpers of vertex programs and the tessellation and geometry programs after them.
     tessellated: HashMap<TessellatedKey, Staged<B>>,
+    /// The programs drawing a vertex program's points as squares, by it and the location their
+    /// size and `gl_PointCoord` pass at.
+    squares: HashMap<(ShaderId, u32), Box<Squares>>,
+}
+
+/// A vertex program's points drawn as squares (`PointsAsQuads`): the geometry program making
+/// them, after the vertex program or its copy that also writes its point size at a location.
+struct Squares {
+    vertex: Option<Shader>,
+    geometry: Shader,
 }
 
 /// A vertex program and the geometry program after it run by the stage helper, and the vertex
@@ -243,6 +266,7 @@ impl<B: Backend> Default for Programs<B> {
             compute: HashMap::new(),
             staged: HashMap::new(),
             tessellated: HashMap::new(),
+            squares: HashMap::new(),
         }
     }
 }
@@ -251,6 +275,15 @@ impl<B: Backend> Programs<B> {
     /// Drops everything made from one shader state, which Mesa is deleting.
     pub fn forget(&mut self, screen: &Screen<B>, shader: *const Shader) {
         let id = shader as ShaderId;
+        let squares: Vec<_> = self.squares.keys().filter(|k| k.0 == id).copied().collect();
+        for key in squares {
+            if let Some(made) = self.squares.remove(&key) {
+                self.forget(screen, &made.geometry);
+                if let Some(vertex) = &made.vertex {
+                    self.forget(screen, vertex);
+                }
+            }
+        }
         let built: Vec<_> = self.built.keys().filter(|k| k.0 == id).cloned().collect();
         for key in built {
             if let Some(shader) = self.built.remove(&key).and_then(|b| b.shader) {
@@ -561,7 +594,69 @@ fn fit_stages(module: &mut naga::Module, variant: &Variant) -> Result<(), String
         outputs::second_source(module, alpha)?;
     }
     read_named_layer(module, variant.named_layer);
+    read_point_coord(module, variant.point_coord);
     Ok(())
+}
+
+/// A fragment program's `gl_PointCoord` (the route's input at `POINT_COORD_INPUT`) read where a
+/// point's square passes it, at `at`; the centre's, as a point of one pixel has, without one.
+fn read_point_coord(module: &mut naga::Module, at: Option<u32>) {
+    let is_coord = |a: &naga::FunctionArgument| {
+        matches!(
+            a.binding,
+            Some(naga::Binding::Location {
+                location: wcontainers_nir::direct::POINT_COORD_INPUT,
+                ..
+            })
+        )
+    };
+    for entry in &mut module.entry_points {
+        let function = &mut entry.function;
+        let Some(index) = function.arguments.iter().position(is_coord) else {
+            continue;
+        };
+        if let Some(at) = at {
+            if let Some(naga::Binding::Location { location, .. }) =
+                &mut function.arguments[index].binding
+            {
+                *location = at;
+            }
+            continue;
+        }
+        let ty = function.arguments[index].ty;
+        let centre = naga::Literal::F32(POINT_CENTRE);
+        let init = match module.types[ty].inner {
+            naga::TypeInner::Vector { size, .. } => {
+                let value = module
+                    .global_expressions
+                    .append(naga::Expression::Literal(centre), naga::Span::UNDEFINED);
+                naga::Expression::Splat { size, value }
+            }
+            _ => naga::Expression::Literal(centre),
+        };
+        let init = module
+            .global_expressions
+            .append(init, naga::Span::UNDEFINED);
+        let constant = module.constants.append(
+            naga::Constant {
+                name: None,
+                ty,
+                init,
+            },
+            naga::Span::UNDEFINED,
+        );
+        function.arguments.remove(index);
+        let index = index as u32;
+        for (_, e) in function.expressions.iter_mut() {
+            match e {
+                naga::Expression::FunctionArgument(i) if *i == index => {
+                    *e = naga::Expression::Constant(constant);
+                }
+                naga::Expression::FunctionArgument(i) if *i > index => *i -= 1,
+                _ => {}
+            }
+        }
+    }
 }
 
 /// A fragment program's `gl_Layer` (the route's input at `NAMED_LAYER_INPUT`) read where the
@@ -2034,7 +2129,12 @@ fn draw<B: Backend>(
     }
     // Behind a geometry program or tessellation each range runs the stage helper and draws what
     // it made.
-    if (!gs.is_null() || tessellated) && draws.len() > 1 {
+    // Points drawn as squares run the stage helper too (`PointsAsQuads`).
+    let one_size = || {
+        mesa_prim::from(info.mode) == MESA_PRIM_POINTS
+            && !context.screen().backend().caps().has(Features::POINT_SIZE)
+    };
+    if (!gs.is_null() || tessellated || one_size()) && draws.len() > 1 {
         for d in draws {
             draw(context, info, std::slice::from_ref(d))?;
         }
@@ -2084,6 +2184,22 @@ fn draw<B: Backend>(
     let mut backend = screen.backend();
     let backend = &mut *backend;
     transform.fixed_point_size = !backend.caps().has(Features::POINT_SIZE);
+    let squares = if gs.is_null() && !tessellated && mode == MESA_PRIM_POINTS {
+        // SAFETY: bound shaders live until Mesa unbinds and deletes them.
+        let (vertex, fragment) = unsafe { (&*vs, &*fs) };
+        squares_for(&mut context.programs, backend, vertex, fragment, raster)?
+    } else {
+        None
+    };
+    // The vertex program the API bound, which streams what it writes.
+    let api_vs = vs;
+    let (vs, gs, point_coord) = match squares {
+        Some((vertex, geometry, at)) => {
+            backend.slow_paths().hit(SlowPath::PointsAsQuads);
+            (vertex, geometry, Some(at))
+        }
+        None => (vs, gs, None),
+    };
     if transform.half_z {
         backend.slow_paths().hit(SlowPath::ClipDepthRewrite);
     }
@@ -2115,6 +2231,7 @@ fn draw<B: Backend>(
         image_formats: image_formats(context.stages.get(Stage::Fragment)),
         texture_layers: texture_layers(context.stages.get(Stage::Fragment)),
         named_layer,
+        point_coord,
         ..Variant::default()
     };
     if fragment.second_source.is_some() {
@@ -2157,21 +2274,31 @@ fn draw<B: Backend>(
         image_formats: Vec::new(),
         texture_layers: texture_layers(context.stages.get(Stage::Vertex)),
         named_layer: None,
+        point_coord: None,
     };
     // SAFETY: as above.
     let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
-    let geometry = Variant {
-        transform,
-        swizzles: swizzles(context.stages.get(Stage::Geometry)),
-        nearest: nearest_samplers(context.stages.get(Stage::Geometry)),
-        border: border_in_program(context.stages.get(Stage::Geometry)),
-        lod_bias: lod_bias_in_program(context.stages.get(Stage::Geometry)),
-        texture_layers: texture_layers(context.stages.get(Stage::Geometry)),
-        interpolation: inputs,
-        named_layer,
-        ..Variant::default()
+    let geometry = if point_coord.is_some() {
+        // A point's square samples nothing.
+        Variant {
+            transform,
+            interpolation: inputs.clone(),
+            ..Variant::default()
+        }
+    } else {
+        Variant {
+            transform,
+            swizzles: swizzles(context.stages.get(Stage::Geometry)),
+            nearest: nearest_samplers(context.stages.get(Stage::Geometry)),
+            border: border_in_program(context.stages.get(Stage::Geometry)),
+            lod_bias: lod_bias_in_program(context.stages.get(Stage::Geometry)),
+            texture_layers: texture_layers(context.stages.get(Stage::Geometry)),
+            interpolation: inputs,
+            named_layer,
+            ..Variant::default()
+        }
     };
     // The evaluation program draws the tessellated points with the position's transform, for its
     // control program's patches; before a geometry program, which takes its position as a vertex
@@ -2281,28 +2408,59 @@ fn draw<B: Backend>(
         };
         // SAFETY: as above.
         let (vertex_stage, geometry_stage) = unsafe { ((&*vs, &vertex), (&*gs, &geometry)) };
-        let made = run_stages(
-            context,
-            backend,
-            vertex_stage,
-            Some(geometry_stage),
-            elements,
-            (info, d),
-            staged_provoking,
-        )?;
+        let made = match point_coord {
+            None => run_stages(
+                context,
+                backend,
+                vertex_stage,
+                Some(geometry_stage),
+                elements,
+                (info, d),
+                staged_provoking,
+            )?,
+            Some(_) => {
+                let square = square_block(&context.bound.viewport, raster);
+                if context.streams.active() {
+                    // SAFETY: as above.
+                    let streamed = (unsafe { &*api_vs }, &vertex);
+                    run_stages(
+                        context,
+                        backend,
+                        streamed,
+                        None,
+                        elements,
+                        (info, d),
+                        staged_provoking,
+                    )?;
+                }
+                let stages = (vertex_stage, geometry_stage);
+                draw_squares(
+                    context,
+                    backend,
+                    stages,
+                    elements,
+                    (info, d),
+                    staged_provoking,
+                    square,
+                )?
+            }
+        };
         match made {
             Some(made) => Some(made),
             None => return Ok(()),
         }
     };
     if !context.streams.active() {
-        query::count_drawn::<B>(&context.counting, info, draws, !gs.is_null() || tessellated)?;
+        let staged = (!gs.is_null() && point_coord.is_none()) || tessellated;
+        query::count_drawn::<B>(&context.counting, info, draws, staged)?;
     }
     let topology = match &made {
         Some(m) => m.out.topology,
         None => api_topology.ok_or("a primitive the screen does not report")?,
     };
-    if raster.discard || (raster.cull_both && triangles(topology)) {
+    // Points drawn as squares are points still, which nothing culls.
+    let squared = point_coord.is_some();
+    if raster.discard || (raster.cull_both && triangles(topology) && !squared) {
         return Ok(());
     }
     let bound = &context.bound;
@@ -2548,14 +2706,14 @@ fn draw<B: Backend>(
         let samples = context.framebuffer.samples.clamp(1, u32::BITS);
         let all = u32::MAX >> (u32::BITS - samples);
         let mask = Some(bound.sample_mask & all).filter(|&m| samples > 1 && m != all);
-        let blocks = masked_blocks(&mut context.programs, backend, raster, mask)?;
+        let blocks = masked_blocks(&mut context.programs, backend, raster, mask, squared)?;
         let bound = &context.bound;
         let passes = face_passes(
             backend,
             depth_stencil,
             &blocks,
             raster.cull,
-            triangles(topology),
+            triangles(topology) && !squared,
             bound.stencil_ref,
         )?;
         let base = DrawCall {
@@ -2851,6 +3009,128 @@ fn helper_indices<B: Backend>(
         indices::translated(info, &bytes, restart, true, provoking, provoking)?
     };
     Ok(rewritten.map_or(HelperIndices::Nothing, HelperIndices::Rewritten))
+}
+
+/// The geometry program drawing a vertex program's points as squares where the back end draws
+/// points of one size and these are larger (`PointsAsQuads`), the vertex program before it (`vs`
+/// or its copy also writing its point size where the squares read it), and where the squares pass
+/// `gl_PointCoord`; `None` for points of one pixel.
+fn squares_for<B: Backend>(
+    programs: &mut Programs<B>,
+    backend: &B,
+    vs: &Shader,
+    fs: &Shader,
+    raster: &state::Raster<B>,
+) -> Result<Option<(*const Shader, *const Shader, u32)>, String> {
+    if backend.caps().has(Features::POINT_SIZE) {
+        return Ok(None);
+    }
+    // After every generic location either program uses.
+    let at = vs.nir.generic_end().max(fs.nir.generic_end());
+    let made = match programs
+        .squares
+        .entry((std::ptr::from_ref(vs) as ShaderId, at))
+    {
+        Entry::Occupied(made) => made.into_mut(),
+        Entry::Vacant(slot) => {
+            let mut copy = vs.nir.try_clone().ok_or("out of memory")?;
+            let sized = copy.point_size_also_at(at);
+            let largest = crate::screen::largest_point_size(backend.caps());
+            let square = if sized { &copy } else { &vs.nir }.point_square(at, largest);
+            let Some(mut nir) = square else {
+                return refused(format_args!(
+                    "points drawn as squares from a program writing clip distances or outputs at \
+                     offsets known only when run (not built)"
+                ));
+            };
+            nir.uniform_blocks_as_words();
+            let shader = |stage, nir| Shader {
+                stage,
+                nir,
+                streamed: Ok(None),
+                reads_sample_positions: false,
+                writes_sample_mask: false,
+                fetches_target: false,
+                formatless_images: vs.formatless_images,
+                integer_sampled: vs.integer_sampled,
+                named_layer: None,
+            };
+            slot.insert(Box::new(Squares {
+                vertex: sized.then(|| shader(Stage::Vertex, copy)),
+                geometry: Shader {
+                    formatless_images: 0,
+                    integer_sampled: 0,
+                    ..shader(Stage::Geometry, nir)
+                },
+            }))
+        }
+    };
+    if made.vertex.is_none() && raster.point_size <= ONE_PIXEL {
+        return Ok(None);
+    }
+    if at >= backend.caps().limits.inter_stage_slots {
+        return refused(format_args!(
+            "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
+        ));
+    }
+    let vertex = made
+        .vertex
+        .as_ref()
+        .map_or(std::ptr::from_ref(vs), std::ptr::from_ref);
+    Ok(Some((vertex, std::ptr::from_ref(&made.geometry), at)))
+}
+
+/// The uniform block of a point's square (`Nir::point_square`): the bound size, half a pixel's
+/// clip-space length over w in x and in y (signed as the viewport's scale), and the direction of
+/// `gl_PointCoord`'s t.
+fn square_block<B: Backend>(viewport: &pipe_viewport_state, raster: &state::Raster<B>) -> Vec<u8> {
+    let [sx, sy, _] = viewport.scale;
+    let words: [f32; SQUARE_WORDS] = [
+        raster.point_size,
+        HALF_PIXEL / sx,
+        HALF_PIXEL / sy,
+        if raster.point_coord_down {
+            COORD_T_DOWN
+        } else {
+            -COORD_T_DOWN
+        },
+    ];
+    words.iter().flat_map(|w| w.to_ne_bytes()).collect()
+}
+
+/// One range of points drawn as squares (`PointsAsQuads`): the stage helper runs the vertex
+/// program and the squares' geometry program, which reads `block` as its uniform block 0, and
+/// neither streams nor counts what it makes (the API's points are counted as drawn).
+fn draw_squares<B: Backend>(
+    context: &mut Context<B>,
+    backend: &mut B,
+    (vertex, geometry): ((&Shader, &Variant), (&Shader, &Variant)),
+    elements: &state::Elements<B>,
+    range: (&pipe_draw_info, &pipe_draw_start_count_bias),
+    provoking: Provoking,
+    block: Vec<u8>,
+) -> Result<Option<Made<B>>, String> {
+    let squares_block = state::Constants {
+        bytes: block,
+        ..state::Constants::default()
+    };
+    let held = std::mem::replace(
+        &mut context.stages.get_mut(Stage::Geometry).constants[0],
+        squares_block,
+    );
+    let counting = std::mem::take(&mut context.counting);
+    let made = run_stages(
+        context,
+        backend,
+        vertex,
+        Some(geometry),
+        elements,
+        range,
+        provoking,
+    );
+    context.counting = counting;
+    context.stages.get_mut(Stage::Geometry).constants[0] = held;
+    made
 }
 
 /// One range of a draw run by the stage helper outside the pass: the vertex program, then the
@@ -3504,7 +3784,36 @@ fn masked_blocks<B: Backend>(
     backend: &mut B,
     raster: &state::Raster<B>,
     mask: Option<u32>,
+    squared: bool,
 ) -> Result<RasterBlocks<B::Raster>, String> {
+    if squared {
+        // Points drawn as squares: filled, never culled, unbiased and facing front, as OpenGL
+        // draws points (`Nir::point_square` turns them counter-clockwise).
+        let desc = RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::CounterClockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            sample_mask: mask.unwrap_or(u32::MAX),
+            ..raster.desc
+        };
+        if mask.is_some() && !backend.caps().has(Features::SAMPLE_MASK) {
+            return refused(format_args!("a sample mask on a back end without one"));
+        }
+        let block = match programs.masked.get(&desc) {
+            Some(block) => block.clone(),
+            None => {
+                let block = backend
+                    .create_raster(&desc)
+                    .map_err(|e| format!("a rasterizer state: {e:?}"))?;
+                programs.masked.insert(desc, block.clone());
+                block
+            }
+        };
+        return Ok(RasterBlocks { block, faces: None });
+    }
     let Some(mask) = mask else {
         return Ok(RasterBlocks {
             block: raster.block.clone(),
