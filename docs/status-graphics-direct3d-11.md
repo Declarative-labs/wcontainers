@@ -52,6 +52,10 @@ G4h round 6 run 2 (2026-11-23, from about 14:20 Pacific), the sixth round's chec
   run 9 (96 of 111, not 97): the shaders crate's capture program refuses a geometry shader that
   reads no clip distance behind a vertex shader writing one (Gap list, asked of the shaders track).
   The 97 and 96 this file gave are now each placed by run.
+- The fix of atg-simplecomputepc measured in a trial never committed: the converter's division
+  refined once makes the frames case pass and the program 1,705 pixels from the reference, WARP
+  being 1,889 (Gap list). The change is the shaders crate's; the owner is asked whose it is (For
+  the owner), as the shaders track also asked him.
 
 G4h round 6 run 1 (2026-11-23, from about 08:50 Pacific), the orchestrator's two rulings:
 - atg-simplecomputepc read as explained and counted passing; the check showed that wrong (the
@@ -616,9 +620,17 @@ the bar's three, three differ from the rig's recorded frames:
   `8180803e00000000000000000000803f` (64/255, 0, 0, 1), ours `0000803f0000803f000000000000803f`
   (1, 1, 0, 1) at frames 1 and 30; the RTX 3080 without presents gave ours' in three runs
   (logs/r6f-frames.log). A known failure until ours divides as WARP does: the shaders crate's
-  conversion of `div` refined once after the reciprocal (a fused multiply-add for the remainder
+  conversion of `div` refined once after the division (a fused multiply-add for the remainder
   and one for the correction) gives exactly 4 here, at that cost on every division (Asked of other
   tracks). Not done in this track's crates: the division is the converter's.
+  - Measured with that refinement patched into the converter in a trial commit never committed
+    (scratch r6h/div.patch on lower.rs's `F_DIV`, r6h/div.sh; trial 9b484b63, round 6 run 2,
+    22:30 to 22:58 through the queue): the frames case passes (ours equals WARP at frames 1 and
+    30, logs/r6h-a-case.log), and the program's frames 10, 60 and 120 each have 1,705 pixels
+    beyond (largest 255; where they lie not checked), where WARP has 1,889 (logs/r6h-a-program.log): then closer to
+    the RTX 3080's reference than another real implementation, so passing under the graphics bar.
+    The patch is a measurement only: it does not keep the plain quotient where it is not finite
+    (a division by zero would become NaN), which the shaders crate's form must.
 - atg-simplemsaa_pc: frame 10 has 8 pixels beyond the channel tolerance (largest 11), 4 of them
   beyond their tiles' allowance; frames 60 and 120 pass. Real Direct3D's own two runs had 0 and 1
   such pixels in frame 10 (logs/q3j-sysruns.log). WARP, drawing the same program, has 25 such
@@ -1174,7 +1186,9 @@ listed case of section 12 has its test against real Direct3D.
   (the shaders crate's choice, asked). The shaders track holds that it is not its own (its run 113
   question to you): its copies of the division give real Direct3D 11's first-frame bits on the RTX
   3080, which is true, and is the answer the RTX 3080 leaves by frame 18. The two tracks disagree on
-  whose it is; please rule. If you would rather accept the specification's allowance here, say so
+  whose it is; please rule. Measured in a trial (Gap list): with the division refined once in the
+  converter, the isolated case gives WARP's bits and the program comes within 1,705 pixels of the
+  reference (WARP: 1,889), so that change alone makes it pass. If you would rather accept the specification's allowance here, say so
   and the test's reason changes; until then it is a known failure.
 - Video is read as no part of a feature level (Departures): the tables' video columns are not
   required of ours, which serves no video device. If you read them as required, 10_0 and above
@@ -1525,7 +1539,9 @@ Earlier runs' measurements are in this file's git history.
 - Shaders track: the conversion of DXBC `div` (and DXIL `fdiv`) giving what WARP and the RTX 3080
   settle on: the quotient refined once after the reciprocal (`q = a * r; e = fma(-b, q, a);
   q = fma(e, r, q)`), which gives 4 for 1200 / 300 where the plain division gives 3.9999998
-  (atg-simplecomputepc, Gap list). Test: programs.rs
+  (atg-simplecomputepc, Gap list; measured in a trial: the case passes and the program comes
+  within WARP's distance of the reference, scratch r6h/div.patch, which keeps no non-finite
+  quotient and is a measurement only). Test: programs.rs
   `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (ignored
   until then; run it with `--ignored`).
 - Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now
