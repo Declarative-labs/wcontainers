@@ -5,6 +5,30 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections sa
 -kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
 and crates/executor/implementation/unicorn.
 
+## J5c, second run (2026-11-24, from 03:05 UTC): J5's bar again after the owner's interface changes
+
+Conforming (the owner's changes of 2026-11-23): this track's crates call no executor `execute` and carry no
+`register_tool` lines; the socket, stream and random source callers (described.rs, system.rs, tcp.rs, udp.rs,
+host_call.rs) were conformed to volatile bytes and the infallible icmp and raw getters by the job that conforms
+the callers (ebda43ab); this run formatted two of them (25c8093e). The wasmtime executor's call of the stop
+flag no longer has its `unsafe { }` (closed).
+
+At c07e21cd (ARM64 machine, scratch runtime/j5d: `bar.sh` as in J5c's first run, `all.sh` and `rest.sh`
+run it, results in arm-tree/ and arm-patched/):
+- prep (load 34): fmt and clippy with warnings denied on single-kernel and the runtime suite clean (the two
+  files fmt flagged are formatted since); single-kernel's tests 15 passed.
+- The wasmtime executor does not build at the tip (the executors' conforming job's, not committed yet):
+  guest_memory.rs imports `VolatileBytes` from `memory_space`, where it is private now, and its `GuestBytes`
+  lacks `read_to` and `write_from`; its own tests interrupts.rs and spaces.rs fail the same way. Both scratch
+  trees carry the kernel track's kf9/wasmtime-vb.patch (copies j5d/wasmtime-vb.patch; through a buffer), which
+  touches only guest memory, a path the existing loop does not take.
+- The translator's process-wide pool (translator track, 69639b37) is unchanged at the tip: with
+  look-ahead full, each of saving, procsignals, outside, threads, backend, rootbackend and repeats ran to the
+  900 s limit, and in each the forked copy's thread was in `in_worker_cross` under `translate_within` at
+  840 s (arm-tree/copies, load 8 to 36); counterclock passed (1 passed, 1 ignored). The comparisons below
+  are on the tip with j5c/translator-pool.patch (arm-patched).
+- outside at full, patched: 10 runs of 8 pass (2.1 s to 24 s each, load 9).
+
 ## J5c, first run (2026-11-23, from 13:00 UTC): J5 closed on the tree as it stands
 
 The stop flag (a6f6b928, root list bb7653f2):
