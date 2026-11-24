@@ -3,12 +3,13 @@
 //! addresses, memory size and the count at every stop wait on the kernel's K2, so they are not compared here).
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
+#[expect(dead_code, reason = "the freestanding build is the speed test's")]
+mod guest_build;
 mod kernel_host;
 
-use std::path::Path;
-use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 
+use guest_build::compile;
 use kernel_host::{Output, Program, REALTIME_NANOSECONDS, run_container};
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use wcontainers_arm64::Arm64;
@@ -17,14 +18,10 @@ use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use wcontainers_kernel_linux::{Attributes, NewFile};
 use wcontainers_runtime_single_kernel::{Execution, Kernel};
-use wcontainers_translator_test::guest::GuestTest;
-use wcontainers_translator_test::programs::{C_DRIVER, OUTPUT_FLAG, ZIG_TARGET_FLAG};
 
 /// The kernel test crate's programs, and the virtual-machine executor's own, from this package.
 const KERNEL_TEST_GUEST: &str = "../unicorn/guest";
 const VM_GUEST: &str = "../hardware-virtualization/tests/guest";
-/// The translator's test programs, whose guest folder holds headers the virtual-machine executor's programs include.
-const PROGRAMS: &str = "../../../wcontainers-translator-test/programs";
 
 /// Seeds the policy and the host's random bytes; `WCHP_KERNEL_SEEDS` runs that many seeds from it.
 const SEED_VARIABLE: &str = "WCHP_KERNEL_SEED";
@@ -93,65 +90,6 @@ fn run<E: Execution<Failure = core::convert::Infallible>>(
         status: ran.status,
         output: ran.output,
     }
-}
-
-/// Builds the static ARM64 Linux program `directory/name.c` with zig's C compiler, linked with musl or with no C
-/// library, once per test process.
-fn compile(directory: &str, name: &str, with_libc: bool) -> Vec<u8> {
-    static BUILT: OnceLock<Mutex<std::collections::BTreeMap<String, Vec<u8>>>> = OnceLock::new();
-    let built = BUILT.get_or_init(Mutex::default);
-    let key = format!("{directory}/{name}");
-    if let Some(image) = built
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-    {
-        return image.clone();
-    }
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(directory)
-        .join(name)
-        .with_extension("c");
-    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("wchp-{name}"));
-    let object = out.with_extension("o");
-    let include = format!(
-        "-I{}",
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(PROGRAMS)
-            .join(<Arm64 as GuestTest>::NAME)
-            .display()
-    );
-    let target = [C_DRIVER, ZIG_TARGET_FLAG, <Arm64 as GuestTest>::C_TARGET];
-    // Compiled with the C library's headers, linked with its code or without it.
-    let mut compile = Command::new("zig");
-    compile
-        .args(target)
-        .args(["-O2", "-c", &include, OUTPUT_FLAG])
-        .arg(&object)
-        .arg(&source);
-    let mut link = Command::new("zig");
-    link.args(target)
-        .arg("-static")
-        .args((!with_libc).then_some("-nostdlib"))
-        .arg(OUTPUT_FLAG)
-        .arg(&out)
-        .arg(&object);
-    for command in [&mut compile, &mut link] {
-        let output = command
-            .output()
-            .expect("running zig cc; run the test inside `nix develop`");
-        assert!(
-            output.status.success(),
-            "{command:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let image = std::fs::read(&out).expect("the built program");
-    built
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(key, image.clone());
-    image
 }
 
 static HOST: OnceLock<Arc<HostProcessHost>> = OnceLock::new();
