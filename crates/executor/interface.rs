@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod caller_proofs;
 pub mod memory_space;
 
 use alloc::vec::Vec;
