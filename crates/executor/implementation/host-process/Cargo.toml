@@ -148,6 +148,7 @@ name = "speed"
 
 [[test]]
 name = "conformance"
+path = "conformance_run.rs"
 
 [[test]]
 name = "interrupt"
