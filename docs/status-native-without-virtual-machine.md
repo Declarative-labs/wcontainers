@@ -34,6 +34,10 @@ added (host-process's count in the root manifest is unchanged, 13).
   is most often too early): a zygote's start on Graviton4 1.57, 1.54, 1.52 ms then 0.59, 0.57, 0.58 ms (compare2-arm.out,
   alternating, 3 rounds of 100, load 12 to 14); zygote, stub, threads, stop, run, interrupt and the pages unit tests
   pass and clippy is clean (test2-arm.out).
+- bench's eight workloads after both changes (bench1-arm.out, Graviton4, load 15 falling to 7, medians of 3, the
+  speed test's `bench_workloads_plainly_under_p_and_under_web_assembly`): form P against plain fib 1.319, sieve
+  1.016, hash 1.002, sort 1.361, interpret 1.342, matrix 4.018, walk 1.003, search 1.159, geometric mean 1.356
+  (1.348 before run 11), WebAssembly 34.9; outputs and statuses equal to the plain runs.
 - Verified: clippy with warnings denied clean on Graviton4 and the Xeon; on Graviton4 every test binary of the
   crate run by run 12's test.sh passes (test1-arm.out, load 21 to 26: pages, zygote, stub, files, host, threads,
   stop, touch, memory, slice, placement, embedder, floor, step, translated, run, kernel, busybox, interrupt, copy,
