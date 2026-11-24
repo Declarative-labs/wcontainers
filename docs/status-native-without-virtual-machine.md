@@ -123,6 +123,40 @@ before and after, alternating, on a quiet machine.
   3.87, 4.44, 4.41. Load 8 to 9 for rounds 1 to 3, 14 to 17 for rounds 4 to 7 (other tracks). Paired by round the
   change saves 0.53, 0.62, -0.24, 0.63, 0.53, 0.16, 0.56 ms: median 0.53 ms (12%), mean 0.40 ms, as the account
   expected (0.4 to 0.6). Against the model (1.04 to 1.20 ms in these runs) P is now about 3.4 to 4.0 times it.
+- Built (commits bc4456fc9, 17b1219e4): the fork-child half of the account's change 1, behind a private stand-in for
+  decision 16 (`FORK_SHARES_CODE` in native.rs, the one place his ruling changes). The executor's codes are a table
+  (`native::Codes`): each memory names a code, and a code lists the memories using it. A fork child whose parent has
+  code and no page both writable and executable uses the parent's code: its stub maps the parent's code memfd
+  (`MapCode`, `MapSlots`), it takes the parent's code pages (write-protected in its view), and a page any user loads a
+  piece from is write-protected in every user. A memory stops sharing before it changes its executable pages
+  (counter `codes_unshared`): `set_permissions` that adds or removes execute or grants write and execute together; a
+  kernel write, zero, shared map or unmap over a page with execute; a guest write to a code page; a change it announces
+  or the kernel names. The others keep the code; it makes its own at its next load. Why that is enough: while shared,
+  no page of any user is writable and executable, so an executable page's bytes change only through those calls.
+- Test: tests/run.rs `a_fork_child_runs_its_parent_s_code_until_either_changes_it` (a child runs the parent's code
+  loading nothing; the child rewrites its code and runs it while the parent runs its own; a second child keeps the
+  parent's code when the parent rewrites). Broken three ways in the remote copy (scratch w1/r4b-run2, mutate-share.sh,
+  mutate-share2.sh, mutate3-arm.out), each fails: no sharing (the child loaded 4 pieces ahead), never unsharing and
+  unsharing counted but not done (the parent ran the child's rewritten code: 1500 for 1300). Graviton4 with /dev/kvm
+  denied (11:25 UTC, load 12 to 17): run 12, memory 12, copy 2, kernel 12, busybox 1, interrupt 3, forged 3 passed,
+  conformance 20 of 21 (the known precise-set test); clippy clean.
+- Measured as above, before being commit bdbc087b8 (built in the remote copy with the change's diff reversed,
+  ab-patch.sh, ab3-arm.out), 5 rounds at load 10 to 12.5, second runs in ms a program: before 3.74, 3.93, 3.99, 3.70,
+  3.69; after 3.46, 3.85, 3.46, 3.53, 3.43. Paired: 0.28, 0.08, 0.53, 0.17, 0.26 ms saved, median 0.26 ms (7%). Less
+  than the account's 0.7 ms because its figure counted the child's slot-page commands, which change 2 had already
+  removed. The model in these runs 1.02 to 1.16 ms: P is now about 3.2 times it.
+- Where that leaves the account (expected, from its own figures, not measured part by part again): loading is still
+  the largest part (333 pieces into each exec'd busybox at about 3.4 us each, about 1.1 ms against a floor near 0.3),
+  then the turns' host work, the stubs (two a program, about 0.39 ms each against the model's 0.3), the kernel's file
+  read (kernel track) and memory calls. The exec half of change 1 needs the owner's ruling (a file's base kept across
+  execs) or position-independent translated code.
+
+What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
+- The per-piece load cost toward its floor (a kept translation found and its moved bytes written in well under 1 us);
+  measure before and after as above.
+- x86-64 verdicts for this run's changes once the x86 machine is back (it was "not set up" at 11:12 UTC): stub, zygote,
+  touch, threads, stop, memory and clippy.
+- The W1 gap list and W1 reported complete by run 5 at the latest.
 
 ## Findings carried from the fourth check of the plan, each settled or open
 

@@ -332,6 +332,13 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
 - A fork child's code area and slot table start empty; its pieces are loaded on first run from the kept
   translations, as the VM form loads them into a new memory, so a fork copies no code and a child that execs at
   once loads only the pieces it runs before the exec. The exec itself starts a fresh memory (4.1, 5.1).
+  As built (W1 round 4 run 2, behind a private stand-in for decision 16, `FORK_SHARES_CODE` in native.rs): a fork
+  child maps its parent's code memfd (code area and slot table) and uses the same pieces, where the parent has code
+  and no page both writable and executable; the pages pieces were made from are write-protected in every memory using
+  them. A memory stops sharing (counted, `codes_unshared`) before any change to its executable pages: a permission
+  change that adds or removes execute or makes a page writable and executable, a kernel write, zero or mapping over
+  an executable page, a guest write to a code page, or a change it announces; it then loads its own. Measured: 0.26
+  ms less a program for busybox `sh` (status file, round 4 run 2).
 - Code a program writes: every guest page that holds translated code is write-protected in the guest's view of
   every memory that maps it (shared blocks included); the first write faults to the floor, which drops the
   translations of that page in every process holding them (their other threads stopped first, 4.2), gives the page
