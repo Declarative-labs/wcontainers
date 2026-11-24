@@ -2218,6 +2218,8 @@ fn draw<B: Backend>(
     // SAFETY: bound shaders live until Mesa unbinds and deletes them.
     let fragment_program = unsafe { &*fs };
     let squares = match (pointed, geometry_shader) {
+        // Points that are not rasterized are not drawn as squares.
+        _ if raster.discard => None,
         (Some(before), _) => {
             // SAFETY: as above.
             let before = unsafe { &*before };
