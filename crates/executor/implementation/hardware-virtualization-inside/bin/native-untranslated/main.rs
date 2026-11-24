@@ -58,7 +58,7 @@ mod untranslated {
     /// The bytes of the program's memory at `address`.
     #[expect(
         unsafe_code,
-        reason = "a slice of the program's memory inside one region, found above, whose frames are one run, through the linear map; test program only, Words replaces it"
+        reason = "UNSOUND: a private safe fn returning a &'static slice of the program's memory, which the guest writes again once it runs; its one caller uses it only while the guest waits in its write call; the range lies in one region whose frames are one run, through the linear map; test program only, Words replaces it"
     )]
     fn bytes(regions: &[Region], address: u64, length: u64) -> &'static [u8] {
         let region = regions

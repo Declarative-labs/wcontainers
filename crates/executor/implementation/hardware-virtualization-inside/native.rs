@@ -1569,7 +1569,7 @@ fn drop_piece(m: &mut Memory, at: u64, empty: u32) {
 
 #[expect(
     unsafe_code,
-    reason = "writes a thread's register page to the frame taken for it from Frames, through the linear map; Words replaces it"
+    reason = "UNSOUND: a private safe fn that writes a register page into whatever frame number it is given, through the linear map, the same shape as frame_bytes; its callers pass the frame taken for the thread from Frames, which only convention ties to it; Words replaces it"
 )]
 fn write_page(frame: u64, page: &RegisterPage) {
     // SAFETY: the register page's frame is the thread's; `RegisterPage` is `#[repr(C)]` words.
@@ -1578,7 +1578,7 @@ fn write_page(frame: u64, page: &RegisterPage) {
 
 #[expect(
     unsafe_code,
-    reason = "reads a thread's register page from the frame taken for it from Frames, through the linear map; Words replaces it"
+    reason = "UNSOUND: a private safe fn that reads a register page from whatever frame number it is given, through the linear map, with a plain read that races any other virtual CPU writing that frame, the same shape as frame_bytes; its callers pass the frame taken for the thread from Frames, which only convention ties to it; Words replaces it"
 )]
 fn read_page(frame: u64) -> RegisterPage {
     // SAFETY: as in `write_page`.

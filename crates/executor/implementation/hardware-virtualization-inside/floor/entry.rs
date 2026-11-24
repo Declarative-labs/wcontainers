@@ -47,10 +47,10 @@ unsafe extern "C" {
 /// Runs the guest's level from `registers` until an exception brings it back.
 #[expect(
     unsafe_code,
-    reason = "switches to the guest's level and back through the entry assembly, which saves and restores every register the floor relies on, and the floor uses no vector register (softfloat); a safe fn declaration removes it"
+    reason = "UNEXPLAINED: switches to the guest's level and back through the entry assembly, trusted, not checked, to save and restore every register the floor relies on (the assembly is marked UNEXPLAINED below); the floor uses no vector register (softfloat); no primitive replaces it, and a safe fn declaration removes this line, not the trust"
 )]
 pub fn enter_user(registers: &mut UserRegisters) -> Taken {
-    // SAFETY: the switch saves and restores every register the floor's code relies on.
+    // SAFETY: trusted, not checked: the switch saves and restores every register the floor's code relies on.
     unsafe { floor_enter_user(registers) }
 }
 

@@ -91,10 +91,11 @@ mod cases {
         make_code_visible(gate.va, gate.bytes);
         VBAR_EL1.set(gate.va);
         barrier::isb(SY);
-        // SAFETY: the host wrote the gate, which comes back as a call does: it restores every register.
+        // SAFETY: trusted, not checked: the host wrote the gate, which comes back as a call does and restores
+        // every register.
         #[expect(
             unsafe_code,
-            reason = "turns the address of the gate the host wrote into a function pointer; the gate comes back as a call does, restoring every register; test program only, stays a one-off"
+            reason = "UNEXPLAINED: turns the address of the gate the host wrote into a function pointer, trusting the host's code to come back as a call does and restore every register this program relies on, which nothing here checks; test program only, stays a one-off"
         )]
         let call: extern "C" fn() = unsafe { core::mem::transmute(gate.va + GATE_OFFSET) };
         loop {
