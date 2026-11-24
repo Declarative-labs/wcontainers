@@ -4,6 +4,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use zerocopy::IntoBytes;
+
 use wcontainers_gpu::{
     Backend, Extent, Format, FormatKind, Object, Origin, Reflection, SamplerDesc as GpuSampler,
     TextureDesc as GpuTexture, TextureRegion, VertexFormat, ViewDimension,
@@ -20,6 +22,21 @@ pub struct Graveyard<B: Backend> {
 }
 
 pub type SharedGraveyard<B> = Rc<RefCell<Graveyard<B>>>;
+
+/// A dynamic or staging subresource's bytes, which a map hands out: the program writes them
+/// through a pointer while the device keeps them.
+pub type Shadow = Rc<[Cell<u8>]>;
+
+/// A shadow holding `bytes`.
+pub fn shadow_of(bytes: &mut [u8]) -> Shadow {
+    Rc::from(Cell::from_mut(bytes).as_slice_of_cells())
+}
+
+/// The shadow's bytes for the device to read or fill. A [`crate::Mapped`] kept past its unmap
+/// keeps the bytes it had; the device goes on with its own copy.
+pub fn shadow_bytes(shadow: &mut Shadow) -> &mut [u8] {
+    Rc::make_mut(shadow).as_mut_bytes()
+}
 
 /// A back-end handle owned by one front object.
 pub struct Kept<B: Backend, H: Clone> {
@@ -78,7 +95,7 @@ pub struct Buffer<B: Backend> {
     pub grown: Cell<bool>,
     /// The latest contents of a dynamic or staging buffer, which a map hands out; for a grown dynamic
     /// buffer, all of its bytes.
-    pub shadow: RefCell<Vec<u8>>,
+    pub shadow: RefCell<Shadow>,
     /// A staging buffer's shadow against the GPU's bytes.
     pub staged: RefCell<Staged<B>>,
     /// Counts the writes into it, for the copies of its windows.
@@ -152,7 +169,7 @@ pub struct Texture<B: Backend> {
     pub gpu_desc: GpuTexture,
     pub gpu: Kept<B, B::Texture>,
     /// Per subresource of a staging texture, tightly packed rows and slices a map hands out.
-    pub shadow: RefCell<Vec<Vec<u8>>>,
+    pub shadow: RefCell<Vec<Shadow>>,
     /// Per subresource of a staging texture, its shadow against the GPU's copy.
     pub staged: RefCell<Vec<Staged<B>>>,
     /// Whether it is a swap chain's buffer, and whether views may draw into it.

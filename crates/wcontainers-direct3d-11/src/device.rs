@@ -1253,9 +1253,9 @@ impl<B: Backend> Device<B> {
             if let Some(bytes) = init {
                 s.copy_from_slice(&bytes[..d.byte_width as usize]);
             }
-            s
+            shadow_of(&mut s)
         } else {
-            Vec::new()
+            Shadow::default()
         };
         let id = self.id();
         Ok(Rc::new(Buffer {
@@ -1745,7 +1745,7 @@ impl<B: Backend> Device<B> {
                         }
                         debug_assert_eq!(shadow.len(), slice * slices as usize);
                     }
-                    shadow
+                    shadow_of(&mut shadow)
                 })
                 .collect::<Vec<_>>();
             *texture.staged.borrow_mut() = shadow.iter().map(|_| Staged::Current).collect();

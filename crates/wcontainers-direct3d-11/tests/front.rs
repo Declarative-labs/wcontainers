@@ -2,6 +2,7 @@
 //! programs make them (their DXBC from the rig's corpus), checked by the calls recorded; and the
 //! creation checks, lifetimes and maps.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_direct3d_11::desc::*;
@@ -24,6 +25,11 @@ fn corpus(name: &str) -> Vec<u8> {
 
 fn device() -> Dev {
     Device::new(Recorder::new(None), &[level::L11_1, level::L11_0]).unwrap()
+}
+
+/// The first `n` bytes a map handed out.
+fn mapped_bytes(data: &[Cell<u8>], n: usize) -> Vec<u8> {
+    data[..n].iter().map(Cell::get).collect()
 }
 
 fn log_from(dev: &Dev, from: usize) -> Vec<String> {
@@ -120,10 +126,7 @@ fn read(dev: &mut Dev, target: &Rc<Texture<Recorder>>) -> Vec<u8> {
         .unwrap();
     let mapped = dev.map(&dst, 0, map::READ, 0).unwrap();
     assert_eq!(mapped.row_pitch, desc.width * 4);
-    let bytes = unsafe {
-        std::slice::from_raw_parts(mapped.data, (mapped.row_pitch * desc.height) as usize)
-    }
-    .to_vec();
+    let bytes = mapped_bytes(&mapped.data, (mapped.row_pitch * desc.height) as usize);
     dev.unmap(&dst, 0);
     bytes
 }
@@ -388,7 +391,7 @@ fn nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows(
         let mapped = dev.map(&staging, 0, map::READ, 0).unwrap();
         assert_eq!(mapped.row_pitch, w);
         assert_eq!(mapped.depth_pitch, w * h * 3 / 2);
-        let got = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        let got = mapped_bytes(&mapped.data, bytes.len());
         dev.unmap(&staging, 0);
         got
     };
@@ -472,7 +475,7 @@ fn yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8() {
         dev.copy_resource(&staging, &yuy2).unwrap();
         let mapped = dev.map(&staging, 0, map::READ, 0).unwrap();
         assert_eq!(mapped.row_pitch, w * 2);
-        let got = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        let got = mapped_bytes(&mapped.data, bytes.len());
         dev.unmap(&staging, 0);
         got
     };
@@ -699,7 +702,7 @@ fn quads_scene() {
         let s = Resource::Texture(s);
         dev.copy_resource(&s, &Resource::Texture(texture)).unwrap();
         let m = dev.map(&s, 0, map::READ, 0).unwrap();
-        let bytes = unsafe { std::slice::from_raw_parts(m.data, 16 * 16 * 4) }.to_vec();
+        let bytes = mapped_bytes(&m.data, 16 * 16 * 4);
         dev.unmap(&s, 0);
         bytes
     };
@@ -914,7 +917,7 @@ fn dynamic_constants_upload_whole_on_unmap() {
     };
     let b = Resource::Buffer(dev.create_buffer(&desc, None).unwrap());
     let m = dev.map(&b, 0, map::WRITE_DISCARD, 0).unwrap();
-    unsafe { std::ptr::write_bytes(m.data, 7, 64) };
+    m.data[..64].iter().for_each(|c| c.set(7));
     dev.unmap(&b, 0);
     assert!(
         dev.backend
@@ -1561,7 +1564,7 @@ fn staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout() {
             })
             .collect();
         let mapped = dev.map(&a, 0, map::WRITE, 0).unwrap();
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.data, bytes.len()) };
+        mapped.data.iter().zip(&bytes).for_each(|(c, b)| c.set(*b));
         let from = dev.backend.log.len();
         dev.unmap(&a, 0);
         let writes = dev.backend.log[from..]
@@ -1572,7 +1575,7 @@ fn staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout() {
         dev.copy_resource(&b, &a).unwrap();
         let mapped = dev.map(&b, 0, map::READ, 0).unwrap();
         assert_eq!(mapped.row_pitch as usize, 2 * texel);
-        let back = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        let back = mapped_bytes(&mapped.data, bytes.len());
         dev.unmap(&b, 0);
         assert_eq!(back, bytes, "format {format}");
         assert!(dev.removed.is_none());
@@ -2020,7 +2023,7 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
     assert!(matches!(r, Err(Error::StillDrawing)));
     find(&log_from(&dev, start), "submit");
     let mapped = dev.map(&readable, 0, map::READ, map::DO_NOT_WAIT).unwrap();
-    assert_eq!(unsafe { *mapped.data }, 7);
+    assert_eq!(mapped.data[0].get(), 7);
     dev.unmap(&readable, 0);
     // The shadow is current: mapping again reads nothing back.
     let start = dev.backend.log.len();
@@ -2050,7 +2053,7 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
     dev.copy_subresource_region(&writable, 0, [0; 3], &src, 0, None)
         .unwrap();
     let mapped = dev.map(&writable, 0, map::WRITE, 0).unwrap();
-    assert_eq!(unsafe { *mapped.data }, 7, "the GPU's bytes are kept");
+    assert_eq!(mapped.data[0].get(), 7, "the GPU's bytes are kept");
     dev.unmap(&writable, 0);
     assert_eq!(
         dev.backend.slow_paths().count(SlowPath::StagingRefreshed),
@@ -2936,7 +2939,7 @@ fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
     let r = Resource::Buffer(dynamic);
     for i in 0..3 {
         let m = dev.map(&r, 0, map::WRITE_DISCARD, 0).unwrap();
-        unsafe { std::ptr::write_bytes(m.data, i, 16) };
+        m.data[..16].iter().for_each(|c| c.set(i));
         dev.unmap(&r, 0);
         dev.draw(3, 0);
     }

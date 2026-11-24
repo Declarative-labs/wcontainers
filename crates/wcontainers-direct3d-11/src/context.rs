@@ -124,7 +124,7 @@ struct PendingClear<B: Backend> {
 
 /// A mapped subresource, released by `unmap`.
 pub struct Mapped {
-    pub data: *mut u8,
+    pub data: Shadow,
     pub row_pitch: u32,
     pub depth_pitch: u32,
 }
@@ -2733,7 +2733,9 @@ impl<B: Backend> Device<B> {
         b.grown.set(true);
         let mut shadow = b.shadow.borrow_mut();
         if !shadow.is_empty() {
-            shadow.resize(size as usize, 0);
+            let mut grown = vec![0; size as usize];
+            grown[..shadow.len()].copy_from_slice(shadow_bytes(&mut shadow));
+            *shadow = shadow_of(&mut grown);
         }
         Ok(())
     }
@@ -5793,11 +5795,12 @@ impl<B: Backend> Device<B> {
                         size: u64::from(d.byte_width),
                     };
                     let mut staged = b.staged.borrow_mut();
-                    let shadow = &mut b.shadow.borrow_mut();
+                    let mut shadow = b.shadow.borrow_mut();
+                    let shadow = shadow_bytes(&mut shadow);
                     self.refresh(&mut staged, &src, None, shadow, reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(b) as usize, 0, kind));
-                let data = b.shadow.borrow_mut().as_mut_ptr();
+                let data = b.shadow.borrow().clone();
                 Ok(Mapped {
                     data,
                     row_pitch: d.byte_width,
@@ -5830,11 +5833,12 @@ impl<B: Backend> Device<B> {
                     let second = second
                         .map(|(region, extent, how)| (ReadSource::Texture { region, extent }, how));
                     let second = second.as_ref().map(|(s, how)| (s, *how));
-                    self.refresh(&mut staged[s], &src, second, &mut shadow[s], reads, wait)?;
+                    let bytes = shadow_bytes(&mut shadow[s]);
+                    self.refresh(&mut staged[s], &src, second, bytes, reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
-                    data: shadow[sub as usize].as_mut_ptr(),
+                    data: shadow[s].clone(),
                     row_pitch: row,
                     depth_pitch: row * rows,
                 })
@@ -6005,14 +6009,16 @@ impl<B: Backend> Device<B> {
                     map::WRITE_NO_OVERWRITE => WriteMode::NoOverwrite,
                     _ => WriteMode::Ordered,
                 };
+                let mut shadow = b.shadow.borrow_mut();
                 self.backend
-                    .write_buffer(&b.handle(), 0, &b.shadow.borrow(), mode);
+                    .write_buffer(&b.handle(), 0, shadow_bytes(&mut shadow), mode);
             }
             Resource::Texture(t) => {
                 let (region, extent) = t.whole(sub).expect("a subresource the map checked");
                 let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
-                let shadow = &t.shadow.borrow()[sub as usize];
+                let mut shadows = t.shadow.borrow_mut();
+                let shadow: &[u8] = shadow_bytes(&mut shadows[sub as usize]);
                 let (stencil, texel) = match t.second_region(sub) {
                     None => {
                         self.backend.write_texture(

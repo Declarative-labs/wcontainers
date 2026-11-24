@@ -440,15 +440,12 @@ impl Dc {
             None,
         )?;
         let mapped = f.map(&staging, 0, desc::map::READ, 0)?;
-        for y in 0..self.height as usize {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    mapped.data.add(y * mapped.row_pitch as usize),
-                    self.bits.as_mut_ptr().add(y * self.pitch()),
-                    self.pitch(),
-                )
-            };
+        let pitch = self.pitch();
+        for (y, row) in self.bits.chunks_exact_mut(pitch).enumerate() {
+            let from = &mapped.data[y * mapped.row_pitch as usize..][..pitch];
+            row.iter_mut().zip(from).for_each(|(t, f)| *t = f.get());
         }
+        drop(mapped);
         f.unmap(&staging, 0);
         Ok(())
     }
