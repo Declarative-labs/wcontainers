@@ -1285,9 +1285,16 @@ impl HostProcessExecutor {
                 }
                 Ended::Stopped(stop) => stop,
             };
+            // A jump to a misaligned target has ended at it: the fault is the target's, which the next turn's load
+            // gives, as the hardware takes it at the target's fetch.
+            let ended = match stop {
+                Stop::Landed(_) => true,
+                Stop::Alignment(address) => address == t.state.pc,
+                _ => false,
+            };
             match stop {
                 // Lone instructions land at every instruction's end, so a limit is reached exactly there.
-                Stop::Landed(_) if reached(&t.state) => {
+                _ if ended && reached(&t.state) => {
                     if !self.lone {
                         self.slow(
                             reason::TURN_LIMIT_PASSED,

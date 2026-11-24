@@ -415,8 +415,7 @@ fn count_at_every_stop_of_calls_is_the_virtual_machine_executor_s() {
     every_event_against_the_virtual_machine("calls", 3_004, 18_260_131_204_484_228_776);
 }
 
-/// Known failure: form P returns 5,482 times (hash 590264501367005601), two fewer than the virtual-machine executor,
-/// while its count rises by the definition's events at every instruction (status file, round 7 run 1).
+/// Its jumps to misaligned targets end a limited turn at the target before the target's fault.
 #[test]
 fn count_at_every_stop_of_jumptables_is_the_virtual_machine_executor_s() {
     every_event_against_the_virtual_machine("jumptables", 5_484, 17_339_527_552_300_285_948);
