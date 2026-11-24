@@ -605,7 +605,15 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     final2-arm.log, lx/log): Graviton4 57 runs, 225 tests passed, none failed (01:08 to 01:15 UTC, load 10.5 to
     12.9); Xeon 57 runs, 156 passed, none failed (load 26 to 30 from other tracks).
   - No new unsafe code.
-  - Not done: the executor suite (see "For the owner"); the VM executor's own speed test beside P's.
+  - The VM executor's own speed test on the same machine with KVM, right after P's figures (speed3-arm.out, its
+    look-ahead 256, 3 pairs, load 11.7 to 12.6): native against plain, median cycles, fib +41.3%, sieve +5.4%, hash
+    +2.8%, sort +40.4%, interpret +35.7%, matrix +41.6%, walk +1.9%, search +32.3%, calls +22.5%, geometric mean
+    +23.96% (its bar +21.2%: fails here); its system call 472 ns, the kernel's share 204 ns. Beside it form P's whole
+    runs against plain (wall, start and translation included): fib +32.7%, sieve +1.1%, hash +0.3%, sort +35.9%,
+    interpret +31.0%, matrix +301%, walk -1.1%, search +15.6%. So P runs the compute and memory-bound workloads
+    (sieve, hash, walk) at the plain speed and as fast as or faster than the VM form elsewhere, but for matrix; P's
+    system call is 6.4 times the VM form's (3,021 against 472 ns).
+  - Not done: the executor suite (see "For the owner").
 - Not built yet (W1's bar is not met): conformance to the owner's new `Executor` (merged at e65273d5 during run 3,
   see Next); the getppid round trip under 1.25 times the slot and busybox `sh` within 1.25 times the model, measured
   after this run's fixes; placement's remaining items; the copy unit on translated code; the VM executor's figures
