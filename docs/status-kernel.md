@@ -8,6 +8,13 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, eleventh run: still waiting on the three files
+
+Started about 07:16 UTC on 2026-11-24 at 962a03fd. Watched the three other tracks' files from
+07:17 to 07:47 UTC (scratch kernel/kc11, wait.sh): no commit and no uncommitted edit touched them,
+and main has nothing newer for them. The tip's other commits were other tracks' docs, so the
+check was not run again; its result at 9d374918 stands. Nothing of this track's is open for KC.
+
 ## KC, tenth run: the workspace check again at 9d374918
 
 Started about 06:33 UTC on 2026-11-24. The Mac only read, edited and committed. Scratch kernel/kc9
@@ -1088,7 +1095,8 @@ side of each is worked around without changing the interface.
   crates/executor/implementation/hardware-virtualization/tests/guest_memory.rs:222 (ARM64 only, type
   annotations; the executors job's). Please hand each to its track; KC passes once they build.
   Still unchanged at 06:35 UTC on 2026-11-24 (ninth run), and failing the same way at 9d374918
-  at 07:15 UTC (tenth run; layer1.rs changed in 108d7566 without the cfg). The fixes as read: guest_memory.rs:222
+  at 07:15 UTC (tenth run; layer1.rs changed in 108d7566 without the cfg), and untouched from
+  07:17 to 07:47 UTC (eleventh run). The fixes as read: guest_memory.rs:222
   compares `Vec<u64>` with `[]` (e.g. `assert!(reached.is_empty(), ..)`); layer1.rs's
   `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64`,
   `answered_as_the_meaning` and `the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64`
