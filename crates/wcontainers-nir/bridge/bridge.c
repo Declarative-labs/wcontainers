@@ -2497,7 +2497,7 @@ wc_nir_uses_storage(const struct nir_shader *nir)
 }
 
 struct nir_shader *
-wc_nir_pass_through_geometry(const struct nir_shader *tes)
+wc_nir_pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
 {
    if (tes->info.stage != MESA_SHADER_TESS_EVAL)
       return NULL;
@@ -2511,7 +2511,10 @@ wc_nir_pass_through_geometry(const struct nir_shader *tes)
    }
    nir_shader_intrinsics_pass(lowered, note_written, nir_metadata_all, written);
    ralloc_free(lowered);
-   if (written->indirect) {
+   const bool sized = written->slots[VARYING_SLOT_PSIZ].components;
+   const unsigned size_slot = VARYING_SLOT_VAR0 + size_at;
+   if (written->indirect ||
+       (sized && (size_slot >= VARYING_SLOT_MAX || !written->slots[size_slot].components))) {
       free(written);
       return NULL;
    }
@@ -2542,13 +2545,17 @@ wc_nir_pass_through_geometry(const struct nir_shader *tes)
       nir_def *vertex = nir_imm_int(&b, v);
       for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
          const struct written_slot *s = &written->slots[slot];
-         if (slot == VARYING_SLOT_EDGE)
+         if (slot == VARYING_SLOT_EDGE || (sized && slot == size_slot))
             continue;
+         /* The point size is read where the program also wrote it. */
+         const struct written_slot *from =
+            slot == VARYING_SLOT_PSIZ ? &written->slots[size_slot] : s;
          nir_def *offset = nir_imm_int(&b, s->offset);
          u_foreach_bit(c, s->components) {
             nir_def *value = nir_load_per_vertex_input(
-               &b, 1, nir_alu_type_get_type_size(s->types[c]), vertex, offset, .component = c,
-               .dest_type = s->types[c], .io_semantics = s->semantics);
+               &b, 1, nir_alu_type_get_type_size(from->types[c]), vertex,
+               nir_imm_int(&b, from->offset), .component = c, .dest_type = from->types[c],
+               .io_semantics = from->semantics);
             nir_store_output(&b, value, offset, .component = c, .src_type = s->types[c],
                              .io_semantics = s->semantics);
          }

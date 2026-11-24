@@ -1056,14 +1056,20 @@ fn create_shader<B: Backend>(
     let formatless_images = nir.formatless_images();
     let integer_sampled = nir.integer_sampled_units();
     let named_layer = nir.named_layer_location();
+    // WebGPU writes no storage from a vertex program, which an evaluation program is drawn as
+    // without a geometry program after it; one using storage runs before a pass-through geometry
+    // program instead, passing it its point size at a location (the stage helper stages none).
+    let size_at = (stage == Stage::TessEvaluation && nir.uses_storage()).then(|| {
+        let at = nir.generic_end();
+        nir.point_size_also_at(at);
+        at
+    });
     let id = nir
         .key()
         .unwrap_or_else(|e| refuse(format_args!("a program whose content has no key: {e}")));
     driver.shader_made(id);
-    // WebGPU writes no storage from a vertex program, which an evaluation program is drawn as
-    // without a geometry program after it.
-    let pass_through = if stage == Stage::TessEvaluation && nir.uses_storage() {
-        match nir.pass_through_geometry() {
+    let pass_through = if let Some(at) = size_at {
+        match nir.pass_through_geometry(at) {
             Some(geometry) => {
                 let id = geometry.key().unwrap_or_else(|e| {
                     refuse(format_args!(
@@ -1086,7 +1092,8 @@ fn create_shader<B: Backend>(
                 })))
             }
             None => Err(
-                "an evaluation program using storage, writing outputs at offsets known only when run",
+                "an evaluation program using storage, writing outputs at offsets known only when run \
+                 or a point size past the last location",
             ),
         }
     } else {

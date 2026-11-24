@@ -236,7 +236,7 @@ unsafe extern "C" {
         block: u32,
     ) -> *mut NirShader;
     fn wc_nir_uses_storage(nir: *const NirShader) -> bool;
-    fn wc_nir_pass_through_geometry(tes: *const NirShader) -> *mut NirShader;
+    fn wc_nir_pass_through_geometry(tes: *const NirShader, size_at: u32) -> *mut NirShader;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -535,11 +535,13 @@ impl Nir {
     }
 
     /// A geometry program passing each primitive of this evaluation program on unchanged, every
-    /// output as written, so that this program runs before it. `None` for another stage, or a
-    /// program writing outputs at offsets known only when run.
-    pub fn pass_through_geometry(&self) -> Option<Nir> {
+    /// output as written, so that this program runs before it; its point size read where it also
+    /// writes it, at the generic location `size_at` ([`Self::point_size_also_at`]), which is not
+    /// passed on. `None` for another stage, a program writing outputs at offsets known only when
+    /// run, or one writing a point size not also at `size_at`.
+    pub fn pass_through_geometry(&self, size_at: u32) -> Option<Nir> {
         // SAFETY: self.0 is a live shader; the result is a new shader or null.
-        let geometry = unsafe { wc_nir_pass_through_geometry(self.0) };
+        let geometry = unsafe { wc_nir_pass_through_geometry(self.0, size_at) };
         (!geometry.is_null()).then_some(Nir(geometry))
     }
 
