@@ -334,6 +334,33 @@ fn colour_map_sampled_at_its_edges_as_direct3d_samples_it() {
     case("colour_map_edge");
 }
 
+/// atg-simplecomputepc's frames (its dispatch, then a sprite draw of the result and a second draw
+/// from another texture, each frame): the colour inside the set is the map's first texel, as WARP
+/// gives it in every frame and the RTX 3080 in the program once such frames have gone by. Compared
+/// with WARP, as the RTX 3080's first frames give either answer.
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore = "ours divides 1200 by 300 to 3.9999998 (the map's last texel) where WARP and the RTX 3080's settled answer give 4 (Gap list)"]
+fn colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it() {
+    let args = ["colour_map_frames"];
+    let warp = [("OWN_CASES_DRIVER", "warp")];
+    let (code, want, _) = run_logged(
+        "own_cases",
+        &place("colour_map_frames-warp", false),
+        &args,
+        &warp,
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got, _) = run_logged(
+        "own_cases",
+        &place("colour_map_frames-ours", true),
+        &args,
+        &[],
+    );
+    assert_eq!(code, 0, "{got}");
+    assert_eq!(want, got);
+}
+
 /// Programs load from and store into storage views of every format of Microsoft's set of typed
 /// storage loads, which both devices claim, and get what the RTX 3080 gives.
 #[cfg(not(feature = "webgl"))]

@@ -1747,11 +1747,7 @@ fn main() -> windows::core::Result<()> {
                     o[id.xy] = map.SampleLevel(s, float2(u, 0), 0);
                     bits[id.xy] = asuint(u);
                 }");
-            let texels: [u32; 8] = [
-                0xFF000040, 0xFF000080, 0xFF0000C0, 0xFF0000FF, 0xFF0040FF, 0xFF0080FF, 0xFF00C0FF,
-                0xFF00FFFF,
-            ];
-            let bytes: Vec<u8> = texels.iter().flat_map(|t| t.to_le_bytes()).collect();
+            let bytes: Vec<u8> = COLOUR_MAP.iter().flat_map(|t| t.to_le_bytes()).collect();
             let at = |format, bind| Tex {
                 w: 8,
                 h: 1,
@@ -1800,36 +1796,7 @@ fn main() -> windows::core::Result<()> {
             }
             print("sampled", &o, 4);
             print("coordinates", &bits, 4);
-            // atg-simplecomputepc's own program.
-            let fractal = cs("RWTexture2D<float4> OutputTexture : register(u0);
-                Texture2D ColorMapTexture : register(t0);
-                SamplerState ColorMapSampler : register(s0);
-                cbuffer cb0 {
-                    float4 g_MaxThreadIter : packoffset(c0);
-                    float4 g_Window : packoffset(c1);
-                }
-                [numthreads(8, 8, 1)]
-                void main(uint3 DTid : SV_DispatchThreadID) {
-                    float2 WindowLocal = ((float2)DTid.xy / g_MaxThreadIter.xy) * float2(1, -1)
-                        + float2(-0.5f, 0.5f);
-                    float2 coord = WindowLocal.xy * g_Window.xy + g_Window.zw;
-                    uint maxiter = (uint)g_MaxThreadIter.z * 4;
-                    uint iter = 0;
-                    float2 constant = coord;
-                    float2 sq;
-                    do {
-                        float2 newvalue;
-                        sq = coord * coord;
-                        newvalue.x = sq.x - sq.y;
-                        newvalue.y = 2 * coord.y * coord.x;
-                        coord = newvalue + constant;
-                        iter++;
-                    } while (iter < maxiter && (sq.x + sq.y) < 4.0);
-                    float colorIndex = frac((float)iter / g_MaxThreadIter.z);
-                    float4 SampledColor =
-                        ColorMapTexture.SampleLevel(ColorMapSampler, float2(colorIndex, 0), 0);
-                    OutputTexture[DTid.xy] = SampledColor;
-                }");
+            let fractal = cs(FRACTAL);
             // As the program runs it: its window over a 1280 by 720 target of 32-bit floats, its
             // constants written through a mapped dynamic buffer; eight points of the middle row
             // copied out, inside the set.
@@ -1863,16 +1830,14 @@ fn main() -> windows::core::Result<()> {
             };
             let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
             let mut window = None;
-            unsafe {
-                device.CreateBuffer(&desc, None, Some(&mut window))?;
-                let window = window.as_ref().unwrap();
-                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                context.Map(window, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
-                std::ptr::copy_nonoverlapping(values.as_ptr(), mapped.pData.cast(), values.len());
-                context.Unmap(window, 0);
-            }
             let group = 8;
             unsafe {
+                device.CreateBuffer(&desc, None, Some(&mut window))?;
+                let buffer = window.as_ref().unwrap();
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                context.Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
+                std::ptr::copy_nonoverlapping(values.as_ptr(), mapped.pData.cast(), values.len());
+                context.Unmap(buffer, 0);
                 context.CSSetShader(fractal.as_ref(), None);
                 context.CSSetConstantBuffers(0, Some(&[window]));
                 context.CSSetUnorderedAccessViews(0, 2, Some([uav(&target), None].as_ptr()), None);
@@ -1889,6 +1854,264 @@ fn main() -> windows::core::Result<()> {
                 context.CopySubresourceRegion(&block, 0, 0, 0, 0, &target, 0, Some(&middle));
             }
             print("fractal", &block, 16);
+        }
+        // atg-simplecomputepc's frames: its dispatch, then its sprite pass drawing the result and
+        // a second draw of 100 quads from another texture, frame after frame; the colour inside
+        // the set (its loop count 1200 over 300) at the first and the last frame.
+        "colour_map_frames" => {
+            const FRAMES: u32 = 30;
+            const GROUP: u32 = 8;
+            const GLYPHS: usize = 100;
+            const QUAD_INDICES: u32 = 6;
+            let (w, h) = (320u32, 180u32);
+            let iterations = 300.0;
+            let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
+            let fractal = cs(FRACTAL);
+            let bytes: Vec<u8> = COLOUR_MAP.iter().flat_map(|t| t.to_le_bytes()).collect();
+            let at = |w, h, format, bind: D3D11_BIND_FLAG| Tex {
+                w,
+                h,
+                format,
+                samples: 1,
+                bind,
+            };
+            let map = make(
+                &at(8, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE),
+                Some((&bytes, 32)),
+            )?;
+            let glyph_bytes: Vec<u8> = (0..16 * 16 * 4).map(|i| (i * 37 % 256) as u8).collect();
+            let glyphs = make(
+                &at(
+                    16,
+                    16,
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_SHADER_RESOURCE,
+                ),
+                Some((&glyph_bytes, 64)),
+            )?;
+            let both =
+                D3D11_BIND_FLAG(D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0);
+            let target = make(&at(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, both), None)?;
+            let back = make(
+                &at(w, h, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_RENDER_TARGET),
+                None,
+            )?;
+            let middle = make(
+                &at(
+                    1,
+                    1,
+                    DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    D3D11_BIND_SHADER_RESOURCE,
+                ),
+                None,
+            )?;
+            let (back_view, target_view) = (rtv(&back), srv(&target, DXGI_FORMAT_UNKNOWN));
+            let (map_view, glyph_view) = (
+                srv(&map, DXGI_FORMAT_UNKNOWN),
+                srv(&glyphs, DXGI_FORMAT_UNKNOWN),
+            );
+            let store = uav(&target);
+            let sprite_vs = compile(
+                "struct O { float4 c : COLOR; float2 uv : TEXCOORD; float4 p : SV_Position; };
+                O main(float4 p : SV_Position, float4 c : COLOR, float2 uv : TEXCOORD) {
+                    O o;
+                    o.p = p;
+                    o.c = c;
+                    o.uv = uv;
+                    return o;
+                }",
+                models.0,
+            );
+            let sprite_ps = ps("Texture2D t : register(t0);
+                SamplerState s : register(s0);
+                float4 main(float4 c : COLOR, float2 uv : TEXCOORD) : SV_Target {
+                    return t.Sample(s, uv) * c;
+                }");
+            // Position, colour and texture coordinates of each corner of `n` quads.
+            const VERTEX_FLOATS: usize = 9;
+            let quads = |n: usize, size: f32| -> Vec<[f32; VERTEX_FLOATS]> {
+                let mut v = Vec::new();
+                for i in 0..n {
+                    let (x, y) = (-1.0 + (i % 50) as f32 * size, 1.0 - (i / 50) as f32 * size);
+                    for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                        let (px, py) = (x + dx * size, y - dy * size);
+                        v.push([px, py, 0.0, 1.0, 1.0, 1.0, 1.0, dx, dy]);
+                    }
+                }
+                v
+            };
+            let corners = (GLYPHS + 1) * 4;
+            let indices: Vec<u16> = (0..(GLYPHS + 1) as u16)
+                .flat_map(|q| [0, 1, 2, 1, 3, 2].map(|i| q * 4 + i))
+                .collect();
+            let elements = [
+                (s!("SV_Position"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
+                (s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 12),
+                (s!("TEXCOORD"), DXGI_FORMAT_R32G32_FLOAT, 28),
+            ]
+            .map(|(name, format, offset)| D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: name,
+                Format: format,
+                AlignedByteOffset: offset,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                ..Default::default()
+            });
+            let dynamic = |bytes: usize, bind: D3D11_BIND_FLAG| D3D11_BUFFER_DESC {
+                ByteWidth: bytes as u32,
+                Usage: D3D11_USAGE_DYNAMIC,
+                BindFlags: bind.0 as u32,
+                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                ..Default::default()
+            };
+            let index_desc = D3D11_BUFFER_DESC {
+                ByteWidth: size_of_val(&indices[..]) as u32,
+                Usage: D3D11_USAGE_IMMUTABLE,
+                BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+                ..Default::default()
+            };
+            let index_data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: indices.as_ptr().cast(),
+                ..Default::default()
+            };
+            let map_sampling = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MaxAnisotropy: 1,
+                ComparisonFunc: D3D11_COMPARISON_NEVER,
+                MaxLOD: f32::MAX,
+                ..Default::default()
+            };
+            let sprite_sampling = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                ..map_sampling
+            };
+            let mut blend_desc = D3D11_BLEND_DESC::default();
+            blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: true.into(),
+                SrcBlend: D3D11_BLEND_ONE,
+                DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+            };
+            let depth_desc = D3D11_DEPTH_STENCIL_DESC::default();
+            let raster_desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_NONE,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            };
+            let (mut window, mut vertices, mut index_buffer) = (None, None, None);
+            let (mut map_sampler, mut sprite_sampler, mut layout, mut sprite) =
+                (None, None, None, None);
+            let (mut blend, mut depth, mut raster) = (None, None, None);
+            let stride = (VERTEX_FLOATS * size_of::<f32>()) as u32;
+            let middle_box = D3D11_BOX {
+                left: w / 2,
+                top: h / 2,
+                front: 0,
+                right: w / 2 + 1,
+                bottom: h / 2 + 1,
+                back: 1,
+            };
+            unsafe {
+                device.CreateBuffer(
+                    &dynamic(size_of_val(&values), D3D11_BIND_CONSTANT_BUFFER),
+                    None,
+                    Some(&mut window),
+                )?;
+                device.CreateBuffer(
+                    &dynamic(corners * stride as usize, D3D11_BIND_VERTEX_BUFFER),
+                    None,
+                    Some(&mut vertices),
+                )?;
+                device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut index_buffer))?;
+                device.CreateSamplerState(&map_sampling, Some(&mut map_sampler))?;
+                device.CreateSamplerState(&sprite_sampling, Some(&mut sprite_sampler))?;
+                device.CreateInputLayout(&elements, &sprite_vs, Some(&mut layout))?;
+                device.CreateVertexShader(&sprite_vs, None, Some(&mut sprite))?;
+                device.CreateBlendState(&blend_desc, Some(&mut blend))?;
+                device.CreateDepthStencilState(&depth_desc, Some(&mut depth))?;
+                device.CreateRasterizerState(&raster_desc, Some(&mut raster))?;
+                let (window, vertices) = (window.as_ref().unwrap(), vertices.as_ref().unwrap());
+                // Writes `data` from corner `at` of the vertex buffer, mapped as `how`.
+                let write = |data: &[[f32; VERTEX_FLOATS]], how, at: usize| {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    context.Map(vertices, 0, how, 0, Some(&mut mapped)).unwrap();
+                    let start = mapped.pData.cast::<[f32; VERTEX_FLOATS]>().add(at);
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), start, data.len());
+                    context.Unmap(vertices, 0);
+                };
+                for frame in 1..=FRAMES {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    context.Map(window, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
+                    std::ptr::copy_nonoverlapping(
+                        values.as_ptr(),
+                        mapped.pData.cast(),
+                        values.len(),
+                    );
+                    context.Unmap(window, 0);
+                    context.CSSetConstantBuffers(0, Some(&[Some(window.clone())]));
+                    context.CSSetShaderResources(0, Some(&[map_view.clone()]));
+                    context.CSSetSamplers(0, Some(&[map_sampler.clone()]));
+                    context.CSSetShader(fractal.as_ref(), None);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&store), None);
+                    context.Dispatch(w / GROUP, h / GROUP, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&None), None);
+                    context.ClearRenderTargetView(
+                        back_view.as_ref().unwrap(),
+                        &[0.25, 0.25, 0.25, 1.0],
+                    );
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&back_view)), None);
+                    viewport(w, h);
+                    context.OMSetBlendState(blend.as_ref(), None, u32::MAX);
+                    context.OMSetDepthStencilState(depth.as_ref(), 0);
+                    context.RSSetState(raster.as_ref());
+                    context.PSSetSamplers(0, Some(&[sprite_sampler.clone()]));
+                    context.IASetInputLayout(layout.as_ref());
+                    context.VSSetShader(sprite.as_ref(), None);
+                    context.PSSetShader(sprite_ps.as_ref(), None);
+                    context.IASetVertexBuffers(
+                        0,
+                        1,
+                        Some(&Some(vertices.clone())),
+                        Some(&stride),
+                        Some(&0),
+                    );
+                    context.IASetIndexBuffer(index_buffer.as_ref(), DXGI_FORMAT_R16_UINT, 0);
+                    // The result drawn over the target, after the glyphs' corners, as the program
+                    // appends it; then the glyphs from the buffer's start.
+                    context.PSSetShaderResources(0, Some(&[target_view.clone()]));
+                    write(&quads(1, 2.0), D3D11_MAP_WRITE_NO_OVERWRITE, GLYPHS * 4);
+                    context.DrawIndexed(QUAD_INDICES, GLYPHS as u32 * QUAD_INDICES, 0);
+                    context.PSSetShaderResources(0, Some(&[glyph_view.clone()]));
+                    write(&quads(GLYPHS, 0.04), D3D11_MAP_WRITE_DISCARD, 0);
+                    context.DrawIndexed(GLYPHS as u32 * QUAD_INDICES, 0, 0);
+                    context.PSSetShaderResources(0, Some(&[None]));
+                    context.OMSetRenderTargets(None, None);
+                    context.Flush();
+                    if frame == 1 || frame == FRAMES {
+                        context.CopySubresourceRegion(
+                            &middle,
+                            0,
+                            0,
+                            0,
+                            0,
+                            &target,
+                            0,
+                            Some(&middle_box),
+                        );
+                        print(&format!("frame {frame} inside the set"), &middle, 16);
+                    }
+                }
+                context.RSSetState(None);
+                context.OMSetBlendState(None, None, u32::MAX);
+                context.OMSetDepthStencilState(None, 0);
+            }
         }
         // Programs loading from and storing into storage views of each format Microsoft's typed
         // storage loads page lists as a set, where the device claims such loads: a pattern stored,
@@ -4587,6 +4810,45 @@ fn main() -> windows::core::Result<()> {
     println!("GetDeviceRemovedReason {:#010x}", removed());
     Ok(())
 }
+
+/// atg-simplecomputepc's colour map.
+#[cfg(windows)]
+const COLOUR_MAP: [u32; 8] = [
+    0xFF000040, 0xFF000080, 0xFF0000C0, 0xFF0000FF, 0xFF0040FF, 0xFF0080FF, 0xFF00C0FF, 0xFF00FFFF,
+];
+
+/// atg-simplecomputepc's own compute program (Microsoft's ATG samples, MIT): a Mandelbrot set,
+/// each point coloured from an 8-texel map by its loop count over the iteration constant.
+#[cfg(windows)]
+const FRACTAL: &str = "RWTexture2D<float4> OutputTexture : register(u0);
+    Texture2D ColorMapTexture : register(t0);
+    SamplerState ColorMapSampler : register(s0);
+    cbuffer cb0 {
+        float4 g_MaxThreadIter : packoffset(c0);
+        float4 g_Window : packoffset(c1);
+    }
+    [numthreads(8, 8, 1)]
+    void main(uint3 DTid : SV_DispatchThreadID) {
+        float2 WindowLocal = ((float2)DTid.xy / g_MaxThreadIter.xy) * float2(1, -1)
+            + float2(-0.5f, 0.5f);
+        float2 coord = WindowLocal.xy * g_Window.xy + g_Window.zw;
+        uint maxiter = (uint)g_MaxThreadIter.z * 4;
+        uint iter = 0;
+        float2 constant = coord;
+        float2 sq;
+        do {
+            float2 newvalue;
+            sq = coord * coord;
+            newvalue.x = sq.x - sq.y;
+            newvalue.y = 2 * coord.y * coord.x;
+            coord = newvalue + constant;
+            iter++;
+        } while (iter < maxiter && (sq.x + sq.y) < 4.0);
+        float colorIndex = frac((float)iter / g_MaxThreadIter.z);
+        float4 SampledColor =
+            ColorMapTexture.SampleLevel(ColorMapSampler, float2(colorIndex, 0), 0);
+        OutputTexture[DTid.xy] = SampledColor;
+    }";
 
 /// Each 16-bit packed texel's channel codes, red first, as bytes: implementations round to a 5-
 /// or 6-bit channel differently within the specification's 0.6 of a step. A 1-bit alpha is 00 or
