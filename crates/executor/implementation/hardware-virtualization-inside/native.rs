@@ -477,11 +477,13 @@ impl NativeCpu {
             );
         }
         // SAFETY: trusted, not checked: the host wrote each routine at its place with a plain copy, and its code is
-        // trusted to keep the C calling convention's signature `Placed` names; `load_vectors` overwrites v8 to v15,
-        // which a call must keep, so it is sound only because this program uses no vector register (softfloat).
+        // trusted to keep the C calling convention's signature `Placed` names, and for everything it writes
+        // through its pointer argument, which no signature limits; `load_vectors` overwrites v8 to v15, which a
+        // call must keep: the Rust code here uses no vector register, since implementation.rs refuses to build
+        // this crate for a target with them (see the reason).
         #[expect(
             unsafe_code,
-            reason = "UNEXPLAINED: turns five addresses of the page the monitor placed its routines in, each checked only to be an instruction of the page, into function pointers that safe calls jump through into code the host wrote with a plain copy (routines.rs answer, marked UNEXPLAINED), trusted, not checked, to keep the C calling convention; load_vectors overwrites all 32 vector registers, v8 to v15 among them, which a call must keep, and is sound only because the inside is built softfloat and uses no vector register; stays a one-off"
+            reason = "UNEXPLAINED: turns five addresses of the page the monitor placed its routines in, each checked only to be an instruction of the page, into function pointers that safe calls jump through into code the host wrote with a plain copy (routines.rs answer, marked UNEXPLAINED), trusted, not checked, to keep the C calling convention; save_vectors and load_vectors are also trusted for everything they write through their pointer argument, which no signature limits: save_vectors may write past the Vectors it is given, or load_vectors write through a pointer meant for reading; load_vectors overwrites all 32 vector registers, v8 to v15 among them, which a call must keep, which holds because the Rust code of this crate and of every crate it uses is built with no vector register: implementation.rs refuses to compile for aarch64 with target_os none when target_feature neon is on (so only aarch64-unknown-none-softfloat builds); the vendored memcpy's general registers only and the floor's own assembly are not covered by that check; stays a one-off"
         )]
         let (
             read_float_control,
