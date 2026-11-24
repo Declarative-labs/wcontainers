@@ -310,6 +310,9 @@ struct wc_nearest_sampler {
 void wc_nir_nearest_integer_textures(struct nir_shader *nir,
                                      const struct wc_nearest_sampler *samplers, size_t count);
 
+/* The texture units a program samples integers at (not loads, gathers or queries), a bit each. */
+uint64_t wc_nir_integer_sampled_units(struct nir_shader *nir);
+
 /* One output a vertex program streams: the buffer, its byte offset in each vertex there, where the
  * route places the output (a generic location, or the position), and its components. */
 struct wc_stream_output {

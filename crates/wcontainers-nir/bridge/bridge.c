@@ -1428,6 +1428,30 @@ wc_nir_nearest_integer_textures(struct nir_shader *nir, const struct wc_nearest_
    nir_shader_instructions_pass(nir, nearest_integer_texture, nir_metadata_control_flow, &s);
 }
 
+uint64_t
+wc_nir_integer_sampled_units(struct nir_shader *nir)
+{
+   uint64_t units = 0;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
+            uint32_t first, count;
+            if (!sampling(tex) || tex->is_shadow || (base != nir_type_int && base != nir_type_uint) ||
+                !texture_units(tex, &first, &count))
+               continue;
+            const uint32_t end = MIN2(first + count, sizeof(units) * CHAR_BIT);
+            for (uint32_t unit = first; unit < end; unit++)
+               units |= BITFIELD64_BIT(unit);
+         }
+      }
+   }
+   return units;
+}
+
 void
 wc_nir_free(struct nir_shader *nir)
 {

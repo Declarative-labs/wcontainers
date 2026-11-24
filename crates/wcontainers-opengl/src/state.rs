@@ -369,6 +369,8 @@ pub struct Shader {
     /// The image units it declares images at without a format, a bit each, converted for the
     /// bound images' formats.
     pub formatless_images: u64,
+    /// The texture units it samples integers at, a bit each.
+    pub integer_sampled: u64,
     /// A geometry program writing `gl_Layer`: the location after its outputs, where its
     /// pass-through passes the layer it names to the fragment program.
     pub named_layer: Option<u32>,
@@ -1029,6 +1031,7 @@ fn create_shader(
     let writes_sample_mask = nir.writes_sample_mask();
     let fetches_target = nir.fetches_target();
     let formatless_images = nir.formatless_images();
+    let integer_sampled = nir.integer_sampled_units();
     let named_layer = nir.named_layer_location();
     object(Shader {
         stage,
@@ -1038,6 +1041,7 @@ fn create_shader(
         writes_sample_mask,
         fetches_target,
         formatless_images,
+        integer_sampled,
         named_layer,
     })
 }

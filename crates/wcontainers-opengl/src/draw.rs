@@ -18,7 +18,7 @@ use wcontainers_gpu::{
     helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
-use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
+use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle, Wrap};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
     DomainSets, FinalDraw, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
@@ -3973,19 +3973,43 @@ fn texture_layers<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// The samplers bound with a stage's integer textures, by unit.
+/// The sampler of an integer sampling at a unit whose texture does not hold integers, which OpenGL
+/// leaves undefined (the program reads a stand-in of its own kind there): the first level's nearest
+/// texel, clamped to the edge.
+const UNDEFINED_INTEGER_SAMPLER: NearestSampler = NearestSampler {
+    unit: 0,
+    wrap: [Wrap::ClampToEdge; naga::VectorSize::Tri as usize],
+    mipmapped: false,
+    min_lod: 0,
+    max_lod: 0,
+    border: [0; naga::VectorSize::MAX],
+};
+
+/// The samplers bound with a stage's integer textures, by unit, and the undefined one at the
+/// units where its program samples integers from a texture that holds none.
 fn nearest_samplers<B: Backend>(stage: &state::StageState<B>) -> Vec<NearestSampler> {
+    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+    let integer_sampled = unsafe { stage.shader.as_ref() }.map_or(0, |s| s.integer_sampled);
     stage
         .views
         .iter()
         .zip(&stage.samplers)
         .enumerate()
-        .filter(|(_, (v, s))| !v.is_null() && !s.is_null())
+        .filter(|(_, (v, _))| !v.is_null())
         .filter_map(|(unit, (&v, &s))| {
             // SAFETY: the slots hold a reference on a live view of this driver and a bound
-            // sampler, which lives until Mesa unbinds and deletes it.
-            let (view, sampler) = unsafe { (View::<B>::of(v), &*s) };
-            let nearest = sampler.nearest.filter(|_| view.integer)?;
+            // sampler or none, which lives until Mesa unbinds and deletes it.
+            let (view, sampler) = unsafe { (View::<B>::of(v), s.as_ref()) };
+            let nearest = if view.integer {
+                sampler?.nearest?
+            } else if integer_sampled
+                .checked_shr(unit as u32)
+                .is_some_and(|bits| bits & 1 != 0)
+            {
+                UNDEFINED_INTEGER_SAMPLER
+            } else {
+                return None;
+            };
             Some(NearestSampler {
                 unit: unit as u32,
                 ..nearest

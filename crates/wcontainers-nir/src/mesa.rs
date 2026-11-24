@@ -221,6 +221,7 @@ unsafe extern "C" {
         samplers: *const NearestSampler,
         count: usize,
     );
+    fn wc_nir_integer_sampled_units(nir: *mut NirShader) -> u64;
     fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
@@ -436,6 +437,13 @@ impl Nir {
     pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }
+    }
+
+    /// The texture units the program samples integers at (not loads, gathers or queries), a bit
+    /// each: an integer texture there is sampled by [`Self::nearest_integer_textures`].
+    pub fn integer_sampled_units(&mut self) -> u64 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_integer_sampled_units(self.0) }
     }
 
     /// A streamed point size (a built-in the common form keeps and the stage helper does not
