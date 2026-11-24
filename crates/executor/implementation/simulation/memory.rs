@@ -321,6 +321,7 @@ impl MemorySpace for SimulatedMemory {
         let before = snapshot!(**holder);
         // Changed: the other space's frames are made in one locked loop rather than one lock per page.
         let mut frames: Vec<Frame> = Vec::new();
+        let mut left = snapshot!(FMap::empty());
         {
             let mut other_pages = other.lock_held(ghost!(&mut **holder), snapshot!(Seq::empty()));
             // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
@@ -357,7 +358,22 @@ impl MemorySpace for SimulatedMemory {
                 frames.push(frame);
                 start += PAGE_SIZE;
             }
+            proof_assert!(written_since((*before).table(*other), *found, *before, Seq::empty()));
+            proof_assert!(forall<i: Int> 0 <= i && i < frames@.len() ==>
+                page_in((*before).table(*other), other_addresses.start@ + i * PAGE_SIZE@).frame == Some(frames@[i])
+                || page_in((*before).table(*other), other_addresses.start@ + i * PAGE_SIZE@).frame == None
+                    && new_to(*before, frames@[i]));
+            left = snapshot!(entries(*table));
+            proof_assert!(forall<key: Int> other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0 ==>
+                match page_in(*left, key).frame {
+                    None => false,
+                    Some(frame) => page_in((*before).table(*other), key).frame == Some(frame)
+                        || page_in((*before).table(*other), key).frame == None && new_to(*before, frame),
+                });
         }
+        let middle = snapshot!(**holder);
+        proof_assert!((*middle).table(*other) == *left);
+        proof_assert!(forall<space: SimulatedMemory> space != *other ==> (*middle).table(space) == (*before).table(space));
         let mut pages = self.lock_held(holder, snapshot!(Seq::empty()));
         // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
         let table = &mut *pages;
@@ -368,24 +384,49 @@ impl MemorySpace for SimulatedMemory {
             ==> key - addresses.start@ == (key - addresses.start@) / PAGE_SIZE@ * PAGE_SIZE@);
         let mut frames = frames.into_iter();
         let mut start = addresses.start;
-        #[invariant(addresses.start@ <= start@ && start@ <= addresses.end@ && start@ % PAGE_SIZE@ == 0)]
+        let mut index = snapshot!(0);
+        #[invariant(0 <= *index && start@ == addresses.start@ + *index * PAGE_SIZE@ && start@ <= addresses.end@)]
         #[invariant((*all).len() * PAGE_SIZE@ == addresses.end@ - addresses.start@)]
-        #[invariant(frames@.len() == (*all).len() - (start@ - addresses.start@) / PAGE_SIZE@)]
-        #[invariant(forall<j: Int> 0 <= j && j < frames@.len() ==> frames@[j] == (*all)[(start@ - addresses.start@) / PAGE_SIZE@ + j])]
-        #[invariant(forall<key: Int> page_in(entries(*table), key) == if addresses.start@ <= key && key < start@ && key % PAGE_SIZE@ == 0 {
-            Page { frame: Some((*all)[(key - addresses.start@) / PAGE_SIZE@]), mapped: true, permissions: page_in(*found, key).permissions }
-        } else {
-            page_in(*found, key)
-        })]
+        #[invariant(frames@.len() == (*all).len() - *index)]
+        #[invariant(forall<j: Int> 0 <= j && j < frames@.len() ==> frames@[j] == (*all)[*index + j])]
+        #[invariant(forall<i: Int> 0 <= i && i < *index ==> page_in(entries(*table), addresses.start@ + i * PAGE_SIZE@)
+            == Page { frame: Some((*all)[i]), mapped: true, permissions: page_in(*found, addresses.start@ + i * PAGE_SIZE@).permissions })]
+        #[invariant(forall<key: Int> key < addresses.start@ || start@ <= key || (key - addresses.start@) % PAGE_SIZE@ != 0
+            ==> page_in(entries(*table), key) == page_in(*found, key))]
         while start < addresses.end {
-            proof_assert!((start@ + PAGE_SIZE@ - addresses.start@) / PAGE_SIZE@ == (start@ - addresses.start@) / PAGE_SIZE@ + 1);
+            let rest = snapshot!(frames@);
             if let Some(frame) = frames.next() {
+                proof_assert!(frame == (*rest)[0] && forall<j: Int> 0 <= j && j < frames@.len() ==> frames@[j] == (*rest)[j + 1]);
                 let page = page_at(table, start);
                 page.frame = Some(frame);
                 page.mapped = true;
             }
             start += PAGE_SIZE;
+            index = snapshot!(*index + 1);
         }
+        proof_assert!(forall<key: Int> addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0
+            ==> page_in(entries(*table), key) == Page {
+                frame: Some((*all)[(key - addresses.start@) / PAGE_SIZE@]), mapped: true, permissions: page_in(*found, key).permissions
+            });
+        proof_assert!(forall<key: Int> !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0)
+            ==> page_in(entries(*table), key) == page_in(*found, key));
+
+        proof_assert!(other_addresses.start == other_start);
+        proof_assert!(forall<key: Int> addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0 ==>
+            page_in((*before).table(*other), key - addresses.start@ + other_start@).frame == Some((*all)[(key - addresses.start@) / PAGE_SIZE@])
+            || page_in((*before).table(*other), key - addresses.start@ + other_start@).frame == None
+                && new_to(*before, (*all)[(key - addresses.start@) / PAGE_SIZE@]));
+        proof_assert!(forall<key: Int> addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0 ==>
+            page_in(*left, key - addresses.start@ + other_start@).frame == Some((*all)[(key - addresses.start@) / PAGE_SIZE@]));
+        proof_assert!(*other == *self ==> forall<key: Int> addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0
+            && !(addresses.start@ <= key - addresses.start@ + other_start@ && key - addresses.start@ + other_start@ < addresses.end@)
+            ==> page_in(entries(*table), key - addresses.start@ + other_start@).frame == Some((*all)[(key - addresses.start@) / PAGE_SIZE@]));
+        proof_assert!(forall<key: Int> !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0) ==>
+            match page_in(entries(*table), key).frame {
+                None => true,
+                Some(frame) => page_in((*middle).table(*self), key).frame == Some(frame)
+                    || new_to(*middle, frame) && forall<other_key: Int> other_key != key ==> page_in(entries(*table), other_key).frame != Some(frame),
+            });
         proof_assert!(table_sound(entries(*table)));
         count_change();
         Ok(())
@@ -466,6 +507,7 @@ impl MemorySpace for SimulatedMemory {
         let mut made = snapshot!(Seq::<Frame>::empty());
         // Changed: loops over the page starts, for which Creusot needs no iterator contract.
         let mut copied: Vec<Option<Page>> = Vec::new();
+        let mut left = snapshot!(FMap::empty());
         {
             let other_pages = other.lock_held(ghost!(&mut **holder), snapshot!(Seq::empty()));
             let table = &*other_pages;
@@ -478,6 +520,14 @@ impl MemorySpace for SimulatedMemory {
             #[invariant(forall<i: Int> 0 <= i && i < copied@.len() ==> copied_as(page_in(*found, other_addresses.start@ + i * PAGE_SIZE@), copied@[i], *made))]
             #[invariant(forall<f: Frame> (*made).contains(f) ==> new_to(*before, f) && !shows(*found, f))]
             #[invariant(forall<i: Int, j: Int> 0 <= i && i < j && j < (*made).len() ==> (*made)[i] != (*made)[j])]
+            #[invariant(forall<i: Int, j: Int> 0 <= i && i < j && j < copied@.len() ==> match (copied@[i], copied@[j]) {
+                (Some(first), Some(second)) => !first.mapped && first.frame != None ==> first.frame != second.frame,
+                _ => true,
+            })]
+            #[invariant(forall<i: Int, f: Frame> 0 <= i && i < copied@.len() && (*made).contains(f) ==> match copied@[i] {
+                Some(copy) => copy.mapped ==> copy.frame != Some(f),
+                None => true,
+            })]
             while start < other_addresses.end {
                 let page = match page_of(table, start) {
                     Some(page) => {
@@ -493,7 +543,12 @@ impl MemorySpace for SimulatedMemory {
                 copied.push(page);
                 start += PAGE_SIZE;
             }
+            left = snapshot!(*found);
         }
+        let middle = snapshot!(**holder);
+        proof_assert!((*middle).table(*other) == *left);
+        proof_assert!(forall<f: Frame> (*made).contains(f) ==> new_to(*before, f) && !shows(*left, f));
+        proof_assert!(forall<space: SimulatedMemory> space != *other ==> (*middle).table(space) == (*before).table(space));
         let mut pages = self.lock_held(holder, made);
         // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
         let table = &mut *pages;
@@ -504,25 +559,31 @@ impl MemorySpace for SimulatedMemory {
             ==> key - addresses.start@ == (key - addresses.start@) / PAGE_SIZE@ * PAGE_SIZE@);
         let mut copied = copied.into_iter();
         let mut start = addresses.start;
-        #[invariant(addresses.start@ <= start@ && start@ <= addresses.end@ && start@ % PAGE_SIZE@ == 0)]
+        let mut index = snapshot!(0);
+        #[invariant(0 <= *index && start@ == addresses.start@ + *index * PAGE_SIZE@ && start@ <= addresses.end@)]
         #[invariant((*all).len() * PAGE_SIZE@ == addresses.end@ - addresses.start@)]
-        #[invariant(copied@.len() == (*all).len() - (start@ - addresses.start@) / PAGE_SIZE@)]
-        #[invariant(forall<j: Int> 0 <= j && j < copied@.len() ==> copied@[j] == (*all)[(start@ - addresses.start@) / PAGE_SIZE@ + j])]
-        #[invariant(forall<key: Int> page_in(entries(*table), key) == if addresses.start@ <= key && key < start@ && key % PAGE_SIZE@ == 0 {
-            match (*all)[(key - addresses.start@) / PAGE_SIZE@] { Some(page) => page, None => blank() }
-        } else {
-            page_in(*found, key)
-        })]
+        #[invariant(copied@.len() == (*all).len() - *index)]
+        #[invariant(forall<j: Int> 0 <= j && j < copied@.len() ==> copied@[j] == (*all)[*index + j])]
+        #[invariant(forall<i: Int> 0 <= i && i < *index ==> page_in(entries(*table), addresses.start@ + i * PAGE_SIZE@)
+            == match (*all)[i] { Some(page) => page, None => blank() })]
+        #[invariant(forall<key: Int> key < addresses.start@ || start@ <= key || (key - addresses.start@) % PAGE_SIZE@ != 0
+            ==> page_in(entries(*table), key) == page_in(*found, key))]
         while start < addresses.end {
-            proof_assert!((start@ + PAGE_SIZE@ - addresses.start@) / PAGE_SIZE@ == (start@ - addresses.start@) / PAGE_SIZE@ + 1);
+            let rest = snapshot!(copied@);
             if let Some(page) = copied.next() {
+                proof_assert!(page == (*rest)[0] && forall<j: Int> 0 <= j && j < copied@.len() ==> copied@[j] == (*rest)[j + 1]);
                 match page {
                     Some(page) => put(table, start, page),
                     None => clear(table, start),
                 }
             }
             start += PAGE_SIZE;
+            index = snapshot!(*index + 1);
         }
+        proof_assert!(forall<key: Int> addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0
+            ==> page_in(entries(*table), key) == match (*all)[(key - addresses.start@) / PAGE_SIZE@] { Some(page) => page, None => blank() });
+        proof_assert!(forall<key: Int> !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0)
+            ==> page_in(entries(*table), key) == page_in(*found, key));
         proof_assert!(table_sound(entries(*table)));
         count_change();
         Ok(())

@@ -1,6 +1,6 @@
 use core::ops::Range;
 
-use creusot_std::prelude::{DeepModel, Ghost, Int, ensures, invariant, logic, requires};
+use creusot_std::prelude::{DeepModel, Ghost, Int, ensures, extern_spec, invariant, logic, requires};
 use thiserror::Error;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -178,7 +178,8 @@ pub trait MemorySpace: Sized {
                     Some(frame) => Self::given(before, after, space, addresses, other,
                         page - addresses.start@ + other_start@, frame),
                 }
-            } else if which == other && other_start@ <= page && page < other_start@ + addresses.end@ - addresses.start@ {
+            } else if which == other && other_start@ <= page && page < other_start@ + addresses.end@ - addresses.start@
+                && page % PAGE_SIZE@ == 0 {
                 other.page(after, page).mapped == other.page(before, page).mapped
                 && other.page(after, page).permissions == other.page(before, page).permissions
                 && match other.page(before, page).frame {
@@ -319,6 +320,17 @@ pub trait MemorySpace: Sized {
         other_start: u64,
         holder: Ghost<&mut Self::Holder>,
     ) -> Result<(), CopyMemoryError>;
+}
+
+// Trusted: `VolatileBytes` has no contract yet, and Creusot gives a method without one a precondition no caller can
+// meet. This says `write` may be called with any bytes, and promises nothing of what it does.
+extern_spec! {
+    mod wcontainers_volatile_bytes {
+        trait VolatileBytes {
+            #[ensures(true)]
+            fn write(&self, bytes: &[u8]) -> usize;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error, DeepModel)]
