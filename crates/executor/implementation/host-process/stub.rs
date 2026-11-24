@@ -1,5 +1,6 @@
 //! A stub: one guest memory as a host process forked by the zygote, each of its threads driven through its pages.
 
+use core::mem::offset_of;
 use std::io::IoSlice;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +13,8 @@ use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
 use rustix::process::Pid;
 use rustix::thread::futex;
 use wcontainers_abi::RegisterBlock;
+#[cfg(target_arch = "aarch64")]
+use wcontainers_executor_arm64_stop::Interrupted;
 use zerocopy::IntoBytes;
 
 use crate::filter::stub_filter;
@@ -44,7 +47,12 @@ const MAX_ERRNO: u32 = 4095;
 
 /// The bytes of a register block that hold the vectors.
 const VECTORS: core::ops::Range<usize> =
-    core::mem::offset_of!(RegisterBlock, v)..core::mem::offset_of!(RegisterBlock, fpsr);
+    offset_of!(RegisterBlock, v)..offset_of!(RegisterBlock, fpsr);
+
+// FPSR and FPCR share one word of the register page, FPSR in its low half.
+const _: () =
+    assert!(offset_of!(RegisterBlock, fpcr) == offset_of!(RegisterBlock, fpsr) + size_of::<u32>());
+const _: () = assert!(offset_of!(RegisterBlock, fpsr).is_multiple_of(size_of::<u64>()));
 
 /// One stub, owned by the executor; the zygote that forked it reaps it, and its owner makes the window cache forget
 /// its memory before dropping it.
@@ -348,21 +356,51 @@ impl Stub {
         self.write_registers(thread, block.as_bytes());
     }
 
-    /// A thread's register block as the stub left it but for the vectors, which read as zeros (untrusted).
-    pub fn registers_but_vectors(&self, thread: usize) -> RegisterBlock {
-        let mut block = RegisterBlock::ZERO;
-        let bytes = block.as_mut_bytes();
-        let (before, after) = bytes.split_at_mut(VECTORS.start);
-        self.read_registers(thread, before);
-        self.read_registers_from(thread, VECTORS.end, &mut after[VECTORS.len()..]);
-        block
+    /// A thread's registers but for its vectors, and its thread pointer, as the stub left them (untrusted); read word
+    /// by word, with no register block built.
+    #[cfg(target_arch = "aarch64")]
+    pub fn scalars(&self, thread: usize) -> (Interrupted, u64) {
+        let word = |at: usize| {
+            self.pages
+                .register64(thread, register::REGISTERS + at)
+                .load(Ordering::Relaxed)
+        };
+        let float = word(offset_of!(RegisterBlock, fpsr));
+        let registers = Interrupted {
+            x: std::array::from_fn(|index| {
+                word(offset_of!(RegisterBlock, x) + index * size_of::<u64>())
+            }),
+            sp: word(offset_of!(RegisterBlock, sp)),
+            pc: word(offset_of!(RegisterBlock, pc)),
+            state: word(offset_of!(RegisterBlock, pstate)),
+            fpsr: float as u32,
+            fpcr: (float >> u32::BITS) as u32,
+        };
+        (registers, word(offset_of!(RegisterBlock, tpidr_el0)))
     }
 
-    /// Replaces a thread's register block but for its vectors.
-    pub fn set_registers_but_vectors(&self, thread: usize, block: &RegisterBlock) {
-        let bytes = block.as_bytes();
-        self.write_registers(thread, &bytes[..VECTORS.start]);
-        self.write_registers_from(thread, VECTORS.end, &bytes[VECTORS.end..]);
+    /// Replaces a thread's registers but for its vectors, and its thread pointer, word by word.
+    #[cfg(target_arch = "aarch64")]
+    pub fn set_scalars(&self, thread: usize, registers: &Interrupted, tpidr: u64) {
+        let set = |at: usize, value: u64| {
+            self.pages
+                .register64(thread, register::REGISTERS + at)
+                .store(value, Ordering::Relaxed);
+        };
+        for (index, &value) in registers.x.iter().enumerate() {
+            set(
+                offset_of!(RegisterBlock, x) + index * size_of::<u64>(),
+                value,
+            );
+        }
+        set(offset_of!(RegisterBlock, sp), registers.sp);
+        set(offset_of!(RegisterBlock, pc), registers.pc);
+        set(offset_of!(RegisterBlock, pstate), registers.state);
+        set(
+            offset_of!(RegisterBlock, fpsr),
+            u64::from(registers.fpsr) | u64::from(registers.fpcr) << u32::BITS,
+        );
+        set(offset_of!(RegisterBlock, tpidr_el0), tpidr);
     }
 
     /// A thread's vectors as the stub left them (untrusted).

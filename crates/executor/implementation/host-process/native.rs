@@ -1107,21 +1107,23 @@ impl HostProcessExecutor {
                 (hardware, page)
             });
             let ended = loop {
-                let block = RegisterBlock {
-                    x: hardware.x[..31].try_into().expect("x0 to x30"),
-                    sp: hardware.sp,
-                    pc: hardware.pc,
-                    pstate: hardware.state,
-                    v: t.vectors,
-                    fpsr: hardware.fpsr,
-                    fpcr: hardware.fpcr,
-                    tpidr_el0: t.tpidr,
-                };
                 let stub = &self.memory(memory).stub;
                 if t.vectors_held {
-                    stub.set_registers_but_vectors(index, &block);
+                    stub.set_scalars(index, &hardware, t.tpidr);
                 } else {
-                    stub.set_registers(index, &block);
+                    stub.set_registers(
+                        index,
+                        &RegisterBlock {
+                            x: hardware.x,
+                            sp: hardware.sp,
+                            pc: hardware.pc,
+                            pstate: hardware.state,
+                            v: t.vectors,
+                            fpsr: hardware.fpsr,
+                            fpcr: hardware.fpcr,
+                            tpidr_el0: t.tpidr,
+                        },
+                    );
                     t.vectors_held = true;
                 }
                 stub.set_translated_page(index, &page);
@@ -1130,21 +1132,11 @@ impl HostProcessExecutor {
                     Err(_) => break Ended::Killed,
                 };
                 let stub = &self.memory(memory).stub;
-                let block = stub.registers_but_vectors(index);
+                let (mut h, tpidr) = stub.scalars(index);
                 let held = stub.translated_page(index);
-                let mut h = Interrupted {
-                    x: block.x[..GENERAL]
-                        .try_into()
-                        .expect("the general registers"),
-                    sp: block.sp,
-                    pc: block.pc,
-                    state: block.pstate,
-                    fpsr: block.fpsr,
-                    fpcr: block.fpcr,
-                };
                 let taken = match end {
                     TurnEnd::Called { entry } => {
-                        h.pc = block.pc.wrapping_sub(INSTRUCTION);
+                        h.pc = h.pc.wrapping_sub(INSTRUCTION);
                         Taken::Call(entry as u16)
                     }
                     TurnEnd::Fault {
@@ -1157,7 +1149,7 @@ impl HostProcessExecutor {
                     }
                     TurnEnd::Interrupted { at } => {
                         h.pc = at;
-                        t.tpidr = block.tpidr_el0;
+                        t.tpidr = tpidr;
                         let state = self.resolve_interrupt(memory, &h, &held, &mut t.float);
                         match state {
                             Some(state) => {
@@ -1182,7 +1174,7 @@ impl HostProcessExecutor {
                     TurnEnd::Stopped { .. } => break Ended::TurnOver,
                     _ => break self.not_understood(memory, h.pc),
                 };
-                t.tpidr = block.tpidr_el0;
+                t.tpidr = tpidr;
                 let resolved = {
                     let code = self.codes[memory.0 as usize]
                         .as_ref()
