@@ -1138,13 +1138,15 @@ Met, each with its run (register isolation now with its from-outside part, round
 random, not every order): the zygote's migration and no restartable sequences left (run 1); the stop landing at every
 instruction of the stub's windows and handler (runs 8, 9); the control and register pages' escapes and the filter's
 kills (runs 2, 3, 7); a stub killed from outside and the embedder killed (run 4); threads made and ended under
-random stops (run 3); 10,000 maps of one block holding no fd (run 4); 64 memories of 2^43 bytes through the window
-cache (run 2); register isolation on stub pieces and on translated threads (runs 7 and round 3 run 2); the SVE probe
+random stops (run 3); 10,000 maps of one block holding no fd (run 4); 64 memories of 2^43 bytes (run 2, through the window cache; since
+round 8 run 1 read and written by position, adding no mapping); register isolation on stub pieces and on translated threads (runs 7 and round 3 run 2); the SVE probe
 (run 1); Docker's default profile (runs 5, 9, 10 and round 3 run 3); form I's bounds-check bypass as a host program
 (run 6); every slow path counted and warned.
 
 ## Next
 
+- The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
+  primitive); when they land, each use here becomes a call of one.
 - W1 is not complete (gap list). In order: busybox `sh`'s bar, the round trip's margin, the adversarial fork with a
   writing sibling, `Execution::restored`; x86-64 and form I are W3's and W2's.
 - busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
