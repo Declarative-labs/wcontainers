@@ -1087,6 +1087,35 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     build failed for some minutes on the unicorn executor's edit in progress (driver.rs, not ours), so the last A/B
     ran the binaries already built.
 
+- W1 round 8 run 2 (2026-11-24, 10:10 UTC on), scratch w1/r8run2, every run with /dev/kvm denied:
+  - Conforming: nothing new in the executor, memory space or volatile bytes interfaces since round 4; form I does not
+    exist yet. No unsafe code added or touched (18 in the library, as round 8 run 1 left them).
+  - Verdict at the start, shared tree at ac39cbbd (verdict1-arm.out, Graviton4, load 15 to 23): every binary passes but
+    the known precise-set test (20 of 21 in conformance); clippy with warnings denied clean.
+  - Where busybox `sh` goes now (perf1-arm.out, CPU 41, load 24 to 26): `load_piece` 25.9% of the samples with its
+    callees; of that, a kept translation moved to another page was cloned whole and moved (`Translation::moved` 2.8%,
+    the spans' clone 1.4%) and then dropped with its memory (2.7%), at every exec, since the kernel places busybox at
+    a random base each time. The kernel's own exec reads the whole program file at each exec (`loader::program_of`,
+    `Regular::read` through `shared_read`, 7 to 8%: the kernel track's, and the same copy under the WebAssembly
+    output).
+  - Built: a piece loaded at another page than its kept translation's now writes only the moved bytes (the kept
+    translation's bytes with its address places written for the new address, `moved_bytes`, the same words
+    `Translation::moved` writes); the loaded piece keeps the kept translation and how far it moved, and the whole
+    moved translation is made only when a stop resolves a position in it (`Loaded::code`, a `OnceCell`). Exits and
+    table targets are moved as they are linked. The unit test of moving now also checks, at every case that moves,
+    that `moved_bytes` equals the moved translation's bytes (2,000 cases, seed 1, 829 moved with 3,966 address
+    places). Measured (moved1-arm.out, busybox `sh` starting 1,000 programs, release, alternating 4 rounds, load 18
+    to 30): before 4.67 to 4.97 s, after 4.32 to 4.89 s (means 4.74 and 4.49).
+  - Built: one load and the pieces it loads ahead read each guest page once (a map of the pages read, local to the
+    load), instead of one `pread` of the rest of the page per piece. Measured (pages1-arm.out, ab-file.sh, the same
+    test, 4 rounds, load 21 to 35): before 4.46 to 4.98 s, after 4.33 to 4.82 s, lower in every round (means 4.73 and
+    4.58). Profile after both (perf2-arm.out): `load_piece` 19.7%, `memory_drop` 4.1% (6.9% before).
+  - busybox `sh` against the model in this run's "after" figures: 3.78 to 4.44 times (bar 1.25).
+  - Verdicts after both changes (moved1-arm.out, pages1-arm.out): Graviton4 the unit tests, run, kernel, translated,
+    differential (65,124 runs, none failing), forged, step, floor, busybox, interrupt, copy and memory pass,
+    conformance 20 of 21 (the known precise-set test); clippy with warnings denied clean. The Xeon from the same tree
+    (verdict1-x86.out, load 3 to 19): its 54 tests of 13 binaries pass (the translated-code binaries build none there).
+
 ## W1 not complete: the gap list
 
 W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
@@ -1097,7 +1126,8 @@ known:
   load 9 to 30), and the independent check measured 1.238, 1.276 and 1.249 at load 9: at the margin, not met; about five sixths of a round trip is the host's task switch (round 5 run 2's profile). Not met: busybox `sh` starting 1,000
   programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
   1): 4.36 times the model (bar 1.25; 9.25 before), 4.29 to 5.01 since round 8 run 1 read guest memory by position
-  instead of through mapped windows (Departures); per program about 1.45 ms of memory calls (about 0.6 ms of it the
+  instead of through mapped windows (Departures), 3.78 to 4.44 since round 8 run 2 loaded moved pieces by their bytes
+  alone and read each page once a load; per program about 1.45 ms of memory calls (about 0.6 ms of it the
   model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
   workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
   page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
@@ -1149,8 +1179,10 @@ round 8 run 1 read and written by position, adding no mapping); register isolati
   primitive); when they land, each use here becomes a call of one.
 - W1 is not complete (gap list). In order: busybox `sh`'s bar, the round trip's margin, the adversarial fork with a
   writing sibling, `Execution::restored`; x86-64 and form I are W3's and W2's.
-- busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
-  the key's hash, comparing the code, cloning and moving a moved translation, placing, the slot) and the memory calls
+- busybox `sh`'s bar (3.78 to 4.44 times the model, round 8 run 2): the loads (440 a program; left after round 8 run 2:
+  the key's hash, comparing the rest of the page with the kept code, writing the moved address places, placing, the
+  slot; perf2-arm.out) and the kernel's read of the whole program file at each exec (7 to 8%, the kernel track's
+  `loader::program_of`), and the memory calls
   (new, fork and drop beyond the model's process creation, about 0.9 ms a program), then the turns that are left (59 a
   program, of which 26 system calls and 21 faults). Sharing code areas between memories is decision 16's question
   (the owner's). A fork child copying its parent's code was measured slower (round 5 run 1). Scratch
@@ -1176,6 +1208,10 @@ round 8 run 1 read and written by position, adding no mapping); register isolati
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 8 run 2: scratch w1/r8run2. check.sh is round 6's; perf-bb.sh profiles CPU 41 during busybox `sh` and
+  keeps the speed test it built as speed-before; ab-file.sh (`FILE=<path> BEFORE=<base64 of its committed text>`, then
+  `set -- <rounds>`) builds the speed test with that one file as committed, then as sent, and alternates busybox `sh`.
 
 - Since round 8 run 1: scratch w1/r8run1. check.sh is round 6's (`set -- <binary>[:<filter>] ...`); before.sh builds
   the speed test of the tree sent (send the scratch tree `before`, a git repository of commit 5c049141, under `--name
