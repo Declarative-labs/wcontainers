@@ -5114,6 +5114,7 @@ dependencies = [
 name = "wcontainers-executor-host-process"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "fastrand",
  "iced-x86",
  "libc",
@@ -5124,11 +5125,18 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-clock",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-executor",
  "wcontainers-executor-arm64-stop",
+ "wcontainers-executor-conformance",
  "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-kernel-linux",
+ "wcontainers-precise-instruction-set-translator",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
