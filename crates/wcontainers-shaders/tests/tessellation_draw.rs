@@ -23,6 +23,9 @@ use windows::core::s;
 /// Patches per draw; the constant buffer holds 32.
 const PATCHES: usize = 8;
 
+/// Rows of the hull shaders' constant buffer (`float4 factors[64]`), two a patch.
+const HULL_FACTOR_ROWS: usize = 64;
+
 /// One streamed vertex: the domain location's three components (f32 bits) and the primitive number.
 type Vertex = [u32; 4];
 
@@ -61,7 +64,7 @@ fn factors(rng: &mut fastrand::Rng) -> Vec<[f32; 8]> {
 
 /// The hull shaders' constant buffer (`factors[64]`, four floats each) holding each patch's factors.
 fn factor_constants(factors: &[[f32; 8]]) -> Vec<u8> {
-    let mut constants = vec![0u8; 1024];
+    let mut constants = vec![0u8; HULL_FACTOR_ROWS * size_of::<[f32; 4]>()];
     for (p, f) in factors.iter().enumerate() {
         for (i, v) in f.iter().enumerate() {
             constants[p * 32 + i * 4..][..4].copy_from_slice(&v.to_le_bytes());
