@@ -435,6 +435,10 @@ against this table, the NotSupported groups case by case (the 33 that turned Not
 KHR-GLES32's 496 are read above), and the RTX 3080's own OpenGL (`-Driver system`) on the
 failing groups. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) follows that check.
 
+The suite of both crates at a894ff00 (x86-64 machine, load 29 to 46): fmt clean; clippy with
+warnings denied clean with and without Mesa; with Mesa the nir crate's route 20, glsl_reference 10
+and 2 ignored, glsl_buffers 2 and narrow 1 pass; wcontainers-opengl has no tests of its own (0).
+
 The suite of both crates at 7e686f27 (x86-64 machine, load 21 to 25): fmt clean; clippy with
 warnings denied clean with and without Mesa; with Mesa 30 tests pass and 2 are ignored (route 17,
 glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none build that need it.
@@ -486,7 +490,9 @@ layers, `tessellation_geometry_interaction...geometry_scatter_layers`) and KHR
 .viewclass_96_bits` 32 crashes: cause read (st/mesa holds `GL_RGB32F` in four channels, the
 integer formats in three), owner the WebGPU back end track (the render use of the three-channel
 formats, asked). New: dEQP-GLES31 `builtin_functions.common.sign.float_*_tess_control` 3 Fail,
-not yet read (this track).
+read in part (this track): `sign(1.0)` in a control program writes `0x00000001`, an integer one's
+bits where the float's are expected (`sign` passes in every other stage); not yet traced past
+that.
 
 Run 26's changes to the rows below (the groups run 25 left not yet read, read from run 25's kept
 `.qpa` files, copied to scratch `results/g9r25/qpa`):
