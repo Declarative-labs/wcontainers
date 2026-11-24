@@ -637,6 +637,109 @@ pub fn counts_and_swaps_without_losing_a_value_across_threads<M: SharedMemory + 
     check_counted_and_swapped(&memory, swapped_out, (THREADS * increments) as u64);
 }
 
+/// Checks that compare-and-exchange and swap stay one atomic access while another thread stores single bytes into the
+/// very words they change, as a hostile guest may: threads that count in the 4-byte word's first three bytes lose no
+/// count, and the tokens swapped through the 8-byte word's first seven bytes each come out once.
+pub fn counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words<
+    M: SharedMemory + Sync,
+>(
+    memory: M,
+) {
+    /// The threads that count and swap at once, beside the one that writes bytes.
+    const THREADS: usize = 4;
+    /// The byte of each word that only the byte writer writes.
+    const COUNTED_BYTE: u64 = COUNTED + HALF as u64 - 1;
+    const SWAPPED_BYTE: u64 = SWAPPED + WORD as u64 - 1;
+    bytes(&memory);
+    let rounds = ROUNDS;
+    assert_eq!(memory.store(COUNTED, u32::MIN), Ok(()));
+    assert_eq!(memory.store(SWAPPED, u64::MIN), Ok(()));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let start = std::sync::Barrier::new(THREADS + 1);
+    let (swapped_out, bytes_written) = thread::scope(|scope| {
+        let (memory, start, done) = (&memory, &start, &done);
+        let writer = scope.spawn(move || {
+            start.wait();
+            let mut written = 0_u64;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let byte = [(written % 255 + 1) as u8];
+                memory.write(COUNTED_BYTE, &byte).expect("the byte lies inside the memory");
+                memory.write(SWAPPED_BYTE, &byte).expect("the byte lies inside the memory");
+                written += 2;
+            }
+            written
+        });
+        let counters: Vec<_> = (0..THREADS)
+            .map(|thread| {
+                scope.spawn(move || {
+                    start.wait();
+                    let first = (thread * rounds) as u64;
+                    let out: Vec<u64> = (1..=rounds as u64)
+                        .map(|round| {
+                            let token = u64::from_ne_bytes(seven_bytes(first + round));
+                            let held = memory.swap(SWAPPED, token).expect("the word lies inside the memory");
+                            u64::from_le_bytes(seven_bytes_of(held.to_ne_bytes()))
+                        })
+                        .collect();
+                    (0..rounds).for_each(|_| increment_first_three_bytes(memory, COUNTED));
+                    out
+                })
+            })
+            .collect();
+        let swapped_out: Vec<u64> = counters
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("the thread finishes"))
+            .collect();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        (swapped_out, writer.join().expect("the writer finishes"))
+    });
+    assert!(bytes_written > 0, "the writer wrote no byte");
+    let counted = memory.load::<u32>(COUNTED).expect("inside").to_ne_bytes();
+    assert_eq!(
+        u32::from_le_bytes([counted[0], counted[1], counted[2], 0]),
+        (THREADS * rounds) as u32,
+        "a count was lost while {bytes_written} bytes were written into the word"
+    );
+    let mut seen = swapped_out;
+    let left = memory.load::<u64>(SWAPPED).expect("inside").to_ne_bytes();
+    seen.push(u64::from_le_bytes(seven_bytes_of(left)));
+    seen.sort_unstable();
+    assert_eq!(
+        seen,
+        (0..=(THREADS * rounds) as u64).collect::<Vec<u64>>(),
+        "a token was lost or doubled while {bytes_written} bytes were written into the word"
+    );
+}
+
+/// Returns the token's first seven bytes, least significant first, and a zero last byte.
+fn seven_bytes(token: u64) -> [u8; WORD] {
+    seven_bytes_of(token.to_le_bytes())
+}
+
+/// Returns the bytes with the last one zeroed.
+fn seven_bytes_of(mut word: [u8; WORD]) -> [u8; WORD] {
+    word[WORD - 1] = 0;
+    word
+}
+
+/// Adds one to the count in the 4-byte word's first three bytes, least significant first, with a compare-and-exchange
+/// that keeps whatever the fourth byte holds.
+fn increment_first_three_bytes<M: SharedMemory>(memory: &M, at: u64) {
+    let mut seen: u32 = memory.load(at).expect("the word lies inside the memory");
+    loop {
+        let mut next = seen.to_ne_bytes();
+        let count = u32::from_le_bytes([next[0], next[1], next[2], 0]).wrapping_add(1);
+        next[..HALF - 1].copy_from_slice(&count.to_le_bytes()[..HALF - 1]);
+        let held = memory
+            .compare_exchange(at, seen, u32::from_ne_bytes(next))
+            .expect("the word lies inside the memory");
+        if held == seen {
+            return;
+        }
+        seen = held;
+    }
+}
+
 /// Swaps the tokens from `first + 1` to `first + rounds` in turn into the 8-byte word at `SWAPPED`, then adds one to the
 /// 4-byte word at `COUNTED` `rounds` times; returns the values swapped out.
 pub fn count_and_swap<M: SharedMemory>(memory: &M, first: u64, rounds: usize) -> Vec<u64> {
@@ -793,6 +896,17 @@ macro_rules! tests {
         )]
         fn counts_and_swaps_without_losing_a_value_across_threads() {
             $crate::counts_and_swaps_without_losing_a_value_across_threads($memory);
+        }
+
+        #[test]
+        #[cfg_attr(
+            miri,
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
+        )]
+        fn counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words() {
+            $crate::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words(
+                $memory,
+            );
         }
 
         #[cfg(target_os = "linux")]

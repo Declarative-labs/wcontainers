@@ -45,8 +45,9 @@ rustix = { version = "1.1.6", features = ["param"] }
 memmap2 = "0.9.12"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# Memory files, their seals and second descriptors, which the host's tests change under a mapping.
-rustix = { version = "1.1.6", features = ["fs", "param"] }
+# Memory files, their seals and second descriptors, which the host's tests change under a mapping; and the signal that
+# ends the process test's other process when the test that started it ends.
+rustix = { version = "1.1.6", features = ["fs", "param", "process"] }
 
 [[test]]
 name = "host"

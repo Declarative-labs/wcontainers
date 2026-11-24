@@ -1,8 +1,8 @@
 //! Memory outside every Rust allocation, reached only by the C library's `memcpy`, volatile loads and stores, and
 //! atomic read-modify-writes of one word, and never through a slice.
 //!
-//! The design rests on one sentence of the standard library's documentation of `core::ptr::read_volatile` (1.100.0,
-//! library/core/src/ptr/mod.rs:2078): "Volatile operations, however, may also be used to access memory that is
+//! The design rests on one sentence of the standard library's documentation of `core::ptr::read_volatile` (1.99.0,
+//! library/core/src/ptr/mod.rs:2024): "Volatile operations, however, may also be used to access memory that is
 //! _outside_ of any Rust allocation." Whether a program may treat memory it mapped itself as outside every allocation is
 //! not settled yet (https://github.com/rust-lang/unsafe-code-guidelines/issues/607,
 //! https://github.com/rust-lang/unsafe-code-guidelines/issues/543). The copies are the C library's, whose promises are
@@ -99,8 +99,11 @@ impl Region {
             reason = "an atomic swap of a word of the region, borrowed for this call"
         )]
         // SAFETY: the word lies inside the region and is aligned to 8 (checked by `word`), and stays mapped while the
-        // borrow lasts, this one expression. ASSUMED, not checked: every other access to the word while it lasts is an
-        // atomic access of 8 bytes, as the protocols on such words require of the other party (REVIEW.md).
+        // borrow lasts, this one expression. ASSUMED, not checked, and not what `from_ptr` asks: it asks for a pointer
+        // valid for reads and writes, which means inside a Rust allocation, while every other method here relies on the
+        // region lying outside every allocation (REVIEW.md §5). ASSUMED, not checked: every other access to the word
+        // while it lasts is an atomic access of 8 bytes; a hostile guest's smaller stores, and this program's own `read`,
+        // `write`, `load` or `store` of the word from another thread, break that and are a data race by Rust's rules.
         Ok(unsafe { AtomicU64::from_ptr(word) }.swap(value, Ordering::AcqRel))
     }
 

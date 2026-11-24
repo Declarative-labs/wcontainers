@@ -91,7 +91,8 @@ impl HostMapping {
         // mapping's own. The start is aligned (asserted above). Whatever else reaches the bytes (another mapping of the
         // file, another process, a guest, or the kernel through the file) does so on the hardware's terms, not Rust's.
         // NOT KEPT: under strict overcommit (`vm.overcommit_memory=2`) a page of a file faulted in can fail to be charged,
-        // and the access ends the process with SIGBUS (MEASURED, REVIEW.md); a crash, not a write anywhere else.
+        // and the access ends the process with SIGBUS (MEASURED, checks/overcommit.log); a crash, not a write anywhere
+        // else.
         let region = unsafe { Region::new(base, map.len()) };
         HostMapping { region, map }
     }

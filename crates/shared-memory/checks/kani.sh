@@ -16,6 +16,7 @@ one() { # target dir, module::harness
 stream() { # module
   for h in $harnesses; do one /work/target/gmc-kani-$1 $1::$h; done > $out/stream-$1.log
 }
+echo "code $(bash crates/shared-memory/checks/tree.sh)"
 echo "kani $(cargo kani --version 2>&1 | tail -1), load $(cut -d' ' -f1-3 /proc/loadavg)"
 s=$(date +%s)
 for m in one_word two_words three_words four_words; do stream $m & done; wait

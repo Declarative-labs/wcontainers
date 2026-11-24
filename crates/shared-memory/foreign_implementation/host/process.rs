@@ -1,13 +1,15 @@
 //! Copies and word methods while another process, which maps the same memory file, writes the same bytes, or the bytes
 //! beside them, or counts and swaps on the same words. The other process is this test binary run again, with only
-//! `the_other_process` selected, the path of the file in `PATH`, and what it does in `TASK`.
+//! `the_other_process` selected, the path of the file in `PATH`, what it does in `TASK` and its parent in `PARENT`.
 #![cfg(all(target_os = "linux", not(miri)))]
 
+use std::io::{BufRead, BufReader};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, ftruncate, memfd_create};
+use rustix::process::{Pid, Signal, getppid, kill_process, set_parent_process_death_signal};
 use wcontainers_shared_memory::{HostMapping, SharedMemory};
 use wcontainers_shared_memory_conformance::{
     CACHE_LINE, background, check_counted_and_swapped, count_and_swap, read_values_each_byte_held,
@@ -19,6 +21,9 @@ const PATH: &str = "SHARED_MEMORY_PATH";
 
 /// The variable that tells the other process which of the tasks below to do.
 const TASK: &str = "SHARED_MEMORY_TASK";
+
+/// The variable that names the process that started the other process.
+const PARENT: &str = "SHARED_MEMORY_PARENT";
 
 /// The bytes the writer of mixed sizes changes: two cache lines and a word.
 const CHANGED: usize = 2 * CACHE_LINE + size_of::<u64>();
@@ -44,12 +49,34 @@ const TOKENS: usize = COUNTS * size_of::<u64>();
 /// The longest the parent waits for the other process to start.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// In the other process only: does the task named, until told to stop.
+/// In the other process only: does the task named, until told to stop, or until the test thread that started it ends.
 #[test]
 fn the_other_process() {
-    let (Ok(path), Ok(task)) = (std::env::var(PATH), std::env::var(TASK)) else {
+    let Ok(task) = std::env::var(TASK) else {
         return;
     };
+    // The kernel sends the signal when the thread that started this process ends, so a test that fails or crashes
+    // before `stop` leaves no writer behind holding its output open.
+    set_parent_process_death_signal(Some(Signal::KILL)).expect("the parent-death signal is set");
+    let parent = std::env::var(PARENT).expect("the parent is named");
+    assert_eq!(
+        Pid::as_raw(getppid()).to_string(),
+        parent,
+        "the parent ended before the parent-death signal was set"
+    );
+    if task == "parent" {
+        let (file, memory) = shared();
+        #[expect(
+            clippy::zombie_processes,
+            reason = "this process is killed while it parks, so that the test sees whether the writer outlives it"
+        )]
+        let writer = start(&file, &memory, "mixed");
+        println!("writer {}", writer.id());
+        loop {
+            std::thread::park();
+        }
+    }
+    let path = std::env::var(PATH).expect("the memory file is named");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -91,6 +118,7 @@ fn start(file: &OwnedFd, memory: &HostMapping, task: &str) -> Child {
         .args(["--exact", "the_other_process", "--nocapture", "--test-threads=1"])
         .env(PATH, format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd()))
         .env(TASK, task)
+        .env(PARENT, std::process::id().to_string())
         .spawn()
         .expect("the other process starts");
     let deadline = Instant::now() + PATIENCE;
@@ -106,6 +134,50 @@ fn stop(memory: &HostMapping, mut child: Child) {
     memory.store(STOP, 1_u64).expect("inside");
     let status = child.wait().expect("the other process ends");
     assert!(status.success(), "the other process failed: {status}");
+}
+
+/// Returns whether the process has ended: it is gone, or only its exit status is left.
+fn has_ended(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .is_none_or(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
+        })
+}
+
+#[test]
+fn the_other_process_ends_when_the_process_that_started_it_is_killed() {
+    let mut parent = Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", "the_other_process", "--nocapture", "--test-threads=1"])
+        .env(TASK, "parent")
+        .env(PARENT, std::process::id().to_string())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("the parent process starts");
+    let output = parent.stdout.take().expect("the parent's output is piped");
+    let (named, writer) = std::sync::mpsc::channel();
+    // The test harness prints the test's name on the line where the parent's own output starts.
+    std::thread::spawn(move || {
+        let writer = BufReader::new(output)
+            .lines()
+            .map_while(Result::ok)
+            .find_map(|line| line.split_once("writer ")?.1.trim().parse::<u32>().ok());
+        named.send(writer).ok();
+    });
+    let writer = writer.recv_timeout(PATIENCE).ok().flatten();
+    parent.kill().expect("the parent is killed");
+    let writer = writer.expect("the parent names the writer it started");
+    parent.wait().expect("the parent ends");
+    let deadline = Instant::now() + PATIENCE;
+    while !has_ended(writer) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ended = has_ended(writer);
+    if !ended && let Some(pid) = i32::try_from(writer).ok().and_then(Pid::from_raw) {
+        kill_process(pid, Signal::KILL).ok();
+    }
+    assert!(ended, "the writer {writer} outlived the process that started it");
 }
 
 #[test]

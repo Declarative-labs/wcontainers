@@ -74,10 +74,13 @@ pub trait SharedMemory {
 
     fn store<W: Word>(&self, at: u64, value: W) -> Result<(), WordError>;
 
-    /// Stores the value in the 8-byte word and returns the value the word held before.
+    /// Stores the value in the 8-byte word and returns the value the word held before; while it runs, any other access
+    /// to the word but a swap, including this program's own `read`, `write`, `load` or `store` from another thread, is
+    /// a data race by Rust's rules (REVIEW.md §5).
     fn swap(&self, at: u64, value: u64) -> Result<u64, WordError>;
 
-    /// Stores `new` in the 4-byte word if it holds `current`, and returns the value the word held before.
+    /// Stores `new` in the 4-byte word if it holds `current`, and returns the value the word held before; while it runs,
+    /// any other access to the word but a compare-and-exchange is a data race by Rust's rules, as for `swap`.
     fn compare_exchange(&self, at: u64, current: u32, new: u32) -> Result<u32, WordError>;
 
     /// Waits, until woken or the timeout passes, while the 4-byte word at the offset holds `expected`.

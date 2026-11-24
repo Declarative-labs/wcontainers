@@ -7,6 +7,7 @@ home=${MIRI_HOME:-/work/eup}
 load() { echo "load $(cut -d' ' -f1-3 /proc/loadavg)"; }
 miri() { ( export RUSTUP_HOME=$home/rustup CARGO_HOME=$home/cargo PATH=$home/cargo/bin:$PATH CARGO_TARGET_DIR=/work/target/gmc-miri; "$@" ); }
 filter() { grep -E "^test |FAILED|Undefined Behavior|panicked at|test result: |error(\[|:)|unsupported|Running|ignored" | grep -v "^test .* ok$" | grep -v " 0 passed; 0 failed" | head -${1:-20}; }
+echo "code $(bash crates/shared-memory/checks/tree.sh)"
 echo "===== $(miri cargo +nightly miri --version 2>&1) $(load)"
 for borrows in "" -Zmiri-tree-borrows; do
   echo "-- ${borrows:-stacked borrows}"

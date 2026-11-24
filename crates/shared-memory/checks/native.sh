@@ -5,6 +5,7 @@ here=$(pwd)
 arch=$(uname -m)
 load() { echo "load $(cut -d' ' -f1-3 /proc/loadavg)"; }
 filter() { grep -E "^test |FAILED|panicked at|test result: |error(\[|:)|signal|SIGBUS|SIGSEGV|Running" | grep -v "^test .* ok$" | grep -v " 0 passed; 0 failed" | head -${1:-30}; }
+echo "code $(bash crates/shared-memory/checks/tree.sh)"
 echo "===== $arch native suites $(load)"
 cargo test -p wcontainers-shared-memory -p wcontainers-shared-memory-conformance --features host 2>&1 | filter 60
 echo "-- the same suites optimized $(load)"
@@ -20,11 +21,11 @@ for target in $other-unknown-linux-musl aarch64-unknown-none wasm32-unknown-unkn
   cargo build -q -p wcontainers-shared-memory $features --target $target 2>&1 | tail -5; echo "$target: status ${PIPESTATUS[0]}"
 done
 
-echo "===== the listings of HostMapping's read and write and the region's copy, optimized"
+echo "===== the listings of HostMapping's read, write, swap and compare-and-exchange and the region's copy, optimized"
 rm -rf target/gmc-asm
 CARGO_TARGET_DIR=target/gmc-asm cargo rustc -q --release -p wcontainers-shared-memory --features host --lib -- --emit asm -C codegen-units=1 2>&1 | tail -3
 s=$(ls target/gmc-asm/release/deps/wcontainers_shared_memory-*.s | head -1)
-for pattern in 'HostMapping.*SharedMemory.*4read' 'HostMapping.*SharedMemory.*5write' 'region4copy'; do
+for pattern in 'HostMapping.*SharedMemory.*4read' 'HostMapping.*SharedMemory.*5write' 'region4copy' 'HostMapping.*SharedMemory.*4swap' 'HostMapping.*SharedMemory.*16compare_exchange'; do
   symbol=$(grep -E "^_?_ZN.*${pattern}.*:\$|^_R.*${pattern}.*:\$" "$s" | head -1 | tr -d ':')
   echo "--- symbol: ${symbol:-none matching $pattern}"
   [ -n "$symbol" ] && awk -v f="$symbol:" '$0==f{p=1} p{print} p&&/\.cfi_endproc/{exit}' "$s" | grep -vE '^\s*\.(cfi|p2align|loc|file)' | head -60
@@ -94,5 +95,40 @@ mutate size-read-before-the-seals "$H" "--test host" "        file: BorrowedFd<'
 mutate huge-pages-allowed "$H" "--test host" 'if fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32' 'if false && fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32'
 mutate base-one-word-late "$H" "--test host" 'let base = map.as_mut_ptr();' 'let base = map.as_mut_ptr().wrapping_add(8);'
 mutate base-at-the-page-start "$H" "--test host" 'let base = map.as_mut_ptr();' 'let base = map.as_mut_ptr().wrapping_sub(map.as_ptr() as usize % 4096);'
-rm -rf /work/target/gmc-mutn
+P=crates/shared-memory/foreign_implementation/host/process.rs
+mutate parent-death-signal-unset $P "--test process -- the_other_process_ends_when" '    set_parent_process_death_signal(Some(Signal::KILL)).expect("the parent-death signal is set");' ''
+
+# A planted fault fails the process test; then counts the other processes left running, and ends them.
+orphans() { pgrep -fc -- '--exact the_other_process' || true; }
+planted() { # name, then old and new texts in pairs beside the planted fault
+  local name=$1 dir=/work/target/gmc-plant-$1 log=/work/target/gmc-plant-$1.log
+  shift
+  rm -rf "$dir"; mkdir -p "$dir"; (cd "$here" && tar --exclude=./target -cf - .) | tar -C "$dir" -xf -
+  python3 - "$dir/$R/implementation.rs" 'memcpy(to.cast(), from.cast(), length);' 'memcpy(to.cast(), from.cast(), length + 1);' <<'PY'
+import sys
+p, old, new = sys.argv[1:]
+s = open(p).read()
+assert s.count(old) == 1, "the text to change is not there once: " + old
+open(p, "w").write(s.replace(old, new))
+PY
+  [ $# = 0 ] || python3 - "$dir/$P" "$@" <<'PY'
+import sys
+p, *pairs = sys.argv[1:]
+s = open(p).read()
+for old, new in zip(pairs[::2], pairs[1::2]):
+    assert s.count(old) == 1, "the text to change is not there once: " + old
+    s = s.replace(old, new)
+open(p, "w").write(s)
+PY
+  echo "===== planted fault, a copy one byte long, in the process test: $name; other processes before: $(orphans)"
+  ( cd "$dir"; CARGO_TARGET_DIR=/work/target/gmc-plant timeout 900 cargo test -q -p wcontainers-shared-memory --features host --test process > "$log" 2>&1; echo "cargo status $?" )
+  grep -E "^test .*FAILED|panicked at|test result: |signal" "$log" | head -8
+  sleep 3
+  echo "other processes still running 3 s after the test ended: $(orphans)"
+  pkill -KILL -f -- '--exact the_other_process' || true
+  rm -rf "$dir" "$log"
+}
+planted "without the parent-death signal" '    set_parent_process_death_signal(Some(Signal::KILL)).expect("the parent-death signal is set");' ''
+planted "with the parent-death signal"
+rm -rf /work/target/gmc-mutn /work/target/gmc-plant
 echo "done $(load)"
