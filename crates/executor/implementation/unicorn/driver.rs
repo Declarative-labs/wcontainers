@@ -1942,6 +1942,10 @@ where
             // SAFETY: NOT shown. The copy goes on in this thread alone and ends with `_exit` once it
             // has reported, but this process has other threads (kernel runners, the backend's and
             // the network's), so the copy may start with a lock one of them held.
+            #[expect(
+                unsafe_code,
+                reason = "UNSOUND: forks a process that has other threads, so the copy may start holding a lock one of them held; no primitive replaces it, step one re-runs the test binary with Command instead"
+            )]
             match unsafe { libc::fork() } {
                 copy if copy < 0 => panic!("fork failed"),
                 0 => {
@@ -2393,7 +2397,11 @@ fn finish(run: Run, report: Option<std::os::fd::OwnedFd>) -> Run {
             written += count;
         }
         // SAFETY: ends the copy without unwinding into the harness it was copied with.
-        unsafe { libc::_exit(0) }
+        #[expect(
+            unsafe_code,
+            reason = "ends the forked copy at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+        )]
+        unsafe { libc::_exit(0) };
     }
     run
 }
@@ -2404,7 +2412,11 @@ fn panic_in_copy(why: &str) -> ! {
     let message = format!("a copy made at a save failed: {why}\n");
     let _ = rustix::io::write(rustix::stdio::stderr(), message.as_bytes());
     // SAFETY: the copy ends.
-    unsafe { libc::_exit(1) }
+    #[expect(
+        unsafe_code,
+        reason = "ends the forked copy at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+    )]
+    unsafe { libc::_exit(1) };
 }
 
 /// The run of a copy made at a save, read from its pipe once it has ended.
@@ -2414,16 +2426,26 @@ fn copied_run(copy: libc::pid_t, fd: std::os::fd::OwnedFd) -> Run {
     std::fs::File::from(fd)
         .read_to_end(&mut bytes)
         .expect("the copy's pipe reads to its end");
-    // Reaps the copy, a child of this process.
-    let copy = rustix::process::Pid::from_raw(copy).expect("the copy's id");
-    let status = rustix::process::waitpid(Some(copy), rustix::process::WaitOptions::empty())
-        .expect("waiting for the copy")
-        .map_or(-1, |(_, status)| status.as_raw());
+    let ended = reap(rustix::process::Pid::from_raw(copy).expect("the copy's id"));
     assert!(
-        !bytes.is_empty() && status == 0,
-        "the copy made at a save ended without a run (wait status {status}); why is above"
+        !bytes.is_empty() && ended == Ok(0),
+        "the copy made at a save ended without a run ({ended:?}); why is above"
     );
     decode(&bytes)
+}
+
+/// Waits for a child of this process to end and returns its wait status, waiting again when a
+/// signal interrupts the wait; any other failure to wait is returned as text, so the copy counts as
+/// failed rather than as ended cleanly.
+fn reap(child: rustix::process::Pid) -> Result<i32, String> {
+    loop {
+        match rustix::process::waitpid(Some(child), rustix::process::WaitOptions::empty()) {
+            Ok(Some((_, status))) => return Ok(status.as_raw()),
+            Ok(None) => return Err("waiting gave no status".to_owned()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(format!("waiting for it failed: {error}")),
+        }
+    }
 }
 
 /// A run as bytes, for a copy to hand it to the process it was copied from.
@@ -2553,5 +2575,27 @@ fn decode(input: &[u8]) -> Run {
         // A copy made at a save keeps no record.
         tape: None,
         memories: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reap;
+
+    #[test]
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the child is waited for by reap, the function under test, not by Child::wait"
+    )]
+    fn a_child_is_reaped_once_and_a_second_wait_fails_without_a_panic() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .expect("starting a shell");
+        let pid = rustix::process::Pid::from_raw(child.id() as i32).expect("the child's id");
+        // Linux's wait status of a child that called exit(3).
+        assert_eq!(reap(pid), Ok(3 << 8));
+        // The child is reaped, so waiting again fails (ECHILD) and says so.
+        assert!(reap(pid).is_err_and(|why| why.starts_with("waiting for it failed")));
     }
 }
