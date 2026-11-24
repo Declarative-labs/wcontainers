@@ -222,9 +222,10 @@ const UIO_MAXIOV: usize = libc::UIO_MAXIOV as usize;
 #[cfg(target_arch = "aarch64")]
 #[expect(
     unsafe_code,
-    reason = "cache maintenance by address and its barriers are instructions no crate wraps"
+    reason = "cache maintenance by address is an instruction no crate wraps"
 )]
 fn publish_code(probe: &HostProbe, start: usize, bytes: usize) {
+    use aarch64_cpu::asm::barrier;
     let end = start + bytes;
     let lines = |line: usize| (start & !(line - 1)..end).step_by(line);
     let (data, instruction) = probe.code_lines();
@@ -236,8 +237,7 @@ fn publish_code(probe: &HostProbe, start: usize, bytes: usize) {
             };
         }
     }
-    // SAFETY: a barrier has no other effect.
-    unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+    barrier::dsb(barrier::ISH);
     if let Some(line) = instruction {
         for at in lines(line) {
             // SAFETY: invalidating instruction lines changes no memory's value.
@@ -245,7 +245,6 @@ fn publish_code(probe: &HostProbe, start: usize, bytes: usize) {
                 core::arch::asm!("ic ivau, {}", in(reg) at, options(nostack, preserves_flags))
             };
         }
-        // SAFETY: as above.
-        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        barrier::dsb(barrier::ISH);
     }
 }

@@ -93,10 +93,16 @@ const _: () = assert!(
 // The stub's turn loop reads the answer word with `ldar`, which takes no offset.
 const _: () = assert!(control::ANSWER == 0);
 
+/// A symbol in the assembly's object file, which has none of its own, so that the linker takes that file and the
+/// assembly with it.
+#[used]
+static LINKS_THE_ASSEMBLY: u8 = 0;
+
 // Entered by exec of the zygote's own image, which holds the user-space top at `TOP_AT`; the socket is its standard
 // input.
 core::arch::global_asm!(
-    ".pushsection .text.wcontainers_host_process_zygote,\"ax\",%progbits",
+    // Its own section, which the embedder reads from its executable as the zygote's code.
+    ".pushsection wcontainers_host_process_zygote,\"axR\",%progbits",
     ".macro wchp_mov64 register, value",
     "movz \\register, #((\\value) & 0xffff)",
     "movk \\register, #(((\\value) >> 16) & 0xffff), lsl #16",
@@ -196,9 +202,6 @@ core::arch::global_asm!(
     "3:",
     ".endm",
     ".balign 16",
-    ".globl wcontainers_host_process_zygote_start",
-    ".hidden wcontainers_host_process_zygote_start",
-    "wcontainers_host_process_zygote_start:",
     ".Lwchp_start:",
     "b .Lwchp_body",
     "// The floor's entries, one per call translated code makes (`blr` with the link in x30), each keeping x23 and",
@@ -1240,9 +1243,6 @@ core::arch::global_asm!(
     "mov x8, #{nr_exit_group}",
     "svc #0",
     "b .Lwchp_exit",
-    ".globl wcontainers_host_process_zygote_end",
-    ".hidden wcontainers_host_process_zygote_end",
-    "wcontainers_host_process_zygote_end:",
     ".popsection",
     zygote = const ZYGOTE,
     code_size = const ZYGOTE_CODE_SIZE,

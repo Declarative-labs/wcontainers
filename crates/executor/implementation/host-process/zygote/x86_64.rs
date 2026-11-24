@@ -29,10 +29,16 @@ use crate::stub::{BLOCK_FD, MEMORY_FD, SOCKET_FD, STOP_SET, STOP_SIGNAL, THREAD_
 // The stub's turn loop reads the answer word at its page's start.
 const _: () = assert!(control::ANSWER == 0);
 
+/// A symbol in the assembly's object file, which has none of its own, so that the linker takes that file and the
+/// assembly with it.
+#[used]
+static LINKS_THE_ASSEMBLY: u8 = 0;
+
 // Entered by exec of the zygote's own image, which holds the user-space top at `TOP_AT`; the socket is its standard
 // input.
 core::arch::global_asm!(
-    ".pushsection .text.wcontainers_host_process_zygote,\"ax\",@progbits",
+    // Its own section, which the embedder reads from its executable as the zygote's code.
+    ".pushsection wcontainers_host_process_zygote,\"axR\",@progbits",
     // Puts rsp at the signal stack top of the thread whose register page is in r13; rax and rdi change.
     ".macro wchp_handler_stack",
     "mov rax, r13",
@@ -63,9 +69,6 @@ core::arch::global_asm!(
     "syscall",
     ".endm",
     ".balign 16",
-    ".globl wcontainers_host_process_zygote_start",
-    ".hidden wcontainers_host_process_zygote_start",
-    "wcontainers_host_process_zygote_start:",
     ".Lwchp_start:",
     "mov ebp, {socket_at_start}",
     "mov r14, {top_at}",
@@ -779,9 +782,6 @@ core::arch::global_asm!(
     "mov eax, {nr_exit_group}",
     "syscall",
     "jmp .Lwchp_exit",
-    ".globl wcontainers_host_process_zygote_end",
-    ".hidden wcontainers_host_process_zygote_end",
-    "wcontainers_host_process_zygote_end:",
     ".popsection",
     zygote = const ZYGOTE,
     code_size = const ZYGOTE_CODE_SIZE,

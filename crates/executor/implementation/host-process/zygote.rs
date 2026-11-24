@@ -251,36 +251,52 @@ const RSEQ_FLAG_UNREGISTER: u32 = 1;
 /// The original `struct rseq`'s size and alignment, the smallest registration Linux accepts.
 const RSEQ_AREA: usize = 32;
 
-#[expect(unsafe_code, reason = "the two labels around the zygote's assembly")]
-// SAFETY: the zygote's assembly defines both, in one section.
-unsafe extern "C" {
-    safe static wcontainers_host_process_zygote_start: u8;
-    safe static wcontainers_host_process_zygote_end: u8;
+/// The section of the embedder's executable that holds the zygote's assembly and nothing else, kept by the linker
+/// though nothing refers to it (`SHF_GNU_RETAIN`).
+const CODE_SECTION: &str = "wcontainers_host_process_zygote";
+
+/// The zygote's machine code, which runs at `ZYGOTE`, read once from the embedder's own executable.
+fn code() -> Result<&'static [u8], Unavailable> {
+    static CODE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    if let Some(code) = CODE.get() {
+        return Ok(code);
+    }
+    let code = read_code()?;
+    Ok(CODE.get_or_init(|| code))
 }
 
-/// The zygote's machine code, which runs at `ZYGOTE`.
-fn code() -> &'static [u8] {
-    let start = &raw const wcontainers_host_process_zygote_start;
-    let end = &raw const wcontainers_host_process_zygote_end;
-    let length = (end as usize)
-        .checked_sub(start as usize)
-        .expect("the zygote's end label before its start");
-    #[expect(
-        unsafe_code,
-        reason = "the zygote's code, between two labels of its own assembly"
-    )]
-    // SAFETY: both labels are in one text section, start before end (checked above, so a reordered assembly panics
-    // rather than making a slice past the section), and text is never written.
-    unsafe {
-        core::slice::from_raw_parts(start, length)
+/// The bytes of `CODE_SECTION` in the file this process was started from.
+fn read_code() -> Result<Vec<u8>, Unavailable> {
+    use object::read::elf::{FileHeader, SectionHeader};
+    // proc(5)'s name for the file this process was exec'd from, which stays that file if its path is replaced.
+    let file = std::fs::File::open("/proc/self/exe")
+        .map_err(|error| Unavailable::Host(Errno::from_io_error(&error).unwrap_or(Errno::IO)))?;
+    let file = object::read::ReadCache::new(file);
+    let not_found = |_| Unavailable::ZygoteCodeNotFound;
+    let header =
+        object::elf::FileHeader64::<object::Endianness>::parse(&file).map_err(not_found)?;
+    let endian = header.endian().map_err(not_found)?;
+    let sections = header.sections(endian, &file).map_err(not_found)?;
+    let (_, section) = sections
+        .section_by_name(endian, CODE_SECTION.as_bytes())
+        .ok_or(Unavailable::ZygoteCodeNotFound)?;
+    if section.sh_type(endian) != object::elf::SHT_PROGBITS
+        || section.sh_flags(endian).0 & object::elf::SHF_EXECINSTR.0 == 0
+    {
+        return Err(Unavailable::ZygoteCodeNotFound);
     }
+    let code = section.data(endian, &file).map_err(not_found)?;
+    if code.is_empty() {
+        return Err(Unavailable::ZygoteCodeNotFound);
+    }
+    Ok(code.to_vec())
 }
 
 impl Zygote {
     /// Starts the zygote from its own executable image and waits until it answers.
     pub fn start(probe: &HostProbe) -> Result<Self, Unavailable> {
         let image =
-            memfd_image(&image(code(), probe.user_space_top())).map_err(Unavailable::Host)?;
+            memfd_image(&image(code()?, probe.user_space_top())).map_err(Unavailable::Host)?;
         let (ours, theirs) = rustix::net::socketpair(
             AddressFamily::UNIX,
             SocketType::SEQPACKET,

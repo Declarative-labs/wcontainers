@@ -17,6 +17,9 @@ pub enum Unavailable {
     Zygote(crate::zygote::ZygoteEnd),
     /// A host call the form needs was refused.
     Host(Errno),
+    /// The embedder's executable holds no section of the zygote's code: section headers stripped, or the crate linked
+    /// into a shared library that another program loaded.
+    ZygoteCodeNotFound,
 }
 
 /// What the probe found.

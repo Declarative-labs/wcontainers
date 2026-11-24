@@ -27,8 +27,8 @@ zerocopy.workspace = true
 nix = { version = "0.31.3", default-features = false, features = ["process", "time"] }
 # The embedder's mappings of a stub's thread pages and code area, made and unmapped without unsafe code of ours.
 memmap2 = "0.9.12"
-# The ELF header and program headers of the zygote's executable image.
-object = { version = "0.41.0", default-features = false, features = ["elf"] }
+# The ELF header and program headers of the zygote's executable image, and its code read from the embedder's own.
+object = { version = "0.41.0", default-features = false, features = ["elf", "read_core", "std"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
