@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use wcontainers_abi::{Access, PAGE_MASK, PAGE_SIZE, Permissions};
 use wcontainers_byte_sink::ByteSink;
@@ -21,8 +23,8 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_processor_architecture_arm64::{Arm64, DataAccess, InstructionFetch};
 use wcontainers_volatile_bytes::VolatileBytes;
 
-use crate::single_step::{MEMORY_BYTES, to_page_entry, to_table_entry, to_unmapped_entry};
-use crate::{Memory, Result};
+use crate::single_step::{CpuStopper, MEMORY_BYTES, to_page_entry, to_table_entry, to_unmapped_entry};
+use crate::{Memory, Result, Stopper};
 
 /// Where the pool lies in guest-physical memory: right after the machine's own memory.
 pub(crate) const POOL_BASE: u64 = MEMORY_BASE + MEMORY_BYTES;
@@ -32,6 +34,12 @@ pub(crate) const POOL_BYTES: u64 = MEMORY_BYTES;
 const FRAMES: u64 = POOL_BYTES / PAGE_SIZE;
 /// What a frame just taken is held by: the one record or table it is taken for.
 const ONE_HOLDER: u32 = 1;
+/// How long a change of the running space's tables waits before it stops the virtual CPU again.
+///
+/// A stop that comes between two runs may be forgotten: [hv_vcpus_exit](https://developer.apple.com/documentation/hypervisor/hv_vcpus_exit(_:_:)) does not say it is kept.
+const STOP_AGAIN_AFTER: Duration = Duration::from_millis(1);
+/// The address bits a translation uses: those below the top byte, which [TBI0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-#:~:text=TBI0%2C%20bit%20%5B37%5D) leaves as a tag.
+const UNTAGGED: u64 = u64::MAX >> u8::BITS;
 
 /// Returns the guest-physical address of a frame of the pool.
 const fn to_physical(frame: u64) -> u64 {
@@ -231,24 +239,24 @@ impl Space {
         frames.write_entry(leaf, self.to_leaf_entry(page));
     }
 
-    /// Gives the page the frame, letting go of the one it had, or returns `None` when no frame is left for its tables.
-    fn back(&mut self, frames: &mut Frames, page: u64, backed: Backed) -> Option<()> {
+    /// Gives the page the frame, adding the one it had to `released`, or returns `None` when no frame is left for its tables.
+    fn back(&mut self, frames: &mut Frames, page: u64, backed: Backed, released: &mut Vec<u64>) -> Option<()> {
         if self.make_tables(frames, page).is_none() {
             frames.release(backed.frame);
             return None;
         }
         if let Some(old) = self.backed.insert(page, backed) {
-            frames.release(old.frame);
+            released.push(old.frame);
         }
         self.write_leaf_entry(frames, page);
         Some(())
     }
 
-    /// Lets go of the page's frame, so that it reads as zeros.
-    fn unback(&mut self, frames: &mut Frames, page: u64) {
+    /// Takes the page's frame away, adding it to `released`, so that the page reads as zeros.
+    fn unback(&mut self, frames: &mut Frames, page: u64, released: &mut Vec<u64>) {
         if let Some(old) = self.backed.remove(&page) {
             self.write_leaf_entry(frames, page);
-            frames.release(old.frame);
+            released.push(old.frame);
         }
     }
 
@@ -258,6 +266,7 @@ impl Space {
             return Some(backed.frame);
         }
         let frame = frames.take()?;
+        // A page without a frame had none to let go of.
         self.back(
             frames,
             page,
@@ -265,6 +274,7 @@ impl Space {
                 frame,
                 mapped: false,
             },
+            &mut Vec::new(),
         )?;
         Some(frame)
     }
@@ -297,16 +307,52 @@ fn allows(allowed: Permissions, access: Access) -> bool {
     }
 }
 
+/// The executor's virtual CPU, as a change of the tables of the space it runs waits on it.
+struct Runner {
+    /// Whether the virtual CPU may run a space's guest code.
+    in_guest: AtomicBool,
+    /// Counts the runs of a space's guest that have ended.
+    ended: AtomicU64,
+    /// Set by a change of the running space's tables, so that the virtual CPU leaves the guest and forgets its translations.
+    forget: AtomicBool,
+    stopper: CpuStopper,
+}
+
+impl Runner {
+    /// Waits until the virtual CPU runs no guest code on translations it had before the call.
+    fn wait_until_forgotten(&self) {
+        let ended = self.ended.load(Ordering::SeqCst);
+        if !self.in_guest.load(Ordering::SeqCst) {
+            return;
+        }
+        self.forget.store(true, Ordering::SeqCst);
+        loop {
+            // The stopper refuses only once the virtual CPU is gone, and then the guest has left already.
+            self.stopper.stop().ok();
+            let stopped = Instant::now();
+            while stopped.elapsed() < STOP_AGAIN_AFTER {
+                if self.ended.load(Ordering::SeqCst) != ended {
+                    return;
+                }
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
 /// The frames and every space of one executor.
 pub(crate) struct Pool {
     frames: Frames,
     spaces: BTreeMap<u64, Space>,
     next_space: u64,
+    runner: Arc<Runner>,
+    /// The space whose guest the virtual CPU runs, if any.
+    running: Option<u64>,
 }
 
 impl Pool {
-    /// Reserves the pool's memory, which the caller maps at [`POOL_BASE`].
-    pub(crate) fn new() -> Result<Pool> {
+    /// Reserves the pool's memory, which the caller maps at [`POOL_BASE`], for the spaces the stopper's CPU runs.
+    pub(crate) fn new(stopper: CpuStopper) -> Result<Pool> {
         Ok(Pool {
             frames: Frames {
                 memory: Memory::reserve(POOL_BYTES)?,
@@ -315,6 +361,13 @@ impl Pool {
             },
             spaces: BTreeMap::new(),
             next_space: u64::MIN,
+            runner: Arc::new(Runner {
+                in_guest: AtomicBool::new(false),
+                ended: AtomicU64::new(u64::MIN),
+                forget: AtomicBool::new(false),
+                stopper,
+            }),
+            running: None,
         })
     }
 
@@ -382,7 +435,7 @@ impl GuestMemorySpace {
 
     /// Gives the page a frame where its permissions allow the access, and returns whether the guest may make it now.
     pub(crate) fn back_for(&self, address: u64, access: Access) -> bool {
-        let page = address & !PAGE_MASK;
+        let page = address & UNTAGGED & !PAGE_MASK;
         let mut pool = lock(&self.pool);
         let (frames, space) = pool.split(self.id);
         if !allows(space.permissions(page), access) {
@@ -397,6 +450,29 @@ impl GuestMemorySpace {
 
     fn lock(&self) -> MutexGuard<'_, Pool> {
         lock(&self.pool)
+    }
+
+    /// Marks the space as the one whose guest the virtual CPU runs, until the returned mark drops.
+    pub(crate) fn start_running(&self) -> Running<'_> {
+        let mut pool = self.lock();
+        pool.running = Some(self.id);
+        Running {
+            space: self,
+            runner: Arc::clone(&pool.runner),
+        }
+    }
+
+    /// Ends a change of the space's tables: once no guest runs on translations from before it, lets go of the frames.
+    fn finish_change<'space>(&'space self, mut pool: MutexGuard<'space, Pool>, released: Vec<u64>) {
+        if pool.running == Some(self.id) {
+            let runner = Arc::clone(&pool.runner);
+            drop(pool);
+            runner.wait_until_forgotten();
+            pool = self.lock();
+        }
+        for frame in released {
+            pool.frames.release(frame);
+        }
     }
 
     /// Panics when the other space takes its frames from another executor's pool, which this machine does not map.
@@ -516,6 +592,7 @@ impl MemorySpace for GuestMemorySpace {
         for page in pages {
             space.write_leaf_entry(frames, page);
         }
+        self.finish_change(pool, Vec::new());
         Ok(())
     }
 
@@ -530,18 +607,26 @@ impl MemorySpace for GuestMemorySpace {
         let others = pair(&addresses, other_start).map_err(MapMemoryError::InvalidAddress)?;
         self.check_same_pool(other);
         let mut pool = self.lock();
+        let mut released = Vec::new();
+        let mut outcome = Ok(());
         for (page, other_page) in list_pages(addresses).zip(list_pages(others)) {
             let (frames, source) = pool.split(other.id);
-            let frame = source
-                .find_or_take_frame(frames, other_page)
-                .ok_or(MapMemoryError::OutOfMemory)?;
+            let Some(frame) = source.find_or_take_frame(frames, other_page) else {
+                outcome = Err(MapMemoryError::OutOfMemory);
+                break;
+            };
             frames.hold(frame);
             let (frames, space) = pool.split(self.id);
-            space
-                .back(frames, page, Backed { frame, mapped: true })
-                .ok_or(MapMemoryError::OutOfMemory)?;
+            if space
+                .back(frames, page, Backed { frame, mapped: true }, &mut released)
+                .is_none()
+            {
+                outcome = Err(MapMemoryError::OutOfMemory);
+                break;
+            }
         }
-        Ok(())
+        self.finish_change(pool, released);
+        outcome
     }
 
     /// Takes whole pages only; pages that were not mapped from another space keep their bytes.
@@ -555,9 +640,11 @@ impl MemorySpace for GuestMemorySpace {
             .filter(|(_, backed)| backed.mapped)
             .map(|(&page, _)| page)
             .collect();
+        let mut released = Vec::new();
         for page in mapped {
-            space.unback(frames, page);
+            space.unback(frames, page, &mut released);
         }
+        self.finish_change(pool, released);
         Ok(())
     }
 
@@ -607,19 +694,61 @@ impl MemorySpace for GuestMemorySpace {
         }
         let (frames, space) = pool.split(self.id);
         let old: Vec<u64> = space.backed.range(addresses.clone()).map(|(&page, _)| page).collect();
+        let mut released = Vec::new();
         for page in old {
-            space.unback(frames, page);
+            space.unback(frames, page, &mut released);
         }
         space.set_permissions(addresses.clone(), Permissions::empty());
         for (range, allowed) in permissions {
             space.set_permissions(shift(range.start)..shift(range.end), allowed);
         }
-        for (page, backed) in copies {
-            space
-                .back(frames, page, backed)
-                .ok_or(CopyMemoryError::OutOfMemory)?;
+        let mut outcome = Ok(());
+        let mut copies = copies.into_iter();
+        while let Some((page, backed)) = copies.next() {
+            if space.back(frames, page, backed, &mut released).is_none() {
+                // The copies not placed yet are held by nothing else.
+                for (_, unplaced) in copies.by_ref() {
+                    frames.release(unplaced.frame);
+                }
+                outcome = Err(CopyMemoryError::OutOfMemory);
+            }
         }
-        Ok(())
+        self.finish_change(pool, released);
+        outcome
+    }
+}
+
+/// The mark of a space whose guest the virtual CPU runs, which counts the virtual CPU's runs of it.
+pub(crate) struct Running<'space> {
+    space: &'space GuestMemorySpace,
+    runner: Arc<Runner>,
+}
+
+impl Running<'_> {
+    /// Counts the start of a run that enters the guest through the handler's entry, which forgets every translation.
+    pub(crate) fn enter(&self) {
+        self.runner.in_guest.store(true, Ordering::SeqCst);
+    }
+
+    /// Counts the end of a run: the virtual CPU runs no guest code until the next start.
+    pub(crate) fn leave(&self) {
+        self.runner.ended.fetch_add(1, Ordering::SeqCst);
+        self.runner.in_guest.store(false, Ordering::SeqCst);
+    }
+
+    /// Returns whether a change of the space's tables asked the guest to forget its translations since the last call.
+    pub(crate) fn take_forget(&self) -> bool {
+        self.runner.forget.swap(false, Ordering::SeqCst)
+    }
+}
+
+impl Drop for Running<'_> {
+    /// Ends a run left in the middle, as by a panic, so that no change of the tables waits on it.
+    fn drop(&mut self) {
+        if self.runner.in_guest.load(Ordering::SeqCst) {
+            self.leave();
+        }
+        self.space.lock().running = None;
     }
 }
 

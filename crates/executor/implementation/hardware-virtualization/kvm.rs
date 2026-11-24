@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::mem::offset_of;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, Ordering, fence};
 use std::sync::{Arc, Mutex, Once};
 
 use aarch64_cpu::registers::{CNTVCT_EL0, Read};
@@ -61,7 +61,7 @@ pub struct KvmVirtualMachine {
     timer: u32,
 }
 
-/// A virtual CPU, run by the thread that took it.
+/// A virtual CPU, run by one thread at a time.
 pub struct KvmCpu {
     vcpu: VcpuFd,
     remote: Arc<Remote>,
@@ -72,8 +72,22 @@ pub struct KvmCpu {
 struct Remote {
     run: NonNull<kvm_run>,
     bytes: usize,
-    /// The thread that runs the CPU, 0 once the CPU is gone.
+    /// The thread that ran the CPU last, [`NOT_RUN_BY_A_THREAD`] before its first run and once it is gone.
     thread: AtomicI32,
+}
+
+/// The thread of a virtual CPU that has never run or is gone: no thread has a negative number.
+const NOT_RUN_BY_A_THREAD: i32 = libc::pid_t::MIN;
+
+thread_local! {
+    /// The calling thread's number, which the stop signal is sent to.
+    static THREAD: i32 = this_thread();
+}
+
+#[expect(unsafe_code, reason = "gettid, which neither std nor a dependency wraps, moved here from the virtual CPU's making")]
+fn this_thread() -> i32 {
+    // SAFETY: a plain query.
+    unsafe { libc::gettid() }
 }
 
 // SAFETY: the mapping is the kernel's shared run page, which is written only through atomics here.
@@ -331,8 +345,7 @@ impl crate::VirtualMachine for KvmVirtualMachine {
         let remote = Arc::new(Remote {
             run: NonNull::new(run.cast()).expect("mmap gave null"),
             bytes,
-            // SAFETY: a plain query.
-            thread: AtomicI32::new(unsafe { libc::gettid() }),
+            thread: AtomicI32::new(NOT_RUN_BY_A_THREAD),
         });
         Ok(KvmCpu {
             vcpu,
@@ -366,7 +379,7 @@ impl Drop for Remote {
 
 impl Drop for KvmCpu {
     fn drop(&mut self) {
-        self.remote.thread.store(0, Ordering::Relaxed);
+        self.remote.thread.store(NOT_RUN_BY_A_THREAD, Ordering::SeqCst);
     }
 }
 
@@ -496,7 +509,11 @@ fn vector_id(n: u8) -> u64 {
 impl crate::VirtualCpu for KvmCpu {
     type Stopper = KvmStopper;
 
+    /// Records the calling thread first, so that a stop signals the thread that runs it now.
     fn run(&mut self) -> Result<Exit> {
+        self.remote.thread.store(THREAD.with(|thread| *thread), Ordering::SeqCst);
+        // Against the stopper's own fence: either KVM_RUN reads its `immediate_exit`, or it signals this thread.
+        fence(Ordering::SeqCst);
         loop {
             match self.vcpu.run() {
                 Ok(VcpuExit::Hypercall(call)) if call.nr == u64::from(DOORBELL_FUNCTION) => {
@@ -570,12 +587,14 @@ impl crate::VirtualCpu for KvmCpu {
 }
 
 impl crate::Stopper for KvmStopper {
+    /// Signals no thread when the CPU has never run or is gone: its next run, if any, reads `immediate_exit`.
     fn stop(&self) -> Result<()> {
-        let thread = self.remote.thread.load(Ordering::Relaxed);
-        if thread == 0 {
-            return Err(refused(format_args!("the virtual CPU is gone")));
+        self.remote.immediate_exit().store(u8::from(true), Ordering::SeqCst);
+        fence(Ordering::SeqCst);
+        let thread = self.remote.thread.load(Ordering::SeqCst);
+        if thread == NOT_RUN_BY_A_THREAD {
+            return Ok(());
         }
-        self.remote.immediate_exit().store(1, Ordering::Release);
         // SAFETY: a signal whose handler does nothing, to a thread of this process.
         if unsafe { libc::tgkill(libc::getpid(), thread, stop_signal()) } != 0 {
             return Err(Error::Host(std::io::Error::last_os_error()));

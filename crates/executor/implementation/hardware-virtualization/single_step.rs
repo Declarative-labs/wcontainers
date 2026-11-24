@@ -365,7 +365,7 @@ struct WritableRun {
     before: Range<usize>,
 }
 
-/// The executor: one virtual machine with one virtual CPU, bound to the thread that made it.
+/// The executor: one virtual machine with one virtual CPU, which on Hypervisor.framework is bound to the thread that made it.
 ///
 /// The fields drop in order: the CPU before its machine, the machine before the memory it maps.
 pub struct SingleStepMachine {
@@ -402,9 +402,9 @@ impl SingleStepMachine {
         let memory = Memory::reserve(MEMORY_BYTES)?;
         let host = NonNull::new(memory.host(MEMORY_BASE)).expect("the reservation is not at zero");
         machine.map(host, MEMORY_BASE, MEMORY_BYTES)?;
-        let pool = Pool::new()?;
-        machine.map(pool.host(), POOL_BASE, POOL_BYTES)?;
         let cpu = machine.cpu()?;
+        let pool = Pool::new(cpu.stopper())?;
+        machine.map(pool.host(), POOL_BASE, POOL_BYTES)?;
         #[cfg(target_os = "macos")]
         cpu.leave_debugging_to_guest()?;
         let mut executor = SingleStepMachine {
@@ -631,10 +631,8 @@ impl SingleStepMachine {
             return;
         };
         self.enter(first, MDSCR_EL1::SS::SET.value);
-        match self.run_until_exit() {
-            Ended::Doorbell => {}
-            Ended::Stopped => panic!("the single step machine was stopped from another thread"),
-        }
+        // A stop meant for an execution that has ended finds single steps, which end by themselves.
+        while let Ended::Stopped = self.run_until_exit() {}
     }
 
     /// Sets the virtual CPU to enter the handler at the slot, with the debug controls given.
@@ -696,8 +694,8 @@ impl SingleStepMachine {
 
     /// Runs the guest on the space from the processor state until a trap the handler, or no handler, ends it.
     ///
-    /// An interrupt is pending while `pending` is set; a stop of the virtual CPU without it is another execution's
-    /// late interrupt, and the guest runs on.
+    /// An interrupt is pending while `pending` is set. A stop of the virtual CPU with neither it nor a change of the
+    /// space's tables is another execution's late interrupt, and the guest runs on.
     fn run_guest(
         &mut self,
         mut processor: Processor,
@@ -710,9 +708,10 @@ impl SingleStepMachine {
             "the executor runs only spaces it made"
         );
         let translation_table = memory.find_root();
+        let running = memory.start_running();
         // The last fault the machine answered itself: when it comes again at once, the handler answers it.
         let mut answered: Option<(u64, Access)> = None;
-        // An interrupt that found the handler saving the slot, answered after the trap it saves.
+        // An interrupt that stopped the guest before its trap or between two runs, answered before the next run.
         let mut interrupted = false;
         loop {
             if (std::mem::take(&mut interrupted) || pending.swap(false, Ordering::Acquire))
@@ -733,26 +732,30 @@ impl SingleStepMachine {
                 },
             );
             self.enter(EXECUTE_SLOT, u64::MIN);
-            while let Ended::Stopped = self.run_until_exit() {
-                if !pending.swap(false, Ordering::Acquire) {
+            running.enter();
+            let ended = loop {
+                if let Ended::Doorbell = self.run_until_exit() {
+                    break Some(self.read_ended_slot(EXECUTE_SLOT));
+                }
+                let interrupt = pending.swap(false, Ordering::Acquire);
+                if !running.take_forget() && !interrupt {
                     continue;
                 }
+                interrupted |= interrupt;
+                // The handler's entry forgets the translations the next run would find stale.
                 match self.locate_stop() {
                     Stop::Guest => {
-                        if let InterruptResponse::Terminate = handler.handle_interrupt() {
-                            return self.save_running_guest();
-                        }
+                        processor = self.save_running_guest();
+                        break None;
                     }
-                    Stop::Entering => {
-                        if let InterruptResponse::Terminate = handler.handle_interrupt() {
-                            processor.exception = None;
-                            return processor;
-                        }
-                    }
-                    Stop::Saving => interrupted = true,
+                    Stop::Entering => break None,
+                    Stop::Saving => {}
                 }
-            }
-            let slot = self.read_ended_slot(EXECUTE_SLOT);
+            };
+            running.leave();
+            let Some(slot) = ended else {
+                continue;
+            };
             let stopped = to_processor(&slot.after);
             processor = Processor {
                 exception: None,
@@ -809,6 +812,8 @@ impl SingleStepMachine {
     }
 
     /// Returns the processor state of a guest stopped at EL0, which the handler saves as if a software step ended it.
+    ///
+    /// A stop while it saves is answered after: the slot ends by itself.
     fn save_running_guest(&mut self) -> Processor {
         let get = |register| {
             self.cpu
@@ -896,26 +901,32 @@ impl SingleStepMachine {
         self.memory.bytes_mut(at, length)
     }
 
+    #[expect(unsafe_code, reason = "the handler's slot, read whole; one of the single step machine's existing uses")]
     fn read_slot(&self, at: u64) -> Slot {
         // SAFETY: the slot lies in guest memory and the guest is not running.
         unsafe { std::ptr::read(self.memory.host(at).cast::<Slot>()) }
     }
 
+    #[expect(unsafe_code, reason = "the handler's slot, written whole; one of the single step machine's existing uses")]
     fn write_slot(&mut self, at: u64, slot: Slot) {
         // SAFETY: the slot's page lies in guest memory, and the guest is not running.
         unsafe { std::ptr::write(self.memory.host(at).cast::<Slot>(), slot) };
     }
 }
 
+/// What stops the machine's virtual CPU from another thread.
+pub(crate) type CpuStopper =
+    <<<Host as Hypervisor>::VirtualMachine as VirtualMachine>::Cpu as VirtualCpu>::Stopper;
+
 /// Interrupts one execution of the machine from any thread.
 pub struct MachineInterrupter {
     /// Set until the execution answers the interrupt.
     pending: Arc<AtomicBool>,
-    stopper: <<<Host as Hypervisor>::VirtualMachine as VirtualMachine>::Cpu as VirtualCpu>::Stopper,
+    stopper: CpuStopper,
 }
 
 impl ExecutionInterrupter for MachineInterrupter {
-    /// Marks the interrupt pending and stops the virtual CPU, which answers it at once or at its next trap or entry.
+    /// Marks the interrupt pending and stops the virtual CPU, which answers it before its next run.
     fn interrupt(&self) {
         self.pending.store(true, Ordering::Release);
         // The stopper refuses only once the virtual CPU is gone, when no execution is left to interrupt.
@@ -931,7 +942,7 @@ enum Ended {
 
 /// Where a stop from another thread found the virtual CPU.
 enum Stop {
-    /// Running the guest at EL0.
+    /// Running the guest at EL0; the handler saves it, and it runs again from the saved state.
     Guest,
     /// In the handler, before the guest runs.
     Entering,
