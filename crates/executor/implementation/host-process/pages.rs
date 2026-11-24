@@ -407,31 +407,29 @@ impl ThreadPages {
         &self.words64()[at / size_of::<u64>()]
     }
 
-    /// Writes into every control page the records the stub hands the host kernel to read and never builds itself:
-    /// its receive's `iovec` and its signal stack's `stack_t`.
-    pub(crate) fn write_records(&self) {
-        for thread in 0..THREADS_PER_PROCESS {
-            let byte =
-                REGISTER_PAGES + thread * THREAD_PAGE_SIZE + register::RECEIVE + RECEIVE_BYTE;
-            let iovec = [
-                (offset_of!(libc::iovec, iov_base), byte as u64),
-                (offset_of!(libc::iovec, iov_len), 1),
-            ];
-            let stack = [
-                (
-                    offset_of!(libc::stack_t, ss_sp),
-                    (SIGNAL_STACKS + thread * SIGNAL_STACK_SIZE) as u64,
-                ),
-                (offset_of!(libc::stack_t, ss_flags), 0),
-                (offset_of!(libc::stack_t, ss_size), SIGNAL_STACK_SIZE as u64),
-            ];
-            for (at, word) in iovec
-                .map(|(at, word)| (control::IOVEC + at, word))
-                .into_iter()
-                .chain(stack.map(|(at, word)| (control::STACK_RECORD + at, word)))
-            {
-                self.control64(thread, at).store(word, Ordering::Relaxed);
-            }
+    /// Writes into a thread's control page the records the stub hands the host kernel to read and never builds itself:
+    /// its receive's `iovec` and its signal stack's `stack_t`. Only the pages of threads made are written, so a stub's
+    /// start touches one control page rather than every index's.
+    pub(crate) fn write_records(&self, thread: usize) {
+        let byte = REGISTER_PAGES + thread * THREAD_PAGE_SIZE + register::RECEIVE + RECEIVE_BYTE;
+        let iovec = [
+            (offset_of!(libc::iovec, iov_base), byte as u64),
+            (offset_of!(libc::iovec, iov_len), 1),
+        ];
+        let stack = [
+            (
+                offset_of!(libc::stack_t, ss_sp),
+                (SIGNAL_STACKS + thread * SIGNAL_STACK_SIZE) as u64,
+            ),
+            (offset_of!(libc::stack_t, ss_flags), 0),
+            (offset_of!(libc::stack_t, ss_size), SIGNAL_STACK_SIZE as u64),
+        ];
+        for (at, word) in iovec
+            .map(|(at, word)| (control::IOVEC + at, word))
+            .into_iter()
+            .chain(stack.map(|(at, word)| (control::STACK_RECORD + at, word)))
+        {
+            self.control64(thread, at).store(word, Ordering::Relaxed);
         }
     }
 
@@ -580,8 +578,8 @@ mod tests {
     #[test]
     fn every_thread_s_records_name_its_own_receive_byte_and_signal_stack() {
         let pages = ThreadPages::new().expect("thread pages");
-        pages.write_records();
         for thread in [0, 1, THREADS_PER_PROCESS - 1] {
+            pages.write_records(thread);
             let word = |at| pages.control64(thread, at).load(Ordering::Relaxed);
             let register_page = (REGISTER_PAGES + thread * THREAD_PAGE_SIZE) as u64;
             let byte = word(control::IOVEC);

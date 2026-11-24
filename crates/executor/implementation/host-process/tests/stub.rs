@@ -14,7 +14,7 @@ use rustix::process::{Pid, Signal};
 use rustix::thread::CpuSet;
 use wcontainers_executor_host_process::layout::{
     CODE_AREA, CODE_AREA_SIZE, GUEST_START, OUR_AREA, REGISTER_PAGES, SIGNAL_STACKS, SLOT_TABLE,
-    SLOT_TABLE_SIZE, THREAD_PAGES,
+    SLOT_TABLE_SIZE, THREAD_PAGE_SIZE, THREAD_PAGES, THREADS_PER_PROCESS,
 };
 use wcontainers_executor_host_process::pages::Command;
 use wcontainers_executor_host_process::probe::HostProbe;
@@ -100,6 +100,45 @@ fn a_stub_answers_every_turn_and_reports_its_thread() {
     assert_eq!(
         Some(stub.reported_thread_id(0)),
         u32::try_from(stub.process().as_raw_nonzero().get()).ok()
+    );
+    assert_eq!(end_and_reap(&zygote, &stub), Ended::Exited(0));
+}
+
+/// The embedder touches only the thread pages of threads made: writing every index's at a stub's start took a page
+/// fault per control page and 128 MiB of shared memory for each guest process.
+#[test]
+fn a_stub_s_start_touches_only_the_thread_pages_of_threads_made() {
+    let zygote = zygote();
+    let mut stub = zygote.fork_stub().expect("fork");
+    for _ in 0..2 {
+        stub.new_thread().expect("a free index");
+    }
+    let smaps = std::fs::read_to_string("/proc/self/smaps").expect("smaps");
+    let mut mapping = None;
+    let mut resident = Vec::new();
+    for line in smaps.lines() {
+        if line
+            .split_whitespace()
+            .next()
+            .is_some_and(|range| range.contains('-'))
+        {
+            mapping = Some(line.contains("wcontainers thread pages"));
+        } else if let (Some(true), Some(kib)) = (mapping, line.strip_prefix("Rss:")) {
+            let kib: usize = kib
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse()
+                .expect("a size");
+            resident.push(kib * 1024);
+        }
+    }
+    assert!(!resident.is_empty(), "no thread pages mapped");
+    // Tests running beside this one make a few threads each, never an eighth of every index.
+    let bound = THREADS_PER_PROCESS / 8 * THREAD_PAGE_SIZE;
+    assert!(
+        resident.iter().all(|bytes| *bytes < bound),
+        "thread pages resident: {resident:?} bytes"
     );
     assert_eq!(end_and_reap(&zygote, &stub), Ended::Exited(0));
 }

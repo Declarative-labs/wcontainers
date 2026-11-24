@@ -182,6 +182,7 @@ impl Stub {
                     == 0
         })?;
         self.held[thread / u64::BITS as usize] |= 1 << (thread % u64::BITS as usize);
+        self.pages.write_records(thread);
         let last_turn = self
             .pages
             .control32(thread, control::ANSWER)
@@ -227,10 +228,10 @@ impl Stub {
         }
     }
 
-    /// Writes the stub's start: every control page's records, then into thread 0's the filter, which the stub reads,
-    /// and the start's turn.
+    /// Writes the stub's start: thread 0's records, then into its control page the filter, which the stub reads, and the
+    /// start's turn; a thread made later has its records written when its index is taken.
     pub(crate) fn write_start(pages: &ThreadPages, frames_without_vectors: bool) {
-        pages.write_records();
+        pages.write_records(0);
         let filter = stub_filter(frames_without_vectors);
         assert!(
             filter.len() * size_of::<u64>() <= control::COMMANDS_END - control::COMMANDS,
