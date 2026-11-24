@@ -3,12 +3,17 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use wcontainers_executor_unicorn::assert_same_output;
+use wcontainers_abi::SystemCallRequest;
+use wcontainers_executor_unicorn::hooks::Hooks;
 use wcontainers_executor_unicorn::network::DOCKER_HOST_NAME;
+use wcontainers_executor_unicorn::{assert_same_output, driver, guest_directory_entry, reference};
+use wcontainers_kernel_linux::linux::general;
+use wcontainers_kernel_linux::{Process, SystemCallResponse, TaskId};
 
 /// A server on this machine: TCP answers what it read once the client finishes sending, UDP
 /// answers each datagram. Returns its TCP and UDP ports.
@@ -153,6 +158,138 @@ fn a_full_connection_hears_a_reset() {
     let ours = assert_same_output(&out, "fullreset", &[DOCKER_HOST_NAME, &port]);
     let text = String::from_utf8_lossy(&ours.outcome.stdout);
     assert!(text.contains("so_error Connection reset by peer"), "{text}");
+}
+
+/// What holds a told-resetting server's reset back until a hook lets it go: the server says a reset
+/// is held, waits to be let go, and says when the reset is done.
+struct Gate {
+    held: mpsc::Sender<()>,
+    go: mpsc::Receiver<()>,
+    done: mpsc::Sender<()>,
+}
+
+/// A server on this machine that, for each pair of connections, reads a byte on the second,
+/// answers "reset" on it, and resets the first: at once, or with a gate once the gate lets it.
+/// Returns its port.
+fn told_resetting_server(gate: Option<Gate>) -> u16 {
+    let listener = TcpListener::bind("0.0.0.0:0").expect("a TCP port");
+    let port = listener.local_addr().expect("an address").port();
+    std::thread::spawn(move || {
+        loop {
+            let (Ok((data, _)), Ok((mut signal, _))) = (listener.accept(), listener.accept())
+            else {
+                return;
+            };
+            if signal.read_exact(&mut [0u8]).is_err() {
+                continue;
+            }
+            if let Some(gate) = &gate {
+                let _ = gate.held.send(());
+            }
+            let _ = signal.write_all(b"reset");
+            if let Some(gate) = &gate
+                && gate.go.recv().is_err()
+            {
+                return;
+            }
+            // A linger of zero makes the close a reset.
+            let _ = socket2::SockRef::from(&data).set_linger(Some(Duration::ZERO));
+            drop(data);
+            if let Some(gate) = &gate {
+                let _ = gate.done.send(());
+            }
+            let _ = signal.read_to_end(&mut Vec::new());
+        }
+    });
+    port
+}
+
+/// Lets a held reset go at the start of the program's next look at a socket (poll, select or
+/// getsockopt), after every earlier call has ended, and waits until it is done.
+struct LetGoAtTheLook {
+    held: mpsc::Receiver<()>,
+    go: mpsc::Sender<()>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Hooks for LetGoAtTheLook {
+    fn intercept_system_call_request(
+        &mut self,
+        _process: Process<'_>,
+        _thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        let looks = [
+            general::__NR_ppoll,
+            general::__NR_pselect6,
+            general::__NR_getsockopt,
+        ];
+        let looking = looks.map(u64::from).contains(&request.number.0);
+        if looking && self.held.try_recv().is_ok() {
+            self.go.send(()).expect("the server waits");
+            self.done
+                .recv_timeout(HEARING_PATIENCE)
+                .expect("the server reset the connection");
+        }
+        ControlFlow::Continue(request)
+    }
+}
+
+/// A reset that reaches this machine just before the program looks at its connection is seen by
+/// that look, by poll, select or SO_ERROR, as on Linux, which handled the reset as it came: the
+/// kernel asks the system at the look, rather than answering from what the system told it before.
+/// On ours the server resets each connection at the start of the call that looks, after the end of
+/// every call before it, where the kernel last heard the outside.
+#[test]
+fn a_look_hears_a_reset_the_system_has_not_told_yet() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = wcontainers_executor_unicorn::guest::build("toldreset", &[], &out);
+    let port = told_resetting_server(None).to_string();
+    let theirs = reference::run(&program, &[DOCKER_HOST_NAME, &port]);
+    let (held, hold) = mpsc::channel();
+    let (let_go, go) = mpsc::channel();
+    let (done, finished) = mpsc::channel();
+    let port = told_resetting_server(Some(Gate { held, go, done })).to_string();
+    let hooks = LetGoAtTheLook {
+        held: hold,
+        go: let_go,
+        done: finished,
+    };
+    let mut files = wcontainers_executor_unicorn::image::reference_image().to_vec();
+    files.extend(wcontainers_executor_unicorn::image::host_directory(
+        program.parent().expect("a directory"),
+        guest_directory_entry(),
+    ));
+    let path = reference::in_guest_directory(program.file_name().expect("a name"));
+    let arguments = [path.as_str(), DOCKER_HOST_NAME, &port];
+    let container = driver::Container {
+        files: &files,
+        path: &path,
+        arguments: &arguments,
+        environment: reference::ENVIRONMENT,
+        working_directory: reference::ROOT_DIRECTORY,
+        backend: None,
+        cached: false,
+        published: &[],
+        root_image: None,
+        address_space: wcontainers_executor_unicorn::standin::SPACE_32_BIT,
+    };
+    let prepared = driver::Prepared {
+        hooks: Some(Box::new(hooks)),
+        ..driver::prepare(&container)
+    };
+    let ours = driver::run_prepared(prepared, &container, 0, Default::default())
+        .expect("an outcome on our kernel");
+    let ours_text = String::from_utf8_lossy(&ours.outcome.stdout);
+    let theirs_text = String::from_utf8_lossy(&theirs.stdout);
+    assert_eq!(ours_text, theirs_text);
+    assert_eq!(ours.outcome, theirs);
+    for line in [" err", " readable", "so_error 0 Connection reset by peer"] {
+        assert!(
+            theirs_text.contains(line),
+            "{line:?} missing from:\n{theirs_text}"
+        );
+    }
 }
 
 /// How long the telling server waits to hear what the first connection of a pair does.

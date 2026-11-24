@@ -64,8 +64,13 @@ impl Readied {
         }
     }
 
-    /// Waits until the network says what `number` is ready for, forgetting it if let go.
-    pub(super) async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadinessReport {
+    /// Waits until the network says what `number` is ready for, or `now` finds it ready when the
+    /// wait is polled, forgetting it if let go.
+    pub(super) async fn wait(
+        readied: &Mutex<Readied>,
+        number: u32,
+        now: impl Fn() -> Option<ReadinessReport>,
+    ) -> ReadinessReport {
         /// Forgets the readiness waited for, when the wait is let go.
         struct Forget<'a>(&'a Mutex<Readied>, u32);
         impl Drop for Forget<'_> {
@@ -78,7 +83,7 @@ impl Readied {
         let _forget = Forget(readied, number);
         std::future::poll_fn(|context| {
             let mut readied = lock(readied);
-            match readied.arrived.remove(&number) {
+            match readied.arrived.remove(&number).or_else(&now) {
                 Some(ready) => Poll::Ready(ready),
                 None => {
                     readied.waiting.insert(number, context.waker().clone());
@@ -415,7 +420,10 @@ impl<H: Send> Readiness<TcpHandle> for TestHost<H> {
         if !self.replaying() {
             lock(&self.network).arm(connection.0, interest);
         }
-        Ok(Readied::wait(&self.ready, connection.0).await)
+        Ok(Readied::wait(&self.ready, connection.0, || {
+            self.socket_ready_now(connection.0)
+        })
+        .await)
     }
 }
 

@@ -103,6 +103,19 @@ fn unspecified_of(address: SocketAddr) -> SocketAddr {
     }
 }
 
+/// The events `poll` asks of a socket whose wait asks to read, to write, or neither (an error or
+/// hang-up is always told).
+fn asked(read: bool, write: bool) -> PollFlags {
+    let mut events = PollFlags::empty();
+    if read {
+        events |= PollFlags::IN;
+    }
+    if write {
+        events |= PollFlags::OUT;
+    }
+    events
+}
+
 /// What a socket is ready for, from the events `poll` gave for it.
 fn ready_for(revents: PollFlags) -> ReadinessReport {
     let mut ready = report(ReadyFor::empty(), UnconditionalEvents::empty());
@@ -375,6 +388,41 @@ impl Network {
             || self.listeners.values().any(|listener| listener.armed)
     }
 
+    /// What socket `number`'s kept wait would hear now, asked of the socket without waiting, as a
+    /// host's wait asks when polled; the watch then ends, as a report of [`Self::take`] ends it.
+    pub fn ready_now(&mut self, number: u32) -> Option<ReadinessReport> {
+        let (fd, wanted) = if let Some(flow) = self.flows.get(&number).filter(|flow| flow.armed) {
+            let wanted = asked(flow.read_armed, flow.write_armed);
+            (flow.socket.as_fd(), wanted)
+        } else if let Some(stream) = self.streams.get(&number).filter(|stream| stream.armed) {
+            let wanted = asked(stream.read_armed, stream.write_armed);
+            (stream.socket.as_ref()?.as_fd(), wanted)
+        } else {
+            let listener = self
+                .listeners
+                .get(&number)
+                .filter(|listener| listener.armed)?;
+            (listener.socket.as_fd(), PollFlags::IN)
+        };
+        let mut fds = [PollFd::from_borrowed_fd(fd, wanted)];
+        let _ = rustix::event::poll(&mut fds, Some(&Timespec::default()));
+        let revents = fds[0].revents();
+        if revents.is_empty() {
+            return None;
+        }
+        if let Some(flow) = self.flows.get_mut(&number) {
+            (flow.armed, flow.read_armed, flow.write_armed) = (false, false, false);
+            return Some(ready_for(revents));
+        }
+        if let Some(stream) = self.streams.get_mut(&number) {
+            (stream.armed, stream.read_armed, stream.write_armed) = (false, false, false);
+            return Some(ready_for(revents));
+        }
+        let listener = self.listeners.get_mut(&number)?;
+        listener.armed = false;
+        Some(report(ReadyFor::READABLE, UnconditionalEvents::empty()))
+    }
+
     /// What is owed, after waiting up to `timeout` for a socket to change when nothing is.
     pub fn take(&mut self, timeout: Duration) -> Vec<Owed> {
         /// What a socket watched is.
@@ -384,28 +432,18 @@ impl Network {
             Stream(u32),
             Listener(u32),
         }
-        let events = |read: bool, write: bool| {
-            let mut events = PollFlags::empty();
-            if read {
-                events |= PollFlags::IN;
-            }
-            if write {
-                events |= PollFlags::OUT;
-            }
-            events
-        };
         let mut armed: Vec<(Watched, BorrowedFd<'_>, PollFlags)> = self
             .flows
             .iter()
             .filter(|(_, flow)| flow.armed)
             .map(|(&id, flow)| {
-                let wanted = events(flow.read_armed, flow.write_armed);
+                let wanted = asked(flow.read_armed, flow.write_armed);
                 (Watched::Flow(id), flow.socket.as_fd(), wanted)
             })
             .collect();
         armed.extend(self.streams.iter().filter_map(|(&number, stream)| {
             let socket = stream.socket.as_ref().filter(|_| stream.armed)?;
-            let wanted = events(stream.read_armed, stream.write_armed);
+            let wanted = asked(stream.read_armed, stream.write_armed);
             Some((Watched::Stream(number), socket.as_fd(), wanted))
         }));
         armed.extend(

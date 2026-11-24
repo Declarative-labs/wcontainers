@@ -930,7 +930,7 @@ impl<H: Send> wcontainers_readiness::Readiness<crate::streams::End> for TestHost
         if !self.replaying() {
             lock(&self.streams).arm(*peer, interest);
         }
-        Ok(Readied::wait(&self.stream_ready, peer.0).await)
+        Ok(Readied::wait(&self.stream_ready, peer.0, || None).await)
     }
 }
 
@@ -1133,6 +1133,19 @@ impl<H> TestHost<H> {
 
     pub(crate) fn socket_ready(&self, number: u32, ready: wcontainers_readiness::ReadinessReport) {
         Readied::arrive(&self.ready, number, ready);
+    }
+
+    /// What socket `number` is ready for now, asked of the socket as a host's wait asks when it is
+    /// polled; none in a run that keeps or answers from a record, which hears the outside only
+    /// between turns, where its record keeps what it heard.
+    pub(crate) fn socket_ready_now(
+        &self,
+        number: u32,
+    ) -> Option<wcontainers_readiness::ReadinessReport> {
+        if self.taped_run() {
+            return None;
+        }
+        lock(&self.network).ready_now(number)
     }
 }
 

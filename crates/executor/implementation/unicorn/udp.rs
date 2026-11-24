@@ -158,7 +158,7 @@ impl<H: Send> Readiness<UdpHandle> for TestHost<H> {
         if !self.replaying() {
             lock(&self.network).arm(socket.0, interest);
         }
-        Ok(Readied::wait(&self.ready, socket.0).await)
+        Ok(Readied::wait(&self.ready, socket.0, || self.socket_ready_now(socket.0)).await)
     }
 }
 
