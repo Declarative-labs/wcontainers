@@ -5159,6 +5159,7 @@ dependencies = [
  "rangemap",
  "rustc-hash 2.1.3",
  "rustix",
+ "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-byte-sink",
