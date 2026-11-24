@@ -5256,6 +5256,8 @@ dependencies = [
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-docker",
  "wcontainers-executor",
@@ -5267,6 +5269,8 @@ dependencies = [
  "wcontainers-processor-architecture-arm64",
  "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
  "zerocopy",
  "zstd",
 ]
