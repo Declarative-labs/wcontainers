@@ -177,6 +177,37 @@ code of the tip; load 7 to 29 of 96 cores, three fuzz seeds running beside from 
   0 lines of difference (the converter-version files included, one tree).
 - wasm32-wasip1 (laptop): the fuzz binary's 6 tests pass under wasmtime 38.0.4, the mutation run and
   the many-threads test ignored (no threads there).
+- Fuzz on the module route, natively, 12,000 cases a seed, the three in parallel (per-seed logs
+  `target/g6w-r3/seed-*.log` on the machine; load 13 to 49 of 96): zero process ends, the test
+  passes at each, no "the conversion panicked" class at any. Seed 141421: 2,353 converted (run 2:
+  2,355), ended in a converter and refused by name: dxil-spirv 646 traps and 7 past the memory
+  bound, dxbc-spirv 126 traps, 35 memory, 74 instructions; 6,478 s. Seed 2236067: 2,292 converted
+  (A42's case now refused), dxil-spirv 616 and 6, dxbc-spirv 123, 37, 61; 5,342 s. Seed 1732050:
+  2,344 converted, dxil-spirv 576 and 12, dxbc-spirv 118, 27, 62; 5,431 s. Each case at the
+  instruction bound took 87.5 to 87.7 s; each is DXBC, as before (per conversion now, the bound
+  was never reached by a DXIL conversion's calls together).
+- Windows, the fuzz test on the module route natively at seed 271828 (a seed of this run), 12,000
+  cases in three parallel parts (`fuzz-win.log`, at d00a19dc7; the rig's and this crate's own
+  shaders, the external corpus is not on the desktop): zero process ends, each part passes (2,308
+  s, 2,450 s, 1,845 s), no caught panic; 2,574 converted; 988 ended inside a converter and refused
+  by name (dxil-spirv 799 traps and 13 past the memory bound; dxbc-spirv 99 traps, 23 memory, 54
+  instructions). The slowest case took 130 s there.
+- Windows clippy with warnings denied of both routes (MSVC building the C++ for the linked route):
+  clean (`win-suite.log`). That job's suite did not run: another track sent branch `agents` to the
+  desktop meanwhile (the gpu-job refused the changed copy, exit 125); the suite ran again from a
+  branch of its own name (below).
+- Desktop timing (i9-9900K, Windows 10, each route one GPU job so no other job of the queue ran
+  beside it, the desktop's own load not taken; the rig's DXBC and DXIL and this crate's own shaders;
+  `time-desk-linked.log`, `time-desk-module.log`), first conversions, linked then module: DXBC (239)
+  480 / 1,168 / 8,011 us then 688 / 1,615 / 15,962 us; DXIL (222) 556 / 1,275 / 2,134 us then 696 /
+  1,400 / 2,388 us; first conversion of the process 1.5 ms then 514 ms.
+- Windows, the whole suite on the default (linked) route on the RTX 3080 (one GPU job, one test
+  thread, at d00a19dc7 from branch `phase-2-graphics-shaders`; `win-suite2.log`): 28 binaries, 224
+  passed, 3 failed, 4 ignored. The 3 are A43's, the same three as at the pre-change tree (run 2):
+  `clamped_samples_match_direct3d` and `filtering_in_the_program_matches_direct3d` (filter_draw),
+  `variants_draw_as_the_native_feature_does` (`depth_clamp`). compute_draw passes 17 of 17 again:
+  a53d6d4c2 (the Direct3D 11 track's) keeps the device's quotient now, so run 2's two division
+  failures are gone; the division entry under "New for the owner" may be settled by that track.
 - Literal check with history at 4ad8c9989 (`lit3.log`): no line in this crate's files or naga;
   two baseline lines the build script briefly named were put back when naming them made a growth
   line in another track's file (a constant of the same value), net zero.
@@ -3141,7 +3172,7 @@ Runs at a00ab267:
   the default is the linked C++ (as before G6w), the module under wasmtime is the feature
   `contained-converters`, as the milestone says for a cost a user would see. The choice: the
   module ends A11 (no malformed shader ends the host: zero process ends in 36,000 fuzz cases on
-  ARM64 and 12,000 on Windows, see runs 1 to 3) and removes the 4 inline unsafe lines natively; the
+  ARM64 and 24,000 on Windows, runs 2 and 3) and removes the 4 inline unsafe lines natively; the
   linked route lets 46 of 12,000 fuzz cases end the process. The cost, measured on the ARM64
   machine (load 13 to 29 of 96), each shader's first conversion, linked then module:
   - per shader 2 to 2.5 times: games DXIL median 445 then 898 us, 95th percentile 5.2 then 9.7 ms,
