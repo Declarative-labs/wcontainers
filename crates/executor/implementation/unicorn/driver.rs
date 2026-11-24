@@ -340,7 +340,7 @@ struct Injecting {
     turns: u64,
     saved: usize,
     /// In a copy, where its run is reported to the process it was copied from.
-    report: Option<i32>,
+    report: Option<std::os::fd::OwnedFd>,
 }
 
 impl Injecting {
@@ -1809,8 +1809,8 @@ where
         );
     }
     let (report, saved, turns) = {
-        let injecting = host.injecting();
-        (injecting.report, injecting.saved, injecting.turns)
+        let mut injecting = host.injecting();
+        (injecting.report.take(), injecting.saved, injecting.turns)
     };
     let streams = std::mem::take(&mut *host.streams());
     let run = Run {
@@ -1938,27 +1938,24 @@ where
                 injecting.at.remove(0);
                 injecting.saved += 1;
             }
-            let mut ends = [0; 2];
-            // SAFETY: plain system calls; the copy goes on in this thread alone and ends with
-            // `_exit` once it has reported.
-            unsafe {
-                assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
-                match libc::fork() {
-                    copy if copy < 0 => panic!("fork failed"),
-                    0 => {
-                        libc::close(ends[0]);
-                        std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
-                        if let Some(earlier) = self.injecting().report.replace(ends[1]) {
-                            libc::close(earlier);
-                        }
-                    }
-                    copy => {
-                        libc::close(ends[1]);
-                        // The copy alone holds the network from here on.
-                        drop(std::mem::take(&mut *lock(&self.network)));
-                        let report = self.injecting().report;
-                        return ControlFlow::Break(finish(copied_run(copy, ends[0]), report));
-                    }
+            let (reading, writing) = rustix::pipe::pipe().expect("a pipe for the copy");
+            // SAFETY: NOT shown. The copy goes on in this thread alone and ends with `_exit` once it
+            // has reported, but this process has other threads (kernel runners, the backend's and
+            // the network's), so the copy may start with a lock one of them held.
+            match unsafe { libc::fork() } {
+                copy if copy < 0 => panic!("fork failed"),
+                0 => {
+                    drop(reading);
+                    std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
+                    // An earlier report end, of the process this copy was copied from, closes.
+                    drop(self.injecting().report.replace(writing));
+                }
+                copy => {
+                    drop(writing);
+                    // The copy alone holds the network from here on.
+                    drop(std::mem::take(&mut *lock(&self.network)));
+                    let report = self.injecting().report.take();
+                    return ControlFlow::Break(finish(copied_run(copy, reading), report));
                 }
             }
             *cpu = cpu.restored();
@@ -2386,20 +2383,17 @@ fn deliver_live<H: Send>(
 
 /// A run's end: returned, or in a copy made at a save reported to the process it was copied from,
 /// which ends the copy.
-fn finish(run: Run, report: Option<i32>) -> Run {
+fn finish(run: Run, report: Option<std::os::fd::OwnedFd>) -> Run {
     if let Some(fd) = report {
         let bytes = encode(&run);
-        // SAFETY: writes to the pipe this copy was given, then ends the copy without unwinding.
-        unsafe {
-            let mut written = 0;
-            while written < bytes.len() {
-                let count =
-                    libc::write(fd, bytes[written..].as_ptr().cast(), bytes.len() - written);
-                assert!(count > 0, "reporting a copy's run");
-                written += count as usize;
-            }
-            libc::_exit(0);
+        let mut written = 0;
+        while written < bytes.len() {
+            let count = rustix::io::write(&fd, &bytes[written..]).expect("reporting a copy's run");
+            assert!(count > 0, "reporting a copy's run");
+            written += count;
         }
+        // SAFETY: ends the copy without unwinding into the harness it was copied with.
+        unsafe { libc::_exit(0) }
     }
     run
 }
@@ -2408,25 +2402,23 @@ fn finish(run: Run, report: Option<i32>) -> Run {
 /// must not unwind into the test harness it was copied with.
 fn panic_in_copy(why: &str) -> ! {
     let message = format!("a copy made at a save failed: {why}\n");
-    // SAFETY: a write to the standard error, then the copy ends.
-    unsafe {
-        libc::write(2, message.as_ptr().cast(), message.len());
-        libc::_exit(1)
-    }
+    let _ = rustix::io::write(rustix::stdio::stderr(), message.as_bytes());
+    // SAFETY: the copy ends.
+    unsafe { libc::_exit(1) }
 }
 
 /// The run of a copy made at a save, read from its pipe once it has ended.
-fn copied_run(copy: libc::pid_t, fd: i32) -> Run {
+fn copied_run(copy: libc::pid_t, fd: std::os::fd::OwnedFd) -> Run {
     use std::io::Read;
-    use std::os::fd::{FromRawFd, OwnedFd};
     let mut bytes = Vec::new();
-    // SAFETY: the read end of the copy's pipe, which only this function uses and closes.
-    std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) })
+    std::fs::File::from(fd)
         .read_to_end(&mut bytes)
         .expect("the copy's pipe reads to its end");
-    let mut status = 0;
-    // SAFETY: reaps the copy, a child of this process.
-    unsafe { libc::waitpid(copy, &mut status, 0) };
+    // Reaps the copy, a child of this process.
+    let copy = rustix::process::Pid::from_raw(copy).expect("the copy's id");
+    let status = rustix::process::waitpid(Some(copy), rustix::process::WaitOptions::empty())
+        .expect("waiting for the copy")
+        .map_or(-1, |(_, status)| status.as_raw());
     assert!(
         !bytes.is_empty() && status == 0,
         "the copy made at a save ended without a run (wait status {status}); why is above"
