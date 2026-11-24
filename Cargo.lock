@@ -4933,6 +4933,7 @@ dependencies = [
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-shaders",
+ "zerocopy",
 ]
 
 [[package]]
