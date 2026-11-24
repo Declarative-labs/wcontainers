@@ -1115,34 +1115,65 @@ cube_array_layer(nir_builder *b, nir_def *coord, nir_def *layer, nir_def *layers
    return nir_iadd(b, layer, nir_imul_imm(b, cube, WC_CUBE_FACES));
 }
 
-/* OpenGL's face of a cube map for direction `coord` (its table of cube map faces): the face's
- * coordinates, 0 to 1, and in `layer` its layer, +x, -x, +y, -y, +z and -z in order. */
-static nir_def *
-cube_face(nir_builder *b, nir_def *coord, nir_def **layer)
+/* The parts of vector `v` OpenGL's table of cube map faces takes for the face of direction
+ * `coord`: the numerators of the face's coordinates and its major axis, signed as the face is
+ * picked (for `v` = `coord`, the major axis's magnitude); in `layer`, where given, the face's
+ * layer, +x, -x, +y, -y, +z and -z in order. */
+static void
+cube_parts(nir_builder *b, nir_def *coord, nir_def *v, nir_def **sc, nir_def **tc, nir_def **major,
+           nir_def **layer)
 {
-   nir_def *r[WC_CUBE_AXES], *a[WC_CUBE_AXES], *positive[WC_CUBE_AXES];
+   nir_def *r[WC_CUBE_AXES], *a[WC_CUBE_AXES], *positive[WC_CUBE_AXES], *signed_v[WC_CUBE_AXES];
    for (unsigned i = 0; i < WC_CUBE_AXES; i++) {
-      r[i] = nir_channel(b, coord, i);
-      a[i] = nir_fabs(b, r[i]);
-      positive[i] = nir_fge(b, r[i], nir_imm_float(b, 0.0f));
+      nir_def *c = nir_channel(b, coord, i);
+      r[i] = nir_channel(b, v, i);
+      a[i] = nir_fabs(b, c);
+      positive[i] = nir_fge(b, c, nir_imm_float(b, 0.0f));
+      signed_v[i] = nir_bcsel(b, positive[i], r[i], nir_fneg(b, r[i]));
    }
    enum { X, Y, Z };
    nir_def *x_major = nir_iand(b, nir_fge(b, a[X], a[Y]), nir_fge(b, a[X], a[Z]));
    nir_def *y_major = nir_iand(b, nir_inot(b, x_major), nir_fge(b, a[Y], a[Z]));
-   nir_def *major = nir_bcsel(b, x_major, a[X], nir_bcsel(b, y_major, a[Y], a[Z]));
-   nir_def *sc = nir_bcsel(b, x_major, nir_bcsel(b, positive[X], nir_fneg(b, r[Z]), r[Z]),
-                           nir_bcsel(b, y_major, r[X],
-                                     nir_bcsel(b, positive[Z], r[X], nir_fneg(b, r[X]))));
-   nir_def *tc = nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], r[Z], nir_fneg(b, r[Z])),
-                           nir_fneg(b, r[Y]));
+   *major = nir_bcsel(b, x_major, signed_v[X], nir_bcsel(b, y_major, signed_v[Y], signed_v[Z]));
+   *sc = nir_bcsel(b, x_major, nir_bcsel(b, positive[X], nir_fneg(b, r[Z]), r[Z]),
+                   nir_bcsel(b, y_major, r[X], nir_bcsel(b, positive[Z], r[X], nir_fneg(b, r[X]))));
+   *tc = nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], r[Z], nir_fneg(b, r[Z])), nir_fneg(b, r[Y]));
+   if (!layer)
+      return;
    nir_def *axis = nir_bcsel(b, x_major, nir_imm_int(b, X),
                              nir_bcsel(b, y_major, nir_imm_int(b, Y), nir_imm_int(b, Z)));
    nir_def *towards = nir_bcsel(b, x_major, positive[X],
                                 nir_bcsel(b, y_major, positive[Y], positive[Z]));
    *layer = nir_iadd(b, nir_ishl_imm(b, axis, 1), nir_b2i32(b, nir_inot(b, towards)));
+}
+
+/* OpenGL's face of a cube map for direction `coord` (its table of cube map faces): the face's
+ * coordinates, 0 to 1, and in `layer` its layer, +x, -x, +y, -y, +z and -z in order. */
+static nir_def *
+cube_face(nir_builder *b, nir_def *coord, nir_def **layer)
+{
+   nir_def *sc, *tc, *major;
+   cube_parts(b, coord, coord, &sc, &tc, &major, layer);
    nir_def *face[] = {sc, tc};
    for (unsigned i = 0; i < ARRAY_SIZE(face); i++)
       face[i] = nir_fmul_imm(b, nir_fadd_imm(b, nir_fdiv(b, face[i], major), 1.0f), WC_HALF);
+   return nir_vec(b, face, ARRAY_SIZE(face));
+}
+
+/* The derivative of the face's coordinates of direction `coord` along the direction's derivative
+ * `d`, on the face `coord` picks, as OpenGL's level of detail of a cube map takes it:
+ * (dc * major - c * dmajor) / (2 * major * major) for each coordinate's numerator c. */
+static nir_def *
+cube_face_derivative(nir_builder *b, nir_def *coord, nir_def *d)
+{
+   nir_def *sc, *tc, *major, *dsc, *dtc, *dmajor;
+   cube_parts(b, coord, coord, &sc, &tc, &major, NULL);
+   cube_parts(b, coord, d, &dsc, &dtc, &dmajor, NULL);
+   nir_def *square = nir_fmul(b, major, major);
+   nir_def *face[] = {nir_fsub(b, nir_fmul(b, dsc, major), nir_fmul(b, sc, dmajor)),
+                      nir_fsub(b, nir_fmul(b, dtc, major), nir_fmul(b, tc, dmajor))};
+   for (unsigned i = 0; i < ARRAY_SIZE(face); i++)
+      face[i] = nir_fmul_imm(b, nir_fdiv(b, face[i], square), WC_HALF);
    return nir_vec(b, face, ARRAY_SIZE(face));
 }
 
@@ -1332,12 +1363,9 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
          nir_def *dy = tex->op == nir_texop_txd && !cube ? tex_source(tex, nir_tex_src_ddy)
                                                          : nir_ddy(b, position);
          if (tex->op == nir_texop_txd && cube) {
-            nir_def *unused;
             nir_def *at = nir_trim_vector(b, coord, WC_CUBE_AXES);
-            dx = nir_fsub(b, cube_face(b, nir_fadd(b, at, tex_source(tex, nir_tex_src_ddx)), &unused),
-                          position);
-            dy = nir_fsub(b, cube_face(b, nir_fadd(b, at, tex_source(tex, nir_tex_src_ddy)), &unused),
-                          position);
+            dx = cube_face_derivative(b, at, tex_source(tex, nir_tex_src_ddx));
+            dy = cube_face_derivative(b, at, tex_source(tex, nir_tex_src_ddy));
          }
          nir_def *sx = nir_fmul(b, dx, base_size), *sy = nir_fmul(b, dy, base_size);
          nir_def *rho = nir_fsqrt(b, nir_fmax(b, nir_fdot(b, sx, sx), nir_fdot(b, sy, sy)));
