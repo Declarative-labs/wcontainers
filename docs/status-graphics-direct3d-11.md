@@ -1156,8 +1156,11 @@ listed case of section 12 has its test against real Direct3D.
   specification's 2.5-ULP division, where WARP and the RTX 3080 (once the program's frames have
   drawn twice after its dispatch, by frame 18) give 0; the RTX 3080's driver gives ours' answer in
   the first frames. Matching it costs every converted program two fused multiply-adds per division
-  (the shaders crate's choice, asked). If you would rather accept the specification's allowance
-  here, say so and the test's reason changes; until then it is a known failure.
+  (the shaders crate's choice, asked). The shaders track holds that it is not its own (its run 113
+  question to you): its copies of the division give real Direct3D 11's first-frame bits on the RTX
+  3080, which is true, and is the answer the RTX 3080 leaves by frame 18. The two tracks disagree on
+  whose it is; please rule. If you would rather accept the specification's allowance here, say so
+  and the test's reason changes; until then it is a known failure.
 - Video is read as no part of a feature level (Departures): the tables' video columns are not
   required of ours, which serves no video device. If you read them as required, 10_0 and above
   need a video processor (`ID3D11VideoDevice`, `VideoProcessorBlt`) built first.
