@@ -1,42 +1,45 @@
-# the tree of commit 673309d7a (crates/shared-memory files hashed together: 040f49f0); script: checks/miri.sh
-arm-run: job rprimm/20261124-122900-1714754 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 25.13 18.65 18.32, jobs 12
-arm-run: in /work/src/rprimm, build directory /work/target/rprimm
-arm-run: command: bash /work/rprim-scripts/miri.sh
-===== miri 0.1.0 (20fe935d50 2026-11-23) load 25.13 18.65 18.32
+# the tree of commit 19a69bfed (crates/shared-memory, git tree 19adff861); script: checks/miri.sh
+Connection timed out during banner exchange
+Connection to 54.153.79.58 port 22 timed out
+x86-run: job o3m/20261124-172937-791033 (re-attach: x86-run --attach o3m 20261124-172937-791033; stop: x86-run --stop o3m 20261124-172937-791033)
+arm-run: job o3m/20261124-172937-791033 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 6.10 9.22 8.48, jobs 96
+arm-run: in /work/src/o3m, build directory /work/target/o3m
+arm-run: command: bash crates/shared-memory/checks/miri.sh 
+===== miri 0.1.0 (20fe935d50 2026-11-23) load 7.78 9.52 8.58
      Running attack/attacks.rs (/work/target/rprim-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/62863397605ff3cb/out/attacks-62863397605ff3cb)
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.68s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.71s
      Running foreign_implementation/heap/conformance.rs (/work/target/rprim-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/866647554417d208/out/heap-866647554417d208)
 test waits_until_woken ... ignored, Miri refuses rustix's futex call for its argument's type, before this crate's code is reached
-test result: ok. 13 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 14.18s
+test result: ok. 13 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 14.15s
      Running foreign_implementation/host/conformance.rs (/work/target/rprim-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/02ad93abf0ac6652/out/host-02ad93abf0ac6652)
 test anonymous::waits_until_woken ... ignored, Miri refuses rustix's futex call for its argument's type, before this crate's code is reached
-test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 17.31s
-wall 39 s
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 17.05s
+wall 54 s
 -- tree borrows
      Running attack/attacks.rs (/work/target/rprim-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/62863397605ff3cb/out/attacks-62863397605ff3cb)
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.67s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.82s
      Running foreign_implementation/heap/conformance.rs (/work/target/rprim-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/866647554417d208/out/heap-866647554417d208)
 test waits_until_woken ... ignored, Miri refuses rustix's futex call for its argument's type, before this crate's code is reached
-test result: ok. 13 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 14.25s
+test result: ok. 13 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 14.33s
      Running foreign_implementation/host/conformance.rs (/work/target/rprim-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/02ad93abf0ac6652/out/host-02ad93abf0ac6652)
 test anonymous::waits_until_woken ... ignored, Miri refuses rustix's futex call for its argument's type, before this crate's code is reached
-test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 17.04s
-wall 38 s
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 17.07s
+wall 40 s
 -- 16 seeds of every threaded test
 host: exit 0, threaded tests 3, reports of undefined behavior 0, failures 0
 heap: exit 0, threaded tests 3, reports of undefined behavior 0, failures 0
 attacks: exit 0, threaded tests 4, reports of undefined behavior 0, failures 0
-wall 105 s
+wall 223 s
 -- the futex test, ignored above: why
 error: Undefined Behavior: incorrect c-variadic argument type for `syscall(SYS_futex, ...)`: expected argument #2 to have type `*mut u32` but got incompatible type `*const std::sync::atomic::Atomic<u32>`
     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Undefined Behavior occurred here
     = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
-===== wrong change slice-one-word-long, host suite under Miri: >         let all = unsafe { core::slice::from_raw_parts(base, self.count + 1) };
+===== wrong change slice-one-word-long, host suite under Miri: >         let all = unsafe { core::slice::from_raw_parts(base, count + 1) };
 test anonymous::keeps_the_rest_of_a_word_another_thread_writes ... error: Undefined Behavior: constructing invalid value of type &[std::sync::atomic::Atomic<u64>]: encountered a dangling reference (going beyond the bounds of its allocation)
  = note: Undefined Behavior occurred here
  = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
 ===== wrong change length-rounded-to-a-page, host suite under Miri: >         self.map.len().next_multiple_of(4096)
 thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1002) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:13:5:
-test result: FAILED. 13 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 16.79s
-done load 57.91 30.35 22.33
-arm-run: exit 0 after 206 s, load 57.91 30.35 22.33
+test result: FAILED. 13 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 16.90s
+done load 8.55 10.11 9.31
+arm-run: exit 0 after 340 s, load 8.55 10.11 9.31

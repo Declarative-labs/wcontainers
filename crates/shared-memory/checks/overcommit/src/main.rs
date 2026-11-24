@@ -28,17 +28,28 @@ fn touch(words: &Words, label: &str) {
     for p in 0..total {
         words.store(p * page, p + 1).unwrap();
         if p % (total / 8).max(1) == 0 {
-            writeln!(out, "  {label}: page {p} of {total} written, Committed_AS {} MiB", meminfo("Committed_AS:") >> 20).ok();
+            writeln!(
+                out,
+                "  {label}: page {p} of {total} written, Committed_AS {} MiB",
+                meminfo("Committed_AS:") >> 20
+            )
+            .ok();
         }
     }
-    writeln!(out, "  {label}: all {total} pages written, every load {}", (0..total).all(|p| words.load(p * page) == Ok(p + 1))).ok();
+    writeln!(
+        out,
+        "  {label}: all {total} pages written, every load {}",
+        (0..total).all(|p| words.load(p * page) == Ok(p + 1))
+    )
+    .ok();
 }
 
 fn child(case: &str, bytes: u64) {
     let len = bytes as usize;
     match case {
         "file" => {
-            let file = memfd_create("probe", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).unwrap();
+            let file =
+                memfd_create("probe", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).unwrap();
             ftruncate(&file, bytes).unwrap();
             fcntl_add_seals(&file, SealFlags::SHRINK).unwrap();
             match HostMapping::file(file.as_fd(), 0, len) {
@@ -51,7 +62,11 @@ fn child(case: &str, bytes: u64) {
         }
         _ => match HostMapping::anonymous(len) {
             Ok(m) => {
-                println!("  anonymous: mapped {} MiB, Committed_AS {} MiB", bytes >> 20, meminfo("Committed_AS:") >> 20);
+                println!(
+                    "  anonymous: mapped {} MiB, Committed_AS {} MiB",
+                    bytes >> 20,
+                    meminfo("Committed_AS:") >> 20
+                );
                 touch(&Words::new(m), "anonymous");
             }
             Err(e) => println!("  anonymous: refused: {e}"),
@@ -68,11 +83,21 @@ fn run(mode: &str, case: &str, bytes: u64) {
         meminfo("CommitLimit:") >> 20,
         meminfo("Committed_AS:") >> 20
     );
-    let mut c = Command::new("/init").arg(case).arg(bytes.to_string()).stdout(Stdio::inherit()).spawn().unwrap();
+    let mut c = Command::new("/init")
+        .arg(case)
+        .arg(bytes.to_string())
+        .stdout(Stdio::inherit())
+        .spawn()
+        .unwrap();
     let start = Instant::now();
     loop {
         if let Some(status) = c.try_wait().unwrap() {
-            println!("  ended after {:?}: exit {:?}, signal {:?}", start.elapsed(), status.code(), status.signal());
+            println!(
+                "  ended after {:?}: exit {:?}, signal {:?}",
+                start.elapsed(),
+                status.code(),
+                status.signal()
+            );
             break;
         }
         if start.elapsed() > Duration::from_secs(30) {
@@ -93,8 +118,20 @@ fn main() {
         return;
     }
     fs::create_dir_all("/proc").ok();
-    rustix::mount::mount("proc", "/proc", "proc", rustix::mount::MountFlags::empty(), None).unwrap();
-    println!("probe: kernel {}", fs::read_to_string("/proc/sys/kernel/osrelease").unwrap().trim());
+    rustix::mount::mount(
+        "proc",
+        "/proc",
+        "proc",
+        rustix::mount::MountFlags::empty(),
+        None,
+    )
+    .unwrap();
+    println!(
+        "probe: kernel {}",
+        fs::read_to_string("/proc/sys/kernel/osrelease")
+            .unwrap()
+            .trim()
+    );
     let total = meminfo("MemTotal:");
     let mib = 1 << 20;
     let big = total * 8 / 10 / mib * mib;
