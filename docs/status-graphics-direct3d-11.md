@@ -394,15 +394,14 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
 3080 through the queue, not alone, at beeec184 (G4h run 5, logs/g4h5-bar*), and the same again at
-54fc06fc (G4h run 7, logs/r7-bar*):
+54fc06fc (G4h run 7, logs/r7-bar*) and at a93c8576 (G4h round 6 run 2, logs/r6g-*):
 - d3d11: 152 pass of 166; the 14 failing are the Gap list's absent features. test_format_support
   and test_swapchain_formats fail no check (each runs fewer than real Direct3D, which also makes an
   11_1 device), and test_vertex_formats passes, since G4h run 4.
 - d3d10core: 110 of 111: test_desktop_window (Gap list).
-- d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/a3b-wine10gl.log): the 13 failing
-  since round 2 run 12 and, since main run 3 reports no multisampling there,
-  test_alpha_to_coverage and test_check_multisample_quality_levels; all are under the WebGL 2
-  item of the Gap list.
+- d3d10core through the WebGL 2 build (10_0): 96 of 111, current (G4h run 9 and round 6 run 2,
+  logs/r9-bar-wine10gl.log and r6g-wine10gl.log; 97 at G4h runs 5, 7 and 8, before
+  test_clip_distance began to crash): 15 failing, all under the WebGL 2 item of the Gap list.
 - dxgi (not on G4's bar): 4 of the 17 tests without a Direct3D 12 part at round 2 run 8.
 
 ## Gap list (the pass bar's written list)
@@ -503,8 +502,8 @@ Not on Wine's verdicts, against the RTX 3080:
   result). Needs a route the interface does not have; no program measured reaches it.
 
 The WebGL 2 build (10_0; the bar's WebGL 2 cases match real Direct3D through it): what it does
-not give real Direct3D's verdict on (G4h run 5: Wine's d3d10core 97 of 111; the rig's scenes 95
-pass, 17 fail, 30 absent), each with its owner. Re-judged under the orchestrator's rule (G4h run
+not give real Direct3D's verdict on (round 6 run 2, logs/r6g-*: Wine's d3d10core 96 of 111; the
+rig's scenes 95 pass, 17 fail, 30 absent), each with its owner. Re-judged under the orchestrator's rule (G4h run
 6, from logs/g4h5-bar-webgl.log): no scene fails by its pixels. The 17 are the pictures of three
 scenes (raster, views, geometry), each of which stops at a refusal (`E_NOTIMPL`, named below:
 `FillModeConverted`, `TEXTURE_VIEWS`, `SV_PrimitiveID` and layers without compute) before writing
@@ -527,6 +526,15 @@ them, so there are no pixels to set against WARP's. The 95 that are drawn pass a
   `DXGI_ERROR_DEVICE_REMOVED` and Wine's test uses the object it was not given. The crash is the
   test's; the gap is the refusal.
 - Cull distances (`CullDistanceAsGeometry` needs compute): test_combined_clip_and_cull_distances.
+- test_clip_distance (passing at G4h run 8, crashing since run 9): its geometry shader reads no
+  clip distance while its vertex shader writes one, and the shaders crate's
+  `stage::capture_program` refuses every pair whose counts differ (`GeometryDistancesRead`, added
+  by its 03b897de of 2026-11-23); the device is removed and Wine's test then crashes on a texture
+  it was not given. Measured with the test's own bytecode on the rented x86 machine (scratch
+  r6h/clip_probe.rs, logs/r6h-clip-front.log): vertex outputs `SV_ClipDistance` mask 1, geometry
+  inputs none, refused with and without the front's clip key. Real Direct3D lets a stage leave
+  an earlier stage's values unread. The shaders track's (Asked); WebGPU draws it through compute
+  and passes.
 - Views in another format of the group (`Features::TEXTURE_VIEWS`, the WebGL 2 back end's):
   test_create_shader_resource_view, the rig's views scene.
 - `A8_UNORM` and the other four formats 10_0 requires are built since G4h run 5. Of the d3d10core
@@ -1204,6 +1212,26 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
+G4h round 6 run 2 (2026-11-23, Pacific; desktop i9-9900K with the RTX 3080, driver 32.0.16.2101,
+through the queue, not alone, the OpenGL track's conformance runs holding the hazard group between
+steps). The whole bar at a93c8576, this run's last code (main/q5-final.sh r6g lint lib webgllib bar
+wine10gl, logs/r6g-*), 17:06 to 21:45:
+- Lint of both builds clean. Library: com 15 pass (1 ignored), programs 68 pass (9 ignored: run
+  10's 8 and the new frames case), "lifetimes: seeds 1..9 of 300 steps each" in the log. The WebGL
+  2 build's 10_0 cases 7 pass (1 ignored).
+- Wine d3d11 152 of 166, d3d10core 110 of 111, the same failing tests as at run 9;
+  d3d10core through the WebGL 2 build 96 of 111, as at run 9 (test_clip_distance's crash, Gap list).
+- Scenes 137 pass, 0 fail, 2 absent; through the WebGL 2 build 95 pass, 17 fail, 30 absent.
+- Programs: the bar's three and atg-simplebezierpc, atg-simpleinstancingpc,
+  godot-platformer-2d-d3d11 and sdk-tutorial02, 04 to 07 pass with 0 pixels beyond;
+  atg-simplecomputepc 154,515 beyond in frames 10, 60 and 120 (Gap list); atg-simplemsaa_pc frame 10
+  8 beyond (largest 11), as at run 8. bgfx: 01, 24, 35, 37, 38 pass, 26-occlusion 6,458 beyond in
+  each frame (the overlay's memory line, Gap list).
+- The front's tests (front 60, unit, cache) were not rerun: no commit of this run touches
+  crates/wcontainers-direct3d-11 (last tested at 3fe49ed3, round 6 run 1).
+- Sizes, load times and building ahead were not rerun: no code of this run is in the shipped
+  library (own cases and tests only).
+
 G4h round 6 run 1 (2026-11-23, 09:50 to 10:10 Pacific; desktop i9-9900K with the RTX 3080, driver
 32.0.16.2101, through the queue in the hazard group, one job at a time, after the OpenGL track's
 conformance run):
@@ -1481,6 +1509,10 @@ Earlier runs' measurements are in this file's git history.
 - NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/wcontainers-nir/src/lib.rs in place of
   its own copy; until then the literal check reports that copy as a redefinition (its one finding
   outside the shaders and OpenGL crates' new code that touches this track).
+- Shaders track: `stage::capture_program` accepting a geometry shader that reads fewer clip or
+  cull distances than its vertex program writes (none, in Wine's d3d10core test_clip_distance:
+  vertex outputs `SV_ClipDistance` mask 1, geometry inputs none); since 03b897de it refuses with
+  `GeometryDistancesRead`, which removes the WebGL 2 build's device there (Gap list).
 - Shaders track: the conversion of DXBC `div` (and DXIL `fdiv`) giving what WARP and the RTX 3080
   settle on: the quotient refined once after the reciprocal (`q = a * r; e = fma(-b, q, a);
   q = fma(e, r, q)`), which gives 4 for 1200 / 300 where the plain division gives 3.9999998
