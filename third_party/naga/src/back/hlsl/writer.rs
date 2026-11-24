@@ -3545,8 +3545,6 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     write!(self.out, ")")?;
                 }
             }
-            // These overloads are only missing on FXC, so this is only needed for 32bit types,
-            // as non-32bit types are DXC only.
             Function::Sign => {
                 // HLSL's `sign` gives an integer whatever its argument; a float's sign is converted
                 // back to the argument's type.
@@ -3564,6 +3562,8 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     self.out.write_str(back::CLOSE)?;
                 }
             }
+            // These overloads are only missing on FXC, so this is only needed for 32bit types,
+            // as non-32bit types are DXC only.
             Function::MissingIntReturnType(fun_name) => {
                 let scalar_kind = func_ctx.resolve_type(arg, &module.types).scalar();
                 if let Some(Scalar::I32) = scalar_kind {
