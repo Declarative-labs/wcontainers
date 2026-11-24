@@ -2486,8 +2486,8 @@ wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest,
    return nir;
 }
 
-bool
-wc_nir_uses_storage(const struct nir_shader *nir)
+static bool
+uses_storage(const struct nir_shader *nir)
 {
    if (nir->info.num_ssbos || nir->info.num_images)
       return true;
@@ -2496,8 +2496,8 @@ wc_nir_uses_storage(const struct nir_shader *nir)
    return false;
 }
 
-struct nir_shader *
-wc_nir_pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
+static struct nir_shader *
+pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
 {
    if (tes->info.stage != MESA_SHADER_TESS_EVAL)
       return NULL;
@@ -2568,6 +2568,17 @@ wc_nir_pass_through_geometry(const struct nir_shader *tes, uint32_t size_at)
    nir_recompute_io_bases(nir, nir_var_shader_in | nir_var_shader_out);
    nir_validate_shader(nir, "pass-through");
    return nir;
+}
+
+struct nir_shader *
+wc_nir_storage_pass_through(struct nir_shader *tes, bool *wanted)
+{
+   *wanted = tes->info.stage == MESA_SHADER_TESS_EVAL && uses_storage(tes);
+   if (!*wanted)
+      return NULL;
+   const uint32_t at = wc_nir_generic_end(tes);
+   wc_nir_point_size_also_at(tes, at);
+   return pass_through_geometry(tes, at);
 }
 
 uint32_t

@@ -10,8 +10,6 @@ use wcontainers_nir::mesa::LAVAPIPE;
 const ICD_GET_INSTANCE_PROC_ADDR: &[u8] = b"vk_icdGetInstanceProcAddr\0";
 /// The Vulkan the references use.
 const API_VERSION: u32 = vk::API_VERSION_1_3;
-/// The mip level and array layer everything here starts at.
-const FIRST_INDEX: u32 = 0;
 /// How long a submission may take before the run counts as hung.
 const FENCE_TIME_LIMIT_NS: u64 = 60_000_000_000;
 
@@ -268,7 +266,7 @@ impl Lavapipe {
             let device = instance
                 .create_device(physical, &info, None)
                 .map_err(vk_error("vkCreateDevice"))?;
-            let queue = device.get_device_queue(family, FIRST_INDEX);
+            let queue = device.get_device_queue(family, 0);
             let xfb = ash::ext::transform_feedback::Device::new(&instance, &device);
             Ok(Lavapipe {
                 _library: library,

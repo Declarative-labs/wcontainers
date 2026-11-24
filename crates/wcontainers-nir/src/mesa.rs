@@ -235,8 +235,7 @@ unsafe extern "C" {
         largest: f32,
         block: u32,
     ) -> *mut NirShader;
-    fn wc_nir_uses_storage(nir: *const NirShader) -> bool;
-    fn wc_nir_pass_through_geometry(tes: *const NirShader, size_at: u32) -> *mut NirShader;
+    fn wc_nir_storage_pass_through(tes: *mut NirShader, wanted: *mut bool) -> *mut NirShader;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -528,21 +527,17 @@ impl Nir {
         (!squares.is_null()).then_some(Nir(squares))
     }
 
-    /// A program that reads or writes storage buffers or images.
-    pub fn uses_storage(&self) -> bool {
-        // SAFETY: self.0 is a live shader.
-        unsafe { wc_nir_uses_storage(self.0) }
-    }
-
-    /// A geometry program passing each primitive of this evaluation program on unchanged, every
-    /// output as written, so that this program runs before it; its point size read where it also
-    /// writes it, at the generic location `size_at` ([`Self::point_size_also_at`]), which is not
-    /// passed on. `None` for another stage, a program writing outputs at offsets known only when
-    /// run, or one writing a point size not also at `size_at`.
-    pub fn pass_through_geometry(&self, size_at: u32) -> Option<Nir> {
+    /// For an evaluation program using storage buffers or images, which runs as compute work
+    /// before a geometry program passing each of its primitives on unchanged, every output as
+    /// written: that geometry program, with this program's point size also written at the generic
+    /// location after its outputs, where the geometry program reads it and does not pass it on.
+    /// `None` for a program of another stage or using no storage; `Some(None)` for one writing
+    /// outputs at offsets known only when run, or a point size the geometry program cannot read.
+    pub fn storage_pass_through(&mut self) -> Option<Option<Nir>> {
+        let mut wanted = false;
         // SAFETY: self.0 is a live shader; the result is a new shader or null.
-        let geometry = unsafe { wc_nir_pass_through_geometry(self.0, size_at) };
-        (!geometry.is_null()).then_some(Nir(geometry))
+        let geometry = unsafe { wc_nir_storage_pass_through(self.0, &mut wanted) };
+        wanted.then(|| (!geometry.is_null()).then_some(Nir(geometry)))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the

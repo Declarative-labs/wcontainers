@@ -359,14 +359,14 @@ struct nir_shader *wc_nir_point_square(const struct nir_shader *vs, uint32_t at,
  * than one stream. */
 struct nir_shader *wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest,
                                            uint32_t block);
-/* A program that reads or writes storage buffers or images. */
-bool wc_nir_uses_storage(const struct nir_shader *nir);
-/* A geometry program passing each primitive of the evaluation program `tes` on unchanged (its
- * points, lines or triangles, every output as written), so that `tes` runs before it; a point
- * size read where `tes` also writes it, at the generic slot `size_at`
- * (`wc_nir_point_size_also_at`), which is not passed on. NULL for another stage, a program writing
- * outputs at offsets known only when run, or one writing a point size not also at `size_at`. */
-struct nir_shader *wc_nir_pass_through_geometry(const struct nir_shader *tes, uint32_t size_at);
+/* For an evaluation program `tes` that reads or writes storage buffers or images, which runs before
+ * a geometry program passing each of its primitives on: its point size also written at the generic
+ * slot after its outputs (`wc_nir_point_size_also_at`), and that geometry program, passing its
+ * points, lines or triangles on unchanged with every output as written, its point size read from
+ * that slot and not passed on. `*wanted` is false, and the result NULL, for a program of another
+ * stage or using no storage; the result is NULL with `*wanted` true for a program writing outputs at
+ * offsets known only when run, or a point size the geometry program cannot read. */
+struct nir_shader *wc_nir_storage_pass_through(struct nir_shader *tes, bool *wanted);
 
 /* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
  * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,
