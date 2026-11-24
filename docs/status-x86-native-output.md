@@ -27,8 +27,13 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   register-group and hostile-guest tests in I, the ymm upper halves across a call into the inside, and the X9
   programs. That executor is the native-without-virtual-machine track's W3 (its plan: "both forms on x86-64 Linux",
   after its W2, form I on ARM64), whose own bar already includes "the x86 plan's own way P and way I tests"; at
-  run 7 (2026-11-24) that track is in W1's round 4, W2 is not built and W3 not started. So these items cannot be
-  done by this track before W3 exists, and nothing of this output stands in W3's way (see "XN2 run 7").
+  runs 7 and 8 (2026-11-24) that track is in W1's round 4, W2 is not built and W3 not started. So these items
+  cannot be done by this track before W3 exists, and nothing of this output stands in W3's way (see "XN2 run 7").
+
+## XN2 run 8 (2026-11-24)
+
+The blocker stands unchanged: no commit since run 7 (0d2ddadc6), so crates/executor/implementation/in-process still
+does not exist and nothing was built or run.
 
 ## XN2 run 7 (2026-11-24)
 
