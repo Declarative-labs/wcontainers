@@ -18,6 +18,10 @@ use crate::{Error, Exit, Hypervisor, Interrupts, Memory, Register, Result, fresh
 // The framework takes a vector register's value in a vector register, as C passes a 16-byte vector, and
 // applevisor-sys declares it as a `u128`, which Rust passes in two general registers: the call is made in C
 // (src/hvf_vector.c).
+#[expect(
+    unsafe_code,
+    reason = "declares the C shim in hvf_vector.c, whose signature it matches; the claim above that applevisor's own call passes the value wrongly is unchecked; a safe fn declaration would keep only this line"
+)]
 unsafe extern "C" {
     fn wcontainers_set_vector(vcpu: hv_vcpu_t, reg: SimdFpReg, value: *const u128) -> i32;
 }
@@ -71,6 +75,10 @@ impl Hypervisor for HypervisorFramework {
 impl crate::VirtualMachine for HvfVirtualMachine {
     type Cpu = HvfCpu;
 
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: maps host memory into the virtual machine from a safe trait method that takes any pointer and length, so nothing keeps the range alive while it is mapped; Lend replaces it"
+    )]
     fn map(&self, host: NonNull<u8>, at: u64, length: u64) -> Result<()> {
         let flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
         // SAFETY: the host range is the caller's memory and outlives the mapping.
@@ -80,9 +88,20 @@ impl crate::VirtualMachine for HvfVirtualMachine {
     /// The framework keeps its own hold on mapped pages, so they are unmapped, replaced by fresh memory and
     /// mapped again.
     fn give_back(&self, memory: &Memory, at: u64, length: u64) -> Result<()> {
+        // The fixed remap below replaces whatever host memory the range covers, so all of it must be guest
+        // memory, as in KVM's give_back.
+        if !memory.contains(at, length) {
+            return Err(Error::Hypervisor(format!(
+                "giving back {length:#x} bytes at {at:#x}, which are not all guest memory"
+            )));
+        }
         // SAFETY: unmapping guest-physical memory the caller mapped.
+        #[expect(
+            unsafe_code,
+            reason = "unmaps a guest-physical range the check above found all in guest memory, which changes only what the virtual machine sees; Lend replaces it"
+        )]
         code(unsafe { hv_vm_unmap(at, length as usize) })?;
-        let host = NonNull::new(memory.host(at)).expect("host address");
+        let host = NonNull::new(memory.host_bytes(at, length)).expect("host address");
         fresh(Some(host), length)?;
         crate::VirtualMachine::map(self, host, at, length)
     }
@@ -269,6 +288,10 @@ impl crate::VirtualCpu for HvfCpu {
             .map_err(|e| Error::Hypervisor(format!("v{n}: {e:?}")))
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "calls the C shim with this CPU's own id and a pointer to a live local it only reads; a safe fn declaration of the shim removes it"
+    )]
     fn set_vector(&mut self, n: u8, value: u128) -> Result<()> {
         // SAFETY: the value is read during the call; the identifier is this CPU's.
         code(unsafe { wcontainers_set_vector(self.vcpu.id(), VECTOR[usize::from(n)], &value) })
@@ -286,6 +309,10 @@ impl crate::VirtualCpu for HvfCpu {
 }
 
 impl crate::Stopper for HvfStopper {
+    #[expect(
+        unsafe_code,
+        reason = "stops a virtual CPU by its raw id from another thread with a live one-element array; a reused id could stop another CPU, a logic and not a memory fault; applevisor's safe vcpus_exit replaces it"
+    )]
     fn stop(&self) -> Result<()> {
         let ids = [self.id];
         // SAFETY: valid identifiers; stopping a CPU that has gone is refused by the framework, not unsound.
