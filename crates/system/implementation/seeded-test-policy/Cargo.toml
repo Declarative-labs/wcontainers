@@ -13,7 +13,7 @@ path = "implementation.rs"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true

@@ -80,7 +80,7 @@ sha2 = "0.10.9"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [[test]]
 name = "volatile_bytes"

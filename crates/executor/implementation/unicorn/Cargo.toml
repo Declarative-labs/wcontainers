@@ -77,7 +77,7 @@ wcontainers-precise-instruction-set-unicorn = { path = "../../../precise-instruc
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [features]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)

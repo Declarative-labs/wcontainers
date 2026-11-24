@@ -100,7 +100,7 @@ perf-event2 = "0.7.4"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [[test]]
 name = "exits"
