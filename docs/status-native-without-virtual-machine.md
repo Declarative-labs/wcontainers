@@ -3,6 +3,60 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 6 (2026-11-24): the independent check's attacks on the inline protection, on hardware
+
+Scratch w2/run6 (check.sh with `SEEDS`, `CASES`, `ACASES`; check-vm.sh; attacks.sh; mutate-jumps.sh,
+mutate-access.sh; tagged-branch.c; outputs *-arm.out). Graviton4. Form I's executor is still not built: no
+primitive has landed and the rule of 2026-11-24 (no new unsafe) stands (Needs a primitive, "Form I"). Nothing of
+this run adds unsafe code. The interface notices since run 5 change nothing of this track's (host-process conformed
+in W1; the suite runs from conformance_run.rs).
+- Built, 920a00ef7 and db193049a: tests/in_process_attacks.rs, three of the check's four attacks run on hardware.
+  The in-process way's code for slot 1 runs in a P stub (slot 1's slots lie inside P's slot table; x24 holds the
+  window's base 2^33); a stub ends at a fault outside its code area and slot table, where I's floor entries would be,
+  so each translated call into the floor is pointed at P's entry of the same call (the `movz/movk x30` pair, the only
+  change to the code), and the stop crate resolves what the floor would.
+  - Jumps (the jump into the middle of translated code): `br`, `blr`, `ret` through each of the 26 registers the way
+    does not withhold, to targets in the window (aligned, misaligned, tagged), just past it, one bit past it, far
+    outside, a landing's alias and host address, inside translated code, the floor's entries, the slot table, our
+    pages. Each must end at its target's slot (the ending written there, or `udf` or a misaligned pc at exactly that
+    slot) or at the unreachable entry, resolved to `Landed`/`Alignment` at the target untagged as Linux does; the
+    guest's registers its own (x30 the return after `blr`). A return's or call's first jump calls the floor for its
+    last target; the test goes on without linking. Seeds 1 to 3 at 400 a piece pass (31,200 cases each,
+    check-arm.out). Linux's behaviour for a tagged target was measured (tagged-branch-arm.out: a branch to a tagged
+    address runs at the untagged one and faults with the untagged pc; with bit 55 set the top byte is kept). Broken
+    in the remote copy (mutate-jumps-arm.out, jumps5-arm.out): the check 8 bits short fails the one-bit class (a
+    class added because random targets almost never had bits 48 to 55 alone), the slot from the whole target in place
+    of its window address fails the in-window classes; with slot 0 that mutation was invisible (base 0), which is why
+    the test runs slot 1.
+  - Accesses (an address just past a mapping, a wrap-around): twelve shapes (ldr immediate, ldur, register offset
+    plain, shifted, sxtw, uxtw, ldrb, ldp, str, stp, pre-index load, post-index store), each case its own drawn word
+    translated anew, at addresses inside a mapping, just past or before one, across the window's top, a base wrapped
+    past 2^64 by its index, an alias above the window, one bit above it, tagged, bit 55 set, a window byte's host
+    address. Model: Linux completes an access iff every byte is on a mapped page that allows it, untagged as Linux
+    does. Canaries at the guest's own addresses and in slot 2's window; the window may change only where a store
+    completed; a completed access moves Linux's bytes and writes back Linux's base; a fault resolves to `Outside`
+    or a `MemoryFault` at a byte of the access with the state before it. Seeds 1 to 6 at 400 a shape pass (4,800
+    each; about 1,550 completed, 1,000 faulted in the window, 2,200 outside; attacks3-arm.out). Broken in the remote
+    copy (mutate-access-arm.out): the check 8 bits short, 560 failing; the check on bit 63 alone, 2,254 failing.
+  - Self-modifying code: not run; the code watch is the floor's (3.4), so it waits on the executor.
+- Found and fixed, 720a4f3f9 (translator and stop crate, a commit of its own): with the window's top page mapped,
+  an 8-byte access at 2^32 - 7 faults on hardware at the mark's own address (Graviton4 reports the faulting page's
+  first byte), and the stop crate took it for the mark and resolved `Displaced` (attacks1-arm.out); the emulator
+  reports one byte further, so in_process_way never met it. The mark is now read at its own byte, `way::MARK` =
+  window base + 2^32 + 4095 (`ldrb`'s largest offset), which no crossing access reaches. Under the plan's layout the
+  top band (`GUARD`, 64 KiB, 3.1) keeps a crossing access from starting on a mapped page, so this guards against a
+  CPU's choice of fault byte rather than a reachable case; the test's own first version mapped the window's top
+  pages, against the plan, and also found that a pair whose base is just above 2^32 with a negative offset faults
+  where Linux completes there: that is the reason for the band, and the test now maps its top region below it.
+  Verdicts (check-arm.out, check-vm-arm.out, Graviton4, 18:13 to 18:25 UTC, load 31 to 52 on 96 cores): clippy with
+  warnings denied clean on the arm64, translator, stop, host-process and both VM crates; the arm64, translator,
+  guest-cpu and stop crates' tests pass; in_process_way seeds 1 to 3 at 16 cases a form and 4,000 pieces pass; the
+  VM executor's exits, native (32,562 cases, 0 failing), floor, registers, host_branches, interrupts and probe pass
+  with KVM.
+- A rule for form I's floor, from the jump test: the `LastTarget` call comes before the window check with the
+  target as the guest gave it, so the floor must link a last target only to a piece of a guest address in the
+  window; linking anything for an outside target would let a later jump to the same value skip the check (plan 3.2).
+
 ## W2 run 5 (2026-11-24): collisions checked, and the in-process way's code run on hardware for the first time
 
 Scratch w2/run5 (check.sh with `SEEDS`, `CASES`, `PIECES`; cost.sh with `ITERATIONS`, `ROUNDS`; mutate.sh,
@@ -1759,10 +1813,15 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
   checked, and displaced code (rule e) is built and checked (W2 run 4); collisions are checked, and the way's code
   runs natively in a stub at window base 0, its cost per access shape measured and the bounds-check-bypass test
-  run on it (W2 run 5). The in-process executor itself waits for
+  run on it (W2 run 5); the independent check's attacks on jumps and accesses run on hardware in slot 1, and the
+  mark has its own byte (W2 run 6). The in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
-  when sp is back in the window, never link displaced pieces) and every measured item of W2's bar.
+  when sp is back in the window, never link displaced pieces), its last-target rule (W2 run 6), the attack by
+  self-modifying code, and every measured item of W2's bar (the check's cost per workload, the crossover table,
+  the getppid entry, isolation through system-call pointers and signal frames, slot exhaustion, two I containers
+  beside a P one). The wrapping form waits on the owner's decision 2. Beyond these, nothing of W2 is left that
+  can be built or measured without new unsafe code.
 - W3 now also carries the x86 native output track's in-process tests (interface-changes.md, 2026-11-24): the link,
   register-group and hostile-guest tests in the in-process way, the ymm upper halves across a call into the inside,
   the X9 programs natively in that way with figures, and 0x67 string instructions through the inside
@@ -1798,6 +1857,11 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 ## How to run
 
+- Since W2 run 6: scratch w2/run6. check.sh runs clippy, the crates' tests, in_process_way and in_process_attacks
+  (`SEEDS`, `CASES`, `PIECES`, `ACASES`); check-vm.sh the VM executor's tests with KVM (`--name nwvmvm`);
+  mutate-jumps.sh and mutate-access.sh break the translator in the remote copy (each must fail). Send each as
+  `arm-run . --name nwvm -- "bash -c '<script with its quotes escaped>'"`. The attacks test alone:
+  `WCHP_SEED=1 WCHP_CASES=400 cargo test -p wcontainers-executor-host-process --test in_process_attacks`.
 - Since W2 run 5: scratch w2/run5. check.sh runs clippy and the in-process test (`SEEDS`, `CASES`, `PIECES`);
   cost.sh runs `in_process_cost` (`ITERATIONS`, `ROUNDS`) and spec.sh `in_process_speculation` (`ROUNDS`, `SEED`),
   both ignored by default; send each inline, as
@@ -1986,6 +2050,10 @@ W1 run 1 (2026-11-23 12:55 to 13:20 UTC): no timings yet, only the probe's value
 
 Made by this track on 2026-11-23 with the orchestrator's leave; each commit kept the ARM64 translator suites and
 the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above).
+- 720a4f3f9 (W2 run 6): the in-process way's mark is `way::MARK` (window base + 2^32 + 4095, read by `ldrb wzr,
+  [x15, #4095]` after `eor x15, x24, #2^32`); `way::OUTSIDE` stays the start of the never mapped bytes. The stop
+  crate's `in_process::resolve` compares a fault with `window_base() + MARK`. Only the in-process way's code changes;
+  verdicts under W2 run 6.
 - ASKED, not made (round 4 run 1): a guest loop that names a withheld register (x18, x23 or x28) keeps it in the
   register page, a load and a store per use; in bench's matrix the innermost loop's counter is x18 and the loop runs 4
   times plain under P (both ways withhold the same registers, so the VM form pays it in such loops too). Proposed:

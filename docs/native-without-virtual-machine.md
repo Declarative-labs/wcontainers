@@ -255,7 +255,14 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
 As built for I (W2 run 2, `wcontainers_arm64::Way::InProcess { slot }`, the exact form only): `u` is x15 and
 `base` x24 (the next two by native.md 3.3's static count, 29.2 and 30.3 per 1000), their guest values the two words
 after the register page. Every failed check, and every new stack pointer outside the window by (d), reads one byte
-at the window's base plus 2^32 (`way::OUTSIDE`, unmapped by 3.1) out of line: the floor finds there either the
+at the window's base plus 2^32 plus 4095 (`way::MARK`, unmapped by 3.1; 4095 being `ldrb`'s largest offset) out of
+line. It is not the first byte past the window because an access whose bytes cross the window's top faults there on
+hardware when its first bytes are mapped (Graviton4 reports the faulting page's first byte), which the floor took
+for the mark and resolved as a stack pointer leaving (W2 run 6, the attacks test below with the window's top page
+mapped; the emulator reports one byte further, so its test never met it). The top band (`GUARD`, 3.1) keeps such an
+access from starting on a mapped page, so it faults in the band first; the mark's own byte makes the floor's reading
+not depend on that or on which byte a CPU reports, at no cost (no crossing access reaches 4095 bytes in: Arm's
+largest is 64). The floor finds there either the
 instruction's own fault (the access's address from its operand) or a stack pointer to take displaced (e), by the
 span's instruction; no new call code. An access with an immediate is `add t, base, wA, uxtw` then the copied word
 on t; a register offset's sum, once checked, is cut by the access itself, `[base, wT, uxtw]` (the measured form;
@@ -281,7 +288,20 @@ is never mapped, so every exit of a displaced piece reaches the floor as a fault
 which would take sp as the host's; displaced pieces are never linked. The stop crate takes the way: the guest sp is
 the host's less `Way::stack_base` (0 when displaced), and displaced code makes no probe. The floor decides, after
 each displaced instruction, whether sp is back in the window (rejoin with the ordinary way) or not. Not built: the
-floor itself, and the wrapping form.
+floor itself, and the wrapping form. A rule for the floor, from the jump test below: a return's or call's first
+jump asks the floor to make its target the last one (`LastTarget`) before the window check, with the target as the
+guest gave it, so the floor links a last target only to a piece it holds for that guest address in the window and
+never to anything for a target outside it, or a later jump to the same value would skip the check.
+The independent check's attacks, on hardware (W2 run 6, host-process tests/in_process_attacks.rs, slot 1's
+translation run in a P stub, each call into the floor moved to P's entry of the same call): `br`, `blr` and `ret`
+through every register not withheld, to targets in the window (aligned, misaligned, tagged), one bit past it, far
+outside it, a landing's alias and host address, inside translated code, the floor's entries, the slot table and our
+pages: each ends at its target's slot or at the unreachable entry, which resolves to the guest landing at the
+target untagged as Linux does (measured: a branch to a tagged address runs at the untagged one, and faults with the
+untagged pc). Twelve access shapes at addresses inside, just past or before a mapping, across the window's top, a
+base wrapped past 2^64 by its index, an alias above the window, tagged, bit 55 set, a window byte's host address,
+against Linux's outcome, with canaries at the guest's own addresses and in the next slot's window. Self-modifying
+code waits on the executor (the code watch is the floor's).
 The slot table's base and reach, the entries' address and size are `wcontainers_arm64::way`'s constants, which the
 host-process layout asserts; stops resolve through `wcontainers-executor-arm64-stop` with the way as a parameter.
 Withheld registers: the VM form's three (count x18, scratch x23, register page x28) in P; two more in I (`base`
