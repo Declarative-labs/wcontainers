@@ -1699,8 +1699,10 @@ impl Cpu for NativeCpu {
         let Some(m) = self.memories.remove(&memory) else {
             return;
         };
-        // Its tables may be the ones switched to; its identifier is not used again before a new generation.
+        // Its tables may be the ones switched to. Every CPU forgets its translations before its tables and frames
+        // are given back, so none rests on the identifier staying unused until a new generation.
         self.idle.switch();
+        self.forget_every_translation();
         let global = self.global;
         self.runs.extend(m.reserved.values().map(|r| r.run));
         with_frames(|frames| {
