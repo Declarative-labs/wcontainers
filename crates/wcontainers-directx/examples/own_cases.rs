@@ -1943,7 +1943,7 @@ fn main() -> windows::core::Result<()> {
             const GLYPHS: usize = 100;
             const QUAD_INDICES: u32 = 6;
             let (w, h) = (320u32, 180u32);
-            // standalone 300.0: atg-simplecomputepc's iteration count, its constant buffer's third value
+            // atg-simplecomputepc's iteration count, its constant buffer's third value.
             let iterations = 300.0;
             let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
             let fractal = cs(FRACTAL);
