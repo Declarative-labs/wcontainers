@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use wcontainers_abi::{Access, Permissions, SystemCallRequest};
 use wcontainers_arm64::encode;
-use wcontainers_executor::memory_space::{MemorySpace, VolatileBytes};
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_executor::{
     ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
     TrapHandler,
@@ -18,6 +18,7 @@ use wcontainers_executor::{
 use wcontainers_executor_host_process::executor::HostProcess;
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_processor_architecture_arm64::{Processor, ZERO_PROCESSOR};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 static HOST: OnceLock<Arc<HostProcessHost>> = OnceLock::new();
 

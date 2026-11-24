@@ -45,6 +45,9 @@ wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }
 # The executor interface, its ARM64 processor state, and the exception classes the state's syndromes are made from.
 wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 aarch64-cpu = "12.0.0"
@@ -76,6 +79,7 @@ wcontainers-precise-instruction-set-translator = { path = "../../../precise-inst
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]

@@ -16,8 +16,10 @@ use wcontainers_abi::{
     Access, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, SharedId,
     ThreadId, Warning,
 };
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
 };
 use wcontainers_executor::{
     ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
@@ -34,6 +36,7 @@ use wcontainers_processor_architecture_arm64::{
     PagePermission, Processor,
 };
 use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Turn};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use super::{GUEST, HostProcessExecutor, data_extents, page_cover, pieces};
 use crate::host::HostProcessHost;
@@ -353,6 +356,20 @@ impl VolatileBytes for HostProcessBytes<'_> {
             Ok(()) => count,
             Err(_) => 0,
         }
+    }
+
+    /// The bytes are copied out of the stub's memory first, so the sink is given them in one write.
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        let mut buffer = vec![u8::MIN; self.len() as usize];
+        let count = self.read(&mut buffer);
+        sink.write(&buffer[..count])
+    }
+
+    /// The source fills a buffer in one read, which is then copied into the stub's memory.
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut buffer = vec![u8::MIN; self.len() as usize];
+        let count = source.read(&mut buffer)?;
+        Ok(self.write(&buffer[..count]))
     }
 }
 
