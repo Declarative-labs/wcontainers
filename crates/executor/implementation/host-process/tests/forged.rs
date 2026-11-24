@@ -36,6 +36,8 @@ const SYSCALL_NUMBER: u8 = 8;
 const WRITE_AT: u64 = CODE;
 const READ_AT: u64 = CODE + 0x40;
 const FORGE_AT: u64 = CODE + 0x80;
+/// A store of x1 to the address in x6.
+const STORE_AT: u64 = CODE + 0x100;
 /// The data as written before the forks, A's store and B's store.
 const BEFORE: u64 = 0x1111;
 const BY_A: u64 = 0x2222;
@@ -92,6 +94,9 @@ fn code_page() -> Vec<u8> {
     ];
     forge.extend(exit_call());
     put(FORGE_AT, &forge);
+    let mut store_to = vec![store(1, 6, 0)];
+    store_to.extend(exit_call());
+    put(STORE_AT, &store_to);
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
@@ -182,7 +187,7 @@ fn case(kind: u64, value: u64, syndrome: u64) {
     cpu.set_permissions(a, DATA, PAGE, Permissions::READ | Permissions::WRITE)
         .expect("data");
     cpu.write(a, CODE, &code_page()).expect("the code");
-    cpu.code_changed(a, CODE, PAGE, &[WRITE_AT, READ_AT, FORGE_AT]);
+    cpu.code_changed(a, CODE, PAGE, &[WRITE_AT, READ_AT, FORGE_AT, STORE_AT]);
     cpu.write(a, DATA, &BEFORE.to_le_bytes()).expect("write");
     let b = cpu.memory_duplicate(a).expect("fork B");
     let c = cpu.memory_duplicate(a).expect("fork C");
@@ -289,4 +294,39 @@ fn forged_exits_naming_other_addresses_hurt_only_the_forger() {
             case(kind, value, DATA_ABORT_LOWER | WRITE_NOT_READ);
         }
     }
+}
+
+#[test]
+fn a_guest_store_to_its_control_pages_is_its_own_fault_there() {
+    let mut cpu = executor();
+    let memory = cpu.memory_new().expect("memory");
+    cpu.set_permissions(memory, CODE, PAGE, Permissions::READ | Permissions::EXECUTE)
+        .expect("code");
+    cpu.set_permissions(memory, DATA, PAGE, Permissions::READ | Permissions::WRITE)
+        .expect("data");
+    cpu.write(memory, CODE, &code_page()).expect("the code");
+    cpu.code_changed(memory, CODE, PAGE, &[STORE_AT, READ_AT]);
+    let thread = cpu.thread_new(memory).expect("thread");
+    for page in [FIRST_INDEX, FIRST_INDEX + 1, 1 << 14] {
+        let address = THREAD_PAGES as u64 + page * PAGE + control::ANSWER as u64;
+        let mut registers = registers_at(STORE_AT, BY_B);
+        registers.x[6] = address;
+        let seen = run(&mut cpu, thread, &registers);
+        assert_eq!(
+            seen.exits,
+            [Exit::MemoryFault {
+                address,
+                access: wcontainers_abi::Access::Write
+            }],
+            "control page {page}"
+        );
+        assert_eq!(seen.last.pc, STORE_AT, "at the store");
+    }
+    // The thread still takes turns: it runs on to its exit from the next routine.
+    let seen = run(&mut cpu, thread, &registers_at(READ_AT, 0));
+    assert!(
+        matches!(seen.exits.last(), Some(Exit::Syscall(call)) if call.number.0 == u64::from(EXIT)),
+        "{:?}",
+        seen.exits
+    );
 }
