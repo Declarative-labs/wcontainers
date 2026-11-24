@@ -5446,6 +5446,8 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
+ "wcontainers-socket-options",
+ "wcontainers-socket-options-linux",
  "wcontainers-volatile-bytes",
 ]
 
@@ -5525,6 +5527,8 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-readiness",
+ "wcontainers-socket-options",
+ "wcontainers-socket-options-linux",
  "zerocopy",
 ]
 
@@ -5895,11 +5899,14 @@ dependencies = [
  "linux-raw-sys",
  "nix",
  "rustix",
+ "socket2 0.6.5",
  "wcontainers-abi",
  "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-route-resolver",
+ "wcontainers-socket-options",
+ "wcontainers-socket-options-linux",
 ]
 
 [[package]]
@@ -6012,6 +6019,36 @@ dependencies = [
  "wcontainers-graphics-test",
  "wgpu",
  "windows",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-socket-options"
+version = "0.1.0"
+dependencies = [
+ "linux-raw-sys",
+ "rustix",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-socket-options-conformance"
+version = "0.1.0"
+dependencies = [
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-socket-options",
+]
+
+[[package]]
+name = "wcontainers-socket-options-linux"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-socket-options",
+ "wcontainers-socket-options-conformance",
  "zerocopy",
 ]
 

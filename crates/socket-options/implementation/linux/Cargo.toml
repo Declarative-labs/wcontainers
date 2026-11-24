@@ -1,0 +1,35 @@
+[package]
+name = "wcontainers-socket-options-linux"
+description = "The plain socket options and queue counts through Linux's setsockopt, getsockopt and ioctl: the only unsafe code of the socket crates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-socket-options = { path = "../.." }
+rustix = { version = "1.1.6", default-features = false, features = ["std"] }
+zerocopy.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# setsockopt, getsockopt and ioctl, and SIOCOUTQNSD, which linux-raw-sys does not carry.
+libc = "0.2.191"
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "no_std"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+wcontainers-socket-options-conformance = { path = "../../conformance" }
+
+[[test]]
+name = "conformance"
+path = "tests/conformance.rs"
+
+[lints.rust]
+# A primitive: it may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

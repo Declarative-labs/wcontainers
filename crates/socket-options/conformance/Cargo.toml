@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-socket-options-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-socket-options = { path = ".." }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+# The sockets the checks set and read options on.
+rustix = { version = "1.1.6", features = ["net"] }
+
+[lints]
+workspace = true

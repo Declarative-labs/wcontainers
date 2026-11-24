@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-socket-options"
+description = "The Linux socket options whose values are plain bytes, the queue counts of a socket, and the trait that makes those calls."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+# The levels, names and structures of the options listed.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "ioctl", "net", "no_std"] }
+# The kernel's error numbers.
+rustix = { version = "1.1.6", default-features = false, features = ["std"] }
+# The element types of the arrays `MPTCP_FULL_INFO` fills.
+zerocopy.workspace = true
+
+[lints]
+workspace = true
