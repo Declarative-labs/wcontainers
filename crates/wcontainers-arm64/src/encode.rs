@@ -111,6 +111,7 @@ mod name {
     pub const ADRP: &str = "ADRP_only_pcreladdr";
     pub const ADR: &str = "ADR_only_pcreladdr";
     pub const LDUR_32: &str = "LDUR_32_ldst_unscaled";
+    pub const LDR_64_REGISTER: &str = "LDR_64_ldst_regoff";
 }
 
 written_forms! {
@@ -167,6 +168,7 @@ written_forms! {
     ADRP,
     ADR,
     LDUR_32,
+    LDR_64_REGISTER,
 }
 
 /// Arm's names of the fields the encoder and its callers name.
@@ -200,6 +202,7 @@ mod field_name {
     pub const CRN: &str = "CRn";
     pub const CRM: &str = "CRm";
     pub const OP2: &str = "op2";
+    pub const S: &str = "S";
     pub const REGISTER: &str = "R";
 }
 
@@ -259,6 +262,8 @@ written_fields! {
     CRN,
     CRM,
     OP2,
+    /// A register offset's shift bit: 1 shifts the index by the access's size.
+    S,
 }
 
 /// A name Arm's table gives fields: its place among every such name, [`field`]'s first and then the others in
@@ -703,6 +708,18 @@ pub fn load_store(
     }
     let scaled = u32::try_from(offset / unit).map_err(|_| DoesNotFit)?;
     LOADS_AND_STORES.word(form, [rt.into(), rn.into(), scaled])
+}
+
+/// A copied load or store of one register by a register offset, made to address `[rn, wM, uxtw]` (the index not
+/// shifted), whichever of its register-offset forms it was: the shifted form's option is fixed, so the extended
+/// form's fields are set on it.
+pub fn register_offset_uxtw(word: u32, rn: Register, rm: Register) -> Result<u32, DoesNotFit> {
+    let extended = form::LDR_64_REGISTER;
+    let option = Field::written(extended, field::OPTION);
+    let shift = Field::written(extended, field::S);
+    let word = shift.set(option.set(word, self::option(false, u32::BITS))?, 0)?;
+    let word = replace(word, field::RN, rn.into())?;
+    replace(word, field::RM, rm.into())
 }
 
 /// The field `field` of a word of any form Arm's table has, set to `value`: a copied instruction with a register
@@ -1391,6 +1408,30 @@ mod tests {
 
     /// A builder given a form of another kind places the values it can in order, so a value that does not fit
     /// before the missing field is refused, and the missing field is a fault of the caller.
+    #[test]
+    fn a_register_offset_access_is_made_unshifted_uxtw_from_either_form() {
+        // `ldrb w0, [x1, x2]` (the shifted form, its option fixed) and `ldr x3, [x4, w5, sxtw #3]` (the extended).
+        for word in [0x3862_6820, 0xf865_d883] {
+            let made = super::register_offset_uxtw(word, 24, 23).expect("a register-offset access");
+            let access = crate::decode(made).memory_access().expect("an access");
+            let unshifted_uxtw = crate::Address::Indexed {
+                base: crate::Reg::X(24),
+                index: crate::Reg::X(23),
+                extend: crate::Extend {
+                    signed: false,
+                    from_bits: 32,
+                },
+                shift: 0,
+            };
+            assert_eq!(access.address, unshifted_uxtw, "{word:#x} made {made:#x}");
+            assert_eq!(
+                crate::decode(made).memory_access().map(|m| m.bytes),
+                crate::decode(word).memory_access().map(|m| m.bytes),
+                "{word:#x}"
+            );
+        }
+    }
+
     #[test]
     fn a_form_of_another_kind_is_refused_or_missing_in_field_order() {
         assert_eq!(

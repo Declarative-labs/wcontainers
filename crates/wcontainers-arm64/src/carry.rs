@@ -954,7 +954,7 @@ fn access_in_process(out: &mut Out, route: Route, i: &I, word: u32) {
                 Address::Offset { offset, .. } | Address::PreIndex { offset, .. } => offset,
                 _ => 0,
             };
-            access_in_window(out, &m, false, None, None, |t| {
+            access_in_window(out, &m, false, None, None, None, |t| {
                 let first = encode::add_immediate(t, t, at).expect("a pair's offset fits");
                 let load = encode::load_store(name, rt, t, 0, 1).expect("fits");
                 (vec![first], load)
@@ -966,19 +966,33 @@ fn access_in_process(out: &mut Out, route: Route, i: &I, word: u32) {
         _ if base_of(&m.address) == Some(Reg::Sp) && post.is_some() => {
             stack_post_register(out, &m, post.expect("a register"), word);
         }
-        _ => access_in_window(out, &m, one_element(i), align, post, rebuilt),
+        _ => {
+            let register_offset = matches!(m.address, Address::Indexed { .. }).then_some(word);
+            access_in_window(
+                out,
+                &m,
+                one_element(i),
+                align,
+                post,
+                register_offset,
+                rebuilt,
+            );
+        }
     }
 }
 
 /// An access checked and cut to the window: its address before its immediate (`a`) checked, then made the host's in
-/// t, from which `words` makes the access (its last word, the commit point). A written back base gets its new
-/// value from u after the access, which a fix-up gives it at a stop between the two.
+/// t, from which `words` makes the access (its last word, the commit point). An access by a register offset, the
+/// copied `register_offset`, is cut by its own addressing (`[base, wT, uxtw]`) where no page probe needs the host
+/// address. A written back base gets its new value from u after the access, which a fix-up gives it at a stop
+/// between the two.
 fn access_in_window(
     out: &mut Out,
     m: &MemoryAccess,
     one_element: bool,
     align: Option<u32>,
     post: Option<Register>,
+    register_offset: Option<u32>,
     words: impl FnOnce(Register) -> (Vec<u32>, u32),
 ) {
     let base = base_of(&m.address).expect("a literal access is rebased");
@@ -1026,10 +1040,16 @@ fn access_in_window(
         });
     }
     window_check(out, a);
-    out.put(window_address(SCRATCH, a));
     let tested_before =
         one_element && aligned_with_base(&m.address, m.bytes) && out.aligned.holds(base, m.bytes);
-    if align.is_none() && m.bytes > 1 && may_cross_page(m) && !tested_before {
+    let page_test = align.is_none() && m.bytes > 1 && may_cross_page(m) && !tested_before;
+    let cut = register_offset.filter(|_| !page_test).map(|word| {
+        encode::register_offset_uxtw(word, BASE, SCRATCH).expect("a register-offset access")
+    });
+    if cut.is_none() {
+        out.put(window_address(SCRATCH, a));
+    }
+    if page_test {
         let at = Address::Offset {
             base: Reg::X(SCRATCH),
             offset,
@@ -1049,7 +1069,10 @@ fn access_in_window(
     if let Some(w) = written_back {
         out.put(w);
     }
-    let (prefix, access) = words(SCRATCH);
+    let (prefix, access) = match cut {
+        Some(access) => (Vec::new(), access),
+        None => words(SCRATCH),
+    };
     out.put_all(&prefix);
     let next = out.next();
     out.commit(access, next);
