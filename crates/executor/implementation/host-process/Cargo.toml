@@ -87,6 +87,9 @@ wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The differential test's draws of layer 1's cases.
 proptest = "1.12.0"
+# The in-process way's test runs translated code in the emulator (GPL-2.0, test only, as the virtual-machine form's
+# tests use it).
+unicorn-engine = "2.1.5"
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 # Finding the host call a traced stub thread is about to make, in the step test.
@@ -161,6 +164,9 @@ name = "forged"
 
 [[test]]
 name = "differential"
+
+[[test]]
+name = "in_process_way"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
