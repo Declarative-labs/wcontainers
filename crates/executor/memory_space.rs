@@ -5,6 +5,7 @@ use creusot_std::prelude::{
 };
 use thiserror::Error;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
+use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_volatile_bytes::VolatileBytes;
 
 /// One page of a space as the contract sees it. Only proofs use it.
@@ -40,6 +41,9 @@ pub trait MemorySpace: Sized {
     /// What tells one frame from another. It exists only in proofs.
     type Frame;
 
+    /// The processor whose memory this is, which fixes the addresses that exist.
+    type Architecture: ProcessorArchitecture;
+
     // The model. Each implementation says what these are for it; everything else is fixed here.
 
     /// Whether the holder holds this space.
@@ -50,11 +54,15 @@ pub trait MemorySpace: Sized {
     #[logic]
     fn page(self, holder: Self::Holder, start: Int) -> Page<Self::Frame>;
 
-    /// The addresses a program may use, the same in every space.
-    #[logic]
-    fn addressable() -> Range<Int>;
-
     // The rules. Sealed: no implementation can change them.
+
+    /// The addresses a program may use: the architecture's, the same in every space.
+    #[logic(open, sealed, inline)]
+    fn addressable() -> Range<Int> {
+        pearlite! {
+            Range { start: Self::Architecture::ADDRESSABLE.start@, end: Self::Architecture::ADDRESSABLE.end@ }
+        }
+    }
 
     /// Whether the addresses run forward and lie inside the space.
     #[logic(open, sealed, inline)]

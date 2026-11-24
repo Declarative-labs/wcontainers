@@ -226,6 +226,7 @@ impl MemorySpace for SimulatedMemory {
     type Bytes<'space> = SimulatedBytes<'space>;
     type Holder = Tables;
     type Frame = Frame;
+    type Architecture = Arm64;
 
     #[logic]
     fn held(self, holder: Tables) -> bool {
@@ -239,10 +240,6 @@ impl MemorySpace for SimulatedMemory {
         }
     }
 
-    #[logic]
-    fn addressable() -> Range<Int> {
-        pearlite! { Range { start: Arm64::ADDRESSABLE.start@, end: Arm64::ADDRESSABLE.end@ } }
-    }
 
     #[ensures(match result { Ok(_) => Self::inside(addresses.start@, addresses.end@), Err(_) => !Self::inside(addresses.start@, addresses.end@) })]
     fn borrow(&self, addresses: Range<u64>) -> Result<SimulatedBytes<'_>, InvalidAddressError> {

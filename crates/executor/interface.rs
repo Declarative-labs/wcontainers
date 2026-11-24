@@ -19,7 +19,7 @@ use crate::memory_space::MemorySpace;
 pub trait Executor {
     type Architecture: ProcessorArchitecture;
     type TranslatorConfig: Default;
-    type GuestMemory: MemorySpace;
+    type GuestMemory: MemorySpace<Architecture = Self::Architecture>;
     type Interrupter: ExecutionInterrupter + 'static;
 
     type CreateGuestMemoryError;
