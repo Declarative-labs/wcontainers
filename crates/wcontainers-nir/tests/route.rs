@@ -645,6 +645,42 @@ fn inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolat
     }
 }
 
+const CENTROID_ELSEWHERE: &str = "#version 450
+layout(location = 0) centroid in vec2 moved;
+layout(location = 1) centroid in vec2 only_centroid;
+layout(location = 2) in vec2 asked_at_centroid;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = vec4(floor(moved) + interpolateAtOffset(moved, only_centroid), only_centroid)
+        + interpolateAtCentroid(asked_at_centroid).xyxy + asked_at_centroid.yxyx;
+}
+";
+
+#[test]
+fn a_centroid_input_also_read_another_way_is_made_from_the_other_way() {
+    let stage = || {
+        Nir::from_glsl(&[(Stage::Fragment, CENTROID_ELSEWHERE)])
+            .unwrap()
+            .pop()
+            .unwrap()
+    };
+    assert!(stage().nir.reads_sample_positions());
+    assert!(!stage().nir.interpolate_elsewhere(3));
+    for samples in [1, 2, 4, 8, 16] {
+        let mut nir = stage().nir;
+        assert!(nir.interpolate_elsewhere(samples));
+        nir.to_common_form(Stage::Fragment).unwrap();
+        let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+        wcontainers_nir::spirv::validate(&module).unwrap();
+        // A slot read only at its centroid stays there; the others are at the pixel's centre.
+        let (centre, centroid) = (Some(naga::Sampling::Center), Some(naga::Sampling::Centroid));
+        assert_eq!(
+            fragment_inputs(&module),
+            [(0, centre), (1, centroid), (2, centre)]
+        );
+    }
+}
+
 const AT_OWN_SAMPLE: &str = "#version 450
 layout(location = 0) in vec4 only_there;
 layout(location = 1) in vec4 also_here;
