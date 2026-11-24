@@ -493,6 +493,7 @@ fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
 /// meaning's on the operands layer 1's random cases rarely reach: every exponent of both signs with the fractions
 /// at the estimates' interval edges and not-a-numbers, every selector of Linux's table and its neighbours, every
 /// rflags bit popped, and accesses that fault in the read-only and unmapped data or off the canonical range.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() {
     use wcontainers_translator_test::guest::x86_64::{
@@ -686,6 +687,7 @@ fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() 
 }
 
 /// The inside's answer equals the meaning's for `case`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn answered_as_the_meaning(case: &Case) {
     use wcontainers_translator_test::guest::x86_64::native::answered;
     use wcontainers_translator_test::layer1::translated;
@@ -709,6 +711,7 @@ fn answered_as_the_meaning(case: &Case) {
 /// `lfs` through a wrapping 32-bit address equal the meaning's: every selector of Linux's code segments and its
 /// neighbours, canonical and non-canonical targets and bases, every rflags bit `iret` loads, frames and pointers
 /// that fault at each slot; and `rdtsc` and `rdtscp` give the clock as the meaning does.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
@@ -905,6 +908,7 @@ fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() 
 /// the meaning's: each RFBM, components in and out of their initial configuration, a TOP that rotates the
 /// registers, areas whose XSTATE_BV, header and MXCSR `xrstor` takes or refuses, and areas misaligned, in the
 /// read-only data, across the data's end, off the canonical range, and wrapping a 32-bit address under fs.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_inside_answers_xsave_and_xrstor_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
