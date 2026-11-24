@@ -44,7 +44,30 @@ by piece; arm-tree/ is the tip, arm-patched/ the tip with j5e/translator-pool.pa
   wall clock test (fails as at none) and outside `a_full_connection_hears_a_reset` (ours "after reset: poll
   1 in out err hup rdhup" and "so_error Connection reset by peer", theirs "poll 1 in out" and "so_error
   none"), the same three as the second record's bounded run.
-- Still running when this was written: the runtimes at none, the surface tests and the follow-ups.
+- The runtimes at none apart (6,000 s limit, load 7 to 14): go and node x2 pass; java x2 fail as at full
+  ("Could not allocate compressed class space"); python was cut at the limit before its first verdict (at
+  none it needs about 4,700 s alone: the second record's follow-ups).
+- The surface tests (wasmtime executor's surface and refused, 13:53 UTC, load 7 to 18) at full, none and
+  bounded: refused 77 passed; surface 20 passed, 1 ignored (`run_with_the_cache`, run by
+  `a_second_process_starts_from_the_cache`) at each, the five J5 names among them.
+- After the bar the ARM64 machine's build output of this track (debug, the test cache, tmp) was deleted:
+  906 MB left (the LTP image's files).
+
+Follow-ups (patched tip, ARM64 machine, 13:58 to 15:16 UTC, load 4 to 18; arm-patched/follow):
+- busybox `files` at full alone: 3 runs of 3 pass (20.6 s to 38.2 s). Its one difference in the whole run
+  was the minute of `ls -la /dev/shm /dev/pts` (ours 05:06, theirs 05:05: the directories are made as the
+  container starts, and the reference ran a minute earlier); it passed at none and bounded in the whole
+  runs. A timing dependent test of the kernel track's.
+- outside `a_full_connection_hears_a_reset` at bounded alone: 6 runs of 6 pass (2.2 s to 3.5 s).
+- cpulimit's wall clock test alone: passes at none and full, fails at bounded (ours "handled: killed by 9",
+  with "progress counted by stop checks").
+- LTP at full, three runs in a row from a cold cache for those tests: getrusage04 and clock_gettime04 fail
+  on the first (getrusage04: 525 translations made, 9.0 s compiling; clock_gettime04: 541 made, 10.5 s)
+  and pass on the second and third (1 and 4 made); setrlimit06 fails 3 of 3; mem02 hangs 3 of 3 (125 s
+  to 130 s); fsx22 passes 3 of 3 (679 s to 697 s). At none (cold): getrusage04, clock_gettime04 and
+  setrlimit06 fail, mem02 passes (33.6 s), fsx22 runs past 900 s. At bounded (cold): getrusage04,
+  clock_gettime04 and setrlimit06 fail, mem02 hangs, fsx22 passes (676 s). The stand-in: the first four
+  pass, fsx22 runs past 900 s.
 
 ## J5c, second run (2026-11-24, from 03:05 UTC): J5's bar again after the owner's interface changes
 
@@ -335,32 +358,37 @@ For the owner (the interfaces, read-only to this track):
 
 ## Where things stand
 
-- J5 is closed on the tree as it stands (J5c, section at the top), and goes to its independent check. Nothing
-  of this track's own is left for it. Every test of the kernel test crate whose verdict with the back end
-  differs from the stand-in's, with its one cause and owner (all at 0314e263, ARM64 machine):
+- J5 is closed on the tree as it stands (J5c, third run, at the top), and goes to its independent check.
+  Nothing of this track's own is left for it. Every test of the kernel test crate whose verdict with the back
+  end differs from the stand-in's, with its one cause and owner (all at b315b6ad, ARM64 machine):
   - The translator's process-wide pool (translator track, 69639b37; fix sketched in scratch
-    j5c/translator-pool.patch): at the tip every test of saving, procsignals, outside, threads, backend,
-    rootbackend and repeats hangs at full (each binary held 900 s; the copy's stack in `translate_within`).
-    With the patch they give the stand-in's verdicts.
+    j5e/translator-pool.patch): at the tip every test of saving, procsignals, outside, threads, backend,
+    rootbackend and repeats hangs at full (each binary held 900 s; the forked copy's stack in
+    `in_worker_cross` under `translate_within`). With the patch they give the stand-in's verdicts.
   - The address ceiling (the back end's 4 GiB address space; the embedder interface's export): java
     `start_up_matches_reference` and `threads_and_collections_match_reference` (kernel warning "process
-    outgrew the ceiling", "Could not allocate compressed class space"), python
-    `system_test_modules_match_reference` (`test_around_4GB` maps a file of 4 GiB and 6 bytes). The kernel
-    gives that map ENOMEM without its "outgrew the ceiling" warning, since the driver makes the address
-    space end at the ceiling: for the kernel track.
+    outgrew the ceiling", "Could not allocate compressed class space: 1073741824 bytes"), python
+    `system_test_modules_match_reference` (its one differing line `test_around_4GB ERROR`: the test maps a
+    file of 4 GiB and 6 bytes). The kernel gives that map ENOMEM without its "outgrew the ceiling" warning,
+    since the driver makes the address space end at the ceiling: for the kernel track.
   - The progress count (translator C1 and its use in the wasmtime executor): cpulimit
-    `cpu_limit_on_the_wall_clock_matches_reference` (fails in the whole run at full and bounded, passes
-    alone) and LTP setrlimit06 (fails at every look-ahead): SIGKILL without SIGXCPU, with the warning
-    "progress counted by stop checks".
-  - The translator at full and bounded (translator track; a regression since J5 run 5): LTP mem02 (no turn
-    ends for 120 s; passes at none in 24 s).
-  - Timing: LTP clock_gettime04 fails only on a run that translates its code (the back end's counted
-    "translated at run time"), passes once cached; LTP fsx22 passes with the back end where the stand-in
-    runs past 900 s; outside `a_full_connection_hears_a_reset` failed once in the whole bounded run and
-    passes alone 6 of 6 (kernel track's test).
-  - Closed at this tip: the kernel's parked-call assertion (outside 10 runs of 8 pass), the mapping floor (LTP
+    `cpu_limit_on_the_wall_clock_matches_reference` (fails in the whole runs at none and bounded and alone
+    at bounded; passes at full) and LTP setrlimit06 (fails at every look-ahead, every run): SIGKILL without
+    SIGXCPU, with the warning "progress counted by stop checks".
+  - The translator at full and bounded (translator track): LTP mem02 (hangs, 125 s; passes at none in
+    33.6 s and on the stand-in in 3.3 s).
+  - Run-time compiling charged as the guest's time (kernel track's charge of a free turn by the monotonic
+    clock, asked under "Asked of the kernel track": CPU time in free turns): LTP getrusage04 ("stime
+    increased > 2000us") and clock_gettime04 ("CLOCK_REALTIME ... greater than 5 ms") fail on a run that
+    makes its translations (about 530 made, 9 to 10.5 s compiling) and pass once they are on disk.
+  - Timing of the kernel track's tests: busybox `files` (the minute in `ls -la` of /dev/shm; passes alone 3
+    of 3 and in the whole runs at none and bounded); outside `a_full_connection_hears_a_reset` (failed in
+    the whole bounded run twice now, ours seeing the reset sooner; alone 6 of 6 pass). LTP fsx22 passes with
+    the back end at full and bounded where the stand-in runs past 900 s.
+  - Closed: the kernel's parked-call assertion (outside 10 runs of 8 pass at full), the mapping floor (LTP
     pth_str01 and pth_str03 pass), node `system_program_matches_reference` (passes), the slow LTP four (gf16,
-    gf17, mmapstress09 and 10 pass within 900 s).
+    gf17, mmapstress09 and 10 pass within 900 s), the stop flag's unsafe uses (the crate inherits the
+    workspace's lints; the wasmtime executor's call has no `unsafe { }` any more).
 - J0 (the plan), J1, J2, J3 and J4a are done and on main; their records are below.
 - J5 (files outside, sockets, network, the whole suite): everything is built, committed and pushed. Run 1 built
   the local system's file backend and network, one bind mount, wcon's `--volume` and `--publish`; run 3 merged
