@@ -30,8 +30,15 @@ by piece; arm-tree/ is the tip, arm-patched/ the tip with j5e/translator-pool.pa
   class space: 1073741824 bytes", kernel warning "process outgrew the ceiling"; python
   `system_test_modules_match_reference`: its one line `test_around_4GB ERROR`, theirs `ok`), and busybox
   `files` (see follow-ups). cpulimit's wall clock test passed in the whole run this time.
-- Still running when this was written: LTP at full and on the stand-in, none, bounded, the runtimes at none,
-  the surface tests and the follow-ups.
+- LTP at full (3,330 s, load 5 to 25) against the stand-in (3,899 s, load 17 to 34): 4,226 tests, 4,221
+  verdicts equal. The five others: fsx22 (stand-in past 900 s, ours passes), mem02 (ours hangs, the
+  stand-in passes), clock_gettime04 (ours "CLOCK_REALTIME ... greater than 5 ms: 17"), setrlimit06 (ours
+  "Got only SIGKILL after reaching both limit", with "progress counted by stop checks"), and getrusage04,
+  new since the second run (ours "stime increased > 2000us", with "progress counted by stop checks"; it
+  passed at full on c07e21cd). The stand-in's verdicts equal the second run's but fsx22 (timeout both) and
+  getrusage04 (pass both): no stand-in verdict changed.
+- Still running when this was written: none, bounded, the runtimes at none, the surface tests and the
+  follow-ups (busybox `files` and the five LTP tests again at each look-ahead).
 
 ## J5c, second run (2026-11-24, from 03:05 UTC): J5's bar again after the owner's interface changes
 
