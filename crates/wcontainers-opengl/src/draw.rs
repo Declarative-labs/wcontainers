@@ -2403,6 +2403,12 @@ fn draw<B: Backend>(
     };
     // SAFETY: as above.
     let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
+    // The program fetches the inputs of other kinds as well, so the draw binds their streams too.
+    let pulled: Vec<u32> = vertex
+        .pulled
+        .iter()
+        .map(|&(location, _)| location)
+        .collect();
     // The geometry program takes the position's transform, the vertex program's streamed as
     // written.
     let geometry = if !own_squares {
