@@ -712,15 +712,13 @@ fn compare_compute<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The cases run by Direct3D 11 and by `backend` from both builds, at each seed; the names of those
-/// that differ.
+/// The cases run by Direct3D 11 on the GPU and on WARP and by `backend` from both builds, at each
+/// seed; the names of those where a word or a counter of ours equals neither real implementation's
+/// (they differ where Direct3D leaves a result free, such as a division's last bit).
 fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) -> Vec<String> {
-    let gpu = d3d11::create(
-        wcontainers_graphics_test::Driver::Hardware,
-        false,
-        &[D3D_FEATURE_LEVEL_11_0],
-    )
-    .unwrap();
+    let real = |driver| d3d11::create(driver, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
+    let gpu = real(wcontainers_graphics_test::Driver::Hardware);
+    let warp = real(wcontainers_graphics_test::Driver::Warp);
     let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
@@ -737,6 +735,7 @@ fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) ->
             let build = if dxil { "dxil" } else { "dxbc" };
             let name = format!("seed {seed} {} {build}", case.shader);
             let mut reference = direct3d(&gpu, &case);
+            let mut software = direct3d(&warp, &case);
             let mut made = match ours(backend, &case, dxil) {
                 Ok(made) => made,
                 Err(e) => {
@@ -753,28 +752,39 @@ fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) ->
                 }
             };
             ordered(&case, &mut reference);
+            ordered(&case, &mut software);
             ordered(&case, &mut made);
             compared += 1;
+            let word = |w: &[u8]| u32::from_le_bytes(w.try_into().unwrap());
             let mut apart = 0;
-            for (slot, (a, o)) in reference.views.iter().zip(&made.views).enumerate() {
-                for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
-                    if x != y {
+            for (slot, ((a, s), o)) in reference
+                .views
+                .iter()
+                .zip(&software.views)
+                .zip(&made.views)
+                .enumerate()
+            {
+                for (w, ((x, z), y)) in a.chunks(4).zip(s.chunks(4)).zip(o.chunks(4)).enumerate() {
+                    if y != x && y != z {
                         apart += 1;
                         if apart <= 8 {
                             eprintln!(
-                                "  view {slot} word {w}: direct3d {:#010x}, ours {:#010x}",
-                                u32::from_le_bytes(x.try_into().unwrap()),
-                                u32::from_le_bytes(y.try_into().unwrap())
+                                "  view {slot} word {w}: direct3d {:#010x}, warp {:#010x}, ours {:#010x}",
+                                word(x),
+                                word(z),
+                                word(y)
                             );
                         }
                     }
                 }
             }
             eprintln!(
-                "{name}: counters direct3d {:?}, ours {:?}; {apart} words apart",
-                reference.counters, made.counters
+                "{name}: counters direct3d {:?}, warp {:?}, ours {:?}; {apart} words apart from both",
+                reference.counters, software.counters, made.counters
             );
-            if apart > 0 || reference.counters != made.counters {
+            if apart > 0
+                || (reference.counters != made.counters && software.counters != made.counters)
+            {
                 failures.push(name);
             }
         }
