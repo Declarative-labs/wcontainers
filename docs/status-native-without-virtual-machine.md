@@ -2134,6 +2134,10 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 10 marked uses (9 lines) left since W2 run 14 wait
   for the primitives (Needs a primitive); when they land, each use here becomes a call of one.
+- Not traced (W2 run 14): busybox `sh`'s 1,000 programs took 3.62 to 4.66 s in release at load 12 to 14, against
+  3.33 to 3.67 s in W1 round 4 run 2 (and 3.16 to 3.31 times the old model in round 4 run 5); the spread inside one
+  run is as wide as the gap, so whether anything since round 4 made a program slower needs alternating rounds of the
+  two trees on one quiet CPU.
 - W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2), and its stops
   resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
   access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
