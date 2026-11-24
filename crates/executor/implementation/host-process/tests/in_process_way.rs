@@ -14,7 +14,8 @@
 //! instruction at a time (a piece naming x15 or x24 keeps u and the base in two it does not name, counted); and every form is run in displaced code (rule e), from a stack pointer outside the
 //! window. Pieces with direct branches, forward inside them and past their end, and a loop counted down in a
 //! register, after a part naming nearly every register in half of them (so that only the loop can keep u and the
-//! base in registers of its own), run against the reference followed through its branches until it leaves the
+//! base in registers of its own), and jumps through a register among the branches, run against the reference
+//! followed through its branches until it leaves the
 //! piece's instructions. A collision (one register named twice where Arm leaves the result open) runs in the reference with the
 //! registers the meaning does not write renamed to free ones.
 //!
@@ -131,6 +132,8 @@ const BODY_LENGTH: usize = 5;
 const TURNS: u64 = 4;
 /// The most guest instructions the reference runs of one piece with branches.
 const REFERENCE_STEPS: usize = 400;
+/// The jumps through a register a piece with branches draws.
+const JUMPS: [encode::Form; 3] = [form::BR, form::BLR, form::RET];
 
 /// A seeded case: an instruction and the guest's state before it.
 #[derive(Clone, Debug)]
@@ -172,6 +175,8 @@ enum Outcome {
     Stray(u64),
     /// The translated code still running after [`STEPS`] host instructions.
     Running,
+    /// A jump's first miss asked the floor to make this its last target, which is not where the jump went.
+    AskedOther(u64),
 }
 
 fn setting(name: &str, default: u64) -> u64 {
@@ -601,6 +606,8 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
         })
         .expect("the exits' hook");
     let into = faults.clone();
+    let asked: Rc<RefCell<Vec<u64>>> = Rc::default();
+    let asking = asked.clone();
     unicorn
         .add_code_hook(
             entries,
@@ -609,6 +616,15 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
                 let code = (address - IN_PROCESS_ENTRIES) / PROCESS_ENTRY_BYTES;
                 let call = u16::try_from(code).ok().and_then(InsideCall::from_code);
                 match call {
+                    // A jump's first miss: the floor makes no last target here and goes on after the call, with the
+                    // target the compare left in t recorded.
+                    Some(InsideCall::LastTarget) => {
+                        let t = unicorn.reg_read(x_register(SCRATCH.into())).expect("t");
+                        asking.borrow_mut().push(t);
+                        let link = unicorn.reg_read(RegisterARM64::X30).expect("x30");
+                        unicorn.reg_write(RegisterARM64::PC, link).expect("pc");
+                        return;
+                    }
                     // The call is reported at its blr, before the return address in x30.
                     Some(call) => {
                         let link = unicorn.reg_read(RegisterARM64::X30).expect("x30");
@@ -683,7 +699,12 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
     write_vectors(&unicorn, &case.q);
     let ran = unicorn.emu_start(HOST_CODE, 0, 0, STEPS);
     let pc = match faults.take() {
-        Some((Outcome::Done(state), _)) => state.pc,
+        Some((Outcome::Done(state), _)) => {
+            if let Some(&other) = asked.borrow().iter().find(|&&t| t != state.pc) {
+                return (Outcome::AskedOther(other), None);
+            }
+            state.pc
+        }
         Some((outcome, None)) => return (outcome, None),
         Some((outcome, Some(t))) => {
             let (page, after) = kept(&unicorn, REGISTER_PAGE);
@@ -1454,16 +1475,20 @@ fn stopped_pc(resolution: &Resolution) -> Option<u64> {
 /// Pieces with direct branches and a loop, against the reference followed through its branches. Each piece is,
 /// in order: in half of them, a part naming every register below x30 ([`crowded_words`]); a body of one to
 /// [`BODY_LENGTH`] instructions, accesses as the pieces of several draw them and, one in four, a direct branch
-/// (b, bl, b.cond, bc.cond, cbz, cbnz, tbz, tbnz, of any register or condition); in three quarters a loop back to
+/// (b, bl, b.cond, bc.cond, cbz, cbnz, tbz, tbnz, of any register or condition) or, one in three of those, a jump
+/// through a register (`adr xR` of its target, then br, blr or ret through xR, any register but the loop's
+/// counter, to any instruction of the piece or up to [`EXITS_PAST`] past it); in three quarters a loop back to
 /// the body's start, counted down in x15, x24 or another register from one to [`TURNS`] (`sub` then `cbnz`), which
 /// no word of the body names; and up to two more such instructions. Each branch goes forward, inside the piece or
-/// up to [`EXITS_PAST`] instructions past it, never to the loop's own branch. The translated piece runs once; the
+/// up to [`EXITS_PAST`] instructions past it, never to the loop's own branch or a jump past its adr. A jump's first
+/// miss calls the floor to make its target the last one, which here goes on at once, the target asked for recorded
+/// and required to be where the jump went. The translated piece runs once; the
 /// reference runs from the piece's start one instruction at a time, from the state the one before left, through
 /// its branches, until it leaves the piece's instructions, where the translated piece must have ended at the same
 /// guest address (through that address's entry slot) with the same state; or until it stops, or the translated
 /// piece's stop resolves to its instruction with an outcome the single instructions' rules accept, where the two
 /// must agree as theirs do. A branch to an instruction the piece holds that leaves through its slot fails, but for
-/// a call, whose target the translator does not follow.
+/// a call or a jump through a register, whose target the translator does not follow.
 /// Knobs: `WCHP_IN_PROCESS_BRANCHY` pieces, `WCHP_SEED`.
 #[test]
 fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
@@ -1483,8 +1508,8 @@ fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
         })
         .collect();
     let mut tally = Tally::default();
-    let (mut crowded, mut looped, mut loops_kept_elsewhere, mut left, mut steps_run) =
-        (0, 0, 0, 0, 0);
+    let (mut crowded, mut looped, mut loops_kept_elsewhere, mut left, mut steps_run, mut jumps) =
+        (0, 0, 0, 0, 0, 0);
     let mut failures: Vec<String> = Vec::new();
     for _ in 0..pieces {
         let mut words = if rng.bool() {
@@ -1505,12 +1530,18 @@ fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
         };
         let looping = rng.u32(0..4) != 0;
         let head = words.len();
-        // Branches are written once the piece's length is known.
+        // Branches and jumps are written once the piece's length is known; a jump is two words.
         let mut branching = Vec::new();
+        let mut jumping = Vec::new();
         let mut instruction = |words: &mut Vec<u32>, rng: &mut fastrand::Rng| {
             if rng.u32(0..4) == 0 {
-                branching.push(words.len());
-                words.push(0);
+                if rng.u32(0..3) == 0 {
+                    jumping.push(words.len());
+                    words.extend([0, 0]);
+                } else {
+                    branching.push(words.len());
+                    words.push(0);
+                }
                 return;
             }
             words.push(loop {
@@ -1535,10 +1566,24 @@ fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
             instruction(&mut words, &mut rng);
         }
         let length = words.len();
+        for &at in &jumping {
+            let r = loop {
+                let r = rng.u8(..=LINK);
+                if !(looping && r == counter) {
+                    break r;
+                }
+            };
+            let to = rng.usize(..length + EXITS_PAST as usize);
+            let offset = (to as i64 - at as i64) * INSTRUCTION as i64;
+            words[at] = encode::adr(r, offset).expect("a near target");
+            words[at + 1] = encode::branch_register(JUMPS[rng.usize(..JUMPS.len())], r);
+            jumps += 1;
+        }
         for at in branching {
+            // Never into a jump past its target's adr, nor to the loop's own branch.
             let to = loop {
                 let to = rng.usize(at + 1..length + EXITS_PAST as usize);
-                if Some(to) != back {
+                if Some(to) != back && !jumping.contains(&(to - 1)) {
                     break to;
                 }
             };
@@ -1614,9 +1659,13 @@ fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
                     "the reference ran {REFERENCE_STEPS} instructions in the piece"
                 ));
             }
-            // A call leaves through its exit even to an instruction the piece holds: its target is not followed.
-            let call = matches!(decode(case.word), I::Branch { link: true, .. });
-            let called = call && matches!(&translated, Outcome::Done(t) if t.pc == state.pc);
+            // A call or a jump through a register leaves through its exit even to an instruction the piece holds:
+            // its target is not followed.
+            let unfollowed = matches!(
+                decode(case.word),
+                I::Branch { link: true, .. } | I::BranchRegister { .. }
+            );
+            let called = unfollowed && matches!(&translated, Outcome::Done(t) if t.pc == state.pc);
             if !held.contains(&state.pc) || called {
                 left += u64::from(matches!(translated, Outcome::Done(_)));
                 break match &translated {
@@ -1644,7 +1693,8 @@ fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
     }
     eprintln!(
         "seed {seed:#x}, {pieces} pieces with branches: {crowded} crowded, {looped} looping, \
-         {loops_kept_elsewhere} crowded loops keeping u or the base elsewhere, {left} left through an exit, \
+         {loops_kept_elsewhere} crowded loops keeping u or the base elsewhere, {jumps} jumps through a register, \
+         {left} left through an exit, \
          {steps_run} reference steps: {tally:?}, {} failing",
         failures.len()
     );
