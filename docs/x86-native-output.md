@@ -130,10 +130,11 @@ Never copied, by route:
   register offset is added and wrapped by the CPU, a vector index needs no rebuild, an implicit rsi, rdi or rbx
   (`movs`, `cmps`, `lods`, `xlat`, `maskmovq`, `maskmovdqu`, `vmaskmovdqu` with `gs:`) needs none either, a base of
   rsp or rbp keeps the guest's fault (#GP, an override naming no stack segment), and the CPU picks the segment
-  among several prefixes as it does for the guest (the ninth check's `2e 65 36` `setg`, whose last prefix ss
-  wins). `stos`, `scas` and `ins` reach es:rdi, which no override changes: copied. An instruction that names a
-  withheld register takes its stand-ins around the window, re-encoded by iced on `fs:` (so its several segment
-  prefixes become the one iced decodes, as the meaning reads them); a RIP-relative operand on the area's segment
+  among several prefixes as it does for the guest (measured on the Xeon: cs, ds, es and ss overrides are
+  ignored and the last of fs and gs wins, so `2e 65 36` is gs and `65 64` fs; iced decodes the same, so `65 64`
+  is not this route). `stos`, `scas` and `ins` reach es:rdi, which no override changes: copied. An instruction
+  that names a withheld register takes its stand-ins around the window, re-encoded by iced on `fs:` (its several
+  segment prefixes become the one iced decodes, the CPU's own choice); a RIP-relative operand on the area's segment
   is `mov t, imm64` (an address place) inside the window and the access on `fs:[t]`, `fs:[t32]` under 0x67. The
   in-process way (I), where FS is the thread area, keeps the inside for the implicit forms (XN2). A RIP-relative
   operand with the guest's 0x67 off the area's segment is made on `[t32]` likewise, so the CPU wraps a bit offset

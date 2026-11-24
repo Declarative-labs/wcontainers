@@ -191,8 +191,8 @@ fn the_address_size_prefix_wraps_before_the_base() {
 }
 
 /// The guest's prefixes and their order are kept, each GS override made FS, so the CPU picks the segment it picks
-/// for the guest (the check's `2e 65 36` setg, whose last prefix is ss) and wraps each part of an access under 0x67
-/// (its fxsave64 across offset 2^32).
+/// for the guest (the check's `2e 65 36` setg, where gs wins) and wraps each part of an access under 0x67 (its
+/// fxsave64 across offset 2^32).
 #[test]
 fn the_guest_bytes_run_on_fs() {
     let values = || {

@@ -1469,8 +1469,10 @@ fn every_unoffered_code_is_drawn_x86_64() {
 #[test]
 fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
-    use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare as natively};
-    use wcontainers_translator_test::guest::x86_64::{GS, RFLAGS, RSP, XMM, plain};
+    use wcontainers_translator_test::guest::x86_64::native::{
+        Ended, REFERENCE_HOST, compare as natively,
+    };
+    use wcontainers_translator_test::guest::x86_64::{FS, GS, RFLAGS, RSP, XMM, plain};
     use wcontainers_translator_test::layout::{CODE, DATA};
     use wcontainers_x86::{R9, R10, RAX, RBX, RCX, RDI, RSI, USER_END};
     // Where the stack, a string's destination and a bit offset are, and a GS base above 2^32 (the check's gs67.c).
@@ -1480,9 +1482,18 @@ fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
     let mut reference = Reference::start(&X86_64::REFERENCE);
     let (mut same, mut known, mut failures) = (0, BTreeMap::<&str, u64>::new(), Vec::new());
     let mut check = |case: Case| match natively(&mut reference, &case, REFERENCE_HOST) {
-        Ok((Agreement::Same, _)) => same += 1,
-        Ok((Agreement::KnownFailure(why), _)) => *known.entry(why).or_default() += 1,
-        Err(report) => failures.push(format!("{:02x?}: {report}", case.code.code())),
+        Ok((Agreement::Same, ended)) => {
+            same += 1;
+            Some(ended)
+        }
+        Ok((Agreement::KnownFailure(why), ended)) => {
+            *known.entry(why).or_default() += 1;
+            Some(ended)
+        }
+        Err(report) => {
+            failures.push(format!("{:02x?}: {report}", case.code.code()));
+            None
+        }
     };
     let with = |code: &[u8], registers: &[(usize, u64)]| {
         let mut case = plain(code);
@@ -1602,13 +1613,47 @@ fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
             (r(R9), 0),
         ],
     ));
-    // The check's setg with cs, gs and ss prefixes, the last one choosing the segment.
-    check(with(
+    // Several segment prefixes: gs among others in every order lands at the data, any other segment would fault at
+    // the offset (the fourteenth check's prefixes.c; the setg is the ninth check's); with fs and gs both, the last.
+    const OFFSET: u64 = 0x40;
+    let mut chosen = Vec::new();
+    let setg = [
+        0x2e, 0x65, 0x36, 0x4f, 0x0f, 0x9f, 0x81, 0xdf, 0xbc, 0x7c, 0x48,
+    ];
+    let displacement = u32::from_le_bytes(setg[7..].try_into().expect("a disp32"));
+    let ended = check(with(
+        &setg,
         &[
-            0x2e, 0x65, 0x36, 0x4f, 0x0f, 0x9f, 0x81, 0xdf, 0xbc, 0x7c, 0x48,
+            (r(R9), OFFSET.wrapping_sub(displacement.into())),
+            (GS, DATA),
         ],
-        &[(r(R9), 0xc7), (GS, DATA)],
     ));
+    chosen.push((setg.to_vec(), ended, Ended::Exit));
+    for prefixes in [
+        &[0x65][..],
+        &[0x2e, 0x65, 0x36],
+        &[0x65, 0x36],
+        &[0x36, 0x65],
+        &[0x65, 0x2e],
+        &[0x65, 0x3e],
+        &[0x65, 0x26],
+    ] {
+        for rex in [&[][..], &[0x48]] {
+            let code = [prefixes, rex, &[0x8b, 0x01]].concat();
+            let ended = check(with(&code, &[(r(RCX), OFFSET), (GS, DATA)]));
+            chosen.push((code, ended, Ended::Exit));
+        }
+    }
+    for (code, ended) in [
+        (&[0x64, 0x65, 0x8b, 0x01][..], Ended::Exit),
+        (&[0x65, 0x64, 0x8b, 0x01], Ended::Fault),
+        (&[0x64, 0x2e, 0x65, 0x36, 0x8b, 0x01], Ended::Exit),
+        (&[0x65, 0x36, 0x64, 0x2e, 0x8b, 0x01], Ended::Fault),
+    ] {
+        let got = check(with(code, &[(r(RCX), OFFSET), (GS, DATA), (FS, 0)]));
+        chosen.push((code.to_vec(), got, ended));
+    }
+    chosen.retain(|(_, got, expected)| *got != Some(*expected));
     // The check's RIP-relative bit test under 0x67 (at DATA + 0x100), its bit offset past 2^32 and at 2^63.
     for offset in [0x8_0000_0000, 1 << 63] {
         check(with(
@@ -1649,4 +1694,8 @@ fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
     }
     eprintln!("the plan's shapes natively: {same} as the CPU, known differences {known:?}");
     assert!(failures.is_empty(), "{failures:#?}");
+    assert!(
+        chosen.is_empty(),
+        "segment prefixes ending otherwise: {chosen:02x?}"
+    );
 }
