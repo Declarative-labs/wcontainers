@@ -8,6 +8,34 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KF, ninth run: the whole suite on volatile bytes
+
+Started about 02:30 UTC on 2026-11-24 at b6763a53. Every build and test ran on the ARM64 machine;
+the Mac only edited and committed. Scratch kernel/kf9 (d1.sh to d4.sh, whole.sh, logs beside them).
+
+- The executor suite builds again (794413392, another track's). The single-kernel runtime (the
+  runtime track's: described.rs, system.rs, tcp.rs, udp.rs) still takes slices, and the wasmtime
+  executor (guest_memory.rs) still imports `VolatileBytes` from `memory_space` without the new
+  `read_to` and `write_from`; the kernel's tests and the stand-in need both. Neither crate was
+  edited: scratch kf9/runtime-vb.patch and kf9/wasmtime-vb.patch conform them (copy through a
+  buffer), and the ARM64 jobs apply them to the machine's copy only, so this track's suite runs.
+  Their owners still have to conform them.
+- The kernel's unit-test executor imports `VolatileBytes` from its own crate and gives its
+  uninhabited bytes `read_to` and `write_from` (d74d4b31; lock lines f8f546ce, committed alone:
+  the lock also holds other agents' uncommitted lines). Kernel unit tests 22 pass; clippy over the
+  kernel, abi, kernel suite, stand-in and inside, all targets, warnings denied: status 0.
+- fmt over the same packages finds differences only in the stand-in's space.rs and standin.rs,
+  which another agent had uncommitted edits in (the executor interface's part of that crate).
+- The 14 literal lines For the orchestrator names were read again: each is a measured or chosen
+  test value equal to another crate's constant by chance, or a fact without a shared home (the
+  MTUs); renaming or changing a value only to pass the check would hide, not settle, them. They
+  wait for the ruling.
+- The whole suite and then the whole LTP comparison were started at f8f546ce (kf9/whole.sh, job
+  kernel/20261124-024108-1615225, suite start 02:41 UTC, load 4; its output in
+  kf9/whole-attach.log, the LTP verdicts copied to /work/kernel-kf9-whole.tsv on the machine).
+  This run ended before they did: the next run reads them (do not start them again while the
+  inputs are unchanged) and compares with fails7.txt (the ARM list) and ours-20260930-376fba71.tsv.
+
 ## KF, eighth run: the literal check's lines this track can settle, and the executor interface
 
 Started about 02:00 UTC on 2026-11-24 at 6ea365e5. Every build and test ran on the ARM64 machine;
