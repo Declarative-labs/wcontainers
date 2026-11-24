@@ -1755,27 +1755,34 @@ impl<B: Backend> Device<B> {
         }
         // A pixel shader reading its clip or cull distances reads them as values the last vertex
         // stage passes, past every register: converted so first, for its reflection, and linked
-        // to that stage's values later (`link_pixel_program`).
-        let first = crate::cache::convert(source, key);
-        let reads = match first {
-            Err(ConvertError::Unsupported(refusal::CLIP_DISTANCE)) => VariantFlags::CLIP_DISTANCE,
-            Err(ConvertError::Unsupported(refusal::CULL_DISTANCE)) => {
-                VariantFlags::CULL_DISTANCE_LINKED
-            }
-            _ => {
-                let converted = self.checked(first, &format!("{stage:?}"))?;
-                if converted.modules.len() != 1 || converted.modules[0].stage != stage {
-                    return Err(Error::Invalid("a shader of another stage"));
+        // to that stage's values later (`link_pixel_program`). One reading both is refused for
+        // each in turn.
+        let mut result = crate::cache::convert(source, key);
+        loop {
+            let reads = match result {
+                Err(ConvertError::Unsupported(refusal::CLIP_DISTANCE)) => {
+                    VariantFlags::CLIP_DISTANCE
                 }
-                return Ok(converted);
+                Err(ConvertError::Unsupported(refusal::CULL_DISTANCE)) => {
+                    VariantFlags::CULL_DISTANCE_LINKED
+                }
+                _ => break,
+            };
+            if key.flags.contains(reads) {
+                break;
             }
-        };
-        key.flags |= reads;
-        key.linked = LinkedValues {
-            location: OUTPUT_REGISTERS,
-            clip_distances: MOST_DISTANCES,
-        };
-        self.convert(code, stage, key.clone())
+            key.flags |= reads;
+            key.linked = LinkedValues {
+                location: OUTPUT_REGISTERS,
+                clip_distances: MOST_DISTANCES,
+            };
+            result = crate::cache::convert(source, key);
+        }
+        let converted = self.checked(result, &format!("{stage:?}"))?;
+        if converted.modules.len() != 1 || converted.modules[0].stage != stage {
+            return Err(Error::Invalid("a shader of another stage"));
+        }
+        Ok(converted)
     }
 
     /// A geometry, hull or domain shader in the common form, as the stage helper takes it.
