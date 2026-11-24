@@ -21,7 +21,8 @@ wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12"
 zerocopy = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+libloading = "0.8.9"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
@@ -33,6 +34,6 @@ cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# TODO: remove this crate's 361 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 356 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

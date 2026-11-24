@@ -763,10 +763,10 @@ unsafe extern "C" fn texture_barrier<B: Backend>(pipe: *mut pipe_context, _: c_u
 }
 
 /// A resource about to be shown or shared needs nothing more: every write is already ordered.
-unsafe extern "C" fn flush_resource(_: *mut pipe_context, _: *mut pipe_resource) {}
+extern "C" fn flush_resource(_: *mut pipe_context, _: *mut pipe_resource) {}
 
 /// The stipple pattern applies only to a rasterizer state that stipples, which is refused by name.
-unsafe extern "C" fn set_polygon_stipple(_: *mut pipe_context, _: *const pipe_poly_stipple) {}
+extern "C" fn set_polygon_stipple(_: *mut pipe_context, _: *const pipe_poly_stipple) {}
 
 /// The stage slot a Gallium stage's state is kept in, for the stages the driver takes.
 pub fn stage(stage: mesa_shader_stage) -> Option<Stage> {

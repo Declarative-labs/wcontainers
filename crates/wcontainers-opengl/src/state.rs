@@ -1389,7 +1389,7 @@ unsafe extern "C" fn set_sample_mask<B: Backend>(pipe: *mut pipe_context, mask: 
 }
 
 /// User clip planes are lowered into the programs by st/mesa (the screen reports none).
-unsafe extern "C" fn set_clip_state(_: *mut pipe_context, _: *const pipe_clip_state) {}
+extern "C" fn set_clip_state(_: *mut pipe_context, _: *const pipe_clip_state) {}
 
 unsafe extern "C" fn set_constant_buffer<B: Backend>(
     pipe: *mut pipe_context,

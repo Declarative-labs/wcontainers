@@ -141,7 +141,7 @@ unsafe extern "C" fn destroy<B: Backend>(screen: *mut pipe_screen) {
     })
 }
 
-unsafe extern "C" fn name(_: *mut pipe_screen) -> *const c_char {
+extern "C" fn name(_: *mut pipe_screen) -> *const c_char {
     DRIVER_NAME.as_ptr()
 }
 

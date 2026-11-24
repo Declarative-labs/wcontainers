@@ -90,18 +90,12 @@ impl HostWindows for WebGpu {
 /// end, where Mesa releases nothing.
 #[cfg(windows)]
 fn stay_loaded() -> Option<()> {
-    use windows_sys::Win32::System::LibraryLoader::{
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
-    };
-    let mut module = std::ptr::null_mut();
-    let address = stay_loaded as *const u16;
-    // SAFETY: the address is in this module and `module` is writable.
-    let pinned = unsafe {
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-            address,
-            &mut module,
-        )
-    };
-    (pinned != 0).then_some(())
+    libloading::os::windows::Library::open_already_loaded(DRIVER_MODULE)
+        .and_then(|module| module.pin())
+        .ok()
 }
+
+/// The module Mesa's WGL target links the driver into (`libgallium_wgl`, `name_prefix : ''`, in
+/// `src/gallium/targets/wgl/meson.build`).
+#[cfg(windows)]
+const DRIVER_MODULE: &str = "libgallium_wgl.dll";
