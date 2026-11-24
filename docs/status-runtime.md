@@ -265,6 +265,32 @@ For the owner (the interfaces, read-only to this track):
 
 ## Where things stand
 
+- J5 is closed on the tree as it stands (J5c, section at the top), and goes to its independent check. Nothing
+  of this track's own is left for it. Every test of the kernel test crate whose verdict with the back end
+  differs from the stand-in's, with its one cause and owner (all at 0314e263, ARM64 machine):
+  - The translator's process-wide pool (translator track, 69639b37; fix sketched in scratch
+    j5c/translator-pool.patch): at the tip every test of saving, procsignals, outside, threads, backend,
+    rootbackend and repeats hangs at full (each binary held 900 s; the copy's stack in `translate_within`).
+    With the patch they give the stand-in's verdicts.
+  - The address ceiling (the back end's 4 GiB address space; the embedder interface's export): java
+    `start_up_matches_reference` and `threads_and_collections_match_reference` (kernel warning "process
+    outgrew the ceiling", "Could not allocate compressed class space"), python
+    `system_test_modules_match_reference` (`test_around_4GB` maps a file of 4 GiB and 6 bytes). The kernel
+    gives that map ENOMEM without its "outgrew the ceiling" warning, since the driver makes the address
+    space end at the ceiling: for the kernel track.
+  - The progress count (translator C1 and its use in the wasmtime executor): cpulimit
+    `cpu_limit_on_the_wall_clock_matches_reference` (fails in the whole run at full and bounded, passes
+    alone) and LTP setrlimit06 (fails at every look-ahead): SIGKILL without SIGXCPU, with the warning
+    "progress counted by stop checks".
+  - The translator at full and bounded (translator track; a regression since J5 run 5): LTP mem02 (no turn
+    ends for 120 s; passes at none in 24 s).
+  - Timing: LTP clock_gettime04 fails only on a run that translates its code (the back end's counted
+    "translated at run time"), passes once cached; LTP fsx22 passes with the back end where the stand-in
+    runs past 900 s; outside `a_full_connection_hears_a_reset` failed once in the whole bounded run and
+    passes alone 6 of 6 (kernel track's test).
+  - Closed at this tip: the kernel's parked-call assertion (outside 10 runs of 8 pass), the mapping floor (LTP
+    pth_str01 and pth_str03 pass), node `system_program_matches_reference` (passes), the slow LTP four (gf16,
+    gf17, mmapstress09 and 10 pass within 900 s).
 - J0 (the plan), J1, J2, J3 and J4a are done and on main; their records are below.
 - J5 (files outside, sockets, network, the whole suite): everything is built, committed and pushed. Run 1 built
   the local system's file backend and network, one bind mount, wcon's `--volume` and `--publish`; run 3 merged
@@ -311,6 +337,11 @@ For the owner (the interfaces, read-only to this track):
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
+
+- J5c (2026-11-23): the ARM64 machine's disk reached 100% (29 MB free) at 13:40 UTC while this track's
+  stand-in build ran: /work/target/kernel held 294 GB (286 GB in debug), this track's 78 GB. This track
+  deleted its own build output (77 GB) and from then built with line-tables-only debug information; the
+  kernel's folder was not touched. Other tracks' jobs at that time may have failed on "No space left".
 
 - J5 run 10: this track has nothing left to build or run for J5, and every remaining item waits on another
   track or on a ruling. J5 closes when either (a) the kernel's fix of task.rs's assertion and its mapping floor
@@ -2026,6 +2057,14 @@ Linux VM on this Mac. Measured:
 
 ## How to run
 
+- J5's bar on the ARM64 machine (J5c), one command: scratch `j5c/all.sh` (pieces through `j5c/bar.sh
+  [piece...]`, `TREE=patched` for the copy with the translator pool patch; each piece fetched to
+  j5c/arm[-patched]/<piece> and skipped once done; a piece is not started under 40 GB free). Pieces: targeted,
+  standin, full, none, none-runtimes, bounded, ltp-standin, ltp-full, ltp-slow, copies (the tip's saving
+  tests, 900 s each, with gdb stacks). Verdict lists: `j5c/verdicts.sh <suite.log>`. Follow-ups:
+  `j5c/follow-bar.sh` (cpulimit-cold, ltp-three, outside-bounded, python-none). The export the pieces run is
+  j5c/tree (git archive of the tip, made a git repository of its own because arm-run needs one).
+
 The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset); the tests'
 translation cache is in it (target/wc-kernel-test/translations; delete it to make every translation again;
 J3 run 1 deleted its 15 GB of old identities' files, and target/debug/incremental). A run that must not see
@@ -2216,6 +2255,16 @@ shell's fork about 0.75 ms, nearly all of it instantiating busybox's and musl's 
 array of slots in microseconds.
 
 ## Departures from the phase-one plans and the brief
+
+- J5c: the bar's builds on the ARM64 machine used `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and
+  `CARGO_INCREMENTAL=0`. With full debug information the stand-in's and the back end's test binaries filled
+  this track's build folder to 78 GB and the machine's disk to 100% (another track's folder held 294 GB); a
+  test's verdict does not depend on the debug information. The translation cache's entries of a finished
+  look-ahead were deleted between pieces for the same reason (they are keyed by look-ahead, so no later
+  piece read them).
+- J5c: the back end's part of the bar ran on the tip plus a scratch patch of the translator's pool (never
+  committed), since at the tip every test that saves hangs on it (another track's file); the tip's own runs
+  of those tests are recorded beside it.
 
 - The container's address-space size is the guest's Linux size (2^48 for ARM64), not the kernel plan's 4 GiB,
   as the brief's late section directs; the memory size told is a separate value given in `Start` (proposed
