@@ -406,29 +406,29 @@ impl VolatileBytes for HostProcessBytes<'_> {
         self.addresses.end - self.addresses.start
     }
 
-    /// A host refusal to map the bytes reads none.
+    /// A host refusal to read the stub's memfd reads none, counted and warned as "guest bytes refused".
     fn read(&self, into: &mut [u8]) -> usize {
         let count = into.len().min(self.len() as usize);
-        match self.memory.lock().read_guest(
-            self.memory.id,
-            self.addresses.start,
-            &mut into[..count],
-        ) {
+        let mut executor = self.memory.lock();
+        match executor.read_guest(self.memory.id, self.addresses.start, &mut into[..count]) {
             Ok(()) => count,
-            Err(_) => 0,
+            Err(error) => {
+                executor.guest_bytes_refused(error);
+                0
+            }
         }
     }
 
-    /// A host refusal to map the bytes writes none.
+    /// A host refusal to write the stub's memfd writes none, counted and warned as "guest bytes refused".
     fn write(&self, bytes: &[u8]) -> usize {
         let count = bytes.len().min(self.len() as usize);
-        match self
-            .memory
-            .lock()
-            .write(self.memory.id, self.addresses.start, &bytes[..count])
-        {
+        let mut executor = self.memory.lock();
+        match executor.write(self.memory.id, self.addresses.start, &bytes[..count]) {
             Ok(()) => count,
-            Err(_) => 0,
+            Err(error) => {
+                executor.guest_bytes_refused(error);
+                0
+            }
         }
     }
 

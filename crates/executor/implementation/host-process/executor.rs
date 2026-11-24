@@ -182,6 +182,8 @@ pub struct Counters {
     pub codes_unshared: u64,
     /// Pages translated code was made from that the guest wrote, left writable from then on.
     pub code_pages_left_writable: u64,
+    /// Reads and writes of borrowed guest bytes the host refused, which moved no bytes ("guest bytes refused").
+    pub guest_bytes_refused: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -736,6 +738,15 @@ impl HostProcessExecutor {
             return Ok(());
         }
         Err(self.mappings_exhausted())
+    }
+
+    /// Counts and warns of a read or write of borrowed guest bytes the host refused.
+    pub(super) fn guest_bytes_refused(&mut self, error: CpuError) {
+        self.counters.guest_bytes_refused += 1;
+        eprintln!(
+            "wcontainers warning: guest bytes refused ({error:?}), none moved, {} so far",
+            self.counters.guest_bytes_refused
+        );
     }
 
     /// Counts and warns of a change refused for want of host mappings.
