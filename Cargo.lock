@@ -5102,6 +5102,7 @@ dependencies = [
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
