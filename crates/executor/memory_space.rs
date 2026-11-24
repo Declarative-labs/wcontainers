@@ -45,6 +45,11 @@ pub open spec fn starts_page(address: u64) -> bool {
     address % PAGE_SIZE == 0
 }
 
+/// The first address of the page that holds the address.
+pub open spec fn page_start(address: u64) -> u64 {
+    (address - address % PAGE_SIZE) as u64
+}
+
 /// Whether the page that starts at the address lies among the addresses.
 pub open spec fn page_among(start: u64, addresses: Range<u64>) -> bool {
     starts_page(start) && addresses.start <= start < addresses.end
@@ -199,6 +204,14 @@ pub trait MemorySpace: Sized {
         }
         Ok(())
     }
+
+    /// Returns what the page that holds the address allows.
+    fn permissions(&self, address: u64, Tracked(space): Tracked<&GhostVar<Space>>) -> (allowed: Permissions)
+        requires
+            space.id() == self.token(),
+        ensures
+            allowed == space@.page(page_start(address)).allowed,
+    ;
 
     fn set_permissions(
         &self,

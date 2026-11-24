@@ -487,6 +487,20 @@ impl MemorySpace for SimulatedMemory {
         Ok(SimulatedBytes { space: self, addresses })
     }
 
+    fn permissions(&self, address: u64, Tracked(space): Tracked<&GhostVar<contract::Space>>) -> (allowed: Permissions) {
+        let (table, held) = self.pages.acquire();
+        proof {
+            table.model.borrow().agree(space);
+        }
+        let start = address - address % contract::PAGE_SIZE;
+        let allowed = match table.pages.get(&start) {
+            Some(page) => page.permissions,
+            None => contract::no_permissions(),
+        };
+        held.release(table);
+        allowed
+    }
+
     fn set_permissions(
         &self,
         addresses: Range<u64>,

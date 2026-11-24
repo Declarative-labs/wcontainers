@@ -87,10 +87,17 @@ pub fn permissions_set_are_found<S: MemorySpace>(
         whole_pages(addresses, S::addressable()),
 {
     let ghost before = mine@;
-    let result = this.set_permissions(addresses, allowed, Tracked(mine));
+    let (start, end) = (addresses.start, addresses.end);
+    let result = this.set_permissions(start..end, allowed, Tracked(mine));
     assert(result is Ok);
     assert(forall|start: u64| page_among(start, addresses) ==> (#[trigger] mine@.page(start)).allowed == allowed);
     assert(forall|start: u64| !page_among(start, addresses) ==> #[trigger] mine@.page(start) == before.page(start));
+    if start < end {
+        let found = this.permissions(start, Tracked(&*mine));
+        assert(page_start(start) == start);
+        assert(page_among(start, addresses));
+        assert(found == allowed);
+    }
 }
 
 /// A refused call changes nothing: addresses that do not start on a page are refused by every page method.
