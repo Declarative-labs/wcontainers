@@ -166,6 +166,23 @@ Checks:
   equal and the 9 others are `converter-version.txt`, whose hash names the converter's sources
   (cache.txt rows compared without that key; `outdiff.py`). Run three times as the route changed,
   the last at the final module.
+- Fuzz, natively on the ARM64 machine at the tip (941c5427d; load 11 to 18 of 96 cores; `arm-cmd.sh`,
+  job 20261124-125936-579267), 12,000 cases a seed, the three in parallel: zero process ends, the
+  test passes at each. Seed 141421: 2,355 converted, 772 runs ended in dxil-spirv or dxbc-spirv and
+  refused by name (dxil-spirv: 646 traps, 7 past the memory bound; dxbc-spirv: 126 traps, 35 past
+  the memory bound, 74 past the instruction bound), 6,474 s. Seed 2236067: 2,294 converted, 843 ended
+  (dxil-spirv 616 traps and 6 memory; dxbc-spirv 123 traps, 37 memory, 61 instructions), 5,338 s.
+  Seed 1732050: 2,344 converted, 795 ended (dxil-spirv 576 and 12; dxbc-spirv 118, 27, 62), 5,426 s.
+  Every case past the instruction bound took 87.4 to 87.6 s there and every one is DXBC: dxbc-spirv
+  loops without end on them, which natively would have held the thread forever. The test at its
+  default (seed 1, 2,000 cases) passes in 526 s, 6 of them at the instruction bound (fuzz-default.log).
+  Found there: one panic of ours caught and refused as malformed (case 1626 of seed 1,
+  `src/dxil/registers.rs:480`, a signature element whose first component plus its width passes 4),
+  new gap A41 below.
+- Windows: clippy with warnings denied clean (the three changed Direct3D 12 tests and the module
+  route build there). The fuzz and drawn-test job (task 79) was still queued behind other tracks'
+  GPU work after two hours and its log was not taken; not run on Windows this run. Desktop timing
+  not run for the same reason (`time-desk.sh` is ready, with `g6w-r1/base` for the linked route).
 - WebAssembly build (laptop, wasi-sdk 25, wasmtime 38.0.4): the fuzz binary's tests pass (444
   signatures refused), the mutated run ignored there; clippy for wasm32 with warnings denied clean.
 - Native clippy with warnings denied and rustfmt clean (laptop and ARM64); Windows clippy clean.
@@ -198,6 +215,10 @@ per shader median / 95th percentile / worst):
 - The module is compiled in the process on its first conversion and kept for the process
   (`OnceLock`); nothing is cached on disk. Converted shaders are cached by plan section 8, so a
   process whose shaders are all cached never compiles it.
+
+New gap A41 (this track's own, found by the fuzz test): a DXIL input signature element whose
+first component plus its component count passes 4 panics in `dxil/registers.rs` `components_of`;
+the panic is caught and the shader refused as malformed, but it should be refused by a check.
 
 The one cost a user would see: the corpora's slowest shader (one game's DXBC pixel shader) takes 48
 s instead of 16 s on the ARM64 machine (60 s instead of 25 s on the laptop) at its first
