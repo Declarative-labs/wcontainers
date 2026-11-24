@@ -1,7 +1,8 @@
 //! The C++ converters (dxbc-spirv, dxil-spirv, with the boundary in `cpp/`), called with a shader's
 //! bytes and giving back the buffers they wrote. They are linked into the crate, natively and in its
 //! own WebAssembly build; natively with the feature `contained-converters` they run as their own
-//! WebAssembly module under wasmtime instead, so that no shader can end, exhaust or stall the host.
+//! WebAssembly module under wasmtime instead, so that nothing a shader makes them do can end,
+//! exhaust or stall the host: it ends in a trap or a bound of their instance, refused by name.
 
 #[cfg(all(feature = "contained-converters", not(target_os = "wasi")))]
 mod module;

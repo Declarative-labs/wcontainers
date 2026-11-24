@@ -26,7 +26,8 @@ wasmtime = { version = "50.0.1", optional = true, default-features = false, feat
 
 [features]
 # Natively, runs the converters as their own WebAssembly module under wasmtime instead of linking
-# their C++ into the process: no shader ends, exhausts or stalls the host, at the cost measured in
+# their C++ into the process: what a shader makes them do ends in a trap or a bound of their instance,
+# refused by name, instead of ending, exhausting or stalling the host; at the cost measured in
 # docs/status-graphics-shaders.md. No effect in the crate's own WebAssembly build.
 contained-converters = ["dep:wasmtime"]
 
