@@ -113,9 +113,39 @@ fn bytes_after_a_read_shutdown_are_read() {
 /// How long the resetting server waits after a reset before it tells of it.
 const TOLD_AFTER_RESET: Duration = Duration::from_millis(300);
 
+/// How long a server waits for this machine's end of a connection it reset to take the reset.
+const RESET_PATIENCE: Duration = Duration::from_secs(5);
+
+/// Resets connection `data` (a close with a linger of zero) and waits until this machine's end of
+/// it has taken the reset, when that end is in this network namespace (ours; the reference's is in
+/// its container's): the end is no longer listed among this machine's TCP sockets, which Linux
+/// leaves as the reset closes it. Sending a reset is not its arrival: under load the receiving end
+/// may take it later. Whether it was taken within [`RESET_PATIENCE`].
+fn reset_and_wait_for_its_arrival(data: TcpStream) -> bool {
+    let (Ok(server), Ok(client)) = (data.local_addr(), data.peer_addr()) else {
+        return false;
+    };
+    // A linger of zero makes the close a reset.
+    let _ = socket2::SockRef::from(&data).set_linger(Some(Duration::ZERO));
+    drop(data);
+    let start = std::time::Instant::now();
+    while start.elapsed() < RESET_PATIENCE {
+        let listed = procfs::net::tcp().expect("this machine's TCP sockets");
+        let open = |entry: &procfs::net::TcpNetEntry| {
+            entry.local_address == client && entry.remote_address == server
+        };
+        if !listed.iter().any(open) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    false
+}
+
 /// A server on this machine that sends a connection up to 1 MiB (as much as goes within 2 s), and
-/// once the next one comes, resets the first and tells the second "reset", for each pair in turn.
-/// Returns its port.
+/// once the next one comes, resets the first and tells the second "reset" once the reset has
+/// arrived ("unheard" if it did not within [`RESET_PATIENCE`]), for each pair in turn. Returns its
+/// port.
 fn resetting_server() -> u16 {
     let listener = TcpListener::bind("0.0.0.0:0").expect("a TCP port");
     let port = listener.local_addr().expect("an address").port();
@@ -138,11 +168,10 @@ fn resetting_server() -> u16 {
             };
             // The program's queue has taken what fits by now.
             std::thread::sleep(Duration::from_millis(500));
-            // A linger of zero makes the close a reset.
-            let _ = socket2::SockRef::from(&data).set_linger(Some(Duration::ZERO));
-            drop(data);
+            let taken = reset_and_wait_for_its_arrival(data);
             std::thread::sleep(TOLD_AFTER_RESET);
-            let _ = signal.write_all(b"reset");
+            let word = if taken { "reset" } else { "unheard" };
+            let _ = signal.write_all(word.as_bytes());
             let _ = signal.read_to_end(&mut Vec::new());
         }
     });
@@ -161,16 +190,17 @@ fn a_full_connection_hears_a_reset() {
 }
 
 /// What holds a told-resetting server's reset back until a hook lets it go: the server says a reset
-/// is held, waits to be let go, and says when the reset is done.
+/// is held, waits to be let go, and says when the reset has arrived (or that it did not within
+/// [`RESET_PATIENCE`]).
 struct Gate {
     held: mpsc::Sender<()>,
     go: mpsc::Receiver<()>,
-    done: mpsc::Sender<()>,
+    done: mpsc::Sender<bool>,
 }
 
 /// A server on this machine that, for each pair of connections, reads a byte on the second,
-/// answers "reset" on it, and resets the first: at once, or with a gate once the gate lets it.
-/// Returns its port.
+/// answers "reset" on it, and resets the first: at once, or with a gate once the gate lets it;
+/// then waits for the reset's arrival. Returns its port.
 fn told_resetting_server(gate: Option<Gate>) -> u16 {
     let listener = TcpListener::bind("0.0.0.0:0").expect("a TCP port");
     let port = listener.local_addr().expect("an address").port();
@@ -192,11 +222,9 @@ fn told_resetting_server(gate: Option<Gate>) -> u16 {
             {
                 return;
             }
-            // A linger of zero makes the close a reset.
-            let _ = socket2::SockRef::from(&data).set_linger(Some(Duration::ZERO));
-            drop(data);
+            let taken = reset_and_wait_for_its_arrival(data);
             if let Some(gate) = &gate {
-                let _ = gate.done.send(());
+                let _ = gate.done.send(taken);
             }
             let _ = signal.read_to_end(&mut Vec::new());
         }
@@ -205,11 +233,11 @@ fn told_resetting_server(gate: Option<Gate>) -> u16 {
 }
 
 /// Lets a held reset go at the start of the program's next look at a socket (poll, select or
-/// getsockopt), after every earlier call has ended, and waits until it is done.
+/// getsockopt), after every earlier call has ended, and waits until it has arrived.
 struct LetGoAtTheLook {
     held: mpsc::Receiver<()>,
     go: mpsc::Sender<()>,
-    done: mpsc::Receiver<()>,
+    done: mpsc::Receiver<bool>,
 }
 
 impl Hooks for LetGoAtTheLook {
@@ -227,9 +255,14 @@ impl Hooks for LetGoAtTheLook {
         let looking = looks.map(u64::from).contains(&request.number.0);
         if looking && self.held.try_recv().is_ok() {
             self.go.send(()).expect("the server waits");
-            self.done
-                .recv_timeout(HEARING_PATIENCE)
+            let arrived = self
+                .done
+                .recv_timeout(RESET_PATIENCE * 2)
                 .expect("the server reset the connection");
+            assert!(
+                arrived,
+                "the reset reached this machine's end of the connection"
+            );
         }
         ControlFlow::Continue(request)
     }
@@ -239,7 +272,8 @@ impl Hooks for LetGoAtTheLook {
 /// that look, by poll, select or SO_ERROR, as on Linux, which handled the reset as it came: the
 /// kernel asks the system at the look, rather than answering from what the system told it before.
 /// On ours the server resets each connection at the start of the call that looks, after the end of
-/// every call before it, where the kernel last heard the outside.
+/// every call before it, where the kernel last heard the outside, and the call goes on once the
+/// reset has reached this machine's end of the connection.
 #[test]
 fn a_look_hears_a_reset_the_system_has_not_told_yet() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");

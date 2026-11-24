@@ -70,6 +70,8 @@ zerocopy.workspace = true
 coarsetime = "0.1.38"
 
 [dev-dependencies]
+# This machine's TCP sockets, read from /proc/net/tcp to see a reset arrive (MIT OR Apache-2.0).
+procfs = { version = "0.18.0", default-features = false }
 # The heap allocations a test process makes, counted without a global allocator of our own.
 stats_alloc = "0.1.10"
 wcontainers-executor-conformance = { path = "../../conformance" }
