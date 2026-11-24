@@ -5168,6 +5168,7 @@ dependencies = [
 name = "wcontainers-executor-unicorn"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "cargo_metadata",
  "coarsetime",
  "domain",
