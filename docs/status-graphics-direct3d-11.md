@@ -6,31 +6,58 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23), 3,
-4 and 5 (2026-11-24).
+(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23), 3
+to 6 (2026-11-24), G4h round 7 run 1 (2026-11-24).
 
 ## Where things stand
 
 G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of 2026-11-22) is reported
-complete for its check (round 6 run 6), as the orchestrator asked once its two rulings were applied;
-two items of the bar stay failing and are on the Gap list with their owners (below). The device reports the
+complete for its check (round 7 run 1): lint of both builds and the whole library suite pass at
+97fdfcd2 on the RTX 3080, and atg-simplecomputepc now gives the answer both real implementations
+agree on. The device reports the
 highest level whose every format requirement of Microsoft's tables (their video columns aside,
 Departures) and whose per-stage slots it serves: the RTX 3080 device (WebGPU build, wgpu on
 Direct3D 12) is 11_0 with every requirement met and tested; the WebGPU build without
 texture-formats-tier1 is 10_0; the WebGL 2 build (ANGLE on the RTX 3080) is 9_3 (16 texture units
 a stage where 10_0 reads 128 views); a browser's WebGPU at Chrome's 48 sampled textures a stage
 would be 9_3. What stands:
-- atg-simplecomputepc (a real difference by the orchestrator's ruling of 2026-11-23): the fix is
-  a correctly rounded division in the shaders crate's conversion, asked of that track with a
-  ready, measured patch (Asked of other tracks; Gap list). Its isolated test stays ignored until
-  then. The shaders track's status (its run 113) holds that the division is not its crate's to
-  change, so the two tracks disagree on whose it is; the orchestrator decides (For the
-  orchestrator).
-- The bar's two WebGL 2 items: absent on that back end by the feature level rule since round 6
-  run 6 (Departures), as ruling (2) of 2026-11-23 did for the texture-formats-tier1 item: the
-  build is truthfully 9_3, which has neither ability; their three tests are known failures named
-  for that cause and no longer count against the bar. The packed views route to 10_0 there is
-  described (Gap list), not built.
+- atg-simplecomputepc: fixed by the shaders crate's correctly rounded `div` (48f3959d, applied
+  by this track under the orchestrator's ruling (b) of 2026-11-24, noted in the shaders track's
+  status). Its isolated test runs again and passes; the program is 1,705 pixels from the RTX
+  3080's reference in each saved frame, where WARP is 1,889 (Gap list).
+- The bar's two WebGL 2 items: absent on that back end by the feature level rule (ruling (a) of
+  2026-11-24 keeps this): the build is truthfully 9_3, which has neither ability; their three
+  tests are known failures named for that cause and do not count against the bar. The packed
+  views route to 10_0 there is described (Gap list), not built.
+
+G4h round 7 run 1 (2026-11-24, from about 06:10 Pacific):
+- Round 6 run 6's queued desktop run never started (another track's shader fuzz job held the
+  desktop's GPU slot from 04:55 to past 07:00); it was withdrawn and run here at the tip instead.
+- r9/div.patch applied to crates/wcontainers-shaders/src/lower.rs (48f3959d; the file had no
+  uncommitted change and its last commit was b9edb814 of 2026-11-23);
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` un-ignored (4da02921).
+- Unsafe: the front is free of it (10 uses gone; mapped bytes are `Rc<[Cell<u8>]>`, Unsafe
+  below) and inherits the workspace lints, which forbid it; the Windows library went from 1076 to
+  1069 lines. Both counts lowered in the root Cargo.toml.
+- Tests at 97fdfcd2 (scratch r11/run.sh, logs/r11c-*; desktop RTX 3080 through the rig and its
+  queue, 07:02 to 07:06 Pacific, other tracks' jobs waiting beside it): lint of both builds clean;
+  library com 15 pass (1 ignored), programs 71 pass (8 ignored, the known failures), 0 failed; the
+  atg case among the 71. The front's unit 7, cache 1 and front.rs 61 and its clippy pass on the
+  rented x86 machine (96 cores, load 0.9; logs/r11-x1-front.log, the same front code).
+- The WebGL 2 build's cases at 97fdfcd2 (filters `below_10_0 10_0 nv12 direct3d_10s`, 08:27 to
+  08:33 Pacific; logs/r11d-webgllib.log): 2 passed, 8 ignored (the 10_0 cases that build refuses
+  as 9_3), 0 failed. Its first try (r11c) failed to link: a build of the shaders crate this run
+  stopped mid-way had left broken output in that build folder; `cargo clean -p
+  wcontainers-shaders` there fixed it (scratch r11/webgl.sh).
+- atg-simplecomputepc through the rig (07:31 to 07:44 Pacific): ours 1,705 of 921,600 pixels
+  beyond the RTX 3080's reference in frames 10, 60 and 120 (largest 255, the set's edge;
+  logs/r11c-atg.log). WARP through g4h/warpshim (08:20 to 08:26): 1,889 in each
+  (logs/r11c-atgwarp.log). Ours against WARP's frames directly (gt-compare on the desktop, frames
+  in scratch r11/ours and r11/warp): 1,188 pixels beyond 8 in each frame (8,619, 8,619 and 8,781
+  beyond 0; largest 255). So ours is nearer each real implementation than the two are to each
+  other: a pass under the graphics bar of 2026-11-22.
+- Literal check (rented x86 machine, at 6d2e836c): nothing new in this track's files or in
+  lower.rs; the one listed line is the tool's stale `required.rs` (round 6 run 5).
 
 G4h round 6 run 6 (2026-11-24, from about 06:00 Pacific):
 - Nothing of the shaders crate changed since run 5 (its division is as before, r9/div.patch still
@@ -742,7 +769,10 @@ the bar's three, three differ from the rig's recorded frames:
   `IDXGIAdapter1` alone and reports memory sizes of zero, as no browser API reports memory (the
   infrastructure crate's rule). An absent feature, reported absent through `QueryInterface`; the
   occlusion queries themselves match. Found in main run 1; earlier runs thought it the counts.
-- atg-simplecomputepc: FAILS, a real difference (the orchestrator's ruling of 2026-11-23): at the
+- atg-simplecomputepc: FIXED in round 7 run 1 by the correctly rounded `div` below (48f3959d):
+  ours 1,705 pixels from the RTX 3080's reference in each saved frame, WARP 1,889, so closer than
+  another real implementation; the isolated case passes. The rig's own verdict prints FAIL, as its
+  references allow only the RTX 3080's own variation. The record of the difference: at the
   rig's frames 60 and 120 every real run gives the colour map's first texel inside the Mandelbrot
   set and ours its last, 154,515 pixels beyond in each frame (logs/r6c-o1.log). Inside the set the
   colour is `frac(1200 / 300)` sampled clamped from its 8-texel map: a quotient of 4 gives the
@@ -788,9 +818,9 @@ the bar's three, three differ from the rig's recorded frames:
   (1, 1, 0, 1) at frames 1 and 30; the RTX 3080 without presents gave ours' in three runs
   (logs/r6f-frames.log). The fix: the shaders crate's conversion of `div` refined once after the
   division (a fused multiply-add for the remainder and one for the correction), which gives
-  exactly 4 here, at that cost on every division. WAITING on the shaders track (Asked of other
-  tracks, with the patch): the conversion is in its crate, not this track's. A known failure
-  until it lands.
+  exactly 4 here, at that cost on every division (a reciprocal, two fused multiply-adds, a
+  comparison and two selects), keeping the device's quotient where it is zero or the refined one
+  is not finite. Applied by this track (ruling (b) of 2026-11-24) as r9/div.patch.
   - Measured with that refinement patched into the converter in a trial commit never committed
     (scratch r6h/div.patch on lower.rs's `F_DIV`, r6h/div.sh; trial 9b484b63, round 6 run 2,
     22:30 to 22:58 through the queue): the frames case passes (ours equals WARP at frames 1 and
@@ -967,10 +997,6 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   build and are marked `#[ignore]` with the reason (Gap list); run them with `--include-ignored`.
 - The six tests with WebGPU features off named in the Gap list's truthful-level item, marked
   `#[ignore]` with that reason.
-- `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` (programs.rs):
-  ours' division gives the colour map's last texel where WARP gives its first (Gap list,
-  atg-simplecomputepc); marked `#[ignore]` with that reason until the shaders crate's correctly
-  rounded division lands (Asked of other tracks).
 - On the WebGL 2 build only: the library tests asking for a device of 10_0 or above fail by
   refusing it, as the build is 9_3 (Gap list). The seven 10_0 cases the bar's WebGL 2 run took
   (nv12, small formats, the four `own_level10` cases and
@@ -988,11 +1014,8 @@ In order:
    stage, as between vertex and pixel programs now (Departures). The tests that ask an 11_0 device
    with WebGPU features off could run their 10_0 parts on the 10_0 device without
    texture-formats-tier1 (shader model 4 forms of their cases).
-1. atg-simplecomputepc: when the shaders crate's correctly rounded division lands (Asked, patch
-   r9/div.patch), un-ignore `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`
-   and run it, `divisions_give_a_real_devices_quotient`, the colour map case and the program
-   through the rig, then the whole bar once more.
-   The WebGL 2 bar items: as recorded unless the orchestrator rules to build packed views.
+1. G4h's independent check. Unsafe in the Windows library, a few lines a run (Unsafe).
+   The WebGL 2 bar items: as recorded (ruling (a) of 2026-11-24).
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
    Once the shaders crate accepts unread clip distances behind a geometry shader (Asked), run
    d3d10core test_clip_distance through the WebGL 2 build again.
@@ -1045,6 +1068,9 @@ job on the desktop. Before a run, look at the queue with `ssh tom@192.168.2.183
 - Real programs drawn by WARP: g4h/warpshim is a test-only d3d11.dll (built on the desktop in
   C:\wc\out\phase-2-graphics-direct3d-11\warpshim) that makes every device of the system's
   Direct3D 11 on WARP; pass it to `programs run` as `--dll 'd3d11.dll=<its path>'`.
+- G4h's check in one command: `r11/run.sh <label> <commit> [lint lib webgllib atg atgwarp]`
+  (lint of both builds, the library suite, the WebGL 2 build's cases, atg-simplecomputepc through
+  ours and through WARP, frames copied to r11/ours and r11/warp).
 - The whole bar in one command: `q5-final.sh <label> [steps]` (the literal check, lint of both
   builds, the library suite, the WebGL 2 build's 10_0 cases, Wine's two files, scenes, programs,
   sizes and load times, building ahead, Wine's d3d10core through the WebGL 2 build). Steps:
@@ -1373,24 +1399,12 @@ listed case of section 12 has its test against real Direct3D.
 
 ## For the orchestrator
 
-- atg-simplecomputepc is no longer a question: under ruling (1) of 2026-11-23 and the graphics bar,
-  ours must give the answer both real implementations agree on in the program, which is the
-  correctly rounded quotient (Gap list). That is a change to the shaders crate's conversion of
-  `div`, which is not this track's to make; it is asked of the shaders track with a patch ready
-  and measured (Asked of other tracks). The shaders track's status (its run 113, unchanged at
-  its run 120) holds that its division equals real Direct3D 11's bits and is not its to change,
-  so the two tracks disagree on whose it is. This track may not edit that crate. Needed from you:
-  tell the shaders track to apply r9/div.patch (it applies to lower.rs at 3dcd74e4), or give the
-  change to this track. The program and its isolated test stay failing until then; nothing else
-  stands in their way.
-- The WebGL 2 bar items (per-target blends without OES_draw_buffers_indexed, `resinfo` on WebGL 2)
-  fail since the WebGL 2 build truthfully reports 9_3. With no ruling on them, round 6 run 6
-  recorded them in ruling (2)'s form (absent on that back end by the feature level rule, their
-  tests known failures named for it, not counted against the bar; Departures). If you want them
-  built instead: the route to 10_0 there is views past the 16 texture units packed into one
-  texture and read, filtered and addressed by the program (Gap list, WebGL 2 item); it needs an
-  interface binding, the WebGL 2 back end's copies and a program variant of the shaders crate,
-  several runs over three crates, two of them other tracks'.
+- Both rulings of 2026-11-24 are applied: the division patch is in (48f3959d) and the WebGL 2
+  items stay absent on that build by the feature level rule. Nothing waits on you for G4h.
+- The unsafe removal list's item 10 (sharing.rs `unsafe impl Sync for Shares`, "put the cells
+  inside a Mutex") cannot be done as written: the shares are `Weak<Share>` of `Rc`, which are not
+  `Send`, so a `Mutex` of them is not `Sync` either. It needs the shares to be `Arc` (and their
+  cells locks) or kept per thread; not started.
 
 ## For the owner
 
@@ -1750,21 +1764,13 @@ Earlier runs' measurements are in this file's git history.
   cull distances than its vertex program writes (none, in Wine's d3d10core test_clip_distance:
   vertex outputs `SV_ClipDistance` mask 1, geometry inputs none); since 03b897de it refuses with
   `GeometryDistancesRead`, which removes the WebGL 2 build's device there (Gap list).
-- Shaders track, BLOCKING this track's G4h (the orchestrator's ruling (1) of 2026-11-23 on
-  atg-simplecomputepc, a real difference; its check of round 6 run 4 names your division as what
-  is left): the conversion of DXBC `div` giving the correctly rounded quotient, as WARP gives it
-  and the RTX 3080 inside that program. The patch, ready to apply to lower.rs as it is at
-  8ed43df0 (one arm before `c::F_DIV | c::U_DIV`, 32-bit floats only): scratch
-  graphics-direct3d-11/r9/div.patch. It refines the device's quotient once (`e = fma(-b, q, a)`,
-  `q + e * (1 / b)` fused) and keeps the device's quotient where it is zero or where the refined
-  one is infinite or NaN, so divisions by zero, of infinities and of NaNs and overflows give what
-  they give now. Cost: a reciprocal, two fused multiply-adds, a comparison and two selects per
-  division. Tests that hold it (this track's, run them after it lands): programs.rs
-  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` (ignored until then;
-  `--include-ignored`), `divisions_give_a_real_devices_quotient` (ordinary and non-finite
-  quotients, each the RTX 3080's or WARP's) and `colour_map_sampled_at_its_edges_as_direct3d_samples_it`;
-  measurements with it applied in round 6 run 5 (Gap list, atg-simplecomputepc). DXIL's `fdiv`
-  likewise for the Direct3D 12 front, if you keep the two routes alike.
+- Shaders track, DONE by this track under the orchestrator's ruling (b) of 2026-11-24: DXBC
+  `div` of 32-bit floats is correctly rounded (48f3959d, r9/div.patch: the device's quotient
+  refined once by its fused remainder, kept where it is zero or the refined one is not finite),
+  noted in your status's "Requests to other tracks". Tests that hold it: programs.rs
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`,
+  `divisions_give_a_real_devices_quotient`, `colour_map_sampled_at_its_edges_as_direct3d_samples_it`.
+  Still asked: DXIL's `fdiv` likewise for the Direct3D 12 front, if you keep the two routes alike.
 - Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now
   (this track runs its scratch copy, How to run).
 - Rig track: a way to run Wine's dxgi file with its Direct3D 12 tests kept off the GPU; the scene
@@ -1848,9 +1854,28 @@ Earlier runs' measurements are in this file's git history.
 Left: the export names in build.rs (a build script cannot import the crate it builds), and the rest
 of the fix list (orchestrator magic-literals/fix-graphics.md), a part per run.
 
+## Unsafe
+
+- crates/wcontainers-direct3d-11: none since round 7 run 1 (b22d18cc); `[lints] workspace = true`,
+  so `unsafe_code` is forbidden there. A map hands out `Mapped { data: Shadow }`, `Shadow` being
+  `Rc<[Cell<u8>]>` (object.rs): the Windows library gives the program `data.as_ptr()`, tests
+  read and write with `Cell::get`/`set`, and the device reads or fills the bytes through
+  `shadow_bytes` (`Rc::make_mut` and zerocopy's `as_mut_bytes`, no copy while no `Mapped` is
+  kept; one kept past its unmap keeps its old bytes and the device goes on with a copy).
+- crates/wcontainers-directx: 1069 lines (from 1076): the four reads and writes of mapped bytes
+  (sharing.rs two, objects.rs, the deferred context's unmap), `Locked`'s `ManuallyDrop` (now an
+  `Option` taken at drop), `as_one`'s transmuted null `OutRef` (now `OutRef::default()`) and a
+  test's write (com.rs). Left of the removal list (boundary-unsafe-primitives
+  removals-by-track.md): `same_fields` (19), Direct3D 10 descriptions (8), `words` (1), calls into
+  our own objects (5), `creating`'s `OutRef` (1, 55 generated callers), `force_unlock` (3),
+  `Child`'s `ManuallyDrop` device (1; counted.rs releases that reference by hand, so an `Option`
+  would release it twice), `Shares` (1; For the orchestrator).
+- Needs a primitive: nothing new.
+
 ## Licences
 
-G4h run 1 added no dependency. Downloaded to scratch downloads/msdocs: Microsoft's 10_0, 10_1 and
+Round 7 run 1 added `zerocopy` 0.8 (BSD-2-Clause OR Apache-2.0 OR MIT, already in the workspace)
+to the front. G4h run 1 added no dependency. Downloaded to scratch downloads/msdocs: Microsoft's 10_0, 10_1 and
 11_0 format support pages (markdown from github.com/MicrosoftDocs/win32, CC-BY-4.0 text; the
 table in required.rs is facts generated from them, not their text).
 
