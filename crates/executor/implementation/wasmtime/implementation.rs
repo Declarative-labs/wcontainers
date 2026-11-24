@@ -3,12 +3,16 @@
 //! run; code is translated at first use and kept in a cache shared by every executor of a [`Compiler`].
 
 pub mod cli;
+mod guest_memory;
 mod memory;
 pub mod single_instruction;
 pub mod starts;
 
+use aarch64_cpu::registers::ESR_EL1;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::io::Write;
@@ -30,8 +34,14 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
+use wcontainers_executor::{
+    ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
+};
 use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::Processor;
+use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, encode_syndrome};
+use wcontainers_processor_architecture_arm64::{
+    DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch, PagePermission, Processor,
+};
 use wcontainers_runtime_single_kernel::{
     Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
@@ -39,6 +49,8 @@ use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
 use zerocopy::{FromBytes, IntoBytes};
 
+use guest_memory::World;
+pub use guest_memory::{GuestBytes, GuestMemory};
 pub use memory::Layout;
 use memory::SLOT_BYTES;
 pub use starts::Sources;
@@ -2406,8 +2418,7 @@ where
             let flag = flag::<G>(state_base, block_at);
             let counted = matches!(data.turn, Turn::Counted { .. });
             flag.store(u32::from(counted), Ordering::SeqCst);
-            // SAFETY: the flag is in the state memory, which outlives the run; `left` follows it.
-            unsafe { self.stop_flag.entered(flag) };
+            self.stop_flag.entered(flag);
             let result = instance.run.call(&mut store, ());
             flag.store(0, Ordering::SeqCst);
             let data = store.data_mut();
@@ -3155,29 +3166,60 @@ impl Default for TranslatorConfig {
     }
 }
 
-/// The WebAssembly executor of ARM64: each instruction runs through the translator, as the precise instruction set
-/// `Translator` describes.
+/// The WebAssembly executor of ARM64, running each instruction as the precise instruction set `Translator` describes.
 pub struct Arm64Executor {
-    side: CpuSide<wcontainers_arm64::Arm64>,
+    world: World<wcontainers_arm64::Arm64>,
 }
 
 impl Arm64Executor {
-    /// TODO: temporary placeholder until the executor interface says how an executor is built.
+    /// Returns an executor translating as the configuration says, keeping its translations in memory.
     pub fn new(translator: TranslatorConfig) -> Self {
+        let side = CpuSide::new(
+            Compiler::new(None),
+            translator.look_ahead,
+            translator.optimise,
+            (),
+        );
         Self {
-            side: CpuSide::new(
-                Compiler::new(None),
-                translator.look_ahead,
-                translator.optimise,
-                (),
-            ),
+            world: Rc::new(RefCell::new(side)),
         }
     }
+
+    /// Returns every slow path the executor's spaces took so far: how often and the time spent.
+    pub fn counters(&self) -> Vec<CounterReading> {
+        self.world.borrow().counters()
+    }
 }
+
+/// The host refused the memories of a new guest space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostRefusedMemoryError;
 
 impl wcontainers_executor::Executor for Arm64Executor {
     type Architecture = wcontainers_processor_architecture_arm64::Arm64;
     type TranslatorConfig = TranslatorConfig;
+    type GuestMemory = GuestMemory<wcontainers_arm64::Arm64>;
+    type CreateGuestMemoryError = HostRefusedMemoryError;
+    type Interrupter = Arm64Interrupter;
+
+    fn create_guest_memory(&self) -> Result<Self::GuestMemory, HostRefusedMemoryError> {
+        GuestMemory::new(self.world.clone()).map_err(|_| HostRefusedMemoryError)
+    }
+
+    fn execute<'execution>(
+        &'execution mut self,
+        processor: Processor,
+        memory: &'execution Self::GuestMemory,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (
+        impl Future<Output = Processor> + 'execution,
+        Arm64Interrupter,
+    ) {
+        let stop_flag = StopFlag::default();
+        let interrupter = Arm64Interrupter(stop_flag.clone());
+        let execution = async move { run_to_trap(processor, memory, handler, &stop_flag) };
+        (execution, interrupter)
+    }
 
     fn execute_single_instruction_in_place(
         &mut self,
@@ -3186,7 +3228,7 @@ impl wcontainers_executor::Executor for Arm64Executor {
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Self::Architecture>),
     ) {
         single_instruction::execute_on_cpu(
-            &mut self.side,
+            &mut *self.world.borrow_mut(),
             processor,
             memory,
             on_memory_mutated,
@@ -3194,3 +3236,134 @@ impl wcontainers_executor::Executor for Arm64Executor {
         );
     }
 }
+
+/// Raises the interrupt of one execution of an [`Arm64Executor`] through the stop flag only that execution runs with.
+pub struct Arm64Interrupter(StopFlag);
+
+impl ExecutionInterrupter for Arm64Interrupter {
+    fn interrupt(&self) {
+        self.0.raise();
+    }
+}
+
+/// Returns the processor state the guest stops at, run on the space until a trap the handler does not let it go on from.
+fn run_to_trap(
+    processor: Processor,
+    memory: &GuestMemory<wcontainers_arm64::Arm64>,
+    handler: &mut impl TrapHandler,
+    stop_flag: &StopFlag,
+) -> Processor {
+    let world = &memory.world;
+    world.borrow_mut().stop_flag = stop_flag.clone();
+    if stop_flag.take() {
+        match handler.handle_interrupt() {
+            InterruptResponse::Continue => {}
+            InterruptResponse::Terminate => return processor,
+        }
+    }
+    let thread = world
+        .borrow_mut()
+        .thread_new(memory.memory)
+        .expect("a thread block is free while no other processor runs on the space");
+    let registers = single_instruction::to_register_block(&processor);
+    world.borrow_mut().set_registers(thread, &registers);
+    let mut resume = Resume::FromRegisters;
+    let (mut registers, exit) = loop {
+        let mut trapped = Trapped(None);
+        let Ok(()) = Execution::run(
+            &mut *world.borrow_mut(),
+            thread,
+            resume,
+            Turn::Free,
+            &mut trapped,
+        );
+        let exit = trapped.0.expect("a run the executor left ends with an exit");
+        let mut registers = RegisterBlock::ZERO;
+        world.borrow_mut().registers(thread, &mut registers);
+        let next = match exit {
+            Exit::Syscall(call) => match handler.handle_system_call(call) {
+                SystemCallResponse::Return(value) => Some(Resume::Return(value)),
+                SystemCallResponse::Terminate => None,
+            },
+            Exit::Stop => match handler.handle_interrupt() {
+                InterruptResponse::Continue => Some(Resume::Continue),
+                InterruptResponse::Terminate => None,
+            },
+            Exit::MemoryFault { address, access } => {
+                match handler.handle_memory_fault(address, access) {
+                    MemoryFaultResponse::Retry => Some(Resume::Continue),
+                    MemoryFaultResponse::Terminate => None,
+                }
+            }
+            Exit::MemoryFaultWithoutRegisters
+            | Exit::AlignmentFault { .. }
+            | Exit::IllegalInstruction
+            | Exit::Breakpoint { .. } => None,
+        };
+        match next {
+            Some(then) => resume = then,
+            None => break (registers, exit),
+        }
+    };
+    let mut side = world.borrow_mut();
+    side.thread_drop(thread);
+    // A stop leaves the program counter on the instruction that trapped, the system call too.
+    if let Exit::Syscall(_) = exit {
+        registers.pc -= INSTRUCTION_BYTES;
+    }
+    let mut word = [u8::MIN; INSTRUCTION_BYTES as usize];
+    if side.read(memory.memory, registers.pc, &mut word).is_err() {
+        word = [u8::MIN; INSTRUCTION_BYTES as usize];
+    }
+    let process = side.process(memory.memory);
+    let permission_at = |address: u64| {
+        if process.pages.get(address / PAGE_SIZE).allows.is_empty() {
+            PagePermission::Unmapped
+        } else {
+            PagePermission::Mapped {
+                data_access: DataAccess::Forbidden,
+                instruction_fetch: InstructionFetch::Forbidden,
+            }
+        }
+    };
+    let exception = match exit {
+        // The engine stopped an access past the whole space, so the address is not known.
+        Exit::MemoryFaultWithoutRegisters => Some(Exception {
+            syndrome: encode_syndrome(
+                ESR_EL1::EC::Value::DataAbortLowerEL,
+                FaultStatus::TranslationFaultLevel3 as u64,
+            ),
+            fault_address: None,
+        }),
+        other => single_instruction::to_exception(
+            other,
+            u32::from_le_bytes(word),
+            registers.pc,
+            permission_at,
+        ),
+    };
+    single_instruction::to_processor(&registers, exception)
+}
+
+/// The answer of a run of `execute`, which keeps the exit and leaves so that no part of the executor is borrowed.
+///
+/// The trap handler is then called outside the run, and the guest's clock reads the system's monotonic clock.
+struct Trapped(Option<Exit>);
+
+impl Answer for Trapped {
+    fn exit(&mut self, _: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
+        self.0 = Some(exit);
+        Carry::Leave(Leaving::SystemAsked)
+    }
+
+    fn clock(&mut self, _: u64) -> u64 {
+        let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+        let seconds = u64::try_from(now.tv_sec).expect("the monotonic clock is past its start");
+        let nanoseconds = u32::try_from(now.tv_nsec).expect("nanoseconds below a second");
+        let elapsed = std::time::Duration::new(seconds, nanoseconds).as_nanos();
+        u64::try_from(elapsed).unwrap_or(u64::MAX)
+    }
+
+    fn warn(&mut self, _: Warning<'_>) {}
+}
+
