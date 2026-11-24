@@ -210,7 +210,9 @@ pub struct Programs<B: Backend> {
 /// location.
 struct Squares {
     before: Option<Shader>,
-    geometry: Shader,
+    /// `None` for a geometry program whose rewrite is not built, refused only where its points
+    /// are wide.
+    geometry: Option<Shader>,
     /// The points' size is the one the programs write, not the rasterizer's.
     sized: bool,
 }
@@ -282,7 +284,9 @@ impl<B: Backend> Programs<B> {
         let squares: Vec<_> = self.squares.keys().filter(|k| k.0 == id).copied().collect();
         for key in squares {
             if let Some(made) = self.squares.remove(&key).flatten() {
-                self.forget(screen, &made.geometry);
+                if let Some(geometry) = &made.geometry {
+                    self.forget(screen, geometry);
+                }
                 if let Some(before) = &made.before {
                     self.forget(screen, before);
                 }
@@ -3133,11 +3137,11 @@ fn squares_for<B: Backend>(
             slot.insert(Some(Box::new(Squares {
                 before: sized.then(|| shader(vs.stage, copy)),
                 sized,
-                geometry: Shader {
+                geometry: Some(Shader {
                     formatless_images: 0,
                     integer_sampled: 0,
                     ..shader(Stage::Geometry, nir)
-                },
+                }),
             })))
         }
     };
@@ -3156,7 +3160,11 @@ fn squares_for<B: Backend>(
         .before
         .as_ref()
         .map_or(std::ptr::from_ref(vs), std::ptr::from_ref);
-    Ok(Some((before, std::ptr::from_ref(&made.geometry), at)))
+    let geometry = made
+        .geometry
+        .as_ref()
+        .ok_or("points drawn as squares without their geometry program")?;
+    Ok(Some((before, std::ptr::from_ref(geometry), at)))
 }
 
 /// A geometry program whose output is points rewritten to draw them as squares where the back end
@@ -3174,13 +3182,7 @@ fn geometry_squares_for<B: Backend>(
         return Ok(None);
     }
     let at = gs.nir.generic_end().max(fs.nir.generic_end());
-    let block = backend.caps().limits.uniform_buffers_per_stage - 1;
-    if block as usize >= PIPE_MAX_CONSTANT_BUFFERS as usize {
-        return refused(format_args!(
-            "points of a geometry program drawn as squares where the host has a uniform buffer \
-             for every block Gallium binds (not built)"
-        ));
-    }
+    let block = crate::screen::uniform_blocks(backend.caps());
     let made = match programs
         .squares
         .entry((std::ptr::from_ref(gs) as ShaderId, at))
@@ -3195,16 +3197,10 @@ fn geometry_squares_for<B: Backend>(
                 return Ok(None);
             }
             let largest = crate::screen::largest_point_size(backend.caps());
-            let Some(nir) = gs.nir.geometry_squares(at, largest, block) else {
-                return refused(format_args!(
-                    "points of a geometry program drawn as squares where it writes clip \
-                     distances, outputs at offsets known only when run or to several streams, or \
-                     emits with counters (not built)"
-                ));
-            };
-            slot.insert(Some(Box::new(Squares {
-                before: None,
-                geometry: Shader {
+            let geometry = gs
+                .nir
+                .geometry_squares(at, largest, block)
+                .map(|nir| Shader {
                     stage: Stage::Geometry,
                     nir,
                     streamed: Ok(None),
@@ -3214,7 +3210,10 @@ fn geometry_squares_for<B: Backend>(
                     formatless_images: gs.formatless_images,
                     integer_sampled: gs.integer_sampled,
                     named_layer: gs.named_layer,
-                },
+                });
+            slot.insert(Some(Box::new(Squares {
+                before: None,
+                geometry,
                 sized,
             })))
         }
@@ -3230,7 +3229,14 @@ fn geometry_squares_for<B: Backend>(
             "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
         ));
     }
-    Ok(Some((std::ptr::from_ref(&made.geometry), at, block)))
+    let Some(geometry) = &made.geometry else {
+        return refused(format_args!(
+            "points of a geometry program drawn as squares where it writes clip distances, \
+             outputs at offsets known only when run or to several streams, or emits with counters \
+             (not built)"
+        ));
+    };
+    Ok(Some((std::ptr::from_ref(geometry), at, block)))
 }
 
 /// The uniform block of a point's square (`Nir::point_square`): the bound size, half a pixel's

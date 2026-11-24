@@ -163,6 +163,14 @@ pub(crate) fn largest_point_size(caps: &Caps) -> f32 {
     }
 }
 
+/// The uniform blocks a stage reports, every one of them a Gallium slot and a host buffer: one of
+/// the host's buffers is left for a converted program's helper constants, and one of Gallium's
+/// slots, the first past these, for the blocks the driver binds itself (a geometry program's
+/// squares, `draw::geometry_squares_for`).
+pub(crate) fn uniform_blocks(caps: &Caps) -> u32 {
+    (caps.limits.uniform_buffers_per_stage - 1).min(PIPE_MAX_CONSTANT_BUFFERS - 1)
+}
+
 /// Gallium's screen caps: its defaults, with the interface's limits over them and what the
 /// context does and does not do.
 fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
@@ -375,8 +383,7 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
         }
     }
     caps.max_const_buffer0_size = limits.max_uniform_buffer_size;
-    // One of the stage's uniform buffers holds a converted program's helper constants.
-    caps.max_const_buffers = limits.uniform_buffers_per_stage - 1;
+    caps.max_const_buffers = uniform_blocks(ours);
     // Each OpenGL sampler is split into a texture and a sampler at the same binding, each within
     // its kind's range of the stage's bindings.
     let samplers = limits
