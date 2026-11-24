@@ -41,7 +41,7 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/wcontainers-graphics-test-forward (188, counted on 2026-11-24)
 #   crates/wcontainers-gpu-webgl (163, counted on 2026-11-24)
 #   crates/wcontainers-nir (117, counted on 2026-11-24)
-#   crates/wcontainers-shaders (94)
+#   crates/wcontainers-shaders (75, counted on 2026-11-24: 4 in the linked converters of its WebAssembly build, 71 in its Windows tests calling real Direct3D)
 #   crates/executor/implementation/hardware-virtualization (58, an executor, counted on 2026-11-24)
 #   crates/executor/implementation/hardware-virtualization-inside (57, an executor)
 #   crates/executor/implementation/unicorn (12, an executor, counted on 2026-11-24)
