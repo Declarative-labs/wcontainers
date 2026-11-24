@@ -97,6 +97,20 @@ fn within_register(
     }
 }
 
+/// The registers of a stage's signature, Direct3D's for every stage.
+const REGISTERS: u32 = crate::stage::tess::LOCATIONS;
+
+/// Why a stage value is refused whose registers pass the signature's last.
+const PAST_SIGNATURE: &str = "a stage value past its signature's last register";
+
+/// Refuses a value whose `rows` registers from `register` pass the signature's last.
+fn within_signature(register: u32, rows: u32) -> Result<(), ConvertError> {
+    match register.checked_add(rows) {
+        Some(end) if end <= REGISTERS => Ok(()),
+        _ => Err(ConvertError::Malformed(PAST_SIGNATURE.into())),
+    }
+}
+
 /// A scalar or vector type's scalar and width.
 fn shape(module: &Module, ty: Handle<Type>) -> (Scalar, u32) {
     match module.types[ty].inner {
@@ -195,6 +209,7 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         let (register, component) = decode(*location);
         let (element, rows) = element_of(module, a.ty)?;
         within_register(module, element, component)?;
+        within_signature(register, rows)?;
         for row in 0..rows {
             placed.push(Placed {
                 output: false,
@@ -311,6 +326,7 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         let (register, component) = decode(location);
         let (element, rows) = element_of(module, o.ty)?;
         within_register(module, element, component)?;
+        within_signature(register, rows)?;
         for row in 0..rows {
             placed.push(Placed {
                 output: true,
