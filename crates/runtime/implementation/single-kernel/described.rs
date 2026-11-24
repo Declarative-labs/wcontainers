@@ -1,6 +1,7 @@
 //! The local system as the system interface describes it: the kernel it serves, what programs read from their processor,
 //! the machine they are told of, and ICMP echo sockets, raw sockets and routes through the host's.
 
+use core::cell::RefCell;
 use std::num::NonZeroUsize;
 
 use etherparse::IpNumber;
@@ -23,8 +24,12 @@ use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_route_resolver_host::HostRouteResolver;
 use wcontainers_system::{FallbackObserver, MachineDescription, ProcessTracer, ProcessorInputs};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::LocalSystem;
+
+/// Why the host's sockets of a kind are open whenever one of their sockets is asked about.
+const OPENED_WITH_ITS_SOCKET: &str = "a socket is only given out once the host's sockets of its kind opened";
 
 /// The kernel a local system on the executor `E` serves; its processes carry no state of the system's.
 pub type LocalKernel<E> = KernelWithExecutor<E, (), LocalSystem<E>>;
@@ -47,7 +52,7 @@ where
 
     fn read_random_number<P: ProcessOf<(), LocalKernel<E>>>(&self, _: P, _: TaskId) -> u64 {
         let mut bytes = [0; size_of::<u64>()];
-        self.fill_random_bytes(&mut bytes)
+        self.fill_random_bytes(&RefCell::new(&mut bytes[..]))
             .expect("the host gives random bytes");
         u64::from_ne_bytes(bytes)
     }
@@ -122,23 +127,31 @@ impl<E> IcmpSockets for LocalSystem<E> {
         socket: &HostIcmpSocket,
         header: IpHeaderFields<'_>,
         fields: IpSendFields,
-        message: &[u8],
+        message: &impl VolatileBytes,
     ) -> Result<(), SendError> {
         self.icmp()
             .map_err(SendError::Host)?
             .send_to(socket, header, fields, message)
     }
 
-    fn receive(&self, socket: &HostIcmpSocket, into: &mut [u8]) -> Result<Received, HostError> {
+    fn receive(
+        &self,
+        socket: &HostIcmpSocket,
+        into: &impl VolatileBytes,
+    ) -> Result<Received, HostError> {
         self.icmp()?.receive(socket, into)
     }
 
-    fn count_unsent_bytes(&self, socket: &HostIcmpSocket) -> Result<ByteCount, HostError> {
-        self.icmp()?.count_unsent_bytes(socket)
+    fn count_unsent_bytes(&self, socket: &HostIcmpSocket) -> ByteCount {
+        self.icmp()
+            .expect(OPENED_WITH_ITS_SOCKET)
+            .count_unsent_bytes(socket)
     }
 
-    fn read_buffer_sizes(&self, socket: &HostIcmpSocket) -> Result<BufferSizes, HostError> {
-        self.icmp()?.read_buffer_sizes(socket)
+    fn read_buffer_sizes(&self, socket: &HostIcmpSocket) -> BufferSizes {
+        self.icmp()
+            .expect(OPENED_WITH_ITS_SOCKET)
+            .read_buffer_sizes(socket)
     }
 
     fn close(&self, socket: HostIcmpSocket) {
@@ -192,16 +205,24 @@ impl<E> RawSockets for LocalSystem<E> {
             .send_to(socket, packet, fields)
     }
 
-    fn receive(&self, socket: &HostRawSocket, into: &mut [u8]) -> Result<Received, HostError> {
+    fn receive(
+        &self,
+        socket: &HostRawSocket,
+        into: &impl VolatileBytes,
+    ) -> Result<Received, HostError> {
         self.raw()?.receive(socket, into)
     }
 
-    fn count_unsent_bytes(&self, socket: &HostRawSocket) -> Result<ByteCount, HostError> {
-        self.raw()?.count_unsent_bytes(socket)
+    fn count_unsent_bytes(&self, socket: &HostRawSocket) -> ByteCount {
+        self.raw()
+            .expect(OPENED_WITH_ITS_SOCKET)
+            .count_unsent_bytes(socket)
     }
 
-    fn read_buffer_sizes(&self, socket: &HostRawSocket) -> Result<BufferSizes, HostError> {
-        self.raw()?.read_buffer_sizes(socket)
+    fn read_buffer_sizes(&self, socket: &HostRawSocket) -> BufferSizes {
+        self.raw()
+            .expect(OPENED_WITH_ITS_SOCKET)
+            .read_buffer_sizes(socket)
     }
 
     fn close(&self, socket: HostRawSocket) {

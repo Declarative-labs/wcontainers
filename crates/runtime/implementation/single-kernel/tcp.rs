@@ -29,7 +29,10 @@ use wcontainers_tcp_sockets::{
     TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest, TcpShutdown,
 };
 
+use wcontainers_volatile_bytes::VolatileBytes;
+
 use crate::LocalSystem;
+use crate::host_call::{receive_into, send_from};
 
 /// A TCP connection or listener, or a UDP socket, of the local system, by the network's number
 /// of it.
@@ -87,19 +90,19 @@ impl<E> TcpConnections for LocalSystem<E> {
         &self,
         connection: &Self::Connection,
         _request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
-        self.state()
-            .network()
-            .tcp_send(connection.0, bytes)
-            .map(ByteCount)
+        send_from(payload, |bytes| {
+            self.state().network().tcp_send(connection.0, bytes)
+        })
+        .map(ByteCount)
     }
 
     fn receive(
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let peek = match request {
             TcpReceiveRequest::Read => false,
@@ -108,10 +111,11 @@ impl<E> TcpConnections for LocalSystem<E> {
             } => true,
             _ => return Err(HostError::NotSupported),
         };
-        let length = self
-            .state()
-            .network()
-            .tcp_receive(connection.0, into, peek)?;
+        let length = receive_into(into, |bytes| {
+            self.state()
+                .network()
+                .tcp_receive(connection.0, bytes, peek)
+        })?;
         Ok(TcpReceived {
             length: ByteCount(length),
             timestamps: ReceiveTimestamps {

@@ -1421,11 +1421,7 @@ pub fn buffer_sizes_are_read_as_linux_gives_them<S: IcmpSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let socket = opened(&sockets, version);
         buffer_sizes_are_read_back(
-            || {
-                sockets
-                    .read_buffer_sizes(&socket)
-                    .expect("the buffer sizes are read")
-            },
+            || sockets.read_buffer_sizes(&socket),
             |setting| set(&sockets, &socket, setting),
         );
     }
@@ -3017,10 +3013,7 @@ pub fn pacing_holds_messages_in_the_send_buffer<S: IcmpSockets>(sockets: S) {
         let socket = opened(&sockets, version_of(to));
         ping(&sockets, &socket, to, PAYLOAD).unwrap();
         receive_packet(&sockets, &socket, &mut buffer());
-        assert_eq!(
-            sockets.count_unsent_bytes(&socket),
-            Ok(ByteCount(usize::MIN))
-        );
+        assert_eq!(sockets.count_unsent_bytes(&socket), ByteCount(usize::MIN));
         set(
             &sockets,
             &socket,
@@ -3030,7 +3023,7 @@ pub fn pacing_holds_messages_in_the_send_buffer<S: IcmpSockets>(sockets: S) {
         for _ in 0..MESSAGES {
             ping(&sockets, &socket, to, &long).expect("a paced request is sent");
         }
-        let unsent = sockets.count_unsent_bytes(&socket).unwrap();
+        let unsent = sockets.count_unsent_bytes(&socket);
         assert!(unsent.0 >= long.len(), "{to}: {unsent:?}");
         for _ in 0..MESSAGES {
             receive_packet(&sockets, &socket, &mut buffer());

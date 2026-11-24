@@ -58,11 +58,11 @@ impl RawSockets for HostRawSockets {
         match socket.never {}
     }
 
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> ByteCount {
         match socket.never {}
     }
 
-    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> BufferSizes {
         match socket.never {}
     }
 

@@ -402,11 +402,7 @@ pub fn buffer_sizes_are_read_as_linux_gives_them<S: RawSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let socket = opened(&sockets, version, EXPERIMENT);
         buffer_sizes_are_read_back(
-            || {
-                sockets
-                    .read_buffer_sizes(&socket)
-                    .expect("the buffer sizes are read")
-            },
+            || sockets.read_buffer_sizes(&socket),
             |setting| set(&sockets, &socket, RawSocketSetting::Ip(setting)),
         );
     }
@@ -2128,10 +2124,7 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
     send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD)).unwrap();
     let fields = receive_packet(&sockets, &socket, &mut buffer());
     assert_eq!(fields.timestamps.software, None);
-    assert_eq!(
-        sockets.count_unsent_bytes(&socket),
-        Ok(ByteCount(usize::MIN))
-    );
+    assert_eq!(sockets.count_unsent_bytes(&socket), ByteCount(usize::MIN));
     set(
         &sockets,
         &socket,
@@ -2167,7 +2160,7 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
         }
     }
     assert!(blocked);
-    assert!(sockets.count_unsent_bytes(&socket).unwrap().0 >= long.len());
+    assert!(sockets.count_unsent_bytes(&socket).0 >= long.len());
 }
 
 /// Returns the setting joining a group, or leaving it, on the dummy link.

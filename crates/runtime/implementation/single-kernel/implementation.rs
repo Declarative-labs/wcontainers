@@ -30,6 +30,8 @@ mod errno;
 #[cfg(feature = "std")]
 pub mod files;
 #[cfg(feature = "std")]
+mod host_call;
+#[cfg(feature = "std")]
 pub mod image;
 #[cfg(feature = "std")]
 pub mod names;

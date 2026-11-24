@@ -66,6 +66,9 @@ const FORWARDED_BY_ITS_BYTES: &str = "linux does not tell a packet it forwards t
 const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a raw socket an icmp error without the identification and \
      fragment flags of an ipv4 one, nor under a payload the quoted header's fields but its addresses: written as zero";
 
+/// Why reading the send queue or the buffer sizes of a socket cannot fail.
+const OWN_DESCRIPTOR: &str = "getsockopt on the socket's own open descriptor";
+
 /// The value that takes a socket off the IPv6 router alert chain: any negative one.
 ///
 /// https://man7.org/linux/man-pages/man7/ipv6.7.html
@@ -593,12 +596,12 @@ impl RawSockets for HostRawSockets {
             .map_or_else(|| self.receive_bytes(socket, &mut []), Ok)
     }
 
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
-        unsent_bytes(socket.fd())
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> ByteCount {
+        unsent_bytes(socket.fd()).expect(OWN_DESCRIPTOR)
     }
 
-    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
-        buffer_sizes(socket.fd())
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> BufferSizes {
+        buffer_sizes(socket.fd()).expect(OWN_DESCRIPTOR)
     }
 
     fn close(&self, socket: Self::Socket) {

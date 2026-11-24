@@ -18,6 +18,7 @@ use wcontainers_abi::{Cpu, Event, Host, HostError, PAGE_SIZE, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard};
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
@@ -581,9 +582,12 @@ macro_rules! host_on_state {
         }
 
         impl<E> wcontainers_random_source::RandomSource for $host {
-            fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+            fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
                 let $this = self;
-                $state.random(into);
+                crate::host_call::receive_into(into, |bytes| {
+                    $state.random(bytes);
+                    Ok(bytes.len())
+                })?;
                 Ok(())
             }
         }
@@ -598,14 +602,14 @@ macro_rules! host_on_state {
         impl<E> StreamTransport for $host {
             type Endpoint = u32;
 
-            fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+            fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
                 let $this = self;
-                $state.send_stream(*peer, bytes)
+                crate::host_call::send_from(payload, |bytes| $state.send_stream(*peer, bytes))
             }
 
-            fn receive_stream(&self, peer: &u32, into: &mut [u8]) -> Result<usize, HostError> {
+            fn receive_stream(&self, peer: &u32, into: &impl VolatileBytes) -> Result<usize, HostError> {
                 let $this = self;
-                $state.receive_stream(*peer, into)
+                crate::host_call::receive_into(into, |bytes| $state.receive_stream(*peer, bytes))
             }
 
             fn close_stream(&self, peer: &u32) {
