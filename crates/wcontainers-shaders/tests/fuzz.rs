@@ -384,6 +384,7 @@ const MANY_THREADS: usize = 1100;
 /// converters run as a module, a conversion waits for a free instance of the pool rather than being
 /// refused, and no thread keeps one after its conversion.
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WebAssembly for WASI has no threads")]
 fn many_threads_converting_at_once_each_convert() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxil");
     let bytes = std::fs::read(path).unwrap();
