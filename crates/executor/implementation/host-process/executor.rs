@@ -796,7 +796,7 @@ impl HostProcessExecutor {
             for command in chunk {
                 if matches!(
                     command,
-                    Command::MapShared { .. } | Command::MapCode | Command::MapSlots { .. }
+                    Command::MapShared { .. } | Command::MapCode | Command::MapSlots
                 ) {
                     let block = blocks.next().expect("a memfd for every queued block");
                     stub.send_block(block.as_fd()).map_err(host_error)?;

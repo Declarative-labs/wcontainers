@@ -4,7 +4,7 @@
 
 use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use wcontainers_abi::{
@@ -30,8 +30,8 @@ use wcontainers_translator::{LookAhead, translate_native_for};
 use super::{FaultOwner, HostProcessExecutor, Then};
 use crate::code::CodeArea;
 use crate::layout::{
-    CODE_AREA, CODE_AREA_SIZE, CODE_FILE_SIZE, OUR_AREA, REGISTER_PAGES, SLOT_TABLE,
-    SLOT_TABLE_SIZE, THREAD_PAGE_SIZE,
+    CODE_AREA, CODE_AREA_SIZE, OUR_AREA, REGISTER_PAGES, SLOT_TABLE, SLOT_TABLE_SIZE,
+    THREAD_PAGE_SIZE,
 };
 use crate::pages::Command;
 use crate::probe::{CTR_EL0_IMINLINE_SHIFT, CTR_EL0_LINE_MASK};
@@ -52,8 +52,8 @@ pub mod reason {
     pub const TRANSLATED: &str = "native code translated";
     /// The code area was full, so every piece of its memory was dropped.
     pub const CODE_AREA_EMPTIED: &str = "code area emptied";
-    /// Every page of the slot table a memory can hold is in use, so its process is ended.
-    pub const SLOT_PAGES_EXHAUSTED: &str = "slot pages exhausted";
+    /// The host refused to give back a page of the slot table that a jump reached and no slot was written in.
+    pub const SLOT_PAGE_KEPT: &str = "slot page kept";
     /// A turn limited to a count ended past it: linked pieces cannot stop a thread at an exact count.
     pub const TURN_LIMIT_PASSED: &str = "turn limit passed";
     /// A turn limited to a count ran one instruction at a time, so that it ends exactly at the count.
@@ -159,15 +159,13 @@ fn moved_bytes(translation: &Translation, by: u64) -> Vec<u8> {
     bytes
 }
 
-/// One memory's translated code: its code area, its slot pages and its pieces.
+/// One memory's translated code: its code area, its slot table and its pieces.
 pub(super) struct Code {
     area: CodeArea,
     /// The next free byte of the code area.
     next: u64,
-    /// Each slot page in use: its address in the stub and its bytes' offset in the memfd.
-    slot_pages: HashMap<u64, usize>,
-    /// The next free offset for a slot page.
-    slot_next: usize,
+    /// The slot table's pages ever written, by their address in the stub; every other page reads as empty slots.
+    slot_pages: HashSet<u64>,
     /// The pieces by guest address.
     pieces: BTreeMap<u64, Loaded>,
     /// The guest address of the piece at each host address.
@@ -416,7 +414,7 @@ impl HostProcessExecutor {
             .collect()
     }
 
-    /// The memory's code, made with its code area mapped at the next turn on first use.
+    /// The memory's code, made with its code area and slot table mapped at the next turn on first use.
     fn code(&mut self, memory: MemoryId) -> Result<&mut Code, CpuError> {
         let index = memory.0 as usize;
         if self.codes.len() <= index {
@@ -424,13 +422,13 @@ impl HostProcessExecutor {
         }
         if self.codes[index].is_none() {
             let area = CodeArea::new().map_err(super::host_error)?;
-            let file = area.shared_file();
-            self.memory_mut(memory).push_code(Command::MapCode, file);
+            let memory = self.memory_mut(memory);
+            memory.push_code(Command::MapCode, area.shared_file());
+            memory.push_code(Command::MapSlots, area.shared_file());
             self.codes[index] = Some(Code {
                 area,
                 next: CODE_AREA as u64,
-                slot_pages: HashMap::new(),
-                slot_next: CODE_AREA_SIZE,
+                slot_pages: HashSet::new(),
                 pieces: BTreeMap::new(),
                 hosts: BTreeMap::new(),
                 exits_to: HashMap::new(),
@@ -698,13 +696,7 @@ impl HostProcessExecutor {
         if self.lone {
             return Ok(Some(at));
         }
-        if self.fill_slot(memory, pc, base).is_none() {
-            if !make {
-                return Ok(None);
-            }
-            self.slow(reason::SLOT_PAGES_EXHAUSTED, 1, pc);
-            return Err(Exit::MemoryFaultWithoutRegisters);
-        }
+        self.fill_slot(memory, pc, base);
         let code = &self.codes[memory.0 as usize].as_ref().expect("made above");
         let into = code
             .exits_to
@@ -738,7 +730,10 @@ impl HostProcessExecutor {
     pub(super) fn flush_code(&mut self, memory: MemoryId) {
         let probe = *self.host.probe();
         if let Some(Some(code)) = self.codes.get_mut(memory.0 as usize) {
-            code.area.flush(&probe);
+            let kept = code.area.flush(&probe);
+            if kept > 0 {
+                self.slow(reason::SLOT_PAGE_KEPT, kept as u64, memory.0.into());
+            }
         }
     }
 
@@ -772,10 +767,9 @@ impl HostProcessExecutor {
         code.hosts.clear();
         code.exits_to.clear();
         code.next = CODE_AREA as u64;
-        let page = vec![empty; THREAD_PAGE_SIZE / size_of::<u32>()];
-        let offsets: Vec<usize> = code.slot_pages.values().copied().collect();
-        for offset in offsets {
-            code.area.stage_slots(offset, &page);
+        let words = vec![empty; THREAD_PAGE_SIZE / size_of::<u32>()];
+        for &page in &code.slot_pages {
+            code.area.stage_slots(page as usize, &words);
         }
         self.slow(reason::CODE_AREA_EMPTIED, 1, dropped);
     }
@@ -793,40 +787,19 @@ impl HostProcessExecutor {
         branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
-    /// Fills the entry slot of guest `guest` with a jump to the piece at `base`, its page mapped in the stub at its
-    /// first use; none when no slot page is free.
-    fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Option<()> {
+    /// Fills the entry slot of guest `guest` with a jump to the piece at `base`.
+    fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) {
         let words_of = words();
         let at = WAY.slot(guest);
-        let page = at & !(THREAD_PAGE_SIZE as u64 - 1);
-        let code = self.codes[memory.0 as usize].as_mut()?;
-        let offset = match code.slot_pages.get(&page) {
-            Some(&offset) => offset,
-            None => {
-                let offset = code.slot_next;
-                if offset + THREAD_PAGE_SIZE > CODE_FILE_SIZE {
-                    return None;
-                }
-                code.slot_next += THREAD_PAGE_SIZE;
-                code.slot_pages.insert(page, offset);
-                let file = code.area.shared_file();
-                self.memory_mut(memory).push_code(
-                    Command::MapSlots {
-                        address: page as usize,
-                        offset,
-                    },
-                    file,
-                );
-                offset
-            }
-        };
+        let code = self.codes[memory.0 as usize]
+            .as_mut()
+            .expect("a memory with code");
+        code.slot_pages.insert(at & !(THREAD_PAGE_SIZE as u64 - 1));
         let mut words = [words_of.jump; SLOT_MOVES + 1];
         for (k, (word, &field)) in words.iter_mut().zip(&words_of.moves).enumerate() {
             *word = Field::new(field).with(base >> (k as u32 * SLOT_MOVE_BITS));
         }
-        let code = self.codes[memory.0 as usize].as_mut()?;
-        code.area.stage_slots(offset + (at - page) as usize, &words);
-        Some(())
+        code.area.stage_slots(at as usize, &words);
     }
 
     /// The host address of the word in line that leads to the out-of-line call whose `blr` is at `call`: the word
@@ -1011,10 +984,11 @@ impl HostProcessExecutor {
         };
         code.hosts.remove(&loaded.base);
         let slot = WAY.slot(at);
-        let page = slot & !(THREAD_PAGE_SIZE as u64 - 1);
-        if let Some(&offset) = code.slot_pages.get(&page) {
-            code.area
-                .stage_slots(offset + (slot - page) as usize, &[empty]);
+        if code
+            .slot_pages
+            .contains(&(slot & !(THREAD_PAGE_SIZE as u64 - 1)))
+        {
+            code.area.stage_slots(slot as usize, &[empty]);
         }
         let unlink: Vec<Site> = code.exits_to.get(&at).cloned().unwrap_or_default();
         for site in unlink {
@@ -1325,6 +1299,11 @@ impl HostProcessExecutor {
                         break Ended::LastTarget { call, target };
                     }
                     Some(Resolved::Stop(stop, state)) => {
+                        if let Stop::Landed(_) = stop
+                            && let Some(Some(code)) = self.codes.get_mut(memory.0 as usize)
+                        {
+                            code.area.reached_slot(h.pc as usize);
+                        }
                         let stop = self.store_faults_as_write(memory, stop, state.pc);
                         t.state = state;
                         t.page = held;

@@ -13,16 +13,8 @@ use libc::{
 use linux_raw_sys::general as linux;
 
 use crate::layout::{
-    CODE_AREA, CODE_AREA_SIZE, CODE_FILE_SIZE, GUEST_START, OUR_AREA, SLOT_TABLE, SLOT_TABLE_SIZE,
-    THREAD_PAGE_SIZE,
+    CODE_AREA, CODE_AREA_SIZE, GUEST_START, OUR_AREA, SLOT_TABLE, SLOT_TABLE_SIZE,
 };
-
-// The slot table and the slot pages' offsets are bounded by one word of each.
-const _: () = assert!(
-    SLOT_TABLE as u32 == 0
-        && (SLOT_TABLE + SLOT_TABLE_SIZE) as u32 == 0
-        && CODE_FILE_SIZE >> 32 == 0
-);
 use crate::stub::{BLOCK_FD, MEMORY_FD, SOCKET_FD, THREAD_FLAGS};
 
 #[cfg(target_arch = "aarch64")]
@@ -215,8 +207,8 @@ impl Program {
 
 /// The stub's filter: `futex`, `exit`, `exit_group`, `rt_sigprocmask` and `sigaltstack` as they come; `mmap` shared and
 /// fixed, inside the guest area, never executable, of the memory's memfd at the offset equal to the address or of a
-/// shared block's received memfd, of the code area's received memfd execute-only over exactly the code area, and one
-/// page of it past the code area's bytes execute-only in the slot table; `mprotect` inside the guest area, never
+/// shared block's received memfd, of the code area's received memfd execute-only over exactly the code area, and its
+/// bytes past the code area's execute-only over exactly the slot table; `mprotect` inside the guest area, never
 /// executable; `munmap` inside the guest area;
 /// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block;
 /// `sched_setaffinity` of the calling thread only; on ARM64 `rt_sigreturn`. Anything else kills the stub.
@@ -269,31 +261,19 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     program.always(kill);
 
     program.place(mmap);
-    // One page of the code area's memfd past the code area's own bytes, received as a block, execute-only in the slot
+    // The code area's memfd past the code area's own bytes, received as a block, execute-only over exactly the slot
     // table.
     let code_mmap = program.label();
     for (argument, value) in [
-        (1, THREAD_PAGE_SIZE as u64),
+        (0, SLOT_TABLE as u64),
+        (1, SLOT_TABLE_SIZE as u64),
         (2, u64::from(linux::PROT_EXEC)),
         (3, u64::from(linux::MAP_SHARED | linux::MAP_FIXED)),
         (4, u64::from(BLOCK_FD)),
+        (5, CODE_AREA_SIZE as u64),
     ] {
         program.argument_is(argument, value, code_mmap);
     }
-    let (refuse, next) = (Target::Label(code_mmap), Target::Next);
-    program.load_high(0);
-    program.jump(BPF_JGE | BPF_K, (SLOT_TABLE >> 32) as u32, next, refuse);
-    program.jump(
-        BPF_JGE | BPF_K,
-        ((SLOT_TABLE + SLOT_TABLE_SIZE) >> 32) as u32,
-        refuse,
-        next,
-    );
-    program.load_high(5);
-    program.jump(BPF_JEQ | BPF_K, 0, next, refuse);
-    program.load_low(5);
-    program.jump(BPF_JGE | BPF_K, CODE_AREA_SIZE as u32, next, refuse);
-    program.jump(BPF_JGE | BPF_K, CODE_FILE_SIZE as u32, refuse, next);
     program.always(allow);
     program.place(code_mmap);
     // The code area's memfd, received as a block, execute-only over exactly the code area.

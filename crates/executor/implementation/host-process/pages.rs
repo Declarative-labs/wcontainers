@@ -9,8 +9,8 @@ use rustix::io::Errno;
 use rustix::mm::ProtFlags;
 
 use crate::layout::{
-    CODE_AREA, CODE_AREA_SIZE, REGISTER_PAGES_OFFSET, THREAD_PAGE_SIZE, THREAD_PAGES_SIZE,
-    THREADS_PER_PROCESS,
+    CODE_AREA, CODE_AREA_SIZE, REGISTER_PAGES_OFFSET, SLOT_TABLE, SLOT_TABLE_SIZE,
+    THREAD_PAGE_SIZE, THREAD_PAGES_SIZE, THREADS_PER_PROCESS,
 };
 
 /// Byte offsets in a control page.
@@ -163,14 +163,9 @@ pub enum Command {
     /// Maps the code area's memfd, which the stub receives first on its socket, execute-only over the whole code
     /// area, then closes it.
     MapCode,
-    /// Maps one page of the code area's memfd, which the stub receives first on its socket, execute-only as the slot
-    /// table's page at `address`, from the memfd's `offset`, then closes it.
-    MapSlots {
-        /// The slot table's page.
-        address: usize,
-        /// Where its bytes are in the code area's memfd.
-        offset: usize,
-    },
+    /// Maps the code area's memfd past the code area's bytes, which the stub receives first on its socket,
+    /// execute-only over the whole slot table, then closes it.
+    MapSlots,
     /// Moves the thread applying it to one CPU, as its runner's.
     Place {
         /// The CPU's number.
@@ -248,11 +243,11 @@ impl Command {
                 CODE_AREA_SIZE as u64,
                 0,
             ],
-            Self::MapSlots { address, offset } => [
+            Self::MapSlots => [
                 with(CommandKind::MapShared, ProtFlags::EXEC),
-                address as u64,
-                crate::layout::THREAD_PAGE_SIZE as u64,
-                offset as u64,
+                SLOT_TABLE as u64,
+                SLOT_TABLE_SIZE as u64,
+                CODE_AREA_SIZE as u64,
             ],
             Self::Place { cpu } => [
                 with(CommandKind::Place, ProtFlags::empty()),

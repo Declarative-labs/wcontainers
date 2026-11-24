@@ -15,16 +15,17 @@ struct Mapping {
     block: Option<(SharedId, u64)>,
 }
 
-/// A stub's guest-area mappings, its code area's and its slot pages'.
+/// A stub's guest-area mappings, its code area's and its slot table's.
 #[derive(Debug, Default)]
 pub struct View {
     mappings: RangeMap<u64, Mapping>,
     count: usize,
     code_mapped: bool,
+    slots_mapped: bool,
 }
 
 impl View {
-    /// The host mappings of the guest area and the code area.
+    /// The host mappings of the guest area, the code area and the slot table.
     pub fn count(&self) -> usize {
         self.count
     }
@@ -48,9 +49,9 @@ impl View {
                 self.code_mapped = true;
                 return;
             }
-            // A slot page merges with neighbours only where their file offsets happen to follow; counted alone.
-            Command::MapSlots { .. } => {
-                self.count += 1;
+            Command::MapSlots => {
+                self.count += usize::from(!self.slots_mapped);
+                self.slots_mapped = true;
                 return;
             }
         };
@@ -108,7 +109,7 @@ impl View {
             Command::Place { .. }
             | Command::NewThread { .. }
             | Command::MapCode
-            | Command::MapSlots { .. } => {}
+            | Command::MapSlots => {}
         }
         self.count = self.count + self.mappings.overlapping(around).count() - before;
     }

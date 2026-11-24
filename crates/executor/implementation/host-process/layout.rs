@@ -36,12 +36,8 @@ pub const SLOT_TABLE: usize = 1 << 46;
 /// The slot table's bytes: a 16-byte slot for every 4 bytes of the guest area, rounded up to the table's alignment.
 pub const SLOT_TABLE_SIZE: usize = 1 << 46;
 
-/// The bytes of the code area's memfd that back slot pages, after the code area's own; a slot page takes the next free
-/// one when its first slot is filled.
-pub const SLOT_PAGES_SIZE: usize = 128 * (KIB * KIB) as usize;
-
-/// The code area's memfd: the code area, then the pages of the slot table in use.
-pub const CODE_FILE_SIZE: usize = CODE_AREA_SIZE + SLOT_PAGES_SIZE;
+/// The code area's memfd: the code area, then the slot table, mapped whole once; a slot page's bytes exist once written.
+pub const CODE_FILE_SIZE: usize = CODE_AREA_SIZE + SLOT_TABLE_SIZE;
 
 /// The alignment of the floor's entries; the zygote's code starts with one branch to its start, padded up to it.
 #[cfg(target_arch = "aarch64")]

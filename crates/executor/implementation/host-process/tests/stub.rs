@@ -13,7 +13,8 @@ use rustix::mm::ProtFlags;
 use rustix::process::{Pid, Signal};
 use rustix::thread::CpuSet;
 use wcontainers_executor_host_process::layout::{
-    CODE_AREA, CODE_AREA_SIZE, GUEST_START, OUR_AREA, REGISTER_PAGES, SIGNAL_STACKS, THREAD_PAGES,
+    CODE_AREA, CODE_AREA_SIZE, GUEST_START, OUR_AREA, REGISTER_PAGES, SIGNAL_STACKS, SLOT_TABLE,
+    SLOT_TABLE_SIZE, THREAD_PAGES,
 };
 use wcontainers_executor_host_process::pages::Command;
 use wcontainers_executor_host_process::probe::HostProbe;
@@ -353,6 +354,27 @@ fn a_shared_block_is_mapped_only_once_sent_and_only_as_guest_memory() {
             "a block execute-only past the code area",
             code_map(CODE_AREA + WINDOW, CODE_AREA_SIZE, ProtFlags::EXEC, 0),
         ),
+        (
+            "one page of the slot table",
+            code_map(SLOT_TABLE, 4096, ProtFlags::EXEC, CODE_AREA_SIZE),
+        ),
+        (
+            "the slot table readable",
+            code_map(SLOT_TABLE, SLOT_TABLE_SIZE, executable, CODE_AREA_SIZE),
+        ),
+        (
+            "the slot table from another offset",
+            code_map(
+                SLOT_TABLE,
+                SLOT_TABLE_SIZE,
+                ProtFlags::EXEC,
+                CODE_AREA_SIZE + WINDOW,
+            ),
+        ),
+        (
+            "the code area's bytes over the slot table",
+            code_map(SLOT_TABLE, SLOT_TABLE_SIZE, ProtFlags::EXEC, 0),
+        ),
     ] {
         let stub = zygote.fork_stub().expect("fork");
         assert_eq!(
@@ -369,6 +391,40 @@ fn a_shared_block_is_mapped_only_once_sent_and_only_as_guest_memory() {
             "{what}"
         );
     }
+}
+
+/// The slot table is the code area's memfd past the code area's bytes, mapped whole by one command, execute-only: a
+/// slot written by position is there at its address, and every page no slot was written in reads as empty slots.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn the_slot_table_is_mapped_whole_once_from_the_code_area_s_memfd() {
+    use wcontainers_executor_host_process::code::CodeArea;
+    let zygote = zygote();
+    let probe = HostProbe::new().expect("the host is refused");
+    let mut code = CodeArea::new().expect("code area");
+    let slot = SLOT_TABLE + (0x40_1000 << 2);
+    code.write_slots(&probe, slot, &[0xd503_201f, 0xd65f_03c0]);
+    let stub = zygote.fork_stub().expect("fork");
+    stub.send_block(code.file()).expect("send");
+    stub.send_block(code.file()).expect("send");
+    assert_eq!(
+        done(&zygote, &stub, &[Command::MapCode, Command::MapSlots]),
+        2
+    );
+    let maps = std::fs::read_to_string(format!("/proc/{}/maps", stub.process().as_raw_nonzero()))
+        .expect("maps");
+    let table = format!("{SLOT_TABLE:x}-{:x} --xs", SLOT_TABLE + SLOT_TABLE_SIZE);
+    assert_eq!(
+        maps.lines().filter(|line| line.starts_with(&table)).count(),
+        1,
+        "{maps}"
+    );
+    assert_eq!(permissions_at(&stub, slot).as_deref(), Some("--xs"));
+    let written = read_guest(&stub, slot, 8).expect("the slot through /proc");
+    assert_eq!(written, [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6]);
+    let empty = read_guest(&stub, SLOT_TABLE + (0x7f_0000 << 2), 16).expect("an empty slot");
+    assert_eq!(empty, [0; 16], "an empty slot is udf");
+    assert_eq!(end_and_reap(&zygote, &stub), Ended::Exited(0));
 }
 
 #[test]
