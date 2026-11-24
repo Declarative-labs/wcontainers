@@ -264,6 +264,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic_refcell"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41e67cd8309bbd06cd603a9e693a784ac2e5d1e955f11286e355089fcab3047c"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5205,6 +5211,7 @@ name = "wcontainers-executor-unicorn"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
+ "atomic_refcell",
  "cargo_metadata",
  "coarsetime",
  "domain",
@@ -5560,6 +5567,8 @@ version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "allocation-counter",
+ "atomic_refcell",
+ "crossbeam-utils",
  "domain",
  "etherparse",
  "flate2",
