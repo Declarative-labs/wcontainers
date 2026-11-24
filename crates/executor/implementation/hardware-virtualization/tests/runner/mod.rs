@@ -390,7 +390,7 @@ impl Runner {
 
     #[expect(
         unsafe_code,
-        reason = "reads the register page from its page-aligned frame, which host checks lies in guest memory, while the guest is not running; test only, Words replaces it"
+        reason = "reads the register page from its frame while the guest is not running; host checks only its first byte lies in guest memory, and the rest does because the frame is page-aligned and guest memory is whole pages, which nothing here asserts; test only, Words replaces it"
     )]
     fn page(&self) -> RegisterPage {
         // SAFETY: the register page's frame holds a `RegisterPage`; the guest is not running.
@@ -399,7 +399,7 @@ impl Runner {
 
     #[expect(
         unsafe_code,
-        reason = "writes the register page to its page-aligned frame, which host checks lies in guest memory, while the guest is not running; test only, Words replaces it"
+        reason = "writes the register page to its frame while the guest is not running; host checks only its first byte lies in guest memory, and the rest does because the frame is page-aligned and guest memory is whole pages, which nothing here asserts; test only, Words replaces it"
     )]
     fn set_page(&self, page: &RegisterPage) {
         // SAFETY: as above.

@@ -87,7 +87,7 @@ thread_local! {
 // SAFETY: the mapping is the kernel's shared run page, which is written only through atomics here.
 #[expect(
     unsafe_code,
-    reason = "promises Remote may move to another thread: it alone holds its own mapping of the run page, reached through a raw pointer that is not Send by itself; Kick replaces it"
+    reason = "UNSOUND: promises Remote may move to another thread, from which it writes immediate_exit through its own second mapping of the run page while kvm-ioctls holds &mut kvm_run over that page on the CPU's thread (kvm-ioctls vcpu.rs:1690), the same fault as the Sync below; Kick replaces it"
 )]
 unsafe impl Send for Remote {}
 // SAFETY: as above.
@@ -117,8 +117,8 @@ fn stop_signal() -> c_int {
 /// The stop signal's handler does nothing: delivering it is what ends KVM_RUN.
 extern "C" fn on_stop_signal(_: c_int) {}
 
-/// Installs the stop signal's handler once per process. Calls the signal interrupts restart, so it never makes
-/// another call of a virtual CPU's thread fail.
+/// Installs the stop signal's handler once per process. Calls the signal interrupts restart where SA_RESTART
+/// applies; others, such as poll, fail with EINTR.
 fn install_stop_signal() -> Result<()> {
     static INSTALLED: Once = Once::new();
     let mut outcome = Ok(());
@@ -336,7 +336,7 @@ impl crate::VirtualMachine for KvmVirtualMachine {
         // SAFETY: the whole range is guest memory, which the caller no longer needs.
         #[expect(
             unsafe_code,
-            reason = "drops the host pages of a range give_back checked is all guest memory, which then reads as zeros; a hole punch in the memfd replaces it in step one"
+            reason = "UNEXPLAINED: drops the host pages of a range give_back checked is all guest memory, which then reads as zeros, from a safe method any thread may call while virtual CPUs or the monitor's plain copies reach that range; only the inside's request says nothing uses it; a hole punch in the memfd replaces it in step one"
         )]
         let done = unsafe { libc::madvise(host.cast(), length as usize, libc::MADV_DONTNEED) };
         if done != 0 {
@@ -644,7 +644,7 @@ impl crate::Stopper for KvmStopper {
         // SAFETY: a signal whose handler does nothing, to a thread of this process.
         #[expect(
             unsafe_code,
-            reason = "sends the stop signal, whose handler does nothing, to the thread of this process that last ran the CPU; a reused thread id gets only that harmless signal; Kick replaces it"
+            reason = "UNEXPLAINED: sends the stop signal, whose handler does nothing, to the thread id of this process that last ran the CPU; that thread may have ended and its id gone to another thread of this process, where the signal can make a blocking call such as poll fail with EINTR even under SA_RESTART, which nothing shows that thread's code handles; Kick replaces it"
         )]
         let sent = unsafe { libc::tgkill(libc::getpid(), thread, stop_signal()) };
         if sent != 0 {

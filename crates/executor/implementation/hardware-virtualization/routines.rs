@@ -60,7 +60,7 @@ pub fn answer(link: &mut Link, memory: &Memory) {
     // SAFETY: the bytes lie in guest memory, in the frame the inside named for them.
     #[expect(
         unsafe_code,
-        reason = "copies the generated routines into the frame the inside named for them, while it waits at the doorbell; host_bytes checked the range; Words replaces it"
+        reason = "UNEXPLAINED: a plain copy into whatever frame the inside named, from a safe pub fn; only the asking virtual CPU waits at the doorbell, and nothing shows the others cannot reach that frame; host_bytes checked the range; Words replaces it"
     )]
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), host, bytes.len()) };
     let [

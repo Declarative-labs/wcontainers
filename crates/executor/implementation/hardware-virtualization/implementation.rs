@@ -169,7 +169,7 @@ pub struct Memory {
 // and the monitor's protocol.
 #[expect(
     unsafe_code,
-    reason = "promises Memory may move to another thread: it owns its anonymous reservation alone, reached through a raw pointer that is not Send by itself; Lend's mapping replaces it"
+    reason = "promises Memory may move to another thread, through a raw pointer that is not Send by itself; the reservation is not its alone, since the virtual machine maps it and virtual CPUs on other threads reach it wherever Memory goes, and only field drop order keeps it mapped while they do (the UNSOUND drop below); Lend's mapping replaces it"
 )]
 unsafe impl Send for Memory {}
 // SAFETY: as above.
@@ -324,7 +324,7 @@ pub fn load(memory: &Memory, image: &[u8], cpus: u64) -> Result<Loaded> {
         // SAFETY: the segment lies in guest memory, which is ours.
         #[expect(
             unsafe_code,
-            reason = "copies an ELF segment into guest memory at load, before any virtual CPU runs; host_bytes checked the whole range; Words replaces it"
+            reason = "UNEXPLAINED: copies an ELF segment into guest memory from a safe pub fn that takes a shared &Memory, so nothing keeps virtual CPUs or other threads off those bytes during the copy; its one caller loads before it makes any virtual CPU; host_bytes checked the whole range; Words replaces it"
         )]
         unsafe { ptr::copy_nonoverlapping(data.as_ptr(), host, data.len()) };
         end = end.max(at + segment.size());
@@ -336,7 +336,7 @@ pub fn load(memory: &Memory, image: &[u8], cpus: u64) -> Result<Loaded> {
         // SAFETY: the boot map lies in guest memory, after the image, and the entry is aligned.
         #[expect(
             unsafe_code,
-            reason = "writes a boot page-table entry into guest memory at load, before any virtual CPU runs; host_bytes checked the range and the assert its alignment; Words replaces it"
+            reason = "UNEXPLAINED: writes a boot page-table entry into guest memory from the same safe pub fn as the copy above, which nothing keeps from running while virtual CPUs do; its one caller loads before it makes any; host_bytes checked the range and the assert its alignment; Words replaces it"
         )]
         unsafe { ptr::write(host, entry) };
     });
@@ -373,7 +373,7 @@ pub fn boot<C: VirtualCpu>(
     // SAFETY: the start record lies in guest memory, aligned, and its page is this CPU's.
     #[expect(
         unsafe_code,
-        reason = "writes a virtual CPU's start record into its own page before that CPU runs; host_bytes checked the range and the assert its alignment; Words replaces it"
+        reason = "UNEXPLAINED: writes virtual CPU index's start record into the page set aside for it, from a safe pub fn that takes any index; other virtual CPUs may already run (the floor test boots each on its own thread), and only the inside's layout keeps them off that page; host_bytes checked the range and the assert its alignment; Words replaces it"
     )]
     unsafe { ptr::write(host, start) };
     let features = cpu.get(Register::MemoryModelFeatures)?;

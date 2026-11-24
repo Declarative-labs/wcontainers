@@ -311,7 +311,7 @@ impl crate::VirtualCpu for HvfCpu {
 impl crate::Stopper for HvfStopper {
     #[expect(
         unsafe_code,
-        reason = "stops a virtual CPU by its raw id from another thread with a live one-element array; a reused id could stop another CPU, a logic and not a memory fault; applevisor's safe vcpus_exit replaces it"
+        reason = "stops a virtual CPU by its raw id from another thread with a live one-element array; a reused id could stop another CPU of this process, which, by Apple's documentation and not by any check here, only makes it exit; applevisor's safe vcpus_exit replaces it"
     )]
     fn stop(&self) -> Result<()> {
         let ids = [self.id];

@@ -490,7 +490,7 @@ mod speed {
             // SAFETY: the mapping holds the segment.
             #[expect(
                 unsafe_code,
-                reason = "copies a segment's bytes to its address, inside the mapping just made and checked; test only"
+                reason = "copies a segment's file bytes to its address in the mapping just made and checked, which spans its memory size; that the file bytes fit that size is trusted from the test's own ELF, not checked; test only"
             )]
             unsafe {
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len())
