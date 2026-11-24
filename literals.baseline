@@ -22422,7 +22422,6 @@ restated	crates/executor/implementation/unicorn/tests/memory.rs	str	memory_match
 restated	crates/executor/implementation/unicorn/tests/memory.rs	str	memory_matches_reference	"none"
 restated	crates/executor/implementation/unicorn/tests/outside.rs	int	clients	300
 restated	crates/executor/implementation/unicorn/tests/python.rs	int	system_program_matches_reference	4_000
-restated	crates/executor/implementation/unicorn/tests/standin.rs	int	CODE	0x10000
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	exits_are_exact	1_000_000
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	permissions_change_while_running	0x10000
 restated	crates/executor/implementation/unicorn/tests/standin.rs	int	unaligned_exclusive_is_reported_as_unsupported	0x20000

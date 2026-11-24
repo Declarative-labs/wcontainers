@@ -1,12 +1,10 @@
 //! The stand-in CPU comes back for each reason the abi names, with exact registers.
 
 use wcontainers_abi::{
-    Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, Resume, SystemCallNumber,
-    SystemCallRequest,
+    Access, Cpu, Exit, LOWEST_ADDRESS, PAGE_SIZE, Permissions, RegisterBlock, Resume,
+    SystemCallNumber, SystemCallRequest,
 };
 use wcontainers_executor_unicorn::standin::{StandIn, Unsupported};
-
-const CODE: u64 = 0x10000;
 
 // Instruction words.
 const SVC_0: u32 = 0xd400_0001;
@@ -29,17 +27,17 @@ fn exits_are_exact() {
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect();
-    cpu.write(memory, CODE, &code).unwrap();
+    cpu.write(memory, LOWEST_ADDRESS, &code).unwrap();
     cpu.set_permissions(
         memory,
-        CODE,
+        LOWEST_ADDRESS,
         PAGE_SIZE,
         Permissions::READ | Permissions::EXECUTE,
     )
     .unwrap();
     let thread = cpu.thread_new(memory).unwrap();
     let mut start = RegisterBlock::ZERO;
-    start.pc = CODE;
+    start.pc = LOWEST_ADDRESS;
     start.x[8] = 64;
     start.x[0] = 1;
     start.x[1] = 0x10;
@@ -58,7 +56,7 @@ fn exits_are_exact() {
         })
     );
     let after = registers(&mut cpu, thread);
-    assert_eq!(after.pc, CODE + 4);
+    assert_eq!(after.pc, LOWEST_ADDRESS + 4);
     assert_eq!(after.v[3], start.v[3]);
     assert_eq!(after.tpidr_el0, start.tpidr_el0);
     assert_eq!(after.pstate, start.pstate);
@@ -66,11 +64,11 @@ fn exits_are_exact() {
     let exit = cpu.run(thread, Resume::Return(7), None).unwrap();
     assert_eq!(exit, Exit::Breakpoint { comment: 5 });
     let after = registers(&mut cpu, thread);
-    assert_eq!(after.pc, CODE + 4);
+    assert_eq!(after.pc, LOWEST_ADDRESS + 4);
     assert_eq!(after.x[0], 7);
 
     let mut next = after;
-    next.pc = CODE + 8;
+    next.pc = LOWEST_ADDRESS + 8;
     cpu.set_registers(thread, &next);
     let exit = cpu.run(thread, Resume::FromRegisters, None).unwrap();
     assert_eq!(
@@ -80,24 +78,24 @@ fn exits_are_exact() {
             access: Access::Read
         }
     );
-    assert_eq!(registers(&mut cpu, thread).pc, CODE + 8);
+    assert_eq!(registers(&mut cpu, thread).pc, LOWEST_ADDRESS + 8);
 
-    next.pc = CODE + 12;
+    next.pc = LOWEST_ADDRESS + 12;
     cpu.set_registers(thread, &next);
     assert_eq!(
         cpu.run(thread, Resume::FromRegisters, None).unwrap(),
         Exit::IllegalInstruction
     );
-    assert_eq!(registers(&mut cpu, thread).pc, CODE + 12);
+    assert_eq!(registers(&mut cpu, thread).pc, LOWEST_ADDRESS + 12);
 
-    next.pc = CODE + 16;
+    next.pc = LOWEST_ADDRESS + 16;
     cpu.set_registers(thread, &next);
     assert_eq!(
         cpu.run(thread, Resume::FromRegisters, Some(1_000_000))
             .unwrap(),
         Exit::Stop
     );
-    assert_eq!(registers(&mut cpu, thread).pc, CODE + 16);
+    assert_eq!(registers(&mut cpu, thread).pc, LOWEST_ADDRESS + 16);
 }
 
 #[test]
@@ -109,20 +107,20 @@ fn permissions_change_while_running() {
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect();
-    cpu.write(memory, CODE, &code).unwrap();
+    cpu.write(memory, LOWEST_ADDRESS, &code).unwrap();
     cpu.set_permissions(
         memory,
-        CODE,
+        LOWEST_ADDRESS,
         PAGE_SIZE,
         Permissions::READ | Permissions::EXECUTE,
     )
     .unwrap();
-    let data = CODE + 0x10000;
+    let data = LOWEST_ADDRESS + 0x10000;
     cpu.set_permissions(memory, data, 3 * PAGE_SIZE, Permissions::READ)
         .unwrap();
     let thread = cpu.thread_new(memory).unwrap();
     let mut start = RegisterBlock::ZERO;
-    start.pc = CODE;
+    start.pc = LOWEST_ADDRESS;
     start.x[0] = 0xfeed;
     start.x[1] = data + PAGE_SIZE;
     cpu.set_registers(thread, &start);
@@ -167,10 +165,11 @@ fn unaligned_exclusive_is_reported_as_unsupported() {
     const LDXR_X0_X1: u32 = 0xc85f_7c20;
     let mut cpu = StandIn::new();
     let memory = cpu.memory_new().unwrap();
-    cpu.write(memory, CODE, &LDXR_X0_X1.to_le_bytes()).unwrap();
+    cpu.write(memory, LOWEST_ADDRESS, &LDXR_X0_X1.to_le_bytes())
+        .unwrap();
     cpu.set_permissions(
         memory,
-        CODE,
+        LOWEST_ADDRESS,
         PAGE_SIZE,
         Permissions::READ | Permissions::EXECUTE,
     )
@@ -184,11 +183,11 @@ fn unaligned_exclusive_is_reported_as_unsupported() {
     .unwrap();
     let thread = cpu.thread_new(memory).unwrap();
     let mut start = RegisterBlock::ZERO;
-    start.pc = CODE;
+    start.pc = LOWEST_ADDRESS;
     start.x[1] = 0x20001;
     cpu.set_registers(thread, &start);
     assert_eq!(
         cpu.run(thread, Resume::FromRegisters, None),
-        Err(Unsupported::AlignmentFault { pc: CODE })
+        Err(Unsupported::AlignmentFault { pc: LOWEST_ADDRESS })
     );
 }
