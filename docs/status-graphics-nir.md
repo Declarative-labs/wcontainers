@@ -71,6 +71,15 @@ case notes `logs/g9r26/case-notes.txt`), every list whole:
   another kind was made as a multisampled 2D array; fixed in 15234898, a multisampled array's
   views being 2D and its stand-in read for every layer). One more: `image_load_store.3d
   .qualifiers.coherent_r32f` passed and fails, one of the intermittent coherence family.
+- Run 26's check run of the regressed groups at 15234898 (desktop, one GPU job, 17:01 to 17:05
+  desktop time; scratch `results/g9r26/c`, log `logs/g9r26/c.log`; dEQP-GLES31 `copy_image
+  .non_compressed.viewclass_96_bits`, `builtin_functions.texture_size`, `texture.multisample`,
+  KHR-GLES31 `texture_stencil8` and `texture_storage_multisample`): KHR 60 of 60 pass
+  (`texture_stencil8.multisample` passes again); the 96-bit copies are back to run 25's state
+  (the integer pairs pass, the 32 rgb32f ones crash); `texture.multisample` passes all it runs;
+  the six `texture_size` cases of multisampled arrays fail (one crash, four timeouts at 60 s, one
+  flake): their arrays have many layers, a host texture each, and the program is refused only
+  after they are made (below). The whole table was not run again after these two fixes.
 - New crashes where cases were NotSupported (13): `geometry_shading.layered` and `instanced` of
   multisampled arrays 7 (layered geometry output), `builtin_functions.texture_size.samples_*
   _texture_*2d_array` 6 ("BindingsBeyondLimit": the cases' arrays have more layers than the
@@ -348,7 +357,8 @@ Next, in order (run 26):
    clears of layered framebuffers on every layer.
 3. Wide points (KHR-GL33 `restart_mode`, the NotSupported wide-point groups); integer cube map
    arrays sampled with gradients.
-4. Still not traced: the run-time gather offsets at edges, `advanced-copyImage-cs`,
+4. Still not traced: the 96-bit `copy_image` blits (rgb32f to the integer formats), the
+   run-time gather offsets at edges, `advanced-copyImage-cs`,
    `advanced-allMips-cs`, `advanced-sync-imageAccess2`, `basic-glsl-misc-fs`, the storage
    coherence of `synchronization` and `advanced-readWrite-case1-cs`.
 5. This track's causes found and not built: an input read at the centroid and at an offset,
