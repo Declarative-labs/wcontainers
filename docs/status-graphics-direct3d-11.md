@@ -56,9 +56,15 @@ G4h round 6 run 5 (2026-11-24, from about 03:40 Pacific), the eighth round's che
   allowance): 1 passed, 45 failed, 12 ignored; the 45 make 11_0 devices and have failed there
   since the build stopped reporting 11_0 (G4h); the bar's WebGL 2 run takes its filters (How to run).
   9_1's format support matched real Direct3D; the 9_x creations differed first at the 4-sample
-  texture. With the allowance (trial 940434cd, logs/r9d-*, 04:32 to 05:10 Pacific through the
+  texture. With the allowance (trial 940434cd, logs/r9d-*, 04:20 to 04:55 Pacific through the
   queue): lint of both builds clean; on the WebGL 2 build the 9_x comparison and the 10_0
   refusal pass (2 passed, 8 ignored, filters `below_10_0 10_0 nv12 direct3d_10s`).
+- Not run this run: the whole library suite at the last commit, and the same 9_x test on the
+  WebGPU build (whose path it does not change). The desktop was held from 04:55 to past 06:05
+  Pacific by another track's fuzz job, beside which the rig runs nothing; the jobs were withdrawn
+  before they reached the queue. The front's tests at 6310c582 on the rented x86 machine: unit 7,
+  cache 1, front.rs 61 pass (logs/r9e-front.log). This run changed only the library's tests and
+  examples, and their cases above were run; the last whole suite is run 4's (40094011).
 - Literals: own_cases' 300.0 is named (`INSIDE_LOOPS / 4.0`); the check on the rented x86 machine
   at 6096d419 finds nothing in this track's files but a file it lists that 6572e2e9 deleted
   (`crates/wcontainers-direct3d-11/src/required.rs` "unparsed", the tool's, not a literal).
