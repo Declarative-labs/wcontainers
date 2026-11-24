@@ -5,12 +5,13 @@
 use std::sync::Arc;
 
 use wcontainers_abi::{
-    Access, Cpu, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning,
+    Access, Cpu, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning,
 };
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::{Address, Instruction, Reg};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
 use wcontainers_executor_host_process::host::HostProcessHost;
+use wcontainers_executor_host_process::layout::THREADS_PER_PROCESS;
 use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
 
 static HOST: std::sync::OnceLock<Arc<HostProcessHost>> = std::sync::OnceLock::new();
@@ -350,6 +351,42 @@ fn code_placed_at_another_base_runs_from_its_kept_translation_moved_there() {
     // Under 4 GiB an `adrp` of the code could name a page below zero, so code there keeps a translation of its own.
     run_placed_at(&mut cpu, CODE);
     assert!(translations(&cpu) > made, "translated again at {CODE:#x}");
+}
+
+#[test]
+fn a_process_s_thread_past_its_last_index_is_refused_and_counted() {
+    let mut cpu = executor();
+    let (memory, first) = guest(&mut cpu, &adding_program());
+    let mut threads = vec![first];
+    let refused = loop {
+        match cpu.thread_new(memory) {
+            Ok(thread) => threads.push(thread),
+            Err(error) => break error,
+        }
+        assert!(
+            threads.len() <= THREADS_PER_PROCESS,
+            "more threads than indices"
+        );
+    };
+    assert_eq!(threads.len(), THREADS_PER_PROCESS);
+    assert_eq!(refused, CpuError::OutOfMemory);
+    assert_eq!(cpu.counters().threads_exhausted, 1);
+    // The last thread made runs guest code.
+    let last = *threads.last().expect("threads");
+    let mut registers = RegisterBlock::ZERO;
+    registers.pc = CODE;
+    registers.x[2] = DATA;
+    cpu.set_registers(last, &registers);
+    let seen = run_to_exit(&mut cpu, last);
+    assert_eq!(seen.exits[0].1.x[0], SUM, "{:?}", seen.exits);
+    // A thread let go makes room for one more.
+    cpu.thread_drop(first);
+    let again = cpu
+        .thread_new(memory)
+        .expect("a thread after one was let go");
+    assert_eq!(cpu.thread_new(memory), Err(CpuError::OutOfMemory));
+    assert_eq!(cpu.counters().threads_exhausted, 2);
+    cpu.thread_drop(again);
 }
 
 /// Calls a function through a register 50 times, each adding its index to x0, then exits; the function's address in
