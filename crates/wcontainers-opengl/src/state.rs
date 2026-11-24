@@ -729,7 +729,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         provoking,
         host_provoking,
         point_size: state.point_size,
-        point_coord_down: state.sprite_coord_mode() == PIPE_SPRITE_COORD_UPPER_LEFT,
+        point_coord_down: state.sprite_coord_mode() == PIPE_SPRITE_COORD_UPPER_LEFT as c_uint,
     })
 }
 
