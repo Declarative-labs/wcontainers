@@ -1,12 +1,17 @@
 //! A kernel's processes and tasks taken off it and put back, through the kernel interface's traits:
 //! a container on the stand-in started with a program that has not run.
 
+use std::num::NonZeroUsize;
+
 use wcontainers_executor_unicorn::driver::{
-    FIRST_PROCESS, TestHost, program_not_run, program_waiting,
+    FIRST_PROCESS, InterfaceRunner, TestHost, program_not_run, program_on_runners, program_waiting,
 };
-use wcontainers_executor_unicorn::standin::StandIn;
+use wcontainers_executor_unicorn::standin::{SPACE_32_BIT, StandIn};
+use wcontainers_kernel::signal::Signal;
+use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
-    ExecutionConfig, ExecutorOf, Kernel, Process, ReplayDeterminism, TaskId, ThreadOrdering,
+    ExecutionConfig, ExecutorOf, Kernel, Process, ProcessEnd, ReplayDeterminism, Runner,
+    StopReason, TaskId, ThreadOrdering,
 };
 use wcontainers_kernel_linux::KernelWithExecutor;
 
@@ -133,20 +138,75 @@ fn copies_are_made_and_let_go_of_on_several_threads() {
 }
 
 /// A copy let go of while a process's handle holds the kernel's lock is dropped by the lock's next
-/// holder, and the kernel goes on.
+/// holder, and what it held goes with it: a copy of a child that alone has a shared memory segment
+/// attached holds that attachment too, so once the child is killed the segment has none left only
+/// if the copy was dropped.
 #[test]
 fn a_copy_let_go_of_under_a_handle_is_dropped_later() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
-    let mut kernel = program_waiting("forked", &[], &out);
-    let mut process = kernel.process(FIRST_PROCESS).expect("the first process");
+    let (mut kernel, mut runners, _host) =
+        program_on_runners("heldattach", &[], &out, NonZeroUsize::MIN);
+    let mut runner = runners.pop().expect("one runner");
+    let mut executor = StandIn::with_space(SPACE_32_BIT);
+    assert_eq!(
+        run_until_stopped(&mut runner, &mut executor),
+        StopReason::Idle { until: None },
+        "the child waits for ever, attached, and the parent for its end"
+    );
+    let child = (FIRST_PROCESS.0 + 1..1 << 12)
+        .map(TaskId)
+        .find(|&id| kernel.copy_process_context(id).is_some())
+        .expect("the first process's child");
+    let mut process = kernel.process(child).expect("the child");
     drop(process.copy_process_context());
-    let taken: Vec<TaskId> = process
-        .suspend_threads(&[FIRST_PROCESS])
-        .map(|(id, _)| id)
-        .collect();
-    assert_eq!(taken, [FIRST_PROCESS]);
+    process.send_signal(
+        child,
+        SignalInformation::SentByKernel {
+            signal: Signal::SIGKILL,
+        },
+    );
     drop(process);
-    assert!(kernel.copy_process_context(FIRST_PROCESS).is_some());
+    assert!(
+        kernel.copy_process_context(FIRST_PROCESS).is_some(),
+        "the lock's next holder"
+    );
+    assert_eq!(
+        run_until_stopped(&mut runner, &mut executor),
+        StopReason::Finished(ProcessEnd::Exited { code: 0 }),
+        "the segment has no attachment left: no copy holds the child's"
+    );
+}
+
+/// Runs `runner` on `executor` until it stops for any reason but an interface call's, and returns
+/// how.
+fn run_until_stopped(runner: &mut InterfaceRunner<u64>, executor: &mut StandIn) -> StopReason {
+    loop {
+        match runner.run(executor) {
+            StopReason::Interrupted => {}
+            stopped => return stopped,
+        }
+    }
+}
+
+/// A process that has ended and is not yet reaped has no context to copy or take, while its
+/// parent, waiting, has.
+#[test]
+fn an_ended_process_is_neither_copied_nor_taken() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let kernel = program_waiting("endedchild", &[], &out);
+    let ids: Vec<TaskId> = (FIRST_PROCESS.0..1 << 12).map(TaskId).collect();
+    let copied: Vec<TaskId> = ids
+        .iter()
+        .copied()
+        .filter(|&id| kernel.copy_process_context(id).is_some())
+        .collect();
+    assert_eq!(copied, [FIRST_PROCESS], "only the parent is copied");
+    let suspended: Vec<TaskId> = ids
+        .iter()
+        .copied()
+        .filter(|&id| kernel.suspend_process(id).is_some())
+        .collect();
+    assert_eq!(suspended, [FIRST_PROCESS], "only the parent is taken");
 }
 
 /// The kernel the round trips start from: `hello`, not run yet.
