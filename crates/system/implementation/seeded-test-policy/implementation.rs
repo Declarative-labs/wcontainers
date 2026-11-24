@@ -2,6 +2,9 @@
 //! wherever the runtime's loop runs, with the host's services behind any [`Host`].
 
 #![no_std]
+// The kernel asks a system's waits to return `Send` futures, so the policy asks the same of its
+// host's, which only return type notation can say of a generic host.
+#![feature(return_type_notation)]
 
 extern crate alloc;
 
@@ -292,12 +295,27 @@ impl<H> wcontainers_system::TaskIdAllocator for TestPolicy<H> {
     fn free_task_id(&self, _id: TaskId) {}
 }
 
-impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static>
-    wcontainers_kernel_linux::System for TestPolicy<H>
+impl<H> wcontainers_kernel_linux::System for TestPolicy<H> where
+    H: Host
+        + RandomSource
+        + StreamTransport<Endpoint = u32>
+        + Readiness<u32, wait_until_ready(..): Send>
+        + Send
+        + Sync
+        + 'static
 {
 }
 
-impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static> System for TestPolicy<H> {
+impl<H> System for TestPolicy<H>
+where
+    H: Host
+        + RandomSource
+        + StreamTransport<Endpoint = u32>
+        + Readiness<u32, wait_until_ready(..): Send>
+        + Send
+        + Sync
+        + 'static,
+{
     type End = Infallible;
 
     fn started(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) {}
