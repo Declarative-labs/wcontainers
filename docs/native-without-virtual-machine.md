@@ -272,8 +272,18 @@ any piece's; a conditional branch's own word is linked only within the piece (it
 direct exit does), and a jump table's known targets are not used in such a piece. The position map holds the moved
 values throughout the piece (`HostCode::keep`), so every stop resolves through the stop crate as before. Measured
 (section 7): interpret 1.63 to 1.30, the others unchanged; search stays 3.92 because its function, one piece, names
-every general register (its loops are vectorised and unrolled). Choosing the two per loop of a piece rather than per
-piece is the next remedy, not built.
+every general register (its loops are vectorised and unrolled). As built since W2 run 9 (`Way::for_parts`,
+`Native::part_ways`): where the piece's own choice still leaves a stand-in, each loop of it, outermost first and
+not inside one chosen already, that names a register free for u and the base is written for its own two, and the
+other parts for theirs (loops taken from their branches back that share a part without one holding the other are one
+loop: a nest whose outer branch back lies in the inner loop's first part would otherwise cross ways every inner
+turn, which W2 run 9 measured as search 6.4 times P); the translator gives each straight-line part its way. A part reached from a part of another
+way is entered as from outside the piece: the way out (a fall-through becomes an exit) gives u and the base back
+their registers as any exit does, and is linked to code placed after the piece that enters the part's way and
+branches to it (`Native::enter_at`), once per such part; a part entered so is counted as one entered from outside
+(its count's add is its own). Linking within one way is as before, so a loop pays the move in and out once per
+entry, never per turn. Measured (W2 run 9, section 7): search 3.92 to 1.22 times P's code, its stand-in sites for
+x15 and x24 30 to 0, every other workload unchanged within 0.01.
 Every failed check, and every new stack pointer outside the window by (d), reads one byte
 at the window's base plus 2^32 plus 4095 (`way::MARK`, unmapped by 3.1; 4095 being `ldrb`'s largest offset) out of
 line. It is not the first byte past the window because an access whose bytes cross the window's top faults there on
@@ -655,6 +665,24 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
     file the stub already holds at an address it may map anyway), so the guest gains nothing it could not do with
     its own memory, but the structures move off guest-writable memory or are checked again after the call when
     parallel threads are built (3.9).
+    What closes it, before parallel threads exist (designed in W2 run 9; not built, because it rewrites the
+    zygote's and the stub's assembly, which is one of the marked unsafe uses the executors' primitives are to
+    replace: status, "Needs a primitive"): every structure a routine hands the host kernel to read moves to the
+    thread's control page, which the embedder writes and the stub maps read-only: the `recvmsg` header and its
+    iovec, whose pointers name the thread's receive area, and the cpu set of `sched_setaffinity`, which the embedder
+    writes beside the request that asks for it. The host kernel reads a read-only page as well as a writable one.
+    What it writes back, the one data byte and the control message with the descriptor, must be on a writable page
+    and goes to the thread's register page; the stub reads of it only the control message's level and type, to see
+    that a descriptor came, and never its number: the received descriptor is 0 (the lowest free one; the stub's own
+    are at fixed higher numbers), the only one the filter lets it map and close. So a sibling's store reaches only
+    bytes whose worst effect is a map of descriptor 0 when none came, which the host refuses (`EBADF`) and the stub
+    reports as any failed map; a header it cannot write directs the host kernel's writes nowhere else. Stub thread
+    0 then keeps nothing on the zygote's stack (its routines hold their state in registers), so a guest store there
+    changes nothing the stub uses; the zygote's own fork request uses that stack before any guest code exists. The
+    zygote's code and the floor's entries stay readable, which gives nothing: they hold no secret. The test that
+    comes with it, once parallel threads run: a sibling storing over the whole register page and the zygote's
+    stack in a loop while the other thread receives blocks and moves between CPUs; every mapping lands as
+    commanded, nothing else is mapped, and the thread stays on the CPUs it was given.
   - Its handlers find their thread's pages from the signal stack's address (the host kernel's, unforgeable), copy
     what they need from the frame once, and never return through the frame (3.6).
   - Position resolution, translation and every decision are in the embedder's process; the stub only reports.
@@ -1253,7 +1281,12 @@ run's): fib 1.059, sieve 1.141, hash 1.002, sort 1.238, interpret 1.295, matrix 
 (geometric mean 1.321; 1.131 without search), busybox sh 0.968 and 1.010 (two runs of it in one round; within the
 rounds' spread of 0.93 to 1.08). I wins above about 800 (hash), 22,000 to 24,000 (fib), 39,000 to 42,000 (matrix,
 walk), 54,000 to 56,000 (sieve), 91,000 to 95,000 (sort), 112,000 to 118,000 (interpret) and 1,110,000 to
-1,170,000 (search) kernel entries per second of guest CPU time.
+1,170,000 (search) kernel entries per second of guest CPU time. With the two chosen per loop of a piece (W2 run 9,
+Graviton4 20:49 to 20:56 UTC, load 61 falling to 18, 9 alternating rounds of three builds, outputs equal to the host
+run's): fib 1.058, sieve 1.136, hash 1.001, sort 1.237, interpret 1.284, matrix 1.103, walk 1.104, search 1.218
+(geometric mean 1.139), busybox sh 1.051 and 1.037 (rounds 0.93 to 1.12). I wins above about 400 (hash), 22,000 to
+23,000 (fib), 39,000 to 42,000 (matrix, walk), 52,000 to 54,000 (sieve), 83,000 to 87,000 (search), 90,000 to
+95,000 (sort) and 108,000 to 114,000 (interpret) kernel entries per second of guest CPU time.
 Rule given to the embedder (it chooses, not us): with no history, P (the owner's default for agentic workloads);
 with history, the form whose arithmetic above is lower at the recorded rates on this host's measured c and f (s
 and c_busy when the probe found no free CPU); P whatever the arithmetic when the container needs the line between

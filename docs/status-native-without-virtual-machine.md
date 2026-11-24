@@ -3,6 +3,77 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 9 (2026-11-24, round 5): the kept registers chosen per loop, branches in the pieces, the zygote's stack
+
+Scratch w2/run9 (send.sh runs a local script on the ARM machine; check.sh with `SEEDS`, `CASES`, `PIECES`, `BRANCHY`,
+`ACASES`, `STAGE`; check-vm.sh; mutate.sh; branchy.sh; cross.sh sends crossover.sh with test.patch and way.patch;
+summarise.py; outputs *-arm.out). Graviton4. Nothing of this run adds a line with `unsafe` (host-process's count in
+the root manifest is unchanged). Form I's executor is still not built: no primitive has landed (no FOR-THE-OWNER.md
+in scratch/enforcement-primitive yet). The page-table split (branch `page-table-split`) has not reached `agents`.
+- Round 5's item 1, form P's speed by design: both changes it names were already built and measured in W1 round 4
+  run 2 (below): the code area's memfd mapped by `MapCode` and the whole slot table by `MapSlots` once per memory,
+  so no slot page has its own command or descriptor (7c765bfd0, 2529908da; alternating rounds, median 0.53 ms a
+  program saved, 12%, load 8 to 17), and the fork-child half of a shared translated image behind `FORK_SHARES_CODE`
+  (bc4456fc9, 17b1219e4; median 0.26 ms, 7%, load 10 to 12.5). P stood at about 3.2 times the model after both.
+  Not built again; the exec half stays the owner's (decision 16).
+- Built, 9d86db8b3 and e8f158ec4 (translator, guest-cpu and arm64 crates; "Changes to the translator"): the two kept
+  registers chosen per loop of a piece. Where the piece's own choice still leaves a stand-in for x15 or x24, each
+  loop, outermost first and not inside one chosen already, that leaves room is written for its own two
+  (`Way::for_parts`), the rest for theirs; loops that share a part without one holding the other are one loop (their
+  union). A part reached from a part of another way is entered as from outside:
+  the way out is an exit (a fall-through becomes one) and is linked to an entry placed after the piece that moves
+  the two and branches to the part (`Native::enter_at`); such a part is counted as entered from outside (its own
+  add). Unit tests: way.rs five (`a_piece_with_no_stand_in_has_one_way`, `a_loop_that_leaves_room_...`,
+  `the_outermost_loop_that_leaves_room_is_chosen`, `loops_sharing_a_part_are_one_loop`,
+  `other_ways_keep_theirs_in_every_part`); the translator's
+  `a_part_entered_from_another_way_is_not_counted_ahead` (the translator's unit tests need `--features native
+  --lib`, which no earlier check ran; check.sh does now).
+- Built, bed14a251: in_process_way's `in_process_pieces_with_branches_and_loops_agree_with_the_reference` (knob
+  `WCHP_IN_PROCESS_BRANCHY`): pieces with direct branches (b, bl, b.cond, bc.cond, cbz, cbnz, tbz, tbnz; forward,
+  inside the piece or up to four instructions past it) and, in three quarters, a loop counted down from 1 to 4 in
+  x15, x24 or another register that no word of the body names, after a part naming x0 to x29 in half of them (so
+  only the loop can keep u and the base elsewhere). The reference is followed through its branches until it leaves
+  the piece's instructions or stops; the translated piece must end at the same guest address through that
+  address's slot with the same state, or stop at the turn whose outcome and resolved state agree. Every exit slot
+  past the piece is hooked now and states carry the pc. Seeds 1 to 6 at 4,000 pieces pass (check6-arm.out: per
+  seed about 1,900 to 2,040 crowded, 2,940 to 3,020 looping, 1,070 to 1,160 crowded loops kept elsewhere, 1,050 to
+  1,120 left through an exit, 34,700 to 36,700 reference steps). Broken in the remote copy, seed 1 at 2,000
+  (mutate2-arm.out): the entry without its moves, 427 failing; crossing exits linked past the entry, 427; the
+  position map not switched at a fall-through into another way, 288; one way for the whole piece (run 8's choice,
+  correct but slower) passes, as it should.
+- Found by the new test, all in the test: a call's exit to an instruction the piece holds leaves through its slot
+  (the translator never follows a call's target), now accepted at the call; the emulator decodes the word after
+  the one it runs and a branch's target, and aborted (SIGABRT) on random bytes there: those words are a `udf` for
+  the reference's run unless an access may read them, then put back; a translated run that spins is the outcome
+  `Running`, not a panic.
+- Verified on Graviton4 (check6-arm.out, 20:45 to 20:49 UTC, load 40 to 61; check-vm-arm.out, 19:54 UTC, load 17 to 52): the
+  arm64, translator, guest-cpu and stop crates' tests; in_process_way's four tests for seeds 1 to 6 (16 cases a
+  form, 4,000 pieces, 4,000 pieces with branches); in_process_attacks seeds 1 to 6 at 400; the VM executor's exits,
+  native (32,562 cases, 0 failing), floor, registers, host_branches, interrupts and probe with KVM; the x86 crate's
+  tests. Clippy with warnings denied clean on the arm64, guest-cpu, x86, translator, stop, host-process and both VM
+  crates (check6; in check5 it stopped at another job's uncommitted test in host-process's tests/copy.rs, since
+  settled by that job).
+- Round 5's item 3, the guest's stores into the zygote's stack and loads of the stub's code: designed in plan 3.7
+  (the routines' input structures on the read-only control page, their outputs on the register page with nothing
+  of them used but the control message's level and type, stub thread 0 keeping nothing on the zygote's stack).
+  Not built: it rewrites the zygote's and stub's assembly, one of the marked unsafe uses (Needs a primitive).
+- Measured, whole programs under P's stubs as runs 7 and 8 (cross.sh: test.patch and way.patch are run 8's
+  unchanged), three builds alternated in one job, 9 rounds: p (the process way's code), i (the in-process way's,
+  this tree) and i8 (the same with one way per piece, run 8's choice, made in the remote copy). Outputs equal to the
+  host's in every run. First run (cross1-arm.out, 20:33 to 20:43 UTC, load 30 to 44): search i/p 6.43 against
+  i8/p 3.92, slower: the choice took each loop's range from its own branch back, and search's nest (an outer loop
+  whose branch back lies in the inner loop's first part) became two ranges sharing a part; the first chosen took
+  that part, so every inner turn crossed between two ways through the page. Fixed by taking such ranges as one
+  (e8f158ec4, with `loops_sharing_a_part_are_one_loop`). Second run (cross2-arm.out, 20:49 to 20:56 UTC, load 61
+  falling to 18), medians of the rounds' ratios to p: fib 1.058, sieve 1.136, hash 1.001, sort 1.237, interpret
+  1.284, matrix 1.103, walk 1.104, search 1.218 (1.192 to 1.292; i8 3.919, i/i8 0.311), busybox sh 1.051 and 1.037
+  (rounds 0.93 to 1.12; i8 1.035 and 1.031). The guest's stand-in sites for x15 and x24 in search: 30 under i8, 0
+  under i (the "withheld register named" counter less P's 49). Every other workload within 0.01 of i8.
+- The crossover from these (plan section 7), k = (i/p - 1) / c with c = 2.50 to 2.63 µs, I's own call taken as
+  nothing: I wins above about 400 (hash), 22,000 to 23,000 (fib), 39,000 to 42,000 (matrix, walk), 52,000 to 54,000
+  (sieve), 83,000 to 87,000 (search), 90,000 to 95,000 (sort) and 108,000 to 114,000 (interpret) kernel entries per
+  second of guest CPU time; search was 1,110,000 to 1,170,000. Geometric mean of the eight 1.139 (run 8: 1.321).
+
 ## W2 run 8 (2026-11-24): the two more withheld registers chosen per piece
 
 Scratch w2/run8 (check.sh with `SEEDS`, `CASES`, `PIECES`, `ACASES`, `STAGE=build`; check-vm.sh; crossover.sh,
@@ -1885,10 +1956,10 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   run on it (W2 run 5); the independent check's attacks on jumps and accesses run on hardware in slot 1, and the
   mark has its own byte (W2 run 6); the way's code is measured on whole programs under P's stubs, f per workload and
   the crossover from it (W2 run 7); the two more withheld registers are chosen per piece (W2 run 8: interpret 1.63
-  to 1.30). Next without unsafe: choosing them per loop of a piece, which search needs (its one piece names every
-  register), measured with w2/run8's crossover command; and drawing jumps and conditional branches into
-  in_process_way's pieces, which today hold only accesses and stack pointer instructions, so a moved piece's jump
-  and branch exits are checked only by the whole programs. The in-process executor itself waits for
+  to 1.30); per loop of a piece, and direct branches and counted loops drawn into the in-process test's pieces
+  (W2 run 9). Next without unsafe: jumps through registers in those pieces (they leave through the slot table and
+  a last target, which the test's slot hooks would need to follow); the zygote-stack design of plan 3.7 once the
+  stub's assembly has its primitive. The in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
   when sp is back in the window, never link displaced pieces), its last-target rule (W2 run 6), the attack by
@@ -2228,6 +2299,18 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   highest register it does not name (section 3.2 of the plan). The stop crate's `AFTER_PAGE` is 4 words and
   `in_process::set_register` takes the span (a relocation decides where the value goes). The machine and process
   ways' output and every answer for them are unchanged; the x86 native output keeps the defaults.
+- 9d86db8b3 and e8f158ec4 (W2 run 9), crates/wcontainers-guest-cpu (native.rs, lib.rs), crates/wcontainers-translator (native.rs),
+  crates/wcontainers-arm64 (way.rs, carry.rs, native.rs), the in-process way only in effect: `Native::piece_way` is
+  gone; `Native::part_ways` (the way of each straight-line part, given the parts and the piece's loops as ranges of
+  parts; every part `way` by default), `Native::entered` (the position map's kept values for a part of a way,
+  writing nothing) and `Native::enter_at` (the entry of a part reached from a part of another way, placed after the
+  piece; false by default) are new provided methods. `HostCode::snapshot` returns a `Snapshot` (the span, whether
+  its event is owed and the kept values, so code placed out of line keeps its part's), `HostCode::unkeep` is new.
+  The translator gives each part its way: code going on into a part of another way leaves through an exit, which is
+  linked to that part's entry; such a part is counted as entered from outside (`counted_ahead` takes
+  `from_outside`). ARM64: `Way::stands_in`, `Way::for_parts` (with the `translate` feature; loops sharing a part are one) are new. The machine and
+  process ways and the x86 output take the defaults, so their code is unchanged (the VM executor's native test,
+  32,562 cases, 0 failing). Verified on Graviton4: in "W2 run 9" above.
 - For the translator track, not done: the InProcess way's wrapping form.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
@@ -2434,6 +2517,10 @@ operation this crate still does with unsafe code, for the primitives' design
   arguments in registers, never returning; the zygote's assembly and the slice of its machine code between two labels.
 - glibc's `__rseq_offset` and `__rseq_size`.
 - The SVE probe: set p0 and FFR, make a system call, store both.
+- The stub's routines with their input structures on the read-only control page (plan 3.7, W2 run 9's design for
+  parallel threads): a change to the zygote's and stub's assembly (zygote/aarch64.rs, x86_64.rs), so it waits with
+  the fork primitive above; the layout constants (`frame`, `block_frame` in zygote.rs) and the embedder's writes of
+  the header, iovec and cpu set into the control page are safe code.
 Not needed by anything built: a view of guest bytes lent to a byte sink or source (For the owner, views of guest
 memory); `read_to` and `write_from` keep their buffer.
 
