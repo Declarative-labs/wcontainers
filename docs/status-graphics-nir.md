@@ -5,6 +5,100 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 29 (2026-11-23, round 4's seventh run). Run 28's whole run never started (the GPU queue was
+held by another track's job until it stopped); this run made it, then built:
+- Wide points (50f63af3, 46233d47; `SlowPath::PointsAsQuads`, which the interface already named).
+  Where the back end draws points of one size (WebGPU) and a draw's points are larger (the vertex
+  program writes `gl_PointSize`, or the rasterizer's size is above one), each point is drawn as a
+  square of two triangles: the bridge makes a geometry program after the vertex program
+  (`wc_nir_point_square`, `Nir::point_square`) that the stage helper runs as for any geometry
+  program, its corners at half the size in pixels each side (from uniform block 0: the bound size,
+  half a pixel's clip-space length per viewport axis, `gl_PointCoord`'s direction), each corner
+  carrying every output. The vertex program's `gl_PointSize`, which the stage helper does not pass
+  between stages, is also written at the first free generic location (`Nir::point_size_also_at`),
+  where the squares read it (clamped to 1..the largest size) and then pass `gl_PointCoord`. The
+  screen now reports the largest 2D texture's side as the largest point where the back end has no
+  point sizes (`screen::largest_point_size`). The squares are drawn filled, never culled, unbiased
+  and as front faces (OpenGL's rules for points); their z and w are the point's, so the host clips
+  at near and far as OpenGL clips points, and keeps the parts of a point whose centre is past the
+  viewport's side, as dEQP's reference renderer and guard-band hardware draw them. A draw that
+  streams is streamed by the vertex program first, then drawn as squares; counts of primitives
+  count the API's points. Refused by name: a vertex program writing clip distances, or outputs at
+  offsets known only when run (not built). Not built: wide points after a geometry program or
+  tessellation (their outputs carry no size through the stage helper, asked of the shaders track).
+  Test `points_are_drawn_as_squares_passing_their_coordinate_after_every_location` (the squares
+  routed through `direct::geometry` and validated).
+- `gl_PointCoord` (50f63af3): a fragment program's point coordinate (Mesa's `VARYING_SLOT_PNTC`
+  input, or the system value) is routed at `direct::POINT_COORD_INPUT`, interpolated without
+  perspective; the driver moves it to where the squares pass it, or replaces it with the centre's
+  (0.5, 0.5), which a point of one pixel reads. Before, every program reading it was refused
+  (dEQP-GLES2 and -GLES3 `builtin_variable.pointcoord` crashed).
+- Run 28's level-of-detail bias (d30f8a32) was refused by the route's rewrite for vertex and
+  fragment programs ("a variant rewrite reading the program's stage values": KHR-GL33
+  `texture_lod_bias.texture_lod_bias_all` went from pass to crash in this run's whole run). The
+  rewrite now takes `VariantKey::lod_bias`, which the shaders crate builds (6ca0adbb).
+- Run 28's constants for `gl_PatchVerticesIn` became globals with initialisers, which the route
+  refuses ("a global variable with an initialiser", the 3 KHR-GLES31 and 3 KHR-GLES32
+  `tessellation_shader` cases still crash in the whole run below); global initialisers are now
+  stored on entry too (6ca0adbb).
+- Read, not changed: KHR-GLES31 `shader_image_load_store.basic-glsl-misc-fs` ("Uses operations
+  forbidden at this stage") is `memoryBarrier()` in a fragment program: the route writes a
+  memory barrier, and WGSL has barriers only in compute work. Absent on WebGPU (Direct3D has
+  `DeviceMemoryBarrier` in every stage); no exact route, left refused.
+- Unsafe code: wcontainers-nir 113, wcontainers-opengl 369 (the squares' entries and the bound
+  programs they read); the root list carries both (120a9f3c). No dependency or licence was added.
+- The first Windows build of the squares failed: `PIPE_SPRITE_COORD_UPPER_LEFT` is an enum constant,
+  `i32` with MSVC and `u32` with Linux's compilers; compared as the bitfield's type in b8c44613. 46233d47
+  and 6ca0adbb did not build on Windows (pushed before the fix was).
+
+Run 29's group run (the fixed driver; desktop, RTX 3080, one GPU job, 8 glcts at once, about
+20:15 to 20:25 Mac time; scratch `results/g9r29/b`, log `logs/g9r29/b.log`): every case of the
+eight lists matching `point`, `rasterization`, `clipping`, `primitive_restart`,
+`transform_feedback`, `primitive_bounding_box`, `multisample`, `lod_bias`, `tessellation_shader`,
+`isnan` (7,501 cases; KHR-GLES2 has none and does not start). Against this run's whole run:
+- Pass now: dEQP-GLES2 and -GLES3 `builtin_variable.pointcoord`, KHR-GL33
+  `primitive_restart.restart_mode` and `texture_lod_bias_all`, KHR-GLES31 and -GLES32
+  `tessellation_shader.single.max_patch_vertices` and `..._PatchVerticesIn` (6 crashes, with
+  dEQP-GLES31's), dEQP-GLES31 6 crashes; NotSupported cases that run and pass: dEQP-GLES2 7,
+  dEQP-GLES3 11 (`clipping.point.wide_point_*` among them), dEQP-GLES31 7.
+- NotSupported cases that now run and fail, 47, all wide points after a geometry program or
+  tessellation, which are still drawn as one pixel (the stage helper carries no point size;
+  this track's, needing the shaders track's ask): dEQP-GLES31 `primitive_bounding_box.wide_points`
+  through tessellation or geometry 34, `tessellation_geometry_interaction.point_size` 6,
+  `geometry_shading.basic` 1; KHR-GLES31 and -GLES32 `geometry_shader.input`, `.limits`,
+  `tessellation_shader_point_mode` 3 each (KHR-GLES31 `tessellation_shader.vertex` 1 more). The
+  screen reports one range of point sizes for every stage, as OpenGL has one; reporting one pixel
+  again would take wide points from every vertex program.
+- Passed in the whole run and fail now: dEQP-GLES3 `transform_feedback.array.interleaved.points
+  .highp_ivec4` and `array_element.separate.points.lowp_uvec2` (2 of the 329 points cases; no
+  refusal): the picture drawn while streaming differs from the one drawn without (largest
+  difference 223, 191, 128). Both draws are squares; not yet traced (overlapping squares of
+  different colours drawn in another order would give it).
+
+THE TABLE, run 29's whole run at 8815575c's driver (run 28's changes; desktop, RTX 3080, one GPU
+job that built and ran, 8 glcts at once, about 19:30 to 19:41 Mac time; scratch
+`results/g9r29/full/<list>/results.csv`, log `logs/g9r29/full.log`), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,001, Warn 6, Fail 22, Crash 1, Skip 135: 17,007 of 17,030,
+  99.86%.
+- dEQP-GLES3: 44,768; Pass 44,206, Warn 5, Fail 44, Crash 32, Skip 481: 44,211 of 44,287, 99.83%.
+- dEQP-GLES31: 37,802; Pass 36,485, Fail 36, Crash 116, Flake 5, Skip 1,160: 36,485 of 36,642,
+  99.57%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,261, Fail 3, Crash 6, Skip 228: 6,261 of 6,270, 99.86%.
+- KHR-GLES31: 4,101; Pass 3,689, Fail 20, Crash 50, Flake 1, Skip 341: 3,689 of 3,760, 98.11%.
+- KHR-GLES32: 1,405; Pass 1,090, Fail 11, Crash 46, Timeout 1, Skip 257: 1,090 of 1,148, 94.95%.
+- KHR-GL33: 9,886; Pass 9,080, Fail 13, Crash 271, Skip 522: 9,080 of 9,364, 96.97%.
+- KHR-GL46 (19,714): no 4.6 context (G9's second part).
+- The bar's measure, every list that starts: 118,261 of 118,939 run, 99.43%, above the 92.9%
+  floor (run 27: 99.36%). With KHR-GLES32's 257 NotSupported counted as failed: 118,261 of
+  119,196, 99.22%.
+- Against run 27's whole run: KHR-GLES3 `copy_tex_image_conversions.required` 63 crashes pass,
+  dEQP-GLES3 13 fails and 1 crash pass (`isnan`, `max_texture_lod_bias`, front facing), dEQP-GLES31
+  6 fails pass. Passed before and not now: KHR-GL33 `texture_lod_bias_all` (crash, cause and fix
+  above), dEQP-GLES31 `image_load_store.3d.qualifiers.volatile_r32f` (fail) and
+  `2d_array.qualifiers.coherent_r32ui`, KHR-GLES31 `texture_cube_map_array.image_op_compute_sh`
+  (flake), all of the intermittent storage coherence family.
+
 G9 run 28 (2026-11-23, round 4's sixth run). Built this run, each linted with warnings denied
 with and without Mesa and the nir crate's route, glsl_reference and glsl_buffers tests passed on
 the x86-64 machine (20, 10 and 2 ignored, 1):
@@ -521,6 +615,14 @@ Run 24's list, kept for its readings (items done in run 25 are marked in the gap
 
 ## Gap list (G9's first part, at e742e0be)
 
+Run 29's changes to the rows below: built, wide points (`PointsAsQuads`, for vertex programs; the
+KHR-GL33 `primitive_restart.restart_mode` row and the NotSupported wide-point groups) and
+`gl_PointCoord`; fixed, run 28's level-of-detail bias in vertex and fragment programs and its
+`gl_PatchVerticesIn` constants. Named: KHR-GLES31 `basic-glsl-misc-fs` is `memoryBarrier()` in a
+fragment program, absent on WebGPU (WGSL has barriers in compute work only). Still this track's,
+not built: wide points after a geometry program or tessellation (needs the point size through the
+stage helper, asked of the shaders track) and from vertex programs writing clip distances.
+
 Run 27's changes to the rows below: done, the layered rows (dEQP-GLES31 `geometry_shading.layered`
 and `instanced`, KHR `geometry_shader.layered_*`, `texture_cube_map_array` attachments with
 layers, `tessellation_geometry_interaction...geometry_scatter_layers`) and KHR
@@ -717,8 +819,8 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 
 ## For the owner
 
-- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (365 uses, counted on 2026-11-23 as the
-  root list counts them: every `unsafe` word outside comments) and wcontainers-nir (108) stay on
+- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (369 uses, counted on 2026-11-23 as the
+  root list counts them: every `unsafe` word outside comments) and wcontainers-nir (113) stay on
   the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
   driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
   structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
@@ -762,6 +864,9 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
   `C:\wc\graphics-nir\stop-cts.ps1` and run with `powershell -NoProfile -ExecutionPolicy Bypass
   -File`; it stops only processes running this track's run-windows.ps1, deqp-runner and glcts.
+- G9 run 29: `scripts/g9r29-run.sh <log> [<lists> [<regexes>]]` is run 28's under its name; the
+  group run's lists and regexes are in this file's run 29 section. Run 29's whole run took about
+  11 minutes once the job started.
 - G9 run 27: `scripts/g9r27-run.sh` is run 26's under its name. Never submit a second job with
   `--build` (a group run) while a whole run waits in the queue: its build sends another tree to
   the desktop's copy and the waiting job then fails at its start ("holds tree ..., not the sent
