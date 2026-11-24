@@ -11,7 +11,9 @@ use core::ops::Range;
 use core::ptr;
 
 use aarch64_cpu::asm::barrier::{self, ISH, ISHST, SY};
-use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDR_EL0, Write as _};
+use aarch64_cpu::registers::{
+    ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TCR_EL1, TPIDR_EL0, Write as _,
+};
 use aarch64_paging::descriptor::El1Attributes;
 use arm_sysregs::el0::registers::CtrEl0;
 use rangemap::RangeMap;
@@ -335,6 +337,8 @@ pub struct NativeCpu {
     next_id: u32,
     /// The next address-space identifier, none when they ran out.
     next_asid: Option<u16>,
+    /// The highest address-space identifier TCR_EL1.AS lets the tables tag: 255 or 65535.
+    last_asid: u16,
     /// The address space switched to while none of a process may be: the global tables and no guest page.
     idle: AddressSpace,
     /// The floor's counts last reported: link exits, frames refused, blocks split.
@@ -430,6 +434,12 @@ fn read_pages(frame: impl Fn(u64) -> Option<u64>, mut address: u64, into: &mut [
 impl NativeCpu {
     /// The CPU side over the global tables `global`; pieces carry the progress count when `exact_replay`.
     pub fn new(global: Table, exact_replay: bool) -> Result<NativeCpu, Full> {
+        // The width the monitor set from ID_AA64MMFR0_EL1.ASIDBits (boot.rs); identifiers above it would alias.
+        let last_asid = if TCR_EL1.matches_all(TCR_EL1::AS::ASID16Bits) {
+            u16::MAX
+        } else {
+            u8::MAX.into()
+        };
         let frame = with_frames(|frames| frames.take())?;
         let placed: Placed = floor::ask(&Routines { at: frame }, &[]);
         let at = Region::Code.base();
@@ -488,6 +498,7 @@ impl NativeCpu {
             threads: BTreeMap::new(),
             next_id: 0,
             next_asid: Some(FIRST_PROCESS_IDENTIFIER),
+            last_asid,
             idle,
             asked_reported: 0,
             full_reported: 0,
@@ -992,17 +1003,24 @@ impl NativeCpu {
     /// Gives every live memory a new identifier after one invalidation of every identifier, and the next free
     /// one, or none when there are more memories than identifiers.
     fn new_generation(&mut self) -> Option<u16> {
+        self.forget_every_translation();
+        let last = self.last_asid;
+        let mut next = IDLE_IDENTIFIER;
+        for m in self.memories.values_mut() {
+            next = next.checked_add(1).filter(|&n| n <= last)?;
+            m.space.asid = next;
+        }
+        self.slow(IDENTIFIERS_RAN_OUT, 1, self.memories.len() as u64);
+        next.checked_add(1).filter(|&n| n <= last)
+    }
+
+    /// Invalidates every cached translation of every identifier on every virtual CPU, and returns once that is
+    /// done.
+    fn forget_every_translation(&self) {
         barrier::dsb(ISHST);
         (self.invalidate_whole_tlb)();
         barrier::dsb(ISH);
         barrier::isb(SY);
-        let mut next = IDLE_IDENTIFIER;
-        for m in self.memories.values_mut() {
-            next = next.checked_add(1)?;
-            m.space.asid = next;
-        }
-        self.slow(IDENTIFIERS_RAN_OUT, 1, self.memories.len() as u64);
-        next.checked_add(1)
     }
 
     fn save_vectors(&mut self, thread: ThreadId) {
@@ -1642,7 +1660,7 @@ impl Cpu for NativeCpu {
             Some(asid) => asid,
             None => self.new_generation().ok_or(CpuError::OutOfMemory)?,
         };
-        self.next_asid = asid.checked_add(1);
+        self.next_asid = asid.checked_add(1).filter(|&n| n <= self.last_asid);
         let global = self.global;
         let space = with_frames(|frames| AddressSpace::new(frames, &global, asid))
             .map_err(out_of_memory)?;
