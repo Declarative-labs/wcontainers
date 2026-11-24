@@ -14,12 +14,16 @@ mod foreign;
 mod proofs;
 
 use std::ffi::c_int;
+use std::mem::offset_of;
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 
 use libc::socklen_t;
+use linux_raw_sys::net as uapi;
 use rustix::io::Errno;
+use rustix::net::{AddressFamily, SocketType, ipproto, sockopt};
 use wcontainers_socket_options::{
-    MPTCP_FULL_INFO, MultipathCounts, PlainOption, QueuedCount, SocketOptions, ValueLength,
+    AUTHENTICATION_KEY_QUERY, MPTCP_FULL_INFO, MultipathCounts, PlainOption, QueuedCount,
+    SocketOptions, SourceFilterOptions, ValueLength,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -33,6 +37,7 @@ impl SocketOptions for LinuxSocketOptions {
         option: PlainOption,
         value: &[u8],
     ) -> Result<(), Errno> {
+        internet_socket(socket)?;
         set(socket.as_raw_fd(), option, value)
     }
 
@@ -42,10 +47,16 @@ impl SocketOptions for LinuxSocketOptions {
         option: PlainOption,
         into: &mut [u8],
     ) -> Result<usize, Errno> {
+        internet_socket(socket)?;
         get(socket.as_raw_fd(), option, into)
     }
 
     fn count_queued(&self, socket: BorrowedFd<'_>, count: QueuedCount) -> Result<c_int, Errno> {
+        match (internet_socket(socket)?, count) {
+            (InternetSocket::Tcp, _)
+            | (InternetSocket::Multipath, QueuedCount::SendQueue | QueuedCount::Unsent) => {}
+            _ => return Err(Errno::NOTTY),
+        }
         let request = match count {
             // SIOCOUTQ is TIOCOUTQ, as sockios.h defines it.
             QueuedCount::SendQueue => linux_raw_sys::ioctl::TIOCOUTQ,
@@ -53,6 +64,30 @@ impl SocketOptions for LinuxSocketOptions {
             QueuedCount::AtUrgentMark => linux_raw_sys::ioctl::SIOCATMARK,
         };
         read_count(socket.as_raw_fd(), request)
+    }
+
+    fn get_authentication_key(
+        &self,
+        socket: BorrowedFd<'_>,
+        query: &mut [u8; AUTHENTICATION_KEY_QUERY],
+    ) -> Result<(), Errno> {
+        internet_socket(socket)?;
+        ask_for_one_key(query);
+        let length = socklen_t::try_from(query.len()).map_err(|_| Errno::INVAL)?;
+        let (level, name) = (uapi::SOL_TCP as c_int, uapi::TCP_AO_GET_KEYS as c_int);
+        get_bytes(socket.as_raw_fd(), level, name, query, length).map(drop)
+    }
+
+    fn set_source_filter(
+        &self,
+        socket: BorrowedFd<'_>,
+        filter: &SourceFilterOptions<'_>,
+    ) -> Result<(), Errno> {
+        internet_socket(socket)?;
+        let mut request = source_filter_request(filter);
+        let length = socklen_t::try_from(request.len()).map_err(|_| Errno::INVAL)?;
+        let (level, name) = (filter.level.level() as c_int, uapi::MCAST_MSFILTER as c_int);
+        set_bytes(socket.as_raw_fd(), level, name, &mut request, length)
     }
 
     fn get_multipath_full_information<const CONNECTION: usize, Subflow, Information>(
@@ -66,6 +101,7 @@ impl SocketOptions for LinuxSocketOptions {
         Subflow: FromBytes,
         Information: FromBytes,
     {
+        internet_socket(socket)?;
         let mut header = FullInformation::<CONNECTION>::new(subflows, information)?;
         get_full_information(socket.as_raw_fd(), &mut header, subflows, information)?;
         let FullInformation {
@@ -82,6 +118,62 @@ impl SocketOptions for LinuxSocketOptions {
     }
 }
 
+/// The sockets the kernel's handlers of the listed options and the queue counts were read for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InternetSocket {
+    Tcp,
+    Multipath,
+    /// UDP, UDP-Lite, ICMP, or a raw socket of any protocol.
+    Datagram,
+}
+
+/// What the socket is, refusing a descriptor that is not a socket (`ENOTSOCK`) and a socket of another family or
+/// protocol (`ENOPROTOOPT`), on which a level and name, or a request number, may mean anything.
+fn internet_socket(socket: BorrowedFd<'_>) -> Result<InternetSocket, Errno> {
+    let family = sockopt::socket_domain(socket)?;
+    if family != AddressFamily::INET && family != AddressFamily::INET6 {
+        return Err(Errno::NOPROTOOPT);
+    }
+    let protocol = sockopt::socket_protocol(socket)?;
+    if protocol == Some(ipproto::TCP) {
+        Ok(InternetSocket::Tcp)
+    } else if protocol == Some(ipproto::MPTCP) {
+        Ok(InternetSocket::Multipath)
+    } else if [ipproto::UDP, ipproto::UDPLITE, ipproto::ICMP, ipproto::ICMPV6]
+        .map(Some)
+        .contains(&protocol)
+        || sockopt::socket_type(socket)? == SocketType::RAW
+    {
+        Ok(InternetSocket::Datagram)
+    } else {
+        Err(Errno::NOPROTOOPT)
+    }
+}
+
+/// Sets the query's `nkeys` to one, so that the kernel writes at most the one `tcp_ao_getsockopt` it is given.
+fn ask_for_one_key(query: &mut [u8; AUTHENTICATION_KEY_QUERY]) {
+    let at = offset_of!(uapi::tcp_ao_getsockopt, nkeys);
+    query[at..at + size_of::<u32>()].copy_from_slice(&KEYS_ASKED.to_ne_bytes());
+}
+
+/// The keys a `TCP_AO_GET_KEYS` read asks for: the one its query names.
+const KEYS_ASKED: u32 = 1;
+
+/// `struct group_filter` with `gf_numsrc` the number of sources, followed by them.
+fn source_filter_request(filter: &SourceFilterOptions<'_>) -> Vec<u8> {
+    type Header = uapi::group_filter__bindgen_ty_1__bindgen_ty_2;
+    let start = offset_of!(Header, gf_slist_flex);
+    let mut request = vec![u8::MIN; start + size_of_val(filter.sources)];
+    let mut put = |at: usize, value: &[u8]| request[at..at + value.len()].copy_from_slice(value);
+    put(offset_of!(Header, gf_interface), &filter.interface.to_ne_bytes());
+    put(offset_of!(Header, gf_group), &filter.group);
+    put(offset_of!(Header, gf_fmode), &filter.mode.to_ne_bytes());
+    let count = u32::try_from(filter.sources.len()).unwrap_or(u32::MAX);
+    put(offset_of!(Header, gf_numsrc), &count.to_ne_bytes());
+    put(start, filter.sources.as_flattened());
+    request
+}
+
 /// Refuses a value whose length is not the option's, and gives the length as the call takes it.
 fn checked_length(option: PlainOption, given: usize) -> Result<socklen_t, Errno> {
     match option.value_length() {
@@ -90,10 +182,12 @@ fn checked_length(option: PlainOption, given: usize) -> Result<socklen_t, Errno>
     }
 }
 
+/// Gives the kernel a copy of the value, so that a write into it (`IPV6_FLOWLABEL_MGR` writes the label it chose)
+/// never reaches the caller's shared bytes.
 fn set(socket: RawFd, option: PlainOption, value: &[u8]) -> Result<(), Errno> {
     let length = checked_length(option, value.len())?;
     let (level, name) = option.level_and_name();
-    set_bytes(socket, level as c_int, name as c_int, value, length)
+    set_bytes(socket, level as c_int, name as c_int, &mut value.to_vec(), length)
 }
 
 fn get(socket: RawFd, option: PlainOption, into: &mut [u8]) -> Result<usize, Errno> {
@@ -104,18 +198,20 @@ fn get(socket: RawFd, option: PlainOption, into: &mut [u8]) -> Result<usize, Err
 
 #[expect(
     unsafe_code,
-    reason = "setsockopt has no safe form for these options: it reads `length` bytes, which `checked_length` made the value's own length"
+    reason = "setsockopt has no safe form for these options: it reads, and may write, at most `length` bytes, the value's own length"
 )]
 fn set_bytes(
     socket: RawFd,
     level: c_int,
     name: c_int,
-    value: &[u8],
+    value: &mut [u8],
     length: socklen_t,
 ) -> Result<(), Errno> {
-    // SAFETY: the kernel reads at most `length` bytes from the start of `value`, which is that long, and a listed
-    // option's value holds no address the kernel follows.
-    let result = unsafe { foreign::setsockopt(socket, level, name, value.as_ptr().cast(), length) };
+    // SAFETY: the kernel reads, and for some options writes, at most `length` bytes from the start of `value`, which is
+    // that long and borrowed only here; a listed option's value, and a source filter whose count `source_filter_request`
+    // set, hold nothing that makes it go further.
+    let result =
+        unsafe { foreign::setsockopt(socket, level, name, value.as_mut_ptr().cast(), length) };
     answer(result).map(drop)
 }
 
@@ -132,7 +228,8 @@ fn get_bytes(
 ) -> Result<usize, Errno> {
     let mut written = length;
     // SAFETY: the kernel writes at most `written` bytes from the start of `into`, which is that long, and writes back
-    // in `written`, a local, how many; a listed option's value holds no address the kernel follows.
+    // in `written`, a local, how many; a listed option's value, and a key query `ask_for_one_key` set to one key, hold
+    // nothing that makes it go further.
     let result =
         unsafe { foreign::getsockopt(socket, level, name, into.as_mut_ptr().cast(), &mut written) };
     answer(result)?;
@@ -141,11 +238,12 @@ fn get_bytes(
 
 #[expect(
     unsafe_code,
-    reason = "ioctl has no safe form for SIOCOUTQ, SIOCOUTQNSD and SIOCATMARK: each writes one int"
+    reason = "ioctl has no safe form for SIOCOUTQ, SIOCOUTQNSD and SIOCATMARK: on a socket whose protocol answers it, each writes one int"
 )]
 fn read_count(socket: RawFd, request: u32) -> Result<c_int, Errno> {
     let mut value = c_int::MIN;
-    // SAFETY: each request `count_queued` passes writes one int, to `value`, a local.
+    // SAFETY: `count_queued` passes only a request the socket's protocol answers, TCP all three and MPTCP the first two,
+    // and each then writes one int, to `value`, a local; on another descriptor the number may mean any request.
     let result = unsafe { foreign::ioctl(socket, request as libc::Ioctl, &mut value) };
     answer(result)?;
     Ok(value)

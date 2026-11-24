@@ -1,6 +1,5 @@
 //! Multicast group and anycast address memberships of a socket.
 
-use core::mem::{offset_of, size_of};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsFd, BorrowedFd};
 
@@ -11,11 +10,10 @@ use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AnycastAddress, Membership, MulticastGroup, MulticastMembership, SourceFilter,
 };
-use zerocopy::IntoBytes;
 
-use crate::datagram::addresses::{StorageBytes, storage_bytes};
+use crate::datagram::addresses::storage_bytes;
 use crate::requests::{AnycastRequest, GroupRequest};
-use crate::{io_host_error, set_bytes, set_option};
+use crate::{io_host_error, set_option, set_source_filter};
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
 #[derive(Default)]
@@ -102,25 +100,10 @@ pub fn set_multicast_group<A: Copy>(
         SourceFilter::Include(sources) => (uapi::MCAST_INCLUDE, sources.as_slice()),
         SourceFilter::Exclude(sources) => (uapi::MCAST_EXCLUDE, sources),
     };
-    type Header = uapi::group_filter__bindgen_ty_1__bindgen_ty_2;
-    let start = offset_of!(Header, gf_slist_flex);
-    let room = size_of::<StorageBytes>();
-    let length = (start + sources.len() * room).max(size_of::<uapi::group_filter>());
-    let mut bytes = vec![u8::MIN; length];
-    let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
-    put(offset_of!(Header, gf_interface), &interface.to_ne_bytes());
-    put(
-        offset_of!(Header, gf_group),
-        storage_bytes(SocketAddr::new(group, u16::MIN)).as_bytes(),
-    );
-    put(offset_of!(Header, gf_fmode), &mode.to_ne_bytes());
-    put(
-        offset_of!(Header, gf_numsrc),
-        &(sources.len() as u32).to_ne_bytes(),
-    );
-    for (index, source) in sources.iter().enumerate() {
-        let source = storage_bytes(SocketAddr::new(address(source), u16::MIN));
-        put(start + index * room, source.as_bytes());
-    }
-    set_bytes(fd, level, uapi::MCAST_MSFILTER, &bytes)
+    let sources: Vec<_> = sources
+        .iter()
+        .map(|source| storage_bytes(SocketAddr::new(address(source), u16::MIN)).bytes)
+        .collect();
+    let group = storage_bytes(SocketAddr::new(group, u16::MIN)).bytes;
+    set_source_filter(fd, level, interface, group, mode, &sources)
 }

@@ -914,13 +914,7 @@ fn holds_authentication_key(
     request: &uapi::tcp_ao_add,
 ) -> bool {
     let mut held = key_query(name);
-    options::get_bytes(
-        socket,
-        uapi::SOL_TCP,
-        uapi::TCP_AO_GET_KEYS,
-        held.as_mut_bytes(),
-    )
-    .is_ok()
+    options::get_authentication_key(socket, &mut held).is_ok()
         && held.nkeys == ONE_KEY
         && held.alg_name == request.alg_name
         && held.maclen == request.maclen

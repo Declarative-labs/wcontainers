@@ -33,3 +33,23 @@ fn written_bytes_are_counted() {
 fn a_multipath_connection_has_one_subflow() {
     suite::a_multipath_connection_has_one_subflow(LinuxSocketOptions);
 }
+
+#[test]
+fn no_listed_option_writes_past_its_length() {
+    suite::no_listed_option_writes_past_its_length(LinuxSocketOptions);
+}
+
+#[test]
+fn only_internet_sockets_are_reached() {
+    suite::only_internet_sockets_are_reached(LinuxSocketOptions);
+}
+
+#[test]
+fn an_authentication_key_read_writes_one_key() {
+    suite::an_authentication_key_read_writes_one_key(LinuxSocketOptions);
+}
+
+#[test]
+fn a_source_filter_carries_every_source() {
+    suite::a_source_filter_carries_every_source(LinuxSocketOptions);
+}

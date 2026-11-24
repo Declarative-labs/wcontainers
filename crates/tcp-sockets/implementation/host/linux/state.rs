@@ -1043,12 +1043,7 @@ pub(super) fn authentication_key(
 ) -> Result<Option<TcpAuthenticationKeyCounters>, HostError> {
     let name = authentication_key_name(family, identity)?;
     let mut asked = key_query(&name);
-    match options::get_bytes(
-        socket,
-        uapi::SOL_TCP,
-        uapi::TCP_AO_GET_KEYS,
-        asked.as_mut_bytes(),
-    ) {
+    match options::get_authentication_key(socket, &mut asked) {
         Ok(_) if asked.nkeys == ONE_KEY => Ok(Some(TcpAuthenticationKeyCounters {
             verified: SegmentCount(asked.pkt_good),
             failed: SegmentCount(asked.pkt_bad),

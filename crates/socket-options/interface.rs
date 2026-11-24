@@ -61,7 +61,10 @@ pub const SOL_UDPLITE: u32 = uapi::IPPROTO_UDPLITE as u32;
 
 macro_rules! plain_options {
     ($($variant:ident = ($level:path, $name:path, $length:expr),)*) => {
-        /// A socket option whose value the kernel copies as plain bytes and never follows as an address; only these exist.
+        /// A socket option whose value the kernel reads and writes no further than the length given, whatever the value
+        /// holds: no address, and no count, length or offset that sizes what the kernel copies; only these exist.
+        ///
+        /// The conformance suite's `no_listed_option_writes_past_its_length` tries every entry against the kernel.
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         pub enum PlainOption {
             $($variant,)*
@@ -123,7 +126,6 @@ plain_options! {
     IpRecvfragsize = (uapi::SOL_IP, uapi::IP_RECVFRAGSIZE, INT),
     IpMcastJoinGroup = (uapi::SOL_IP, uapi::MCAST_JOIN_GROUP, of::<uapi::group_req>()),
     IpMcastLeaveGroup = (uapi::SOL_IP, uapi::MCAST_LEAVE_GROUP, of::<uapi::group_req>()),
-    IpMcastMsfilter = (uapi::SOL_IP, uapi::MCAST_MSFILTER, ANY),
     Ipv6UnicastHops = (uapi::SOL_IPV6, uapi::IPV6_UNICAST_HOPS, INT),
     Ipv6Hopopts = (uapi::SOL_IPV6, uapi::IPV6_HOPOPTS, ANY),
     Ipv6Rthdrdstopts = (uapi::SOL_IPV6, uapi::IPV6_RTHDRDSTOPTS, ANY),
@@ -149,12 +151,10 @@ plain_options! {
     Ipv6Checksum = (uapi::SOL_IPV6, uapi::IPV6_CHECKSUM, INT),
     Ipv6McastJoinGroup = (uapi::SOL_IPV6, uapi::MCAST_JOIN_GROUP, of::<uapi::group_req>()),
     Ipv6McastLeaveGroup = (uapi::SOL_IPV6, uapi::MCAST_LEAVE_GROUP, of::<uapi::group_req>()),
-    Ipv6McastMsfilter = (uapi::SOL_IPV6, uapi::MCAST_MSFILTER, ANY),
     TcpMd5sigExt = (uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, of::<uapi::tcp_md5sig>()),
     TcpAoAddKey = (uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, of::<uapi::tcp_ao_add>()),
     TcpAoDelKey = (uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, of::<uapi::tcp_ao_del>()),
     TcpAoInfo = (uapi::SOL_TCP, uapi::TCP_AO_INFO, of::<uapi::tcp_ao_info_opt>()),
-    TcpAoGetKeys = (uapi::SOL_TCP, uapi::TCP_AO_GET_KEYS, of::<uapi::tcp_ao_getsockopt>()),
     TcpAoRepair = (uapi::SOL_TCP, uapi::TCP_AO_REPAIR, of::<uapi::tcp_ao_repair>()),
     TcpInq = (uapi::SOL_TCP, uapi::TCP_INQ, INT),
     TcpQueueSeq = (uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, U32),
@@ -208,10 +208,45 @@ pub struct MultipathCounts {
     pub subflows: u32,
 }
 
+/// The length of `struct tcp_ao_getsockopt`, the one key a `TCP_AO_GET_KEYS` read names and is given.
+pub const AUTHENTICATION_KEY_QUERY: usize = size_of::<uapi::tcp_ao_getsockopt>();
+
+/// The bytes of a `struct __kernel_sockaddr_storage`.
+pub type StorageBytes = [u8; size_of::<uapi::__kernel_sockaddr_storage>()];
+
+/// The level a multicast setting is made at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MulticastLevel {
+    Ipv4,
+    Ipv6,
+}
+
+impl MulticastLevel {
+    pub const fn level(self) -> u32 {
+        match self {
+            MulticastLevel::Ipv4 => uapi::SOL_IP,
+            MulticastLevel::Ipv6 => uapi::SOL_IPV6,
+        }
+    }
+}
+
+/// An `MCAST_MSFILTER` request: a joined group's filter mode and sources, whose count the primitive sets from `sources`.
+#[derive(Clone, Copy, Debug)]
+pub struct SourceFilterOptions<'a> {
+    pub level: MulticastLevel,
+    pub interface: u32,
+    pub group: StorageBytes,
+    /// `MCAST_INCLUDE` or `MCAST_EXCLUDE`.
+    pub mode: u32,
+    pub sources: &'a [StorageBytes],
+}
+
 #[allow(
     reviewable::explicit_shared_error::Errno,
     reason = "each method is one call into the kernel and fails only with the error number it gives"
 )]
+/// Every method refuses a descriptor that is not an IPv4 or IPv6 socket of TCP, MPTCP, UDP, UDP-Lite, ICMP or a raw
+/// one, the sockets the kernel's handlers of these options were read for.
 pub trait SocketOptions {
     /// Sets the option to the value, refused with `EINVAL` when the value's length is not the option's.
     fn set_option(
@@ -229,7 +264,21 @@ pub trait SocketOptions {
         into: &mut [u8],
     ) -> Result<usize, Errno>;
 
+    /// Refused with `ENOTTY` but on TCP, and on MPTCP for the urgent mark, which it does not answer.
     fn count_queued(&self, socket: BorrowedFd<'_>, count: QueuedCount) -> Result<c_int, Errno>;
+
+    /// Reads `TCP_AO_GET_KEYS` for at most the one key the query names, whatever its `nkeys` held.
+    fn get_authentication_key(
+        &self,
+        socket: BorrowedFd<'_>,
+        query: &mut [u8; AUTHENTICATION_KEY_QUERY],
+    ) -> Result<(), Errno>;
+
+    fn set_source_filter(
+        &self,
+        socket: BorrowedFd<'_>,
+        filter: &SourceFilterOptions<'_>,
+    ) -> Result<(), Errno>;
 
     /// Reads `MPTCP_FULL_INFO`: the connection's `mptcp_info` into `connection`, and each subflow's `mptcp_subflow_info`
     /// and `tcp_info` into the two arrays, as many as the shorter holds, each cut to its element.

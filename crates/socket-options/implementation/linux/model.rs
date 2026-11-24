@@ -8,7 +8,8 @@ use std::ffi::{c_int, c_void};
 
 use libc::socklen_t;
 
-/// Reads the first and last of the `length` bytes, as far as the kernel may read.
+/// Reads the first and last of the `length` bytes, as far as the kernel may read, and writes the last back, as
+/// `IPV6_FLOWLABEL_MGR` does.
 pub unsafe fn setsockopt(
     _socket: c_int,
     _level: c_int,
@@ -16,11 +17,14 @@ pub unsafe fn setsockopt(
     value: *const c_void,
     length: socklen_t,
 ) -> c_int {
-    let bytes = value.cast::<u8>();
+    let bytes = value.cast::<u8>().cast_mut();
     if let Some(last) = (length as usize).checked_sub(1) {
-        // SAFETY: none; the model reads where the kernel may, and Kani or Miri reports a read outside the value.
-        let (first, last) = unsafe { (bytes.read(), bytes.add(last).read()) };
-        std::hint::black_box((first, last));
+        // SAFETY: none; the model reads and writes where the kernel may, and Kani or Miri reports an access outside
+        // the value or a write into bytes the caller only shares.
+        unsafe {
+            let first = bytes.read();
+            bytes.add(last).write(first);
+        }
     }
     0
 }

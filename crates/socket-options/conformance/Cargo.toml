@@ -14,7 +14,7 @@ path = "conformance.rs"
 wcontainers-socket-options = { path = ".." }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # The sockets the checks set and read options on.
-rustix = { version = "1.1.6", features = ["net"] }
+rustix = { version = "1.1.6", features = ["net", "pty"] }
 
 [lints]
 workspace = true

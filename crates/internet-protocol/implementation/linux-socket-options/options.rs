@@ -10,7 +10,10 @@ use nix::sys::socket::{getsockopt, setsockopt, sockopt};
 use rustix::io::Errno;
 use rustix::net::sockopt as rustix_option;
 use wcontainers_abi::HostError;
-use wcontainers_socket_options::{PlainOption, SocketOptions};
+use wcontainers_socket_options::{
+    AUTHENTICATION_KEY_QUERY, MulticastLevel, PlainOption, SocketOptions, SourceFilterOptions,
+    StorageBytes,
+};
 use wcontainers_socket_options_linux::LinuxSocketOptions;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
@@ -201,6 +204,44 @@ pub fn get_int(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<c_int, H
 }
 
 pub use wcontainers_socket_options::{MPTCP_INFO, MultipathCounts, QueuedCount};
+
+/// Reads `TCP_AO_GET_KEYS` for the one key a `struct tcp_ao_getsockopt` names, into it.
+pub fn get_authentication_key<T: FromBytes + IntoBytes>(
+    socket: BorrowedFd<'_>,
+    query: &mut T,
+) -> Result<(), HostError> {
+    let query = <&mut [u8; AUTHENTICATION_KEY_QUERY]>::try_from(query.as_mut_bytes())
+        .map_err(|_| from_errno(Errno::INVAL))?;
+    LinuxSocketOptions
+        .get_authentication_key(socket, query)
+        .map_err(from_errno)
+}
+
+/// Writes the source filter of a group the socket joined on the interface, through `MCAST_MSFILTER`.
+pub fn set_source_filter(
+    socket: BorrowedFd<'_>,
+    level: u32,
+    interface: u32,
+    group: StorageBytes,
+    mode: u32,
+    sources: &[StorageBytes],
+) -> Result<(), HostError> {
+    let level = match level {
+        uapi::SOL_IP => MulticastLevel::Ipv4,
+        uapi::SOL_IPV6 => MulticastLevel::Ipv6,
+        _ => return Err(from_errno(Errno::NOPROTOOPT)),
+    };
+    let filter = SourceFilterOptions {
+        level,
+        interface,
+        group,
+        mode,
+        sources,
+    };
+    LinuxSocketOptions
+        .set_source_filter(socket, &filter)
+        .map_err(from_errno)
+}
 
 /// Reads one of the kernel's counts of the socket's queues.
 pub fn count_queued(socket: BorrowedFd<'_>, count: QueuedCount) -> Result<c_int, HostError> {
