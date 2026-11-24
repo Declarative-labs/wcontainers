@@ -27,7 +27,7 @@ use wcontainers_guest_cpu::position::{Resume, Side};
 use wcontainers_guest_cpu::{Guest, HostCode, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::{
-    ENTRIES, FIRST_LEVEL, FIXED, FixedPart, RegisterArea, WITHHELD_VALUES,
+    ENTRIES, FIRST_LEVEL, FIXED, FixedPart, NO_STOP, RegisterArea, WITHHELD_VALUES,
 };
 use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, retarget};
 use wcontainers_x86::native::{Target, Way};
@@ -658,6 +658,7 @@ fn harness(blob: &Blob, laid: &Laid) -> Result<Vec<u8>, IcedError> {
     put(at.image, &blob.bytes);
     let fixed = FixedPart {
         entries: routines.entries,
+        stop: NO_STOP,
     };
     put(at.area + FIXED as u64, fixed.as_bytes());
     Ok(bytes)

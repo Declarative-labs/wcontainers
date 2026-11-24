@@ -21,9 +21,9 @@ use linux_raw_sys::general::{
 use wcontainers_abi::{Permissions, WORD};
 use wcontainers_guest_cpu::position::{Fixup, Held, Resume, Side, Span};
 use wcontainers_guest_cpu::{Guest, InsideCall};
-use wcontainers_translator::{LookAhead, translate_native_for};
+use wcontainers_translator::{LookAhead, NativeRequest, translate_native_request};
 use wcontainers_x86::Fxsave;
-use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, RegisterArea};
+use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, NO_STOP, RegisterArea};
 use wcontainers_x86::carry::{COUNT, FS_BASE_NUMBER, T, U, WITHHELD};
 use wcontainers_x86::cpuid::{AVX_STATE_BYTES, AVX_STATE_OFFSET, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
 use wcontainers_x86::native::{HostMatches, Target, Way};
@@ -166,44 +166,81 @@ pub enum Ended {
     NotRun(&'static str),
 }
 
-/// A host process never sets the hardware's TF or AC (section 3.6): a guest with either set runs on stepping
-/// pieces, which are not built yet.
-const STEPPING_NOT_BUILT: &str =
-    "not run natively: TF or AC set, which a host process runs on stepping pieces (not built yet)";
+/// The generator keeps TF and AC clear (x86_64.rs, `keep`): a host process never sets the hardware's TF or AC
+/// (section 3.6), and a guest thread with TF set runs on stepping pieces, which every case also runs on.
+const TRAP_OR_ALIGNMENT_FLAG: &str =
+    "not run natively: TF or AC set in the case, which the generator never makes";
+
+/// A stop word the count at a case's start (zero) is not: the replay check runs and the instruction goes on.
+const STOP_NOT_REACHED: u64 = 1;
+
+/// The request for a piece of one instruction.
+fn request(exact_replay: bool, stop: bool, step: bool) -> NativeRequest {
+    NativeRequest {
+        look_ahead: LookAhead::None,
+        exact_replay,
+        stop,
+        step,
+    }
+}
 
 /// Compares a case's native runs with the CPU's: translated without the count, and with it (when the process
-/// asked for exact replay) and stopped by the trap flag after every host instruction; `Ok` with how the first
-/// ended when both agree.
+/// asked for exact replay) and stopped by the trap flag after every host instruction; on a stepping piece without
+/// the count, and with it behind a replay check that does not stop; `Ok` with how the first ended when all agree.
+/// A run behind a replay check whose stop word is the count must stop there, the guest as it started.
 pub fn compare(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
 ) -> Result<(Agreement, Ended), String> {
-    let first = compare_one(reference, case, host, false)?;
-    compare_one(reference, case, host, true)
+    let first = compare_one(reference, case, host, &request(false, false, false))?;
+    compare_one(reference, case, host, &request(true, false, false))
         .map_err(|report| format!("with the count: {report}"))?;
+    compare_one(reference, case, host, &request(false, false, true))
+        .map_err(|report| format!("on a stepping piece: {report}"))?;
+    compare_one(reference, case, host, &request(true, true, true)).map_err(|report| {
+        format!("on a stepping piece with the count and a replay check that goes on: {report}")
+    })?;
+    if first.1 != Ended::NotRun(TRAP_OR_ALIGNMENT_FLAG) {
+        let stopped = run_request(reference, case, host, &request(true, true, false), 0)
+            .map_err(|report| format!("at a replay check that stops: {report}"))?;
+        if stopped.1 != Ended::Answered(InsideCall::Stop) {
+            return Err(format!(
+                "a replay check whose stop word is the count ended {:?}",
+                stopped.1
+            ));
+        }
+        STOPS_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     Ok(first)
 }
+
+/// The runs that stopped at their replay check, the guest as it started and the count the stop word.
+pub static STOPS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn compare_one(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
-    counted: bool,
+    made: &NativeRequest,
 ) -> Result<(Agreement, Ended), String> {
+    let counted = made.exact_replay;
     let held_off = u128::from(wcontainers_x86::TF | wcontainers_x86::ALIGNMENT_CHECK);
     if case.state.0[RFLAGS] & held_off != 0 {
-        let ended = Ended::NotRun(STEPPING_NOT_BUILT);
-        return Ok((Agreement::KnownFailure(STEPPING_NOT_BUILT), ended));
+        let ended = Ended::NotRun(TRAP_OR_ALIGNMENT_FLAG);
+        return Ok((Agreement::KnownFailure(TRAP_OR_ALIGNMENT_FLAG), ended));
     }
     // The hardware keeps MXCSR's flags exact, as the meaning does when told to keep them.
     let case = &Case {
         tracking: true,
         ..case.clone()
     };
-    let (mut outcome, ended) = run(reference, case, host, counted)?;
-    // A repeated string under the count is the inside's run of it on the hardware, the reference's own.
-    let hardware = counted && ended == Ended::Answered(InsideCall::Answer) && repeated_string(case);
+    let (mut outcome, ended, _) = run_request(reference, case, host, made, STOP_NOT_REACHED)?;
+    // A repeated string under the count or on a stepping piece is the inside's run of it on the hardware, the
+    // reference's own.
+    let hardware = (counted || made.step)
+        && ended == Ended::Answered(InsideCall::Answer)
+        && repeated_string(case);
     if matches!(ended, Ended::Exit | Ended::Fault | Ended::Lookup) || hardware {
         // Seen through a signal frame, as the reference's run is, it is read as the reference's is.
         let seen = outcome.clone();
@@ -219,7 +256,9 @@ fn compare_one(
             if five_level_only(theirs) && matches!(ours, Stop::GeneralProtection | Stop::StackFault)
             {
                 Ok((Agreement::KnownFailure(FIVE_LEVEL_REFERENCE), ended))
-            } else if answered.is_some_and(|answered| answered == translated::<X86_64>(case)) {
+            } else if meaning_differs_named(case)
+                && answered.is_some_and(|answered| answered == translated::<X86_64>(case))
+            {
                 eprintln!("{report}");
                 Ok((Agreement::KnownFailure(MEANING_DIFFERS), ended))
             } else {
@@ -237,6 +276,14 @@ const FIVE_LEVEL_REFERENCE: &str = "the reference's 5-level paging: a page fault
 /// An answer of the inside is the meaning's, the WebAssembly output's too: where it differs from the reference,
 /// so does that output's layer 1, which is where the difference is answered.
 const MEANING_DIFFERS: &str = "answered by the meaning, which differs from the reference here as the WebAssembly output's layer 1 does";
+
+/// Whether the case's instruction is one whose meaning the x86 track records as differing from the reference
+/// (docs/status-x86.md: the descriptor reads the kernel's tables answer, and a base past the 4-level range).
+fn meaning_differs_named(case: &Case) -> bool {
+    use iced_x86::Mnemonic::*;
+    wcontainers_x86::decode(case.code.code())
+        .is_some_and(|(i, _)| matches!(i.iced.mnemonic(), Sldt | Smsw | Str | Wrfsbase | Wrgsbase))
+}
 
 /// Whether the case's instruction is a string with a repeat prefix.
 fn repeated_string(case: &Case) -> bool {
@@ -516,23 +563,36 @@ pub fn run_with_pointers(
     checked: bool,
     look_ahead: LookAhead,
 ) -> Result<(Outcome, Ended, Option<Pointers>), String> {
+    let made = NativeRequest {
+        look_ahead,
+        exact_replay: checked,
+        stop: false,
+        step: false,
+    };
+    run_request(reference, case, host, &made, NO_STOP)
+}
+
+/// [`run_with_pointers`] of a piece made as `made` asks, the thread's stop word `stop_word`. A stepping piece's
+/// ways on are each the call of kind Step; a replay check that stops ends the run before the instruction.
+fn run_request(
+    reference: &mut Reference,
+    case: &Case,
+    host: HostMatches,
+    made: &NativeRequest,
+    stop_word: u64,
+) -> Result<(Outcome, Ended, Option<Pointers>), String> {
+    let checked = made.exact_replay;
     let target = Target {
         host,
         offer: X86_64::case_offer(case),
     };
-    let code = translate_native_for::<X86_64>(
-        case.code.code(),
-        CODE,
-        look_ahead,
-        checked,
-        &Way::Process,
-        &target,
-    )
-    .ok_or("no instruction at the case's start")?;
+    let code =
+        translate_native_request::<X86_64>(case.code.code(), CODE, made, &Way::Process, &target)
+            .ok_or("no instruction at the case's start")?;
     if code.bytes.len() as u64 > PIECE_ROOM {
         return Err(format!("a piece of {} bytes", code.bytes.len()));
     }
-    let blob = blob(case, &code.bytes, checked);
+    let blob = blob(case, &code.bytes, checked, stop_word);
     let ran = reference.blob(&BlobRequest {
         bytes: &blob,
         load: LOAD,
@@ -585,8 +645,22 @@ pub fn run_with_pointers(
         let t = host.general[usize::from(number(T))];
         let span =
             in_piece(t.wrapping_sub(1)).ok_or_else(|| format!("a call returning to {t:#x}"))?;
+        let leaves = if made.step {
+            InsideCall::Step
+        } else {
+            InsideCall::Exit
+        };
+        if matches!(kind, InsideCall::Exit | InsideCall::Step) && kind != leaves {
+            return Err(format!(
+                "a call of kind {kind:?} from a piece made with step {}",
+                made.step
+            ));
+        }
         let ended = match kind {
-            InsideCall::Exit | InsideCall::X87Control | InsideCall::FloatAfter => Ended::Exit,
+            InsideCall::Exit
+            | InsideCall::Step
+            | InsideCall::X87Control
+            | InsideCall::FloatAfter => Ended::Exit,
             other => Ended::Answered(other),
         };
         (span, ended, kind == InsideCall::FloatAfter)
@@ -609,6 +683,9 @@ pub fn run_with_pointers(
             && reading.memory_index() == U
             && reading.memory_displacement64() == FIRST_LEVEL as u64;
         let ended = if signal == SIGSEGV && second && second_level.contains(&record.address) {
+            if made.step {
+                Err::<(), _>("a stepping piece reached the lookup's second level")?;
+            }
             Ended::Lookup
         } else if signal == SIGSEGV && first && first_level.contains(&record.address) {
             Ended::FarTarget
@@ -670,6 +747,20 @@ pub fn run_with_pointers(
             }
         }
     }
+    if ended == Ended::Answered(InsideCall::Stop) {
+        if state != case.state || !changed.is_empty() {
+            return Err(format!(
+                "the replay check stopped with the guest changed: {}",
+                differences(&case.state, &state)
+            ));
+        }
+        let outcome = Outcome {
+            stop: Stop::Landed(CODE),
+            state,
+            changed,
+        };
+        return Ok((outcome, ended, None));
+    }
     let mut pointers = None;
     if second_call {
         let after = float_status_after(case, span.guest, &area, state, data)?;
@@ -701,8 +792,9 @@ pub fn run_with_pointers(
             };
             if ended == Ended::Answered(InsideCall::Answer) && answered.is_none() {
                 let (i, _) = wcontainers_x86::decode(case.code.code()).ok_or("no instruction")?;
-                if checked && repeated_string(case) {
-                    // Under the count no inside of this crate runs a repeated string: the CPU's own run stands in
+                if (checked || made.step) && repeated_string(case) {
+                    // Under the count or on a stepping piece no inside of this crate runs a repeated string: the
+                    // CPU's own run (with TF, a pass at a time) stands in
                     // for it, so only the state at the call is checked here (the count by `string_passes` is
                     // checked against the WebAssembly output's in layers 2 and 3).
                     STRINGS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -931,7 +1023,7 @@ fn guest_state(
 
 /// The blob of a case and its piece: the prologue, the handler, the piece, the block, the XSAVE image, the data
 /// area's bytes and the thread area's first two pages.
-fn blob(case: &Case, piece: &[u8], stepping: bool) -> Vec<u8> {
+fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
     let mut bytes = vec![0u8; (FIRST - LOAD) as usize];
     let mut put = |at: u64, part: &[u8]| {
         let at = (at - LOAD) as usize;
@@ -1019,6 +1111,7 @@ fn blob(case: &Case, piece: &[u8], stepping: bool) -> Vec<u8> {
             InsideCall::FloatBefore => RESUME,
             _ => ENTRY_TRAPS + k as u64 * ENTRY_STRIDE,
         }),
+        stop: stop_word,
     };
     put(AREA + FIXED as u64, fixed.as_bytes());
     bytes

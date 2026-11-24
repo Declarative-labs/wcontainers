@@ -415,8 +415,8 @@ fn every_form_matches_the_cpu_x86_64() {
 #[test]
 fn every_form_matches_the_cpu_natively_x86_64() {
     use wcontainers_translator_test::guest::x86_64::native::{
-        ANSWERS_CHECKED, FAR_UNLIKE_MEANING, REFERENCE_HOST, SECOND_CALLS, STRINGS_RUN,
-        TRAPS_CHECKED, compare,
+        ANSWERS_CHECKED, FAR_UNLIKE_MEANING, REFERENCE_HOST, SECOND_CALLS, STOPS_CHECKED,
+        STRINGS_RUN, TRAPS_CHECKED, compare,
     };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
@@ -430,13 +430,14 @@ fn every_form_matches_the_cpu_natively_x86_64() {
         "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}; \
          the float status route's second call made in {}; a repeated string under the count calling the inside \
          correctly (its outcome the CPU's own) in {}; the inside's trap the meaning's in {}; a far transfer answered unlike the meaning (and \
-         judged against the CPU) in {}",
+         judged against the CPU) in {}; a replay check stopping with the guest as it started in {}",
         ended.into_inner().unwrap(),
         ANSWERS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
         SECOND_CALLS.load(std::sync::atomic::Ordering::Relaxed),
         STRINGS_RUN.load(std::sync::atomic::Ordering::Relaxed),
         TRAPS_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
-        FAR_UNLIKE_MEANING.load(std::sync::atomic::Ordering::Relaxed)
+        FAR_UNLIKE_MEANING.load(std::sync::atomic::Ordering::Relaxed),
+        STOPS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
     );
     assert!(
         failures.is_empty(),
