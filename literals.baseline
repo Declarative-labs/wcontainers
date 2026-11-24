@@ -23060,7 +23060,6 @@ role	crates/wcontainers-graphics-test/src/bin/gt-run.rs	int	main	1
 role	crates/wcontainers-graphics-test/src/bin/gt-run.rs	int	main	2
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	1
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	2
-role	crates/wcontainers-shaders/src/dxbc.rs	int	to_ir	0
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	0
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	1
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	2
