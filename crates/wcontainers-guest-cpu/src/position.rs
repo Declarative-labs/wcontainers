@@ -30,11 +30,15 @@ pub enum InsideCall {
     /// A copied `fldcw` unmasked an x87 exception: the inside enters the unmasked x87 mode, or raises the pending
     /// exception as the meaning does (x86).
     X87Control,
+    /// After the instruction of a stepping piece: the meaning's debug trap of a single step (x86's process way).
+    Step,
+    /// The replay check found the thread's stop word equal to its count: the thread stops before the instruction.
+    Stop,
 }
 
 impl InsideCall {
     /// Every call.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Exit,
         Self::Answer,
         Self::FloatBefore,
@@ -44,6 +48,8 @@ impl InsideCall {
         Self::Unreachable,
         Self::LastTarget,
         Self::X87Control,
+        Self::Step,
+        Self::Stop,
     ];
 
     /// The code a call carries.
@@ -225,14 +231,17 @@ pub enum NativeReason {
     HostModelResultRouted,
     /// A repeated string instruction the inside runs, so that the count takes its passes as the meaning's does.
     RepeatedStringCounted,
+    /// A piece of one instruction for a guest thread whose trap flag is set, every way on into the inside.
+    GuestSingleStep,
 }
 
 impl NativeReason {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::WithheldRegisterNamed,
         Self::AccessMayCrossPage,
         Self::HostModelResultRouted,
         Self::RepeatedStringCounted,
+        Self::GuestSingleStep,
     ];
 
     /// The fixed names their counters and warnings carry, in the order of [`Self::ALL`].
@@ -241,6 +250,7 @@ impl NativeReason {
         "access that may cross a page probed",
         "host-model result routed",
         "repeated string counted by the inside",
+        "guest single step",
     ];
 
     /// Its place in [`Self::ALL`].

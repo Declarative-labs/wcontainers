@@ -114,6 +114,17 @@ pub trait Native: Guest {
     fn movable() -> Range<u64>;
     /// Writes the word of `code` at `place` for the place's address.
     fn write_place(code: &mut [u8], place: &AddressPlace);
+    /// Whether `way` runs a guest's single step on stepping pieces ([`HostCode::stepping`]); where it does not,
+    /// the hardware's own single step runs it and no stepping piece is made.
+    fn steps(_: &Self::Way) -> bool {
+        false
+    }
+    /// Writes the replay check before the instruction at a stop point (docs/native.md 5.7): a call of kind
+    /// [`InsideCall::Stop`] where the thread's stop word equals its count, the guest's flags kept. False, with
+    /// nothing written, for a guest that has none yet.
+    fn stop_check(_: &Self::Way, _: &mut HostCode) -> bool {
+        false
+    }
 }
 
 /// Host code with its position map, written one guest instruction after another.
@@ -141,6 +152,9 @@ pub struct HostCode {
     settling: BTreeMap<u32, Option<u32>>,
     /// The current instruction's first host byte.
     begun: u32,
+    /// Whether this is a stepping piece: one instruction whose every way on goes into the inside with
+    /// [`InsideCall::Step`], none linked.
+    pub stepping: bool,
 }
 
 /// Code placed out of line, in the order it was deferred.

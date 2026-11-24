@@ -460,8 +460,8 @@ pub fn resolve(
                     Stop::Alignment(to)
                 }
             }
-            // x86's alone: ARM64 code never makes it.
-            InsideCall::X87Control => return None,
+            // ARM64 code makes none: x86's two, and the replay check's, which ARM64's output does not write yet.
+            InsideCall::X87Control | InsideCall::Step | InsideCall::Stop => return None,
             InsideCall::FloatBefore | InsideCall::FloatAfter | InsideCall::LastTarget => {
                 return None;
             }

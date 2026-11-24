@@ -122,7 +122,11 @@ fn fault(word: u32) -> Option<String> {
                 | InsideCall::Trap
                 | InsideCall::Misaligned => Side::Before,
                 // A call through a register has built x30 before its last target is compared.
-                InsideCall::X87Control => return Some(format!("x86's {call:?} at {offset}")),
+                InsideCall::X87Control | InsideCall::Step | InsideCall::Stop => {
+                    return Some(format!(
+                        "{call:?}, which ARM64 code never makes, at {offset}"
+                    ));
+                }
                 InsideCall::LastTarget => match i {
                     I::BranchRegister {
                         op: BranchRegister::Blr,
