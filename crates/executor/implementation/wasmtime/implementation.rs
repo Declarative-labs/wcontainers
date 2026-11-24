@@ -72,6 +72,9 @@ pub mod reason {
     pub const CODE_OUTSIDE_ANNOUNCED_RANGE: &str = "code outside an announced range";
     /// The thread left `run` because code it may be running was dropped.
     pub const LEFT_CODE_CHANGED_UNDER_IT: &str = "left run: code changed under it";
+    /// The thread left `run` because the kernel took access from a page of its memory while it was in a hook, so
+    /// no piece in progress goes on with what it found out about that page before.
+    pub const LEFT_PERMISSIONS_NARROWED: &str = "left run: permissions narrowed under it";
     /// Leaving `run` from a hook, the slow twin of answering in it, by why. The detail is the call
     /// number, or [`NOT_A_CALL`] after a stop.
     pub const LEFT_CALL_WAITS: &str = "left run: the call waits";
@@ -529,6 +532,8 @@ struct Running {
     thread: ThreadId,
     /// Code of the running process was dropped while the thread was in a hook.
     code_dropped: bool,
+    /// A page of the running process lost read or write while the thread was in a hook.
+    narrowed: bool,
 }
 
 /// One guest process: its store, its memories and what the executor keeps about its pages and code.
@@ -636,6 +641,21 @@ impl Pages {
                 *slot = None;
             }
         }
+    }
+
+    /// Whether the record of any page of `pages` passes `test`; a page in no chunk holds nothing.
+    fn any(&self, pages: Range<u64>, test: impl Fn(&Page) -> bool) -> bool {
+        let (mut page, end) = (pages.start as usize, pages.end as usize);
+        while page < end {
+            let index = page / CHUNK;
+            let (first, last) = (page % CHUNK, (end - index * CHUNK).min(CHUNK));
+            page = index * CHUNK + last;
+            let held = self.0.get(index).and_then(Option::as_ref);
+            if held.is_some_and(|chunk| chunk[first..last].iter().any(&test)) {
+                return true;
+            }
+        }
+        false
     }
 
     /// The pages of every chunk there, in order.
@@ -1837,10 +1857,19 @@ where
         flag::<G>(running_state(data), data.block_at).store(1, Ordering::SeqCst);
     }
     let running = side.running.as_mut().expect("a run");
-    if std::mem::take(&mut running.code_dropped) {
+    let (code_dropped, narrowed) = (
+        std::mem::take(&mut running.code_dropped),
+        std::mem::take(&mut running.narrowed),
+    );
+    if code_dropped || narrowed {
         data.rerun = Some(turn);
         leave(data);
-        side.slow_path(reason::LEFT_CODE_CHANGED_UNDER_IT, 0, 0);
+        let why = if code_dropped {
+            reason::LEFT_CODE_CHANGED_UNDER_IT
+        } else {
+            reason::LEFT_PERMISSIONS_NARROWED
+        };
+        side.slow_path(why, 0, 0);
     }
 }
 
@@ -2384,6 +2413,7 @@ where
             memory,
             thread,
             code_dropped: false,
+            narrowed: false,
         });
         if matches!(turn, Turn::Counted { .. }) {
             self.slow_path(reason::PROGRESS_BY_STOP_CHECKS, 0, 0);
@@ -2408,6 +2438,10 @@ where
                 && self.instruction_length(memory, pc).is_some()
             {
                 self.step(&mut store, thread);
+            }
+            // A narrowing made while the thread was out of `run` finds no piece in progress.
+            if let Some(running) = self.running.as_mut() {
+                running.narrowed = false;
             }
             let block_at = self.threads[&thread].block_at;
             let state = self.process(memory).state_bytes.clone();
@@ -2636,11 +2670,21 @@ where
         self.check(address, length)?;
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
         let process = self.processes.get_mut(&memory).expect("a memory");
+        let access = Permissions::READ | Permissions::WRITE;
+        let narrows = process
+            .pages
+            .any(pages.clone(), |p| !permissions.contains(p.allows & access));
         process.pages.update(pages.clone(), |p| {
             p.allows = permissions;
             p.data |= !permissions.is_empty();
         });
         self.write_table(memory, pages);
+        // A piece in progress keeps what it found out about its own stack frame until its function's next entry
+        // (the translator's contract): the thread leaves `run` before it carries on, so the narrowing holds for
+        // its next access.
+        if narrows && let Some(running) = self.running.as_mut().filter(|r| r.memory == memory) {
+            running.narrowed = true;
+        }
         Ok(())
     }
 
