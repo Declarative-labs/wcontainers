@@ -397,7 +397,7 @@ fn notes<S: crate::System>(
         }
         let fpsimd = user_fpsimd_state {
             vregs: core::array::from_fn(|index| {
-                u128::from(registers.v[index][0]) | (u128::from(registers.v[index][1]) << 64)
+                u128::from(registers.v[index][0]) | (u128::from(registers.v[index][1]) << u64::BITS)
             }),
             fpsr: registers.fpsr,
             fpcr: registers.fpcr,

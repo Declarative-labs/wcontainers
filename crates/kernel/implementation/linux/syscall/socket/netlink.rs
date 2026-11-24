@@ -56,7 +56,7 @@ pub(super) fn create<S: crate::System>(
         return Err(Errno::EPROTONOSUPPORT);
     }
     if protocol != NETLINK_ROUTE {
-        let detail = (u64::from(AF_NETLINK) << 32) | (u64::from(kind) << 16) | u64::from(protocol);
+        let detail = crate::counters::socket_detail(AF_NETLINK, kind, protocol);
         return Err(kernel.counters.refuse(
             cx.host,
             crate::reason::PROTOCOL_NOT_BUILT,
@@ -472,7 +472,7 @@ fn answer<S: crate::System>(
             return Err(kernel.counters.refuse(
                 cx.host,
                 crate::reason::NETLINK_REQUEST_NOT_BUILT,
-                u64::from(kind) | (u64::from(dump) << 16),
+                u64::from(kind) | (u64::from(dump) << u16::BITS),
                 Errno::EOPNOTSUPP,
             ));
         }

@@ -2571,7 +2571,7 @@ impl crate::Kernel {
                 self.counters.count(
                     cx.host,
                     crate::reason::BACKEND_NOTICE_REFUSED,
-                    ((code as u64) << 32) | u64::from(errno.0),
+                    crate::counters::detail(code as u32, errno.0),
                 );
                 Err(errno)
             }

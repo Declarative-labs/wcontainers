@@ -204,10 +204,11 @@ pub(super) fn filter_call<S: crate::System>(
     if thread.filters.iter().any(|filter| filter.reads_pointer) {
         let mut registers = RegisterBlock::new_zeroed();
         cx.cpu.registers(thread.cpu, &mut registers);
-        (data[2], data[3]) = (registers.pc as u32, (registers.pc >> 32) as u32);
+        (data[2], data[3]) = (registers.pc as u32, (registers.pc >> u32::BITS) as u32);
     }
     for (index, argument) in call.arguments.iter().enumerate() {
-        (data[4 + 2 * index], data[5 + 2 * index]) = (*argument as u32, (*argument >> 32) as u32);
+        (data[4 + 2 * index], data[5 + 2 * index]) =
+            (*argument as u32, (*argument >> u32::BITS) as u32);
     }
     // Newest first; an equal action does not displace an earlier answer.
     let mut answer = SECCOMP_RET_ALLOW;

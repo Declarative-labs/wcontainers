@@ -3678,7 +3678,7 @@ pub(super) fn setsockopt<S: crate::System>(
                 return Err(kernel.counters.refuse(
                     cx.host,
                     crate::reason::OPTION_NOT_BUILT,
-                    (u64::from(level) << 32) | u64::from(name),
+                    crate::counters::detail(level, name),
                     Errno::ENOPROTOOPT,
                 ));
             }
@@ -3782,7 +3782,7 @@ pub(super) fn setsockopt<S: crate::System>(
                 kernel.counters.count(
                     cx.host,
                     crate::reason::OPTION_NOT_ACTED_ON,
-                    (u64::from(level) << 32) | u64::from(name),
+                    crate::counters::detail(level, name),
                 );
             }
         }
@@ -3825,7 +3825,7 @@ pub(super) fn setsockopt<S: crate::System>(
             return Err(kernel.counters.refuse(
                 cx.host,
                 crate::reason::OPTION_NOT_BUILT,
-                (u64::from(level) << 32) | u64::from(name),
+                crate::counters::detail(level, name),
                 Errno::ENOPROTOOPT,
             ));
         }
@@ -4163,7 +4163,7 @@ pub(super) fn getsockopt<S: crate::System>(
                 return Err(kernel.counters.refuse(
                     cx.host,
                     crate::reason::OPTION_NOT_BUILT,
-                    (u64::from(level) << 32) | u64::from(name),
+                    crate::counters::detail(level, name),
                     Errno::ENOPROTOOPT,
                 ));
             }

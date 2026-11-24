@@ -807,7 +807,7 @@ pub(super) fn create<S: crate::System>(
         return Err(Errno::EINVAL);
     }
     let refuse = |kernel: &mut Kernel, cx: &mut Context<'_, S>, answer: Errno| {
-        let detail = (u64::from(family) << 32) | (u64::from(kind) << 16) | u64::from(protocol);
+        let detail = crate::counters::socket_detail(family, kind, protocol);
         Err(kernel
             .counters
             .refuse(cx.host, crate::reason::PROTOCOL_NOT_BUILT, detail, answer))
@@ -2740,7 +2740,7 @@ fn sent_control<S: crate::System>(
         Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
-            (u64::from(level) << 32) | u64::from(kind),
+            crate::counters::detail(level, kind),
             Errno::EINVAL,
         ))
     };
@@ -4269,7 +4269,7 @@ pub(super) fn set_option<S: crate::System>(
         Some(Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
-            (u64::from(level) << 32) | u64::from(name),
+            crate::counters::detail(level, name),
             Errno::ENOPROTOOPT,
         )))
     };
@@ -4341,7 +4341,7 @@ pub(super) fn set_option<S: crate::System>(
                         kernel.counters.count(
                             cx.host,
                             crate::reason::OPTION_NOT_ACTED_ON,
-                            (u64::from(level) << 32) | u64::from(name),
+                            crate::counters::detail(level, name),
                         );
                     }
                     store(socket, i32::from(value != 0))
@@ -4387,7 +4387,7 @@ pub(super) fn set_option<S: crate::System>(
                         kernel.counters.count(
                             cx.host,
                             crate::reason::OPTION_NOT_ACTED_ON,
-                            (u64::from(level) << 32) | u64::from(name),
+                            crate::counters::detail(level, name),
                         );
                     }
                     store(socket, value)
@@ -4745,7 +4745,7 @@ pub(super) fn get_option<S: crate::System>(
         Some(Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
-            (u64::from(level) << 32) | u64::from(name),
+            crate::counters::detail(level, name),
             Errno::ENOPROTOOPT,
         )))
     };

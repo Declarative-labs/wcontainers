@@ -539,7 +539,7 @@ fn adjust<S: crate::System>(
         return Err(kernel.counters.refuse(
             cx.host,
             crate::reason::FLAG_NOT_BUILT,
-            (u64::from(__NR_adjtimex) << 32) | u64::from(modes),
+            crate::counters::detail(__NR_adjtimex, modes),
             Errno::EPERM,
         ));
     }

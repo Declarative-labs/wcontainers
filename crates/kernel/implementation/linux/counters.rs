@@ -250,6 +250,16 @@ pub mod reason {
     ];
 }
 
+/// One counter detail made of two numbers, `high` in the upper half.
+pub(crate) fn detail(high: u32, low: u32) -> u64 {
+    (u64::from(high) << u32::BITS) | u64::from(low)
+}
+
+/// The detail of a socket that is not built: its family, then its type and protocol in the lower half.
+pub(crate) fn socket_detail(family: u32, kind: u32, protocol: u32) -> u64 {
+    detail(family, 0) | (u64::from(kind) << u16::BITS) | u64::from(protocol)
+}
+
 #[derive(Default)]
 pub(crate) struct Counters {
     counts: BTreeMap<(&'static str, u64), u64>,
@@ -294,8 +304,12 @@ impl Counters {
         flags: u64,
         answer: crate::Errno,
     ) -> crate::Errno {
-        let detail = (u64::from(number) << 32) | (flags & 0xffff_ffff);
-        self.refuse(host, reason::FLAG_NOT_BUILT, detail, answer)
+        self.refuse(
+            host,
+            reason::FLAG_NOT_BUILT,
+            detail(number, flags as u32),
+            answer,
+        )
     }
 
     /// Adds a measured time under a reason, without a warning: a measurement, not a slow path.

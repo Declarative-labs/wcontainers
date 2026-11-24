@@ -2344,11 +2344,7 @@ code	crates/kernel/implementation/linux/container.rs	str	overlay_root_mount	"/"
 code	crates/kernel/implementation/linux/container.rs	str	overlay_root_mount	"lowerdir=/var/lib/wcontainers/lower,upperdir=/var/lib/wcontainers/upper,\\n                  workdir=/var/lib/wcontainers/work,nouserxattr"
 code	crates/kernel/implementation/linux/container.rs	str	overlay_root_mount	"overlay"
 code	crates/kernel/implementation/linux/container.rs	str	overlay_root_mount	"overlay"
-code	crates/kernel/implementation/linux/counters.rs	int	Counters::refuse_flag	0xffff_ffff
-code	crates/kernel/implementation/linux/counters.rs	int	Counters::refuse_flag	32
 code	crates/kernel/implementation/linux/credentials.rs	int	file_capabilities	3
-code	crates/kernel/implementation/linux/credentials.rs	int	file_capabilities	32
-code	crates/kernel/implementation/linux/credentials.rs	int	file_capabilities	32
 code	crates/kernel/implementation/linux/credentials.rs	int	file_capabilities	4
 code	crates/kernel/implementation/linux/credentials.rs	int	file_capabilities	4
 code	crates/kernel/implementation/linux/credentials.rs	int	file_capabilities	4
@@ -2367,7 +2363,6 @@ code	crates/kernel/implementation/linux/fs/backend.rs	bytestr	tmpfile	b"/"
 code	crates/kernel/implementation/linux/fs/backend.rs	int	Client::new	11
 code	crates/kernel/implementation/linux/fs/backend.rs	int	Client::root	0o755
 code	crates/kernel/implementation/linux/fs/backend.rs	int	counted_entries	8
-code	crates/kernel/implementation/linux/fs/backend.rs	int	crate::Kernel::backend_notice	32
 code	crates/kernel/implementation/linux/fs/backend.rs	int	readdir	8
 code	crates/kernel/implementation/linux/fs/dev.rs	int	Device::from_number	3
 code	crates/kernel/implementation/linux/fs/dev.rs	int	Device::from_number	5
@@ -2964,7 +2959,6 @@ code	crates/kernel/implementation/linux/syscall/coredump.rs	int	layout	4
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	layout	4
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	layout	7
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	notes	128
-code	crates/kernel/implementation/linux/syscall/coredump.rs	int	notes	64
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	notes	8
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	notes	8
 code	crates/kernel/implementation/linux/syscall/coredump.rs	int	process_info	15
@@ -3073,16 +3067,10 @@ code	crates/kernel/implementation/linux/syscall/futex.rs	int	atomic_op	28
 code	crates/kernel/implementation/linux/syscall/futex.rs	int	atomic_op	28
 code	crates/kernel/implementation/linux/syscall/futex.rs	int	atomic_op	31
 code	crates/kernel/implementation/linux/syscall/futex.rs	int	atomic_op	4
-code	crates/kernel/implementation/linux/syscall/futex.rs	int	futex_wait	32
-code	crates/kernel/implementation/linux/syscall/futex.rs	int	futex_wait	32
-code	crates/kernel/implementation/linux/syscall/futex.rs	int	futex_wake	32
-code	crates/kernel/implementation/linux/syscall/futex.rs	int	parse_waitv	32
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	0x81
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	0xf8
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	0xfb
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	29
-code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	32
-code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	32
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	encode	4
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	mount_id	0xff
 code	crates/kernel/implementation/linux/syscall/handle.rs	int	name_to_handle_at	4
@@ -3311,12 +3299,8 @@ code	crates/kernel/implementation/linux/syscall/pipe.rs	int	pipe2	8
 code	crates/kernel/implementation/linux/syscall/process.rs	byte	exec	b'/'
 code	crates/kernel/implementation/linux/syscall/process.rs	byte	exec	b'/'
 code	crates/kernel/implementation/linux/syscall/process.rs	bytestr	exec	b"/"
-code	crates/kernel/implementation/linux/syscall/process.rs	int	capget	32
 code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	12
 code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	3
-code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	32
-code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	32
-code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	32
 code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	4
 code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	4
 code	crates/kernel/implementation/linux/syscall/process.rs	int	capset	4
@@ -3362,8 +3346,6 @@ code	crates/kernel/implementation/linux/syscall/rseq.rs	int	rseq	64
 code	crates/kernel/implementation/linux/syscall/rseq.rs	int	rseq	8
 code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	filter_call	16
 code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	filter_call	3
-code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	filter_call	32
-code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	filter_call	32
 code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	filter_call	4
 code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	filter_call	5
 code	crates/kernel/implementation/linux/syscall/seccomp.rs	int	set_filter	16
@@ -3484,8 +3466,6 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	clamp_window	
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	conflicts	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	const _	248
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	cover	16
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	create	16
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	create	32
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	datagram_truesize	28
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	datagram_truesize	31
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	datagram_truesize	64
@@ -3503,7 +3483,6 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	16
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	20
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	28
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	28
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	32
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	get_option	4
@@ -3631,7 +3610,6 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	255
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	255
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	255
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	32
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	4
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	sent_control	4
@@ -3662,9 +3640,6 @@ code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	25
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	255
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	255
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	3
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	32
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	32
-code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	32
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	32767
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	32767
 code	crates/kernel/implementation/linux/syscall/socket/inet.rs	int	set_option	4
@@ -3783,7 +3758,6 @@ code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	bound_device	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	buffer_locks	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	16
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	255
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	32
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	getsockopt	4
@@ -3864,9 +3838,6 @@ code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	15
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	16
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	16
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	16
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	32
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	32
-code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	32
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	4
 code	crates/kernel/implementation/linux/syscall/socket/mod.rs	int	setsockopt	4
@@ -3929,7 +3900,6 @@ code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	addresses	
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	addresses	15
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	addresses	16
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	addresses	8
-code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	answer	16
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	answer	3
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	answer	4
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	answer	4
@@ -3941,8 +3911,6 @@ code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	answer	8
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	autobind	-4096i32
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	cache_information	32
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	cache_information	32
-code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	create	16
-code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	create	32
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	link	16
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	link	200
 code	crates/kernel/implementation/linux/syscall/socket/netlink.rs	int	link	32
@@ -4118,7 +4086,6 @@ code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
 code	crates/kernel/implementation/linux/syscall/system.rs	int	uname	65
 code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	11000
-code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	32
 code	crates/kernel/implementation/linux/syscall/time.rs	int	adjust	9000
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock	3
 code	crates/kernel/implementation/linux/syscall/time.rs	int	clock_adjtime	11

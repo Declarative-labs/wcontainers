@@ -293,8 +293,8 @@ fn file_capabilities(stored: &[u8]) -> Result<Option<(u64, u64, bool)>, crate::E
     if root != 0 {
         return Ok(None);
     }
-    let permitted = (word(1) | word(3) << 32) & VALID;
-    let inheritable = (word(2) | word(4) << 32) & VALID;
+    let permitted = (word(1) | word(3) << u32::BITS) & VALID;
+    let inheritable = (word(2) | word(4) << u32::BITS) & VALID;
     Ok(Some((
         permitted,
         inheritable,
