@@ -5668,6 +5668,7 @@ dependencies = [
  "wcontainers-shaders",
  "wgpu",
  "windows-sys 0.61.2",
+ "zerocopy",
 ]
 
 [[package]]
