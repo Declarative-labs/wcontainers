@@ -4102,6 +4102,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-byte-sink"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-byte-sink-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+]
+
+[[package]]
+name = "wcontainers-byte-source"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-byte-source-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-source",
+]
+
+[[package]]
 name = "wcontainers-clock"
 version = "0.1.0"
 
@@ -4244,7 +4266,10 @@ version = "0.1.0"
 name = "wcontainers-executor"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-processor-architecture",
 ]
 

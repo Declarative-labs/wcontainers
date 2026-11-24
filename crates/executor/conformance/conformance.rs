@@ -22,7 +22,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
 ) where
     Chip: Executor,
     Chip::Architecture: Clone + Eq,
-    <Chip::Architecture as ProcessorArchitecture>::Processor: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
     <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug,
     <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
     Set: PreciseInstructionSet<Chip::Architecture>,
@@ -71,7 +71,7 @@ fn describe<Architecture>(
 ) -> String
 where
     Architecture: ProcessorArchitecture,
-    Architecture::Processor: Debug,
+    Architecture::ProcessorState: Debug,
     Architecture::PagePermission: Debug,
 {
     let start = before.memory_mutations.len();

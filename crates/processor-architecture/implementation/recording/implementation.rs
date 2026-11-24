@@ -50,7 +50,7 @@ impl<Architecture: ProcessorArchitecture + Clone + Eq> Simulator<Architecture>
     /// Gives the recorded after of the recorded before that equals the processor and memory given.
     fn simulate_in_place(
         &self,
-        processor: &mut Architecture::Processor,
+        processor: &mut Architecture::ProcessorState,
         memory: &[MemoryDelta<'_, Architecture>],
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Architecture>),
     ) -> Result<(), NotRecorded> {

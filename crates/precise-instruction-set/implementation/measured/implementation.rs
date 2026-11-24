@@ -104,7 +104,7 @@ where
     Architecture: ProcessorArchitecture,
     Architecture::Instruction: Debug,
     Architecture::PreciseInstruction: Debug,
-    Architecture::Processor: Debug,
+    Architecture::ProcessorState: Debug,
     Architecture::PagePermission: Debug,
 {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
@@ -149,12 +149,12 @@ where
 
 fn write_state<Architecture>(
     formatter: &mut Formatter<'_>,
-    processor: &Architecture::Processor,
+    processor: &Architecture::ProcessorState,
     memory: &[MemoryDelta<'_, Architecture>],
 ) -> fmt::Result
 where
     Architecture: ProcessorArchitecture,
-    Architecture::Processor: Debug,
+    Architecture::ProcessorState: Debug,
     Architecture::PagePermission: Debug,
 {
     writeln!(formatter, "    {processor:?}")?;

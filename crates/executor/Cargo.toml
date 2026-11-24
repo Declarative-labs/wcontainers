@@ -8,4 +8,7 @@ path = "interface.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+wcontainers-byte-sink = { path = "../byte-sink" }
+wcontainers-byte-source = { path = "../byte-source" }
 wcontainers-processor-architecture = { path = "../processor-architecture" }
+thiserror = { version = "2.0.21", default-features = false }

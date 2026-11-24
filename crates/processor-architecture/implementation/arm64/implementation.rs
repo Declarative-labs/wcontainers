@@ -40,7 +40,7 @@ pub const ZERO_PROCESSOR: Processor = Processor {
 pub struct Arm64;
 
 impl ProcessorArchitecture for Arm64 {
-    type Processor = Processor;
+    type ProcessorState = Processor;
     type PagePermission = PagePermission;
     type Instruction = Instruction;
     type PreciseInstruction = PreciseInstruction;
