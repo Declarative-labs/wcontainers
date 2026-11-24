@@ -826,12 +826,16 @@ pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bi
             let zero = lit(f, Literal::F32(0.0));
             let one = lit(f, Literal::F32(1.0));
             let low = lit(f, Literal::F32(if signed { -1.0 } else { 0.0 }));
-            // NaN fails both comparisons and becomes zero.
+            // NaN becomes zero, found by its bits, which no compiler folds as it may fold `v == v`.
             let above = binary(f, body, B::GreaterEqual, v, low);
             let c = select(f, body, above, v, low);
             let below = binary(f, body, B::LessEqual, c, one);
             let c = select(f, body, below, c, one);
-            let number = binary(f, body, B::Equal, v, v);
+            let word = to_u32(f, body, v, None);
+            let magnitude_mask = lit(f, Literal::U32(!crate::build::F32_SIGN_MASK));
+            let magnitude = binary(f, body, B::And, word, magnitude_mask);
+            let infinity = lit(f, Literal::U32(crate::build::F32_EXPONENT_MASK));
+            let number = binary(f, body, B::LessEqual, magnitude, infinity);
             let c = select(f, body, number, c, zero);
             let n = if signed { bits - 1 } else { bits };
             let scale = lit(f, Literal::F32(((1u64 << n) - 1) as f32));
