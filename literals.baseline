@@ -12218,7 +12218,6 @@ code	crates/wcontainers-shaders/build.rs	char	without_comments	'\n'
 code	crates/wcontainers-shaders/build.rs	int	evaluate	16
 code	crates/wcontainers-shaders/build.rs	str	base	"--sysroot={sdk}/share/wasi-sysroot"
 code	crates/wcontainers-shaders/build.rs	str	base	"-fno-exceptions"
-code	crates/wcontainers-shaders/build.rs	str	base	"CARGO_CFG_TARGET_OS"
 code	crates/wcontainers-shaders/build.rs	str	base	"OUT_DIR"
 code	crates/wcontainers-shaders/build.rs	str	base	"WASI_SDK_PATH"
 code	crates/wcontainers-shaders/build.rs	str	base	"cargo:rustc-link-lib=static=c++"
@@ -12227,7 +12226,6 @@ code	crates/wcontainers-shaders/build.rs	str	base	"cargo:rustc-link-search=nativ
 code	crates/wcontainers-shaders/build.rs	str	base	"cpp/assert"
 code	crates/wcontainers-shaders/build.rs	str	base	"libc++.a"
 code	crates/wcontainers-shaders/build.rs	str	base	"libc++abi.a"
-code	crates/wcontainers-shaders/build.rs	str	base	"wasi"
 code	crates/wcontainers-shaders/build.rs	str	base	"{lib}/{name}"
 code	crates/wcontainers-shaders/build.rs	str	base	"{out}/{name}"
 code	crates/wcontainers-shaders/build.rs	str	base	"{sdk}/bin/clang++"
