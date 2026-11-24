@@ -277,12 +277,20 @@ impl Native for Arm64 {
         carry::write_place(code, place);
     }
 
-    fn piece_way(way: &Way, instructions: &[I]) -> Way {
-        carry::piece_way(*way, instructions)
+    fn part_ways(way: &Way, parts: &[&[I]], loops: &[Range<usize>]) -> Vec<Way> {
+        carry::part_ways(*way, parts, loops)
     }
 
     fn enter(way: &Way, code: &mut HostCode) {
         carry::enter(*way, code);
+    }
+
+    fn entered(way: &Way, code: &mut HostCode) {
+        carry::entered(*way, code);
+    }
+
+    fn enter_at(way: &Way, code: &mut HostCode, to: usize) -> bool {
+        carry::enter_at(*way, code, to)
     }
 
     fn stopping(i: &I, _address: u64) -> Stopping {

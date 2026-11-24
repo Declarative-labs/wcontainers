@@ -22,7 +22,8 @@ mod translate;
 pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
 pub use native::{
-    HostCode, Native, NativeClass, PATCH_BYTES, Patch, Route, Translation, count_placement, counted,
+    HostCode, Native, NativeClass, PATCH_BYTES, Patch, Route, Snapshot, Translation,
+    count_placement, counted,
 };
 pub mod position;
 pub mod reason;

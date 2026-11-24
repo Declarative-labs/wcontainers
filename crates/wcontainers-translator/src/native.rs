@@ -2,6 +2,7 @@
 //! instruction carried over by its route, with the count's adds and the position map. No WebAssembly is made.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use wcontainers_guest_cpu::position::DirectExit;
 use wcontainers_guest_cpu::{
@@ -124,8 +125,6 @@ pub fn translate_native_request<G: Native>(
         return None;
     }
     let instructions: Vec<G::Instruction> = held.iter().map(|h| h.instruction).collect();
-    let piece_way = G::piece_way(way, &instructions);
-    let way = &piece_way;
     let targets: BTreeSet<usize> = held.iter().filter_map(|h| h.target).collect();
     // Where each straight-line part starts: the first instruction, a branch's target, and wherever the code
     // before does not go straight on to it.
@@ -178,6 +177,23 @@ pub fn translate_native_request<G: Native>(
                 .map(|t| (t, h.at))
         })
         .collect();
+    // The way each part is written for, and whether it is entered from outside the piece or from a part of
+    // another way, which reaches it through that part's exit.
+    let parts: Vec<&[G::Instruction]> = (0..starts.len())
+        .map(|p| &instructions[starts[p]..end_of(p)])
+        .collect();
+    let loop_parts: Vec<Range<usize>> = loops
+        .iter()
+        .map(|&(head, end)| part_of(index_at[&head])..part_of(index_at[&end]) + 1)
+        .collect();
+    let part_way = G::part_ways(way, &parts, &loop_parts);
+    let from_outside: Vec<bool> = (0..starts.len())
+        .map(|q| {
+            q == 0
+                || (successors.iter().enumerate())
+                    .any(|(p, next)| next.contains(&q) && part_way[p] != part_way[q])
+        })
+        .collect();
     // The way each part most likely goes on inside the piece: the one that stays in the innermost loop holding
     // the part, else a branch back, else falling through.
     let likely: Vec<Option<usize>> = (0..starts.len())
@@ -214,7 +230,7 @@ pub fn translate_native_request<G: Native>(
         .map(|p| p.map_or(0, |(_, total)| total))
         .collect();
     let throughs: Vec<Option<usize>> = ways.iter().map(|&(through, _)| through).collect();
-    let (amounts, leads) = counted_ahead(&successors, &likely, &throughs, &own);
+    let (amounts, leads) = counted_ahead(&successors, &likely, &throughs, &own, &from_outside);
     let mut adds = vec![None; held.len()];
     for (p, &amount) in amounts.iter().enumerate() {
         if amount > 0 {
@@ -241,6 +257,7 @@ pub fn translate_native_request<G: Native>(
     let copies_made = !stop && !step;
     // One instruction's add and code, after the current straight-line part's instructions so far (`part`).
     let carry_one = |out: &mut HostCode,
+                     way: &G::Way,
                      k: usize,
                      part: &mut Vec<(u64, G::Instruction)>,
                      invariant: &G::LoopInvariant| {
@@ -274,13 +291,17 @@ pub fn translate_native_request<G: Native>(
     let mut tested = Vec::new();
     for (k, h) in held.iter().enumerate() {
         let here = guest(h.at);
+        let p = part_of(k);
+        let way = &part_way[p];
         out.start(here, events[k], G::stopping(&h.instruction, here));
         if k == 0 {
             G::enter(way, &mut out);
+        } else if part_starts[k] && part_way[p - 1] != *way {
+            out.unkeep();
+            G::entered(way, &mut out);
         }
         if part_starts[k] {
-            let p = part_of(k);
-            entries.insert(here, (out.offset(), leads[p]));
+            entries.insert(here, (out.offset(), leads[p], p));
             out.enter_ahead(leads[p]);
             part.clear();
             if let Some(branch) = copies_made
@@ -296,9 +317,14 @@ pub fn translate_native_request<G: Native>(
                 "this guest's output writes no replay check"
             );
         }
-        carry_one(&mut out, k, &mut part, &settled_nothing);
+        carry_one(&mut out, way, k, &mut part, &settled_nothing);
         let next = h.at + h.length;
-        if h.goes_on && held.get(k + 1).is_none_or(|n| n.at != next) {
+        // Code that goes on into a part of another way leaves through an exit, linked to where that part is entered.
+        if h.goes_on
+            && held
+                .get(k + 1)
+                .is_none_or(|n| n.at != next || part_way[part_of(k + 1)] != *way)
+        {
             G::exit(way, &mut out, guest(next));
         }
     }
@@ -309,6 +335,7 @@ pub fn translate_native_request<G: Native>(
     for (p, branch) in tested {
         let (first, end) = (starts[p], starts.get(p + 1).copied().unwrap_or(held.len()));
         let head = guest(held[first].at);
+        let way = &part_way[p];
         let start = out.offset();
         let written = out.exits.len();
         part.clear();
@@ -317,8 +344,10 @@ pub fn translate_native_request<G: Native>(
             out.start(here, events[k], G::stopping(&held[k].instruction, here));
             if k == first {
                 out.enter_ahead(leads[p]);
+                out.unkeep();
+                G::entered(way, &mut out);
             }
-            carry_one(&mut out, k, &mut part, &invariants[p]);
+            carry_one(&mut out, way, k, &mut part, &invariants[p]);
         }
         let last = &held[end - 1];
         if last.goes_on {
@@ -341,13 +370,23 @@ pub fn translate_native_request<G: Native>(
         !step || out.exits.is_empty(),
         "a stepping piece leaves through no exit a loader may link"
     );
+    // Where each part that needs code to be entered from a part of another way is entered from one, by part.
+    let mut entered_at: BTreeMap<usize, usize> = BTreeMap::new();
     for (n, exit) in std::mem::take(&mut out.exits).into_iter().enumerate() {
+        let source = out
+            .span(exit.start)
+            .and_then(|s| index_at.get(&(s.guest.wrapping_sub(address) as usize)))
+            .map(|&k| part_of(k))
+            .expect("an exit is written for one of the piece's instructions");
         // A copy's branch back to its start stays in the copy.
         let within = copies
             .iter()
             .find(|(written, _, head, _)| written.contains(&n) && exit.target == *head)
             .map(|&(_, start, _, lead)| (start, lead))
-            .or_else(|| entries.get(&exit.target).copied());
+            .or_else(|| {
+                let &(to, lead, q) = entries.get(&exit.target)?;
+                (part_way[q] == part_way[source]).then_some((to, lead))
+            });
         // A part entered with the guest's count is linked to past the exit's settling, as a loader links.
         let linked = within.and_then(|(to, lead)| {
             let from = if lead == 0 {
@@ -360,9 +399,43 @@ pub fn translate_native_request<G: Native>(
         if let Some(from) = linked {
             // The word linked over no longer builds an address.
             out.places.retain(|place| place.start != from.start);
-        } else if let Some(exit) = out.for_loader(exit) {
-            out.exits.push(exit);
+            continue;
         }
+        let Some(exit) = out.for_loader(exit) else {
+            continue;
+        };
+        // A part of another way is entered where its exit leaves the piece, as from outside it.
+        let crossing = (entries.get(&exit.target).copied())
+            .filter(|&(_, _, q)| part_way[q] != part_way[source]);
+        if let Some((start, lead, q)) = crossing {
+            assert_eq!(
+                lead, 0,
+                "a part entered from another way starts with the guest's count"
+            );
+            let to = match entered_at.get(&q) {
+                Some(&to) => to,
+                None => {
+                    let k = starts[q];
+                    let here = guest(held[k].at);
+                    let at = out.offset();
+                    out.start(here, events[k], G::stopping(&held[k].instruction, here));
+                    out.enter_ahead(0);
+                    out.unkeep();
+                    let to = if G::enter_at(&part_way[q], &mut out, start) {
+                        at
+                    } else {
+                        start
+                    };
+                    entered_at.insert(q, to);
+                    to
+                }
+            };
+            if G::link(&mut out, &exit, to) {
+                out.places.retain(|place| place.start != exit.start);
+                continue;
+            }
+        }
+        out.exits.push(exit);
     }
     Some(out)
 }
@@ -371,7 +444,7 @@ pub fn translate_native_request<G: Native>(
 /// inside the piece (`successors`), the one it most likely goes on to (`likely`), the one it falls through to
 /// (`throughs`) and its own events (`own`). A part entered only from parts that most likely go on to it, each
 /// going on only to it or having an add of its own to join, has its events counted by their adds, so a loop of
-/// such parts adds once a turn; the first part is entered from outside, where the count is the guest's. A part's
+/// such parts adds once a turn; the parts `from_outside` are entered where the count is the guest's. A part's
 /// other way on, and its code leaving the piece, with the count still ahead, goes through code that brings the
 /// count back, so no such way is a part's fall-through.
 fn counted_ahead(
@@ -379,6 +452,7 @@ fn counted_ahead(
     likely: &[Option<usize>],
     throughs: &[Option<usize>],
     own: &[u32],
+    from_outside: &[bool],
 ) -> (Vec<u32>, Vec<u32>) {
     let parts = own.len();
     let mut predecessors = vec![BTreeSet::new(); parts];
@@ -389,7 +463,7 @@ fn counted_ahead(
     }
     let mut ahead: Vec<bool> = (0..parts)
         .map(|q| {
-            q != 0
+            !from_outside[q]
                 && !predecessors[q].is_empty()
                 && predecessors[q].iter().all(|&p| {
                     p != q && likely[p] == Some(q) && (successors[p].len() == 1 || own[p] > 0)
@@ -558,13 +632,19 @@ mod tests {
     type Part<'a> = (&'a [usize], Option<usize>, Option<usize>);
 
     fn ahead(parts: &[Part], own: &[u32]) -> (Vec<u32>, Vec<u32>) {
+        let from_outside: Vec<bool> = (0..parts.len()).map(|q| q == 0).collect();
+        ahead_from(parts, own, &from_outside)
+    }
+
+    /// [`ahead`] with the parts `from_outside` entered where the count is the guest's.
+    fn ahead_from(parts: &[Part], own: &[u32], from_outside: &[bool]) -> (Vec<u32>, Vec<u32>) {
         let successors: Vec<_> = parts
             .iter()
             .map(|p| p.0.iter().copied().collect())
             .collect();
         let likely: Vec<_> = parts.iter().map(|p| p.1).collect();
         let throughs: Vec<_> = parts.iter().map(|p| p.2).collect();
-        counted_ahead(&successors, &likely, &throughs, own)
+        counted_ahead(&successors, &likely, &throughs, own, from_outside)
     }
 
     /// A loop of two parts entered at the first adds once a turn, the second part entered with its event ahead.
@@ -589,6 +669,23 @@ mod tests {
                 &[1, 1, 1]
             ),
             (vec![3, 0, 0], vec![0, 2, 1])
+        );
+    }
+
+    /// A part entered from a part of another way, through its exit, adds for itself and what follows it.
+    #[test]
+    fn a_part_entered_from_another_way_is_not_counted_ahead() {
+        assert_eq!(
+            ahead_from(
+                &[
+                    (&[1], Some(1), Some(1)),
+                    (&[2], Some(2), Some(2)),
+                    (&[], None, None)
+                ],
+                &[1, 1, 1],
+                &[true, true, false]
+            ),
+            (vec![1, 2, 0], vec![0, 0, 1])
         );
     }
 

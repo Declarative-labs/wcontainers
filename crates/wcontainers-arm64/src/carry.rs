@@ -8,7 +8,7 @@ use std::ops::Range;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
     AddressPlace, BranchTable, Fixup, Guest, Held, Holds, HostCode, InsideCall, Native,
-    NativeReason, Registers, Resume, Route, Span, effects,
+    NativeReason, Registers, Resume, Route, Snapshot, effects,
 };
 
 use crate::encode::{self, Register, ZERO, field, form};
@@ -149,16 +149,53 @@ fn kept_slot(k: usize, register: Register) -> u64 {
     )
 }
 
-/// The way of the piece of `instructions` (in process, [`Way::for_piece`]).
-pub(crate) fn piece_way(way: Way, instructions: &[I]) -> Way {
+/// The general registers `instructions` name, as bits by register number.
+fn named_registers(instructions: &[I]) -> u32 {
     let named = instructions.iter().fold(Registers::NONE, |n, i| {
         let (uses, defs) = touched(i);
         n.union(uses).union(defs)
     });
-    let bits = (0..ZERO)
+    (0..ZERO)
         .filter(|&r| named.has_bit(bit(r)))
-        .fold(0u32, |b, r| b | 1 << r);
-    way.for_piece(bits)
+        .fold(0u32, |b, r| b | 1 << r)
+}
+
+/// The way of each part of a piece (in process, [`Way::for_parts`]).
+pub(crate) fn part_ways(way: Way, parts: &[&[I]], loops: &[Range<usize>]) -> Vec<Way> {
+    let named: Vec<u32> = parts.iter().map(|p| named_registers(p)).collect();
+    way.for_parts(&named, loops)
+}
+
+/// Notes where a part of `way` keeps the guest values of the registers u and the base are kept in, and of
+/// [`CHECK`] and [`BASE`], as [`enter`] leaves them.
+pub(crate) fn entered(way: Way, code: &mut HostCode) {
+    let moved = moved_kept(way);
+    for (k, &(_, to)) in moved
+        .iter()
+        .enumerate()
+        .filter_map(|(k, m)| Some((k, m.as_ref()?)))
+    {
+        code.keep(to, held_page(kept_slot(k, to)));
+    }
+    for &(usual, _) in moved.iter().flatten() {
+        code.keep(usual, Held::Register(usual));
+    }
+}
+
+/// [`enter`] and a branch to `to`, for a part of `way` entered through another part's exit; false where `way`
+/// keeps u and the base where they are between pieces.
+pub(crate) fn enter_at(way: Way, code: &mut HostCode, to: usize) -> bool {
+    if !way.moves_kept() {
+        return false;
+    }
+    enter(way, code);
+    let back = to as i64 - code.offset() as i64;
+    code.push(
+        &encode::branch(false, back)
+            .expect("a piece is short")
+            .to_le_bytes(),
+    );
+    true
 }
 
 /// The usual registers and the ones `way` keeps u and the base in instead, each pair once where they differ.
@@ -386,7 +423,7 @@ pub(crate) fn test_aligned_bases(
 /// Code out of line: a test's other way, entered from the branch at `from` in the state it had there.
 struct Tail {
     way: Way,
-    state: (Span, bool),
+    state: Snapshot,
     from: usize,
     words: Vec<u32>,
     /// What a stop in it means, when it differs from the branch's state.

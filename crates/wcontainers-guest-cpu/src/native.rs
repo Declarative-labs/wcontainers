@@ -125,12 +125,24 @@ pub trait Native: Guest {
     fn stop_check(_: &Self::Way, _: &mut HostCode) -> bool {
         false
     }
-    /// The way one piece of these instructions is written for; the default is `way` itself.
-    fn piece_way(way: &Self::Way, _: &[Self::Instruction]) -> Self::Way {
-        *way
+    /// The way each straight-line part of one piece is written for, given each part's instructions and the piece's
+    /// loops as ranges of parts; the default is `way` for every part.
+    fn part_ways(
+        way: &Self::Way,
+        parts: &[&[Self::Instruction]],
+        _loops: &[Range<usize>],
+    ) -> Vec<Self::Way> {
+        vec![*way; parts.len()]
     }
-    /// Writes what a piece does first when it is entered from outside it; the default writes nothing.
+    /// Writes what a part of `way` does first when it is entered from outside the piece; the default writes nothing.
     fn enter(_: &Self::Way, _: &mut HostCode) {}
+    /// Notes, writing nothing, where a part of `way` holds guest values once [`Self::enter`] has run.
+    fn entered(_: &Self::Way, _: &mut HostCode) {}
+    /// Writes [`Self::enter`] and then a branch to host offset `to`, for a part of `way` entered from a part of
+    /// another way through its exit; false, with nothing written, where entering it needs no code.
+    fn enter_at(_: &Self::Way, _: &mut HostCode, _to: usize) -> bool {
+        false
+    }
 }
 
 /// Host code with its position map, written one guest instruction after another.
@@ -170,6 +182,11 @@ pub struct HostCode {
     /// [`InsideCall::Step`], none linked.
     pub stepping: bool,
 }
+
+/// A state of [`HostCode`] to come back to: the current instruction's span, whether its event is owed, and the
+/// guest values the piece keeps elsewhere there.
+#[derive(Clone, Debug)]
+pub struct Snapshot(pub Span, bool, Vec<Relocated>);
 
 /// Code placed out of line, in the order it was deferred.
 #[derive(Default)]
@@ -214,18 +231,20 @@ impl HostCode {
     }
 
     /// The current state, to come back to for code placed out of line.
-    pub fn snapshot(&self) -> (Span, bool) {
-        (
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot(
             self.now.clone().expect("an instruction was started"),
             self.owed,
+            self.kept.clone(),
         )
     }
 
     /// Goes back to a state taken with [`Self::snapshot`].
-    pub fn restore(&mut self, (span, owed): (Span, bool)) {
+    pub fn restore(&mut self, Snapshot(span, owed, kept): Snapshot) {
         self.released.clear();
         self.now = Some(span);
         self.owed = owed;
+        self.kept = kept;
     }
 
     /// Counts one site of a slow path.
@@ -363,6 +382,12 @@ impl HostCode {
         self.kept.retain(|r| r.guest != guest);
         self.kept.push(Relocated { guest, held });
         self.relocate(guest, held);
+    }
+
+    /// From here on, and in every instruction after, no guest value is kept elsewhere until kept again.
+    pub fn unkeep(&mut self) {
+        let kept = std::mem::take(&mut self.kept);
+        self.state().relocated.retain(|r| !kept.contains(r));
     }
 
     /// For the rest of the current instruction, a kept guest register's value is in its own place again.

@@ -217,6 +217,44 @@ impl Way {
         }
     }
 
+    /// Whether code naming the general registers in `named` reaches one of them through a stand-in for u or the
+    /// base (in process).
+    pub fn stands_in(self, named: u32) -> bool {
+        matches!(self, Self::InProcess { kept, .. }
+            if (named >> kept.check | named >> kept.base) & 1 != 0)
+    }
+
+    #[cfg(feature = "translate")]
+    /// The way of each part of a piece whose parts name the general registers in `named`, given its loops as
+    /// ranges of parts: [`Self::for_piece`] of the whole where no register stands in for u or the base there;
+    /// otherwise, outermost first, each loop not inside one chosen already that is written without a stand-in for
+    /// its own, and the other parts for theirs.
+    pub fn for_parts(self, named: &[u32], loops: &[core::ops::Range<usize>]) -> Vec<Self> {
+        let union = |parts: &[u32]| parts.iter().fold(0, |b, &n| b | n);
+        let whole = self.for_piece(union(named));
+        if !whole.stands_in(union(named)) {
+            return vec![whole; named.len()];
+        }
+        let mut chosen: Vec<Option<Self>> = vec![None; named.len()];
+        let mut outermost: Vec<_> = loops.to_vec();
+        outermost.sort_by_key(|l| core::cmp::Reverse(l.len()));
+        for l in outermost {
+            if chosen[l.clone()].iter().any(Option::is_some) {
+                continue;
+            }
+            let own = union(&named[l.clone()]);
+            let way = self.for_piece(own);
+            if !way.stands_in(own) {
+                chosen[l].fill(Some(way));
+            }
+        }
+        let rest = (named.iter().zip(&chosen))
+            .filter(|(_, c)| c.is_none())
+            .fold(0, |b, (&n, _)| b | n);
+        let rest = self.for_piece(rest);
+        chosen.into_iter().map(|c| c.unwrap_or(rest)).collect()
+    }
+
     /// The way between pieces: in process, u and the base in [`Kept::USUAL`].
     pub const fn usual(self) -> Self {
         match self {
@@ -294,6 +332,77 @@ mod tests {
         let one_free = all & !(1 << 3);
         assert_eq!(WAY.for_piece(one_free), WAY);
         assert_eq!(kept(WAY.for_piece(one_free & !(1 << 5))), (5, 3));
+    }
+
+    /// Every general register but the link register: a part naming these stands in for u and the base.
+    #[cfg(feature = "translate")]
+    fn crowded() -> u32 {
+        (0..LINK).fold(0, |b, r| b | 1 << r)
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn a_piece_with_no_stand_in_has_one_way() {
+        let parts = [named(&[CHECK, 3]), named(&[4]), named(&[BASE])];
+        let ways = WAY.for_parts(&parts, core::slice::from_ref(&(1..3)));
+        let whole = WAY.for_piece(named(&[CHECK, BASE, 3, 4]));
+        assert!(whole.moves_kept());
+        assert_eq!(ways, vec![whole; 3]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn a_loop_that_leaves_room_has_its_own_way_in_a_crowded_piece() {
+        let parts = [
+            crowded(),
+            named(&[CHECK, 1, 2]),
+            named(&[CHECK, 3]),
+            crowded(),
+        ];
+        let ways = WAY.for_parts(&parts, core::slice::from_ref(&(1..3)));
+        let own = WAY.for_piece(named(&[CHECK, 1, 2, 3]));
+        assert_eq!(kept(own), (29, BASE));
+        assert_eq!(ways, vec![WAY, own, own, WAY]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn the_outermost_loop_that_leaves_room_is_chosen() {
+        // The outer loop leaves room: the inner one inside it takes the outer's way.
+        let parts = [
+            crowded(),
+            named(&[CHECK, 1]),
+            named(&[BASE, 2]),
+            named(&[3]),
+        ];
+        let ways = WAY.for_parts(&parts, &[2..3, 1..4]);
+        let outer = WAY.for_piece(named(&[CHECK, BASE, 1, 2, 3]));
+        assert_eq!(ways, vec![WAY, outer, outer, outer]);
+        // The outer loop is crowded: the inner one is chosen alone.
+        let parts = [named(&[0]), crowded(), named(&[CHECK, 1]), named(&[2])];
+        let ways = WAY.for_parts(&parts, &[2..3, 1..4]);
+        let inner = WAY.for_piece(named(&[CHECK, 1]));
+        assert!(inner.moves_kept());
+        assert_eq!(ways, vec![WAY, WAY, inner, WAY]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn other_ways_keep_theirs_in_every_part() {
+        let displaced = Way::InProcess {
+            slot: 1,
+            displaced: true,
+            kept: Kept::USUAL,
+        };
+        for way in [Way::Machine, Way::Process, displaced] {
+            assert_eq!(
+                way.for_parts(
+                    &[crowded(), named(&[CHECK])],
+                    core::slice::from_ref(&(1..2))
+                ),
+                [way; 2]
+            );
+        }
     }
 
     #[test]
