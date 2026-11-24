@@ -203,6 +203,9 @@ mod field_name {
     pub const CRM: &str = "CRm";
     pub const OP2: &str = "op2";
     pub const S: &str = "S";
+    pub const SIZE: &str = "size";
+    pub const VR: &str = "VR";
+    pub const OPC: &str = "opc";
     pub const REGISTER: &str = "R";
 }
 
@@ -264,6 +267,10 @@ written_fields! {
     OP2,
     /// A register offset's shift bit: 1 shifts the index by the access's size.
     S,
+    /// A load or store's size, which with `VR` and `opc` names the access whatever its addressing.
+    SIZE,
+    VR,
+    OPC,
 }
 
 /// A name Arm's table gives fields: its place among every such name, [`field`]'s first and then the others in
@@ -720,6 +727,71 @@ pub fn register_offset_uxtw(word: u32, rn: Register, rm: Register) -> Result<u32
     let word = shift.set(option.set(word, self::option(false, u32::BITS))?, 0)?;
     let word = replace(word, field::RN, rn.into())?;
     replace(word, field::RM, rm.into())
+}
+
+/// The fields that name a load or store of one register whatever its addressing.
+const ACCESS_KIND: [FieldName; 3] = [field::SIZE, field::VR, field::OPC];
+
+/// The groups of Arm's table whose loads and stores of one register address their base plus an immediate.
+const IMMEDIATE_OFFSET_GROUPS: [&str; 2] = ["ldst/ldst_pos", "ldst/ldst_unscaled"];
+
+/// The group of Arm's table whose loads and stores of one register address their base plus a register.
+const REGISTER_OFFSET_GROUP: &str = "ldst/ldst_regoff";
+
+/// A form's values of [`ACCESS_KIND`] in `word`.
+fn access_kind(form: &forms::Form, word: u32) -> [Option<u32>; ACCESS_KIND.len()] {
+    ACCESS_KIND.map(|name| Field::of(form, name).map(|f| (word >> f.low) & ((1 << f.width) - 1)))
+}
+
+/// The register-offset form that takes an index extended from 32 bits, by the access it makes.
+static EXTENDED_BY_KIND: LazyLock<HashMap<[Option<u32>; ACCESS_KIND.len()], &'static forms::Form>> =
+    LazyLock::new(|| {
+        let uxtw = option(false, u32::BITS);
+        (forms::all().iter())
+            .filter(|f| f.group == REGISTER_OFFSET_GROUP)
+            .filter(|f| {
+                let option = Field::of(f, field::OPTION).and_then(|o| o.set(fixed(f), uxtw).ok());
+                option
+                    .and_then(forms::form)
+                    .is_some_and(|g| std::ptr::eq(g, *f))
+            })
+            .map(|f| (access_kind(f, fixed(f)), f))
+            .collect()
+    });
+
+/// A copied load or store of one register at its base with no offset (an immediate of zero), made to address
+/// `[rn, wM, uxtw]` by the register-offset form of the same access; a word of no such form does not fit.
+pub fn register_offset_at_base(word: u32, rn: Register, rm: Register) -> Result<u32, DoesNotFit> {
+    let source = forms::form(word).ok_or(DoesNotFit)?;
+    if !IMMEDIATE_OFFSET_GROUPS.contains(&source.group.as_str()) {
+        return Err(DoesNotFit);
+    }
+    let immediate = [field::IMM12, field::IMM9]
+        .into_iter()
+        .find_map(|name| Field::of(source, name))
+        .ok_or(DoesNotFit)?;
+    if immediate.set(word, 0)? != word {
+        return Err(DoesNotFit);
+    }
+    let made = *EXTENDED_BY_KIND
+        .get(&access_kind(source, word))
+        .ok_or(DoesNotFit)?;
+    let rt = Field::of(source, field::RT).ok_or(DoesNotFit)?;
+    let values = [
+        (field::RT, (word >> rt.low) & ((1 << rt.width) - 1)),
+        (field::RN, rn.into()),
+        (field::RM, rm.into()),
+        (field::OPTION, option(false, u32::BITS)),
+        (field::S, 0),
+    ];
+    let word = (values.into_iter()).try_fold(fixed(made), |w, (name, value)| {
+        Field::of(made, name).ok_or(DoesNotFit)?.set(w, value)
+    })?;
+    // A prefetch whose operation the register-offset form gives to another instruction is refused.
+    match forms::form(word) {
+        Some(form) if std::ptr::eq(form, made) => Ok(word),
+        _ => Err(DoesNotFit),
+    }
 }
 
 /// The field `field` of a word of any form Arm's table has, set to `value`: a copied instruction with a register
@@ -1430,6 +1502,72 @@ mod tests {
                 "{word:#x}"
             );
         }
+    }
+
+    /// Every presented load or store of one register at a base plus an immediate, with the immediate zero, is made
+    /// the same access at `[x24, w23, uxtw]`; with any other immediate it is refused.
+    #[test]
+    fn an_access_at_its_base_is_made_register_offset_uxtw() {
+        let seed = knob(SEED, DEFAULT_SEED);
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let groups = super::IMMEDIATE_OFFSET_GROUPS;
+        let (mut made_count, mut refused) = (0, 0);
+        for source in forms::all()
+            .iter()
+            .filter(|f| groups.contains(&f.group.as_str()))
+        {
+            let immediate = [field::IMM12, field::IMM9]
+                .into_iter()
+                .find_map(|name| super::Field::of(source, name))
+                .expect("an immediate offset");
+            for _ in 0..16 {
+                let drawn = source.word(rng.u32(..));
+                let word = immediate.set(drawn, 0).expect("zero fits");
+                if !forms::form(word).is_some_and(|f| std::ptr::eq(f, source)) {
+                    continue;
+                }
+                let Ok(made) = super::register_offset_at_base(word, 24, 23) else {
+                    // Only a prefetch, which reaches no memory the guest sees, may have none.
+                    let access = crate::decode(word).memory_access();
+                    assert!(access.is_none(), "{} {word:#x} is refused", source.name);
+                    refused += 1;
+                    continue;
+                };
+                let form = forms::form(made).expect("a presented word");
+                assert_eq!(
+                    form.group,
+                    super::REGISTER_OFFSET_GROUP,
+                    "{word:#x} made {made:#x}"
+                );
+                assert_eq!(
+                    super::access_kind(form, made),
+                    super::access_kind(source, word)
+                );
+                assert_eq!(form.field(made, "Rt"), source.field(word, "Rt"));
+                if let Some(access) = crate::decode(word).memory_access() {
+                    let cut = crate::decode(made).memory_access().expect("an access");
+                    let unshifted_uxtw = crate::Address::Indexed {
+                        base: crate::Reg::X(24),
+                        index: crate::Reg::X(23),
+                        extend: crate::Extend {
+                            signed: false,
+                            from_bits: 32,
+                        },
+                        shift: 0,
+                    };
+                    assert_eq!(cut.address, unshifted_uxtw, "{word:#x} made {made:#x}");
+                    assert_eq!((cut.bytes, cut.write), (access.bytes, access.write));
+                }
+                made_count += 1;
+                let other = immediate.set(word, 1).expect("one fits");
+                assert_eq!(
+                    super::register_offset_at_base(other, 24, 23),
+                    Err(DoesNotFit)
+                );
+            }
+        }
+        assert!(made_count > 0);
+        println!("seed {seed}, {made_count} accesses made, {refused} prefetches refused");
     }
 
     #[test]
