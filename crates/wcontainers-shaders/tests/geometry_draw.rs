@@ -577,6 +577,45 @@ struct Placed {
     clipped_end: Option<f32>,
     /// From the nearest end of a line that no plane cuts there.
     line_end: Option<f32>,
+    /// For the nearest line a plane cuts ([`cut_line_decision`]): its crossing's distance from the
+    /// boundary deciding which pixel it lights, in units of how far the snapped vertices can move it.
+    cut_line: Option<f32>,
+}
+
+/// For a line from `a` along `e` (pixels) of which the planes keep the parameters `low` to `high`:
+/// where it crosses the centre line along its major axis of the texel at `centre`, if within a pixel
+/// and a half of the centre, how far that crossing lies from the boundary deciding which of two
+/// pixels the line lights, in units of how far snapping can move it there. Direct3D draws the line
+/// to its cut ends snapped to the subpixel grid, the program the whole line to its own snapped ends,
+/// so the two lines turn apart by up to half a step at each of those ends.
+fn cut_line_decision(
+    a: (f32, f32),
+    e: (f32, f32),
+    low: f32,
+    high: f32,
+    centre: (f32, f32),
+) -> Option<f32> {
+    let (major, minor, e_major, e_minor, c_major, c_minor) = if e.0.abs() >= e.1.abs() {
+        (a.0, a.1, e.0, e.1, centre.0, centre.1)
+    } else {
+        (a.1, a.0, e.1, e.0, centre.1, centre.0)
+    };
+    let s = (c_major - major) / e_major;
+    let crossing = minor + s * e_minor;
+    if !(low..=high).contains(&s) || (crossing - c_minor).abs() > 1.5 {
+        return None;
+    }
+    // Each end's snap moves the crossing by its weight there: the program's line's weight against
+    // Direct3D's, which share the end where no plane cuts.
+    let span = high - low;
+    let end = |cut: bool, program: f32, direct3d: f32| match cut {
+        true => program + direct3d,
+        false => (program - direct3d).abs(),
+    };
+    let weight = end(low > 0.0, 1.0 - s, (high - s) / span) + end(high < 1.0, s, (s - low) / span);
+    let half_step = 2.0f32.powi(-SUBPIXEL_BITS) / 2.0;
+    let reach = weight * half_step * (1.0 + (e_minor / e_major).abs());
+    Some((crossing - crossing.round()).abs() / reach)
 }
 
 /// Where texel (x, y)'s centre lies from the case's clipped edges and line ends ([`Placed`]).
@@ -633,6 +672,12 @@ fn placed(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u32) -> Plac
                             false => nearer(&mut found.line_end, d),
                         }
                     }
+                    if let Some(d) = cut
+                        .then(|| cut_line_decision(*a, (ex, ey), low, high, centre))
+                        .flatten()
+                    {
+                        nearer(&mut found.cut_line, d);
+                    }
                     continue;
                 }
                 let along = ((centre.0 - a.0) * ex + (centre.1 - a.1) * ey) / (length * length);
@@ -648,8 +693,8 @@ fn placed(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u32) -> Plac
 
 /// Prints the first texels `picture` draws apart from `reference`, each with where it lies from the
 /// case's clipped edges and line ends ([`placed`]), and how many of those apart by more than
-/// `allowed` lie within a subpixel step of a clipped edge, within a pixel of a clipped line end, or
-/// within a pixel of a line's own end.
+/// `allowed` lie within a subpixel step of a clipped edge, within a pixel of a clipped line end,
+/// within a pixel of a line's own end, or within a snap's reach of a cut line's pixel decision.
 fn print_apart(
     case: &Case,
     vertices: &[f32],
@@ -679,6 +724,9 @@ fn print_apart(
                 near += &format!(" ({d} px from {what})");
             }
         }
+        if let Some(d) = p.cut_line {
+            near += &format!(" ({d} of a snap's reach from a cut line's pixel decision)");
+        }
         eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}{near}");
     }
     let beyond: Vec<Placed> = apart
@@ -699,11 +747,13 @@ fn print_apart(
     };
     eprintln!(
         "  {} texels apart by more than {allowed}: {} of them within a subpixel step of a clipped \
-         edge, {} within a pixel of a clipped line end, {} within a pixel of a line's end",
+         edge, {} within a pixel of a clipped line end, {} within a pixel of a line's end, {} \
+         within a snap's reach of a cut line's pixel decision",
         beyond.len(),
         within(|p| p.clipped_edge, step),
         within(|p| p.clipped_end, 1.0),
         within(|p| p.line_end, 1.0),
+        within(|p| p.cut_line, 1.0),
     );
 }
 
