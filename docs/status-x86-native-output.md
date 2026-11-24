@@ -23,10 +23,22 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   the forms (no hole found; a static test of every encoding family writing rsp added) and measured the benchmark set
   at five code placements: single-placement figures move by up to 40 percent a program (interpret) with the same
   instructions, so the fair figures are over placements: wrapping 1.034, exact 1.293 (counted 1.020 and 1.275).
-  What is left of XN2 needs an x86 executor (gap item 1), which no track has built (the
-  native-without-virtual-machine track's form I, its W2, does not exist yet at 12:45 UTC on 2026-11-24): the link,
+  What is left of XN2 needs an x86 executor that runs a translation in process (gap item 1): the link,
   register-group and hostile-guest tests in I, the ymm upper halves across a call into the inside, and the X9
-  programs.
+  programs. That executor is the native-without-virtual-machine track's W3 (its plan: "both forms on x86-64 Linux",
+  after its W2, form I on ARM64), whose own bar already includes "the x86 plan's own way P and way I tests"; at
+  run 7 (2026-11-24) that track is in W1's round 4, W2 is not built and W3 not started. So these items cannot be
+  done by this track before W3 exists, and nothing of this output stands in W3's way (see "XN2 run 7").
+
+## XN2 run 7 (2026-11-24)
+
+Nothing to build without the executor. Checked that the blocker stands (docs/status-native-without-virtual-machine.md
+at 6aaeec294: form I's crate, crates/executor/implementation/in-process, does not exist; the x86-64 executor, kernel
+and busybox suites build no tests on the Xeon, "because they need the x86 native output's way (W3)"), and that no
+commit since run 6's tests (d34a4fc4d) touches this track's crates or their dependencies (only the root Cargo.toml's
+unsafe list), so run 6's verdicts stand and no run was repeated. Corrected the blocker's name here (W3, not W2) and
+gap item 5, which still said `carry_plain` refuses I. For the orchestrator: as with XN1, closing XN2 with the
+executor-bound items handed to W3's bar is a ruling only the orchestrator can make; the items are listed above.
 
 ## XN2 run 6 (2026-11-24)
 
@@ -564,9 +576,10 @@ run:
    - The note of an MXCSR read while not kept for `xsave` (the meaning warns; `answer` is not told tracking).
 5. Way I (XN2, as written): the eighth check's way I findings (a string with the guest's 0x67 to the inside in
    both checked forms, the exact form's 0x67 segment operand and `67 d7`, `maskmovq` re-encoded in the window), and
-   now the ninth check's crossing of offset 2^32 under 0x67 in the exact form (plan 4). Fixed in the plan; their
-   code and tests are XN2's. `carry::carry_plain` refuses the in-process way by an assertion for every
-   instruction, memory or not.
+   now the ninth check's crossing of offset 2^32 under 0x67 in the exact form (plan 4). Fixed in the plan, built and
+   run against the CPU in XN2 (runs 1 to 5: the window cases, native layer 1 in I, the speculation probe). Left:
+   the 0x67 strings' run by the inside in I is the executor's (item 1); the window cases run them in the test's
+   harness.
 6. Not this track's: the native layer 2 harness past about 10,000 programs in one process (the ninth check: "state memory: mmap failed to reserve 0x104000000 bytes", runner.rs 455/461/1850, the
    WebAssembly runner's reservation, made by the WebAssembly runs that test compares the count with): the cause is
    address space (the tenth check's arithmetic): each run reserves 0x104000000 bytes, an mmap without a high hint
