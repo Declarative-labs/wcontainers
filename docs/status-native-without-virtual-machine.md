@@ -3,6 +3,32 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 1 (2026-11-24): W1's seventh check settled; form I waits on primitives
+
+Scratch w2/run1 (check.sh is round 4 run 5's; outputs *-arm.out). Graviton4, /dev/kvm denied.
+- W1's seventh independent check (scratch w1-check7), each finding:
+  - [minor] A form P guest reaches the zygote's stack (stores) and the zygote's code and floor entries (loads), which
+    plan 3.7 and 9 left out: settled in the plan (6d46c4b74). 3.7 names them, says the routines keep the `recvmsg`
+    header, iovec, control buffer and the cpu set on stub thread 0's stack, why no guest store lands between a
+    routine's stores and its `svc` while one guest thread runs at a time, and that with parallel threads (3.9) the
+    filter bounds what a sibling's rewrite gives and the structures must move or be checked again; 9 lists them.
+    No code change: the check's own test (check7.rs) shows each access as the plan now states it.
+  - [minor] "158 tests" was wrong: corrected in Round 4 run 5 to 130 passed, 1 failed, 10 ignored.
+  - [minor] The precise-set test's cause is an implementation crate's constant: its owner is now the instruction
+    design track (gap list, Requests to other tracks; removed from For the owner).
+  - [minor] The Met line read as 12 of 12 against the WebAssembly output: corrected (10 against it; `code` and
+    `blocks` against the program on the host; turns differ for multi-process programs).
+  - [minor] The account's "today" line updated to 3.16 to 3.31. Its re-measure on a quiet machine: see below.
+  - [minor] A refused read or write of borrowed guest bytes moved none silently: settled, c143b4001, counted
+    (`Counters::guest_bytes_refused`) and warned ("guest bytes refused"). No test makes the host refuse a `pread` of
+    a stub's own memfd; the memory, embedder, files and copy binaries pass with it (check1-arm.out, load 11 to 14).
+- W2 itself: the owner's rule of 2026-11-24 (no new line with `unsafe`, not even marked) stops form I's executor at
+  its first step: entering translated code in process, handling a fault or stop in it, the raw signal mask and the
+  windows at fixed addresses are each a new unsafe use, and no primitive designed so far covers the first three
+  (Needs a primitive, "Form I", with the exact code). So crates/executor/implementation/in-process is not created
+  and nothing of form I is measured; the crossover table cannot exist yet. What W2 can build meanwhile is the
+  translator's `InProcess` way (code generation only), next.
+
 ## Where busybox sh's factor of four goes, and why the bar of 1.25 cannot be met by this design (2026-11-24)
 
 The test: busybox `sh` starting 1,000 programs (`/bin/true` in a loop) under form P against the model, release, CPU
@@ -71,8 +97,8 @@ area, guest memory in a memfd, and the kernel in the embedder.
 
 So the bar of 1.25 cannot be met by this design: even done as well as it can be, form P starting programs costs
 about 1.4 times the model, because every new host process must be given its translated code and its code area's
-mappings, which a native exec does not need. The bar this design can meet is about 1.5 times the model. Today it
-is 4.0 to 4.5.
+mappings, which a native exec does not need. The bar this design can meet is about 1.5 times the model. When
+this account was taken it was 4.0 to 4.5; after round 4 runs 2 to 5 it is 3.16 to 3.31 (round 4 run 5, load 8 to 11).
 
 The changes of design that would move it, ranked by what they remove, measured in the timed run:
 1. One translated image shared by the processes that run the same file at the same base: a fork child maps its
@@ -141,8 +167,9 @@ w1-check6), settled or not:
   is one program's needs the program a memory runs, which the executor interface does not pass (gap list).
 - [minor] The gap list's unmet bar items: each stays on the list, with its owner; the blocking finding is settled.
 - Verdicts at the run's end (commit 325d1dbb7 plus the status), /dev/kvm denied: Graviton4 (whole-arm.out, 14:39
-  to 14:45 UTC, load 8.6 to 12.7): the library's 6 and all 24 test binaries pass, 158 tests, but the known
-  precise-set test (20 of 21, the owner's); the Xeon (whole-x86.out, load 0.8 to 12.7): the library's 5, embedder 2,
+  to 14:45 UTC, load 8.6 to 12.7): the library's 6 and all 24 test binaries run, 130 passed, 1 failed (the
+  known precise-set test, 20 of 21) and 10 ignored, summed from the result lines (W1's seventh check counted the
+  same in a clean rebuild; "158 tests" stood here before and was wrong); the Xeon (whole-x86.out, load 0.8 to 12.7): the library's 5, embedder 2,
   files 4, host 1, memory 12, placement 2, slice 3, step 6, stop 3, stub 6, threads 4, touch 3, zygote 8 pass, the
   ARM64-only binaries build none. Clippy with warnings denied clean on both.
 
@@ -332,10 +359,18 @@ What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
 - Register isolation from outside at the moment a thread enters its code: settled, a345863c2 (tests/step.rs).
 - Each seed compared with the first seed's run: settled, a345863c2.
 - Open, on the gap list (W1 reported complete in round 4 run 4 with it): the precise-set test at 0x1000 (the
-  owner's), `Execution::restored` (not built, as in the VM executor; its cause on the gap list), the busybox `sh` bar
+  instruction design track's), `Execution::restored` (not built, as in the VM executor; its cause on the gap list), the busybox `sh` bar
   (the account: the design's floor is about 1.4 to 1.5 times the model).
 
 ## Requests to other tracks
+
+- Instruction design track (crates/instruction-input-domain/implementation/arm64, an implementation crate, not a
+  reviewed file): the executor suite's `agrees_with_precise_instruction_set` fails on form P (20 of 21 pass) because
+  `const CODE_ADDRESS: u64 = PAGE_BYTES;` (implementation.rs line 34) puts every state's instruction at 0x1000 and its
+  data pages at 0x2000 to 0x4000, below the host's `vm.mmap_min_addr` (32,768 on Graviton4, 65,536 on the Xeon), so an
+  unprivileged host process cannot map them; P runs guest addresses as host addresses. Example: the first state of
+  `AddShiftedRegister64` has pc 0x1000. Wanted: pages at or above 64 KiB (`16 * PAGE_BYTES` was measured to pass, W1's
+  seventh check, agrees-arm.out). Until then it stays failing on the gap list.
 
 - Kernel track: `loader::program_of` (crates/kernel/implementation/linux/loader.rs) copies a regular file whole with
   `file.bytes(cpu)` at every exec; for busybox that is two `shared_read` calls of 146 us each, 5.5% of form P's
@@ -1495,8 +1530,10 @@ and its owner:
   guest's x18, a withheld register kept in the register page. Owner: the translator's register choice (the native
   track's ruling).
 - The executor suite's precise-set test (`agrees_with_precise_instruction_set`) fails: its input domain puts code at
-  0x1000, below `vm.mmap_min_addr`; with the code at 64 KiB it passes (round 3 run 5). 20 of 21 pass. Owner: the
-  owner (For the owner).
+  0x1000, below `vm.mmap_min_addr`; with the code at 64 KiB it passes (round 3 run 5; again in W1's seventh check:
+  `CODE_ADDRESS` set to `16 * PAGE_BYTES` in a remote copy, 1 passed). 20 of 21 pass. The constant is in an
+  implementation crate, crates/instruction-input-domain/implementation/arm64/implementation.rs line 34, not in a
+  reviewed file. Owner: the instruction design track, whose crate it is (Requests to other tracks).
 - `Execution::restored` (the runtime's save of a process) is `unimplemented!` under P, as it is in the VM executor (its
   N7): a save forks the embedder, but the stubs are the zygote's children and guest memory is shared memfds, so a
   copy needs new stubs and copied memfds. Any save under P panics. Owner: this track, once the runtime says how a
@@ -1517,8 +1554,11 @@ and its owner:
   run 6).
 
 Met, each with its run (register isolation with its from-outside part, round 6; the interleaving is seeded random, not
-every order): the executor suite's 20 other tests, the kernel suite's 12 with equal verdicts, addresses, memory size and
-counts against the WebAssembly output and the VM executor, busybox's 56 commands, all with /dev/kvm denied on
+every order): the executor suite's 20 other tests, the kernel suite's 12 with equal verdicts (10 against the
+WebAssembly output and the VM executor with equal addresses and memory size, and turns for one-thread programs; `code`
+and `blocks`, where the WebAssembly output has known faults, against the program run on the host, a345863c2; turns
+differ for multi-process programs, which the plan compares only for one thread: seed 987654321's `forks` 35 under P
+against 74), busybox's 56 commands, all with /dev/kvm denied on
 Graviton4; the zygote's migration and no restartable sequences left (run 1); the stop landing at every instruction of
 the stub's windows and handler (runs 8, 9); the control and register pages' escapes and the filter's kills (runs 2, 3,
 7); a stub killed from outside and the embedder killed (run 4); threads made and ended under random stops (run 3);
@@ -1531,6 +1571,15 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
   primitive); when they land, each use here becomes a call of one.
+- W2 (form I): build the translator's `InProcess` way first (plan 3.2 item 1, `wcontainers_arm64::way::Way` and
+  carry.rs's `access`, with the stop crate and host-process matching the new variant), each step keeping the ARM64
+  translator suites and the VM executor's tests passing on the rented machines; test its checks' exactness by
+  running its output with the window's base 0 in form P's stubs or under the Unicorn executor in tests. The
+  in-process executor itself waits for the primitives named under Needs a primitive, "Form I".
+- W3 now also carries the x86 native output track's in-process tests (interface-changes.md, 2026-11-24): the link,
+  register-group and hostile-guest tests in the in-process way, the ymm upper halves across a call into the inside,
+  the X9 programs natively in that way with figures, and 0x67 string instructions through the inside
+  (docs/status-x86-native-output.md, "Remaining" of its last XN2 run).
 - W1 is reported complete (round 4 runs 4 and 5) with the gap list above; the sixth check's findings are settled
   (round 4 run 5); its next independent check runs next, then W2 (form I), which the owner's rule says is built too.
 - The load-ahead walk is the one before round 4 run 4 (a mix of programs measured it 3.6 ms a program faster). A walk
@@ -1843,13 +1892,6 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
     mapped. It is not sound as Rust: the guest's other threads may write those bytes meanwhile, and a `&[u8]` promises
     they do not change. It would also split bytes that cross a 2 MiB window into several writes, which the contract's
     one write forbids. So the buffer stays unless the sink and source take volatile access.
-- The executor conformance suite runs on form P and passes but for one test (round 4 run 1: 20 of 21), which cannot
-  pass on it as it stands (plan 8): its one state generator,
-  wcontainers-instruction-input-domain-arm64, places every state's instruction at 0x1000 (`CODE_ADDRESS`) and its
-  data pages at 0x2000 to 0x4000, below the host's `vm.mmap_min_addr` (32,768 on Graviton4, 65,536 on the Xeon), so
-  an unprivileged host process cannot map them; P runs guest addresses as host addresses. Example: the first state
-  of `AddShiftedRegister64` has pc 0x1000. A generator whose pages lie at or above 64 KiB, or one the executor's
-  address space places, would let every executor run it.
 - Decisions in plan section 12:
   - names;
   - I's wrapping check: about 10 points faster, but an access outside the window lands in the process's own
@@ -2001,6 +2043,33 @@ operation this crate still does with unsafe code, for the primitives' design
 - The SVE probe: set p0 and FFR, make a system call, store both.
 Not needed by anything built: a view of guest bytes lent to a byte sink or source (For the owner, views of guest
 memory); `read_to` and `write_from` keep their buffer.
+
+Form I (W2, crates/executor/implementation/in-process, not built: every one of these is on its path, and none of
+the four primitives designed so far, Kick, Lend, Code cache and Words, covers the first three):
+- Enter translated code on the runner's own thread and come back at the floor's save. The code I would write: the
+  floor's `enter` in `global_asm!` (saves the host's callee-saved registers, sp and `TPIDR_EL0` in the thread's page,
+  loads the guest's registers from its register block, sets sp to the window's base plus the guest's sp and
+  `TPIDR_EL0` to the guest's, branches to the slot of the guest's pc; the floor's save reverses it and returns), and
+  its call `#[expect(unsafe_code, reason = "runs translated code, which reaches only its window and returns through
+  the floor's save")] unsafe { enter(page) }`. A primitive's shape: `trait Enter { fn enter(&self, page: &ThreadPage)
+  -> Exit; }`, the safety being the translator's checked output and the floor's.
+- Handle a fault or the stop signal whose pc is in our code area or floor on the runner's thread: `sigaction` with
+  `SA_SIGINFO | SA_ONSTACK` and a handler in the same assembly for SIGSEGV, SIGBUS, SIGILL, SIGTRAP and the stop signal,
+  remembering the previous actions and passing them every fault whose pc is not ours (nix's `sigaction` and
+  rustix's are `unsafe fn`; signal-hook's safe `flag` and `pipe` registrations cannot leave a handler at another pc);
+  a read of each action per `Runner::run` (`sigaction(signal, None)`), refusing to run if ours was replaced; the
+  runner's own signal stack (`sigaltstack`, which no vetted crate offers safely).
+- The raw `rt_sigprocmask` that blocks glibc's own SIGCANCEL and SIGSETXID for a run (glibc's `pthread_sigmask`,
+  which nix wraps safely, silently leaves those two out; rustix's `kernel_sigprocmask` is `unsafe fn`).
+- The windows: 2,047 reservations of 2^32 bytes each with the unmapped 4 GiB beside it, at fixed addresses
+  (`mmap(PROT_NONE, MAP_FIXED_NOREPLACE)`, P's "map at a fixed address" above), and each window's pages mapped from
+  its memory's memfd at fixed addresses inside it (`mmap(MAP_FIXED | MAP_SHARED, fd, offset)`), replaced by the
+  embedder's own calls as the kernel changes the guest's mappings.
+- Cache maintenance after writing code: the Code cache primitive, as P's.
+What W2 can build without any of these, and is next: the translator's `InProcess` way (plan 3.2 item 1: the check,
+the cut access, the stack pointer's rules a to f and the two more withheld registers), which is code generation
+only, tested by running its output where no new unsafe is needed (form P's stubs with the window's base 0, or the
+Unicorn executor in tests).
 
 ## Unsafe code
 
