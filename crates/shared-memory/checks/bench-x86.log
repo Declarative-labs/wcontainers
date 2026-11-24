@@ -1,8 +1,11 @@
-x86-run: attached to gmlibc-bench/20261124-195840-259637
-arm-run: job gmlibc-bench/20261124-195840-259637 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 11.57 8.95 9.43, jobs 96
-arm-run: in /work/src/gmlibc-bench, build directory /work/target/gmlibc-bench
-arm-run: command: bash probe.sh 2>&1 | sed -n "/===== the bench/q;p"; rm -rf /work/target/gmlibc-bench
+# bench-tree/probe.sh and the bench, one job; the tree from make-bench-tree.sh, which copies interface.rs, arithmetic.rs and foreign_implementation/ as committed with this log
+x86-run: attached to gmrep-bench/20261124-212234-3478758
+arm-run: job gmrep-bench/20261124-212234-3478758 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 4.86 10.00 13.87, jobs 96
+arm-run: in /work/src/gmrep-bench, build directory /work/target/gmrep-bench
+arm-run: command: bash probe.sh; echo "===== bench, release, $(nproc) CPUs, load $(cut -d" " -f1-3 /proc/loadavg)"; cargo run --release -q -p gmc-bench; rm -rf /work/target/gmlibc-bench
 arm-run: LIBCLANG_PATH=/nix/store/adr7l6vazpqqjy2wab0v27pzp17c4sq6-clang-21.1.8-lib/lib CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
+unpacking 'github:hercules-ci/flake-parts/024633cd702b10285db5cb19b40ad48d2399ba60?narHash=sha256-zTwuwezD0w3hpga6a6P8emidzAZFyWqlNeRBlpWOOl8%3D' into the Git cache...
+unpacking 'github:oxalica/rust-overlay/404b7a5537f0adc6e5c558a1b94612e683dec504?narHash=sha256-12C5ef8a3endLXBvLOVR/jynM9EHGgP1t%2By5uBorwx4%3D' into the Git cache...
 ===== probe, opt-level 3, codegen-units 1, lto off
 all five read 0x807060504030201
 --- the probes' addresses: two names at one address are one function
@@ -77,76 +80,6 @@ mov    (%rsp),%rax
 pop    %rcx
 ret
 --- probe_no_builtins
-arm-run: exit 0 after 7 s, load 11.36 8.96 9.42
-x86-run: attached to gmlibc-bench/20261124-195742-238109
-arm-run: job gmlibc-bench/20261124-195742-238109 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 6.63 8.06 9.21, jobs 96
-arm-run: in /work/src/gmlibc-bench, build directory /work/target/gmlibc-bench
-arm-run: command: bash probe.sh; echo "===== bench, release, $(nproc) CPUs, load $(cut -d" " -f1-3 /proc/loadavg)"; cargo run --release -q -p gmc-bench; rm -rf /work/target/gmlibc-bench
-arm-run: LIBCLANG_PATH=/nix/store/adr7l6vazpqqjy2wab0v27pzp17c4sq6-clang-21.1.8-lib/lib CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
-unpacking 'github:hercules-ci/flake-parts/024633cd702b10285db5cb19b40ad48d2399ba60?narHash=sha256-zTwuwezD0w3hpga6a6P8emidzAZFyWqlNeRBlpWOOl8%3D' into the Git cache...
-unpacking 'github:oxalica/rust-overlay/404b7a5537f0adc6e5c558a1b94612e683dec504?narHash=sha256-12C5ef8a3endLXBvLOVR/jynM9EHGgP1t%2By5uBorwx4%3D' into the Git cache...
-===== probe, opt-level 3, codegen-units 1, lto off
-all five read 0x807060504030201
---- probe_direct
-mov    (%rdi),%rax
-ret
---- probe_link_name
---- probe_black_box
-sub    $0x18,%rsp
-mov    %rdi,%rsi
-movq   $0x0,0x8(%rsp)
-mov    0x3dd81(%rip),%rax        # 52bf8 <memcpy@GLIBC_2.14>
-mov    %rax,0x10(%rsp)
-lea    0x10(%rsp),%rax
-lea    0x8(%rsp),%rdi
-mov    $0x8,%edx
-call   *0x10(%rsp)
-mov    0x8(%rsp),%rax
-add    $0x18,%rsp
-ret
---- probe_volatile
-push   %rax
-mov    %rdi,%rsi
-movq   $0x0,(%rsp)
-mov    0x3bf75(%rip),%rax        # 50e28 <memcpy@GLIBC_2.14>
-mov    %rsp,%rdi
-mov    $0x8,%edx
-call   *%rax
-mov    (%rsp),%rax
-pop    %rcx
-ret
---- probe_no_builtins
-===== probe, opt-level 3, codegen-units 1, lto fat
-all five read 0x807060504030201
---- probe_direct
-mov    (%rdi),%rax
-ret
---- probe_link_name
---- probe_black_box
-sub    $0x18,%rsp
-mov    %rdi,%rsi
-movq   $0x0,0x8(%rsp)
-mov    0x38f69(%rip),%rax        # 48020 <memcpy@GLIBC_2.14>
-mov    %rax,0x10(%rsp)
-lea    0x10(%rsp),%rax
-lea    0x8(%rsp),%rdi
-mov    $0x8,%edx
-call   *0x10(%rsp)
-mov    0x8(%rsp),%rax
-add    $0x18,%rsp
-ret
---- probe_volatile
-push   %rax
-mov    %rdi,%rsi
-movq   $0x0,(%rsp)
-mov    0x37705(%rip),%rax        # 467f8 <memcpy@GLIBC_2.14>
-mov    %rsp,%rdi
-mov    $0x8,%edx
-call   *%rax
-mov    (%rsp),%rax
-pop    %rcx
-ret
---- probe_no_builtins
 ===== the bench binary's copy routes, lto off and fat
 --- lto off: gmc_read8, and what it calls
 push   %rax
@@ -186,39 +119,39 @@ call   *0x4be19(%rip)        # 6d0b8 <_DYNAMIC+0x2d8>
                  U memcpy
 --- lto fat: gmc_read8, and what it calls
 cmpq   $0x17,0x8(%rdi)
-jbe    1e002 <gmc_read8+0x22>
+jbe    1dff2 <gmc_read8+0x22>
 mov    (%rdi),%rax
 add    $0x10,%rax
-mov    0x43c2b(%rip),%rcx        # 61c20 <memcpy@GLIBC_2.14>
+mov    0x43c2b(%rip),%rcx        # 61c10 <memcpy@GLIBC_2.14>
 mov    $0x8,%edx
 mov    %rsi,%rdi
 mov    %rax,%rsi
 jmp    *%rcx
 push   %rax
-lea    -0x1251f(%rip),%rdi        # baeb <_RNvNtNtNtNtNtCsevLNFiNqfJP_4core3num3imp7flt2dec8strategy6dragon9POW5TO256+0xba7>
-lea    0x41edf(%rip),%rcx        # 5fef0 <__frame_dummy_init_array_entry+0x450>
-lea    0x41fb0(%rip),%r8        # 5ffc8 <__frame_dummy_init_array_entry+0x528>
+lea    -0x1251f(%rip),%rdi        # badb <_RNvNtNtNtNtNtCsevLNFiNqfJP_4core3num3imp7flt2dec8strategy6dragon9POW5TO256+0xba7>
+lea    0x41edf(%rip),%rcx        # 5fee0 <__frame_dummy_init_array_entry+0x450>
+lea    0x41fb0(%rip),%r8        # 5ffb8 <__frame_dummy_init_array_entry+0x528>
 lea    0x7(%rsp),%rdx
 mov    $0x2b,%esi
-call   22700 <_RNvNtCsevLNFiNqfJP_4core6result13unwrap_failed>
+call   226f0 <_RNvNtCsevLNFiNqfJP_4core6result13unwrap_failed>
 --- lto fat: gmc_write8, and what it calls
 cmpq   $0x17,0x8(%rdi)
-jbe    1e08c <gmc_write8+0x1c>
+jbe    1e07c <gmc_write8+0x1c>
 mov    (%rdi),%rdi
 add    $0x10,%rdi
-mov    0x43b9b(%rip),%rax        # 61c20 <memcpy@GLIBC_2.14>
+mov    0x43b9b(%rip),%rax        # 61c10 <memcpy@GLIBC_2.14>
 mov    $0x8,%edx
 jmp    *%rax
 push   %rax
-lea    -0x125a9(%rip),%rdi        # baeb <_RNvNtNtNtNtNtCsevLNFiNqfJP_4core3num3imp7flt2dec8strategy6dragon9POW5TO256+0xba7>
-lea    0x41e55(%rip),%rcx        # 5fef0 <__frame_dummy_init_array_entry+0x450>
-lea    0x41f56(%rip),%r8        # 5fff8 <__frame_dummy_init_array_entry+0x558>
+lea    -0x125a9(%rip),%rdi        # badb <_RNvNtNtNtNtNtCsevLNFiNqfJP_4core3num3imp7flt2dec8strategy6dragon9POW5TO256+0xba7>
+lea    0x41e55(%rip),%rcx        # 5fee0 <__frame_dummy_init_array_entry+0x450>
+lea    0x41f56(%rip),%r8        # 5ffe8 <__frame_dummy_init_array_entry+0x558>
 lea    0x7(%rsp),%rdx
 mov    $0x2b,%esi
-call   22700 <_RNvNtCsevLNFiNqfJP_4core6result13unwrap_failed>
+call   226f0 <_RNvNtCsevLNFiNqfJP_4core6result13unwrap_failed>
 --- lto fat: no region copy symbol: inlined
 --- lto fat: symbols naming memcpy in the bench binary
-0000000000061c20 d _RNvNtNtCsc2Pq1cNDb7x_25wcontainers_shared_memory22foreign_implementation6region6MEMCPY
+0000000000061c10 d _RNvNtNtCsc2Pq1cNDb7x_25wcontainers_shared_memory22foreign_implementation6region6MEMCPY
                  U memcpy
 ===== atomic functions a foreign call could reach
 symbols in libc naming atomic: 0
@@ -226,30 +159,30 @@ symbols in libc naming atomic: 0
 /lib/x86_64-linux-gnu/libatomic.so.1.2.0
 /usr/lib/x86_64-linux-gnu/libatomic.so.1
 /usr/lib/x86_64-linux-gnu/libatomic.so.1.2.0
-	linux-vdso.so.1 (0x00007f8aec030000)
-	libc.so.6 => /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6 (0x00007f8aebc00000)
-	/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2 => /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib64/ld-linux-x86-64.so.2 (0x00007f8aec032000)
-	libgcc_s.so.1 => /nix/store/j7qx4s4mr17j1wqgvqdzj33lmrnzb387-gcc-16.2.0-lib/lib/libgcc_s.so.1 (0x00007f8aebfa5000)
-===== bench, release, 96 CPUs, load 5.75 7.80 9.10
+	linux-vdso.so.1 (0x00007a5846f96000)
+	libc.so.6 => /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/libc.so.6 (0x00007a5846c00000)
+	/nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib/ld-linux-x86-64.so.2 => /nix/store/h4wfwic161kxrr74jlzla5lsm28hgary-glibc-2.44-25/lib64/ld-linux-x86-64.so.2 (0x00007a5846f98000)
+	libgcc_s.so.1 => /nix/store/j7qx4s4mr17j1wqgvqdzj33lmrnzb387-gcc-16.2.0-lib/lib/libgcc_s.so.1 (0x00007a5846f0b000)
+===== bench, release, 96 CPUs, load 5.00 9.78 13.73
 x86_64, 96 CPUs; ns per copy, median of 11 rounds in alternating order; ratio to plain in brackets
-quiet out       8 B: ours 3.2 (1.26x), plain 2.5 (1.00x), atomics 3.4 (1.36x), pread 180.7 (71.60x) | load 5.53 7.72 9.07
-quiet out      64 B: ours 2.7 (1.44x), plain 1.8 (1.00x), atomics 4.5 (2.45x), pread 180.8 (98.10x) | load 5.53 7.72 9.07
-quiet out    4096 B: ours 30.9 (1.06x), plain 29.1 (1.00x), atomics 74.3 (2.56x), pread 217.3 (7.47x) | load 5.53 7.72 9.07
-quiet out   65536 B: ours 1338.7 (0.93x), plain 1441.8 (1.00x), atomics 1652.7 (1.15x), pread 2566.7 (1.78x) | load 5.53 7.72 9.07
-quiet out 2097152 B: ours 125685.8 (1.00x), plain 125850.2 (1.00x), atomics 130596.4 (1.04x), pread 187808.0 (1.49x) | load 5.53 7.72 9.07
-quiet in        8 B: ours 3.4 (1.30x), plain 2.6 (1.00x), atomics 3.3 (1.26x), pread 198.6 (75.19x) | load 5.25 7.62 9.03
-quiet in       64 B: ours 2.8 (1.24x), plain 2.2 (1.00x), atomics 4.4 (1.98x), pread 205.9 (91.84x) | load 5.25 7.62 9.03
-quiet in     4096 B: ours 32.4 (1.02x), plain 31.8 (1.00x), atomics 73.9 (2.32x), pread 239.3 (7.52x) | load 5.25 7.62 9.03
-quiet in    65536 B: ours 1357.0 (1.00x), plain 1358.4 (1.00x), atomics 1716.6 (1.26x), pread 2547.6 (1.88x) | load 5.25 7.62 9.03
-quiet in  2097152 B: ours 132624.5 (1.01x), plain 131106.1 (1.00x), atomics 134493.6 (1.03x), pread 174421.1 (1.33x) | load 5.25 7.62 9.03
-busy  out       8 B: ours 10.5 (2.11x), plain 5.0 (1.00x), atomics 14.2 (2.85x), pread 282.0 (56.60x) | load 5.25 7.62 9.03
-busy  out      64 B: ours 11.0 (2.02x), plain 5.5 (1.00x), atomics 18.2 (3.34x), pread 288.2 (52.71x) | load 4.99 7.53 8.99
-busy  out    4096 B: ours 2114.4 (0.98x), plain 2159.4 (1.00x), atomics 1417.7 (0.66x), pread 2210.2 (1.02x) | load 4.99 7.53 8.99
-busy  out   65536 B: ours 25014.1 (0.98x), plain 25562.2 (1.00x), atomics 4454.4 (0.17x), pread 29380.0 (1.15x) | load 4.99 7.53 8.99
-busy  out 2097152 B: ours 141359.8 (0.99x), plain 142586.9 (1.00x), atomics 137764.4 (0.97x), pread 214163.1 (1.50x) | load 4.99 7.53 8.99
-busy  in        8 B: ours 9.8 (1.00x), plain 9.8 (1.00x), atomics 14.7 (1.50x), pread 292.4 (29.85x) | load 4.99 7.53 8.99
-busy  in       64 B: ours 12.1 (1.00x), plain 12.1 (1.00x), atomics 21.3 (1.77x), pread 291.2 (24.15x) | load 4.83 7.45 8.96
-busy  in     4096 B: ours 132.9 (1.01x), plain 132.1 (1.00x), atomics 1705.3 (12.91x), pread 442.4 (3.35x) | load 4.83 7.45 8.96
-busy  in    65536 B: ours 1886.8 (1.02x), plain 1849.4 (1.00x), atomics 5731.3 (3.10x), pread 3799.0 (2.05x) | load 4.83 7.45 8.96
-busy  in  2097152 B: ours 163323.0 (1.02x), plain 160593.5 (1.00x), atomics 171465.4 (1.07x), pread 297730.8 (1.85x) | load 4.83 7.45 8.96
-arm-run: exit 0 after 33 s, load 4.83 7.45 8.96
+quiet out       8 B: ours 3.7 (1.30x), plain 2.9 (1.00x), atomics 4.0 (1.41x), pread 205.1 (71.53x) | load 7.09 10.14 13.83
+quiet out      64 B: ours 3.1 (1.42x), plain 2.2 (1.00x), atomics 5.2 (2.36x), pread 204.6 (92.71x) | load 7.96 10.27 13.85
+quiet out    4096 B: ours 38.1 (1.07x), plain 35.6 (1.00x), atomics 89.3 (2.51x), pread 252.6 (7.09x) | load 7.96 10.27 13.85
+quiet out   65536 B: ours 1666.9 (0.96x), plain 1738.3 (1.00x), atomics 1975.2 (1.14x), pread 3045.1 (1.75x) | load 7.96 10.27 13.85
+quiet out 2097152 B: ours 143020.9 (1.00x), plain 143271.2 (1.00x), atomics 144971.6 (1.01x), pread 206360.9 (1.44x) | load 7.96 10.27 13.85
+quiet in        8 B: ours 4.1 (1.29x), plain 3.1 (1.00x), atomics 3.9 (1.25x), pread 229.8 (73.30x) | load 7.96 10.27 13.85
+quiet in       64 B: ours 3.1 (1.25x), plain 2.5 (1.00x), atomics 5.1 (2.02x), pread 229.4 (91.25x) | load 7.96 10.27 13.85
+quiet in     4096 B: ours 36.4 (1.01x), plain 35.9 (1.00x), atomics 85.4 (2.38x), pread 259.3 (7.23x) | load 7.96 10.27 13.85
+quiet in    65536 B: ours 1540.2 (1.01x), plain 1527.8 (1.00x), atomics 1949.8 (1.28x), pread 2832.9 (1.85x) | load 7.96 10.27 13.85
+quiet in  2097152 B: ours 143859.0 (1.00x), plain 143680.1 (1.00x), atomics 143427.2 (1.00x), pread 182897.5 (1.27x) | load 7.96 10.27 13.85
+busy  out       8 B: ours 10.9 (2.07x), plain 5.3 (1.00x), atomics 14.8 (2.81x), pread 312.0 (59.32x) | load 9.00 10.45 13.89
+busy  out      64 B: ours 10.2 (2.08x), plain 4.9 (1.00x), atomics 17.0 (3.48x), pread 294.8 (60.14x) | load 9.00 10.45 13.89
+busy  out    4096 B: ours 2239.4 (1.03x), plain 2184.0 (1.00x), atomics 1329.4 (0.61x), pread 2385.4 (1.09x) | load 9.00 10.45 13.89
+busy  out   65536 B: ours 24036.2 (0.96x), plain 25045.5 (1.00x), atomics 3873.9 (0.15x), pread 24651.8 (0.98x) | load 9.00 10.45 13.89
+busy  out 2097152 B: ours 155890.2 (1.00x), plain 156339.9 (1.00x), atomics 149398.1 (0.96x), pread 224167.2 (1.43x) | load 9.00 10.45 13.89
+busy  in        8 B: ours 9.4 (1.04x), plain 9.0 (1.00x), atomics 13.3 (1.47x), pread 309.3 (34.20x) | load 9.81 10.59 13.92
+busy  in       64 B: ours 9.6 (1.04x), plain 9.2 (1.00x), atomics 16.1 (1.75x), pread 307.9 (33.34x) | load 9.81 10.59 13.92
+busy  in     4096 B: ours 125.1 (1.00x), plain 124.9 (1.00x), atomics 1088.0 (8.71x), pread 435.0 (3.48x) | load 9.81 10.59 13.92
+busy  in    65536 B: ours 1865.8 (1.00x), plain 1861.6 (1.00x), atomics 8120.6 (4.36x), pread 3730.4 (2.00x) | load 9.81 10.59 13.92
+busy  in  2097152 B: ours 148761.5 (1.00x), plain 148837.5 (1.00x), atomics 153079.6 (1.03x), pread 224462.0 (1.51x) | load 9.81 10.59 13.92
+arm-run: exit 0 after 36 s, load 9.81 10.59 13.92

@@ -22,9 +22,12 @@ pub trait SharedMemory {
     fn write(&self, at: u64, from: &[u8]) -> Result<(), OutsideError>;
     fn load<W: Word>(&self, at: u64) -> Result<W, WordError>;
     fn store<W: Word>(&self, at: u64, value: W) -> Result<(), WordError>;
-    /// Stores the value in the 8-byte word and returns the value the word held before.
+    /// Stores the value in the 8-byte word and returns the value the word held before; while it runs, any other access
+    /// to the word but a swap, including this program's own `read`, `write`, `load` or `store` from another thread, is
+    /// a data race by Rust's rules (REVIEW.md §5).
     fn swap(&self, at: u64, value: u64) -> Result<u64, WordError>;
-    /// Stores `new` in the 4-byte word if it holds `current`, and returns the value the word held before.
+    /// Stores `new` in the 4-byte word if it holds `current`, and returns the value the word held before; while it runs,
+    /// any other access to the word but a compare-and-exchange is a data race by Rust's rules, as for `swap`.
     fn compare_exchange(&self, at: u64, current: u32, new: u32) -> Result<u32, WordError>;
     /// Waits, until woken or the timeout passes, while the 4-byte word at the offset holds `expected`.
     #[cfg(target_os = "linux")]
@@ -50,7 +53,11 @@ pub trait Word: Copy + Eq + Debug + Into<u64> + TryFrom<u64> + seal::Sealed {} /
 All in foreign_implementation/region/implementation.rs unless named.
 
 1. `pub(crate) unsafe fn new(base: *mut u8, length: usize) -> Region`: the mapping's promise (mapped, writable,
-   never traps, aligned to 8, no reference formed but one word for one swap or compare-and-exchange).
+   never traps, aligned to 8, no reference formed but one word for one swap or compare-and-exchange). One exception
+   the host does not keep: with strict overcommit (`vm.overcommit_memory=2`) a memory file's page can fail to be
+   charged when first touched, and the access ends the process with SIGBUS; a crash, not a write anywhere else
+   (MEASURED, checks/overcommit.log, in a 512 MiB guest: the file mapping died with signal 7 after 45 824 of 91 648
+   pages; anonymous memory was refused when mapped instead; with `overcommit_memory=0` both finished).
 2. `unsafe { copy(into.as_mut_ptr(), from, into.len()); }` in `read`: range checked just before.
 3. `unsafe { copy(to, from.as_ptr(), from.len()); }` in `write`: the same.
 4. `unsafe { word.read_volatile() }` in `load`, then `fence(Acquire)`.
@@ -135,11 +142,28 @@ machines); libatomic exists on both machines but is a separate library not every
 atomics, so they carry the same assumption with a link dependency added; ARM64 binaries already hold compiler-rt's
 `__aarch64_cas8_acq_rel`, which is what (a) compiles to (MEASURED). Why not (c): the owner's ruling.
 
-What (a) assumes: the word stays mapped while borrowed (one expression), and every other access to it meanwhile is an
-atomic access of the same size. The futex protocol requires that of a well-behaved guest. A hostile guest's 1-byte
-writes to the word, and our own volatile `store` to the same word from another thread, are outside Rust's model; the
-hardware still does one locked or exclusive access. It is the one place a reference (`&AtomicU64`, `&AtomicU32`) to the
-mapping is formed.
+What (a) assumes, and where it conflicts with the rest:
+- `from_ptr` asks for a pointer "[valid] for both reads and writes for the whole lifetime" and forbids mixing
+  "conflicting atomic and non-atomic accesses, or atomic accesses of different sizes, without synchronization" (READ,
+  1.99.0 library/core/src/sync/atomic.rs:2655-2658). "Valid" means inside one Rust allocation (READ, ptr/mod.rs:21-24).
+  Every other item here relies on the opposite: the region lies OUTSIDE every allocation, which only volatile accesses
+  may reach (READ, ptr/mod.rs:2024). So items 6 and 7 stand on a premise the copies deny. Neither is proved; both are
+  the stated assumption that the mapping is ordinary memory to the hardware.
+- Every other access to the word while the swap or compare-and-exchange runs is an atomic access of the same size.
+  The futex protocol requires that of a well-behaved guest. Three things break it, each a data race by Rust's rules
+  (READ, atomic.rs:44, "data races are undefined behavior"): a hostile guest's 1-, 2- or 4-byte stores into the word;
+  our own `read`, `write`, `load` or `store` of a range covering the word, from another thread; and a swap and a
+  compare-and-exchange on overlapping words. The trait's doc of `swap` and `compare_exchange` now says so. No caller
+  does the second or third today (INFERRED: no crate calls the primitive yet, READ, grep over crates/).
+- It is the one place a reference (`&AtomicU64`, `&AtomicU32`) to the mapping is formed: one word, for one expression.
+
+What the hardware does there: one locked or exclusive access, INFERRED from the listings (MEASURED, checks/x86.log and
+arm.log, the listings of `swap` and `compare_exchange`): x86 `xchgq` and `lock cmpxchgl` inline; ARM64 calls
+compiler-rt's `__aarch64_swp8_acq_rel` and `__aarch64_cas4_acq_rel`, which use `swpal` and `casal` when the processor
+has them and an exclusive load and store loop when not (INFERRED, not read in this tree). MEASURED, both machines: while another thread stores single bytes into the last byte of the very
+words they change, 4 threads counting with compare-and-exchange lose no count and every token swapped through comes out
+once (`counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words`, checks/x86.log
+and arm.log). That is evidence about these two processors, not a guarantee of Rust's.
 
 Wait and wake: no safe library call takes a raw address (rustix needs `&AtomicU32`), so `libc::syscall(SYS_futex)`.
 
@@ -148,7 +172,13 @@ Where there is no C library (the floor, `no_std`): another implementation of the
 
 ## 6. What the tests cover
 
-MEASURED, both machines, debug and release (checks/x86.log, arm.log):
+Every log names the code it ran on: `checks/tree.sh` hashes every file of the crate but the logs and this page, and
+native.sh, miri.sh and kani.sh print it first. `checks/review.sh` (run on the Mac before each commit) fails when a log
+names other code, when this page's unsafe count differs from the code's, when a cited `checks/` file is missing, or
+when a comment cites this page for a measurement. Final run: code 80f6725968215b3f, both machines, in one job each
+(MEASURED, checks/x86.log, arm.log; review.sh: "10 unsafe items, 0 failed").
+
+MEASURED, both machines, debug and release:
 - Copies in both directions at every start within 17 bytes of each word, cache-line, page and 2-page boundary and of
   the end, at 42 lengths up to 8193, from buffers at every alignment, checking every byte around.
 - Copies of 2 MiB±1 and 9 MiB-3 at four alignments (glibc's large-copy paths).
@@ -157,28 +187,46 @@ MEASURED, both machines, debug and release (checks/x86.log, arm.log):
 - While another thread, and another process, write the same bytes with 1-, 4- and 8-byte stores: reads see only values
   held (13 146 800 bytes against the process); words loaded, swapped and exchanged see only values held; copies in
   never touch the other party's 8-, 4- and 1-byte neighbors (203 947 256 bytes against the process).
-- Swap and compare-and-exchange lose nothing across 8 threads and across 2 processes.
-- Wrong changes caught on both: memcpy one byte long or one early (guard SIGSEGV), swap or compare-and-exchange as load
-  then store, and the ten range, seal and base changes.
-- Miri (x86 and ARM, both borrow models): all single-threaded tests. Miri runs its own memcpy for the foreign call and
-  checks both ranges lie in their allocations (a region one byte long: "attempting to access 33 bytes ... only 32").
-  Miri cannot see the real C memcpy, races with the other party (here the memory is a Rust allocation), or the futex.
-- Kani: the range arithmetic of every method, 32 harnesses, 1 to 4 words, all successful on both; a one-byte-long
-  range check fails it.
+- Swap and compare-and-exchange lose nothing across 8 threads and across 2 processes, and lose nothing across 4
+  threads while a fifth stores single bytes into the same two words (section 5).
+- The process test's other process ends when the test thread that started it ends (`PR_SET_PDEATHSIG`, SIGKILL; it
+  also checks its parent is still the one named). Before, a failing or crashing process test left its writers spinning
+  and holding the output pipe, so the run hung. A test kills the process that started a writer and checks the writer
+  ends within 30 s. A planted one-byte-long copy fails the process test on both machines; 3 s later, without the
+  signal, 4 (x86) and 2 (ARM) other processes were still running; with it, 0.
+- Wrong changes caught on both, each in checks/x86.log and arm.log: memcpy one byte long or one early (guard
+  SIGSEGV); swap, or compare-and-exchange, as a load then a store (both counting tests fail); the ten range, seal and
+  base changes; and the parent-death signal unset ("the writer ... outlived the process that started it").
+- The 8 compile refusals each fail to compile.
+- Miri, both machines, both borrow models, on the final code: host 13, heap 12, attacks 5 pass (the 7 tests with
+  threads in each suite are ignored there). Miri runs its own memcpy for the foreign call and checks both ranges lie in their allocations;
+  the two planted errors are reported ("attempting to access 33 bytes ... only 32", and a dangling pointer for a
+  zero-length region). Miri cannot see the real C memcpy, races with the other party (there the memory is a Rust
+  allocation), or the futex.
+- Kani, both machines: the range arithmetic of every method, 32 harnesses at 1 to 4 words, "32 successful, 0 failed";
+  a one-byte-long range check fails it ("2 of 616 failed").
 - Only native tests cover the real memcpy, the listings, the guard pages, threads and processes.
 
-## 7. Measurements (ns per copy, median of 11 alternating rounds, ratio to plain `copy_nonoverlapping`; MEASURED)
+## 7. Measurements (ns per copy, median of 11 alternating rounds, ratio to plain `copy_nonoverlapping`; MEASURED,
+checks/bench-x86.log and bench-arm.log)
 
-x86-64, load 5.3-5.5 of 96, quiet:
-- out 8 B 1.26x, 64 B 1.44x, 4 KiB 1.06x, 64 KiB 0.93x, 2 MiB 1.00x; in 1.30x, 1.24x, 1.02x, 1.00x, 1.01x.
-- old atomics out 1.36x, 2.45x, 2.56x, 1.15x, 1.04x. `pread` 72x, 98x, 7.5x, 1.8x, 1.5x.
+Sizes 8 B, 64 B, 4 KiB, 64 KiB, 2 MiB.
 
-ARM64, load 40 of 96 (shared, noisy), quiet:
-- out 1.75x, 1.55x, 0.94x, 1.01x, 1.02x; in 0.70x, 0.85x, 0.97x, 0.99x, 0.99x.
-- old atomics out 2.50x, 2.01x, 3.84x, 4.15x, 2.11x. `pread` 171x, 99x, 6.8x, 3.8x, 4.0x.
+x86-64, load 5.0 of 96:
+- out 1.30x, 1.42x, 1.07x, 0.96x, 1.00x; in 1.29x, 1.25x, 1.01x, 1.01x, 1.00x.
+- old 8-byte atomics out 1.41x, 2.36x, 2.51x, 1.14x, 1.01x. `pread` out 72x, 93x, 7.1x, 1.8x, 1.4x.
 
-With a thread storing 8-byte words over the same bytes: ours 0.98-1.05x of plain from 4 KiB up on both. On x86 copying
-out at 4 and 64 KiB both ours and plain are far slower than 8-byte loads (2114 and 25014 ns against 1418 and 4454).
+ARM64, load 18 of 96 (shared, noisy):
+- out 1.75x, 1.71x, 0.95x, 1.01x, 1.00x; in 0.70x, 0.71x, 0.97x, 0.99x, 1.02x.
+- old atomics out 2.52x, 2.01x, 3.75x, 4.15x, 2.24x. `pread` out 172x, 99x, 6.7x, 3.9x, 3.4x.
+
+With a thread storing 8-byte words over the same bytes: ours 0.96-1.03x of plain from 4 KiB up on both. On x86,
+copying out 4 and 64 KiB, both ours and plain are far slower than the old 8-byte atomics (2239 and 24036 ns against
+1329 and 3874).
+
+The opacity probes in the same logs: the direct call becomes one load (x86 `mov (%rdi),%rax`, ARM `ldr x0, [x0]`) and
+the volatile-loaded pointer stays a call (`call *%rax`, `blr x8`) without and with fat LTO; the primitive's 8-byte read
+under fat LTO keeps its range check and ends in `jmp *%rcx` and `br x3`.
 
 ## 8. The TODO
 

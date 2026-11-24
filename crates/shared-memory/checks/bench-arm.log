@@ -1,10 +1,9 @@
-arm-run: job gmlibc-bench/20261124-200317-3736355 (re-attach: arm-run --attach gmlibc-bench 20261124-200317-3736355; stop: arm-run --stop gmlibc-bench 20261124-200317-3736355)
-arm-run: job gmlibc-bench/20261124-200317-3736355 on aarch64 Linux 7.0.0-1018-aws, 96 cores, load 38.92 37.28 26.01, jobs 12
-arm-run: in /work/src/gmlibc-bench, build directory /work/target/gmlibc-bench
+# bench-tree/probe.sh and the bench, one job; the tree from make-bench-tree.sh, which copies interface.rs, arithmetic.rs and foreign_implementation/ as committed with this log
+arm-run: attached to gmrep-bench/20261124-212244-622642
+arm-run: job gmrep-bench/20261124-212244-622642 on aarch64 Linux 7.0.0-1018-aws, 96 cores, load 19.18 25.94 29.85, jobs 12
+arm-run: in /work/src/gmrep-bench, build directory /work/target/gmrep-bench
 arm-run: command: bash probe.sh; echo "===== bench, release, $(nproc) CPUs, load $(cut -d" " -f1-3 /proc/loadavg)"; cargo run --release -q -p gmc-bench; rm -rf /work/target/gmlibc-bench
 arm-run: LIBCLANG_PATH=/nix/store/f8n589x4ylycnji497pldwhcfhmf3kvz-clang-21.1.8-lib/lib CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
-unpacking 'github:hercules-ci/flake-parts/024633cd702b10285db5cb19b40ad48d2399ba60?narHash=sha256-zTwuwezD0w3hpga6a6P8emidzAZFyWqlNeRBlpWOOl8%3D' into the Git cache...
-unpacking 'github:oxalica/rust-overlay/404b7a5537f0adc6e5c558a1b94612e683dec504?narHash=sha256-12C5ef8a3endLXBvLOVR/jynM9EHGgP1t%2By5uBorwx4%3D' into the Git cache...
 ===== probe, opt-level 3, codegen-units 1, lto off
 all five read 0x807060504030201
 --- the probes' addresses: two names at one address are one function
@@ -199,30 +198,30 @@ symbols in libc naming atomic: 0
 /usr/lib/aarch64-linux-gnu/libatomic.so.1
 /usr/lib/aarch64-linux-gnu/libatomic.so.1.2.0
 0000000000039240 t __aarch64_cas8_acq_rel
-	linux-vdso.so.1 (0x0000fa41fc34c000)
-	libc.so.6 => /nix/store/hx9wvdx2l59iahwf9nmrx7rwkm6cymgs-glibc-2.44-25/lib/libc.so.6 (0x0000fa41fc0c0000)
-	libgcc_s.so.1 => /nix/store/na9inwswsrgxxqpqrz3ms78qn7pyxg44-gcc-16.2.0-lib/lib/libgcc_s.so.1 (0x0000fa41fc080000)
-	/nix/store/hx9wvdx2l59iahwf9nmrx7rwkm6cymgs-glibc-2.44-25/lib/ld-linux-aarch64.so.1 (0x0000fa41fc310000)
-===== bench, release, 96 CPUs, load 39.01 37.38 26.22
+	linux-vdso.so.1 (0x0000e1b5f2098000)
+	libc.so.6 => /nix/store/hx9wvdx2l59iahwf9nmrx7rwkm6cymgs-glibc-2.44-25/lib/libc.so.6 (0x0000e1b5f1e00000)
+	libgcc_s.so.1 => /nix/store/na9inwswsrgxxqpqrz3ms78qn7pyxg44-gcc-16.2.0-lib/lib/libgcc_s.so.1 (0x0000e1b5f1dc0000)
+	/nix/store/hx9wvdx2l59iahwf9nmrx7rwkm6cymgs-glibc-2.44-25/lib/ld-linux-aarch64.so.1 (0x0000e1b5f2050000)
+===== bench, release, 96 CPUs, load 18.03 25.36 29.59
 aarch64, 96 CPUs; ns per copy, median of 11 rounds in alternating order; ratio to plain in brackets
-quiet out       8 B: ours 2.5 (1.75x), plain 1.4 (1.00x), atomics 3.6 (2.50x), pread 246.3 (170.91x) | load 39.97 37.61 26.35
-quiet out      64 B: ours 3.9 (1.55x), plain 2.5 (1.00x), atomics 5.0 (2.01x), pread 247.5 (99.01x) | load 39.97 37.61 26.35
-quiet out    4096 B: ours 49.2 (0.94x), plain 52.1 (1.00x), atomics 199.9 (3.84x), pread 351.4 (6.75x) | load 39.97 37.61 26.35
-quiet out   65536 B: ours 757.0 (1.01x), plain 751.7 (1.00x), atomics 3118.4 (4.15x), pread 2874.0 (3.82x) | load 39.97 37.61 26.35
-quiet out 2097152 B: ours 52087.8 (1.02x), plain 51097.5 (1.00x), atomics 107747.0 (2.11x), pread 205422.2 (4.02x) | load 39.97 37.61 26.35
-quiet in        8 B: ours 2.5 (0.70x), plain 3.6 (1.00x), atomics 3.5 (0.97x), pread 311.4 (86.21x) | load 40.46 37.75 26.46
-quiet in       64 B: ours 3.4 (0.85x), plain 4.0 (1.00x), atomics 5.0 (1.26x), pread 312.5 (78.40x) | load 40.46 37.75 26.46
-quiet in     4096 B: ours 48.6 (0.97x), plain 50.1 (1.00x), atomics 205.3 (4.10x), pread 399.5 (7.97x) | load 40.46 37.75 26.46
-quiet in    65536 B: ours 757.7 (0.99x), plain 764.1 (1.00x), atomics 3093.4 (4.05x), pread 3160.9 (4.14x) | load 40.46 37.75 26.46
-quiet in  2097152 B: ours 54018.0 (0.99x), plain 54395.6 (1.00x), atomics 108779.5 (2.00x), pread 182332.6 (3.35x) | load 40.46 37.75 26.46
-busy  out       8 B: ours 5.0 (1.57x), plain 3.2 (1.00x), atomics 6.0 (1.87x), pread 311.4 (97.94x) | load 40.42 37.79 26.53
-busy  out      64 B: ours 7.9 (1.26x), plain 6.3 (1.00x), atomics 12.4 (1.97x), pread 320.2 (51.05x) | load 40.42 37.79 26.53
-busy  out    4096 B: ours 94.3 (0.98x), plain 96.5 (1.00x), atomics 240.8 (2.50x), pread 403.0 (4.18x) | load 40.42 37.79 26.53
-busy  out   65536 B: ours 819.3 (1.00x), plain 820.8 (1.00x), atomics 3196.2 (3.89x), pread 3026.2 (3.69x) | load 40.42 37.79 26.53
-busy  out 2097152 B: ours 48380.4 (1.03x), plain 47143.1 (1.00x), atomics 104841.8 (2.22x), pread 198215.0 (4.20x) | load 40.42 37.79 26.53
-busy  in        8 B: ours 2.6 (0.71x), plain 3.6 (1.00x), atomics 3.4 (0.92x), pread 460.0 (126.09x) | load 39.98 37.74 26.58
-busy  in       64 B: ours 2.8 (0.70x), plain 4.0 (1.00x), atomics 5.1 (1.28x), pread 454.9 (113.35x) | load 40.15 37.81 26.66
-busy  in     4096 B: ours 50.8 (0.49x), plain 103.1 (1.00x), atomics 247.4 (2.40x), pread 461.5 (4.47x) | load 40.15 37.81 26.66
-busy  in    65536 B: ours 759.1 (0.79x), plain 962.6 (1.00x), atomics 3747.9 (3.89x), pread 3334.2 (3.46x) | load 40.15 37.81 26.66
-busy  in  2097152 B: ours 57034.0 (1.05x), plain 54498.5 (1.00x), atomics 113441.0 (2.08x), pread 188129.0 (3.45x) | load 40.15 37.81 26.66
-arm-run: exit 0 after 40 s, load 40.15 37.81 26.66
+quiet out       8 B: ours 2.5 (1.75x), plain 1.4 (1.00x), atomics 3.6 (2.52x), pread 246.0 (171.71x) | load 17.62 25.15 29.50
+quiet out      64 B: ours 4.3 (1.71x), plain 2.5 (1.00x), atomics 5.0 (2.01x), pread 247.4 (99.39x) | load 17.62 25.15 29.50
+quiet out    4096 B: ours 49.2 (0.95x), plain 52.0 (1.00x), atomics 195.3 (3.75x), pread 348.5 (6.70x) | load 17.62 25.15 29.50
+quiet out   65536 B: ours 752.3 (1.01x), plain 747.5 (1.00x), atomics 3103.6 (4.15x), pread 2881.7 (3.86x) | load 17.62 25.15 29.50
+quiet out 2097152 B: ours 45881.1 (1.00x), plain 45967.2 (1.00x), atomics 102753.1 (2.24x), pread 157213.2 (3.42x) | load 17.62 25.15 29.50
+quiet in        8 B: ours 2.5 (0.70x), plain 3.6 (1.00x), atomics 3.5 (0.97x), pread 309.4 (86.44x) | load 17.57 25.02 29.44
+quiet in       64 B: ours 2.8 (0.71x), plain 4.0 (1.00x), atomics 5.0 (1.26x), pread 310.8 (78.00x) | load 17.57 25.02 29.44
+quiet in     4096 B: ours 48.5 (0.97x), plain 50.1 (1.00x), atomics 205.1 (4.09x), pread 412.3 (8.23x) | load 17.57 25.02 29.44
+quiet in    65536 B: ours 749.6 (0.99x), plain 753.5 (1.00x), atomics 3103.9 (4.12x), pread 3146.6 (4.18x) | load 17.57 25.02 29.44
+quiet in  2097152 B: ours 45844.2 (1.02x), plain 44844.6 (1.00x), atomics 104600.5 (2.33x), pread 157156.8 (3.50x) | load 17.57 25.02 29.44
+busy  out       8 B: ours 5.0 (1.53x), plain 3.3 (1.00x), atomics 6.1 (1.88x), pread 309.4 (94.67x) | load 17.21 24.82 29.35
+busy  out      64 B: ours 8.6 (1.30x), plain 6.6 (1.00x), atomics 13.2 (1.99x), pread 313.5 (47.31x) | load 17.21 24.82 29.35
+busy  out    4096 B: ours 88.5 (0.98x), plain 90.2 (1.00x), atomics 236.0 (2.62x), pread 393.7 (4.36x) | load 17.21 24.82 29.35
+busy  out   65536 B: ours 814.7 (1.01x), plain 807.0 (1.00x), atomics 3178.7 (3.94x), pread 3001.3 (3.72x) | load 17.21 24.82 29.35
+busy  out 2097152 B: ours 45317.2 (1.01x), plain 44782.1 (1.00x), atomics 103187.6 (2.30x), pread 159363.6 (3.56x) | load 17.21 24.82 29.35
+busy  in        8 B: ours 2.5 (0.71x), plain 3.6 (1.00x), atomics 3.1 (0.88x), pread 430.0 (120.36x) | load 16.87 24.62 29.26
+busy  in       64 B: ours 2.6 (0.66x), plain 4.0 (1.00x), atomics 5.1 (1.28x), pread 450.7 (112.99x) | load 16.87 24.62 29.26
+busy  in     4096 B: ours 90.0 (1.00x), plain 90.3 (1.00x), atomics 203.5 (2.25x), pread 445.0 (4.93x) | load 16.87 24.62 29.26
+busy  in    65536 B: ours 825.0 (1.02x), plain 808.3 (1.00x), atomics 3116.5 (3.86x), pread 3294.9 (4.08x) | load 16.87 24.62 29.26
+busy  in  2097152 B: ours 55124.2 (0.96x), plain 57273.4 (1.00x), atomics 109273.4 (1.91x), pread 182341.8 (3.18x) | load 16.87 24.62 29.26
+arm-run: exit 0 after 36 s, load 16.87 24.62 29.26
