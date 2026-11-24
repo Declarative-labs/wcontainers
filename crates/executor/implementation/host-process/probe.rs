@@ -13,8 +13,6 @@ pub enum Unavailable {
     HostPageLargerThan4KiB,
     /// Invalidating code by the writer's address may miss the runner's mapping of the same line.
     AliasingInstructionCache,
-    /// Something of the embedder already holds a range our layout needs.
-    ReservationRefused,
     /// The zygote, or a stub before its first turn, ended for this reason.
     Zygote(crate::zygote::ZygoteEnd),
     /// A host call the form needs was refused.

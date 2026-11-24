@@ -18,14 +18,8 @@ use wcontainers_executor_host_process::zygote::{Ended, Zygote, ZygoteEnd};
 /// The fourth check's count of moves between two CPUs.
 const MOVES: usize = 200;
 
-/// One embedder process has one zygote place, so tests running at once start theirs one at a time.
-static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn zygote() -> Zygote {
     let probe = HostProbe::new().expect("the host is refused");
-    let _one_at_a_time = STARTING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Zygote::start(&probe).expect("the zygote did not start")
 }
 
@@ -46,15 +40,6 @@ fn two_cpus() -> [CpuSet; 2] {
 
 fn signal_number(signal: Signal) -> u32 {
     signal.as_raw().unsigned_abs()
-}
-
-#[cfg(target_env = "gnu")]
-#[test]
-fn the_forking_thread_has_a_registration_to_drop() {
-    assert!(
-        wcontainers_executor_host_process::zygote::registered_area_size() > 0,
-        "glibc registered no restartable-sequences area, so these tests cannot see the fault"
-    );
 }
 
 #[test]
@@ -150,6 +135,27 @@ fn neither_zygote_nor_stub_holds_any_memory_or_descriptor_of_the_embedder() {
     assert_eq!(
         zygote.reap(stub),
         Ok(Ended::Killed(signal_number(Signal::KILL)))
+    );
+}
+
+/// The signals a process blocks, as /proc shows them.
+fn blocked_signals(process: Pid) -> u64 {
+    let status = std::fs::read_to_string(format!("/proc/{}/status", process.as_raw_nonzero()))
+        .expect("status");
+    let blocked = status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigBlk:"))
+        .expect("a SigBlk line");
+    u64::from_str_radix(blocked.trim(), 16).expect("hex")
+}
+
+#[test]
+fn the_zygote_blocks_every_signal_but_those_none_can() {
+    let zygote = zygote();
+    let bit = |signal: Signal| 1_u64 << (signal_number(signal) - 1);
+    assert_eq!(
+        blocked_signals(zygote.process()),
+        !(bit(Signal::KILL) | bit(Signal::STOP))
     );
 }
 

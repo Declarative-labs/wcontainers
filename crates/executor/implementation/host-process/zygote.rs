@@ -1,21 +1,21 @@
-//! The zygote: a process forked once from the embedder, holding none of its memory, that forks every stub.
+//! The zygote: a process started from its own executable image, holding none of the embedder's memory, that forks every
+//! stub.
 
-use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use std::io::IoSlice;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use rustix::fs::MemfdFlags;
 use rustix::io::Errno;
-use rustix::mm::{MapFlags, ProtFlags};
 use rustix::net::{
     AddressFamily, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketFlags,
     SocketType,
 };
 use rustix::process::{Pid, WaitOptions};
 
-use crate::layout::{OUR_AREA, ZYGOTE, ZYGOTE_CODE_SIZE, ZYGOTE_SIZE};
+use crate::layout::{OUR_AREA, ZYGOTE, ZYGOTE_CODE_SIZE};
 use crate::pages::ThreadPages;
 use crate::probe::{HostProbe, Unavailable};
 use crate::stub::Stub;
@@ -159,11 +159,11 @@ const MESSAGE: usize = 16;
 pub enum ZygoteEnd {
     /// The embedder's end of the socket closed.
     EmbedderGone = 0,
-    /// Its code or stack could not be mapped.
+    /// Its stack could not be mapped.
     PagesRefused = 1,
-    /// The forking thread's restartable-sequences area could not be unregistered.
-    RestartableSequencesNotUnregistered = 2,
-    /// A restartable-sequences registration was left after unregistering.
+    /// Its signals could not all be blocked.
+    SignalsNotBlocked = 2,
+    /// A restartable-sequences registration was left after its start.
     RestartableSequencesLeftRegistered = 3,
     /// The embedder's file descriptors could not be closed.
     DescriptorsNotClosed = 4,
@@ -189,7 +189,7 @@ impl ZygoteEnd {
     const ALL: [Self; 13] = [
         Self::EmbedderGone,
         Self::PagesRefused,
-        Self::RestartableSequencesNotUnregistered,
+        Self::SignalsNotBlocked,
         Self::RestartableSequencesLeftRegistered,
         Self::DescriptorsNotClosed,
         Self::UnmapRefused,
@@ -239,47 +239,7 @@ pub struct Zygote {
     frames_without_vectors: bool,
 }
 
-/// The forking thread's restartable-sequences registration, as the C library describes it.
-#[derive(Clone, Copy)]
-struct Registration {
-    offset_from_thread_pointer: isize,
-    size: u32,
-}
-
-#[cfg(target_env = "gnu")]
-#[expect(
-    unsafe_code,
-    reason = "glibc's description of each thread's restartable-sequences area, which no crate exposes"
-)]
-// SAFETY: glibc 2.35 and later define both, constant after start-up.
-unsafe extern "C" {
-    safe static __rseq_offset: isize;
-    safe static __rseq_size: u32;
-}
-
-#[cfg(target_env = "gnu")]
-fn registration() -> Registration {
-    Registration {
-        offset_from_thread_pointer: __rseq_offset,
-        size: __rseq_size,
-    }
-}
-
-/// The size of the restartable-sequences area the C library registered for the calling thread, which the zygote's
-/// fork drops in its child; zero where it registered none.
-pub fn registered_area_size() -> u32 {
-    registration().size
-}
-
-#[cfg(not(target_env = "gnu"))]
-fn registration() -> Registration {
-    Registration {
-        offset_from_thread_pointer: 0,
-        size: 0,
-    }
-}
-
-/// The signature glibc registers its areas with (sysdeps/unix/sysv/linux/*/bits/rseq.h), which an unregister repeats.
+/// The signature the zygote registers its own area with, glibc's (sysdeps/unix/sysv/linux/*/bits/rseq.h).
 #[cfg(target_arch = "aarch64")]
 const RSEQ_SIG: u32 = 0xd428_bc00;
 #[cfg(target_arch = "x86_64")]
@@ -298,7 +258,7 @@ unsafe extern "C" {
     safe static wcontainers_host_process_zygote_end: u8;
 }
 
-/// The zygote's machine code, which runs copied to `ZYGOTE`.
+/// The zygote's machine code, which runs at `ZYGOTE`.
 fn code() -> &'static [u8] {
     let start = &raw const wcontainers_host_process_zygote_start;
     let end = &raw const wcontainers_host_process_zygote_end;
@@ -317,17 +277,10 @@ fn code() -> &'static [u8] {
 }
 
 impl Zygote {
-    /// Forks the zygote from the calling thread and waits until it answers.
+    /// Starts the zygote from its own executable image and waits until it answers.
     pub fn start(probe: &HostProbe) -> Result<Self, Unavailable> {
-        let code = code();
-        assert!(
-            code.len() <= ZYGOTE_CODE_SIZE,
-            "the zygote's code outgrew its pages"
-        );
-        let memfd = rustix::fs::memfd_create("wcontainers zygote", MemfdFlags::CLOEXEC)
-            .map_err(Unavailable::Host)?;
-        rustix::io::write(&memfd, code).map_err(Unavailable::Host)?;
-        rustix::fs::ftruncate(&memfd, ZYGOTE_CODE_SIZE as u64).map_err(Unavailable::Host)?;
+        let image =
+            memfd_image(&image(code(), probe.user_space_top())).map_err(Unavailable::Host)?;
         let (ours, theirs) = rustix::net::socketpair(
             AddressFamily::UNIX,
             SocketType::SEQPACKET,
@@ -335,15 +288,21 @@ impl Zygote {
             None,
         )
         .map_err(Unavailable::Host)?;
-        let reservation = Reservation::new()?;
-        let child = fork_into_zygote(Entry {
-            memfd: memfd.as_raw_fd(),
-            socket: theirs.as_raw_fd(),
-            registration: registration(),
-            user_space_top: probe.user_space_top(),
-        })
-        .map_err(Unavailable::Host)?;
-        drop((memfd, theirs, reservation));
+        // proc(5)'s name for one of our own descriptors, which execve opens before it closes the descriptor.
+        let child = Command::new(format!("/proc/self/fd/{}", image.as_raw_fd()))
+            .env_clear()
+            .stdin(Stdio::from(theirs))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                Unavailable::Host(Errno::from_io_error(&error).unwrap_or(Errno::IO))
+            })?;
+        drop(image);
+        let child = i32::try_from(child.id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or(Unavailable::Host(Errno::CHILD))?;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         #[cfg_attr(
             not(target_arch = "aarch64"),
@@ -568,108 +527,99 @@ impl Drop for Zygote {
     }
 }
 
-/// Our hold on the zygote's pages in the embedder while the child maps over them.
-struct Reservation;
+/// Where the zygote's image holds the user-space top: the last word of its code pages.
+const TOP_AT: usize = ZYGOTE + ZYGOTE_CODE_SIZE - size_of::<u64>();
 
-impl Reservation {
-    fn new() -> Result<Self, Unavailable> {
-        let flags = MapFlags::PRIVATE | MapFlags::FIXED_NOREPLACE | MapFlags::NORESERVE;
-        #[expect(
-            unsafe_code,
-            reason = "maps a fixed address, which rustix leaves to the caller to keep sound"
-        )]
-        // SAFETY: FIXED_NOREPLACE never replaces a mapping; the range is inaccessible and dropped with this value.
-        let mapped = unsafe {
-            rustix::mm::mmap_anonymous(
-                ZYGOTE as *mut c_void,
-                ZYGOTE_SIZE,
-                ProtFlags::empty(),
-                flags,
-            )
+/// The descriptor the zygote's socket has when it starts: its standard input.
+const SOCKET_AT_START: i32 = libc::STDIN_FILENO;
+
+/// The zygote's executable image: an ELF header with its program headers in the first `ZYGOTE_CODE_SIZE` bytes, then
+/// the code pages loaded at `ZYGOTE`, which start with its code and end with the user-space top.
+fn image(code: &[u8], user_space_top: usize) -> Vec<u8> {
+    use object::elf::{self, FileFlags, FileHeader64, ProgramFlags, ProgramHeader64, ProgramType};
+    use object::endian::{Endianness, U16, U32, U64};
+    let top_offset = TOP_AT - ZYGOTE;
+    assert!(
+        code.len() <= top_offset,
+        "the zygote's code outgrew its pages"
+    );
+    let endian = Endianness::default();
+    let word = |value: usize| U64::new(endian, value as u64);
+    let header_size = size_of::<FileHeader64<Endianness>>();
+    let program_size = size_of::<ProgramHeader64<Endianness>>();
+    let segment =
+        |p_type: ProgramType, flags: [ProgramFlags; 2], offset, address, size| ProgramHeader64 {
+            p_type: U32::new(endian, p_type),
+            p_flags: U32::new(endian, ProgramFlags(flags[0].0 | flags[1].0)),
+            p_offset: word(offset),
+            p_vaddr: word(address),
+            p_paddr: word(address),
+            p_filesz: word(size),
+            p_memsz: word(size),
+            p_align: word(ZYGOTE_CODE_SIZE),
         };
-        match mapped {
-            Ok(address) if address as usize == ZYGOTE => Ok(Self),
-            Ok(_) | Err(Errno::EXIST) => Err(Unavailable::ReservationRefused),
-            Err(errno) => Err(Unavailable::Host(errno)),
+    let programs = [
+        segment(
+            elf::PT_LOAD,
+            [elf::PF_R, elf::PF_X],
+            ZYGOTE_CODE_SIZE,
+            ZYGOTE,
+            ZYGOTE_CODE_SIZE,
+        ),
+        // A stack that is not executable, and no READ_IMPLIES_EXEC.
+        segment(elf::PT_GNU_STACK, [elf::PF_R, elf::PF_W], 0, 0, 0),
+    ];
+    let header = FileHeader64 {
+        e_ident: elf::Ident {
+            magic: elf::ELFMAG,
+            class: elf::ELFCLASS64,
+            data: match endian {
+                Endianness::Little => elf::ELFDATA2LSB,
+                Endianness::Big => elf::ELFDATA2MSB,
+            },
+            version: elf::EV_CURRENT,
+            os_abi: elf::ELFOSABI_NONE,
+            abi_version: 0,
+            padding: [0; 7],
+        },
+        e_type: U16::new(endian, elf::ET_EXEC),
+        #[cfg(target_arch = "aarch64")]
+        e_machine: U16::new(endian, elf::EM_AARCH64),
+        #[cfg(target_arch = "x86_64")]
+        e_machine: U16::new(endian, elf::EM_X86_64),
+        e_version: U32::new(endian, u32::from(elf::EV_CURRENT.0)),
+        e_entry: word(ZYGOTE),
+        e_phoff: word(header_size),
+        e_shoff: word(0),
+        e_flags: U32::new(endian, FileFlags::default()),
+        e_ehsize: U16::new(endian, header_size as u16),
+        e_phentsize: U16::new(endian, program_size as u16),
+        e_phnum: U16::new(endian, programs.len() as u16),
+        e_shentsize: U16::new(endian, 0),
+        e_shnum: U16::new(endian, 0),
+        e_shstrndx: U16::new(endian, elf::SHN_UNDEF),
+    };
+    let mut image = vec![0; 2 * ZYGOTE_CODE_SIZE];
+    image[..header_size].copy_from_slice(object::pod::bytes_of(&header));
+    for (index, program) in programs.iter().enumerate() {
+        let at = header_size + index * program_size;
+        image[at..at + program_size].copy_from_slice(object::pod::bytes_of(program));
+    }
+    let code_pages = &mut image[ZYGOTE_CODE_SIZE..];
+    code_pages[..code.len()].copy_from_slice(code);
+    code_pages[top_offset..].copy_from_slice(&(user_space_top as u64).to_ne_bytes());
+    image
+}
+
+/// A memfd that holds `bytes` and that the calling process may execute.
+fn memfd_image(bytes: &[u8]) -> Result<OwnedFd, Errno> {
+    let memfd = rustix::fs::memfd_create("wcontainers zygote", MemfdFlags::CLOEXEC)?;
+    let mut written = 0;
+    while written < bytes.len() {
+        match rustix::io::write(&memfd, &bytes[written..])? {
+            0 => return Err(Errno::NOSPC),
+            count => written += count,
         }
     }
-}
-
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "unmaps the reservation made by `new`")]
-        // SAFETY: the range is this value's alone and nothing refers to it.
-        let _ = unsafe { rustix::mm::munmap(ZYGOTE as *mut c_void, ZYGOTE_SIZE) };
-    }
-}
-
-/// What the zygote's code is given at its first instruction.
-struct Entry {
-    memfd: i32,
-    socket: i32,
-    registration: Registration,
-    user_space_top: usize,
-}
-
-/// Forks with every signal blocked; the child jumps into the zygote's code and never returns.
-fn fork_into_zygote(entry: Entry) -> Result<Pid, Errno> {
-    use nix::sys::signal::{SigSet, SigmaskHow, pthread_sigmask};
-    let mut previous = SigSet::empty();
-    pthread_sigmask(
-        SigmaskHow::SIG_SETMASK,
-        Some(&SigSet::all()),
-        Some(&mut previous),
-    )
-    .map_err(|error| Errno::from_raw_os_error(error as i32))?;
-    #[expect(
-        unsafe_code,
-        reason = "forks the embedder; the child runs only the zygote's own code"
-    )]
-    // SAFETY: the child makes no call but the jump, which leaves Rust for good.
-    let forked = unsafe { libc::fork() };
-    if forked == 0 {
-        enter(&entry);
-    }
-    let restored = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&previous), None);
-    debug_assert!(
-        restored.is_ok(),
-        "a mask the host gave back is always valid"
-    );
-    Pid::from_raw(forked).ok_or_else(|| {
-        Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::AGAIN)
-    })
-}
-
-#[cfg(target_arch = "aarch64")]
-fn enter(entry: &Entry) -> ! {
-    #[expect(unsafe_code, reason = "jumps into the zygote's code in the fork child")]
-    // SAFETY: the zygote's code maps its own pages and stack and never returns.
-    unsafe {
-        core::arch::asm!(
-            "b wcontainers_host_process_zygote_start",
-            in("x0") i64::from(entry.memfd),
-            in("x1") i64::from(entry.socket),
-            in("x2") entry.registration.offset_from_thread_pointer,
-            in("x3") u64::from(entry.registration.size),
-            in("x4") entry.user_space_top,
-            options(noreturn),
-        )
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn enter(entry: &Entry) -> ! {
-    #[expect(unsafe_code, reason = "jumps into the zygote's code in the fork child")]
-    // SAFETY: the zygote's code maps its own pages and stack and never returns.
-    unsafe {
-        core::arch::asm!(
-            "jmp wcontainers_host_process_zygote_start",
-            in("rdi") i64::from(entry.memfd),
-            in("rsi") i64::from(entry.socket),
-            in("rdx") entry.registration.offset_from_thread_pointer,
-            in("rcx") u64::from(entry.registration.size),
-            in("r8") entry.user_space_top,
-            options(noreturn),
-        )
-    }
+    Ok(memfd)
 }

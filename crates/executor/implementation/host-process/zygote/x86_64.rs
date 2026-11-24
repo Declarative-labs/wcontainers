@@ -15,7 +15,8 @@ use super::frame::{
     ACTION, ACTION_FLAGS, ACTION_HANDLER, ACTION_MASK, ACTION_RESTORER, OWN_AREA, STATUS, VALUE,
 };
 use super::{
-    MESSAGE, RSEQ_AREA, RSEQ_FLAG_UNREGISTER, RSEQ_SIG, Request, StubDescriptor, ZygoteEnd,
+    MESSAGE, RSEQ_AREA, RSEQ_FLAG_UNREGISTER, RSEQ_SIG, Request, SOCKET_AT_START, StubDescriptor,
+    TOP_AT, ZygoteEnd,
 };
 use crate::layout::{
     CONTROL_PAGES_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACK_SIZE, SIGNAL_STACKS,
@@ -28,9 +29,8 @@ use crate::stub::{BLOCK_FD, MEMORY_FD, SOCKET_FD, STOP_SET, STOP_SIGNAL, THREAD_
 // The stub's turn loop reads the answer word at its page's start.
 const _: () = assert!(control::ANSWER == 0);
 
-// Entered in the fork child with rdi the code's memfd, rsi the socket, rdx and rcx the inherited restartable-sequences
-// area's offset from the thread pointer and its size (0 for none), r8 the user-space top. glibc's thread pointer is
-// the word at fs:0.
+// Entered by exec of the zygote's own image, which holds the user-space top at `TOP_AT`; the socket is its standard
+// input.
 core::arch::global_asm!(
     ".pushsection .text.wcontainers_host_process_zygote,\"ax\",@progbits",
     // Puts rsp at the signal stack top of the thread whose register page is in r13; rax and rdi change.
@@ -67,23 +67,9 @@ core::arch::global_asm!(
     ".hidden wcontainers_host_process_zygote_start",
     "wcontainers_host_process_zygote_start:",
     ".Lwchp_start:",
-    "mov r15, rdi",
-    "mov rbp, rsi",
-    "mov r12, rdx",
-    "mov r13, rcx",
-    "mov r14, r8",
-    // The code, read-execute from its memfd, over the embedder's reservation.
-    "mov rdi, {zygote}",
-    "mov esi, {code_size}",
-    "mov edx, {prot_code}",
-    "mov r10d, {map_code}",
-    "mov r8, r15",
-    "xor r9d, r9d",
-    "mov eax, {nr_mmap}",
-    "syscall",
-    "mov rcx, {zygote}",
-    "cmp rax, rcx",
-    "jne .Lwchp_pages_refused",
+    "mov ebp, {socket_at_start}",
+    "mov r14, {top_at}",
+    "mov r14, qword ptr [r14]",
     // The stack, after the code.
     "mov rdi, {zygote}",
     "add rdi, {code_size}",
@@ -98,35 +84,22 @@ core::arch::global_asm!(
     "add rcx, {code_size}",
     "cmp rax, rcx",
     "jne .Lwchp_pages_refused",
-    "mov rdi, r15",
-    "mov eax, {nr_close}",
-    "syscall",
-    // Continue in the copy.
-    "lea r9, [rip + .Lwchp_mapped]",
-    "lea r10, [rip + .Lwchp_start]",
-    "sub r9, r10",
-    "mov r10, {zygote}",
-    "add r9, r10",
-    "jmp r9",
-    ".Lwchp_mapped:",
     "mov rsp, {zygote}",
     "add rsp, {zygote_size} - {frame}",
+    // Every signal blocked, which every stub inherits.
+    "mov qword ptr [rsp + {buffer}], -1",
+    "mov edi, {sig_setmask}",
+    "lea rsi, [rsp + {buffer}]",
+    "xor edx, edx",
+    "mov r10d, {sigset_size}",
+    "mov eax, {nr_rt_sigprocmask}",
+    "syscall",
+    "test rax, rax",
+    "jnz .Lwchp_not_blocked",
     "mov eax, {nr_getpid}",
     "syscall",
     "mov rbx, rax",
-    // Drop the forking thread's restartable-sequences area, then prove none is left by registering our own.
-    "test r13, r13",
-    "jz .Lwchp_unregistered",
-    "mov rdi, qword ptr fs:[0]",
-    "add rdi, r12",
-    "mov esi, r13d",
-    "mov edx, {unregister}",
-    "mov r10d, {sig}",
-    "mov eax, {nr_rseq}",
-    "syscall",
-    "test rax, rax",
-    "jnz .Lwchp_not_unregistered",
-    ".Lwchp_unregistered:",
+    // Prove no restartable-sequences registration is left by registering our own.
     "lea r15, [rsp + {own_area}]",
     "xor eax, eax",
     "mov qword ptr [r15], rax",
@@ -779,8 +752,8 @@ core::arch::global_asm!(
     ".Lwchp_pages_refused:",
     "mov edi, {end_pages}",
     "jmp .Lwchp_exit",
-    ".Lwchp_not_unregistered:",
-    "mov edi, {end_not_unregistered}",
+    ".Lwchp_not_blocked:",
+    "mov edi, {end_not_blocked}",
     "jmp .Lwchp_exit",
     ".Lwchp_left_registered:",
     "mov edi, {end_left_registered}",
@@ -815,8 +788,9 @@ core::arch::global_asm!(
     stack_size = const ZYGOTE_SIZE - ZYGOTE_CODE_SIZE,
     zygote_size = const ZYGOTE_SIZE,
     frame = const FRAME,
-    prot_code = const linux::PROT_READ | linux::PROT_EXEC,
-    map_code = const linux::MAP_SHARED | linux::MAP_FIXED,
+    socket_at_start = const SOCKET_AT_START,
+    top_at = const TOP_AT,
+    sig_setmask = const linux::SIG_SETMASK,
     prot_stack = const linux::PROT_READ | linux::PROT_WRITE,
     map_stack = const linux::MAP_PRIVATE | linux::MAP_ANONYMOUS | linux::MAP_FIXED,
     unregister = const RSEQ_FLAG_UNREGISTER,
@@ -957,7 +931,7 @@ core::arch::global_asm!(
     sigkill = const linux::SIGKILL,
     pdeathsig = const linux_raw_sys::prctl::PR_SET_PDEATHSIG,
     end_pages = const ZygoteEnd::PagesRefused as u8,
-    end_not_unregistered = const ZygoteEnd::RestartableSequencesNotUnregistered as u8,
+    end_not_blocked = const ZygoteEnd::SignalsNotBlocked as u8,
     end_left_registered = const ZygoteEnd::RestartableSequencesLeftRegistered as u8,
     end_descriptors = const ZygoteEnd::DescriptorsNotClosed as u8,
     end_unmap = const ZygoteEnd::UnmapRefused as u8,

@@ -1,4 +1,4 @@
-//! The process-wide part of form P: the start-up probe, one zygote, forked anew when it ends, and the table of CPUs
+//! The process-wide part of form P: the start-up probe, one zygote, started anew when it ends, and the table of CPUs
 //! its runners hold.
 //!
 //! A private stand-in for the process-wide host the owner is asked for (plan 8.5); his ruling changes this one place.
@@ -16,7 +16,7 @@ use crate::zygote::{Ended, Zygote};
 /// One per embedder process; every P executor of the process forks its stubs through it.
 pub struct HostProcessHost {
     probe: HostProbe,
-    /// The zygote, or why P became unavailable for good when a zygote could not be forked anew.
+    /// The zygote, or why P became unavailable for good when a zygote could not be started anew.
     zygote: Mutex<Result<Zygote, Unavailable>>,
     zygote_ends: AtomicU64,
     cpus: Mutex<CpuTable>,
@@ -48,7 +48,7 @@ impl CpuTable {
 }
 
 impl HostProcessHost {
-    /// Probes the host and forks the first zygote from the calling thread.
+    /// Probes the host and starts the first zygote.
     pub fn new() -> Result<Self, Unavailable> {
         let probe = HostProbe::new()?;
         let zygote = Zygote::start(&probe)?;
@@ -139,7 +139,7 @@ impl HostProcessHost {
         self.zygote_ends.load(Ordering::Relaxed)
     }
 
-    /// Forks a stub; a zygote that has ended is reaped, counted, warned, and forked anew first.
+    /// Forks a stub; a zygote that has ended is reaped, counted, warned, and started anew first.
     pub fn fork_stub(&self) -> Result<Stub, Unavailable> {
         let mut held = self
             .zygote
