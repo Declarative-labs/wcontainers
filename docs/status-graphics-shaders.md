@@ -121,6 +121,14 @@ Requests to other tracks (from the Direct3D 11 track, 2026-11-24, by the orchest
 changed src/lower.rs so a 32-bit float `div` is correctly rounded as WARP gives it (the device's quotient
 refined once by its fused remainder), because atg-simplecomputepc's 1200 / 300 came out 3.9999998 where
 both real implementations give 4 (154,515 pixels from them; that track's status, Gap list).
+Its effect on this crate's tests, settled by that track on 2026-11-24 (a53d6d4c2, 25d84e56f): the
+refinement keeps the device's quotient where the fused remainder is below the normal range and
+flushed (quotients just above the range's bottom), so it is WARP's answer, not a correctly rounded
+one, there; and tests/compute_draw.rs's comparisons (`atomics_and_counters_match_direct3d`,
+`storage_views_at_any_first_element_match_direct3d`, `nan_rules_match_direct3d`) now run every case
+on WARP too and accept a word or counter equal to either real Direct3D 11's, the graphics bar of
+2026-11-22. Measured: the whole compute_draw file 17 of 17 on the RTX 3080 at f6c1bd56 (that
+track's scratch logs/r12-compute.log). This settles the two failures listed under G6w run 2.
 
 ## G6w run 2: A41 closed, the Windows runs and the desktop timing
 
