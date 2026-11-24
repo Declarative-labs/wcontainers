@@ -294,6 +294,10 @@ impl Memory {
 /// Writes host words at `at` in the code area or the running process's entry mirror, and makes them visible.
 fn write_code(at: u64, words: &[u32]) {
     // SAFETY: both are mapped writable at this level, and no virtual CPU runs these words while they change.
+    #[expect(
+        unsafe_code,
+        reason = "UNEXPLAINED: copies words to whatever address this private safe fn is given, on the comment's word that it is mapped writable and nothing runs it; Words replaces it"
+    )]
     unsafe { ptr::copy_nonoverlapping(words.as_ptr(), at as *mut u32, words.len()) };
     make_code_visible(at, size_of_val(words) as u64);
 }
@@ -379,6 +383,10 @@ fn copy_frame(to: u64, from: u64) {
 }
 
 /// A frame's bytes through the linear map.
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a safe fn returning &'static mut [u8] over any frame number, which may alias another view or a frame a guest on another virtual CPU writes; Words replaces it"
+)]
 fn frame_bytes(frame: u64) -> &'static mut [u8] {
     // SAFETY: the frame is the CPU side's, and only reached through the linear map.
     unsafe { core::slice::from_raw_parts_mut(linear(frame) as *mut u8, PAGE_SIZE as usize) }
@@ -445,6 +453,10 @@ impl NativeCpu {
         }
         // SAFETY: the monitor wrote each routine at its place, with the C calling convention's signature
         // `Placed` names, and the frame is mapped for this level to run.
+        #[expect(
+            unsafe_code,
+            reason = "turns five addresses of the page the monitor placed its routines in, each checked to be an instruction of the page, into function pointers of the signatures the monitor gives; the signatures are trusted from the monitor; stays a one-off"
+        )]
         let (
             read_float_control,
             write_float_control,
@@ -982,6 +994,10 @@ impl NativeCpu {
             self.code_mapped += PAGE_SIZE;
         }
         // SAFETY: the code area is mapped writable at this level, and nothing runs this range yet.
+        #[expect(
+            unsafe_code,
+            reason = "copies host code bytes into the code area just mapped writable at this level, which nothing runs yet; Words replaces it"
+        )]
         unsafe {
             ptr::copy_nonoverlapping(code_bytes.as_ptr(), start as *mut u8, code_bytes.len())
         };
@@ -1551,11 +1567,19 @@ fn drop_piece(m: &mut Memory, at: u64, empty: u32) {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "writes a thread's register page to the frame taken for it from Frames, through the linear map; Words replaces it"
+)]
 fn write_page(frame: u64, page: &RegisterPage) {
     // SAFETY: the register page's frame is the thread's; `RegisterPage` is `#[repr(C)]` words.
     unsafe { ptr::write_volatile(linear(frame) as *mut RegisterPage, page.clone()) };
 }
 
+#[expect(
+    unsafe_code,
+    reason = "reads a thread's register page from the frame taken for it from Frames, through the linear map; Words replaces it"
+)]
 fn read_page(frame: u64) -> RegisterPage {
     // SAFETY: as in `write_page`.
     unsafe { ptr::read_volatile(linear(frame) as *const RegisterPage) }

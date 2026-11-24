@@ -26,6 +26,10 @@ mod kernel {
 
     use crate::protocol::{Ended, Policy, PolicySeeds, Warned};
 
+    #[expect(
+        unsafe_code,
+        reason = "exports floor_main under its own name for the entry assembly to call, a name nothing else defines; test program only, a sym operand would remove it"
+    )]
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let floor = Floor::boot(start);

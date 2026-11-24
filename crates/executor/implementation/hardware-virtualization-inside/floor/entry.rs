@@ -33,6 +33,10 @@ pub enum Taken {
 /// Bytes saved for each pair of registers on the floor's stack.
 const SAVED_PAIR: usize = 2 * size_of::<u64>();
 
+#[expect(
+    unsafe_code,
+    reason = "declares the entry assembly's floor_enter_user and vector table, whose signatures match the global_asm! below; a safe fn declaration would keep only this line"
+)]
 unsafe extern "C" {
     /// Runs the guest's level from `registers` until an exception brings it back, saving its state there.
     fn floor_enter_user(registers: *mut UserRegisters) -> Taken;
@@ -41,6 +45,10 @@ unsafe extern "C" {
 }
 
 /// Runs the guest's level from `registers` until an exception brings it back.
+#[expect(
+    unsafe_code,
+    reason = "switches to the guest's level and back through the entry assembly, which saves and restores every register the floor relies on, and the floor uses no vector register (softfloat); a safe fn declaration removes it"
+)]
 pub fn enter_user(registers: &mut UserRegisters) -> Taken {
     // SAFETY: the switch saves and restores every register the floor's code relies on.
     unsafe { floor_enter_user(registers) }
@@ -51,8 +59,15 @@ pub fn vectors() -> u64 {
     &raw const floor_vectors as u64
 }
 
-global_asm!(
-    r#"
+#[expect(
+    unsafe_code,
+    reason = "UNEXPLAINED: the floor's entry, exception vectors and switch to the guest's level, in assembly no survey has checked line by line; trusted as written, no primitive replaces it"
+)]
+mod assembly {
+    use super::*;
+
+    global_asm!(
+        r#"
 .section .text.entry, "ax"
 .global _start
 _start:
@@ -156,15 +171,16 @@ floor_from_user:
     ldp x29, x30, [sp], #{pair}
     ret
 "#,
-    vectors_bytes = const VECTOR_TABLE_BYTES,
-    entry = const VECTOR_BYTES,
-    pair = const SAVED_PAIR,
-    word = const size_of::<u64>(),
-    synchronous = const Taken::Synchronous as u64,
-    interrupt = const Taken::Interrupt as u64,
-    other = const Taken::Other as u64,
-    x = const offset_of!(UserRegisters, x),
-    sp = const offset_of!(UserRegisters, sp),
-    pc = const offset_of!(UserRegisters, pc),
-    pstate = const offset_of!(UserRegisters, pstate),
-);
+        vectors_bytes = const VECTOR_TABLE_BYTES,
+        entry = const VECTOR_BYTES,
+        pair = const SAVED_PAIR,
+        word = const size_of::<u64>(),
+        synchronous = const Taken::Synchronous as u64,
+        interrupt = const Taken::Interrupt as u64,
+        other = const Taken::Other as u64,
+        x = const offset_of!(UserRegisters, x),
+        sp = const offset_of!(UserRegisters, sp),
+        pc = const offset_of!(UserRegisters, pc),
+        pstate = const offset_of!(UserRegisters, pstate),
+    );
+}

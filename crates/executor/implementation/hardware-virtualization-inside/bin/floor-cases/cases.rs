@@ -70,6 +70,10 @@ const SPIN_COUNTER: usize = 19;
 macro_rules! snippets {
     ($($name:ident: $body:literal;)*) => {
         mod starts {
+            #[expect(
+                unsafe_code,
+                reason = "declares each snippet's start label, which the global_asm! beside it defines; test program only"
+            )]
             unsafe extern "C" {
                 $(
                     #[link_name = concat!("snippet_", stringify!($name))]
@@ -77,22 +81,34 @@ macro_rules! snippets {
                 )*
             }
         }
-        global_asm!(
-            ".section .rodata.snippets, \"a\"",
-            ".balign {instruction}",
-            $(
-                concat!(".global snippet_", stringify!($name)),
-                concat!("snippet_", stringify!($name), ":"),
-                $body,
-                concat!(".global snippet_", stringify!($name), "_end"),
-                concat!("snippet_", stringify!($name), "_end:"),
-            )*
-            mark_a = const MARK_A,
-            mark_b = const MARK_B,
-            instruction = const size_of::<u32>(),
-            counter = const SPIN_COUNTER,
-        );
+        #[expect(
+            unsafe_code,
+            reason = "assembles guest-level snippets into a read-only data section, as bytes the cases copy into guest memory; this program never runs them itself; test program only"
+        )]
+        mod assembly {
+            use super::*;
+
+            global_asm!(
+                ".section .rodata.snippets, \"a\"",
+                ".balign {instruction}",
+                $(
+                    concat!(".global snippet_", stringify!($name)),
+                    concat!("snippet_", stringify!($name), ":"),
+                    $body,
+                    concat!(".global snippet_", stringify!($name), "_end"),
+                    concat!("snippet_", stringify!($name), "_end:"),
+                )*
+                mark_a = const MARK_A,
+                mark_b = const MARK_B,
+                instruction = const size_of::<u32>(),
+                counter = const SPIN_COUNTER,
+            );
+        }
         mod ends {
+            #[expect(
+                unsafe_code,
+                reason = "declares each snippet's end label, which the global_asm! beside it defines; test program only"
+            )]
             unsafe extern "C" {
                 $(
                     #[link_name = concat!("snippet_", stringify!($name), "_end")]
@@ -103,6 +119,10 @@ macro_rules! snippets {
         /// Snippets of guest-level code, by name: their bytes.
         mod code_of {
             $(
+                #[expect(
+                    unsafe_code,
+                    reason = "a slice of the image's bytes between a snippet's two labels, the end placed after the start in the same section; test program only"
+                )]
                 pub fn $name() -> &'static [u8] {
                     let start = &raw const super::starts::$name;
                     let end = &raw const super::ends::$name;
@@ -418,6 +438,10 @@ impl Cases {
         let loaded = run(&space, load, va, 0);
         let stored = run(&space, store, va, MARK_B);
         // SAFETY: the frame is the register page's, read through the linear map.
+        #[expect(
+            unsafe_code,
+            reason = "reads a word of the register page's frame, which this case took and mapped, through the linear map; test program only, Words replaces it"
+        )]
         let after = unsafe { core::ptr::read_volatile(linear(frame) as *const u64) };
         let passed = called(&loaded, MARK_A)
             && stored.class == class(ESR_EL1::EC::Value::SVC64)
@@ -475,6 +499,10 @@ impl Cases {
                 let mirror = run(space, branch, MIRROR, 0);
                 let registers = run(space, load, Region::Threads.base(), 0);
                 // SAFETY: the heap page is mapped in this space's inside half, now switched to.
+                #[expect(
+                    unsafe_code,
+                    reason = "reads a word of the heap page this case mapped in the space now switched to; test program only, Words replaces it"
+                )]
                 let heap = unsafe { core::ptr::read_volatile(Region::Heap.base() as *const u64) };
                 let ok = called(&mirror, *mark) && called(&registers, *mark) && heap == *mark;
                 if !ok && passed {
@@ -812,6 +840,10 @@ impl Cases {
         floor::ask(&GiveBack { at: first, length }, &[]);
         let after = floor::ask(&Footprint {}, &[]).bytes;
         // SAFETY: the given-back memory is still mapped, and reads as zeros.
+        #[expect(
+            unsafe_code,
+            reason = "reads a word of memory just given back, which stays mapped and reads as zeros, through the linear map; test program only, Words replaces it"
+        )]
         let reads = unsafe { core::ptr::read_volatile(linear(first + length / 2) as *const u64) };
         let fell = before.saturating_sub(after);
         let passed = fell >= length / 2 && reads == 0;
@@ -920,6 +952,10 @@ fn second(floor: Floor) {
     );
 }
 
+#[expect(
+    unsafe_code,
+    reason = "exports floor_main under its own name for the entry assembly to call, a name nothing else defines; test program only, a sym operand would remove it"
+)]
 #[unsafe(no_mangle)]
 extern "C" fn floor_main(start: &Start) -> ! {
     let mut floor = Floor::boot(start);

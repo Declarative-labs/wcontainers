@@ -17,7 +17,15 @@ use crate::layout::{BLOCK_SIZE, linear};
 pub struct Blocks;
 
 // SAFETY: it only claims memory that nothing else uses, through the `Talc` it is given.
+#[expect(
+    unsafe_code,
+    reason = "promises talc that acquiring takes no talc lock and no global allocation: acquire only takes the frames' spin lock, which does not allocate; stays a one-off"
+)]
 unsafe impl Source for Blocks {
+    #[expect(
+        unsafe_code,
+        reason = "hands talc a run of frames take_blocks gave, never given before, reached only through this heap from then on; stays a one-off"
+    )]
     fn acquire<B: Binning>(talc: &mut Talc<Self, B>, layout: Layout) -> Result<(), ()> {
         // The allocation with its worst alignment, and talc's own chunk on either side of a claim.
         let mut needed = layout.size() + layout.align() + CHUNK_UNIT + CHUNK_UNIT;

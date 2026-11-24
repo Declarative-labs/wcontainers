@@ -49,6 +49,10 @@ pub fn cpu() -> u64 {
 }
 
 /// The running virtual CPU's link page.
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a safe fn returning a fresh &'static mut Link on each call, so two can live at once, over a page the host rewrites while one lives; Words replaces it"
+)]
 fn link_page() -> &'static mut Link {
     let page = FIRST_LINK.load(Ordering::Relaxed) + cpu() * PAGE_SIZE;
     // SAFETY: each virtual CPU has its own link page, reached through the linear map.
@@ -140,6 +144,10 @@ macro_rules! print {
 }
 
 /// Reports a fault in the inside itself and stops.
+#[expect(
+    unsafe_code,
+    reason = "exports floor_fatal under its own name for the vector assembly to call, a name nothing else defines; a sym operand of global_asm! would remove it"
+)]
 #[unsafe(no_mangle)]
 extern "C" fn floor_fatal(esr: u64, elr: u64, far: u64) -> ! {
     loop {
@@ -200,6 +208,10 @@ impl Floor {
         let known = self.start.cpu as usize + 1;
         // SAFETY: the interrupt controller's registers are mapped as device memory through the linear map, and
         // nothing else uses them.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: builds the GICv3 driver over its registers, mapped as device memory through the linear map, from a safe pub method that nothing but its one caller keeps to one call; stays a one-off"
+        )]
         let mut gic =
             unsafe { GicV3::new(UniqueMmioPointer::new(distributor), redistributors, known) }
                 .expect("interrupt controller");
@@ -374,6 +386,10 @@ pub fn make_code_visible(va: u64, length: u64) {
     let mut at = va & !(data_line - 1);
     while at < va + length {
         // SAFETY: cache maintenance only.
+        #[expect(
+            unsafe_code,
+            reason = "cleans one data cache line by address, which has no memory effect and at worst faults to floor_unexpected; CodeCache replaces it"
+        )]
         unsafe { asm!("dc cvau, {0}", in(reg) at, options(nostack, preserves_flags)) };
         at += data_line;
     }
@@ -381,6 +397,10 @@ pub fn make_code_visible(va: u64, length: u64) {
     let mut at = va & !(instruction_line - 1);
     while at < va + length {
         // SAFETY: cache maintenance only.
+        #[expect(
+            unsafe_code,
+            reason = "invalidates one instruction cache line by address, which has no memory effect and at worst faults to floor_unexpected; CodeCache replaces it"
+        )]
         unsafe { asm!("ic ivau, {0}", in(reg) at, options(nostack, preserves_flags)) };
         at += instruction_line;
     }
@@ -398,6 +418,10 @@ pub fn write_frame(frame: u64, offset: u64, bytes: &[u8]) {
         "the bytes fit the frame"
     );
     // SAFETY: the frame is ours, and the bytes lie in it.
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: a plain copy into any frame a caller of this safe pub fn names, which may be the floor's own or one a guest on another virtual CPU is writing; the asserts keep it inside one frame; Words replaces it"
+    )]
     unsafe {
         ptr::copy_nonoverlapping(
             bytes.as_ptr(),
