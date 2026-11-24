@@ -12,6 +12,14 @@ track was idle (f9ecca97, extended-range swap chains in the blit models; c387985
 
 ## Where things stand
 
+Runs 56 and 57 (2026-11-23, milestone G5r): the fresh run of every figure at 1d583db4 (run 56's
+chain, "Results of run 56") and the shader runner's failing files each sorted with its owner
+("Shader runner"). What that sort showed of this front's own was built: a pixel shader reading
+both its clip and its cull distances was converted with only the first refused one linked
+(clip-cull-distance-1; 38d99d9c). The use test now also samples, compares and gathers texels of
+varied components of the 42 formats `varied_texel` decodes, not only zeros ("Gap list",
+formats).
+
 Run 55 (2026-11-23, milestone G5r, its third run): the sixth independent check (scratch
 icheck55) found finding 2 open again and the gap list naming wrong owners; both are closed below,
 and its seven minor findings are each closed or recorded. Runs 53 and 54 closed the fifth check's
@@ -85,8 +93,7 @@ three findings; the seventh check had passed G5 on 2026-11-20 before the owner's
   Direct3D 11 track's back end and infrastructure work, runs 53 and 54), and the shaders track's
   converter items, keyed by this front in run 55 (second item of this list).
 
-The pass bar, item by item (results under "Results of run 55", where measured, and "Results of
-run 54"):
+The pass bar, item by item (results under "Results of runs 56 and 57"):
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080: 189 of
   198; every failing file is on the gap list.
 - Real programs: Microsoft's D3D12HelloTriangle and D3D12HelloConstBuffers, bgfx 01-cubes,
@@ -94,6 +101,29 @@ run 54"):
 - CheckFeatureSupport: the own program's `features` against real, every differing answer listed
   in features-differing.txt under its cause; the level and use tests above.
 - The own program's 35 cases equal to real Direct3D 12.
+
+## Results of runs 56 and 57
+
+2026-11-23, RTX 3080, desktop shared (the OpenGL track's conformance runs held the GPU queue for
+most of the evening; jobs waited up to 50 minutes). Run 56's chain (scratch bin/rest56.sh, logs
+run56/) on code at 1d583db4; run 57's checks (run57/) on its own clone `tip2`, branch
+`phase-2-graphics-direct3d-12b` (its own desktop copy, C:\wc\src and C:\wc\target of that name).
+- Test files (run56/full1.log): 189 of 198, the same 9 as runs 52 to 54.
+- Own program (run56/check1.log): draw 0 of 4096 pixels beyond 1; 35 of 35 cases equal;
+  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38; features 154 of 872 differ,
+  outputs 22 of 110, answers 2 of 40, every one listed and none beyond real.
+- Shader runner (run56/runner1.log): 219 of 302 (run 54: 218); sorted under "Shader runner".
+  clip-cull-distance-1 and -2 at 38d99d9c (run57/verify2.log): -2 passes, -1 fails no check
+  (sections above shader model 6.0 only).
+- Use test at 7ef9b914's test code (run57/verify2-answers.log): 931 uses by resources and 833 by
+  programs, none failing; `binding_tier_1_counts_bound_at_once_are_read` passes.
+- Microsoft's two samples equal (0 pixels beyond 8, 2.8 and 2.6 s); Godot's 2D platformer equal;
+  Godot's 3D platformer the same one pixel (1 of 518,400 beyond 8, difference 48 at 921,317,
+  frames 10, 60 and 120; 10.7 s) (run56/p1-*.log).
+- Lint with warnings denied (the rented ARM64 machine, the x86 one not answering; run57/arm-1.log
+  to arm-4.log): the infrastructure crate, this front and the Direct3D 11 front clean; the tests
+  without a GPU pass. Literal check (arm-5.log, the whole tree): no finding in this track's files;
+  the Direct3D 11 front's two named under "Asked of other tracks".
 
 ## Results of run 55
 
@@ -241,13 +271,22 @@ and resolve bits (Departures: no resource they apply to can be made).
   Since run 55 it also loads a texel of varied components (of either sign) of each of the 42
   formats of whole-byte components alike, checked against Direct3D's conversions (normalised
   ones within a bit): run55/gpu1.log, 931 uses by resources and 787 by programs, none failing.
-  Its other reads (samples, gathers, comparisons, multisampled and typed buffer loads) read
-  textures of zeros, so they prove a use is accepted and keeps the device whole, not that a
-  filter or swizzle is right (the sixth check's own cases filled varied texels and bound resource
-  binding tier 1's full counts: every word equal to the RTX 3080's); and
-  `CheckFeatureSupport`'s answers other than formats (wave lane counts, binding tiers, typed
-  storage load formats) are compared with real by the own program's `features`, not asked and
-  used by a test. Both this track's own open part ("Next" 2).
+  Since run 57 it also samples (linear), compares with 0.5 and gathers a texture of those texels
+  in every texel, wherever answered, each checked against the same conversions (filtered floats
+  within 1/1000): run57/verify2-answers.log, 931 uses by resources and 833 by programs, none
+  failing. Its multisampled and typed buffer loads, and every read of the packed and block
+  formats, still read zeros only, so they prove a use is accepted and keeps the device whole, not
+  that a decode or swizzle is right (the sixth check's own cases filled varied texels and bound
+  resource binding tier 1's full counts: every word equal to the RTX 3080's). Of `CheckFeatureSupport`'s
+  answers other than formats, resource binding tier 1 is asked and used since run 55 (test
+  `binding_tier_1_counts_bound_at_once_are_read`, tests/answers.rs: 128 shader resource views, 14
+  constant buffers, 16 samplers and 8 unordered access views in one compute program, each read)
+  and typed storage loads per format by the use test; `WaveOps` is asked by the shader runner
+  (vkd3d's runner reads it before its wave sections) and used by its four wave files
+  (wave-ops-float, -int, -uint, wave-reconvergence), each running every check real runs but those
+  needing float64, int64 or shader models above 6.0, every one equal to real's; the lane counts
+  themselves are compared with real by the own program's `features` only (a program of our own
+  reading them needs dxc, which the desktop lacks). Both this track's own open part ("Next" 2).
 - Typed storage stores of unorm formats rounding a value exactly half-way between two codes
   (the sixth check's case, texel = v * 0.5 + (0.25, -0.125, 0.0625, 0.5) stored and read back):
   ours gives one code off the RTX 3080's in a few channels (`R8G8B8A8_UNORM` d9 where it gives d8;
@@ -299,7 +338,10 @@ Not to be matched (Direct3D 12 leaves it undefined): "a shader resource view of 
 dimension than the program declares" (since run 52 also a single-sampled view where the program
 declares a multisampled texture, or the reverse, which the back end refused by losing the device)
 and "an unordered access view of another dimension than
-the program declares" (one-layer 2D arrays bound to 2D declarations are bound as 2D views);
+the program declares" (one-layer 2D arrays bound to 2D declarations are bound as 2D views; since
+run 56 also a buffer view where the program declares a storage texture, which the atomics route
+met as "not a texture", uav-atomics); "a raw or structured view where the program declares a typed
+buffer" (run 56, before an invalid-use error, length-property);
 "a shared buffer read after an overlapping one was written in the same submission".
 
 The front's own open parts, each a route not built (no counted test file, case or real program
@@ -338,8 +380,8 @@ on some adapters, and WebGL 2 makes no Direct3D 12 device:
   structured buffer view whose stride is no multiple of 4", "float clears of raw and structured
   buffer views", "clearing a typed buffer view of this format", "clearing an unordered access
   view of this format", "clearing rectangles of a 3D texture's view in another format", "null
-  views of this storage texture", "null views of one-dimensional textures", "typed buffer views
-  bound as storage textures", "unordered access buffers in a custom heap the CPU sees".
+  views of this storage texture", "null views of one-dimensional textures", "unordered access
+  buffers in a custom heap the CPU sees".
 - Views and binding: "a buffer view starting inside one of the program's elements", "a constant
   buffer view shorter than the program's block, or past its buffer's end, of a buffer not in an
   upload heap", "a texture read as another type than its view's format, of a stencil view or in
@@ -496,19 +538,35 @@ picture within 63 of 255 (Direct3D leaves the line filter to the implementation)
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
 Run with our d3d12.dll alone (our dxgi.dll serves Direct3D 12 only and every file starts with a
-Direct3D 11 part). Run 54 (run54/runner3.log): 218 of 302, 84 failing, as in run 53 (run 52: 214, the same 88 as runs 34 to 51;
-which four now pass, from the shaders track's work since, was not sorted in run 53). Each failing file's cause was sorted in run 44 (scratch `bin/classify30.py`; the list is
-in this file at cf55bbe8, "Shader runner"): 61 run fewer checks than real with none failing (50
-shader models above 6.0, which section 9 does not answer; the rest 64-bit integers, stencil
-export, depth bounds, raster order views, the layer and viewport index from any stage, all
-absent); 27 fail some checks (2 absent features, 3 not to be matched, 22 named items of the
-shaders track). texture-load, which run 44 counted as refused for a texture read as another type
-than its view (lines 235 to 267, a route built in run 52 and compared with real Direct3D 12 by
-case `texture-kinds`), has since run 46 ended earlier, at line 51: a `Texture2DMS` declaration
-bound to a view of a single-sampled texture, a view of another dimension than the program
-declares, which Direct3D 12 leaves undefined (not to be matched; real draws it; ours refuses it
-by name since run 52, where the back end lost the device before, and the device is removed, so
-the lines after it are not reached).
+Direct3D 11 part). Run 56 (run56/runner1.log, code at 1d583db4): 219 of 302, 83 failing (run 54:
+218; run 52: 214). Each failing file sorted from that run's logs (scratch `bin/classify56.py`,
+run56/classify-runner1.txt), with its owner:
+- 57 run fewer checks than real, none failing, only for shader models above 6.0 (real runs each
+  section at 6.0 to 6.5, ours at 6.0): absent by plan, section 9 answers shader model 6.0.
+- 12 run fewer checks, none failing, for absent features (section 9): float64
+  (arithmetic-float-uniform, cast-64-bit, wave-ops-float), 64-bit integers (arithmetic-int-uniform,
+  arithmetic-uint, bitwise, cast-64-bit, wave-ops-int, wave-ops-uint), depth bounds (depth-bounds),
+  raster order views (rasteriser-ordered-views), the layer and viewport index from any stage
+  (rt-array-index, vp-array-index).
+- 14 fail some checks:
+  - Absent: switch (64-bit integers, `Int64`), sample-minmax (minimum and maximum filters),
+    tiled-status (sparse feedback belongs to tiled resources, tier 0 answered; the shaders track's
+    `SparseFeedback` stays a refusal by plan), frexp (one check: float subnormals in shader models
+    4 and 5, plan 4.12's listed loss, frexp line 57).
+  - The shaders track (G6), asked ("Asked of other tracks"): gather-cmp (`DepthGatherComponent`),
+    eval-attrib (`CentroidPositionPerSample`), uav-rwbuffer, uav-rwbyteaddressbuffer,
+    uav-rwstructuredbuffer and uav-rwtexture (`GloballyCoherent`, and memory operands wider than
+    the workgroup).
+  - Not to be matched (views of another kind than the program declares, which Direct3D 12 leaves
+    undefined; real draws them, ours refuses each by name and removes the device, so the lines
+    after are not reached): texture-load (line 51, a `Texture2DMS` declaration bound to a
+    single-sampled view), uav-atomics (line 152, a buffer view where the program declares a
+    storage texture), length-property (line 145, a structured view where the program declares
+    `RWBuffer<float>`; vkd3d marks this section todo for itself).
+  - This front's own: clip-cull-distance-1, a pixel shader reading both its clip and cull
+    distances was converted with only the first one refused linked. Fixed in run 57 (38d99d9c;
+    scratch run57/verify2.log): it now fails no check and runs 3,874 of real's 3,919, the rest
+    sections above shader model 6.0, so it joins the first group (58 there, 13 here).
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
@@ -624,14 +682,17 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 ## Next, in this order
 
 1. Keep the crates building after each merge the orchestrator makes into `agents`; keep the
-   literal check free of this track's findings. Apply the rig patch (sync55.sh does, in the
-   clone only) for test file runs.
+   literal check free of this track's findings. Apply the rig patch (sync56.sh does, in the
+   clone only) for test file runs. Run 57's scripts (scratch bin/): `rest56.sh` (the whole chain
+   on `tip`), `verify57.sh <n> <runner files>` (with `ANSWERS=1` also the use test) on `tip2`,
+   `armcheck57c.sh` (lint and the tests without a GPU, the ARM64 machine) on `tip3`; `tip2`'s
+   desktop copy needs the submodule step the script carries.
 2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
    capture), stage register moves behind the stage helper and beside linked values, Godot's 3D
    platformer's one pixel (trace which draw writes it, on real and ours; Godot offers no WARP
-   adapter choice the rig uses), the use test's other reads of varied texels, and loads of the
-   packed and block formats, against a decode of their own (no crate in the tree decodes every
+   adapter choice the rig uses), the use test's multisampled and typed buffer loads of varied
+   texels, and reads of the packed and block formats, against a decode of their own (no crate in the tree decodes every
    DXGI format on the CPU), a test asking and using the
    answers other than formats (wave lane counts need a shader model 6 program: no dxc on the
    desktop), the other refusals of the gap list.
