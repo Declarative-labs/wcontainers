@@ -555,7 +555,8 @@ fn bench_workloads_plainly_under_p_and_under_web_assembly() {
 }
 
 /// busybox's `sh` starting `/bin/true` in a loop, under form P twice on one executor and in the reference, against
-/// the model: the reference's own time plus, per program, two process creations and its kernel entries times the round
+/// the model: the reference's own time plus, per program, two of the host's own process creations (a subshell of the
+/// reference's `sh`, so a slower stub of ours cannot raise the model with it) and its kernel entries times the round
 /// trip, plus the translation time (the first run less the second).
 #[test]
 #[ignore = "a measurement, run on its own"]
@@ -602,16 +603,26 @@ fn busybox_sh_starting_programs() {
     let (outcome, _) = reference::run_command(&["sh", "-c", &timed]);
     let stderr = String::from_utf8_lossy(&outcome.stderr);
     let reference = parse_real(&stderr).unwrap_or_else(|| panic!("no time in {stderr:?}"));
-    // A process creation and a round trip, measured here.
+    // The host's process creation and end: a loop of subshells in the reference, less the same loop without them.
+    let subshells = 10_000;
+    let loop_time = |body: &str| {
+        let script = format!("i=0; while [ $i -lt {subshells} ]; do {body}; i=$((i+1)); done");
+        let outcome =
+            reference::run_command_with(&[], &["sh", "-c", &format!("time sh -c '{script}'")]);
+        let stderr = String::from_utf8_lossy(&outcome.stderr);
+        parse_real(&stderr).unwrap_or_else(|| panic!("no time in {stderr:?}"))
+    };
+    let creation = loop_time("( : )").saturating_sub(loop_time(":")) / subshells;
+    // Our stub's creation and end and a round trip, measured here.
     let host = host();
-    let creations = 100;
+    let stubs = 100;
     let started = Instant::now();
-    for _ in 0..creations {
+    for _ in 0..stubs {
         let stub = host.fork_stub().expect("a stub");
         host.kill(&stub).expect("kill");
         host.reap(&stub).expect("reap");
     }
-    let creation = started.elapsed() / creations;
+    let stub_creation = started.elapsed() / stubs;
     let mut samples = getppid_loop(&mut cpu, 100_000);
     samples.sort_unstable();
     let round_trip = Duration::from_nanos(u64::from(samples[samples.len() / 2]));
@@ -620,7 +631,7 @@ fn busybox_sh_starting_programs() {
     // The model holds no translation: the second run, which translates nothing anew, is the one compared with it.
     let model = reference + creation * 2 * programs as u32 + round_trip * second_entries as u32;
     println!(
-        "busybox sh starting {programs} programs: form P {first:?} then {second:?} ({first_entries} and {second_entries} kernel entries), reference {reference:?}; process creation and end {creation:?}, round trip {round_trip:?}; model {model:?}; second run against the model {:.3}, first run (translating) {:.3}; load {}",
+        "busybox sh starting {programs} programs: form P {first:?} then {second:?} ({first_entries} and {second_entries} kernel entries), reference {reference:?}; the host's process creation and end {creation:?}, our stub's {stub_creation:?}, round trip {round_trip:?}; model {model:?}; second run against the model {:.3}, first run (translating) {:.3}; load {}",
         second.as_secs_f64() / model.as_secs_f64(),
         first.as_secs_f64() / model.as_secs_f64(),
         load().trim()
