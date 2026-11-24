@@ -243,6 +243,66 @@ fn a_fork_child_runs_its_own_copy_and_leaves_the_parent_s_memory() {
     assert_eq!(read_word(&mut cpu, child, DATA), SUM);
 }
 
+/// Runs a thread of `memory` from the adding program's start with x2 at its data; the sum it stored.
+fn run_adding(cpu: &mut HostProcessExecutor, memory: MemoryId, thread: ThreadId) -> u64 {
+    let mut registers = RegisterBlock::ZERO;
+    registers.pc = CODE;
+    registers.x[2] = DATA;
+    cpu.set_registers(thread, &registers);
+    let seen = run_to_exit(cpu, thread);
+    assert!(
+        matches!(seen.exits[..], [.., (Exit::Syscall(call), _, _)] if call.number.0 == u64::from(EXIT)),
+        "{:?}",
+        seen.exits
+    );
+    read_word(cpu, memory, DATA)
+}
+
+/// The adding program with its loop adding `step` instead of 3, written over `memory`'s code as a loader does.
+fn rewrite_adding(cpu: &mut HostProcessExecutor, memory: MemoryId, step: i64) {
+    let mut words = adding_program();
+    words[2] = encode::add_immediate(0, 0, step).expect("an add");
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    cpu.set_permissions(memory, CODE, PAGE, Permissions::READ | Permissions::WRITE)
+        .expect("writable");
+    cpu.write(memory, CODE, &bytes).expect("the code");
+    cpu.set_permissions(memory, CODE, PAGE, Permissions::READ | Permissions::EXECUTE)
+        .expect("executable");
+    cpu.code_changed(memory, CODE, PAGE, &[CODE]);
+}
+
+/// A fork child runs the code its parent loaded, loading none of its own, until one of them changes its executable
+/// pages: that one makes its own and the other keeps running what it ran.
+#[test]
+fn a_fork_child_runs_its_parent_s_code_until_either_changes_it() {
+    let mut cpu = executor();
+    let (parent, parent_thread) = guest(&mut cpu, &adding_program());
+    assert_eq!(run_adding(&mut cpu, parent, parent_thread), SUM);
+    let child = cpu.memory_duplicate(parent).expect("fork");
+    let child_thread = cpu.thread_new(child).expect("thread");
+    let before = cpu.counters();
+    assert_eq!(run_adding(&mut cpu, child, child_thread), SUM);
+    let after = cpu.counters();
+    assert_eq!(
+        after.pieces_loaded_ahead, before.pieces_loaded_ahead,
+        "the child loaded nothing"
+    );
+    assert_eq!(after.codes_unshared, before.codes_unshared);
+    // The child's loader writes new code: it stops sharing; the parent runs what it ran.
+    rewrite_adding(&mut cpu, child, 5);
+    assert_eq!(cpu.counters().codes_unshared, before.codes_unshared + 1);
+    assert_eq!(run_adding(&mut cpu, child, child_thread), 100 * 5 + 1000);
+    assert_eq!(run_adding(&mut cpu, parent, parent_thread), SUM);
+    // A second child shares the parent's code; this time the parent changes it.
+    let second = cpu.memory_duplicate(parent).expect("fork");
+    let second_thread = cpu.thread_new(second).expect("thread");
+    rewrite_adding(&mut cpu, parent, 7);
+    assert_eq!(cpu.counters().codes_unshared, before.codes_unshared + 2);
+    assert_eq!(run_adding(&mut cpu, parent, parent_thread), 100 * 7 + 1000);
+    assert_eq!(run_adding(&mut cpu, second, second_thread), SUM);
+    assert_eq!(run_adding(&mut cpu, child, child_thread), 100 * 5 + 1000);
+}
+
 /// A program that names its own addresses: a loop of 10 adds of 3, a call to a function that adds 1000, the next page's
 /// address by `adr` in x4, a store and a load of the sum there, getpid, exit.
 fn placed_program() -> Vec<u32> {

@@ -173,6 +173,9 @@ pub struct Counters {
     pub last_targets_made_ahead: u64,
     /// Pages of the slot table a jump reached and no slot was written in, given back to the host.
     pub slot_pages_given_back: u64,
+    /// Memories that stopped sharing translated code with the memory they were forked from or to, to change their
+    /// executable pages.
+    pub codes_unshared: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -240,7 +243,7 @@ pub struct HostProcessExecutor {
     counters: Counters,
     /// Each memory's translated code, by memory.
     #[cfg(target_arch = "aarch64")]
-    codes: Vec<Option<native::Code>>,
+    codes: native::Codes,
     /// Each guest thread's own state, by thread.
     #[cfg(target_arch = "aarch64")]
     guests: Vec<Option<native::Guest>>,
@@ -275,7 +278,7 @@ impl HostProcessExecutor {
             blocks: Vec::new(),
             counters: Counters::default(),
             #[cfg(target_arch = "aarch64")]
-            codes: Vec::new(),
+            codes: native::Codes::default(),
             #[cfg(target_arch = "aarch64")]
             guests: Vec::new(),
             #[cfg(target_arch = "aarch64")]
@@ -1143,6 +1146,8 @@ impl Cpu for HostProcessExecutor {
             self.memory_drop(child);
             return Err(error);
         }
+        #[cfg(target_arch = "aarch64")]
+        self.share_code(source, child);
         Ok(child)
     }
 
@@ -1232,6 +1237,10 @@ impl Cpu for HostProcessExecutor {
     ) -> Result<(), CpuError> {
         let range = checked(address, length)?;
         self.room(id, 1)?;
+        #[cfg(target_arch = "aarch64")]
+        if changes_execution(&self.memory(id).permissions, range.clone(), permissions) {
+            self.unshare_code(id);
+        }
         #[cfg(target_arch = "aarch64")]
         if !permissions.contains(Permissions::EXECUTE) {
             self.drop_code_of(id, range.clone());
@@ -1517,6 +1526,23 @@ fn process_clock(process: Pid) -> Result<Duration, Errno> {
         .and_then(nix::time::clock_gettime)
         .map_err(|errno| Errno::from_raw_os_error(errno as i32))?;
     Ok(Duration::new(at.tv_sec() as u64, at.tv_nsec() as u32))
+}
+
+/// Whether giving `range` the permissions `to` changes which of its pages run, or makes one writable and executable.
+#[cfg(target_arch = "aarch64")]
+fn changes_execution(
+    permissions: &RangeMap<u64, Permissions>,
+    range: Range<u64>,
+    to: Permissions,
+) -> bool {
+    let runs = to.contains(Permissions::EXECUTE);
+    if runs && to.contains(Permissions::WRITE) {
+        return true;
+    }
+    let differs = permissions
+        .overlapping(range.clone())
+        .any(|(_, granted)| granted.contains(Permissions::EXECUTE) != runs);
+    differs || (runs && permissions.gaps(&range).next().is_some())
 }
 
 /// Puts a value in the first free slot; its index.

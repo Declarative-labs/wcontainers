@@ -177,6 +177,79 @@ pub(super) struct Code {
     loaded_last: Option<(KeptAt, KeptAt, u64)>,
 }
 
+/// Decision 16's stand-in (plan section 12): a fork child runs its parent's translated code, see
+/// [`HostProcessExecutor::share_code`].
+const FORK_SHARES_CODE: bool = true;
+
+/// Each memory's translated code, one shared by memories whose executable pages are the same.
+#[derive(Default)]
+pub(super) struct Codes {
+    /// The index of each memory's code, by memory.
+    of: Vec<Option<usize>>,
+    /// Each code and the memories using it.
+    codes: Vec<Option<(Code, Vec<MemoryId>)>>,
+}
+
+impl Codes {
+    fn index(&self, memory: MemoryId) -> Option<usize> {
+        self.of.get(memory.0 as usize).copied().flatten()
+    }
+
+    fn get(&self, memory: MemoryId) -> Option<&Code> {
+        let (code, _) = self.codes[self.index(memory)?].as_ref()?;
+        Some(code)
+    }
+
+    fn get_mut(&mut self, memory: MemoryId) -> Option<&mut Code> {
+        let index = self.index(memory)?;
+        let (code, _) = self.codes[index].as_mut()?;
+        Some(code)
+    }
+
+    /// The memories using a memory's code, itself among them; none where it has none.
+    fn users(&self, memory: MemoryId) -> &[MemoryId] {
+        self.index(memory)
+            .and_then(|index| self.codes[index].as_ref())
+            .map_or(&[], |(_, users)| users)
+    }
+
+    fn set(&mut self, memory: MemoryId, index: Option<usize>) {
+        let at = memory.0 as usize;
+        if self.of.len() <= at {
+            self.of.resize(at + 1, None);
+        }
+        self.of[at] = index;
+    }
+
+    fn make(&mut self, memory: MemoryId, code: Code) {
+        let index = super::place(&mut self.codes, (code, vec![memory]));
+        self.set(memory, Some(index));
+    }
+
+    fn share(&mut self, source: MemoryId, child: MemoryId) {
+        let Some(index) = self.index(source) else {
+            return;
+        };
+        if let Some((_, users)) = self.codes[index].as_mut() {
+            users.push(child);
+            self.set(child, Some(index));
+        }
+    }
+
+    /// The memory stops using its code; the code, where no other memory uses it.
+    fn release(&mut self, memory: MemoryId) -> Option<Code> {
+        let index = self.index(memory)?;
+        self.set(memory, None);
+        let (_, users) = self.codes[index].as_mut()?;
+        users.retain(|&user| user != memory);
+        if users.is_empty() {
+            self.codes[index].take().map(|(code, _)| code)
+        } else {
+            None
+        }
+    }
+}
+
 impl Code {
     /// The piece holding host address `pc`, or an empty one at `pc` in the slot table; none for any other address.
     fn piece_at(&self, pc: u64) -> Option<Piece<'_>> {
@@ -416,32 +489,63 @@ impl HostProcessExecutor {
 
     /// The memory's code, made with its code area and slot table mapped at the next turn on first use.
     fn code(&mut self, memory: MemoryId) -> Result<&mut Code, CpuError> {
-        let index = memory.0 as usize;
-        if self.codes.len() <= index {
-            self.codes.resize_with(index + 1, || None);
-        }
-        if self.codes[index].is_none() {
+        if self.codes.get(memory).is_none() {
             let area = CodeArea::new().map_err(super::host_error)?;
-            let memory = self.memory_mut(memory);
-            memory.push_code(Command::MapCode, area.shared_file());
-            memory.push_code(Command::MapSlots, area.shared_file());
-            self.codes[index] = Some(Code {
-                area,
-                next: CODE_AREA as u64,
-                slot_pages: HashSet::new(),
-                pieces: BTreeMap::new(),
-                hosts: BTreeMap::new(),
-                exits_to: HashMap::new(),
-                loaded_last: None,
-            });
+            let stub = self.memory_mut(memory);
+            stub.push_code(Command::MapCode, area.shared_file());
+            stub.push_code(Command::MapSlots, area.shared_file());
+            self.codes.make(
+                memory,
+                Code {
+                    area,
+                    next: CODE_AREA as u64,
+                    slot_pages: HashSet::new(),
+                    pieces: BTreeMap::new(),
+                    hosts: BTreeMap::new(),
+                    exits_to: HashMap::new(),
+                    loaded_last: None,
+                },
+            );
         }
-        Ok(self.codes[index].as_mut().expect("made above"))
+        Ok(self.codes.get_mut(memory).expect("made above"))
     }
 
-    /// Drops a memory's code with the memory; the piece it loaded last had none loaded after it.
+    /// A fork child runs its parent's code area, slot table and pieces, where the parent has code and no page both
+    /// writable and executable; until either changes its executable pages, theirs are the same.
+    pub(super) fn share_code(&mut self, source: MemoryId, child: MemoryId) {
+        if !FORK_SHARES_CODE
+            || self
+                .memory(source)
+                .permissions
+                .iter()
+                .any(|(_, granted)| granted.contains(Permissions::WRITE | Permissions::EXECUTE))
+        {
+            return;
+        }
+        let Some(code) = self.codes.get(source) else {
+            return;
+        };
+        let file = code.area.shared_file();
+        self.codes.share(source, child);
+        let pages = self.memory(source).code_pages.clone();
+        let stub = self.memory_mut(child);
+        stub.code_pages = pages;
+        stub.push_code(Command::MapCode, Arc::clone(&file));
+        stub.push_code(Command::MapSlots, file);
+    }
+
+    /// A memory about to change its executable pages stops sharing its code: it makes its own at its next load.
+    pub(super) fn unshare_code(&mut self, memory: MemoryId) {
+        if self.codes.users(memory).len() > 1 {
+            let _ = self.codes.release(memory);
+            self.counters.codes_unshared += 1;
+        }
+    }
+
+    /// Drops a memory's code with the memory, where no other memory uses it; the piece it loaded last had none loaded
+    /// after it.
     pub(super) fn drop_code(&mut self, memory: MemoryId) {
-        if let Some(code) = self.codes.get_mut(memory.0 as usize)
-            && let Some(code) = code.take()
+        if let Some(code) = self.codes.release(memory)
             && let Some((first, last, _)) = code.loaded_last
             && let Some(after) = self.translations.after.get_mut(&(first, last))
         {
@@ -516,7 +620,7 @@ impl HostProcessExecutor {
         if self.lone {
             return Ok(());
         }
-        let code = self.codes[memory.0 as usize].as_mut().expect("made above");
+        let code = self.codes.get_mut(memory).expect("made above");
         let first = match code.loaded_last.take() {
             Some((first, last, from)) => {
                 self.translations
@@ -535,11 +639,7 @@ impl HostProcessExecutor {
             };
             let (next, targets) = (after.next, after.targets.clone());
             if !targets.is_empty() {
-                let base = self.codes[memory.0 as usize]
-                    .as_ref()
-                    .expect("made above")
-                    .pieces[&at_pc]
-                    .base;
+                let base = self.codes.get(memory).expect("made above").pieces[&at_pc].base;
                 for (call, target) in targets {
                     self.make_last_target(memory, base + call, at_pc.wrapping_add(target));
                     self.counters.last_targets_made_ahead += 1;
@@ -549,7 +649,7 @@ impl HostProcessExecutor {
                 break;
             };
             let next = at_pc.wrapping_add(next);
-            let code = self.codes[memory.0 as usize].as_ref().expect("made above");
+            let code = self.codes.get(memory).expect("made above");
             if code.pieces.contains_key(&next) {
                 break;
             }
@@ -561,10 +661,7 @@ impl HostProcessExecutor {
                 _ => break,
             }
         }
-        self.codes[memory.0 as usize]
-            .as_mut()
-            .expect("made above")
-            .loaded_last = Some((first, at, at_pc));
+        self.codes.get_mut(memory).expect("made above").loaded_last = Some((first, at, at_pc));
         Ok(())
     }
 
@@ -697,7 +794,7 @@ impl HostProcessExecutor {
             return Ok(Some(at));
         }
         self.fill_slot(memory, pc, base);
-        let code = &self.codes[memory.0 as usize].as_ref().expect("made above");
+        let code = &self.codes.get(memory).expect("made above");
         let into = code
             .exits_to
             .get(&pc)
@@ -720,16 +817,14 @@ impl HostProcessExecutor {
 
     /// Stages host words for a memory's code area, written before its next turn.
     fn write_code(&mut self, memory: MemoryId, at: u64, words: &[u32]) {
-        let code = self.codes[memory.0 as usize]
-            .as_mut()
-            .expect("a memory with code");
+        let code = self.codes.get_mut(memory).expect("a memory with code");
         code.area.stage(at as usize, words);
     }
 
     /// Writes a memory's staged code, before one of its threads takes a turn.
     pub(super) fn flush_code(&mut self, memory: MemoryId) {
         let probe = *self.host.probe();
-        if let Some(Some(code)) = self.codes.get_mut(memory.0 as usize) {
+        if let Some(code) = self.codes.get_mut(memory) {
             let (given, kept) = code.area.flush(&probe);
             self.counters.slot_pages_given_back += given as u64;
             if kept > 0 {
@@ -740,7 +835,7 @@ impl HostProcessExecutor {
 
     /// Writes host code into the next free bytes of the code area, giving its address; none when it does not fit.
     fn place(&mut self, memory: MemoryId, bytes: &[u8]) -> Option<u64> {
-        let code = self.codes[memory.0 as usize].as_mut()?;
+        let code = self.codes.get_mut(memory)?;
         let start = code.next;
         let end = start + bytes.len() as u64;
         if end > (CODE_AREA + CODE_AREA_SIZE) as u64 {
@@ -760,9 +855,7 @@ impl HostProcessExecutor {
     /// Drops every piece of a memory and starts its code area again; its slot pages stay its own, every slot empty.
     fn empty_code_area(&mut self, memory: MemoryId) {
         let empty = words().empty;
-        let code = self.codes[memory.0 as usize]
-            .as_mut()
-            .expect("a memory with code");
+        let code = self.codes.get_mut(memory).expect("a memory with code");
         let dropped = code.pieces.len() as u64;
         code.pieces.clear();
         code.hosts.clear();
@@ -792,9 +885,7 @@ impl HostProcessExecutor {
     fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) {
         let words_of = words();
         let at = WAY.slot(guest);
-        let code = self.codes[memory.0 as usize]
-            .as_mut()
-            .expect("a memory with code");
+        let code = self.codes.get_mut(memory).expect("a memory with code");
         code.slot_pages.insert(at & !(THREAD_PAGE_SIZE as u64 - 1));
         let mut words = [words_of.jump; SLOT_MOVES + 1];
         for (k, (word, &field)) in words.iter_mut().zip(&words_of.moves).enumerate() {
@@ -806,7 +897,7 @@ impl HostProcessExecutor {
     /// The host address of the word in line that leads to the out-of-line call whose `blr` is at `call`: the word
     /// before the one its closing `b` goes back to (`str x30; mov x30, entry; blr x30; ldr x30; b back`, plan 3.2).
     fn call_in_line(&self, memory: MemoryId, call: u64) -> Option<u64> {
-        let code = self.codes[memory.0 as usize].as_ref()?;
+        let code = self.codes.get(memory)?;
         let (&base, guest) = code.hosts.range(..=call).next_back()?;
         let bytes = code.pieces[guest].bytes();
         let back_at = call + 2 * INSTRUCTION;
@@ -819,7 +910,7 @@ impl HostProcessExecutor {
 
     /// The word of loaded code at host address `pc`.
     fn host_word(&self, memory: MemoryId, pc: u64) -> Option<u32> {
-        let code = self.codes[memory.0 as usize].as_ref()?;
+        let code = self.codes.get(memory)?;
         let (&base, guest) = code.hosts.range(..=pc).next_back()?;
         let from = usize::try_from(pc - base).ok()?;
         let bytes = code.pieces[guest]
@@ -844,9 +935,7 @@ impl HostProcessExecutor {
             word: words_of.last_target_branch,
             retarget: None,
         };
-        let code = self.codes[memory.0 as usize]
-            .as_ref()
-            .expect("a memory with code");
+        let code = self.codes.get(memory).expect("a memory with code");
         let Some(&holder) = code
             .hosts
             .range(..=call)
@@ -870,9 +959,7 @@ impl HostProcessExecutor {
         if let Some(linked) = link {
             self.write_code(memory, site.at, &[linked]);
         }
-        let code = self.codes[memory.0 as usize]
-            .as_mut()
-            .expect("a memory with code");
+        let code = self.codes.get_mut(memory).expect("a memory with code");
         if let Some(piece) = code.pieces.get_mut(&holder) {
             piece.exits.push((target, site.at));
         }
@@ -881,7 +968,7 @@ impl HostProcessExecutor {
 
     /// Records a last target made in `memory` for the memory loading the same pieces next.
     fn record_last_target(&mut self, memory: MemoryId, call: u64, target: u64) {
-        let Some(code) = self.codes[memory.0 as usize].as_ref() else {
+        let Some(code) = self.codes.get(memory) else {
             return;
         };
         let (Some((first, _, _)), Some((&base, &start))) =
@@ -904,7 +991,7 @@ impl HostProcessExecutor {
     /// Drops the pieces of `memory` made from guest code overlapping `range`; whether one was dropped, and whether the
     /// code of one is no longer what it was made from.
     fn forget_code(&mut self, memory: MemoryId, range: std::ops::Range<u64>) -> (bool, bool) {
-        let Some(code) = self.codes.get(memory.0 as usize).and_then(Option::as_ref) else {
+        let Some(code) = self.codes.get(memory) else {
             return (false, false);
         };
         let overlapping: Vec<(u64, Vec<u8>)> = code
@@ -927,25 +1014,29 @@ impl HostProcessExecutor {
         (!overlapping.is_empty(), changed)
     }
 
-    /// Makes the guest page `page` one translated code was made from: its view loses write at the next turn.
+    /// Makes the guest page `page` one translated code was made from, in every memory using the code: its view loses
+    /// write at the next turn.
     fn protect_code_page(&mut self, memory: MemoryId, page: u64) {
-        if self.memory(memory).code_pages.contains(&page) {
-            return;
-        }
-        let pages = page..page + PAGE_SIZE;
-        self.memory_mut(memory).code_pages.insert(pages.clone());
-        if let Some(&granted) = self.memory(memory).permissions.get(&page)
-            && granted.contains(Permissions::WRITE)
-        {
-            let view = self.view_bound(memory, pages.clone(), granted);
-            self.memory_mut(memory)
-                .push(super::protect(pages, view), None);
+        for memory in self.codes.users(memory).to_vec() {
+            if self.memory(memory).code_pages.contains(&page) {
+                continue;
+            }
+            let pages = page..page + PAGE_SIZE;
+            self.memory_mut(memory).code_pages.insert(pages.clone());
+            if let Some(&granted) = self.memory(memory).permissions.get(&page)
+                && granted.contains(Permissions::WRITE)
+            {
+                let view = self.view_bound(memory, pages.clone(), granted);
+                self.memory_mut(memory)
+                    .push(super::protect(pages, view), None);
+            }
         }
     }
 
     /// The guest writes a page translated code was made from: its pieces are dropped and the page is an ordinary one
     /// again, which the fault's settling then gives what the kernel allows.
     pub(super) fn code_page_written(&mut self, memory: MemoryId, page: u64) {
+        self.unshare_code(memory);
         self.forget_code(memory, page..page + PAGE_SIZE);
         self.memory_mut(memory)
             .code_pages
@@ -955,6 +1046,14 @@ impl HostProcessExecutor {
     /// Drops the pieces made from `range`, which the kernel is about to change or stop letting run; the range's pages
     /// are ordinary ones again.
     pub(super) fn drop_code_of(&mut self, memory: MemoryId, range: std::ops::Range<u64>) {
+        if self
+            .memory(memory)
+            .permissions
+            .overlapping(range.clone())
+            .any(|(_, granted)| granted.contains(Permissions::EXECUTE))
+        {
+            self.unshare_code(memory);
+        }
         if !self.memory(memory).code_pages.overlaps(&range) {
             return;
         }
@@ -967,6 +1066,7 @@ impl HostProcessExecutor {
 
     /// Drops the pieces of a range the kernel changed, counting "code changed after it ran" where one's code changed.
     pub(super) fn forget_changed_code(&mut self, memory: MemoryId, address: u64, length: u64) {
+        self.unshare_code(memory);
         if self
             .forget_code(memory, address..address.saturating_add(length))
             .1
@@ -977,9 +1077,7 @@ impl HostProcessExecutor {
 
     /// Drops the piece at guest `at`: its slot emptied, the exits linked to it unlinked, its own exits forgotten.
     fn drop_piece(&mut self, memory: MemoryId, at: u64, empty: u32) {
-        let code = self.codes[memory.0 as usize]
-            .as_mut()
-            .expect("a memory with code");
+        let code = self.codes.get_mut(memory).expect("a memory with code");
         let Some(loaded) = code.pieces.remove(&at) else {
             return;
         };
@@ -1092,8 +1190,9 @@ impl HostProcessExecutor {
         // loaded, so a stop never makes a translation from the pc it landed at.
         let interrupted = t.interrupted.take().filter(|at| {
             resume == Resume::Continue
-                && self.codes[memory.0 as usize]
-                    .as_ref()
+                && self
+                    .codes
+                    .get(memory)
                     .and_then(|code| code.pieces.get(&at.start))
                     .is_some_and(|loaded| {
                         loaded.base == at.base && Arc::ptr_eq(loaded.code(), &at.code)
@@ -1146,11 +1245,8 @@ impl HostProcessExecutor {
             let (mut hardware, mut page) = resumed.unwrap_or_else(|| {
                 let (mut hardware, page) =
                     stop::rejoin(&t.state, t.page.clone(), &t.float, register_page);
-                hardware.pc = self.codes[memory.0 as usize]
-                    .as_ref()
-                    .expect("loaded above")
-                    .pieces[&t.state.pc]
-                    .base;
+                hardware.pc =
+                    self.codes.get(memory).expect("loaded above").pieces[&t.state.pc].base;
                 (hardware, page)
             });
             let ended = loop {
@@ -1223,9 +1319,7 @@ impl HostProcessExecutor {
                 };
                 t.tpidr = tpidr;
                 let resolved = {
-                    let code = self.codes[memory.0 as usize]
-                        .as_ref()
-                        .expect("loaded above");
+                    let code = self.codes.get(memory).expect("loaded above");
                     let this = &*self;
                     let mut memory_of = |at: u64, into: &mut [u8]| {
                         let _ = this.read_guest(memory, at, into);
@@ -1301,7 +1395,7 @@ impl HostProcessExecutor {
                     }
                     Some(Resolved::Stop(stop, state)) => {
                         if let Stop::Landed(_) = stop
-                            && let Some(Some(code)) = self.codes.get_mut(memory.0 as usize)
+                            && let Some(code) = self.codes.get_mut(memory)
                         {
                             code.area.reached_slot(h.pc as usize);
                         }
@@ -1386,7 +1480,7 @@ impl HostProcessExecutor {
         page: &RegisterPage,
         float: &mut FloatStatus,
     ) -> Option<GuestState> {
-        let code = self.codes[memory.0 as usize].as_ref()?;
+        let code = self.codes.get(memory)?;
         let mut memory_of = |at: u64, into: &mut [u8]| {
             let _ = self.read_guest(memory, at, into);
         };
@@ -1396,7 +1490,7 @@ impl HostProcessExecutor {
 
     /// The loaded piece holding host address `pc`: its guest start, its base and its code.
     fn piece_holding(&self, memory: MemoryId, pc: u64) -> Option<(u64, u64, Arc<Translation>)> {
-        let code = self.codes[memory.0 as usize].as_ref()?;
+        let code = self.codes.get(memory)?;
         let (&base, &start) = code.hosts.range(..=pc).next_back()?;
         let loaded = &code.pieces[&start];
         (pc - base < loaded.bytes().len() as u64).then(|| (start, base, Arc::clone(loaded.code())))
