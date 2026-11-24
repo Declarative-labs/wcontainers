@@ -48,7 +48,7 @@ The crates: `crates/executor/implementation/host-process` (P, package `wcontaine
 `crates/executor/implementation/in-process` (I, package `wcontainers-executor-in-process`). What both use lives in
 host-process and is a public module that in-process depends on (one copy, no third crate: the owner's layout allows
 an implementation to depend on another; if he prefers a shared crate, it is a move of files). P's stub has no binary
-of its own: it is forked from the embedder's process (4.1).
+of its own: it is forked from the zygote, whose image the executor writes at start (4.1).
 
 ## 2. Rules that shape this plan
 
@@ -69,7 +69,7 @@ of its own: it is forked from the embedder's process (4.1).
   uses, each to be listed in the status file as built: running translated code (a jump into generated code), the
   floor's assembly (`global_asm!` entry, exit and signal routines, and P's stub), mapping guest memory and the code
   area (`mmap` with a fixed address through rustix is `unsafe`), reading and writing through those mappings,
-  reading a signal frame, and the fork of the zygote. Nothing for speed.
+  reading a signal frame. Nothing for speed. (The zygote's start needs none since W2 run 12, 4.1.)
 
 ## 3. What both forms share
 
@@ -98,7 +98,7 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   every I executor, one per container, is made from it and takes its slots from the shared pool. Two I
   containers in one process therefore never collide: they hold different slots of one layout. P needs no fixed
   range in the embedder's process (it maps no guest memory, 4.2), so P and I containers mix in one
-  process; P's zygote removes I's reservation in its child like everything else of the embedder (4.1). A second
+  process; P's zygote is a fresh image that holds nothing of the embedder, I's reservation included (4.1). A second
   in-process host in the same process is refused ("in-process host exists"), as is a first one whose reservation
   the host refuses.
 - As built (W1 round 4 run 2): the slot table is the code area's memfd past the code area's bytes, at the offset of
@@ -805,36 +805,35 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 ### 4.1 Processes and threads
 
 - A guest memory (`MemoryId`) is one stub process. A guest thread (`ThreadId`) is one host thread of it.
-- The **zygote**: forked from the embedder's process when the host-process host is made (8.5). In the
-  child only direct host calls run (no allocation, no lock: the embedder may have other threads). It maps the stub's
-  code (copied by the executor before the fork into a memfd) read-execute at a fixed address in our area and a stack
-  beside it (`mmap`, then the memfd is closed) and jumps there, every signal blocked since before the fork (the
-  forking thread blocks them around it, so no handler of the embedder ever runs in the child), and drops what the fork carried of
-  the forking thread's registrations that point into the embedder's memory. The one that kills: the forking
-  thread's restartable-sequences area (glibc registers one per thread), which the host kernel writes at every
-  migration, preemption or signal; once its page is unmapped that write fails and the host kernel kills the
-  process with SIGSEGV (measured by the fourth check on both rented machines: unmapping kills the child, unregistering
-  first or keeping the page does not). So the zygote calls `rseq` with `RSEQ_FLAG_UNREGISTER` and the area, length
-  and signature the embedder's C library registered (glibc's `__rseq_offset` from the thread pointer and
-  `__rseq_size`, read before the fork; none where the C library registers none), then proves that none is left
-  by registering an area of its own stack (a registration left over refuses it with EBUSY: the zygote then exits,
-  and the form is unavailable, named "restartable sequences left registered") and unregistering that again; a host
-  that answers that registration ENOSYS (gVisor) has no restartable sequences, so none can be left. The
-  robust-futex list and the exit-clear word are read and written by the host kernel only at a thread's end, with
-  failures ignored; they are cleared all the same (`set_robust_list` with none, `set_tid_address` with none). The
-  alternate signal stack goes with the memory, harmless while every signal is blocked; each stub sets its own.
-  Then the zygote closes every fd but its socket (`close_range`), unmaps every range outside its own (two `munmap`
-  calls, below and above its own pages up to the user-space top the start-up probe found, so an in-process host's
-  reservation and table go too: no /proc needed), and waits for requests on its socket. So no
-  stub holds any of the embedder's memory, and every stub, forked from the zygote, inherits no registration. The
-  embedder's death closes the socket and the zygote exits.
+- The **zygote**: started when the host-process host is made (8.5) as a process of its own executable image, not
+  a fork of the embedder. The executor writes the image into a memfd (an ELF header and two program headers from
+  the `object` crate's definitions: one segment of read-execute code pages loaded at a fixed address in our area,
+  whose last word holds the user-space top the start-up probe found, and a stack that is not executable) and runs
+  it with the standard library's `Command` through proc(5)'s `/proc/self/fd/N` (`execve` opens it before it closes
+  the memfd), its socket as the standard input, the environment empty. A fresh image holds nothing of the
+  embedder: no other memory, no C library and so no restartable-sequences area (the one an embedder's fork carried
+  killed the child once its page was unmapped: measured by the fourth check on both rented machines), no
+  robust-futex list, no handler and no exit-clear word. It maps a stack beside its code, blocks every signal (which
+  every stub inherits), proves that no restartable-sequences registration is left by registering an area of its own
+  stack (a registration left over refuses it with EBUSY: the zygote then exits, and the form is unavailable, named
+  "restartable sequences left registered") and unregistering that again (a host that answers ENOSYS, gVisor, has
+  none), clears the robust-futex list and the exit-clear word all the same, closes every fd but its socket
+  (`close_range`), unmaps every range outside its own (two `munmap` calls, below and above its own pages up to the
+  user-space top: the kernel's start-up stack, vDSO and vvar go; no /proc read), and waits for requests on its
+  socket. So no stub holds any of the embedder's memory. The embedder's death closes the socket and the zygote
+  exits. Nothing of this needs unsafe code in the executor: no fork of the embedder, no reservation of the
+  zygote's pages in it, no glibc symbol. It needs /proc mounted, as glibc's `fexecve` does where `execveat` is
+  missing, and a host that lets a memfd be executed (Linux 6.3's `vm.memfd_noexec` at 2 refuses it: the form is
+  then unavailable, named by the host's error). Measured (W2 run 12, alternating rounds of 200 starts each): on
+  the Xeon (load 2 to 4) a start to the first answer took 195 µs as a fork from a small embedder and 19.7 ms from
+  one holding 1 GiB, and takes 130 µs from either; on Graviton4 (load 18 to 24) both take about 60 ms, all but a
+  little of it the start's probe of the host's signal frames (a stub stopped in a spinning turn), with no
+  difference beyond the noise.
 - The zygote's own end (the host's out-of-memory killer, or any fault of its own) takes every stub with it
   (`PR_SET_PDEATHSIG`), so every guest process of every P container of that embedder process ends as killed by
   SIGKILL, as the host's out-of-memory killer would end them, counted "zygote ended", warned. The embedder learns it
-  from the zygote's socket hanging up, reaps it, and forks a new zygote on the next `memory_new` by the same path as
-  at start, which is safe from the by-then many-threaded embedder because only direct host calls run in the child;
-  its cost is a fork of the then-larger embedder's page tables, measured in W1. If that fork fails, P is
-  unavailable from then on, named.
+  from the zygote's socket hanging up, reaps it, and starts a new zygote on the next `memory_new` by the same path as
+  at start, whose cost does not grow with the embedder. If that start fails, P is unavailable from then on, named.
 - `memory_new` and `memory_duplicate` ask the zygote for a child (measured, W0 probe: a request until the new child
   runs, 80 µs Graviton4, 95 µs Xeon; a plain fork of a small static process 111 / 121 µs). Each request carries
   (`SCM_RIGHTS`) the fds the child needs, its own socket's end among them, which the zygote closes after the fork.
@@ -1138,11 +1137,13 @@ read-execute), `munmap`, `mprotect`, `futex` (wait with time-out, wake; shared f
 `tgkill`, `rt_sigaction`, `rt_sigprocmask` (at each `Runner::run` start and end, and once per handled signal that
 does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback only); on x86-64 `membarrier`
 (optional, 3.10).
-- P adds: in the embedder, `fork` (or `clone` without namespace flags) for the zygote, `socketpair`, `sendmsg`,
+- P adds: in the embedder, `memfd_create` and `write` (the zygote's image), the standard library's `Command` for
+  the zygote (glibc's `posix_spawn`: `clone` with `CLONE_VM | CLONE_VFORK`, `dup2`, `rt_sigprocmask`,
+  `rt_sigaction`, `execve` of `/proc/self/fd/N`), `socketpair`, `sendmsg`,
   `ppoll` (a stub's socket, 4.1), for placement (4.3) `sched_getaffinity`, `sched_setaffinity` on its own runner
   threads and `clock_gettime` of its own thread's CPU clock and of a stub's process CPU clock, `read` of a stub's socket
-  (parallel threads only, 4.2), `wait4` of the zygote after its end; in the zygote, `mmap` (its code and stack),
-  `close`, `getpid`, `rseq` (unregister the inherited area, then register and unregister its own, 4.1),
+  (parallel threads only, 4.2), `wait4` of the zygote after its end; in the zygote, `mmap` (its stack),
+  `rt_sigprocmask`, `close`, `getpid`, `rseq` (register and unregister its own, 4.1),
   `set_robust_list`, `set_tid_address`, `close_range`, `munmap`, `recvmsg`, `sendmsg`, `fork`, `wait4` (on a process
   id the embedder names), `kill` (SIGKILL to its own unreaped child, 4.1), `exit_group`; in each stub, `prctl` (`PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`),
   `getppid`, `set_tid_address`, `seccomp(SECCOMP_SET_MODE_FILTER)`, `dup3` (fds to their fixed numbers, before the

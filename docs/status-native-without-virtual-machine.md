@@ -3,6 +3,45 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 12 (2026-11-24, round 5 run 4): the zygote exec'd from its own image, six unsafe lines fewer
+
+Scratch w2/run12 (send.sh and send-x86.sh as run 11's; test.sh as run 11's; time.sh with zygote_time.rs, `MODE`
+before or after, `ROUNDS`, `STARTS`, `HELD_MIB`; outputs *-arm.out, *-x86.out). No primitive has landed
+(enforcement-primitive revision 3 waits on the owner's nine decisions; executor-unsafe-primitives on his), and
+`page-table-split` still holds only the interface commit, so form I's executor stays blocked and the page-table
+methods are unchanged. This run did the zygote trial that executor-unsafe-primitives' DESIGN-2 section 6 names
+for agents, since it needs no primitive and removes unsafe code (the owner's first priority).
+- Built: the zygote is a process of its own executable image (plan 4.1): the embedder writes an ELF image into a
+  memfd (header and program headers from object 0.41's definitions; one read-execute segment of the code pages at
+  `ZYGOTE`, whose last word, `TOP_AT`, holds the user-space top; a non-executable stack) and runs it with
+  `std::process::Command` through `/proc/self/fd/N`, its socket as standard input. The zygote's assembly on both
+  architectures now starts from exec: it maps its stack, blocks every signal itself (`rt_sigprocmask`, new end
+  `SignalsNotBlocked` in place of `RestartableSequencesNotUnregistered`), and no longer maps its code from a memfd,
+  jumps into a copy or unregisters an inherited rseq area (an exec'd image has none; the proof by registering its
+  own stays). Gone from zygote.rs: the embedder's `fork` and its signal mask, the jump per architecture, the
+  reservation's `mmap` and `munmap`, glibc's `__rseq_offset` and `__rseq_size`, `Unavailable::ReservationRefused`:
+  six marked uses and six lines (root count 19 to 13; ARM64 builds 11 marked uses, x86-64 8). The two labels and the
+  slice of the code between them stay (a build step that makes the bytes would remove them).
+- Tests: tests/zygote.rs loses `the_forking_thread_has_a_registration_to_drop` (it checked that glibc had an area
+  for the fork to drop; nothing is inherited any more) and the lock that kept starts one at a time (no
+  reservation to collide on); new `the_zygote_blocks_every_signal_but_those_none_can` reads its `SigBlk`.
+- Measured, alternating rounds, 3 rounds of 200 starts each, start to first answer: Xeon (load 2 to 4) as a fork
+  195, 195, 196 µs median from a small embedder and 19.7, 19.6, 19.7 ms from one holding 1 GiB; as an exec 127,
+  131, 137 µs and 125, 125, 133 µs. Graviton4 (load 18 to 24): 60 to 63 ms either way and with either embedder, all
+  but a little of it the start's frame probe (a stub stopped in a spinning turn, `probe_frames`); no difference
+  beyond the noise. That probe's 60 ms per start is worth a look of its own (not done).
+- New host needs (plan 6): /proc mounted (as glibc's `fexecve` without `execveat`), a memfd the host lets run
+  (`vm.memfd_noexec` 2 refuses it), `execve` allowed in the embedder; gVisor not tried this run.
+- Found and fixed (tests/run.rs): `a_new_thread_reads_zeros_and_a_thread_resumed_reads_its_own_registers` failed 3
+  in 10 at HEAD and 4 in 10 with this change (Graviton4, load 21 to 35, the binary run with 3 test threads,
+  alternating; head1-arm.out): its first thread's counted turn is also a 1 ms slice, which a loaded host ended
+  before the code ran (`Stop` at the entry pc), and the test took that as the call it waited for. Its two runs of
+  the first thread now go on through stops (`run_through_stops`, as `run_to_exit` already did); 10 in 10 pass.
+- Verified on Graviton4 (load 25 to 55): clippy with warnings denied clean; every test binary of the crate passes
+  but the known `agrees_with_precise_instruction_set` (test2-arm.out, test3-arm.out, one3-arm.out). On the Xeon
+  (load 2 to 21): clippy clean; pages, zygote, stub, files, host, threads, stop, touch, memory, slice, placement,
+  embedder and step pass (test2-x86.out, test3-x86.out).
+
 ## W2 run 11 (2026-11-24, round 5 run 3): the whole run read, and the zygote's stack closed
 
 Scratch w2/run11 (send.sh and send-x86.sh run a local script on either machine; test.sh is run 10's whole.sh with
@@ -2068,8 +2107,6 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 - In this shared worktree a `[[test]]` entry in the manifest must never land before its file exists: a missing
   test file stops every cargo command of every track (runs 2 and 3 did this once; the runtime and x86 tracks
   recorded it).
-- I's reservation (W2) must leave out the zygote's pages [2^45, 2^45 + 128 KiB), or the zygote's start is refused
-  ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
 
@@ -2392,6 +2429,12 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
+- The zygote is exec'd from its own image since W2 run 12 (plan 4.1), not forked from the embedder: six unsafe
+  lines go and a start no longer grows with the embedder (measured on the Xeon: 19.7 ms from a 1 GiB embedder as a
+  fork, 0.13 ms now). What it asks of the host instead: `execve` allowed in the embedder's process, /proc mounted
+  (`/proc/self/fd/N`), and a memfd the host lets run (`vm.memfd_noexec` below 2). A sandbox that forbids exec but
+  allows fork would lose form P; one way back is the fork kept as a fallback, which the one-path rule argues
+  against. Your call if such sandboxes matter.
 - The zygote's stack (plan 3.7): built in W2 run 11 as the round asked ("build it if it needs no unsafe"). It adds
   no line with `unsafe`, but it changes the stub's `global_asm!` on ARM64 and x86-64, which the zygote's marked unsafe
   uses reach and which the fork and `Floor` primitives will restructure; the change moves with that code.
@@ -2459,8 +2502,8 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 - Filled in by W1 run 1, where the plan was silent (the fourth check's minor point): when the zygote itself ends,
   every P guest process of that embedder ends as killed by SIGKILL (its stubs die with it), counted "zygote
-  ended", and a new zygote is forked from the embedder on the next `memory_new`; if that fork fails, P is
-  unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
+  ended", and a new zygote is started on the next `memory_new` (forked from the embedder until W2 run 12, exec'd
+  from its image since); if that start fails, P is unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
 
@@ -2562,9 +2605,12 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 - W1 run 2: until the stop handler is built, a stub keeps the zygote's mask (every signal blocked); SIGKILL and the
   filter's SIGSYS end it regardless.
 
-- The zygote is forked with every signal already blocked by the forking thread (and its mask restored after),
-  rather than blocking them as its first act, so no handler of the embedder can run in the child (plan 4.1 says
-  so now).
+- Since W2 run 12 the zygote is not a fork of the embedder but a process of its own executable image (plan 4.1),
+  which the plan had as a fork; it blocks every signal as its first act after mapping its stack (an exec'd image
+  holds no handler of the embedder, so nothing can run before). Reason: the owner's rule on unsafe code (six
+  marked uses go: the fork, the jumps, the reservation, glibc's symbols) and a start that does not grow with the
+  embedder (measured, plan 4.1). From W1 run 1 to W2 run 11 the zygote was forked with every signal already blocked
+  by the forking thread.
 
 - The brief's "Linux hosts on ARM64 and x86-64 first" is built in two steps: ARM64 at W1 and W2, x86-64 at W3,
   because x86's native output (the x86 track's XN1, XN2) does not exist yet and both forms run only translated code.
@@ -2580,16 +2626,16 @@ The owner's rule of 2026-11-24 (no new unsafe; unsafe only in low-level primitiv
 operation this crate still does with unsafe code, for the primitives' design
 (pyro-parked/wcontainers-scratch/executor-unsafe-primitives; its survey-process.md lists them line by line as of
 37f1b84b, before round 8 run 1 removed ten):
-- Map at a fixed address with `MAP_FIXED_NOREPLACE` and unmap on drop: the zygote's reservation, the probe's one-page
-  search of the user-space top.
+- Map at a fixed address with `MAP_FIXED_NOREPLACE` and unmap on drop: the probe's one-page search of the
+  user-space top (the zygote's reservation is gone since W2 run 12).
 - Views of a shared mapping as atomics of one size per offset: the thread pages (`&AtomicU32`, `&AtomicU64` at an
   offset; a `#[repr(C)]` page of atomics would make one size per field certain).
 - Cache maintenance after writing code, by address range of a mapping (`dc cvau`, `dsb ish`, `ic ivau`, `dsb ish`).
 - Read a system register: `CTR_EL0`.
 - Send a signal to one thread of another process: `tgkill(pid, tid, signal)`.
-- Fork a multithreaded process whose child only jumps into code of its own: `fork`, then the jump with five
-  arguments in registers, never returning; the zygote's assembly and the slice of its machine code between two labels.
-- glibc's `__rseq_offset` and `__rseq_size`.
+- The zygote's machine code as bytes, to write into its image: the slice between the two labels of its assembly.
+  (Since W2 run 12 the zygote is exec'd from that image, plan 4.1: the fork, the jump and glibc's rseq symbols are
+  gone. A build step that assembles the code into bytes would remove these two lines too.)
 - The SVE probe: set p0 and FFR, make a system call, store both.
 - The stub's routines with their input structures on the read-only control page (plan 3.7, W2 run 9's design for
   parallel threads, corrected in run 10: the `recvmsg` header must stay on a writable page, the register page): a
@@ -2630,8 +2676,9 @@ Unicorn executor in tests).
 
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. Since W1 round 8 run 1:
-18 marked uses in the library (19 lines by the root Cargo.toml's count; 16 build on ARM64, 13 on x86-64), none in its
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. Since W2 run 12: 12
+marked uses in the library (13 lines by the root Cargo.toml's count; 11 build on ARM64, 8 on x86-64). From W1
+round 8 run 1 to W2 run 11: 18 marked uses (19 lines; 16 on ARM64, 13 on x86-64), none in its
 tests (commit fded27c0b moved the tests' read of `__rseq_size` into the library); the same at round 4's start and after
 round 4 run 5. Round 8 run 1 removed 10 (the owner's rule of
 2026-11-24: no new unsafe, and any a safe library function does the same goes): the window cache's five (its
@@ -2644,10 +2691,10 @@ safe `pread` and `pwrite`), the code area's map, unmap and slice (memmap2's safe
   none for one thread of another process; rustix's safe `pidfd_send_signal` on a thread's pidfd would do it, but
   `PIDFD_THREAD` needs Linux 6.9 and is not known in gVisor).
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
-  it refers to nothing outside itself); glibc's `__rseq_offset` and `__rseq_size` (no crate has them); the two
-  labels around the assembly; the slice of its code between them; the reservation's `mmap` and `munmap`;
-  `fork` (the signal mask around it is set through nix's safe `pthread_sigmask`);
-  the jump into the zygote's code in the child, one per architecture.
+  it refers to nothing outside itself); the two labels around the assembly; the slice of its code between them.
+  Since W2 run 12 the zygote is started from its own executable image (plan 4.1), so the embedder's `fork`, the
+  jump into the zygote's code (one per architecture), the reservation's `mmap` and `munmap` and glibc's
+  `__rseq_offset` and `__rseq_size` are gone: six marked uses, six lines.
 - probe.rs: `mrs ctr_el0` (no crate wraps it); the fixed `mmap` and `munmap` of the user-space search; the SVE
   probe's assembly (set p0 and FFR, `svc`, store them).
 - pages.rs: the two views of the thread pages' mapping as 32-bit and 64-bit atomics (the stub writes the same pages
@@ -2671,6 +2718,10 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since W2 run 12, host-process, Linux only: object 0.41.0 (Apache-2.0 OR MIT, already in the lock file, the kernel's
+and the wasmtime executor's version; no default features, `elf` only) for the ELF header and program headers of the
+zygote's executable image; nix's `signal` feature left the library (the mask around the zygote's fork is gone).
 
 Since W2 run 2, for host-process's in_process_way test only: unicorn-engine 2.1.5 (GPL-2.0, already in the lock file
 as the VM executor's tests' and the unicorn executor's), never a dependency of the library.
@@ -2700,7 +2751,7 @@ host-process, Linux only: nix 0.31.4 (MIT; `process` and `time` only) for a stub
 lacks for another process; rangemap 1.8.0 (MIT OR Apache-2.0) for permissions, page states and shared ranges by
 range, zerocopy 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT) for a register block as bytes (both already in the
 lock file), rustix 1.1.6 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
-Apache-2.0) for the signal mask, `fork`, `tgkill`, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
+Apache-2.0) for `tgkill`, standard input's number, the layouts of a signal frame and the wait-status macros, linux-raw-sys 0.12.1 (Apache-2.0 WITH
 LLVM-exception OR Apache-2.0 OR MIT) for Linux's numbers in the assembly (since run 5 also its `errno` feature, for
 ENOSYS), wcontainers-abi; for its tests only, fastrand 2.5.0
 (Apache-2.0 OR MIT), nix's `ptrace` and `signal` features (since run 8, the step test's tracing), on x86-64 since
