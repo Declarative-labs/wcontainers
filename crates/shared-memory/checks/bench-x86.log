@@ -1,0 +1,84 @@
+# the bench in the scratch folder (guest-memory-copy/bench-tree: this tree's crate at 4384e073d, the old one at 0d973b92f), run with cargo build --release and the binary
+x86-run: job gmc-bench/20261124-185702-4037122 (re-attach: x86-run --attach gmc-bench 20261124-185702-4037122; stop: x86-run --stop gmc-bench 20261124-185702-4037122)
+arm-run: job gmc-bench/20261124-185702-4037122 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 0.22 1.90 4.20, jobs 96
+arm-run: in /work/src/gmc-bench, build directory /work/target/gmc-bench
+arm-run: command: cargo build --release -q -p gmc-bench 2>&1 | grep -v "^warning" | tail -5; o=$(command -v objdump || command -v llvm-objdump); echo "== word load and store listing ($o)"; $o -d --no-show-raw-insn target/release/gmc-bench | awk "/<gmc_(load|store)_word>:/{p=1} p{print} p&&/^\$/{p=0}"; ./target/release/gmc-bench
+arm-run: LIBCLANG_PATH=/nix/store/adr7l6vazpqqjy2wab0v27pzp17c4sq6-clang-21.1.8-lib/lib CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
+== word load and store listing (/nix/store/j1938gsbvbhkyz4kbmvjk56r479mkw3s-gcc-wrapper-16.2.0/bin/objdump)
+0000000000022240 <gmc_load_word>:
+   22240:	push   %rbx
+   22241:	sub    $0x10,%rsp
+   22245:	mov    %rdi,%rbx
+   22248:	mov    0x8(%rdi),%rsi
+   2224c:	mov    %rsp,%rdi
+   2224f:	mov    $0x8,%edx
+   22254:	mov    $0x8,%ecx
+   22259:	call   *0x4bf09(%rip)        # 6e168 <_DYNAMIC+0x330>
+   2225f:	cmpb   $0x1,(%rsp)
+   22263:	je     2227c <gmc_load_word+0x3c>
+   22265:	mov    0x8(%rsp),%rsi
+   2226a:	mov    %rbx,%rdi
+   2226d:	call   *0x4befd(%rip)        # 6e170 <_DYNAMIC+0x338>
+   22273:	mov    (%rax),%rax
+   22276:	add    $0x10,%rsp
+   2227a:	pop    %rbx
+   2227b:	ret
+   2227c:	movzbl 0x1(%rsp),%eax
+   22281:	mov    %al,(%rsp)
+   22284:	lea    -0x14f88(%rip),%rdi        # d303 <anon.285e0b78db26a550d62b7dbe618186f2.17.llvm.15563913997076531638+0x4d7>
+   2228b:	lea    0x494ee(%rip),%rcx        # 6b780 <anon.8c73d9d0e15613b4fb3c69f9d550841e.41.llvm.10069142809672412632+0x1d0>
+   22292:	lea    0x4955f(%rip),%r8        # 6b7f8 <anon.8c73d9d0e15613b4fb3c69f9d550841e.41.llvm.10069142809672412632+0x248>
+   22299:	mov    %rsp,%rdx
+   2229c:	mov    $0x2b,%esi
+   222a1:	call   *0x4bf69(%rip)        # 6e210 <_DYNAMIC+0x3d8>
+00000000000222b0 <gmc_store_word>:
+   222b0:	push   %r14
+   222b2:	push   %rbx
+   222b3:	sub    $0x18,%rsp
+   222b7:	mov    %rsi,%rbx
+   222ba:	mov    %rdi,%r14
+   222bd:	mov    0x8(%rdi),%rsi
+   222c1:	lea    0x8(%rsp),%rdi
+   222c6:	mov    $0x8,%edx
+   222cb:	mov    $0x8,%ecx
+   222d0:	call   *0x4be92(%rip)        # 6e168 <_DYNAMIC+0x330>
+   222d6:	cmpb   $0x1,0x8(%rsp)
+   222db:	je     222f6 <gmc_store_word+0x46>
+   222dd:	mov    0x10(%rsp),%rsi
+   222e2:	mov    %r14,%rdi
+   222e5:	call   *0x4be85(%rip)        # 6e170 <_DYNAMIC+0x338>
+   222eb:	mov    %rbx,(%rax)
+   222ee:	add    $0x18,%rsp
+   222f2:	pop    %rbx
+   222f3:	pop    %r14
+   222f5:	ret
+   222f6:	movzbl 0x9(%rsp),%eax
+   222fb:	mov    %al,0x8(%rsp)
+   222ff:	lea    -0x15003(%rip),%rdi        # d303 <anon.285e0b78db26a550d62b7dbe618186f2.17.llvm.15563913997076531638+0x4d7>
+   22306:	lea    0x49473(%rip),%rcx        # 6b780 <anon.8c73d9d0e15613b4fb3c69f9d550841e.41.llvm.10069142809672412632+0x1d0>
+   2230d:	lea    0x494fc(%rip),%r8        # 6b810 <anon.8c73d9d0e15613b4fb3c69f9d550841e.41.llvm.10069142809672412632+0x260>
+   22314:	lea    0x8(%rsp),%rdx
+   22319:	mov    $0x2b,%esi
+   2231e:	call   *0x4beec(%rip)        # 6e210 <_DYNAMIC+0x3d8>
+x86_64, 96 CPUs; ns per copy, median of 11 rounds in alternating order; ratio to plain in brackets
+quiet out       8 B: ours 3.2 (1.37x), plain 2.4 (1.00x), atomics 3.4 (1.45x), pread 173.8 (73.62x) | load 0.43 1.89 4.17
+quiet out      64 B: ours 3.3 (1.80x), plain 1.8 (1.00x), atomics 4.4 (2.39x), pread 174.3 (94.60x) | load 0.43 1.89 4.17
+quiet out    4096 B: ours 29.6 (1.00x), plain 29.8 (1.00x), atomics 73.8 (2.48x), pread 207.7 (6.97x) | load 0.43 1.89 4.17
+quiet out   65536 B: ours 1323.8 (0.92x), plain 1441.2 (1.00x), atomics 1651.6 (1.15x), pread 2548.6 (1.77x) | load 0.43 1.89 4.17
+quiet out 2097152 B: ours 138119.6 (1.00x), plain 138071.6 (1.00x), atomics 145591.8 (1.05x), pread 204667.8 (1.48x) | load 0.43 1.89 4.17
+quiet in        8 B: ours 3.3 (1.29x), plain 2.6 (1.00x), atomics 3.3 (1.27x), pread 193.4 (74.72x) | load 0.43 1.89 4.17
+quiet in       64 B: ours 3.2 (1.50x), plain 2.1 (1.00x), atomics 4.2 (1.97x), pread 192.9 (91.48x) | load 0.43 1.89 4.17
+quiet in     4096 B: ours 29.2 (0.97x), plain 30.2 (1.00x), atomics 74.0 (2.45x), pread 218.2 (7.22x) | load 0.43 1.89 4.17
+quiet in    65536 B: ours 1287.9 (1.00x), plain 1289.1 (1.00x), atomics 1623.7 (1.26x), pread 2373.2 (1.84x) | load 0.43 1.89 4.17
+quiet in  2097152 B: ours 126376.4 (1.00x), plain 126393.5 (1.00x), atomics 131967.9 (1.04x), pread 170295.8 (1.35x) | load 0.43 1.89 4.17
+busy  out       8 B: ours 11.3 (2.89x), plain 3.9 (1.00x), atomics 11.5 (2.92x), pread 247.4 (63.03x) | load 0.64 1.91 4.17
+busy  out      64 B: ours 11.5 (2.73x), plain 4.2 (1.00x), atomics 14.8 (3.51x), pread 247.0 (58.59x) | load 0.64 1.91 4.17
+busy  out    4096 B: ours 2145.6 (1.02x), plain 2101.6 (1.00x), atomics 1177.3 (0.56x), pread 2220.1 (1.06x) | load 0.64 1.91 4.17
+busy  out   65536 B: ours 24375.4 (1.00x), plain 24431.0 (1.00x), atomics 4196.3 (0.17x), pread 26183.3 (1.07x) | load 0.64 1.91 4.17
+busy  out 2097152 B: ours 140716.2 (0.99x), plain 142528.8 (1.00x), atomics 136612.5 (0.96x), pread 214331.1 (1.50x) | load 0.64 1.91 4.17
+busy  in        8 B: ours 8.0 (1.00x), plain 8.0 (1.00x), atomics 11.6 (1.45x), pread 259.5 (32.56x) | load 0.75 1.91 4.15
+busy  in       64 B: ours 7.7 (0.80x), plain 9.6 (1.00x), atomics 16.2 (1.69x), pread 260.3 (27.23x) | load 0.75 1.91 4.15
+busy  in     4096 B: ours 125.6 (0.96x), plain 131.2 (1.00x), atomics 1424.0 (10.85x), pread 377.1 (2.87x) | load 0.75 1.91 4.15
+busy  in    65536 B: ours 1551.9 (1.00x), plain 1555.8 (1.00x), atomics 8832.4 (5.68x), pread 3107.7 (2.00x) | load 0.75 1.91 4.15
+busy  in  2097152 B: ours 132130.6 (1.00x), plain 132089.2 (1.00x), atomics 142761.2 (1.08x), pread 181791.1 (1.38x) | load 0.75 1.91 4.15
+arm-run: exit 0 after 20 s, load 0.75 1.91 4.15

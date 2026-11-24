@@ -81,3 +81,13 @@ while 64 remain, then the tail goes by the bits of what is left; no load overlap
   allocation, so a race there is a race by definition). It cannot see inside assembly.
 - Kani: the range arithmetic of every method, at 1 to 4 words, any offset, length and content, with the fallback.
 - Only the native tests cover the assembly itself; the listing in the report shows each byte loaded once.
+
+## Measurements (ns per copy, median of 11 alternating rounds, ratio to plain `copy_nonoverlapping`; MEASURED, checks/bench-*.log)
+
+- x86-64 quiet (load 0.4): out 8 B 1.37x, 64 B 1.80x, 4 KiB 1.00x, 64 KiB 0.92x, 2 MiB 1.00x; in 1.29x, 1.50x, 0.97x,
+  1.00x, 1.00x. Old atomics: 1.45x, 2.39x, 2.48x, 1.15x, 1.05x out. `pread`: 74x, 95x, 7.0x, 1.8x, 1.5x.
+- ARM64 quiet (load 5): out 1.99x, 1.29x, 0.95x, 1.03x, 1.02x; in 0.78x, 0.81x, 0.97x, 1.01x, 1.02x. Old atomics:
+  2.57x, 1.89x, 3.98x, 4.17x, 2.17x out. `pread`: 172x, 100x, 6.8x, 3.9x, 3.7x.
+- With a thread storing 8-byte words over the same bytes: ARM64 ours 0.99-1.05x of plain from 64 B up. x86-64 copying
+  out at 4 KiB and 64 KiB, both `rep movsb` (ours) and plain (glibc) are much slower than 8-byte loads (2146 and 24375 ns
+  against 1177 and 4196 for the old atomics); copying in, ours is 1.00x and atomics 5.7-10.9x.

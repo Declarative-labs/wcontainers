@@ -1,0 +1,11 @@
+# the 8-byte word harnesses after the cover fix, tree 4384e073d
+x86-run: job gmc-x86/20261124-185947-4051893 (re-attach: x86-run --attach gmc-x86 20261124-185947-4051893; stop: x86-run --stop gmc-x86 20261124-185947-4051893)
+arm-run: job gmc-x86/20261124-185947-4051893 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 0.18 1.24 3.57, jobs 96
+arm-run: in /work/src/gmc-x86, build directory /work/target/gmc-x86
+arm-run: command: export RUSTUP_HOME=/work/ktrial/rustup CARGO_HOME=/work/ktrial/cargo KANI_HOME=/work/ktrial/kani PATH=/work/ktrial/cargo/bin:$PATH; for m in one_word two_words three_words four_words; do CARGO_TARGET_DIR=/work/target/gmc-kani-c cargo kani -p wcontainers-shared-memory -Z stubbing --harness "foreign_implementation::proofs::$m::loads_stores_swaps_and_exchanges_only_8_byte_words_inside" --exact 2>&1 | grep -v "aborting path" | grep -E " of [0-9]+ failed| cover properties|VERIFICATION:" | tr -s " \n" " "; echo " <- $m, load $(cut -d" " -f1 /proc/loadavg)"; done; rm -rf /work/target/gmc-kani-c
+arm-run: LIBCLANG_PATH=/nix/store/adr7l6vazpqqjy2wab0v27pzp17c4sq6-clang-21.1.8-lib/lib CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
+ ** 0 of 790 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  <- one_word, load 0.24
+ ** 0 of 790 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  <- two_words, load 0.30
+ ** 0 of 790 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  <- three_words, load 0.35
+ ** 0 of 790 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  <- four_words, load 0.45
+arm-run: exit 0 after 29 s, load 0.45 1.20 3.48
