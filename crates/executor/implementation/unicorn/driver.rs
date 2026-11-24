@@ -302,6 +302,9 @@ pub struct TestHost<H = NoHooks> {
     hooks: Mutex<H>,
     /// The record of what this host gives the kernel, kept or answered from.
     tape: Option<Mutex<Tape>>,
+    /// Ends the back end's turns once their time has passed on the machine's clock, for a run on it.
+    #[cfg(feature = "runtime")]
+    timer: Option<wcontainers_runtime_single_kernel::SliceTimer>,
 }
 
 /// The backend's replies that arrived for the kernel's calls and are not taken yet, and the waker of
@@ -389,6 +392,8 @@ impl TestHost {
             waits: false,
             hooks: Mutex::new(NoHooks),
             tape: None,
+            #[cfg(feature = "runtime")]
+            timer: None,
         }
     }
 
@@ -432,6 +437,8 @@ impl TestHost {
             waits: self.waits,
             hooks: Mutex::new(hooks),
             tape: self.tape,
+            #[cfg(feature = "runtime")]
+            timer: self.timer,
         }
     }
 }
@@ -1654,6 +1661,13 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     let mut cpu = back_end(seed, container.address_space, wall_clock);
+    // On the machine's clock a unit of the back end's progress takes what it takes, so its turns end
+    // once their time has passed, as the stand-in's do.
+    #[cfg(feature = "runtime")]
+    if wall_clock {
+        use wcontainers_runtime_single_kernel::{Executor as _, SliceTimer};
+        host.timer = Some(SliceTimer::new(cpu.stop_flag()));
+    }
     #[cfg(not(feature = "runtime"))]
     let taped = host.tape.is_some();
     #[cfg(not(feature = "runtime"))]
@@ -1834,6 +1848,11 @@ where
                 .draws()
                 .random_range(1..=ANSWER_ARRIVES_WITHIN);
             limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
+        }
+        #[cfg(feature = "runtime")]
+        if let Some(timer) = &self.timer {
+            timer.turn(limit);
+            return Turn::Free;
         }
         Turn::Counted { limit }
     }
@@ -2086,6 +2105,10 @@ where
         kernel: &mut Kernel,
         cpu: &mut E,
     ) -> ControlFlow<Run> {
+        #[cfg(feature = "runtime")]
+        if let Some(timer) = &self.timer {
+            timer.turn_over();
+        }
         self.stopped_live(kernel, cpu)
     }
 
@@ -2354,7 +2377,9 @@ fn finish(run: Run, report: Option<std::os::fd::OwnedFd>) -> Run {
             unsafe_code,
             reason = "ends the forked copy at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
         )]
-        unsafe { libc::_exit(0) };
+        unsafe {
+            libc::_exit(0)
+        };
     }
     run
 }
@@ -2369,7 +2394,9 @@ fn panic_in_copy(why: &str) -> ! {
         unsafe_code,
         reason = "ends the forked copy at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
     )]
-    unsafe { libc::_exit(1) };
+    unsafe {
+        libc::_exit(1)
+    };
 }
 
 /// The run of a copy made at a save, read from its pipe once it has ended.
