@@ -1052,6 +1052,23 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     earlier attempt failed to build for a few minutes on the kernel track's commit in progress (388f03d7), not ours.
     No new unsafe code.
 
+- W1 round 8 run 1 (2026-11-24, 09:20 UTC on), scratch w1/r8run1, every run with /dev/kvm denied:
+  - Conforming: nothing new in the executor, memory space or volatile bytes interfaces. The owner's notice of
+    2026-11-24 (unsafe is priority one: no new unsafe, and any use a safe library function does the same goes) was
+    followed first: ten of the library's 28 uses are gone (Unsafe code, below), 18 left (16 build on ARM64, 13 on
+    x86-64), each listed under "Needs a primitive" by its operation. No use added.
+  - The window cache is gone (Departures): files.rs reads and writes a stub's memfd or a shared block's by position
+    (rustix's `pread`, `pwrite`, retried on EINTR, a range past the file's end `FAULT`); a fork's copy-on-write
+    moves a copy unit at a time through one buffer. The code area is written by `pwrite` and mapped (memmap2's
+    `MmapRaw`, ARM64 only) for cache maintenance by address; the thread pages are mapped by `MmapRaw`.
+    tests/files.rs replaces tests/windows.rs: writes across huge-page edges are the stub's bytes at the guest
+    address (through /proc) and read back, a write by another path is read back, three memories never mix, a read
+    past the memfd's end is refused, and 64 memories of 2^43 bytes with 512 seeded touches each add no host mapping
+    to the embedder (64 allowed for tests running beside it).
+  - Verdicts from this tree (all1-arm.out, all1-x86.out): Graviton4 (load 26 to 39) 117 passed, 1 failed (the known
+    precise-set test); the Xeon (load 45) 54 passed (the translated-code binaries build no tests there). Clippy with
+    warnings denied clean on every target on both.
+
 ## W1 not complete: the gap list
 
 W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
@@ -1429,6 +1446,12 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## Departures from the plan
 
+- W1 round 8 run 1: the window cache of plan 4.2 is gone. The embedder reads and writes the stubs' memfds by position
+  (files.rs, rustix's `pread` and `pwrite`) and maps no guest memory; the code area is written by `pwrite` and mapped
+  only for its cache maintenance. Five of the crate's unsafe uses went with the cache and five more with memmap2
+  (the owner's rule of 2026-11-24). Plan 4.2 says so now; tests/windows.rs is tests/files.rs (the same checks less
+  the cache's bound, plus a read past a memfd's end refused, and 64 memories of 2^43 bytes adding no mapping).
+
 - W1 round 7 run 2: tests/differential.rs carries copies of the VM executor's test helpers that draw the cases
   (`edge`, `across`, `collisions`, `swept`, `paired` and the WebAssembly side of a pair), because they live in that
   crate's test files; the arm64 crate's `words_of` is included by path as the VM's test does. One shared home for them
@@ -1528,15 +1551,39 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   pages are larger than 4 KiB (Apple silicon, 64 KiB-page ARM64 kernels), named. Cloud ARM64 Linux machines run
   4 KiB pages by default, so W1 to W3 cover the case the ruling of 2026-11-23 is about first.
 
+## Needs a primitive
+
+The owner's rule of 2026-11-24 (no new unsafe; unsafe only in low-level primitives behind traits of their own). Each
+operation this crate still does with unsafe code, for the primitives' design
+(pyro-parked/wcontainers-scratch/executor-unsafe-primitives; its survey-process.md lists them line by line as of
+37f1b84b, before round 8 run 1 removed ten):
+- Map at a fixed address with `MAP_FIXED_NOREPLACE` and unmap on drop: the zygote's reservation, the probe's one-page
+  search of the user-space top.
+- Views of a shared mapping as atomics of one size per offset: the thread pages (`&AtomicU32`, `&AtomicU64` at an
+  offset; a `#[repr(C)]` page of atomics would make one size per field certain).
+- Cache maintenance after writing code, by address range of a mapping (`dc cvau`, `dsb ish`, `ic ivau`, `dsb ish`).
+- Read a system register: `CTR_EL0`.
+- Send a signal to one thread of another process: `tgkill(pid, tid, signal)`.
+- Fork a multithreaded process whose child only jumps into code of its own: `fork`, then the jump with five
+  arguments in registers, never returning; the zygote's assembly and the slice of its machine code between two labels.
+- glibc's `__rseq_offset` and `__rseq_size`.
+- The SVE probe: set p0 and FFR, make a system call, store both.
+Not needed by anything built: a view of guest bytes lent to a byte sink or source (For the owner, views of guest
+memory); `read_to` and `write_from` keep their buffer.
+
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. 28 in the library (26
-build on ARM64, 23 on x86-64), 1 in its tests:
-- code.rs (run 7): the code area's `mmap` where the host chooses and its `munmap`; the embedder's write into it (a
-  slice of its own mapping, which only it writes and a stub only runs); cache maintenance by address and its
-  barriers (`dc cvau`, `ic ivau`, `dsb ish`; no crate wraps them), ARM64 only.
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. Since W1 round 8 run 1:
+18 in the library (16 build on ARM64, 13 on x86-64), 1 in its tests; round 8 run 1 removed 10 (the owner's rule of
+2026-11-24: no new unsafe, and any a safe library function does the same goes): the window cache's five (its
+reservation, its window maps and its two copies; the embedder now reads and writes the stubs' memfds with rustix's
+safe `pread` and `pwrite`), the code area's map, unmap and slice (memmap2's safe `MmapRaw`, words written by
+`pwrite`), the thread pages' map and unmap (`MmapRaw`). Left:
+- code.rs: cache maintenance by address and its barriers (`dc cvau`, `ic ivau`, `dsb ish`; no crate wraps them as
+  safe calls), ARM64 only, one marked function.
 - stub.rs: glibc's `tgkill` for the stop (rustix's `tkill` is unsafe too and reaches any thread of the host; nix has
-  none for one thread of another process).
+  none for one thread of another process; rustix's safe `pidfd_send_signal` on a thread's pidfd would do it, but
+  `PIDFD_THREAD` needs Linux 6.9 and is not known in gVisor).
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
   it refers to nothing outside itself); glibc's `__rseq_offset` and `__rseq_size` (no crate has them); the two
   labels around the assembly; the slice of its code between them; the reservation's `mmap` and `munmap`;
@@ -1544,10 +1591,8 @@ build on ARM64, 23 on x86-64), 1 in its tests:
   the jump into the zygote's code in the child, one per architecture.
 - probe.rs: `mrs ctr_el0` (no crate wraps it); the fixed `mmap` and `munmap` of the user-space search; the SVE
   probe's assembly (set p0 and FFR, `svc`, store them).
-- pages.rs: the thread pages' `mmap` where the host chooses and its `munmap`; the two views of that mapping as
-  32-bit and 64-bit atomics (the stub writes the same pages from its own process).
-- windows.rs: the reservation's `mmap` and `munmap`; mapping a window, or inaccessible memory, over one slot of
-  it; the copy out of a window and the copy into one (raw copies, since a stub may touch the bytes meanwhile).
+- pages.rs: the two views of the thread pages' mapping as 32-bit and 64-bit atomics (the stub writes the same pages
+  from its own process).
 - tests/zygote.rs: glibc's `__rseq_size`, to show the test has a registration to drop.
 - The stub's routine that receives a shared block's memfd and maps it is in the same assembly (no new use); it
   reads the control message the host kernel wrote on its own stack, checks its length, level and type, and maps
@@ -1568,6 +1613,9 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since W1 round 8 run 1: memmap2 0.9.12 (MIT OR Apache-2.0, already in the lock file) for the thread pages' and the
+code area's mappings in the embedder, made and unmapped by its safe `MmapRaw`.
 
 Since round 7 run 2, for the differential test only (ARM64): proptest 1.12.0 (MIT OR Apache-2.0, already in the lock
 file, the VM executor's tests' version) to draw layer 1's cases.

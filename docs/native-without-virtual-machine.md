@@ -97,7 +97,7 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   keeps per process anyway) are made once, by the **in-process host** the embedder makes at start (section 8.5);
   every I executor, one per container, is made from it and takes its slots from the shared pool. Two I
   containers in one process therefore never collide: they hold different slots of one layout. P needs no fixed
-  range in the embedder's process (its views are windows the host places, 4.2), so P and I containers mix in one
+  range in the embedder's process (it maps no guest memory, 4.2), so P and I containers mix in one
   process; P's zygote removes I's reservation in its child like everything else of the embedder (4.1). A second
   in-process host in the same process is refused ("in-process host exists"), as is a first one whose reservation
   the host refuses.
@@ -107,7 +107,7 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
 - **The slot table** (ARM64; the VM form's entry mirror): a 16-byte slot for every host address H of the guest
   area at `SLOTS | (H << 2)`, `SLOTS` = 2^46, so the table spans [2^46, 2^47). It is one memfd per guest memory
   (P) or one per embedder process (I: the slots of different containers are different host addresses), written by
-  the embedder (P: through its windows, 4.2; I: through its own mapping), and mapped read-execute in the guest's
+  the embedder (P: by position in the memfd, 4.2; I: through its own mapping), and mapped read-execute in the guest's
   view **page by page as pieces are loaded** (P: by a command the stub applies, which its filter allows in exactly
   this range, 3.7; I: by the executor itself). A jump to a slot in a page not mapped is a host SIGSEGV at a table
   address, which the floor treats exactly as a slot holding `udf` (no piece for that guest address). So a guest
@@ -121,8 +121,7 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   address is one add away; 2048 · 2^32 = 2^43), then code areas, floor, register blocks, signal stacks in [2^45,
   2^46). P, in the stub: code area, control pages (read-only to the stub, 4.3), register pages, signal stacks, the
   stub's code and stack. P's
-  embedder process maps its views of the stubs' memfds as windows wherever the host places them (4.2; it runs no
-  guest code).
+  embedder process maps no view of a stub's guest memory (4.2; it runs no guest code).
 - Each form reserves its areas at start (`mmap` PROT_NONE, MAP_NORESERVE, MAP_FIXED_NOREPLACE): the host never
   places anything inside a reservation, so our code and the guest cannot collide; an embedder mapping made later
   goes elsewhere, and `brk` stops below a reservation (malloc then maps). If a reservation is refused, the form is
@@ -348,9 +347,8 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   of either recomputes it.
 - The kernel's view: I gives each slot a read-write view in our area (3.1) laid out as the guest's address
   space: the memory's memfd over the whole window (holes read as zero) and each shared block's memfd over the range
-  it is mapped at, so a guest address is one add away whatever backs it; P maps, in the embedder's process, 2 MiB
-  windows of its memfds when the kernel first touches them, a bounded cache (4.2), finding a shared block's memfd
-  from the executor's record of `shared_map`.
+  it is mapped at, so a guest address is one add away whatever backs it; P reads and writes its memfds by position
+  (4.2), finding a shared block's memfd from the executor's record of `shared_map`.
   `Cpu::read`, `write` and `zero` (a hole punched with `fallocate`) go through it in both forms and are seen at once
   by every view.
 - **Fork** (`memory_duplicate`): one copy-on-write mechanism, the same in both forms. Every private page of every
@@ -530,7 +528,7 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   and a load anything mapped readable (its control pages too). Guest code makes no host call (it has no `svc`; the
   only host calls are the stub's own routines, reached through the floor's entries), so what the guest can do to
   its stub is write those pages. The stub is built so that this gives the guest nothing it does not have:
-  - Everything the stub obeys is in its thread's **control page**, which the embedder writes through its window
+  - Everything the stub obeys is in its thread's **control page**, which the embedder writes through its mapping
     and the stub maps read-only (`PROT_READ`, shared): the `Resume`, the answer word, the queued mapping commands
     and placement requests (4.2, 4.3). Its filter refuses `mprotect`, `mmap` and `munmap` outside the guest area
     and the slot table (below), so the stub itself cannot make it writable. A guest store to it faults like a store
@@ -681,7 +679,7 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   alternate signal stack goes with the memory, harmless while every signal is blocked; each stub sets its own.
   Then the zygote closes every fd but its socket (`close_range`), unmaps every range outside its own (two `munmap`
   calls, below and above its own pages up to the user-space top the start-up probe found, so an in-process host's
-  reservation and table and the window cache go too: no /proc needed), and waits for requests on its socket. So no
+  reservation and table go too: no /proc needed), and waits for requests on its socket. So no
   stub holds any of the embedder's memory, and every stub, forked from the zygote, inherits no registration. The
   embedder's death closes the socket and the zygote exits.
 - The zygote's own end (the host's out-of-memory killer, or any fault of its own) takes every stub with it
@@ -736,7 +734,7 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   `shared_map` command's memfd reaches the stub over its socket (`SCM_RIGHTS`), received by the thread that applies
   the command and closed once mapped.
 - One embedder process serves every stub of every container it runs, through one **host-process host** (one
-  zygote, one window cache, 4.2) that the embedder makes once and makes each container's P executor from (8.5).
+  zygote, 4.2) that the embedder makes once and makes each container's P executor from (8.5).
 - A stub's death is learned one way: its socket hangs up (the embedder holds the other end). A runner waits on a
   thread's futex with a time-out of at most 100 ms and, on each time-out, polls that stub's socket (`ppoll`, zero
   wait); any other use of the socket sees the hang-up too. The executor then ends the process as killed by SIGKILL,
@@ -746,16 +744,15 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
 ### 4.2 Memory
 
 - Layout and frames as 3.1 and 3.5: the guest's own addresses, the memfd per memory.
-- **The embedder's views are windows.** Every view the embedder's process has of a stub's memfds (guest memory, the
-  slot table, the code area; shared blocks included), except the thread-pages memfd (4.3), is a window of 2 MiB at a 2 MiB-aligned offset of one memfd,
-  mapped shared read-write at the kernel's side's first touch into one reservation of the host-process host, and
-  found through a table keyed by (memfd, window). The windows are a cache: beyond 16,384 mapped windows (32 GiB of
-  views, against vm.max_map_count's default of 65,530 host mappings) the least recently used one, as the clock algorithm approximates it (one store per touch), is unmapped
-  (counted "view window evicted"). Eviction happens only inside an executor call, which holds `&mut self`, so no
-  slice handed out earlier is still borrowed. Measured (W0 probe run 3): mapping a window, touching one page and
-  unmapping it, 8.5 µs on Graviton4 and 4.8 to 5.2 µs on the Xeon; mapping and unmapping alone 3.2 / 2.0 µs. So neither
-  the number of stubs nor the size of their reservations is bounded by the embedder's own address space, which
-  holds only three whole 2^46-byte slot-table views (measured by the second check).
+- **The embedder maps no guest memory.** The kernel's side reads and writes a stub's memfds (guest memory and shared
+  blocks) by position (`pread`, `pwrite`; rustix's safe calls), so neither the number of stubs nor the size of their
+  memories touches the embedder's own address space or host mappings. Only two things are mapped in the embedder,
+  each through memmap2's safe `MmapRaw`: the thread pages (4.3), read and written as atomics, and on ARM64 the code
+  area, written by position too and mapped only so the caches can be maintained by address (3.4). As built (W1
+  round 8 run 1): this replaced a cache of 2 MiB windows mapped at first touch (the plan as first checked), whose
+  maps and copies were five of the crate's unsafe uses; the owner's rule of 2026-11-24 puts unsafe first. Cost:
+  one host call per contiguous piece the kernel's side reads or writes, and a fork's copy-on-write moves a copy unit
+  (3.5) by two host calls instead of two copies (measured in the status file).
 - Mapping commands (`set_permissions`, `shared_map`, `shared_unmap`, a slot-table page, a protection for code or
   marks) change only the guest view, which no one but the memory's own threads can observe. They are queued per
   memory, written into the control page (3.7) of the thread that resumes next, and applied by it in the order
@@ -802,7 +799,7 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   our area), with its thread's signal stack (16 KiB at a fixed place per index, anonymous, `MAP_NORESERVE`), and
   the fd is then closed: a new thread needs no mapping call, which the filter would refuse in our area, and untouched
   pages cost nothing. The embedder maps each stub's thread-pages memfd whole too (256 MiB of address space, one host
-  mapping per stub), outside the window cache of 4.2, so a page a runner waits on is never evicted under it. A
+  mapping per stub), for as long as the stub lives, so a page a runner waits on is always mapped. A
   `thread_new` that finds no free index answers `CpuError::OutOfMemory`, which the kernel gives the guest's `clone`
   as it gives any other failure to make a thread (counted "guest threads per process exhausted", warned). The runner (`Runner::run` on an embedder thread) writes the control page, wakes the
   answer word's futex, and waits on the request word with a time-out of the slice or 100 ms, whichever is sooner
@@ -1042,7 +1039,7 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
     intersection of its guest pages' permissions, or not at all where their files differ. A host fault there goes
     to the floor, which decides by the faulting guest page's own permission and marks: refused, it is the guest's
     fault exactly as on Linux; allowed, the floor performs that one instruction against the kernel's view (I: its
-    second mapping; P: a round trip and the embedder's window) through the translator's single-instruction path
+    second mapping; P: a round trip and the embedder's positioned access) through the translator's single-instruction path
     (the one `execute_single_instruction` uses, so its semantics are the reference's) and resumes after it. Counted
     "access in a split host page", warned;
   - copy-on-write units, written marks, code pages and watches cover at least a host page, each fault on a
@@ -1212,7 +1209,7 @@ Where an interface would have to change, the smallest change, for the owner (not
 4. Nothing else for running: `Cpu::address_space` carries the ceiling, `ProcessInfo::address_ceiling_distance` and
    `on_process_outgrown` cover growth, `CpuError::OutOfMemory` covers slots running out.
 5. Making an executor. The executor interface has no constructor, and these two have process-wide parts (3.1, 4.1):
-   one zygote and window cache (P), one reservation, slot pool, slot table and set of signal handlers (I). By the
+   one zygote (P), one reservation, slot pool, slot table and set of signal handlers (I). By the
    owner's convention (`StandaloneClock`), the smallest addition is a host that is made once and makes executors:
    ```rust
    /// What an executor's process-wide part is made from and makes executors of.
@@ -1494,8 +1491,8 @@ filter. Pass bar, every item on the rented ARM64 machine:
   moments, a new thread's start included, each thread's registers its own and no index reused before its
   exit-clear word is zero; a process that makes `THREADS_PER_PROCESS` threads and one more gets its `clone`
   refused, counted; a guest that maps one shared block 10,000 times holds no fd for it in its stub;
-  64 guest processes each mapping 2^43 bytes and touching pages across all of it, run by one embedder, whose own
-  mappings stay under the window cache's bound (counted evictions recorded); one P container and two I containers
+  64 guest processes each mapping 2^43 bytes and touching pages across all of it, run by one embedder, which maps none of
+  them (its own host mappings counted before and after); one P container and two I containers
   (W2) running at once in one embedder; the register-group isolation tests of 3.8, and the start-up probe's SVE
   test of 3.8;
 - placement: runners of two containers in one embedder take different CPUs; with a spinning program on a runner's
