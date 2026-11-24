@@ -16,7 +16,8 @@ use wcontainers_executor_hardware_virtualization_inside::layout::{
     BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, TOP_LEVEL, level_span, linear,
 };
 use wcontainers_executor_hardware_virtualization_inside::link::{GiveBack, Start};
-use wcontainers_executor_hardware_virtualization_inside::syndrome::{FAULT_STATUS, WRITE_NOT_READ};
+use wcontainers_executor_hardware_virtualization_inside::syndrome::FAULT_STATUS;
+use wcontainers_processor_architecture_arm64::syndrome::WRITE_NOT_READ;
 
 use crate::protocol::{
     Case, Done, Echo, Footprint, Lower, Measurement, Nothing, RaiseLater, Report, StartCpu,

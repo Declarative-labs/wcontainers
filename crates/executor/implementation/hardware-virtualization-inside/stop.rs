@@ -7,8 +7,9 @@ use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_arm64::Way;
 use wcontainers_arm64::thread_state::RegisterPage;
 pub use wcontainers_executor_arm64_stop::*;
+use wcontainers_processor_architecture_arm64::syndrome::WRITE_NOT_READ;
 
-use crate::syndrome::{ALIGNMENT_FAULT, CACHE_MAINTENANCE, FAULT_STATUS, WRITE_NOT_READ};
+use crate::syndrome::{ALIGNMENT_FAULT, CACHE_MAINTENANCE, FAULT_STATUS};
 
 /// The exception that does not resolve: one translated code never raises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

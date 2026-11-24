@@ -39,6 +39,8 @@ zerocopy.workspace = true
 aarch64-paging = { version = "0.12.3", default-features = false }
 # System register fields.
 aarch64-cpu = "12.0.0"
+# The syndrome bits the architecture's model names.
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 arm-sysregs = { version = "0.5.2", features = ["el1"] }
 # The interrupt controller.
 arm-gic = "0.11.0"
