@@ -535,20 +535,14 @@ struct Entry {
 
 /// Forks with every signal blocked; the child jumps into the zygote's code and never returns.
 fn fork_into_zygote(entry: Entry) -> Result<Pid, Errno> {
-    let mut every = core::mem::MaybeUninit::<libc::sigset_t>::uninit();
-    let mut previous = core::mem::MaybeUninit::<libc::sigset_t>::uninit();
-    #[expect(
-        unsafe_code,
-        reason = "fills a signal set and blocks it, through libc: rustix has no signal mask call"
-    )]
-    // SAFETY: both sets are written before they are read.
-    let blocked = unsafe {
-        libc::sigfillset(every.as_mut_ptr());
-        libc::pthread_sigmask(libc::SIG_SETMASK, every.as_ptr(), previous.as_mut_ptr())
-    };
-    if blocked != 0 {
-        return Err(Errno::from_raw_os_error(blocked));
-    }
+    use nix::sys::signal::{SigSet, SigmaskHow, pthread_sigmask};
+    let mut previous = SigSet::empty();
+    pthread_sigmask(
+        SigmaskHow::SIG_SETMASK,
+        Some(&SigSet::all()),
+        Some(&mut previous),
+    )
+    .map_err(|error| Errno::from_raw_os_error(error as i32))?;
     #[expect(
         unsafe_code,
         reason = "forks the embedder; the child runs only the zygote's own code"
@@ -558,11 +552,11 @@ fn fork_into_zygote(entry: Entry) -> Result<Pid, Errno> {
     if forked == 0 {
         enter(&entry);
     }
-    #[expect(unsafe_code, reason = "puts back the signal mask saved above")]
-    // SAFETY: `previous` was written by the call that blocked every signal.
-    unsafe {
-        libc::pthread_sigmask(libc::SIG_SETMASK, previous.as_ptr(), core::ptr::null_mut());
-    }
+    let restored = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&previous), None);
+    debug_assert!(
+        restored.is_ok(),
+        "a mask the host gave back is always valid"
+    );
     Pid::from_raw(forked).ok_or_else(|| {
         Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::AGAIN)
     })

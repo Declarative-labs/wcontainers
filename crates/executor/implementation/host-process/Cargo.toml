@@ -14,7 +14,7 @@ path = "implementation.rs"
 wcontainers-abi.workspace = true
 # Host calls: memfds, mappings, the zygote's socket, processes and CPU placement.
 rustix = { version = "1.1.6", features = ["event", "fs", "mm", "net", "param", "process", "thread", "time"] }
-# The signal mask around the zygote's fork, the fork itself, and the layouts of a socket message and a seccomp filter,
+# The zygote's fork, and the layouts of a socket message and a seccomp filter,
 # where rustix has none.
 libc = "0.2.191"
 # Linux's numbers for the zygote's and the stubs' own host calls and filter.
@@ -23,8 +23,8 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["err
 rangemap = { version = "1.8.0", default-features = false }
 # A register block as the words of its register page.
 zerocopy.workspace = true
-# A stub process's CPU clock, for placement's samples; rustix has none for another process.
-nix = { version = "0.31.3", default-features = false, features = ["process", "time"] }
+# A stub process's CPU clock, for placement's samples, and the signal mask around the zygote's fork: rustix has neither.
+nix = { version = "0.31.3", default-features = false, features = ["process", "signal", "time"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
