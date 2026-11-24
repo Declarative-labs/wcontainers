@@ -8,6 +8,7 @@ use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 use wcontainers_kernel::UserId;
 use wcontainers_raw_sockets::{RawPacket, RawSocketSetting, RawSockets};
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::{HostRawSocket, HostRawSockets};
 
@@ -49,7 +50,11 @@ impl RawSockets for HostRawSockets {
         match socket.never {}
     }
 
-    fn receive(&self, socket: &Self::Socket, _into: &mut [u8]) -> Result<Received, HostError> {
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        _into: &impl VolatileBytes,
+    ) -> Result<Received, HostError> {
         match socket.never {}
     }
 

@@ -1,6 +1,7 @@
 //! What a waiting call on the host's ping sockets allocates.
 #![cfg(target_os = "linux")]
 
+use core::cell::RefCell;
 use std::alloc::System;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -31,7 +32,7 @@ fn a_wait_allocates_nothing_once_warm() {
         .open(IpVersion::V4, UserId(u32::MIN))
         .expect("an echo socket opens");
     let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let message = suite::echo(IpVersion::V4, suite::PAYLOAD);
+    let mut message = suite::echo(IpVersion::V4, suite::PAYLOAD);
     let mut into = suite::buffer();
     let counted = suite::wait_allocations(
         || sockets.wait_until_ready(&socket, ReadyFor::READABLE),
@@ -41,13 +42,13 @@ fn a_wait_allocates_nothing_once_warm() {
                     &socket,
                     suite::header_to(to, &message),
                     suite::plain_fields(),
-                    &message,
+                    &RefCell::new(&mut message[..]),
                 )
                 .expect("the request is sent");
         },
         || {
             assert!(matches!(
-                sockets.receive(&socket, &mut into),
+                sockets.receive(&socket, &RefCell::new(&mut into[..])),
                 Ok(Received::Packet(_))
             ));
         },

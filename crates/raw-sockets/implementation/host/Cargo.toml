@@ -20,8 +20,11 @@ wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-readiness = { path = "../../../readiness" }
 etherparse.workspace = true
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The source a receive gives the bytes it reaches.
+wcontainers-byte-source = { path = "../../../byte-source" }
 # Socket calls and socket addresses.
 rustix = { version = "1.1.6", features = ["net"] }
 # The socket options socket2 covers, on the socket's descriptor.

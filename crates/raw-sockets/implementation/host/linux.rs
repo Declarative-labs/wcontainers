@@ -9,6 +9,7 @@ use libc::c_int;
 use linux_raw_sys::net as uapi;
 use rustix::net::{Protocol, SocketType};
 use wcontainers_abi::{CounterReading, HostError};
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BufferSizes, ByteCount, IcmpCode, IcmpType, InterfaceSelector, IpHeaderFields, IpSendFields,
@@ -25,6 +26,7 @@ use wcontainers_raw_sockets::{
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_route_resolver_host::HostRouteResolver;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::{HostRawSocket, HostRawSockets};
 use shared::datagram::addresses::local_address;
@@ -309,6 +311,34 @@ fn clear_router_alert(fd: BorrowedFd<'_>, alert: RouterAlert) -> Result<(), Host
     }
 }
 
+/// One receive into the bytes it is given to read into, which keeps what came with them.
+struct Receiving<'a> {
+    sockets: &'a HostRawSockets,
+    socket: &'a HostRawSocket,
+    received: Option<Received>,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        let received = self.sockets.receive_bytes(self.socket, into)?;
+        self.received = Some(received);
+        Ok(written_length(&received, into.len()))
+    }
+}
+
+/// Returns the number of bytes a receive wrote into a buffer of `room` bytes, the start of what it tells the length of.
+fn written_length(received: &Received, room: usize) -> usize {
+    let whole = match received {
+        Received::Packet(fields) => fields.length,
+        Received::TransmitReport(report) => {
+            report.packet_length.map_or(usize::MIN, |length| length.0)
+        }
+    };
+    whole.min(room)
+}
+
 impl RawSockets for HostRawSockets {
     type Socket = HostRawSocket;
 
@@ -546,17 +576,21 @@ impl RawSockets for HostRawSockets {
         }
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<Received, HostError> {
-        let mut state = socket.state.borrow_mut();
-        receive_in_order(
-            socket.fd(),
-            &mut *state,
-            &self.shortfalls,
-            into,
-            |state| &mut state.errors,
-            |state, into| self.take_error_entry(socket, state, into),
-            |state, into| self.receive_packet(socket, state, into),
-        )
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<Received, HostError> {
+        let mut receiving = Receiving {
+            sockets: self,
+            socket,
+            received: None,
+        };
+        into.write_from(&mut receiving)?;
+        // Bytes with nothing to reach may never read from the source, and the packet is taken here instead.
+        receiving
+            .received
+            .map_or_else(|| self.receive_bytes(socket, &mut []), Ok)
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
@@ -583,6 +617,24 @@ impl Readiness<HostRawSocket> for HostRawSockets {
 }
 
 impl HostRawSockets {
+    /// Receives into the buffer as `receive` receives into the bytes it is given.
+    fn receive_bytes(
+        &self,
+        socket: &HostRawSocket,
+        into: &mut [u8],
+    ) -> Result<Received, HostError> {
+        let mut state = socket.state.borrow_mut();
+        receive_in_order(
+            socket.fd(),
+            &mut *state,
+            &self.shortfalls,
+            into,
+            |state| &mut state.errors,
+            |state, into| self.take_error_entry(socket, state, into),
+            |state, into| self.receive_packet(socket, state, into),
+        )
+    }
+
     /// Takes the next ICMP error or transmit report of the error queue, kept entries first, past entries that give none.
     fn take_error_entry(
         &self,

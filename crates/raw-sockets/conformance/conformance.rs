@@ -5,6 +5,7 @@
 //! leaves a link.
 #![cfg(target_os = "linux")]
 
+use core::cell::RefCell;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -19,15 +20,15 @@ use etherparse::{
 };
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets_conformance::{
-    BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FAR_V6_SEGMENT, FLOW_LABEL, GATEWAY, GATEWAY_V6,
-    HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
+    BROADCAST, Capture, CellBytes, DUMMY, FAIR_QUEUE, FAR, FAR_V6_SEGMENT, FLOW_LABEL, GATEWAY,
+    GATEWAY_V6, HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
     NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED, PATIENCE,
     PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, Wakes,
     buffer, buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip,
     ip6, ipv4, ipv6, no_reports, output, plain_fields, poll_with, seen, segment_routing_header,
     source_filters_are_written, tc, version_of, woken, write_setting,
 };
-use wcontainers_icmp_sockets_conformance::{PAD_N, seconds_since_confirmed};
+use wcontainers_icmp_sockets_conformance::{LONGER_THAN_A_PAGE, PAD_N, seconds_since_confirmed};
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
     InterfaceSelector, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
@@ -44,6 +45,7 @@ use wcontainers_raw_sockets::{
 };
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance;
@@ -234,8 +236,25 @@ fn send<S: RawSockets>(
     sockets.send_to(socket, packet, plain_fields())
 }
 
-/// Waits for what the socket receives next.
-fn receive<S: RawSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> Received {
+/// The receive that takes volatile bytes, made with the suite's own buffer lent as a `RefCell` over a mutable slice.
+pub trait LentBuffers: RawSockets {
+    fn receive_buffer(
+        &self,
+        socket: &Self::Socket,
+        into: &mut [u8],
+    ) -> Result<Received, HostError> {
+        self.receive(socket, &RefCell::new(into))
+    }
+}
+
+impl<S: RawSockets> LentBuffers for S {}
+
+/// Waits for what the socket receives next, into the bytes.
+fn receive_into<S: RawSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    into: &impl VolatileBytes,
+) -> Received {
     let start = Instant::now();
     loop {
         match sockets.receive(socket, into) {
@@ -247,20 +266,34 @@ fn receive<S: RawSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> R
     }
 }
 
-fn receive_packet<S: RawSockets>(
+/// Waits for the packet the socket receives next, into the bytes.
+fn receive_packet_into<S: RawSockets>(
     sockets: &S,
     socket: &S::Socket,
-    into: &mut [u8],
+    into: &impl VolatileBytes,
 ) -> ReceivedPacketFields {
-    match receive(sockets, socket, into) {
+    match receive_into(sockets, socket, into) {
         Received::Packet(fields) => fields,
         other => panic!("a packet, not {other:?}"),
     }
 }
 
+/// Waits for what the socket receives next.
+fn receive<S: RawSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> Received {
+    receive_into(sockets, socket, &RefCell::new(into))
+}
+
+fn receive_packet<S: RawSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    into: &mut [u8],
+) -> ReceivedPacketFields {
+    receive_packet_into(sockets, socket, &RefCell::new(into))
+}
+
 fn nothing_arrives<S: RawSockets>(sockets: &S, socket: &S::Socket) -> bool {
     std::thread::sleep(QUIET);
-    sockets.receive(socket, &mut buffer()) == Err(HostError::WouldBlock)
+    sockets.receive_buffer(socket, &mut buffer()) == Err(HostError::WouldBlock)
 }
 
 /// Accepts an honest refusal of what a host may be unable to send, and checks anything else.
@@ -825,7 +858,7 @@ pub fn receive_with_nothing_queued_would_block<S: RawSockets>(sockets: S) {
     for (version, protocol) in [(IpVersion::V4, EXPERIMENT), (IpVersion::V6, EXPERIMENT)] {
         let socket = opened(&sockets, version, protocol);
         assert_eq!(
-            sockets.receive(&socket, &mut buffer()),
+            sockets.receive_buffer(&socket, &mut buffer()),
             Err(HostError::WouldBlock)
         );
     }
@@ -854,6 +887,53 @@ pub fn a_short_buffer_keeps_the_whole_length<S: RawSockets>(sockets: S) {
         assert_eq!(whole.len(), header + PAYLOAD.len(), "{to}");
         let seen = seen(&whole);
         assert_eq!((seen.protocol, seen.payload), (EXPERIMENT, PAYLOAD), "{to}");
+    }
+}
+
+/// Checks that bytes that are not a buffer take what a buffer does: a packet longer than a page, whole or cut short.
+pub fn bytes_that_are_not_a_buffer_take_what_a_buffer_does<S: RawSockets>(sockets: S) {
+    enter_network_namespace();
+    for (to, header) in [
+        (IpAddr::V4(Ipv4Addr::LOCALHOST), Ipv4Header::MIN_LEN),
+        (IpAddr::V6(Ipv6Addr::LOCALHOST), Ipv6Header::LEN),
+    ] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version, EXPERIMENT);
+        let payload: Vec<u8> = (u8::MIN..=u8::MAX)
+            .cycle()
+            .take(LONGER_THAN_A_PAGE)
+            .collect();
+        let sent = || {
+            send(&sockets, &socket, payload_to(to, EXPERIMENT, &payload))
+                .expect("the payload is sent")
+        };
+        sent();
+        let mut plain = buffer();
+        let length = receive_packet(&sockets, &socket, &mut plain).length;
+        plain.truncate(length);
+        assert_eq!(length, header + payload.len(), "{to}");
+        assert_eq!(seen(&plain).payload, payload, "{to}");
+        sent();
+        let cells = CellBytes::new(&buffer());
+        let fields = receive_packet_into(&sockets, &socket, &cells);
+        assert_eq!(fields.length, length, "{to}");
+        let mut whole = cells.to_vec();
+        whole.truncate(length);
+        assert_eq!(
+            unnumbered(version, whole),
+            unnumbered(version, plain.clone()),
+            "{to}"
+        );
+        sent();
+        let short = header + payload.len() / 2;
+        let cut = CellBytes::new(&vec![u8::MIN; short]);
+        let fields = receive_packet_into(&sockets, &socket, &cut);
+        assert_eq!(fields.length, length, "{to} into {short}");
+        assert_eq!(
+            unnumbered(version, cut.to_vec()),
+            unnumbered(version, plain[..short].to_vec()),
+            "{to} into {short}"
+        );
     }
 }
 
@@ -2017,7 +2097,7 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
         let mut received = usize::MIN;
         let mut dropped = usize::MIN;
         let end = loop {
-            match sockets.receive(&receiver, &mut into) {
+            match sockets.receive_buffer(&receiver, &mut into) {
                 Ok(Received::Packet(fields)) => {
                     received += 1;
                     dropped += fields.drops_since_previous.0 as usize;
@@ -2041,7 +2121,7 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
         assert_eq!(received + dropped, requests, "flood {flood}");
         // The sender takes each packet too: emptied, it has room for the next flood, so that some socket takes each
         // packet and Linux sends itself no protocol unreachable error.
-        while let Ok(Received::Packet(_)) = sockets.receive(&sender, &mut into) {}
+        while let Ok(Received::Packet(_)) = sockets.receive_buffer(&sender, &mut into) {}
     }
     tc(FAIR_QUEUE);
     let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
@@ -2617,7 +2697,7 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: RawSockets>(socke
         }
     }
     wcontainers_icmp_sockets_conformance::check_rejections(
-        |into| sockets.receive(&socket, into),
+        |into| sockets.receive_buffer(&socket, into),
         &sends,
     );
 }
@@ -2717,6 +2797,11 @@ macro_rules! tests {
         #[test]
         fn receive_with_nothing_queued_would_block() {
             $crate::receive_with_nothing_queued_would_block($value);
+        }
+
+        #[test]
+        fn bytes_that_are_not_a_buffer_take_what_a_buffer_does() {
+            $crate::bytes_that_are_not_a_buffer_take_what_a_buffer_does($value);
         }
 
         #[test]

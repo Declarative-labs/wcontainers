@@ -5,6 +5,7 @@
 //! packet socket of the namespace sees what leaves a link.
 #![cfg(target_os = "linux")]
 
+use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::{NonZeroU16, NonZeroU32};
 use std::future::Future;
@@ -23,6 +24,8 @@ use etherparse::{
 };
 use mitsein::slice1::Slice1;
 use wcontainers_abi::HostError;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_icmp_sockets::{
     EchoBindAddress, EchoBinding, EchoIdentifier, IcmpSockets, IdentifierSharing, LocalIdentifier,
 };
@@ -41,6 +44,7 @@ use wcontainers_internet_protocol::{
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_readiness_conformance::{MANY_WAITS, Waiting};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance;
@@ -559,15 +563,104 @@ fn ping<S: IcmpSockets>(
     payload: &[u8],
 ) -> Result<(), SendError> {
     let message = echo(version_of(to), payload);
-    sockets.send_to(socket, header_to(to, &message), plain_fields(), &message)
+    sockets.send_buffer(socket, header_to(to, &message), plain_fields(), &message)
 }
 
 pub fn buffer() -> Vec<u8> {
     vec![u8::MIN; usize::from(u16::MAX)]
 }
 
-/// Waits for what the socket receives next.
-fn receive<S: IcmpSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> Received {
+/// The calls that take volatile bytes, made with the suite's own buffers lent as a `RefCell` over a mutable slice.
+pub trait LentBuffers: IcmpSockets {
+    /// Sends a copy of the message, held in a buffer the suite owns.
+    fn send_buffer(
+        &self,
+        socket: &Self::Socket,
+        header: IpHeaderFields<'_>,
+        fields: IpSendFields,
+        message: &[u8],
+    ) -> Result<(), SendError> {
+        let mut held = message.to_vec();
+        self.send_to(socket, header, fields, &RefCell::new(&mut held[..]))
+    }
+
+    fn receive_buffer(
+        &self,
+        socket: &Self::Socket,
+        into: &mut [u8],
+    ) -> Result<Received, HostError> {
+        self.receive(socket, &RefCell::new(into))
+    }
+}
+
+impl<S: IcmpSockets> LentBuffers for S {}
+
+/// A byte the buffer a source is given holds before it reads, which differs from what the suite's buffers start as.
+pub const UNREAD: u8 = u8::MAX;
+
+/// Bytes held in cells rather than a buffer, so that a source or a sink reaches them only through a buffer of its own.
+///
+/// Only the bytes a source says it read reach the cells, so a receive that tells too few loses what it wrote.
+pub struct CellBytes {
+    cells: Vec<Cell<u8>>,
+}
+
+impl CellBytes {
+    pub fn new(bytes: &[u8]) -> Self {
+        Self {
+            cells: bytes.iter().copied().map(Cell::new).collect(),
+        }
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.cells.iter().map(Cell::get).collect()
+    }
+}
+
+impl VolatileBytes for CellBytes {
+    fn len(&self) -> u64 {
+        self.cells.len() as u64
+    }
+
+    fn read(&self, into: &mut [u8]) -> usize {
+        let count = into.len().min(self.cells.len());
+        for (byte, cell) in into.iter_mut().zip(&self.cells) {
+            *byte = cell.get();
+        }
+        count
+    }
+
+    fn write(&self, bytes: &[u8]) -> usize {
+        let count = bytes.len().min(self.cells.len());
+        for (cell, &byte) in self.cells.iter().zip(bytes) {
+            cell.set(byte);
+        }
+        count
+    }
+
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        sink.write(&self.to_vec())
+    }
+
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut buffer = vec![UNREAD; self.cells.len()];
+        let count = source.read(&mut buffer)?;
+        assert!(
+            count <= buffer.len(),
+            "a source read {count} bytes into {}",
+            buffer.len()
+        );
+        self.write(&buffer[..count]);
+        Ok(count)
+    }
+}
+
+/// Waits for what the socket receives next, into the bytes.
+fn receive_into<S: IcmpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    into: &impl VolatileBytes,
+) -> Received {
     let start = Instant::now();
     loop {
         match sockets.receive(socket, into) {
@@ -579,21 +672,35 @@ fn receive<S: IcmpSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> 
     }
 }
 
-fn receive_packet<S: IcmpSockets>(
+/// Waits for the packet the socket receives next, into the bytes.
+fn receive_packet_into<S: IcmpSockets>(
     sockets: &S,
     socket: &S::Socket,
-    into: &mut [u8],
+    into: &impl VolatileBytes,
 ) -> ReceivedPacketFields {
-    match receive(sockets, socket, into) {
+    match receive_into(sockets, socket, into) {
         Received::Packet(fields) => fields,
         other => panic!("a packet, not {other:?}"),
     }
 }
 
+/// Waits for what the socket receives next.
+fn receive<S: IcmpSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> Received {
+    receive_into(sockets, socket, &RefCell::new(into))
+}
+
+fn receive_packet<S: IcmpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    into: &mut [u8],
+) -> ReceivedPacketFields {
+    receive_packet_into(sockets, socket, &RefCell::new(into))
+}
+
 /// Answers whether nothing arrives at the socket for a while.
 fn nothing_arrives<S: IcmpSockets>(sockets: &S, socket: &S::Socket) -> bool {
     std::thread::sleep(QUIET);
-    sockets.receive(socket, &mut buffer()) == Err(HostError::WouldBlock)
+    sockets.receive_buffer(socket, &mut buffer()) == Err(HostError::WouldBlock)
 }
 
 /// An IP packet's version, source, destination, upper-layer protocol and the bytes after its headers.
@@ -864,7 +971,7 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Opt
         })),
     };
     sockets
-        .send_to(&socket, header, plain_fields(), &request)
+        .send_buffer(&socket, header, plain_fields(), &request)
         .expect("the request is sent");
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
@@ -1329,7 +1436,7 @@ pub fn receive_with_nothing_queued_would_block<S: IcmpSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let socket = opened(&sockets, version);
         assert_eq!(
-            sockets.receive(&socket, &mut buffer()),
+            sockets.receive_buffer(&socket, &mut buffer()),
             Err(HostError::WouldBlock)
         );
     }
@@ -1419,7 +1526,7 @@ pub fn ipv4_header_fields_go_out<S: IcmpSockets>(sockets: S) {
     };
     let capture = Capture::on(DUMMY);
     sockets
-        .send_to(
+        .send_buffer(
             &socket,
             IpHeaderFields::V4(header),
             plain_fields(),
@@ -1468,7 +1575,7 @@ pub fn ipv6_header_fields_go_out<S: IcmpSockets>(sockets: S) {
     };
     let capture = Capture::on(DUMMY);
     sockets
-        .send_to(
+        .send_buffer(
             &socket,
             IpHeaderFields::V6(header),
             plain_fields(),
@@ -1547,7 +1654,7 @@ pub fn ipv6_extension_headers_go_out<S: IcmpSockets>(sockets: S) {
             ..v6_route(FAR_V6_SEGMENT, &message)
         })
     };
-    let sent = sockets.send_to(
+    let sent = sockets.send_buffer(
         &socket,
         IpHeaderFields::V6(header),
         plain_fields(),
@@ -1590,7 +1697,7 @@ pub fn an_ipv6_source_goes_out<S: IcmpSockets>(sockets: S) {
             source: Some(source),
             ..v6_route(ON_LINK_V6, &message)
         };
-        let sent = sockets.send_to(
+        let sent = sockets.send_buffer(
             &socket,
             IpHeaderFields::V6(v6_header(route)),
             plain_fields(),
@@ -1623,7 +1730,7 @@ pub fn every_path_mtu_discovery_mode_sends<S: IcmpSockets>(sockets: S) {
             ..v4_header(v4_route(ON_LINK, &message))
         };
         sockets
-            .send_to(
+            .send_buffer(
                 &socket,
                 IpHeaderFields::V4(header),
                 plain_fields(),
@@ -1642,7 +1749,7 @@ pub fn every_path_mtu_discovery_mode_sends<S: IcmpSockets>(sockets: S) {
             ..v6_header(v6_route(ON_LINK_V6, &message))
         };
         sockets
-            .send_to(
+            .send_buffer(
                 &socket,
                 IpHeaderFields::V6(header),
                 plain_fields(),
@@ -1768,7 +1875,7 @@ pub fn each_path_mtu_discovery_mode_takes_its_mtu<S: IcmpSockets>(sockets: S) {
                 ..header
             }),
         };
-        sockets.send_to(&socket, header, plain_fields(), &message)
+        sockets.send_buffer(&socket, header, plain_fields(), &message)
     });
 }
 
@@ -1800,7 +1907,7 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
         ..v6_header(v6_route(ON_LINK_V6, &message))
     };
     assert_eq!(
-        sockets.send_to(
+        sockets.send_buffer(
             &socket,
             IpHeaderFields::V6(forbidden.clone()),
             plain_fields(),
@@ -1814,7 +1921,7 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
         ..forbidden
     };
     assert_eq!(
-        sockets.send_to(
+        sockets.send_buffer(
             &socket,
             IpHeaderFields::V6(forbidden),
             plain_fields(),
@@ -1831,7 +1938,7 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
         })
     };
     assert_eq!(
-        sockets.send_to(
+        sockets.send_buffer(
             &v4_socket,
             header(PathMtuDiscovery::Do),
             plain_fields(),
@@ -1841,7 +1948,7 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
     );
     let capture = Capture::on(DUMMY);
     sockets
-        .send_to(
+        .send_buffer(
             &v4_socket,
             header(PathMtuDiscovery::Dont),
             plain_fields(),
@@ -1854,7 +1961,7 @@ pub fn a_message_over_the_mtu_is_too_long_or_fragmented<S: IcmpSockets>(sockets:
     assert!(fragment.len() <= LINK_MTU as usize, "{}", fragment.len());
     let allowed = v6_header(v6_route(ON_LINK_V6, &message));
     sockets
-        .send_to(
+        .send_buffer(
             &socket,
             IpHeaderFields::V6(allowed),
             plain_fields(),
@@ -1885,7 +1992,7 @@ pub fn mark_selects_the_route<S: IcmpSockets>(sockets: S) {
             IpHeaderFields::V6(header) => header.route.mark = MARK,
         }
         assert_eq!(
-            sockets.send_to(&socket, header, plain_fields(), &message),
+            sockets.send_buffer(&socket, header, plain_fields(), &message),
             Err(SendError::Host(HostError::Errno(libc::EACCES))),
             "{to}"
         );
@@ -1937,7 +2044,7 @@ pub fn icmp_type_and_code_select_the_route<S: IcmpSockets>(sockets: S) {
             IpHeaderFields::V6(header) => header.route.upper_layer.selector = other,
         }
         unless_refused(
-            sockets.send_to(&socket, header, plain_fields(), &message),
+            sockets.send_buffer(&socket, header, plain_fields(), &message),
             |sent| sent.expect("a request routed by another code is sent"),
         );
     }
@@ -1970,7 +2077,7 @@ pub fn interface_selects_the_link<S: IcmpSockets>(sockets: S) {
             let mut header = header_to(to, &message);
             select_interface(&mut header, selector);
             sockets
-                .send_to(&socket, header, plain_fields(), &message)
+                .send_buffer(&socket, header, plain_fields(), &message)
                 .unwrap_or_else(|error| panic!("{to} by {selector:?}: {error:?}"));
             assert_eq!(seen(&second_capture.echo_request()).destination, to);
         }
@@ -2019,7 +2126,7 @@ pub fn a_bound_interface_holds_a_ping_from_a_bound_address<S: IcmpSockets>(socke
             let message = echo(version, PAYLOAD);
             let mut header = header_to(to, &message);
             select_interface(&mut header, InterfaceSelector::Bound(bound));
-            match sockets.send_to(&socket, header, plain_fields(), &message) {
+            match sockets.send_buffer(&socket, header, plain_fields(), &message) {
                 Ok(()) => assert_eq!(seen(&capture.echo_request()).destination, to),
                 Err(SendError::Host(HostError::NotSupported))
                     if version == IpVersion::V6 && bound == second => {}
@@ -2077,7 +2184,7 @@ pub fn a_ping_from_a_bound_address_takes_a_requested_interface_as_linux_does<S: 
         let mut header = header_to(to, &message);
         select_interface(&mut header, InterfaceSelector::Requested(second));
         sockets
-            .send_to(&socket, header, plain_fields(), &message)
+            .send_buffer(&socket, header, plain_fields(), &message)
             .unwrap_or_else(|error| panic!("{to} by the second link: {error:?}"));
         assert_eq!(seen(&capture.echo_request()).destination, to);
         let elsewhere = other.within(QUIET, |packet| {
@@ -2118,7 +2225,7 @@ pub fn a_link_local_bind_takes_pings_by_its_link_and_refuses_another<S: IcmpSock
         let mut header = header_to(to, &message);
         select_interface(&mut header, selector);
         sockets
-            .send_to(&socket, header, plain_fields(), &message)
+            .send_buffer(&socket, header, plain_fields(), &message)
             .unwrap_or_else(|error| panic!("by {selector:?}: {error:?}"));
         let request = second_capture.echo_request();
         assert_eq!(seen(&request).destination, to);
@@ -2132,7 +2239,7 @@ pub fn a_link_local_bind_takes_pings_by_its_link_and_refuses_another<S: IcmpSock
         let mut header = header_to(to, &message);
         select_interface(&mut header, selector);
         assert_eq!(
-            sockets.send_to(&socket, header, plain_fields(), &message),
+            sockets.send_buffer(&socket, header, plain_fields(), &message),
             Err(SendError::Host(HostError::Errno(libc::EINVAL))),
             "by {selector:?}"
         );
@@ -2154,7 +2261,7 @@ pub fn link_scope_takes_only_the_link<S: IcmpSockets>(sockets: S) {
             scope: RouteScope::Link,
             ..v4_route(to, &message)
         };
-        let sent = sockets.send_to(
+        let sent = sockets.send_buffer(
             &socket,
             IpHeaderFields::V4(v4_header(route)),
             plain_fields(),
@@ -2181,7 +2288,7 @@ pub fn broadcast_needs_its_permission<S: IcmpSockets>(sockets: S) {
         ..v4_route(BROADCAST, &message)
     };
     sockets
-        .send_to(
+        .send_buffer(
             &socket,
             IpHeaderFields::V4(v4_header(route)),
             plain_fields(),
@@ -2207,7 +2314,7 @@ pub fn a_waived_source_check_sends_from_an_absent_address<S: IcmpSockets>(socket
         source: Some(ABSENT),
         ..v4_route(ON_LINK, &message)
     };
-    let refused = sockets.send_to(
+    let refused = sockets.send_buffer(
         &socket,
         IpHeaderFields::V4(v4_header(required)),
         plain_fields(),
@@ -2222,7 +2329,7 @@ pub fn a_waived_source_check_sends_from_an_absent_address<S: IcmpSockets>(socket
         ..required
     };
     sockets
-        .send_to(
+        .send_buffer(
             &socket,
             IpHeaderFields::V4(v4_header(waived)),
             plain_fields(),
@@ -2319,7 +2426,7 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
             ..v6_route(ON_LINK_V6, &message)
         };
         sockets
-            .send_to(
+            .send_buffer(
                 &socket,
                 IpHeaderFields::V6(v6_header(route)),
                 plain_fields(),
@@ -2350,7 +2457,7 @@ pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
             ..plain_fields()
         };
         assert!(seconds_since_confirmed(gateway, DUMMY) > 0);
-        let sent = sockets.send_to(&socket, header_to(to, &message), fields, &message);
+        let sent = sockets.send_buffer(&socket, header_to(to, &message), fields, &message);
         let confirmed = |sent: Result<(), SendError>| {
             sent.expect("the confirmed request is sent");
             assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0, "{gateway}");
@@ -2385,7 +2492,7 @@ pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
             ..plain_fields()
         };
         sockets
-            .send_to(&socket, header_to(to, &message), fields, &message)
+            .send_buffer(&socket, header_to(to, &message), fields, &message)
             .expect("the request is sent");
         assert_eq!(third_band(), before + 1, "{to}");
     }
@@ -2416,7 +2523,7 @@ pub fn a_transmit_time_holds_the_send<S: IcmpSockets>(sockets: S) {
         };
         let start = Instant::now();
         sockets
-            .send_to(&socket, header_to(to, &message), fields, &message)
+            .send_buffer(&socket, header_to(to, &message), fields, &message)
             .expect("the request is sent");
         receive_packet(&sockets, &socket, &mut buffer());
         assert!(start.elapsed() >= HELD, "{to}: {:?}", start.elapsed());
@@ -2571,12 +2678,12 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: IcmpSockets>(sock
     let sends = rejected_sends();
     for (place, &(time, reason)) in sends.iter().enumerate() {
         let fields = rejected_send_fields(place, time, reason);
-        match sockets.send_to(&socket, header_to(to, &message), fields, &message) {
+        match sockets.send_buffer(&socket, header_to(to, &message), fields, &message) {
             Ok(()) | Err(SendError::Host(_)) => {}
             Err(error) => panic!("send {place}: {error:?}"),
         }
     }
-    check_rejections(|into| sockets.receive(&socket, into), &sends);
+    check_rejections(|into| sockets.receive_buffer(&socket, into), &sends);
 }
 
 /// Checks that transmit reports come on the socket with the key of their send, with the packet or without it as asked.
@@ -2602,7 +2709,7 @@ pub fn transmit_reports_carry_the_key_of_their_send<S: IcmpSockets>(sockets: S) 
             };
             let wire = Capture::on(SELF_LINK);
             sockets
-                .send_to(&socket, header_to(to, &message), fields, &message)
+                .send_buffer(&socket, header_to(to, &message), fields, &message)
                 .expect("the request is sent");
             let sent = wire.echo_request();
             check_loopback_reports(|into| receive(&sockets, &socket, into), packet, &sent);
@@ -2761,6 +2868,80 @@ pub fn a_short_buffer_keeps_the_start_of_an_icmp_error<S: IcmpSockets>(sockets: 
     }
 }
 
+/// A payload that makes an echo message longer than a page of memory, which a receive must not cut there.
+///
+/// https://man7.org/linux/man-pages/man2/getpagesize.2.html
+pub const LONGER_THAN_A_PAGE: usize = 5000;
+
+/// Checks that bytes that are not a buffer carry a request, and its reply longer than a page whole or cut short.
+pub fn bytes_that_are_not_a_buffer_carry_what_a_buffer_does<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    for (to, header) in [
+        (
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            etherparse::Ipv4Header::MIN_LEN,
+        ),
+        (IpAddr::V6(Ipv6Addr::LOCALHOST), etherparse::Ipv6Header::LEN),
+    ] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        bind_alone(&sockets, &socket, version, identifier(version));
+        let payload: Vec<u8> = (u8::MIN..=u8::MAX)
+            .cycle()
+            .take(LONGER_THAN_A_PAGE)
+            .collect();
+        let message = echo(version, &payload);
+        let send = || {
+            sockets
+                .send_to(
+                    &socket,
+                    header_to(to, &message),
+                    plain_fields(),
+                    &CellBytes::new(&message),
+                )
+                .expect("the request is sent from cells");
+        };
+        send();
+        let mut plain = buffer();
+        let length = receive_packet(&sockets, &socket, &mut plain).length;
+        let plain = &plain[..length];
+        assert_eq!(length, header + message.len(), "{to}");
+        assert_eq!(&seen(plain).payload[ICMP_HEADER..], payload, "{to}");
+        send();
+        let cells = CellBytes::new(&buffer());
+        let fields = receive_packet_into(&sockets, &socket, &cells);
+        assert_eq!(fields.length, length, "{to}");
+        assert_eq!(&cells.to_vec()[..length], plain, "{to}");
+        send();
+        let short = header + ICMP_HEADER;
+        let cut = CellBytes::new(&vec![u8::MIN; short]);
+        let fields = receive_packet_into(&sockets, &socket, &cut);
+        assert_eq!(fields.length, length, "{to} into {short}");
+        assert_eq!(cut.to_vec(), &plain[..short], "{to} into {short}");
+    }
+}
+
+/// Checks that an ICMP error is received into bytes that are not a buffer as into a buffer.
+pub fn an_icmp_error_reaches_bytes_that_are_not_a_buffer<S: IcmpSockets>(sockets: S) {
+    enter_network_namespace();
+    ip(NETWORK);
+    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        bind_alone(&sockets, &socket, version, identifier(version));
+        provoke_icmp_error(&sockets, &socket, to, Quote::Whole);
+        let mut plain = buffer();
+        let length = receive_packet(&sockets, &socket, &mut plain).length;
+        let plain = &plain[..length];
+        assert!(is_unreachable(version, plain), "{to}: {plain:?}");
+        provoke_icmp_error(&sockets, &socket, to, Quote::Whole);
+        let cells = CellBytes::new(&buffer());
+        let fields = receive_packet_into(&sockets, &socket, &cells);
+        assert_eq!(fields.length, length, "{to}");
+        assert_eq!(&cells.to_vec()[..length], plain, "{to}");
+    }
+}
+
 pub fn an_icmp_error_arrives_whole_over_ipv4<S: IcmpSockets>(sockets: S) {
     enter_network_namespace();
     icmp_error_arrives_whole(sockets, IpAddr::V4(ON_LINK));
@@ -2903,7 +3084,7 @@ pub fn a_small_receive_buffer_counts_its_drops<S: IcmpSockets>(sockets: S) {
     let mut received = usize::MIN;
     let mut dropped = usize::MIN;
     let mut into = buffer();
-    while let Ok(Received::Packet(fields)) = sockets.receive(&socket, &mut into) {
+    while let Ok(Received::Packet(fields)) = sockets.receive_buffer(&socket, &mut into) {
         received += 1;
         dropped += fields.drops_since_previous.0 as usize;
     }
@@ -3119,7 +3300,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
                 })),
             };
             sockets
-                .send_to(socket, header, plain_fields(), &message)
+                .send_buffer(socket, header, plain_fields(), &message)
                 .expect("the multicast request is sent");
             assert_eq!(
                 !nothing_arrives(&sockets, socket),
@@ -3485,7 +3666,7 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
         ..v6_header(v6_route(ON_LINK_V6, &message))
     };
     assert_eq!(
-        sockets.send_to(
+        sockets.send_buffer(
             &socket,
             IpHeaderFields::V6(forbidden),
             plain_fields(),
@@ -3609,7 +3790,7 @@ pub fn a_header_of_the_other_version_gets_the_hosts_error<S: IcmpSockets>(socket
     ] {
         let socket = opened(&sockets, version);
         let message = echo(version_of(to), PAYLOAD);
-        let ours = sockets.send_to(&socket, header_to(to, &message), plain_fields(), &message);
+        let ours = sockets.send_buffer(&socket, header_to(to, &message), plain_fields(), &message);
         let (family, protocol, address) = match (version, to) {
             (IpVersion::V6, IpAddr::V4(address)) => (
                 rustix::net::AddressFamily::INET6,
@@ -3699,7 +3880,7 @@ fn fill_send_buffer<S: IcmpSockets>(sockets: &S, socket: &S::Socket, to: IpAddr)
     );
     let message = echo(version_of(to), &vec![u8::MAX; PACED_MESSAGE]);
     let full = (0..ATTEMPTS).any(|_| {
-        match sockets.send_to(socket, header_to(to, &message), held_fields(), &message) {
+        match sockets.send_buffer(socket, header_to(to, &message), held_fields(), &message) {
             Ok(()) => false,
             Err(SendError::Host(HostError::WouldBlock)) => true,
             Err(error) => panic!("{to}: {error:?}"),
@@ -4004,6 +4185,16 @@ macro_rules! tests {
         #[test]
         fn a_short_buffer_keeps_the_start_of_an_icmp_error() {
             $crate::a_short_buffer_keeps_the_start_of_an_icmp_error($value);
+        }
+
+        #[test]
+        fn bytes_that_are_not_a_buffer_carry_what_a_buffer_does() {
+            $crate::bytes_that_are_not_a_buffer_carry_what_a_buffer_does($value);
+        }
+
+        #[test]
+        fn an_icmp_error_reaches_bytes_that_are_not_a_buffer() {
+            $crate::an_icmp_error_reaches_bytes_that_are_not_a_buffer($value);
         }
 
         #[test]

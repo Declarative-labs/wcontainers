@@ -8,6 +8,7 @@ use wcontainers_internet_protocol::{
 use wcontainers_internet_protocol_linux_socket_options::Shortfalls;
 use wcontainers_kernel::UserId;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::{HostIcmpSocket, HostIcmpSockets};
 
@@ -48,12 +49,16 @@ impl IcmpSockets for HostIcmpSockets {
         socket: &Self::Socket,
         _header: IpHeaderFields<'_>,
         _fields: IpSendFields,
-        _message: &[u8],
+        _message: &impl VolatileBytes,
     ) -> Result<(), SendError> {
         match socket.never {}
     }
 
-    fn receive(&self, socket: &Self::Socket, _into: &mut [u8]) -> Result<Received, HostError> {
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        _into: &impl VolatileBytes,
+    ) -> Result<Received, HostError> {
         match socket.never {}
     }
 
