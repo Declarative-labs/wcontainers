@@ -718,7 +718,7 @@ fn failure<S: crate::System>(
     let peek = TcpReceiveRequest::Peek {
         offset: wcontainers_internet_protocol::ByteCount(0),
     };
-    match TcpConnections::receive(&**cx.system, connection, peek, &mut byte) {
+    match TcpConnections::receive(&**cx.system, connection, peek, &RefCell::new(&mut byte[..])) {
         Err(HostError::Errno(number)) => Errno(number as u32),
         _ => otherwise,
     }
@@ -830,7 +830,8 @@ fn receive<S: crate::System>(
     into: &mut [u8],
 ) -> Result<Range<usize>, HostError> {
     if let Some(connection) = connection_of::<S>(kernel, id) {
-        return TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, into)
+        let into = RefCell::new(into);
+        return TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, &into)
             .map(|received| 0..received.length.0);
     }
     let Some(socket) = datagram_of::<S>(kernel, id) else {
@@ -839,7 +840,8 @@ fn receive<S: crate::System>(
     loop {
         // The flow asks for no transmit reports, and a packet that does not parse is dropped, as
         // Linux drops a malformed datagram.
-        if let UdpReceived::Packet(packet) = UdpSockets::receive(&**cx.system, socket, into)?
+        let received = UdpSockets::receive(&**cx.system, socket, &RefCell::new(&mut *into))?;
+        if let UdpReceived::Packet(packet) = received
             && let Some(payload) = payload_of(&into[..packet.fields.length.min(into.len())])
         {
             return Ok(payload);
@@ -1112,12 +1114,12 @@ pub(super) fn send<S: crate::System>(
     cx: &mut Context<'_, S>,
     socket: &SocketRef,
     id: u32,
-    bytes: &[u8],
+    bytes: &mut [u8],
 ) -> Result<usize, Errno> {
+    let payload = RefCell::new(&mut *bytes);
     let sent = match connection_of::<S>(kernel, id) {
-        Some(connection) => {
-            TcpConnections::send(&**cx.system, connection, PLAIN_SEND, bytes).map(|count| count.0)
-        }
+        Some(connection) => TcpConnections::send(&**cx.system, connection, PLAIN_SEND, &payload)
+            .map(|count| count.0),
         None => Err(HostError::Closed),
     };
     match sent {

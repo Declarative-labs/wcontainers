@@ -164,11 +164,15 @@ impl Ends {
         &mut self,
         cx: &Context<'_, S>,
         end: EndNumber,
-        bytes: &[u8],
+        bytes: &mut [u8],
     ) -> usize {
         let held = self.held.get_mut(&end).expect("an end held");
         debug_assert!(held.sends && !held.blocked && !held.hung_up);
-        let taken = match cx.host.send_stream(endpoint_of::<S>(&held.endpoint), bytes) {
+        let payload = core::cell::RefCell::new(&mut *bytes);
+        let taken = match cx
+            .host
+            .send_stream(endpoint_of::<S>(&held.endpoint), &payload)
+        {
             Ok(taken) => taken.min(bytes.len()),
             Err(HostError::WouldBlock) => 0,
             Err(_) => {
@@ -363,15 +367,15 @@ impl Kernel {
                     if outbox.is_empty() {
                         break;
                     }
-                    let taken = self.ends.send(cx, end, &outbox);
+                    let taken = self.ends.send(cx, end, &mut outbox);
                     moved |= taken > 0;
                     self.ends.held.get_mut(&end).expect("held").outbox = outbox[taken..].to_vec();
                 }
                 _ => {
-                    let Some(bytes) = pipe::held_for_end(self, file) else {
+                    let Some(mut bytes) = pipe::held_for_end(self, file) else {
                         break;
                     };
-                    let taken = self.ends.send(cx, end, &bytes);
+                    let taken = self.ends.send(cx, end, &mut bytes);
                     if taken > 0 {
                         pipe::sent_to_end(self, cx, file, taken);
                         moved = true;
@@ -406,10 +410,10 @@ impl Kernel {
             }
             let mut bytes = alloc::vec![0u8; space];
             let held = self.ends.held.get_mut(&end).expect("held");
-            match cx
-                .host
-                .receive_stream(endpoint_of::<S>(&held.endpoint), &mut bytes)
-            {
+            match cx.host.receive_stream(
+                endpoint_of::<S>(&held.endpoint),
+                &core::cell::RefCell::new(&mut bytes[..]),
+            ) {
                 Ok(count) if count > 0 => {
                     bytes.truncate(count.min(space));
                     match side {

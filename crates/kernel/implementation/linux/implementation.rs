@@ -110,7 +110,7 @@ impl<S: System> Context<'_, S> {
     /// Fills `into` from the system's random source. Linux's randomness never fails, so neither
     /// may the kernel's: a failed source stops the kernel.
     pub fn random(&self, into: &mut [u8]) {
-        if let Err(error) = self.host.fill_random_bytes(into) {
+        if let Err(error) = self.host.fill_random_bytes(&core::cell::RefCell::new(into)) {
             panic!("the system's random source failed: {error:?}");
         }
     }

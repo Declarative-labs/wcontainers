@@ -448,7 +448,7 @@ pub(super) fn write<S: crate::System>(
             }
             let taken = match bytes.is_empty() {
                 true => 0,
-                false => kernel.ends.send(cx, end, &bytes),
+                false => kernel.ends.send(cx, end, &mut bytes),
             };
             done += taken as u64;
             if faulted && taken == bytes.len() {

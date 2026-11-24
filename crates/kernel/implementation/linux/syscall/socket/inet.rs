@@ -2408,8 +2408,8 @@ fn tcp_send<S: crate::System>(
                 return Err(error);
             }
             let size = (total - sent).min(TCP_PIECE);
-            let data = gather(kernel, cx, tid, message.data, sent, size)?;
-            match super::outside::send(kernel, cx, socket, id, &data) {
+            let mut data = gather(kernel, cx, tid, message.data, sent, size)?;
+            match super::outside::send(kernel, cx, socket, id, &mut data) {
                 Ok(count) => {
                     carry_outside(kernel, socket, count as u64, false, true);
                     sent += count as u64;
