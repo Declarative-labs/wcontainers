@@ -24,7 +24,7 @@ type Frame = Arc<Mutex<Box<[u8]>>>;
 struct Page {
     /// None while the page reads as zeros and no space shares it.
     frame: Option<Frame>,
-    /// Whether the frame is shared through a mapping, so that a copy of the page shares it too.
+    /// Whether this space mapped the frame from another, so that a copy of the page shares it too and an unmap ends it.
     mapped: bool,
     permissions: Permissions,
 }
@@ -115,14 +115,6 @@ impl SimulatedMemory {
             .clone()
     }
 
-    /// Returns the frame of the page for a mapping, which shares it from now on.
-    fn share_frame(&self, page: u64) -> Frame {
-        let mut pages = self.lock_pages();
-        let shared = pages.entry(page).or_default();
-        shared.mapped = true;
-        shared.frame.get_or_insert_with(new_frame).clone()
-    }
-
     /// Returns the number of bytes read, starting at the address.
     fn read_at(&self, start: u64, into: &mut [u8]) -> usize {
         for (page, within, buffer) in split_at_pages(start, into.len()) {
@@ -177,7 +169,7 @@ impl MemorySpace for SimulatedMemory {
         let other_addresses =
             shift(&addresses, other_start).map_err(MapMemoryError::InvalidAddress)?;
         let frames: Vec<Frame> = page_starts(&other_addresses)
-            .map(|page| other.share_frame(page))
+            .map(|page| other.make_frame(page))
             .collect();
         let mut pages = self.lock_pages();
         for (start, frame) in page_starts(&addresses).zip(frames) {

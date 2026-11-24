@@ -68,3 +68,21 @@ fn unmap_from_leaves_a_page_no_mapping_shares() {
     assert_eq!(bytes.read(&mut read), read.len());
     assert_eq!(read, written);
 }
+
+#[test]
+fn unmap_from_leaves_a_page_another_space_maps() {
+    let owner = SimulatedMemory::default();
+    let other = SimulatedMemory::default();
+    let written = u64::MAX.to_le_bytes();
+    let whole = PAGE..PAGE + PAGE_SIZE;
+    let bytes = owner.borrow(PAGE..PAGE + WORD).expect("inside the space");
+    assert_eq!(bytes.write(&written), written.len());
+    assert_eq!(other.map_from(whole.clone(), &owner, PAGE), Ok(()));
+    assert_eq!(owner.unmap_from(whole), Ok(()));
+    let mut read = [u8::MIN; WORD as usize];
+    assert_eq!(bytes.read(&mut read), read.len());
+    assert_eq!(read, written);
+    let mapped = other.borrow(PAGE..PAGE + WORD).expect("inside the space");
+    assert_eq!(mapped.read(&mut read), read.len());
+    assert_eq!(read, written);
+}
