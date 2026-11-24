@@ -150,6 +150,25 @@ const TURN: Turn = Turn::Counted {
 /// The most stops a program that should exit soon takes.
 const STOPS: usize = 200;
 
+/// Runs `thread` from `resume` into `seen` until it leaves for anything but a stop (a counted turn is also a time
+/// slice, which a loaded host can end before the code runs), continuing after each stop, which `seen` then leaves out.
+fn run_through_stops(
+    cpu: &mut HostProcessExecutor,
+    thread: ThreadId,
+    mut resume: Resume,
+    seen: &mut Seen,
+) {
+    for _ in 0..STOPS {
+        let Ok(()) = cpu.run(thread, resume, TURN, seen);
+        if !matches!(seen.exits.last(), Some((Exit::Stop, _, _))) {
+            return;
+        }
+        seen.exits.pop();
+        resume = Resume::Continue;
+    }
+    panic!("still running after {STOPS} stops");
+}
+
 /// Runs `thread` until it leaves for anything but a stop, continuing after each stop; the exits seen, stops left out.
 fn run_to_exit(cpu: &mut HostProcessExecutor, thread: ThreadId) -> Seen {
     let mut seen = Seen::new(thread);
@@ -856,7 +875,7 @@ fn a_new_thread_reads_zeros_and_a_thread_resumed_reads_its_own_registers() {
     cpu.set_registers(first, &own);
     let mut seen = Seen::new(first);
     seen.leave_at_calls = true;
-    let Ok(()) = cpu.run(first, Resume::FromRegisters, TURN, &mut seen);
+    run_through_stops(&mut cpu, first, Resume::FromRegisters, &mut seen);
     assert!(
         matches!(seen.exits.last(), Some((Exit::Syscall(call), _, _)) if call.number.0 == u64::from(GETPID)),
         "{:?}",
@@ -879,7 +898,7 @@ fn a_new_thread_reads_zeros_and_a_thread_resumed_reads_its_own_registers() {
     }
     // The first thread goes on from its system call with its own registers.
     let mut seen = Seen::new(first);
-    let Ok(()) = cpu.run(first, Resume::Return(RETURNED), TURN, &mut seen);
+    run_through_stops(&mut cpu, first, Resume::Return(RETURNED), &mut seen);
     assert!(
         matches!(seen.exits.last(), Some((Exit::Syscall(call), _, _)) if call.number.0 == u64::from(EXIT)),
         "{:?}",
