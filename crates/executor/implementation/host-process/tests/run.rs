@@ -336,11 +336,18 @@ fn run_placed_at(cpu: &mut HostProcessExecutor, base: u64) {
 #[test]
 fn code_placed_at_another_base_runs_from_its_kept_translation_moved_there() {
     let mut cpu = executor();
-    // Pages translations move between, from 4 GiB to under the slots' reach of 2^44.
+    // Pages every translation moves between (4 GiB to under the slots' reach of 2^44), and pages under them where
+    // the kernel places a program low, from which every address this code names stays in reach.
     run_placed_at(&mut cpu, 0x2_0000_0000);
     let made = translations(&cpu);
     assert!(made > 0, "the first run translates");
-    for base in [0x7_1234_5000, 0x2_0000_0000, 0xaaa_aaaa_a000] {
+    for base in [
+        0x7_1234_5000,
+        0x2_0000_0000,
+        0xaaa_aaaa_a000,
+        0xab0f_3000,
+        0x1000_0000,
+    ] {
         run_placed_at(&mut cpu, base);
         assert_eq!(
             translations(&cpu),
@@ -348,7 +355,7 @@ fn code_placed_at_another_base_runs_from_its_kept_translation_moved_there() {
             "moved to {base:#x}, not translated"
         );
     }
-    // Under 4 GiB an `adrp` of the code could name a page below zero, so code there keeps a translation of its own.
+    // Under 128 MiB a direct branch of the code could wrap below zero, so code there keeps a translation of its own.
     run_placed_at(&mut cpu, CODE);
     assert!(translations(&cpu) > made, "translated again at {CODE:#x}");
 }

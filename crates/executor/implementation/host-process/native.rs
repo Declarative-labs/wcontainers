@@ -11,6 +11,7 @@ use wcontainers_abi::{
     SystemCallNumber, SystemCallRequest, ThreadId,
 };
 use wcontainers_arm64::carry::{LinkWords, link_words, movable};
+use wcontainers_arm64::encode::branch_reach;
 use wcontainers_arm64::mirror::{
     LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_TEST, SLOT_MOVE_BITS, SLOT_MOVES,
 };
@@ -243,12 +244,12 @@ impl Guest {
     }
 }
 
-/// Translations already made, by the code they were made from, its offset in its page, and its page where the code
-/// does not move: the process way's code depends on nothing else, so a fork child, another memory or a program placed
-/// at another base loads them again, moved there.
+/// Translations already made, by the code they were made from and its offset in its page, each with the page it was
+/// made at: the process way's code depends on nothing else, so a fork child, another memory or a program placed at
+/// another base loads them again, moved there where moving gives what translating there would.
 #[derive(Default)]
 pub(super) struct Translations {
-    kept: HashMap<Key, Option<Kept>>,
+    kept: HashMap<Key, Vec<Kept>>,
 }
 
 /// What a translation is kept by.
@@ -256,14 +257,35 @@ pub(super) struct Translations {
 struct Key {
     code: Vec<u8>,
     offset: u64,
-    /// The page, for code outside the pages translations move between.
-    page: Option<u64>,
 }
 
-/// A translation and the page it was made at.
+/// A translation, or none where the code has none, and the page it was made at.
 struct Kept {
-    translation: Arc<Translation>,
+    translation: Option<Arc<Translation>>,
     page: u64,
+}
+
+/// Whether `translation`, made at page `from`, moved to page `to` is what translating it there gives: both pages are
+/// among those every translation moves between, or, on pages no direct branch from which wraps below zero or leaves
+/// the slots' reach, every guest address it names is in that reach both before and after the move.
+fn moves(translation: &Translation, from: u64, to: u64) -> bool {
+    let movable = movable(WAY);
+    if movable.contains(&from) && movable.contains(&to) {
+        return true;
+    }
+    let unwrapped = branch_reach() + PAGE_SIZE..movable.end;
+    if !unwrapped.contains(&from) || !unwrapped.contains(&to) {
+        return false;
+    }
+    let by = to.wrapping_sub(from);
+    let reach = 1u64 << WAY.reach_bits();
+    let stays = |address: u64| address < reach && address.wrapping_add(by) < reach;
+    translation.places.iter().all(|place| stays(place.address))
+        && translation.exits.iter().all(|exit| stays(exit.target))
+        && translation
+            .tables
+            .iter()
+            .all(|table| stays(table.base) && (0..table.entries).all(|k| stays(table.target(k))))
 }
 
 /// How a run of translated code came back.
@@ -344,18 +366,20 @@ impl HostProcessExecutor {
         let key = Key {
             code,
             offset: pc - page,
-            page: (!movable(WAY).contains(&page)).then_some(page),
         };
         if let Some(kept) = self.translations.kept.get(&key) {
-            return kept.as_ref().map(|kept| {
-                if kept.page == page {
-                    Arc::clone(&kept.translation)
-                } else {
-                    let mut moved = Translation::clone(&kept.translation);
-                    moved.moved::<Arm64>(page.wrapping_sub(kept.page));
-                    Arc::new(moved)
-                }
+            if let Some(same) = kept.iter().find(|kept| kept.page == page) {
+                return same.translation.clone();
+            }
+            let movable = kept.iter().find_map(|kept| {
+                let translation = kept.translation.as_ref()?;
+                moves(translation, kept.page, page).then_some((translation, kept.page))
             });
+            if let Some((translation, from)) = movable {
+                let mut moved = Translation::clone(translation);
+                moved.moved::<Arm64>(page.wrapping_sub(from));
+                return Some(Arc::new(moved));
+            }
         }
         let look_ahead = if self.single {
             LookAhead::Bounded(1)
@@ -365,13 +389,10 @@ impl HostProcessExecutor {
         let made = translate_native_for::<Arm64>(&key.code, pc, look_ahead, true, &WAY, &())
             .map(|made| Arc::new(HostCode::translation(made)));
         self.slow(reason::TRANSLATED, 1, pc);
-        self.translations.kept.insert(
-            key,
-            made.as_ref().map(|translation| Kept {
-                translation: Arc::clone(translation),
-                page,
-            }),
-        );
+        self.translations.kept.entry(key).or_default().push(Kept {
+            translation: made.clone(),
+            page,
+        });
         made
     }
 
@@ -1240,5 +1261,104 @@ impl HostProcessExecutor {
     fn code_line(&self) -> u64 {
         INSTRUCTION
             << ((wcontainers_arm64::CACHE_TYPE >> CTR_EL0_IMINLINE_SHIFT) & CTR_EL0_LINE_MASK)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_arm64::Arm64;
+    use wcontainers_arm64::carry::movable;
+    use wcontainers_arm64::encode::branch_reach;
+    use wcontainers_guest_cpu::{HostCode, Translation};
+    use wcontainers_translator::{LookAhead, translate_native_for};
+
+    use super::{INSTRUCTION, WAY, moves};
+
+    /// The moving test's knobs: how many cases, and the seed.
+    fn knob(name: &str, default: u64) -> u64 {
+        std::env::var(name).map_or(default, |value| {
+            value
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} is a number"))
+        })
+    }
+
+    /// A word of guest code: one of the forms that name an address (`adr`, `adrp`, `b`, `bl`, `b.cond`, a literal
+    /// load, `blr`, `ret`) with random fields, or any word.
+    fn word(rng: &mut fastrand::Rng) -> u32 {
+        let forms = [
+            (0x1000_0001u32, 0x60ff_ffffu32), // adr x1 and up
+            (0x9000_0000, 0x60ff_ffff),       // adrp
+            (0x1400_0000, 0x03ff_ffff),       // b
+            (0x9400_0000, 0x03ff_ffff),       // bl
+            (0x5400_0000, 0x00ff_ffef),       // b.cond
+            (0x5800_0001, 0x00ff_ffff),       // ldr x1 and up, literal
+            (0xd63f_0000, 0x0000_03e0),       // blr
+            (0xd65f_03c0, 0),                 // ret
+            (0xd100_0400, 0x0000_001f),       // sub x, x0, #1
+            (0xb5ff_ffe0, 0x00ff_ffff),       // cbnz x
+            (0, u32::MAX),                    // any word
+        ];
+        let (fixed, free) = forms[rng.usize(..forms.len())];
+        fixed | rng.u32(..) & free
+    }
+
+    fn translated(bytes: &[u8], at: u64, look_ahead: LookAhead) -> Option<Translation> {
+        translate_native_for::<Arm64>(bytes, at, look_ahead, true, &WAY, &())
+            .map(HostCode::translation)
+    }
+
+    /// Wherever `moves` lets a translation move, the moved one is what translating there gives, on pages under the
+    /// movable ones (where a position-independent program lies when the kernel places mappings low) as well as on them.
+    #[test]
+    fn a_translation_moves_only_where_moving_gives_what_translating_there_would() {
+        let cases = knob("WCHP_MOVED_CASES", 2000);
+        let seed = knob("WCHP_SEED", 1);
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let movable = movable(WAY);
+        let page = |rng: &mut fastrand::Rng| {
+            let (low, high) = match rng.u8(..3) {
+                0 => (PAGE_SIZE, branch_reach() + PAGE_SIZE),
+                1 => (branch_reach() + PAGE_SIZE, movable.start),
+                _ => (movable.start, movable.end),
+            };
+            low + rng.u64(..(high - low) / PAGE_SIZE) * PAGE_SIZE
+        };
+        let (mut moved_count, mut refused, mut places) = (0, 0, 0);
+        for case in 0..cases {
+            let offset = rng.u64(..PAGE_SIZE / INSTRUCTION) * INSTRUCTION;
+            let words = rng.u64(1..=(PAGE_SIZE - offset) / INSTRUCTION);
+            let bytes: Vec<u8> = (0..words)
+                .flat_map(|_| word(&mut rng).to_le_bytes())
+                .collect();
+            let look_ahead = [LookAhead::Bounded(rng.u32(1..64)), LookAhead::Full][rng.usize(..2)];
+            let (from, to) = (page(&mut rng), page(&mut rng));
+            let Some(made) = translated(&bytes, from + offset, look_ahead) else {
+                continue;
+            };
+            if !moves(&made, from, to) {
+                refused += 1;
+                continue;
+            }
+            moved_count += 1;
+            places += made.places.len();
+            let mut moved = made;
+            moved.moved::<Arm64>(to.wrapping_sub(from));
+            let there = translated(&bytes, to + offset, look_ahead);
+            assert_eq!(
+                Some(moved),
+                there,
+                "case {case} of seed {seed}: {from:#x} to {to:#x}, {look_ahead:?}"
+            );
+        }
+        println!(
+            "moving: {cases} cases of seed {seed}, {moved_count} moved with {places} address places, {refused} refused"
+        );
+        assert!(
+            moved_count > cases / 4,
+            "the check lets few move: {moved_count} of {cases}"
+        );
     }
 }
