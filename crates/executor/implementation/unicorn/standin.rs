@@ -17,11 +17,12 @@ use unicorn_engine::{
 };
 use wcontainers_abi::{
     Access, AddressSpace, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
-    Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId,
+    Resume, SYSTEM_CALL_ARGUMENT_COUNT, SharedId, SystemCallNumber, SystemCallRequest, ThreadId,
 };
 
 use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_executor::memory_space::{MemorySpace, VolatileBytes};
+use wcontainers_executor::memory_space::MemorySpace;
+use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_executor::{
     ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
@@ -51,9 +52,16 @@ const EXCEPTION_SYSCALL: u32 = 2;
 const EXCEPTION_DATA_ABORT: u32 = 4;
 const EXCEPTION_BREAKPOINT: u32 = 7;
 
-/// The most a guest space maps in unicorn as one region: unicorn flushes each page of a region it unmaps, so a
-/// change of one page costs this much at most. A level 2 block of 4 KiB pages, 2 MiB.
+/// The most bytes a guest space maps in unicorn as one region, a level 2 block of pages.
+///
+/// Unicorn flushes each page of a region it unmaps, so a change of one page costs this much at most.
 const LARGEST_GUEST_REGION: u64 = PAGE_SIZE * (PAGE_SIZE / size_of::<u64>() as u64);
+
+/// The count of instructions or of microseconds that unicorn takes as no limit.
+const UNICORN_NO_LIMIT: usize = 0;
+const UNICORN_NO_TIMEOUT: u64 = 0;
+/// The slice that runs one instruction, at one instruction a nanosecond.
+const ONE_INSTRUCTION: u64 = 1;
 
 /// The register a system call's result goes in, x0 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
 const RESULT_REGISTER: usize = 0;
@@ -110,10 +118,10 @@ pub(crate) struct Memory {
     counting: bool,
     /// Where its address space ends.
     end: u64,
-    /// For a guest space, the pages that allow nothing that are mapped in unicorn all the same, without access,
-    /// so that its own reads and writes reach them: one bit each. They are unmapped again before its guest runs,
-    /// since unicorn lets an access that crosses into a page mapped without access through. A guest space's
-    /// mappings are also cut to [`LARGEST_GUEST_REGION`], so a change to one page remaps only that much around it.
+    /// For a guest space, the pages allowing nothing that unicorn maps without access, one bit each.
+    ///
+    /// They are mapped for unicorn's own reads and writes and unmapped before the guest runs, since unicorn lets
+    /// an access that crosses into such a page through. A guest space's regions are cut to [`LARGEST_GUEST_REGION`].
     pub(crate) reachable: Option<Vec<u64>>,
     /// The addresses of the pages reached since the guest last ran.
     reached: Vec<(u64, u64)>,
@@ -477,8 +485,9 @@ impl Memory {
             })
     }
 
-    /// Maps the pages over the addresses in unicorn, those that allow nothing without access, so that its own
-    /// reads and writes reach them; a memory that is not a guest space has them all mapped already or never.
+    /// Maps a guest space's pages over the addresses in unicorn, those allowing nothing without access.
+    ///
+    /// Unicorn's own reads and writes then reach them; a memory that is not a guest space is left as it is.
     pub(crate) fn reach(&mut self, start: u64, end: u64) {
         let Some(reachable) = &mut self.reachable else {
             return;
@@ -682,9 +691,10 @@ impl StandIn {
 }
 
 impl Memory {
-    /// Runs the registers on this memory until they come back, and returns why with the number of instructions
-    /// run, counted in whole blocks. With a slice, it stops after that many instructions; with a deadline, also
-    /// once the machine's clock passes it; with an interrupt, also once it is raised.
+    /// Runs the registers on this memory and returns why they came back with the number of instructions run.
+    ///
+    /// Instructions are counted in whole blocks. With a slice, it stops after that many instructions; with a
+    /// deadline, also once the machine's clock passes it; with an interrupt, also once it is raised.
     pub(crate) fn run_turn(
         &mut self,
         registers: &mut RegisterBlock,
@@ -700,16 +710,19 @@ impl Memory {
             interrupt,
             ..Stopped::default()
         };
-        // Zero means no limit.
-        let count = slice_nanoseconds.map_or(0, |nanoseconds| nanoseconds.max(1) as usize);
-        if count > 0 && !self.counting {
+        let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
+            usize::try_from(nanoseconds.max(ONE_INSTRUCTION)).unwrap_or(usize::MAX)
+        });
+        if count > UNICORN_NO_LIMIT && !self.counting {
             self.unicorn
                 .ctl_flush_tb()
                 .expect("flushing unicorn's translated blocks");
         }
         // Unicorn drops its blocks itself when counting stops.
-        self.counting = count > 0;
-        let result = self.unicorn.emu_start(registers.pc, u64::MAX, 0, count);
+        self.counting = count > UNICORN_NO_LIMIT;
+        let result = self
+            .unicorn
+            .emu_start(registers.pc, u64::MAX, UNICORN_NO_TIMEOUT, count);
         self.save_registers(registers)
             .expect("reading registers from unicorn");
         let stopped = std::mem::take(self.unicorn.get_data_mut());
@@ -725,7 +738,7 @@ impl Memory {
     ) -> Result<Exit, Unsupported> {
         // A jump to an address that is not a multiple of 4 faults on alignment before any fetch.
         if let Some((address, access)) = stopped.fault {
-            if access == Access::Execute && !address.is_multiple_of(4) {
+            if access == Access::Execute && !address.is_multiple_of(INSTRUCTION_BYTES) {
                 return Ok(Exit::AlignmentFault { address });
             }
             return Ok(Exit::MemoryFault { address, access });
@@ -736,19 +749,22 @@ impl Memory {
                 let x = &registers.x;
                 Exit::Syscall(SystemCallRequest {
                     number: SystemCallNumber(x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER]),
-                    arguments: [x[0], x[1], x[2], x[3], x[4], x[5]],
+                    arguments: x[..SYSTEM_CALL_ARGUMENT_COUNT]
+                        .try_into()
+                        .expect("a system call's arguments are registers"),
                 })
             }
             (_, Some(EXCEPTION_BREAKPOINT)) => {
-                let mut instruction = [0u8; 4];
+                let mut instruction = [u8::MIN; INSTRUCTION_BYTES as usize];
                 self.unicorn
                     .mem_read(pc, &mut instruction)
                     .expect("the breakpoint's instruction is mapped");
-                let comment = (u32::from_le_bytes(instruction) >> 5) as u16;
+                let comment = u16::try_from(IMM16.read(u32::from_le_bytes(instruction)))
+                    .expect("a breakpoint's comment is 16 bits");
                 Exit::Breakpoint { comment }
             }
             // QEMU raises a fetch from a pc that is not a multiple of 4 as undefined.
-            (_, Some(EXCEPTION_UNDEFINED)) if !pc.is_multiple_of(4) => {
+            (_, Some(EXCEPTION_UNDEFINED)) if !pc.is_multiple_of(INSTRUCTION_BYTES) => {
                 Exit::AlignmentFault { address: pc }
             }
             (_, Some(EXCEPTION_UNDEFINED)) | (Err(uc_error::INSN_INVALID), None) => {
@@ -950,7 +966,7 @@ impl wcontainers_executor::Executor for StandIn {
         };
         let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
         let mut registers = to_register_block(processor);
-        let (exit, instructions) = space.run_turn(&mut registers, Some(1), None);
+        let (exit, instructions) = space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None);
         self.last_instructions = instructions;
         let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
         // The abi leaves the program counter after a system call; an exception leaves it on the instruction.
@@ -1012,8 +1028,7 @@ fn to_permissions(permission: PagePermission) -> Permissions {
     }
 }
 
-/// Returns the page permission a space's page holds as the architecture names it: a page that allows nothing is
-/// held unmapped.
+/// Returns the architecture's page permission for what a space's page allows, a page allowing nothing unmapped.
 fn to_page_permission(allowed: Permissions) -> PagePermission {
     if allowed.is_empty() {
         return PagePermission::Unmapped;

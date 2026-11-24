@@ -1,12 +1,8 @@
-//! The stand-in's guest memory: each space is one unicorn instance, and its bytes are host pages that
-//! spaces share.
+//! The stand-in's guest memory: one unicorn instance for each space, its bytes in host pages spaces share.
 //!
-//! Every address of a space shows a run of host pages through a view. A new space shows host pages of its
-//! own; a mapping shows the other space's host pages, so a write on either side, by the kernel or by a guest,
-//! lands in the same bytes; a copy shows new host pages holding the other's bytes, and the other's mappings
-//! as they are. Unicorn maps the pages that allow something onto the host pages their view shows, and a page
-//! that allows nothing as well, without access, once the kernel reads or writes it, so that unicorn's own reads
-//! and writes reach every byte while its guest stays bound by the permissions.
+//! Each address shows host pages through a view: its own, another space's for a mapping, or new ones holding
+//! the bytes of a copy. Unicorn maps the pages that allow something, and a page allowing nothing too, without
+//! access, while the kernel reads or writes it.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -17,9 +13,12 @@ use std::sync::atomic::AtomicBool;
 
 use memmap2::MmapMut;
 use wcontainers_abi::{CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock};
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::standin::{Memory, Unsupported};
 
@@ -48,7 +47,7 @@ struct View {
     mapping: bool,
 }
 
-/// Host pages that live while any view shows them.
+/// The host memory of pages, which lives while any view shows it.
 struct HostPages {
     bytes: MmapMut,
     /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
@@ -434,6 +433,27 @@ impl VolatileBytes for UnicornBytes<'_> {
             space.touch(self.addresses.start..end);
         }
         count
+    }
+
+    /// Hands the sink a copy, since a slice of the guest's bytes may not be lent.
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        sink.write(&self.copy_out())
+    }
+
+    /// Has the source fill a buffer and writes what it gave, since a slice of the guest's bytes may not be lent.
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut buffer = vec![u8::MIN; to_index(self.len())];
+        let count = source.read(&mut buffer)?;
+        Ok(self.write(&buffer[..count]))
+    }
+}
+
+impl UnicornBytes<'_> {
+    /// Returns a copy of all the bytes, which unicorn reads in one call.
+    fn copy_out(&self) -> Vec<u8> {
+        let mut copied = vec![u8::MIN; to_index(self.len())];
+        self.read(&mut copied);
+        copied
     }
 }
 
