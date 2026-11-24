@@ -5,6 +5,37 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 6 run 4 (2026-11-24). Run 3's work is now run on the GPU, and its table replaces run 2's
+(which overstated the measure by its refused passes). THE BAR IS STILL NOT WHOLLY MET: KHR-GL33
+does not start (OpenGL 3.1, 28 passed values), so with it counted as failed the measure is under
+the floor. Done this run:
+- Whole run at 29601b00 (desktop, RTX 3080, `gpu-job --alone`, job 83, 13:31 to 13:47 Mac time,
+  no display reset; glcts with `case-ends-on-reset.patch`; scratch `results/r6d/full`, log
+  `logs/r6d/full.log`): dEQP-GLES2 17,037 of 17,037 (100.00%); dEQP-GLES3 44,232 of 44,298
+  (99.85%); dEQP-GLES31 37,379 of 37,503 (99.67%); KHR-GLES2 438 of 438 (100.00%); KHR-GLES3 6,265
+  of 6,271 (99.90%); KHR-GLES31 3,983 of 4,076 (97.72%); KHR-GLES32 1,338 of 1,389 (96.33%);
+  KHR-GL33 and -GL46 no context (OpenGL 3.1). 110,672 of 111,012 GLES cases, 99.69%. With
+  KHR-GL33's 9,364 counted as failed: 110,672 of 120,376, 91.94%, UNDER the 92.9% floor.
+- Against run 2 (`scripts/g9r25-table.py r6d/full r6b/full`): the refused passes now fail, as
+  expected (dEQP-GLES31 `border_clamp` 16, KHR-GLES31 `basic-glsl-earlyFragTests` 1 and
+  `tessellation_shader` 22, each with its refusal); dEQP-GLES3 21 Fail to Pass (cases shadowed by
+  a loss in run 2, in other batches this time); KHR-GLES31 `advanced-allStages-oneImage` Crash to
+  Pass; no case crashes in this run. Every failing case is on the gap list with its cause (its
+  newest block says what moved and what was corrected).
+- Found: the glcts patch did not end a glcts whose ES 3.0 context was lost (dEQP-GLES3 and
+  KHR-GLES3), because glcts loads `glGetGraphicsResetStatus` only for OpenGL ES 3.2 and 4.5; 37
+  cases still follow a loss there. The patch now takes the query by name (a4352ae2). RERUN OF THE
+  TWO LISTS: see the next line.
+- Unsafe: wcontainers-opengl 361 to 356 (c7489ddb): the module pin is libloading's
+  `open_already_loaded` and `pin` (libloading 0.8.9, ISC, already in the lock file for wgpu), and
+  four stubs that touch no pointer (`name`, `flush_resource`, `set_polygon_stipple`,
+  `set_clip_state`) are plain `extern "C" fn`; the root list says 356 (df246a53). wcontainers-nir
+  stays 113. No line with `unsafe` was added.
+- The vertex `memoryBarrier()` item, read: absent on WebGPU (gap list), not built.
+- Built and tested on the x86-64 machine (load 15 to 28): clippy with Mesa and warnings denied, the
+  nir crate's route test 27 pass, wcontainers-opengl 11 pass (`logs/r6d/quick1.log`); the Windows
+  build of the libloading change in the whole run's job.
+
 G9 round 6 run 3 (2026-11-24), STOPPED BEFORE ITS GPU RUN. Settled from the independent check of
 run 2: the literal check (no finding in this track's files), refused cases counted as passes (glcts
 patched to end a case whose context the driver reports reset: Departures), the strip-adjacency
@@ -857,24 +888,57 @@ Next, in order:
 
 ## Gap list (G9's first part, at round 5 run 2's whole run; round 5 runs 3 and 5's changes marked)
 
-Round 6 run 2's whole run (`results/r6b/full`, 321 failing GLES cases) adds three items to those
-below, each this track's:
-- Shadowed by an earlier device loss, 60 (dEQP-GLES3 54: `fbo.blit` 16, `texture.specification` 24,
-  `vertex_arrays.single_attribute` 6, `fbo.color.repeated_clear` 4, `texture.vertex` 3,
-  `fbo.stencil.attach` 1; KHR-GLES3 6: `framebuffer_completeness` 3, `packed_depth_stencil` 2,
-  `texture_lod_basic` 1): they passed in round 5 run 6; the dEQP-GLES3 ones fall in batches with a
-  device loss and follow it (the loss items below; the KHR-GLES3 6 not yet read case by case),
-  after which the driver refuses every call. This track's: make the case of the loss end its glcts.
-- Vertex programs calling `memoryBarrier()`, 11 (KHR-GLES31 `shader_image_size` `-vs` 6,
-  `shader_storage_buffer_object` `advanced-matrix-vsfs`, `advanced-readWrite-case1-vsfs`,
-  `basic-atomic-case3-vsfs` (Flake), `shader_image_load_store` `advanced-sync-imageAccess` and
-  `advanced-allStages-oneImage` (Crash)): the converted vertex entry holds a WGSL barrier, which
-  validation refuses at the vertex stage, though behind the stage helper it runs as compute work.
-- "device lost: Unexpected error variant (driver implementation is at fault)" in those batches: not
-  yet traced to its call.
-- dEQP-GLES31 `texture.multisample.samples_2.use_texture_uint_2d` 1 (Fail; Pass in round 5 run 6;
-  the RTX 3080's OpenGL passes it): not yet traced (this track's). Left out of run 2's list; found
-  by the independent check (`g9c1-gaps.py r6b/full`: 70 unassigned, 69 taken by the items above).
+Round 6 run 4's whole run (`results/r6d/full`, 340 failing GLES cases; `scripts/g9c1-gaps.py
+results/r6d/full` assigns 303 to the items of this list, the other 37 are the first item). Read
+case by case from the process logs (`scripts/case-notes.ps1`, scratch `results/r6d/case-notes.txt`,
+and `scripts/batch-events.ps1 <list> <log>` where a batch's driver output is printed after its
+cases). Each this track's unless said:
+- Shadowed by an earlier device loss, 37 (dEQP-GLES3 33: `fbo.blit` 16, `texture.specification` 9,
+  `fbo.color.repeated_clear` 4, `vertex_arrays.single_attribute` 2, `texture.vertex` 1,
+  `fbo.stencil.attach` 1; KHR-GLES3 4: `framebuffer_completeness` 3, `texture_lod_basic` 1). Read
+  in `gles3-main` `c65`: `fbo.color.tex3d.rgb565` loses the device (the WebGPU back end's 2D view
+  of a 3D texture, the "2D view of 3D" item below) and the 13 cases after it in the same glcts fail
+  with `GL_OUT_OF_MEMORY` or an incomplete framebuffer. The glcts patch (`case-ends-on-reset.patch`)
+  did not end that glcts: its query, `glGetGraphicsResetStatus`, is core only from OpenGL ES 3.2,
+  so glcts never loaded it for the ES 3.0 contexts of dEQP-GLES3 and KHR-GLES3 (it did work for
+  dEQP-GLES31 and the KHR ES 3.1 and 3.2 lists: their refused passes failed in this run). The
+  patch now takes the query by name for older contexts (a4352ae2); the two lists' rerun is below.
+  Of round 6 run 2's 60, 21 passed in this run (other batches), and the 2 `packed_depth_stencil`
+  cases are counted under "destroyed while recorded".
+- Vertex storage drawn as points through the pass-through geometry program while a query counts or
+  a stream is written, 6 (KHR-GLES31 `shader_image_size` `basic-` and `advanced-nonMS-vs-` float,
+  int, uint): refused, "points drawn as squares after tessellation or a geometry program while
+  streaming or counting (not built)". CORRECTED: round 6 run 2 filed these 6 under the vertex
+  `memoryBarrier()` item below; their only refusal is this one.
+- Vertex programs calling `memoryBarrier()`, 2 (KHR-GLES31 `shader_storage_buffer_object`
+  `advanced-matrix-vsfs` and `advanced-readWrite-case1-vsfs`): refused, "Entry point main at Vertex
+  is invalid: Uses operations forbidden at this stage" (the route writes a memory barrier, which
+  naga's validator allows only in compute work). Read in round 6 run 4 (not run): converting it
+  for the compute form only would not make it exact. GLSL's `memoryBarrier()` orders one
+  invocation's own memory accesses and may sit in any control flow; WGSL has no memory-only
+  barrier, and its `storageBarrier()` is a workgroup control barrier that WGSL allows only in
+  uniform control flow, while the stage helper's compute form calls the vertex program after its
+  invocations past the vertex count have returned (`stage.rs`, the vertex form's `when(past,
+  ret)`), so no barrier there is uniform. Absent on WebGPU, as the fragment program's
+  `memoryBarrier()` is (Direct3D has `DeviceMemoryBarrier` in every stage); the plan names no route
+  for it. The cases stay refused and failing. Round 6 run 2 listed 11 here: 6 are the item above,
+  `advanced-allStages-oneImage` passes in this run, and the other two are the next items.
+- "device lost: Unexpected error variant (driver implementation is at fault)", 1 (KHR-GLES31
+  `shader_image_load_store.advanced-sync-imageAccess`, its first note): not yet traced to its call.
+- KHR-GLES31 `shader_storage_buffer_object.basic-atomic-case3-vsfs`, Flake (passes on one of
+  deqp-runner's two tries), no refusal or device note: an atomic counter written by the vertex
+  program on the compute route and the fragment program; not yet traced.
+- Refused passes turned to failures by the glcts patch, as round 6 run 3 expected: dEQP-GLES31
+  `texture.border_clamp` 16 ("border on comparison" item), KHR-GLES31
+  `basic-glsl-earlyFragTests` 1 ("early tests"), KHR-GLES31 `tessellation_shader` 22: 20 refusing
+  an evaluation program's input of the built-in point size ("evaluation point size" item: 18
+  `tessellation_control_to_tessellation_evaluation`, `tessellation_shader_tessellation.TCS_TES` and
+  `.input_patch_discard`) and 2 refusing a control program reading outputs after `barrier()`
+  ("control barrier" item: `compilation_and_linking_errors.tc_` and
+  `te_non_arrayed_per_vertex_input_blocks`). Also `advanced-allMips-cs` (Pass to Fail, "storage
+  coherence") and `synchronization.inter_invocation` one each way (Flake, "storage coherence").
+- dEQP-GLES31 `texture.multisample.samples_2.use_texture_uint_2d` passes in this run (it failed
+  once in run 2, untraced).
 
 Found by the independent check of run 2, each this track's unless said:
 - The screen reports occlusion queries (`caps.occlusion_query`, a 64-bit counter) but an exact
@@ -1697,6 +1761,8 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 round 6 run 4, already in the workspace's lock file (wgpu's): libloading 0.8.9 (ISC) in
+  wcontainers-opengl on Windows, for pinning the driver's module without an unsafe line of ours.
 - G9 round 6 run 1, both already in the workspace's lock file: zerocopy 0.8.63 (BSD-2-Clause OR
   Apache-2.0 OR MIT, the workspace's own dependency) in wcontainers-nir, for the checked
   conversions of the bridge's values; build-rs 0.3.6 (MIT OR Apache-2.0, the Cargo team's, already
