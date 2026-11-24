@@ -405,11 +405,35 @@ side, and stands first for that reason:
     with no SPIR-V variable (id 0 into `spv::Builder::getDerefTypeId` and `isArrayType`, cases 3620
     and 6385), and a handle naming a resource the converter did not declare (`emit_create_handle`,
     cases 5279, 7639, 7673, 8445, 10796).
+  The seventh check (seed 141421, 14,000 cases, 51 ends, every one a .dxil case; its backtraces of
+  45 in scratch `check-g6-r13/fuzz1.log`) found the same kinds and one more:
+  - The container parser, before the bitcode reader (`dxil_parser.cpp`, `parse_iosg1`): 5 (cases
+    3911, 6708, 7035, 10205, 11333). A signature chunk's element count, read unchecked, sized a
+    list (2,770,021,634 elements in case 11333): the process ended under the fuzz script's 16 GB
+    address limit, and without a limit one shader took 1.9 to 110 s or ran past 120 s. Fixed in
+    run 120 (b14b4b8be): a carried patch (`converter-patches/dxil-spirv/dxil_parser.cpp.patch`)
+    refuses a count larger than its chunk can hold before the list is sized, for the signature's
+    elements and for the two other counts the parser sizes a list by (the container's chunk count,
+    the RDAT part count). Test `a_signature_counting_past_its_chunk_is_refused` (tests/fuzz.rs):
+    every input and output signature of every DXIL program that converts, set to a count of
+    2^32 - 1 and signed again, is refused (444, natively on the ARM64 machine and in WebAssembly
+  under wasmtime on the laptop). Without the
+    patch the test held 256 GiB resident for 10 minutes before it was stopped (g6-r120 arm1.log).
+    The check's five cases are each rejected in about 0.01 s at the tip.
+  - Metadata places the helpers above do not cover, as the check placed them by first own frame:
+    `cast<MDNode>` made in place in `emit_stage_input_variables` (2) and
+    `emit_stage_output_variables` (3; run 119's cases 6213 and 10976 also pass there before the
+    helper), `build_geometry_stream_row_offsets` (2) and `emit_patch_variables` (1); and single
+    ends in `register_resource_meta_reference`, `get_type_id`, `resource_is_physical_pointer`,
+    `isFloatingPointTy`, `emit_store_output_instruction` and the parser's `parse_function_record`.
+    `dxil_converter.cpp` alone makes 56 unchecked `cast<MDNode>` (beside 24 `dyn_cast`).
   What removing each kind would take (none built or run): the reader's two kinds, a carried patch
   of `bc/module.cpp` and the decoder checking every type and value an index names and every
   record's operand count, with checked casts (`dyn_cast` and a failure) in place of `cast<>` in
   those files (the header stays); the metadata kind, checked reads in the converter's metadata
-  helpers that fail the conversion, as run 113's patch does for `get_entry_points`; the emission
+  helpers that fail the conversion, as run 113's patch does for `get_entry_points`, and a checked
+  cast at each place that casts a metadata operand itself (the four functions above and every other
+  of the converter's in-place casts); the emission
   kind, a check of every operand at each of dxil-spirv's opcode emitters (several hundred), or a
   pass validating the module before conversion (every block terminated, every `dx.op` operand
   inside the declared signatures and resource ranges). Such patches remove only the places found;
@@ -764,6 +788,48 @@ Logs and scripts in scratch `graphics-shaders/g6-r116` (the clone `tip` moved th
   TriangleStrip, largest 7.2e-7 where WARP lies up to 2.0e-6 from the GPU: A12 under the
   orchestrator's rule). Anisotropic cases are the listed known failures (Known gaps).
 
+## G6 run 33 (run 120, round 8 run 2): the seventh check's findings
+
+Logs and scripts are in scratch `graphics-shaders/g6-r120` (`lit1.log` and `lit-out/lit.txt`,
+`arm1.log`, `wasm1.log`, `gpu1.log`; `lit-cmd.txt`, `cpu-cmd.txt`, `wasm-r120.sh`, `gpu.sh`,
+`gpu1-cmd.txt`). Nothing was built on the Mac; it ran rustfmt of single files only.
+- Blocking, the literal check's growth line: settled (924c84cfb). tests/tessellation_draw.rs sizes
+  the hull shaders' constant buffer as `HULL_FACTOR_ROWS * size_of::<[f32; 4]>()` (64 rows of the
+  buffer `float4 factors[64]`), and the baseline line `factor_constants 1024` that 1afcea75e added
+  is deleted. Checked with the real history (a clone of the pushed branch, the converters'
+  submodules laid out as the baseline was made, as the check did; lit1.log, ARM64, load 19 to
+  24): the summary reads "literals.baseline has 85 changes on this branch's first-parent history
+  (compared with its upstream 924c84cfbff3); growth is checked"; exit 1, its 2,688 lines 2,629
+  `+` and 59 `-`, no `>` and no `~` line; not one line names crates/wcontainers-shaders (its
+  submodules included) or third_party/naga. The lines name other tracks' crates
+  (crates/executor/implementation 2,448, crates/processor-architecture/implementation 94, and
+  fewer). Run 119's and run 105's sentences that said the check printed no line of this crate are
+  corrected in their sections: both ran without the history.
+- Minor, A11's places: dxil-spirv's container parser ended the process or took up to minutes on a
+  signature's unchecked element count (the check's five cases). Fixed by a carried patch, with a
+  test that fails without it (b14b4b8be; A11 on the gap list has the figures). The metadata places
+  the check found beyond the helpers (in-place casts in the stage input, output and patch
+  declarations and the geometry stream rows) are on A11 with what removing them takes, and the
+  fuzz test's ignore reason names them. The rest of A11 stays open as listed.
+- Minor, A38 (`DEPTH_CLAMP` at 0.1 to 0.45 on the DXIL route through WebGPU, up to 5 float steps
+  where 2 are allowed): confirmed by the check as stated; unchanged, its cause not measured.
+- Minor, A40 (the program's anisotropic filtering far from both devices where no device's
+  anisotropic footprint matters): confirmed by the check as stated, with its figures at seed
+  24601, 10 cases: `clamped_samples` 24 of 126 comparisons failed, `filtering_in_the_program` 192
+  of 1,694, all from the two anisotropy-16 cases 24603 and 24610 (case 24610 Rgba8Unorm, DXBC
+  through WebGPU: 2,969 of 4,096 texels past 0.0078125 from both devices, largest 0.511, where the
+  devices differ in 144 texels, largest 0.095). Unchanged; on the gap list as A40.
+- Minor, the float `sign` and the domain program writing storage: the check found both settled as
+  stated; nothing to do.
+- Unsafe: the count stays 94; the new test and the patch add none in Rust.
+- Runs: ARM64 machine, the worktree at b14b4b8be's content (arm1.log, load 21 to 41): rustfmt and
+  clippy with warnings denied clean; every CPU test binary with every corpus and
+  `--include-ignored` but the mutation run passed (the corpus test 13 in 213 s, fuzz.rs's quick
+  tests 5 with "444 signatures refused"); the check's five container cases at seed 141421 each
+  rejected in 0.011 to 0.013 s; the new test without the patch was stopped by hand after 10
+  minutes at 256 GiB resident. Laptop (wasm1.log, load 0.1 to 4.5): the fuzz test built for
+  `wasm32-wasip1` with the patch, its 5 quick tests passed under wasmtime 38.0.4.
+
 ## G6 run 32 (run 119, round 8 run 1): the sixth check's findings
 
 Logs and scripts are in scratch `graphics-shaders/g6-r119` (`arm1.log` to `arm5.log`, `gpu1.log`;
@@ -777,12 +843,12 @@ files only. The check's own logs are in `graphics-shaders/check-g6-r12`.
   `Sampled` value is one module constant of images.rs; the reader test that repeated it moved from
   tests/fuzz.rs into images.rs's unit tests, where it uses that constant. The five baseline lines
   that matched nothing are deleted, and a sixth, naga's HLSL writer's `"sign"`, which the sign fix
-  below names. The check at the tip (ARM64 machine, the worktree copied into a fresh repository,
-  arm5.log, load 1.5): exit 1, and no line names this crate's own files or third_party/naga. Its
-  lines name the converters' submodule folders (4,250 dxil-spirv, 4,009 dxbc-spirv: plain files
-  in that copy, which has no submodules, so an artifact of the copy) and other tracks' crates
-  (crates/executor/implementation 2,415, crates/processor-architecture 94, and fewer). The run 118
-  sentence that said otherwise is corrected in its section.
+  below names. The check this run ran (ARM64 machine, the worktree copied into a fresh repository,
+  arm5.log, load 1.5) had no history ("no upstream branch to compare it with"), so it could not
+  see growth, and its "no line names this crate" was wrong: with the real history the check
+  printed a `>` growth line for tests/tessellation_draw.rs (`factor_constants 1024`, added by
+  1afcea75e), found by the seventh check and settled in run 120 (its section). Its other lines
+  named the converters' submodule folders (plain files in that copy) and other tracks' crates.
 - Blocking, A11: rewritten by place. gdb backtraces of all 30 process ends at the check's seed
   1618033 (arm2.log, 12,000 cases): 26 ended under gdb, 4 ran through under it. Of the 26: 1 in
   the bitstream decoder, 5 in the module parser, 12 in the converter's metadata reads and 8 in its
@@ -1312,8 +1378,10 @@ the rig's queue from the clone; nothing built on the Mac.
   files (chrome.log).
 - Runs: ARM64 machine (load 3 to 6): fmt and clippy of this crate with warnings denied clean; every
   test binary of this crate with every corpus and `--include-ignored` (but `mutated`) passed
-  (arm3.log); the literal check prints no line of this crate after 1afcea75, which makes the
-  tessellation test's two accepted `1024` lines one (its constant buffer built in one function).
+  (arm3.log); the literal check, run without the repository's history, printed no line of this
+  crate after 1afcea75, which made the tessellation test's two accepted `1024` lines one under a
+  new name. That was growth, which only a run with the history reports (the seventh check found
+  it); run 120 named the value and deleted the line.
   Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy clean; at the commit, the stage
   helper's three drawn test binaries with `--test-threads 1` (geometry_draw, stage_draw and
   tessellation_draw: 27 passed, 0 failed; gpu4.log), the vertex cull route's cull program, which
@@ -5726,6 +5794,18 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- The literal check only counts with the repository's history: a fresh repository of a copy cannot
+  see growth ("no upstream branch to compare it with"). Run 120's way, from scratch
+  `graphics-shaders/g6-r120`: `git clone -q --branch agents <worktree> tip` after pushing, then lay
+  out `tip-arm` as the seventh check's `arm-sync.sh` does (the clone's tree, its `.git` as
+  `dotgit`, both converters' folders from the worktree, `lit-cmd.txt` beside them, a bare `git
+  init`), and `arm-run tip-arm --name g6-r120-lit -- 'bash check-lit.sh.txt'`; it rebuilds the
+  converters' submodules as repositories as the baseline was made, runs the check and prints the
+  lines naming this crate or naga (`arm-run --fetch g6-r120-lit target/lit.txt <dir>` for all of
+  them; grep every line kind, `>` included). `cpu-cmd.txt` there is run 119's CPU suite plus the
+  seventh check's five container cases and the new test without its patch; `wasm-r120.sh` builds
+  and runs the fuzz test's quick tests for WebAssembly on the laptop; `gpu.sh <log> "$(cat
+  gpu1-cmd.txt)"` as run 119's.
 - Run 119's scripts in scratch `graphics-shaders/g6-r119`: `cpu-cmd.txt` (rustfmt, clippy, every
   CPU test binary with every corpus but the mutation run) and `lit2-cmd.txt` (the literal check in a
   fresh repository of the copy, its lines filtered to this crate and naga, the converters'
