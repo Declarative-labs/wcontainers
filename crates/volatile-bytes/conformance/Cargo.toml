@@ -5,11 +5,11 @@ edition = "2024"
 publish = false
 
 [lib]
-path = "conformance.rs"
+path = "suite.rs"
 
 [[test]]
 name = "ref_cell"
-path = "../foreign_implementation/ref_cell/conformance.rs"
+path = "../foreign_implementation/ref_cell/conformance_run.rs"
 
 [dependencies]
 wcontainers-volatile-bytes = { path = ".." }
