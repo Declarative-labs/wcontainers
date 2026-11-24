@@ -6,12 +6,13 @@
 //! `WAITCOST_ROUNDS` runs of each, whose median is printed; `WAITCOST_KIND` keeps only the kinds
 //! whose name holds it.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::System;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
 use wcontainers_executor_unicorn::network::DOCKER_HOST_NAME;
 use wcontainers_executor_unicorn::{
@@ -19,32 +20,14 @@ use wcontainers_executor_unicorn::{
 };
 
 /// Counts every allocation the test process makes.
-struct Counting;
-
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
-
-// SAFETY: every call is passed to the system allocator unchanged.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: as the caller's contract.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: as the caller's contract.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: as the caller's contract.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
 #[global_allocator]
-static COUNTING: Counting = Counting;
+static COUNTING: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+/// The allocations and reallocations made so far.
+fn allocations() -> u64 {
+    let stats = COUNTING.stats();
+    (stats.allocations + stats.reallocations) as u64
+}
 
 const DEFAULT_COUNT: u64 = 700;
 const DEFAULT_ROUNDS: usize = 5;
@@ -98,12 +81,12 @@ fn run(directory: &Path, arguments: &[&str], backend: bool) -> (u64, u64) {
         address_space: standin::SPACE_32_BIT,
     };
     let prepared = driver::prepare(&container);
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed);
+    let allocations = allocations();
     let started = Instant::now();
     let ran = driver::run_prepared(prepared, &container, 0, driver::Injections::default())
         .unwrap_or_else(|failure| panic!("no outcome: {failure:?}"));
     let took = started.elapsed().as_nanos() as u64;
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed) - allocations;
+    let allocations = self::allocations() - allocations;
     let stdout = String::from_utf8_lossy(&ran.outcome.stdout);
     assert!(
         stdout.ends_with("done\n"),
