@@ -16,9 +16,10 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
   "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
 - XN2 (way I, the checked forms): built and measured (runs 1 to 4), see "XN2 run 4" and the runs before it. Run 4
-  built the stack form the measurement chose (rsp held as B + the guest's rsp); both forms then meet their speed bars
-  on the benchmark set (wrapping 1.065 and 1.091 times the unchecked form, bar 1.10; exact 1.280 and 1.323, bar
-  1.35). What is left of XN2 needs an x86 executor (gap item 1): the link, register-group and hostile-guest tests in
+  built the stack form the measurement chose (rsp held as B + the guest's rsp); both forms then met their speed bars
+  in the two runs at moderate load (wrapping 1.065 and 1.091 times the unchecked form, bar 1.10; exact 1.280 and
+  1.323, bar 1.35) and missed them in two runs disturbed by other jobs (load to 76 and 160): a quiet confirming run
+  is wanted. What is left of XN2 needs an x86 executor (gap item 1): the link, register-group and hostile-guest tests in
   I and the X9 programs.
 
 ## XN2 run 4 (2026-11-24)
@@ -75,7 +76,9 @@ Results (rented x86 machine, Xeon 8488C):
     1.249, interpret 1.414 and 1.776, matrix 1.055 and 2.603, walk 1.019 and 0.946, search 0.883 and 0.940.
   - A third run (11:28 to 11:37 UTC) is not a measurement of the forms: another job took the load from 3 to 76
     during it, doubling interpret's, matrix's and walk's times between ways (walk 0.59 times the host's); it gave
-    wrapping 1.102 and exact 1.359 (scratch xn2r4/bench3.out).
+    wrapping 1.102 and exact 1.359 (scratch xn2r4/bench3.out). A fourth (11:38 to 11:47, load rising to 160 on 96
+    cores) is not one either: wrapping 1.140, exact 1.432, search 1.64 and 2.27 (xn2r4/bench4.out). The bars want a
+    confirming run on a quiet machine (load under 10) before XN2 is called met.
   - So with the stack as the guest wrote it the earlier figures (+9 to +12 percent wrapping, +40 to +46 exact) become
     +6.5 to +9 and +28 to +32 percent; fib's exact form went from 2.044 to 1.178.
   - interpret's wrapping form is 1.36 to 1.41 times P uncounted but 0.74 to 0.76 times P counted, its uncounted time
