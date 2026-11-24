@@ -5030,6 +5030,7 @@ dependencies = [
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-processor-architecture-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5058,13 +5059,20 @@ dependencies = [
  "vmm-sys-util",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
+ "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
+ "wcontainers-executor-conformance",
  "wcontainers-executor-hardware-virtualization-inside",
  "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-kernel-linux",
+ "wcontainers-precise-instruction-set-apple-m5",
+ "wcontainers-precise-instruction-set-neoverse-v2",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
@@ -5074,6 +5082,7 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
  "wcontainers-translator-test",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
