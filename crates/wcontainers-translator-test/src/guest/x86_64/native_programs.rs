@@ -70,10 +70,15 @@ struct Scratch {
     /// The guest's rcx while its call site is found.
     dispatch: u64,
     record: [u64; RECORD_WORDS],
-    /// The guest's rsp while `pushfq` is answered on the stack below.
+    /// The guest's rsp while an answer in process runs on the stack below.
     rsp: u64,
-    stack: [u64; 2],
+    stack: [u64; STACK_WORDS],
+    /// In process, the guest's pc after the system call being answered, and where its piece goes on.
+    next: u64,
+    back: u64,
 }
+/// The words of the blob's own stack in process.
+const STACK_WORDS: usize = 8;
 const SCRATCH: usize = size_of::<RegisterArea>().next_multiple_of(WORD as usize);
 const _: () = assert!(SCRATCH + size_of::<Scratch>() <= FIXED);
 const fn scratch(field: usize) -> u64 {
@@ -821,7 +826,7 @@ fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedE
     let code = rcx_code(&mut a, InsideCall::Answer)?;
     record_and_end(&mut a, area, Said::OtherCall, code, t)?;
     let scratch_word = |field: usize| gs_word(scratch(field));
-    let mut other_system_call = a.create_label();
+    let mut system_call_in_process = a.create_label();
     for (k, (site, label)) in laid.sites.iter().zip(&mut site_labels).enumerate() {
         a.set_label(label)?;
         let k = Word::Constant(i32::try_from(k).expect("a site's number"));
@@ -839,31 +844,16 @@ fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedE
                     None => Ok(()),
                 };
                 if in_process {
-                    // `write`'s buffer is a guest address, B less in the window; `exit_group` passes none. Told
-                    // apart without a flag: rcx, which the call overwrites, is zero for the one asked of it.
-                    let mut write = a.create_label();
-                    let mut exit = a.create_label();
-                    let mut done = a.create_label();
-                    a.lea(rcx, qword_ptr(rax - libc::SYS_write as i32))?;
-                    a.jrcxz(write)?;
-                    a.lea(rcx, qword_ptr(rax - libc::SYS_exit_group as i32))?;
-                    a.jrcxz(exit)?;
-                    a.jmp(other_system_call)?;
-                    a.set_label(&mut write)?;
-                    a.mov(t, gs_word(WINDOW as u64))?;
-                    a.lea(rsi, qword_ptr(rsi + t))?;
-                    a.syscall()?;
-                    keep_flags(&mut a)?;
-                    a.mov(t, gs_word(WINDOW_NEGATED as u64))?;
-                    a.lea(rsi, qword_ptr(rsi + t))?;
-                    a.jmp(done)?;
-                    a.set_label(&mut exit)?;
-                    a.syscall()?;
-                    a.set_label(&mut done)?;
-                } else {
-                    a.syscall()?;
-                    keep_flags(&mut a)?;
+                    // The call with its pointers made host addresses, shared by every site.
+                    a.mov(rcx, site.t)?;
+                    a.mov(scratch_word(core::mem::offset_of!(Scratch, back)), rcx)?;
+                    a.mov(rcx, site.next)?;
+                    a.mov(scratch_word(core::mem::offset_of!(Scratch, next)), rcx)?;
+                    a.jmp(system_call_in_process)?;
+                    continue;
                 }
+                a.syscall()?;
+                keep_flags(&mut a)?;
                 a.mov(count, scratch_word(core::mem::offset_of!(Scratch, count)))?;
                 a.mov(rcx, site.next)?;
             }
@@ -911,11 +901,8 @@ fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedE
                 // The flags as the guest has them, by `pushfq` on a stack of the blob's own, then stored at the
                 // guest's rsp - 8 in the window.
                 let rsp_kept = scratch_word(core::mem::offset_of!(Scratch, rsp));
-                let stack_top = area
-                    + scratch(core::mem::offset_of!(Scratch, stack))
-                    + size_of::<[u64; 2]>() as u64;
                 a.mov(rsp_kept, rsp)?;
-                a.mov(rsp, stack_top)?;
+                a.mov(rsp, stack_top(area))?;
                 a.pushfq()?;
                 a.pop(t)?;
                 a.mov(rsp, rsp_kept)?;
@@ -932,8 +919,10 @@ fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedE
         a.mov(t, site.t)?;
         a.jmp(t)?;
     }
-    a.set_label(&mut other_system_call)?;
-    record_and_end(&mut a, area, Said::OtherSystemCall, rax, rax)?;
+    if in_process {
+        a.set_label(&mut system_call_in_process)?;
+        answer_system_call(&mut a, (area, way))?;
+    }
     let exit = InsideCall::Exit.code() as usize;
     a.set_label(&mut entry_labels[exit])?;
     record_and_end(&mut a, area, Said::ExitMiss, t, t)?;
@@ -963,6 +952,117 @@ fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedE
         entries,
         copies,
     })
+}
+
+/// The top of the blob's own stack in the area at `area`.
+fn stack_top(area: u64) -> u64 {
+    area + scratch(core::mem::offset_of!(Scratch, stack)) + size_of::<[u64; STACK_WORDS]>() as u64
+}
+
+/// In process, the guest's system call in rax with the guest pointers among its arguments made host addresses (B
+/// more) around it, on the blob's own stack with the guest's flags kept; a call this blob does not know ends it
+/// with a record. Then the guest's r11 is its flags, its rcx the next pc, and its piece goes on.
+fn answer_system_call(a: &mut CodeAssembler, (area, way): (u64, Way)) -> Result<(), IcedError> {
+    let word = |offset: u64| area_word(way, offset);
+    let scratch_word = |field: usize| word(scratch(field));
+    let t = assembled(T);
+    a.mov(scratch_word(core::mem::offset_of!(Scratch, rsp)), rsp)?;
+    a.mov(rsp, stack_top(area))?;
+    a.pushfq()?;
+    let mut done = a.create_label();
+    let mut other = a.create_label();
+    let rebased = |a: &mut CodeAssembler, pointer: AsmRegister64| {
+        a.mov(t, word(WINDOW as u64))?;
+        a.add(pointer, t)?;
+        a.syscall()?;
+        a.mov(t, word(WINDOW as u64))?;
+        a.sub(pointer, t)?;
+        a.jmp(done)
+    };
+    // write(fd, buffer, bytes), ioctl(fd, request, argument) (the C library's asks for the terminal's size into
+    // a guest buffer), set_tid_address(address).
+    for (number, pointer) in [
+        (libc::SYS_write, rsi),
+        (libc::SYS_ioctl, rdx),
+        (libc::SYS_set_tid_address, rdi),
+    ] {
+        let mut next = a.create_label();
+        a.cmp(rax, number as i32)?;
+        a.jne(next)?;
+        rebased(a, pointer)?;
+        a.set_label(&mut next)?;
+    }
+    // writev(fd, vectors, count): each vector's base too, and back after.
+    let mut next = a.create_label();
+    a.cmp(rax, libc::SYS_writev as i32)?;
+    a.jne(next)?;
+    let iov_base = core::mem::offset_of!(libc::iovec, iov_base) as i32;
+    let vectors = |a: &mut CodeAssembler, add: bool| {
+        let mut each = a.create_label();
+        let mut end = a.create_label();
+        a.mov(rcx, rdx)?;
+        a.mov(rax, rsi)?;
+        a.set_label(&mut each)?;
+        a.test(rcx, rcx)?;
+        a.jz(end)?;
+        if add {
+            a.add(qword_ptr(rax + iov_base), t)?;
+        } else {
+            a.sub(qword_ptr(rax + iov_base), t)?;
+        }
+        a.add(rax, size_of::<libc::iovec>() as i32)?;
+        a.dec(rcx)?;
+        a.jmp(each)?;
+        a.set_label(&mut end)
+    };
+    a.mov(t, word(WINDOW as u64))?;
+    a.add(rsi, t)?;
+    vectors(a, true)?;
+    a.mov(rax, libc::SYS_writev as u64)?;
+    a.syscall()?;
+    a.push(rax)?;
+    a.mov(t, word(WINDOW as u64))?;
+    vectors(a, false)?;
+    a.sub(rsi, t)?;
+    a.pop(rax)?;
+    a.jmp(done)?;
+    a.set_label(&mut next)?;
+    // arch_prctl(ARCH_SET_FS, base): the guest's FS base is the area's word.
+    let mut next = a.create_label();
+    a.cmp(rax, libc::SYS_arch_prctl as i32)?;
+    a.jne(next)?;
+    a.cmp(rdi, linux_raw_sys::general::ARCH_SET_FS as i32)?;
+    a.jne(other)?;
+    a.mov(word(GUEST_FS_BASE as u64), rsi)?;
+    a.mov(rax, 0u64)?;
+    a.jmp(done)?;
+    a.set_label(&mut next)?;
+    let mut exit = a.create_label();
+    for number in [libc::SYS_exit_group, libc::SYS_exit] {
+        a.cmp(rax, number as i32)?;
+        a.je(exit)?;
+    }
+    a.jmp(other)?;
+    a.set_label(&mut exit)?;
+    a.syscall()?;
+    a.set_label(&mut other)?;
+    record_and_end(a, area, Said::OtherSystemCall, rax, rax)?;
+    a.set_label(&mut done)?;
+    // r11 the guest's flags, as Linux leaves it, and the flags back.
+    a.pop(t)?;
+    if let Some(k) = WITHHELD.iter().position(|&w| w == wcontainers_x86::R11) {
+        a.mov(word((WITHHELD_VALUES + k * WORD as usize) as u64), t)?;
+    }
+    a.push(t)?;
+    a.popfq()?;
+    a.mov(rsp, scratch_word(core::mem::offset_of!(Scratch, rsp)))?;
+    a.mov(
+        assembled(COUNT),
+        scratch_word(core::mem::offset_of!(Scratch, count)),
+    )?;
+    a.mov(rcx, scratch_word(core::mem::offset_of!(Scratch, next)))?;
+    a.mov(t, scratch_word(core::mem::offset_of!(Scratch, back)))?;
+    a.jmp(t)
 }
 
 /// `mov ecx, code` of `call`: rcx.
