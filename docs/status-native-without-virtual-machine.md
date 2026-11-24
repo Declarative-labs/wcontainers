@@ -884,6 +884,17 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     running a spinning program, 10 moves in 10.0 s in each round (bar: at most one a second). tests/placement.rs and
     tests/host.rs pass. Seen on the way: the same loop in a new memory each time ran either 14.4 or 16.5 us a call,
     so the comparison now keeps one memory (where its pieces lie in the code area may be the cause; not measured).
+  - The copy unit on translated stores (tests/speed.rs `copy_unit_on_translated_stores`, a fork child's loop storing
+    once to each of its parent's 16,384 written pages in order, then to every 16th in a seeded order; unit.sh edits
+    the unit in the remote copy; unit1-arm.out, Graviton4 CPU 41, load 12 to 15, 3 rounds each): in order 18.2 to
+    18.9 us a store at one page, 4.1 to 4.3 at 8, 2.3 to 2.5 at 64, 2.1 to 2.2 at 512; scattered 23.4 to 24.3,
+    34.8 to 35.0, 31.0 to 31.5, 27.4 to 27.5 us (2,058 host mappings in the child at 1 and 8 pages, 12 from 64).
+    busybox `sh` (unit-bb.sh, alternating, 3 rounds): 4.52 to 4.56 s at 8 pages against 4.67 to 4.78 s at one. Set
+    to 8 pages (`COPY_UNIT`, now public), the plan's candidate. The three copy-counting tests of tests/memory.rs
+    write one page per unit (`unit`); a new one checks that a store copies the unit's eight lent pages and the
+    other seven are then the child's (it fails at one page). Every binary once with /dev/kvm denied after it:
+    Graviton4 108 passed, 1 failed (the known precise-set test; unit3-all2-arm.out), Xeon 53 passed
+    (unit3-all-x86.out); clippy clean on both.
   - Verdicts after the placement fixes, shared tree, every binary once with /dev/kvm denied: Graviton4 108 passed, 1
     failed (the known precise-set test; all3-arm.out), Xeon 52 passed, none failed (all2-x86.out); clippy with
     warnings denied clean on both.
@@ -915,7 +926,7 @@ met, each with what is known:
   answer to it is not tested here.
 - Placement's two measured items are met on Graviton4 (round 5 run 1: 1.010 times the free CPU's loop after the move,
   10 moves in 10 s with every CPU contended); not measured on the Xeon, where translated code is W3's.
-- The copy unit is one page, not yet measured on translated stores (8 pages the candidate).
+- The copy unit is 8 pages, measured on translated stores (round 5 run 1).
 - The shared tree builds every host-process test binary again (round 4 run 2, with the conforming jobs' wasmtime and
   Unicorn edits uncommitted in it): kernel and busybox pass with /dev/kvm denied, once on Graviton4; the three rounds
   on both machines from committed code are still to run (the Xeon was not set up during round 4 run 2).
@@ -946,8 +957,7 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 - The other bars: the round trip (1.215 to 1.27 times the slot across runs) needs the embedder's per-exit work cut
   (the translated page's copies, `stop::resolve` and `rejoin`); bench's matrix (3.8 times plain) needs the withheld
   x18 renamed in hot loops (round 4 run 1, the native track's ruling first).
-- Then: the copy unit measured on translated stores (`copy_unit_cost` with real stores), then set; the gVisor kernel
-  test's blocks and jumptables (which side hangs).
+- Then: the gVisor kernel test's blocks and jumptables (which side hangs).
 - x86-64's stub answers `Enter` as `BadTurn`; its floor and translated code are W3's (plan 3.10).
 - W2's part of W1's bar, form I's bounds-check-bypass test on ARM64 (one per access shape), is measured as a host
   program (run 6); at W2 the same gadgets run as translated guest code. I's stop is a real-time signal (plan 3.6)

@@ -388,8 +388,11 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   page). Measured in W1 run 5 with stores standing in for guest code (each store a turn, about 5.3 µs alone; section
   11): a child storing to all 16,384 written pages in order pays 20 µs a store at u = 0, 7.8 at u = 3, 5.4 at u = 6;
   storing to every 16th page in a seeded order, 25 µs at u = 0, 36 at u = 3, 31 at u = 9; that child holds 2,054
-  host mappings at u up to 3 and 8 from u = 4. u stays 0 until translated code, whose stores cost no turn, is
-  measured the same way; u = 3 is the candidate.
+  host mappings at u up to 3 and 8 from u = 4. Measured again on translated stores (W1 round 5 run 1, Graviton4,
+  CPU 41, load 12 to 15; 16,384 pages): in order 18.2 to 18.9 µs a store at u = 0, 4.1 to 4.3 at u = 3, 2.3 to 2.5
+  at u = 6, 2.1 to 2.2 at u = 9; every 16th page in a seeded order 23.4 to 24.3, 34.8 to 35.0, 31.0 to 31.5 and
+  27.4 to 27.5 µs; busybox `sh` starting 1,000 programs 4.52 to 4.56 s at u = 3 against 4.67 to 4.78 s at u = 0
+  (alternating, 3 rounds). Built with u = 3.
 - **Written marks and watches are the kernel's** (`Process::take_dirty_memory`, `Process::watch_memory`): the
   kernel keeps both itself and makes them with `Cpu::set_permissions` (write taken away until the first write,
   which comes back as a fault exit; crates/kernel/implementation/linux/memory.rs `take_dirty` and `reapply`), and
