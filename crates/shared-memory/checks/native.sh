@@ -57,8 +57,19 @@ for old, new in zip(pairs[::2], pairs[1::2]):
 open(p, "w").write(s)
 PY
   echo "===== wrong change $name: $(cd $dir && diff <(cd $here && cat $file) $file | grep '^>' | tr -s ' ' | head -3)"
-  ( cd "$dir"; CARGO_TARGET_DIR=/work/target/gmc-mutn cargo test -q -p wcontainers-shared-memory --features host $tests 2>&1 | filter 8 )
-  rm -rf "$dir"
+  # TMPDIRS, when set, names the temporary folders to run the tests with, one run each.
+  local tmp status
+  for tmp in ${TMPDIRS:-inherited}; do
+    [ "$tmp" = inherited ] || echo "-- TMPDIR=$tmp ($(stat -f -c %T "$tmp"))"
+    ( cd "$dir"; [ "$tmp" = inherited ] || export TMPDIR=$tmp
+      CARGO_TARGET_DIR=/work/target/gmc-mutn cargo test -q -p wcontainers-shared-memory --features host $tests > "$dir.out" 2>&1 )
+    status=$?
+    filter 8 < "$dir.out"
+    if grep -q "could not compile" "$dir.out"; then echo "result $name: does not compile"
+    elif [ $status = 0 ]; then echo "result $name: every test passes"
+    else echo "result $name: a test fails (cargo status $status)"; fi
+  done
+  rm -rf "$dir" "$dir.out"
 }
 R=crates/shared-memory/foreign_implementation/region
 H=crates/shared-memory/foreign_implementation/host/implementation.rs
@@ -121,6 +132,44 @@ mutate file-maps-from-one-word-on "$H" "--test host" '.offset(offset)
                 .len(length)'
 mutate region-one-byte-long "$H" "--test host" 'Region::new(base, map.len())' 'Region::new(base, map.len() + 1)'
 mutate region-one-byte-short "$H" "--test host" 'Region::new(base, map.len())' 'Region::new(base, map.len() - 1)'
+mkdir -p /work/target/gmc-disk
+export TMPDIRS="/dev/shm /work/target/gmc-disk"
+echo "===== the offset check weakened: another bound, another modulus, off by one, another value; each with TMPDIR on tmpfs and on disk"
+O='!offset.is_multiple_of(size_of::<u64>() as u64)'
+mutate offset-checked-only-below-a-page "$H" "--test host" "$O" "(offset < 4096 && $O)"
+mutate offset-checked-only-to-a-page "$H" "--test host" "$O" "(offset <= 4096 && $O)"
+mutate offset-checked-only-below-a-word "$H" "--test host" "$O" "(offset < 8 && $O)"
+mutate offset-checked-only-below-two-pages "$H" "--test host" "$O" "(offset < 8192 && $O)"
+mutate offset-checked-only-below-2-to-the-32 "$H" "--test host" "$O" "(offset < 1 << 32 && $O)"
+mutate offset-checked-only-below-2-to-the-63 "$H" "--test host" "$O" "(offset < 1 << 63 && $O)"
+mutate offset-checked-only-below-the-last-word "$H" "--test host" "$O" "(offset < u64::MAX - 7 && $O)"
+mutate offset-checked-only-from-a-page "$H" "--test host" "$O" "(offset >= 4096 && $O)"
+mutate offset-multiple-of-2 "$H" "--test host" "$O" '!offset.is_multiple_of(2)'
+mutate offset-one-more-checked "$H" "--test host" "$O" '!offset.wrapping_add(1).is_multiple_of(size_of::<u64>() as u64)'
+mutate offset-one-less-checked "$H" "--test host" "$O" '!offset.wrapping_sub(1).is_multiple_of(size_of::<u64>() as u64)'
+mutate offset-end-checked-in-its-place "$H" "--test host" "$O" '!offset.wrapping_add(length as u64).is_multiple_of(size_of::<u64>() as u64)'
+mutate offset-length-checked-in-its-place "$H" "--test host" "$O" '!(length as u64).is_multiple_of(size_of::<u64>() as u64)'
+echo "===== the end check weakened: another bound, rounded, off by one, wrapping or cut to 32 bits; each with TMPDIR on tmpfs and on disk"
+E='.is_none_or(|end| end > size)'
+mutate end-to-the-end-of-the-last-page "$H" "--test host" "$E" '.is_none_or(|end| end > size.next_multiple_of(4096))'
+mutate end-to-the-byte-before-the-end-of-the-last-page "$H" "--test host" "$E" '.is_none_or(|end| end > size.next_multiple_of(4096) - 1)'
+mutate end-to-the-end-of-the-last-word "$H" "--test host" "$E" '.is_none_or(|end| end > size.next_multiple_of(8))'
+mutate end-to-an-even-byte "$H" "--test host" "$E" '.is_none_or(|end| end > size.next_multiple_of(2))'
+mutate end-a-word-past-the-file "$H" "--test host" "$E" '.is_none_or(|end| end > size + 8)'
+mutate end-a-page-past-the-file "$H" "--test host" "$E" '.is_none_or(|end| end > size + 4096)'
+mutate end-to-the-start-of-the-last-page-refused "$H" "--test host" "$E" '.is_none_or(|end| end > size / 4096 * 4096)'
+mutate end-checked-only-for-files-of-a-page "$H" "--test host" "$E" '.is_none_or(|end| size >= 4096 && end > size)'
+mutate end-checked-only-past-a-page "$H" "--test host" "$E" '.is_none_or(|end| end > 4096 && end > size)'
+mutate end-checked-only-below-2-to-the-32 "$H" "--test host" "$E" '.is_none_or(|end| end < 1 << 32 && end > size)'
+mutate end-without-the-offset "$H" "--test host" "$E" '.is_none_or(|_| length as u64 > size)'
+mutate end-without-the-length "$H" "--test host" "$E" '.is_none_or(|_| offset >= size)'
+mutate end-length-cut-to-32-bits "$H" "--test host" '.checked_add(length as u64)' '.checked_add(length as u32 as u64)'
+mutate end-offset-cut-to-32-bits "$H" "--test host" '            if offset
+                .checked_add' '            if (offset as u32 as u64)
+                .checked_add'
+mutate end-compared-as-signed "$H" "--test host" "$E" '.is_none_or(|end| end as i64 > size as i64)'
+unset TMPDIRS
+rm -rf /work/target/gmc-disk
 echo "===== two checks behind others, which no input reaches, so no test can fail: these two pass"
 mutate behind-a-negative-size-taken-as-huge "$H" "--test host" '.unwrap_or(u64::MIN)' '.unwrap_or(u64::MAX)'
 mutate behind-the-alignment-assert-removed "$H" "--test host" 'base.cast::<u64>().is_aligned() && !base.is_null()' 'true'

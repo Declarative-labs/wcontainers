@@ -3,6 +3,7 @@
 set -u
 here=$(pwd)
 out=/work/target/rprim-overcommit; rm -rf $out; mkdir -p $out
+echo "code $(bash crates/shared-memory/checks/tree.sh)"
 echo "machine's own overcommit_memory: $(cat /proc/sys/vm/overcommit_memory)"
 ( cd crates/shared-memory/checks/overcommit && CARGO_TARGET_DIR=$out/build cargo build -q --release --target aarch64-unknown-linux-musl 2>&1 | tail -20 )
 bin=$out/build/aarch64-unknown-linux-musl/release/overcommit-probe

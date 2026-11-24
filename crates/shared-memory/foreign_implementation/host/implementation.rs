@@ -75,6 +75,9 @@ impl HostMapping {
     /// holds the offset and returns the address of the offset itself (memmap2-0.9.12 src/unix.rs:99-100, :246).
     fn new(map: MmapRaw) -> HostMapping {
         let base = map.as_mut_ptr();
+        // No input reaches a failure: `mmap` returns a page start, never null, and memmap2 adds only the offset's
+        // remainder within its page, a multiple of 8 because `file` refuses every other offset. The assert stays as the
+        // one run-time check of the alignment `Region::new` is promised, should memmap2 change.
         assert!(
             base.cast::<u64>().is_aligned() && !base.is_null(),
             "a mapping starts aligned to 8"
@@ -141,6 +144,8 @@ mod shrink_sealed {
 
         /// Reads the size now, and maps the bytes from the offset for the length if the file holds all of them.
         pub(super) fn map(&self, offset: u64, length: usize) -> Result<MmapRaw, FileError> {
+            // No input reaches the fallback: a 64-bit Linux keeps every file's size at most `MAX_LFS_FILESIZE`, which is
+            // `LLONG_MAX` (include/linux/fs.h), so `st_size` is never negative. Were it, the size taken as 0 refuses all.
             let size = u64::try_from(fstat(self.file).map_err(io::Error::from)?.st_size)
                 .unwrap_or(u64::MIN);
             if offset

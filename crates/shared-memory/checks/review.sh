@@ -11,6 +11,14 @@ stated=$(grep -o 'Every unsafe item: [0-9]*' $crate/REVIEW.md | grep -o '[0-9]*$
 [ "$marked" = "$stated" ] || fail "REVIEW.md states $stated unsafe items in a host build; the code marks $marked"
 listed=$(sed -n '/^## 2\./,/^## 3\./p' $crate/REVIEW.md | grep -cE '^[0-9]+\. ')
 [ "$marked" = "$listed" ] || fail "REVIEW.md lists $listed unsafe items; the code marks $marked"
+uncited=$(sed -n '/^## 2\./,/^## 3\./p' $crate/REVIEW.md | grep -E '^[0-9]+\. ' | grep -vcE 'implementation\.rs:[0-9]+')
+[ "$uncited" = 0 ] || fail "$uncited unsafe items of REVIEW.md give no file:line"
+for cite in $(sed -n '/^## 2\./,/^## 3\./p' $crate/REVIEW.md | grep -E '^[0-9]+\. ' | grep -oE '(region|host)/implementation\.rs:[0-9]+(/[0-9]+)?'); do
+  file=$crate/foreign_implementation/${cite%%:*} lines=${cite##*:}
+  for line in ${lines//\// }; do
+    sed -n "${line}p" "$file" | grep -q unsafe || fail "REVIEW.md cites ${cite%%:*}:$line, a line with no unsafe"
+  done
+done
 
 for cited in $(grep -rhoE 'checks/[A-Za-z0-9_.-]+\.(log|sh)' --include='*.rs' --include='*.toml' --include='*.md' $crate | sort -u); do
   [ -e "$crate/$cited" ] || fail "$cited is cited and does not exist"

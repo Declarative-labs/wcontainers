@@ -312,17 +312,75 @@ mod file {
             (8, page() - 7),
             (page() as u64, 1),
             (u64::MAX - 7, 8),
+            (u64::MAX - 7, 7),
             (8, usize::MAX),
+            (page() as u64, usize::MAX - page() + 1),
+            (1 << 32, 8),
+            (0, (1 << 32) + 1),
+            (1 << 40, 8),
+            (0, 1 << 40),
         ] {
             assert!(
                 matches!(HostMapping::file(file.as_fd(), offset, length), Err(FileError::Short)),
                 "{offset} {length}"
             );
         }
-        for offset in [1, 2, 4, 7, WORD as u64 + 4] {
+    }
+
+    /// Refuses, as `Length`, every offset that is not a multiple of 8: each remainder from 1 to 7, after a page, two
+    /// and three pages (inside the file), and after 2^32, 2^63 and the last word of the range (past it), at lengths
+    /// that end on a word and lengths that do not. An offset check limited to small offsets, or to offsets below any
+    /// other bound, a check of another modulus, or of the end's alignment in place of the offset's, fails here, and not
+    /// only at the alignment assert in `HostMapping::new`.
+    #[test]
+    fn refuses_every_offset_that_is_not_a_multiple_of_8() {
+        let file = memory_file(4 * page() as u64, SealFlags::SHRINK);
+        let page = page() as u64;
+        let word = WORD as u64;
+        for start in [0, word, page, page + word, 2 * page, 3 * page, 1 << 32, 1 << 63, u64::MAX - 7] {
+            for offset in (1..word).map(|rest| start + rest) {
+                for length in [1, 4, WORD, (word - offset % word) as usize, page as usize] {
+                    assert!(
+                        matches!(
+                            HostMapping::file(file.as_fd(), offset, length),
+                            Err(FileError::Length)
+                        ),
+                        "{offset} {length}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Maps a file whose size is not a whole number of pages, or of words, to exactly its last byte, from several
+    /// offsets, and refuses one byte more, one word more, the rest of its last page and one page more. A check that
+    /// lets the end run to the end of the file's last page or word, or any number of bytes past the file, fails here.
+    #[test]
+    fn maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further() {
+        let page = page() as u64;
+        let word = WORD as u64;
+        for size in [1, word - 1, word, word + 1, 100, page - 1, page + 1, page + 100, 2 * page + word + 3] {
+            let file = memory_file(size, SealFlags::SHRINK);
+            for offset in [0, word, page, page + word].into_iter().filter(|&offset| offset < size) {
+                let length = (size - offset) as usize;
+                let memory = HostMapping::file(file.as_fd(), offset, length)
+                    .unwrap_or_else(|error| panic!("{size} {offset}: {error}"));
+                counts_exactly(&memory, length);
+                let to_the_page_end = (size.next_multiple_of(page) - offset) as usize;
+                for past in [length + 1, length + WORD, to_the_page_end + 1, length + page as usize]
+                    .into_iter()
+                    .chain((to_the_page_end > length).then_some(to_the_page_end))
+                {
+                    assert!(
+                        matches!(HostMapping::file(file.as_fd(), offset, past), Err(FileError::Short)),
+                        "{size} {offset} {past}"
+                    );
+                }
+            }
+            let after = size.next_multiple_of(word);
             assert!(
-                matches!(HostMapping::file(file.as_fd(), offset, 8), Err(FileError::Length)),
-                "{offset}"
+                matches!(HostMapping::file(file.as_fd(), after, 1), Err(FileError::Short)),
+                "{size}"
             );
         }
     }

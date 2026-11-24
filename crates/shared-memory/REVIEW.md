@@ -50,21 +50,24 @@ pub trait Word: Copy + Eq + Debug + Into<u64> + TryFrom<u64> + seal::Sealed {} /
 
 ## 2. Every unsafe item: 10 in a host build on Linux
 
-All in foreign_implementation/region/implementation.rs unless named.
+Paths are under foreign_implementation/; `checks/review.sh` fails when a cited line holds no `unsafe`.
 
-1. `pub(crate) unsafe fn new(base: *mut u8, length: usize) -> Region`: the mapping's promise (mapped, writable,
-   never traps, aligned to 8, no reference formed but one word for one swap or compare-and-exchange). One exception
+1. region/implementation.rs:41, `pub(crate) unsafe fn new(base: *mut u8, length: usize) -> Region`: the mapping's
+   promise (mapped, writable, never traps, aligned to 8, no reference formed but one word for one swap or compare-and-exchange). One exception
    the host does not keep: with strict overcommit (`vm.overcommit_memory=2`) a memory file's page can fail to be
    charged when first touched, and the access ends the process with SIGBUS; a crash, not a write anywhere else
-   (MEASURED, checks/overcommit.log, in a 512 MiB guest: the file mapping died with signal 7 after 45 824 of 91 648
-   pages; anonymous memory was refused when mapped instead; with `overcommit_memory=0` both finished).
-2. `unsafe { copy(into.as_mut_ptr(), from, into.len()); }` in `read`: range checked just before.
-3. `unsafe { copy(to, from.as_ptr(), from.len()); }` in `write`: the same.
-4. `unsafe { word.read_volatile() }` in `load`, then `fence(Acquire)`.
-5. `unsafe { word.write_volatile(value); }` in `store`, after `fence(Release)`.
-6. `unsafe { AtomicU64::from_ptr(word) }.swap(value, AcqRel)`: see section 5.
-7. `unsafe { AtomicU32::from_ptr(word) }.compare_exchange(current, new, AcqRel, Acquire)`: see section 5.
-8. The one foreign call:
+   (MEASURED, checks/overcommit.log, ARM64 machine only, in a 512 MiB KVM guest with a commit limit of 224 MiB, on
+   code fec8c953d6929ba9: the probe writes all 91 648 pages of a 358 MiB file mapping and prints a line every 11 456;
+   the last line before signal 7 was "page 45824 of 91648 written", so the fault came between that page and 57 280,
+   the next line. The first run, on commit 19a69bfed, gave the same lines. Anonymous memory was refused when mapped
+   instead; with `overcommit_memory=0` both finished).
+2. region/implementation.rs:57, `unsafe { copy(into.as_mut_ptr(), from, into.len()); }` in `read`: range checked just before.
+3. region/implementation.rs:68, `unsafe { copy(to, from.as_ptr(), from.len()); }` in `write`: the same.
+4. region/implementation.rs:79, `unsafe { word.read_volatile() }` in `load`, then `fence(Acquire)`.
+5. region/implementation.rs:89, `unsafe { word.write_volatile(value); }` in `store`, after `fence(Release)`.
+6. region/implementation.rs:107, `unsafe { AtomicU64::from_ptr(word) }.swap(value, AcqRel)`: see section 5.
+7. region/implementation.rs:117, `unsafe { AtomicU32::from_ptr(word) }.compare_exchange(current, new, AcqRel, Acquire)`: see section 5.
+8. region/implementation.rs:180/187, the one foreign call, the function and its block:
    ```rust
    pub(crate) unsafe fn copy(to: *mut u8, from: *const u8, length: usize) {
        if length == 0 { return; }
@@ -74,8 +77,8 @@ All in foreign_implementation/region/implementation.rs unless named.
        }
    }
    ```
-9. `libc::syscall(SYS_futex, word, ...)` in `futex`: rustix takes the word only as `&AtomicU32`.
-10. host/implementation.rs: `unsafe { Region::new(base, map.len()) }` over memmap2's `MmapRaw`. For a memory file it
+9. region/implementation.rs:209, `libc::syscall(SYS_futex, word, ...)` in `futex`: rustix takes the word only as `&AtomicU32`.
+10. host/implementation.rs:103, `unsafe { Region::new(base, map.len()) }` over memmap2's `MmapRaw`. For a memory file it
     rests on three things done in order on one borrowed descriptor: the seals are read and hold `F_SEAL_SHRINK`, then
     the size is read, then the file is mapped. Two limits:
     - The type does not enforce the order. `ShrinkSealedFile::new` reads the seals and `map` reads the size, but code
@@ -186,7 +189,7 @@ Where there is no C library (the floor, `no_std`): another implementation of the
 Every log names the code it ran on: `checks/tree.sh` hashes every file of the crate but the logs and this page, and
 native.sh, miri.sh and kani.sh print it first. `checks/review.sh` (run on the Mac before each commit) fails when a log
 names other code, when this page's unsafe count differs from the code's, when a cited `checks/` file is missing, or
-when a comment cites this page for a measurement. Final run: code e8a20ce18811b34d, both machines, in one job each; the host suite has 51 tests
+when a comment cites this page for a measurement. Final run: code fec8c953d6929ba9, both machines, in one job each; the host suite has 53 tests
 (MEASURED, checks/x86.log, arm.log; review.sh: "10 unsafe items, 0 failed").
 
 MEASURED, both machines, debug and release:
@@ -216,13 +219,35 @@ MEASURED, both machines, debug and release:
   seals no host reads (the kernel keeps seals only for memory files), asserts that they cannot be read, and so fails
   rather than pass untried. The wrong change fails it with `TMPDIR` on tmpfs and on ext4, both machines.
 - Lengths and offsets: the file mapping refuses a length of zero, an offset that is not a multiple of 8, and bytes
-  past the file's end, and maps every other length, whole words or not (the anonymous one refuses only zero). Each
-  check fails a test when removed, weakened or made stricter, both machines: anonymous and file length zero accepted,
-  anonymous and file mapping one byte more, file offset unchecked or checked to 4 or to 16, file lengths limited to
-  whole words, the end allowed one byte past the file or refused at it, the end wrapping, the file mapped from one word
-  on, the region one byte long or short. Two checks sit behind others and no input reaches them, so their removal
-  passes every test: the fallback that reads a negative size as 0 (`fstat` gives none), and the alignment assert in
-  `new` (the offset check already refuses every offset it would catch).
+  past the file's end, and maps every other length, whole words or not (the anonymous one refuses only zero). What is
+  shown is that each wrong change listed in native.sh fails a test on both machines (MEASURED, checks/x86.log and
+  arm.log, lines "result ...: a test fails"): 59 changes, the 28 to the offset and end checks each run with `TMPDIR`
+  on tmpfs and on ext4. Nothing shows that a change not listed there fails. Listed:
+  - removed or made stricter: anonymous and file length zero accepted, anonymous and file mapping one byte more, the
+    offset unchecked or checked to 16, lengths limited to whole words, the end refused at the file's end or at the
+    start of its last page, the file mapped from one word on, the region one byte long or short;
+  - the offset check weakened: checked only below a word, below a page, up to a page, below two pages, below 2^32,
+    below 2^63, below the last word of the range, or only from a page on; to a modulus of 4 or 2; one more or one less
+    checked; the end's or the length's alignment checked in its place;
+  - the end check weakened: allowed one byte, a word or a page past the file, to the end of the file's last word, its
+    last page or the byte before it, to an even byte; checked only for files of a page or more, only for ends past a
+    page, only for ends below 2^32; the offset or the length left out; the length or the offset cut to 32 bits; the end
+    wrapping, or compared as a signed number.
+  Until this run the weakenings "offset checked only below a page" and "end to the end of the last page" passed every
+  test (scratch guest-memory-copy/check3); the tests `refuses_every_offset_that_is_not_a_multiple_of_8` (offsets of
+  every remainder after 0, a word, one to three pages, 2^32, 2^63 and the last word) and
+  `maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further` (sizes 1 to 2 pages + 11, mapped to exactly
+  their end, refused one byte, a word and a page past it and to the end of the page) now fail them.
+  Changes that leave the code doing the same are not counted (the offset cut to 32 bits before the remainder, the end
+  saturating). Two checks sit behind others, and their removal passes every test because no input reaches them:
+  - the fallback that reads a negative `st_size` as 0 (host/implementation.rs:150): a 64-bit Linux keeps every file's
+    size at most `MAX_LFS_FILESIZE`, which is `LLONG_MAX` (READ, include/linux/fs.h:1327 of the machines' 7.0
+    headers), so the conversion never fails. It stays because Rust's conversion must handle the failure somehow, and
+    0 is the side that refuses;
+  - the alignment assert in `HostMapping::new` (host/implementation.rs:81): `mmap` returns a page start, never null,
+    and memmap2 adds only the offset's remainder within its page (memmap2-0.9.12 src/unix.rs:99-100, :246), a
+    multiple of 8 since `file` refuses every other offset, which the tests above now pin. It stays as the one run-time
+    check of the alignment `Region::new` is promised, against a change in memmap2 (INFERRED that none reaches it).
 - The 8 compile refusals each fail to compile.
 - Miri, both machines, both borrow models, on the final code: host 13, heap 12, attacks 5 pass (the 7 tests with
   threads in each suite are ignored there). Miri runs its own memcpy for the foreign call and checks both ranges lie in their allocations;
