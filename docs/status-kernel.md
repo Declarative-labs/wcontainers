@@ -8,6 +8,34 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KF, eighth run: the literal check's lines this track can settle, and the executor interface
+
+Started about 02:00 UTC on 2026-11-24 at 6ea365e5. Every build and test ran on the ARM64 machine;
+the Mac only edited, formatted single files and committed. Scratch kernel/kf8 (b1.sh to b5.sh,
+lit.sh, whole.sh, logs beside them).
+
+- hardware-virtualization-inside's `WRITE_NOT_READ` is gone: stop.rs and floor-cases import the
+  arm64 architecture crate's (efb627ab; its lock line 25d94a30). That crate is `no_std` and needs
+  only `aarch64-cpu`, which the inside already used. Clippy over the inside (with and without
+  `kernel-test`) status 0, its tests 3 pass, its programs build for aarch64-unknown-none-softfloat.
+- The executor interface (b01ba0d8 and before) asks every `Executor` for a guest memory, an
+  interrupter and `execute`; the kernel's unit-test executor `Plain` did not have them, so the
+  kernel's unit tests did not build. `Plain` now has an uninhabited memory and interrupter and
+  gives no memory (60183ae8). Kernel unit tests 22 and its conformance 16 pass.
+- The literal fix list, steps 4 and 5 (5512c9a1): widths are `u32::BITS`, `u64::BITS` and
+  `u16::BITS`; counter details are made by `counters::detail` and `counters::socket_detail`, which
+  give the same values as before. The baseline loses 33 kernel lines.
+- The stand-in's tests/standin.rs placed code at its own `CODE = 0x10000`, which the executor
+  suite's `CODE` (its `LOWEST_ADDRESS`) made a redefinition; it now uses
+  `wcontainers_abi::LOWEST_ADDRESS` (a7b0b008), one more baseline line gone.
+- Tests run on the ARM64 machine after these (load 4 to 19): handle, seccomp, securebits, faults,
+  unixsock, lockwaits, options, standin pass; inet's three, threads' `proc_task_matches_reference`
+  and clocks' two fail, all six on the ARM list.
+
+The literal check at a7b0b008's parent 5512c9a1 (kf8/lit.sh, lit2-out.txt): baseline 27583 lines
+(27582 after a7b0b008), exits 1 on other tracks' files and the interfaces', and in this track's
+files only on the 14 lines For the orchestrator names (`WRITE_NOT_READ` is off that list).
+
 ## KF, seventh run: the third check's findings
 
 The seventh run made the fixes (commits b7524554 to 376fba71) and started the whole suite; the
@@ -795,18 +823,16 @@ side of each is worked around without changing the interface.
   `ROUTE_MTU` (65535) against the host route resolver's `IP_MAX_MTU`, and network.rs
   `LOOPBACK_MTU` (65536) against the route resolver suite's `LOOPBACK_DEVICE_MTU`: one shared
   home (an interface crate both use, or wcontainers-abi with the route resolver importing it)
-  needs a ruling. The four of the fifth run stay as they are.
+  needs a ruling. Of the fifth run's four, three stay as they are (`WRITE_NOT_READ` is settled).
 
 - KC, fourth run: the abi's `Event` lost its `BackendNotice` variant and with it its lifetime, so
   this track changed one line of the runtime track's crate to build (single-kernel net.rs,
   `fn event(&mut self, arrival: &Arrival) -> Option<Event>`) and corrected that crate's
   `receive_notice` comment (system.rs: its file server sends no notices), in a commit of their
   own.
-- KC, fourth run: the literal check reports hardware-virtualization-inside syndrome.rs
-  `WRITE_NOT_READ = 64` (this track's embedder) as a redefinition of
-  crates/processor-architecture/implementation/arm64/syndrome.rs `WRITE_NOT_READ = 1 << 6`, which
-  another track added since. The fix is to import it, which needs the inside crate to depend on
-  that crate (built for the machine's inside, `no_std`): left until a ruling on whether it may.
+- KC, fourth run (settled in KF's eighth run): hardware-virtualization-inside's `WRITE_NOT_READ`
+  now comes from the arm64 architecture crate, which the inside depends on (`no_std`, it needs
+  only `aarch64-cpu`). host-process's native.rs keeps its own copy (that track's).
 
 - KC: should a guest's TCP `bind` bind at the system (networking-fixes/tcp/for-implementers.md),
   though the container has its own network namespace and its connects leave through the exit
@@ -962,6 +988,13 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, eighth run: hardware-virtualization-inside imports `WRITE_NOT_READ`, the kernel's
+unit-test executor conforms to the executor interface (the kernel's unit tests build again), the
+literal fix list's steps 4 and 5 are done and the stand-in's test uses the abi's lowest address
+(baseline 27616 to 27582). In this track's files the literal check now fails only on the 14 lines
+For the orchestrator names, each a value another track named later or a fact without a shared
+home; KF has nothing else left. The whole suite at a7b0b008: see "KF, eighth run".
 
 KF, seventh run: every finding of the third check is fixed or recorded (see "KF, seventh run"):
 placement falls back to the gap below the stack when nothing fits below the mmap base, a hint
