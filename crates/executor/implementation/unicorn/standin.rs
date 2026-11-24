@@ -207,21 +207,20 @@ fn prot(permissions: Permissions) -> Prot {
     Prot(prot)
 }
 
-fn x_register(index: usize) -> RegisterARM64 {
+/// Unicorn's number of the general register `X<index>`; X0 to X28 are numbered in a run, X29 and X30 apart.
+fn x_register(index: usize) -> i32 {
     match index {
-        29 => RegisterARM64::X29,
-        30 => RegisterARM64::X30,
-        _ => register_at(RegisterARM64::X0 as i32 + index as i32),
+        0..=28 => RegisterARM64::X0 as i32 + index as i32,
+        29 => RegisterARM64::X29 as i32,
+        30 => RegisterARM64::X30 as i32,
+        _ => panic!("no general register X{index}"),
     }
 }
 
-fn q_register(index: usize) -> RegisterARM64 {
-    register_at(RegisterARM64::Q0 as i32 + index as i32)
-}
-
-fn register_at(id: i32) -> RegisterARM64 {
-    // SAFETY: the callers stay inside the contiguous runs X0..X28 and Q0..Q31 of the enum.
-    unsafe { std::mem::transmute::<i32, RegisterARM64>(id) }
+/// Unicorn's number of the vector register `Q<index>`; Q0 to Q31 are numbered in a run.
+fn q_register(index: usize) -> i32 {
+    assert!(index < 32, "no vector register Q{index}");
+    RegisterARM64::Q0 as i32 + index as i32
 }
 
 impl Memory {
@@ -1419,5 +1418,35 @@ fn copy_touched(from: &MmapMut, to: &mut MmapMut) {
             let start = index * CHUNK;
             to[start..start + chunk.len()].copy_from_slice(chunk);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use unicorn_engine::RegisterARM64;
+
+    use super::{q_register, x_register};
+
+    #[test]
+    fn register_numbers_end_where_unicorn_numbers_them() {
+        assert_eq!(x_register(28), RegisterARM64::X28 as i32);
+        assert_eq!(x_register(29), RegisterARM64::X29 as i32);
+        assert_eq!(x_register(30), RegisterARM64::X30 as i32);
+        assert_eq!(q_register(31), RegisterARM64::Q31 as i32);
+    }
+
+    /// Before, this index became a value of unicorn's register enum that names no register, which
+    /// is undefined behavior from a safe function.
+    #[test]
+    #[should_panic(expected = "no general register X31")]
+    fn a_general_register_past_x30_is_refused() {
+        x_register(31);
+    }
+
+    /// As for the general registers.
+    #[test]
+    #[should_panic(expected = "no vector register Q32")]
+    fn a_vector_register_past_q31_is_refused() {
+        q_register(32);
     }
 }
