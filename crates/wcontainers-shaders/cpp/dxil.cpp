@@ -489,26 +489,26 @@ int list(ListReader read, const uint8_t* data, size_t size, uintptr_t* slots) {
 
 // Each list reader returns 0 and its words in `slots`, or nonzero with the reason; `samples` is
 // unused. The views of the resource list (`views`):
-extern "C" int wcs_dxil_views(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+WCS_EXPORT(wcs_dxil_views) int wcs_dxil_views(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
   (void)samples;
   return list(views, data, size, slots);
 }
 
 // The constant buffers' (space, register, size in bytes) triples:
-extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+WCS_EXPORT(wcs_dxil_constant_sizes) int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
   (void)samples;
   return list(constant_sizes, data, size, slots);
 }
 
 // The channel of every comparison gather the module calls (`compared_gather_channels`):
-extern "C" int wcs_dxil_compared_gather_channels(const uint8_t* data, size_t size, uint32_t samples,
+WCS_EXPORT(wcs_dxil_compared_gather_channels) int wcs_dxil_compared_gather_channels(const uint8_t* data, size_t size, uint32_t samples,
                                                  uintptr_t* slots) {
   (void)samples;
   return list(compared_gather_channels, data, size, slots);
 }
 
 // The (class, space, register) triples of every register the resource list declares:
-extern "C" int wcs_dxil_declared_registers(const uint8_t* data, size_t size, uint32_t samples,
+WCS_EXPORT(wcs_dxil_declared_registers) int wcs_dxil_declared_registers(const uint8_t* data, size_t size, uint32_t samples,
                                            uintptr_t* slots) {
   (void)samples;
   return list(declared_registers, data, size, slots);
@@ -516,7 +516,7 @@ extern "C" int wcs_dxil_declared_registers(const uint8_t* data, size_t size, uin
 
 // Returns 0, the SPIR-V and the resources' (class, space, register) triples in words in `slots`, or
 // nonzero with the reason.
-extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+WCS_EXPORT(wcs_dxil_to_spirv) int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
   uint32_t* out = nullptr;
   size_t out_words = 0;
   uint32_t* table = nullptr;

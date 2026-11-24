@@ -92,8 +92,8 @@ fn signing_again_gives_the_compilers_checksum() {
 #[cfg_attr(
     target_os = "wasi",
     ignore = "a known failure in the crate's own WebAssembly build, which links the converters into \
-              its module: malformed DXIL can end that module inside dxil-spirv (gap A11; natively the \
-              converters run in a module of their own)"
+              its module: malformed DXIL can end that module inside the DXIL converter (gap A11; natively \
+              the converters run in a module of their own)"
 )]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     let number = |name: &str, default: u64| {

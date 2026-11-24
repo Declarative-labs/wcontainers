@@ -1,7 +1,7 @@
 //! The converters linked into the crate's own WebAssembly build, where no engine runs inside the
 //! module to hold them: every entry is called through the one signature of `cpp/boundary.h`.
 
-use super::{BUFFER_SLOTS, Entry, Failure, exports, no_reason, slot};
+use super::{BUFFER_SLOTS, Entry, Failure, SUCCEEDED, exports, no_reason, slot};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
@@ -75,7 +75,7 @@ pub(super) fn call<const BUFFERS: usize>(
         copy(buffer, slots[count] * entry.outputs[i].bytes())
     });
     match status {
-        0 => Ok(outputs),
+        SUCCEEDED => Ok(outputs),
         _ if slots[slot::REASON] == 0 => Err(Failure::Refused(no_reason(entry))),
         _ => Err(Failure::Refused(
             String::from_utf8_lossy(&reason).into_owned(),

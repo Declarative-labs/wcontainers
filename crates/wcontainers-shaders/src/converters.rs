@@ -19,7 +19,28 @@ use crate::ir::slot;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-include!(concat!(env!("OUT_DIR"), "/exports.rs"));
+/// The names the boundary's functions are exported under (`WCS_EXPORT` in `cpp/`).
+mod exports {
+    pub const DXBC_TO_IR: &str = "wcs_dxbc_to_ir";
+    pub const DXIL_TO_SPIRV: &str = "wcs_dxil_to_spirv";
+    pub const DXIL_CONSTANT_SIZES: &str = "wcs_dxil_constant_sizes";
+    pub const DXIL_COMPARED_GATHER_CHANNELS: &str = "wcs_dxil_compared_gather_channels";
+    pub const DXIL_DECLARED_REGISTERS: &str = "wcs_dxil_declared_registers";
+    pub const DXIL_VIEWS: &str = "wcs_dxil_views";
+    #[cfg_attr(
+        target_os = "wasi",
+        expect(dead_code, reason = "the linked route frees by symbol")
+    )]
+    pub const FREE: &str = "wcs_free";
+    #[cfg_attr(
+        target_os = "wasi",
+        expect(dead_code, reason = "the linked route lends Rust's bytes")
+    )]
+    pub const ALLOCATE: &str = "wcs_allocate";
+}
+
+/// The status a boundary function returns when it gave its buffers.
+const SUCCEEDED: i32 = 0;
 
 /// The size of one element of a buffer an entry gives.
 #[derive(Clone, Copy)]

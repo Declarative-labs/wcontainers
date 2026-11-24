@@ -101,7 +101,7 @@ int convert(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, u
 
 // Returns 0 with the serialised IR in bytes and the dynamically indexed constant buffers' (space,
 // register, size) triples in words in `slots`, or nonzero with the reason. `samples` is unused.
-extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+WCS_EXPORT(wcs_dxbc_to_ir) int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
   (void)samples;
   uint8_t* out = nullptr;
   size_t out_size = 0;
@@ -114,6 +114,11 @@ extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint32_t samples
   return status;
 }
 
-extern "C" void wcs_free(void* p) {
+WCS_EXPORT(wcs_free) void wcs_free(void* p) {
   std::free(p);
+}
+
+// Memory in the converters' module for the host to write a shader into (free with wcs_free).
+WCS_EXPORT(wcs_allocate) void* wcs_allocate(size_t size) {
+  return std::malloc(size);
 }

@@ -5,14 +5,14 @@
 //! come from wasmtime's pool, whose memories keep their first pages mapped between instances, so a
 //! fresh instance costs no page faults where the converters work.
 
-use super::{BUFFER_SLOTS, Entry, Failure, exports, no_reason, slot};
+use super::{BUFFER_SLOTS, Entry, Failure, SUCCEEDED, exports, no_reason, slot};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use std::sync::OnceLock;
 use wasmtime::{
-    Caller, Config, Engine, Extern, Instance, InstanceAllocationStrategy, InstancePre, Linker,
+    Caller, Config, Engine, Export, Instance, InstanceAllocationStrategy, InstancePre, Linker,
     Memory, Module, PoolingAllocationConfig, ResourceLimiter, Store, Trap, TypedFunc, Val,
 };
 
@@ -21,6 +21,7 @@ const MODULE: &[u8] = include_bytes!("../../converters.wasm");
 
 /// The most memory one shader's instance may grow to: 26 times the most any shader of the corpora
 /// reaches (9.9 MB).
+// standalone 256: the bound in MiB, chosen as above
 const MEMORY_BOUND: usize = 256 << 20;
 
 /// The first bytes of a pooled memory kept mapped and zeroed between instances: the module's stack,
@@ -40,9 +41,6 @@ const WASI: &str = "wasi_snapshot_preview1";
 
 /// The reactor's initialiser (the C++ static constructors), run once per instance.
 const INITIALIZE: &str = "_initialize";
-
-/// The module's memory export.
-const MEMORY: &str = "memory";
 
 /// The file descriptor of standard error.
 const STANDARD_ERROR: i32 = 2;
@@ -69,6 +67,8 @@ struct Loaded {
 struct State {
     /// Whether the module asked to grow past `MEMORY_BOUND`.
     past_memory_bound: bool,
+    /// The instance's memory, once it exists.
+    memory: Option<Memory>,
     error: Vec<u8>,
 }
 
@@ -140,13 +140,14 @@ fn system_call(
 ) -> wasmtime::Result<()> {
     let arg = |i: usize| params.get(i).and_then(Val::i32).unwrap_or_default();
     let status = match name {
-        "fd_write" if arg(0) == STANDARD_ERROR => {
-            let memory = memory_of(&mut caller)?;
+        wasi::WRITE if arg(wasi::write::DESCRIPTOR) == STANDARD_ERROR => {
+            let memory = memory_of(&caller)?;
             let mut written = 0u32;
             let data = memory.data(&caller);
             let mut kept = Vec::new();
-            for vector in 0..arg(2) {
-                let at = address(arg(1)) + address(vector) * 2 * size_of::<u32>();
+            for vector in 0..arg(wasi::write::VECTOR_COUNT) {
+                let at = address(arg(wasi::write::VECTORS))
+                    + address(vector) * wasi::write::VECTOR_BYTES;
                 let (base, len) = (word(data, at)?, word(data, at + size_of::<u32>())?);
                 let bytes = data
                     .get(address(base as i32)..address(base as i32) + len as usize)
@@ -157,18 +158,19 @@ fn system_call(
             let state = caller.data_mut();
             let room = KEPT_ERROR_BYTES.saturating_sub(state.error.len());
             state.error.extend(kept.into_iter().take(room));
-            memory.write(&mut caller, address(arg(3)), &written.to_le_bytes())?;
+            let at = address(arg(wasi::write::WRITTEN));
+            memory.write(&mut caller, at, &written.to_le_bytes())?;
             SUCCESS
         }
-        "environ_sizes_get" | "args_sizes_get" => {
-            let memory = memory_of(&mut caller)?;
-            for at in [arg(0), arg(1)] {
+        wasi::ENVIRONMENT_SIZES | wasi::ARGUMENT_SIZES => {
+            let memory = memory_of(&caller)?;
+            for at in wasi::SIZES.map(arg) {
                 memory.write(&mut caller, address(at), &0u32.to_le_bytes())?;
             }
             SUCCESS
         }
-        "environ_get" | "args_get" => SUCCESS,
-        "proc_exit" => return Err(wasmtime::Error::msg(format!("exit {}", arg(0)))),
+        wasi::ENVIRONMENT | wasi::ARGUMENTS => SUCCESS,
+        wasi::EXIT => return Err(wasmtime::Error::msg(format!("exit {}", arg(0)))),
         name if name.starts_with(DESCRIPTOR_CALL) => BAD_DESCRIPTOR,
         _ => NO_SYSTEM_CALL,
     };
@@ -178,11 +180,36 @@ fn system_call(
     Ok(())
 }
 
-fn memory_of(caller: &mut Caller<'_, State>) -> wasmtime::Result<Memory> {
-    match caller.get_export(MEMORY) {
-        Some(Extern::Memory(memory)) => Ok(memory),
-        _ => Err(wasmtime::Error::msg("the module exports no memory")),
+/// The calls of WASI's
+/// [first preview](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md#-wasi_snapshot_preview1)
+/// the host answers by name, and the parameters it reads.
+mod wasi {
+    pub const WRITE: &str = "fd_write";
+    pub const ENVIRONMENT_SIZES: &str = "environ_sizes_get";
+    pub const ARGUMENT_SIZES: &str = "args_sizes_get";
+    pub const ENVIRONMENT: &str = "environ_get";
+    pub const ARGUMENTS: &str = "args_get";
+    pub const EXIT: &str = "proc_exit";
+    /// The two counts' addresses a size call writes.
+    pub const SIZES: [usize; 2] = [0, 1];
+
+    /// `fd_write(fd, iovs, iovs_len, nwritten)`.
+    pub mod write {
+        pub const DESCRIPTOR: usize = 0;
+        pub const VECTORS: usize = 1;
+        pub const VECTOR_COUNT: usize = 2;
+        pub const WRITTEN: usize = 3;
+        /// An `iovec`: its base and its length, a word each.
+        pub const VECTOR_BYTES: usize = 2 * size_of::<u32>();
     }
+}
+
+/// The memory of the instance the caller runs in.
+fn memory_of(caller: &Caller<'_, State>) -> wasmtime::Result<Memory> {
+    caller
+        .data()
+        .memory
+        .ok_or_else(|| wasmtime::Error::msg("the module exports no memory"))
 }
 
 /// A 32-bit address of the module as an index of its memory.
@@ -267,8 +294,10 @@ fn start(
             initialize.call(&mut store, ())?;
         }
         let memory = instance
-            .get_memory(&mut store, MEMORY)
+            .exports(&mut store)
+            .find_map(Export::into_memory)
             .ok_or_else(|| wasmtime::Error::msg("the module exports no memory"))?;
+        store.data_mut().memory = Some(memory);
         let allocate = instance.get_typed_func::<i32, i32>(&mut store, exports::ALLOCATE)?;
         let free = instance.get_typed_func::<i32, ()>(&mut store, exports::FREE)?;
         let length = i32::try_from(data.len())
@@ -357,7 +386,7 @@ fn run<const BUFFERS: usize>(
     let data = memory.data(&*store);
     let at = |slot: usize| word(data, address(*slots) + slot * size_of::<u32>());
     let given = [slot::FIRST, slot::SECOND, slot::REASON].map(&at);
-    let result = if status != SUCCESS {
+    let result = if status != SUCCEEDED {
         let (reason, length) = (address(at(slot::REASON)? as i32), at(slot::REASON_LENGTH)?);
         Err(Run::Refused(match reason {
             0 => no_reason(entry),

@@ -12,6 +12,9 @@
 
 #include "util/util_log.h"
 
+// Declares a boundary function, exported from the converters' module under its own name.
+#define WCS_EXPORT(name) extern "C" __attribute__((export_name(#name)))
+
 namespace wcs {
 
 // A resource class of Direct3D 12, which the DXIL boundary gives as each resource's descriptor set.
