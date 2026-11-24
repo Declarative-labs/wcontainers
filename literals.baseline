@@ -5911,17 +5911,7 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::zero_view	"an e
 code	crates/wcontainers-direct3d-11/src/device.rs	str	check_buffer	"constant buffer sizes are multiples of 16"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"anisotropy above 16"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"minimum and maximum filtering"
-code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	189
-code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	191
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_alignment	4
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format_read_as	3
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	12
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	16
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	3
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	4
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	6
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	8
-code	crates/wcontainers-direct3d-11/src/format.rs	str	unserved	"a DXGI format this front does not serve"
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
 code	crates/wcontainers-direct3d-11/src/record.rs	int	<Recorder as Backend>::read_back	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	<Recorder as Backend>::read_queries	8
