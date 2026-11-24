@@ -8,6 +8,24 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, eighth run: the workspace check on the x86-64 machine
+
+Started about 06:26 UTC on 2026-11-24 at 4403770d. The Mac only edited and committed. Scratch
+kernel/kc8 (c1.sh, c1.log).
+
+- Since the seventh run's check at 7ef9b914 only other tracks' docs changed, so the ARM64 check was
+  not repeated: it still fails only in the three crates named there.
+- The whole workspace's `cargo check --keep-going --all-targets` on the x86-64 machine at
+  4403770d (other agents' uncommitted edits taken back; 06:27 to 06:31 UTC, load 74 to 67 from
+  other jobs) fails only in precise-instruction-set-measured's tests.rs:59 (the instruction
+  design track's `Counted` executor lacks `GuestMemory`, `Interrupter`, `CreateGuestMemoryError`,
+  `create_guest_memory` and `execute`). Translator-test's layer1 and hardware-virtualization's
+  tests/guest_memory.rs build there: their failures are ARM64-only (`guest::x86_64::native` is
+  compiled only on x86-64 Linux; guest_memory.rs only on aarch64).
+
+Not done: KC's pass bar waits only on those three files of other tracks (see "For the
+orchestrator"); nothing of this track's fails the check.
+
 ## KC, seventh run: the sixth run's results read, a new suite check, three breaks
 
 Started about 04:40 UTC on 2026-11-24 at 2086b90e. Every build and test ran on the ARM64 machine;
@@ -1042,6 +1060,14 @@ side of each is worked around without changing the interface.
   a hook never meets a process without one.
 
 ## For the orchestrator
+
+- KC, eighth run: KC's whole-workspace check fails only in other tracks' files, unchanged since
+  the owner's merges of 2026-11-23: crates/precise-instruction-set/implementation/measured/tests.rs:59
+  (both machines; the instruction design track's), crates/wcontainers-translator-test/tests/layer1.rs
+  lines 499, 690 and 715 (ARM64 only: they import `guest::x86_64::native` without the x86-64 cfg
+  that module has; the native track's) and
+  crates/executor/implementation/hardware-virtualization/tests/guest_memory.rs:222 (ARM64 only, type
+  annotations; the executors job's). Please hand each to its track; KC passes once they build.
 
 - KF, seventh run: `Start::ceiling` (the highest address the executor can give now, if below
   the address space's end) has no embedder that sets it today: the single-kernel runtime and
