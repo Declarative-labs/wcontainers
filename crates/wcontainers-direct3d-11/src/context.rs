@@ -22,7 +22,8 @@ use crate::desc::{
     TexDim, TextureDesc, Viewport, level, map, topology, usage,
 };
 use crate::device::{
-    Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
+    COUNTER_BYTES, Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format,
+    resolvable,
 };
 use crate::error::{Error, Result, WARNING_PREFIX, not_implemented};
 use crate::format;
@@ -615,9 +616,35 @@ pub(crate) fn split_depth_stencil(texel: u32, bytes: &[u8]) -> (Vec<u8>, Vec<u8>
     (depth, stencil)
 }
 
-/// Bytes of one indirect draw's arguments: four words, five for an indexed draw.
+/// The bits of the normalised depth formats, whose steps a depth bias counts in.
+const DEPTH16_BITS: u32 = 16;
+const DEPTH24_BITS: u32 = 24;
+/// What a depth bias clamp on a float depth target needs and no back end route gives.
+const FLOAT_DEPTH_BIAS_CLAMP: &str = "a depth bias clamp on float depth without the back end's";
+
+/// The bytes of one word of indirect arguments.
+const ARGUMENT_WORD_BYTES: usize = size_of::<u32>();
+/// Words of `D3D11_DRAW_INSTANCED_INDIRECT_ARGS`.
+const DRAW_ARGUMENT_WORDS: usize = 4;
+/// Words of `D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS`.
+const INDEXED_DRAW_ARGUMENT_WORDS: usize = 5;
+/// A dispatch's axes: its group counts, and the words of its indirect arguments.
+pub(crate) const DISPATCH_AXES: usize = 3;
+
+/// Bytes of one indirect draw's arguments.
 const fn indirect_bytes(indexed: bool) -> u32 {
-    if indexed { 20 } else { 16 }
+    let words = if indexed {
+        INDEXED_DRAW_ARGUMENT_WORDS
+    } else {
+        DRAW_ARGUMENT_WORDS
+    };
+    (words * ARGUMENT_WORD_BYTES) as u32
+}
+
+/// Little-endian words read back from a buffer.
+fn argument_words<const N: usize>(bytes: &[u8]) -> [u32; N] {
+    let (words, _) = bytes.as_chunks::<ARGUMENT_WORD_BYTES>();
+    std::array::from_fn(|i| words.get(i).copied().map_or(0, u32::from_le_bytes))
 }
 
 impl<B: Backend> Device<B> {
@@ -1850,25 +1877,23 @@ impl<B: Backend> Device<B> {
     }
 
     /// An indirect dispatch's group counts read back (`IndirectReadBack`), for pipeline statistics.
-    fn read_dispatch(&mut self, args: &Buffer<B>, offset: u32) -> Result<[u32; 3]> {
+    fn read_dispatch(&mut self, args: &Buffer<B>, offset: u32) -> Result<[u32; DISPATCH_AXES]> {
         self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
         self.settle();
         let handle = args.handle();
+        let mut bytes = [0u8; DISPATCH_AXES * ARGUMENT_WORD_BYTES];
         let rb = self.backend.read_back(&ReadSource::Buffer {
             buffer: &handle,
             offset: u64::from(offset),
-            size: 12,
+            size: bytes.len() as u64,
         });
         drop(handle);
         let rb = self.gpu(rb)?;
         if self.backend.read_state(&rb) == ReadState::Pending {
             self.backend.wait_read(&rb);
         }
-        let mut bytes = [0u8; 12];
         self.backend.finish_read(rb, &mut bytes);
-        Ok(std::array::from_fn(|i| {
-            u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap())
-        }))
+        Ok(argument_words(&bytes))
     }
 
     /// An indirect draw's arguments read back (`IndirectReadBack`), as the range, first instance and
@@ -1893,23 +1918,19 @@ impl<B: Backend> Device<B> {
         if self.backend.read_state(&rb) == ReadState::Pending {
             self.backend.wait_read(&rb);
         }
-        let mut bytes = [0u8; 20];
+        let mut bytes = [0u8; INDEXED_DRAW_ARGUMENT_WORDS * ARGUMENT_WORD_BYTES];
         self.backend.finish_read(rb, &mut bytes[..size]);
-        let word = |i: usize| u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap());
-        // D3D11_DRAW_INSTANCED_INDIRECT_ARGS and D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS.
         Ok(if indexed {
+            let [count, instances, start, base, first_instance] = argument_words(&bytes);
             let range = Range::Indexed {
-                count: word(0),
-                start: word(2),
-                base: word(3) as i32,
+                count,
+                start,
+                base: base as i32,
             };
-            (range, word(4), word(1))
+            (range, first_instance, instances)
         } else {
-            let range = Range::Vertices {
-                count: word(0),
-                start: word(2),
-            };
-            (range, word(3), word(1))
+            let [count, instances, start, first_instance] = argument_words(&bytes);
+            (Range::Vertices { count, start }, first_instance, instances)
         })
     }
 
@@ -1920,7 +1941,7 @@ impl<B: Backend> Device<B> {
                 "indirect arguments in a buffer not made for them",
             ));
         }
-        if !offset.is_multiple_of(4)
+        if !offset.is_multiple_of(ARGUMENT_WORD_BYTES as u32)
             || u64::from(offset) + u64::from(indirect_bytes(indexed))
                 > u64::from(args.desc.byte_width)
         {
@@ -2506,11 +2527,9 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         }
         let bits = match depth.format {
-            Format::Depth16Unorm => 16,
-            _ if d24 => 24,
-            _ => {
-                return not_implemented("a depth bias clamp on float depth without the back end's");
-            }
+            Format::Depth16Unorm => DEPTH16_BITS,
+            _ if d24 => DEPTH24_BITS,
+            _ => return not_implemented(FLOAT_DEPTH_BIAS_CLAMP),
         };
         Ok(Some(1.0 / ((1u32 << bits) - 1) as f32))
     }
@@ -3042,7 +3061,11 @@ impl<B: Backend> Device<B> {
     }
 
     /// `Dispatch` and `DispatchIndirect`; one this front cannot serve removes the device.
-    pub fn dispatch(&mut self, groups: [u32; 3], indirect: Option<(&Rc<Buffer<B>>, u32)>) {
+    pub fn dispatch(
+        &mut self,
+        groups: [u32; DISPATCH_AXES],
+        indirect: Option<(&Rc<Buffer<B>>, u32)>,
+    ) {
         if let Err(e) = self.try_dispatch(groups, indirect) {
             self.lose(e);
         }
@@ -3050,7 +3073,7 @@ impl<B: Backend> Device<B> {
 
     fn try_dispatch(
         &mut self,
-        groups: [u32; 3],
+        groups: [u32; DISPATCH_AXES],
         indirect: Option<(&Rc<Buffer<B>>, u32)>,
     ) -> Result<()> {
         if self.predicated_out() {
@@ -3237,13 +3260,16 @@ impl<B: Backend> Device<B> {
         else {
             return Err(Error::InvalidArg("a view without a counter"));
         };
-        if !offset.is_multiple_of(4) || u64::from(offset) + 4 > u64::from(dst.desc.byte_width) {
+        let count_bytes = COUNTER_BYTES as u64;
+        if !u64::from(offset).is_multiple_of(count_bytes)
+            || u64::from(offset) + count_bytes > u64::from(dst.desc.byte_width)
+        {
             return Err(Error::InvalidArg("a count written past the buffer"));
         }
         self.settle();
         dst.writes.set(dst.writes.get() + 1);
         self.backend
-            .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
+            .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), count_bytes);
         self.buffer_written(dst)
     }
 
