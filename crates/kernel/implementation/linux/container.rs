@@ -1339,7 +1339,12 @@ impl Kernel {
                 return Ok(());
             }
         };
-        self.standard_descriptors(cx, pid, starting.standard, null)?;
+        // A start that waits for its ends loads its program again, and one that cannot make them
+        // ends: either way the memory the program was loaded into goes, with the blocks it shows.
+        if let Err(error) = self.standard_descriptors(cx, pid, starting.standard, null) {
+            cx.cpu.memory_drop(image.memory);
+            return Err(error);
+        }
         let thread = match cx.cpu.thread_new(image.memory) {
             Ok(thread) => thread,
             Err(error) => {
