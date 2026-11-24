@@ -5,11 +5,123 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 6 run 1 (2026-11-24). Settles the independent check of round 5 run 6 in the round's
+order: the two security defects, then unsafe, then the literal check, each built and tested on the
+x86-64 machine. NOT REPORTED COMPLETE: the whole run of the guard build reset the RTX 3080's display
+driver (below), the fix for that is built but not yet run on the GPU, and its run command is
+quarantined. THE BAR IS STILL NOT MET: KHR-GL33 does not start and the programs part does not run
+(the driver reports OpenGL 3.1, 28 passed values against 3.2's 32), and about 300 NotSupported
+cases are for want of the vertex-stage compute route; both are the round's next items, not
+started this run. Each finding, and what was done:
+- Blocking (security), a guest call ending the process: FIXED for every path. A refusal no longer
+  calls `std::process::abort()`: `state::refuse` warns and unwinds to `state::guest_call`, which
+  wraps the body of each of the driver's 82 Gallium entry points that do anything (every
+  `pipe_context` and `pipe_screen` function and the transfer helper's table; left outside: `name`
+  and `device_name`, a static string each, and the three empty ones, `flush_resource`,
+  `set_polygon_stipple`, `set_clip_state`). A refused or failed call is dropped, as a device reset
+  drops the work that caused it: it answers what Mesa takes as failure (a null object, false, zero;
+  a query result zero and ready, as a lost context's; `fence_finish` done), its context reports
+  `PIPE_GUILTY_CONTEXT_RESET` from the new `get_device_reset_status` (the screen reports
+  `device_reset_status_query`, so st/mesa loses a context made with reset notification), the warning
+  "refused: ..." is printed and `state::FAILED_CALLS` counts it; the process and other contexts go
+  on. Every path found by searching both crates for `abort`, `refuse(`, `unwrap()`, `expect(`,
+  `panic!` and `unreachable!`, and how each is closed:
+  - `std::process::abort()`, 3: all gone (`refuse` itself; the scissored clear, now a refusal; the
+    `unbuilt!` stub of `get_query_result_resource`, whose entry is left empty: st/mesa calls it
+    only for `ARB_query_buffer_object`, which the screen does not report).
+  - `refuse(...)`, 62 sites in the driver (blit 4, compute 1, context 12, draw 6, query 16, resource
+    2, state 16, stream 3, view 2) and every `Err` a draw or launch returns: they end at the guard.
+  - `expect`: the screen's 6 lock `expect`s now take the lock past poisoning (`screen::whole`), so
+    that a call refused while holding one does not refuse every later call; context.rs 2,
+    outputs.rs 1, stream.rs 1 and the nir crate's 24 (invariants of their own construction) end at
+    the guard, as do panics in the crates the driver calls (wcontainers-gpu-webgpu, wgpu, naga,
+    wcontainers-shaders).
+  - A refused create leaves Mesa a null object (Mesa's object cache keeps it): every delete takes
+    null (`drop_object`), and a draw with a null state is refused by name.
+  - Nothing else can end the process from a guest call: a panic that reached an `extern "C"`
+    function would end it (Rust's rule), and every entry Mesa calls holds the guard; the driver has
+    no `Drop` that could fail during an unwind.
+  - SAMPLES_PASSED: `create_query` answers null for every kind it does not build (an exact count
+    of samples, pipeline statistics, ...), which st/mesa turns into `GL_OUT_OF_MEMORY` at
+    `glBeginQuery`, with the warning "not built: a query of Gallium kind N". That is the API's own
+    error; the capability is still reported (desktop OpenGL 1.5 and up has it), so the exact count
+    through the interface's `OcclusionCounter` (`OcclusionCountReplay`) is on the gap list, this
+    track's.
+  - Tests: `state::tests` (3): a refused call answers its dropped value and its context reports its
+    reset; a panicking call ends alone; a lock held by a refused call is taken again.
+  - What it does to the CTS: a refused call used to crash its case. With glcts's stop on a lost
+    context (now kept for the ES lists) the case ends its glcts as before; without it the case and
+    its batch go on (the whole run below).
+- Blocking (security), enums by `transmute` from the bridge: FIXED. `direct.rs`'s five conversions
+  (ALU operations, intrinsics, atomics, derefs, texture operations) read the value through
+  zerocopy's checked `TryFromBytes` (`direct::variant`): an operation outside the bridge's list is
+  `Unsupported` (as before, now checked), and a deref or texture operation the bridge does not
+  write is refused by name ("a deref operation the bridge does not write (N)"). Unit test
+  `direct::tests::a_value_the_bridge_does_not_write_is_no_variant`.
+- Blocking, unsafe raised: FIXED. wcontainers-opengl 369 to 361 and wcontainers-nir 119 to 113
+  (the root list's command, at the pushed tip; the root list says so): the three lines of round 5
+  run 6 went (the two bound shaders read in one line; the evaluation program's storage pass-through
+  one bridge call, `Nir::storage_pass_through`, in place of `uses_storage` and
+  `pass_through_geometry`), and of the removal list: the five transmutes, the `unbuilt!` transmute,
+  four byte views of the driver's own words (zerocopy `IntoBytes`, indices.rs 3 and resource.rs
+  1), and two writes of a query result made one. No line with `unsafe` was added.
+- Blocking, the literal check: 1 finding left in this track's files of 21 (Literal check):
+  `include!(concat!(env!("OUT_DIR"), "/gallium.rs"))`, which no form can name once.
+- Minor, "31 passed values" at the top of round 5 run 6's section: corrected there to 28 (what the
+  screen reports on the RTX 3080; 31 is what the host passes).
+- Minor, two departures against the rules: corrected (Departures). The integer cube gather's
+  known wrong result is now a refusal by name, with a route test; the uncounted maps of
+  multisampled textures are listed under Needs a primitive (counting them needs a new call into
+  Mesa's C).
+- Not this run, by the round's order: KHR-GL33 and the 32nd value, the programs part, the vertex
+  programs' compute route (about 300 NotSupported cases), the atomic counter cases, the evaluation
+  program's storage reported while its extra invocations write (minor), the multisampled line
+  strip, the device losses, the flakes.
+- Next, in order: (1) on e6e5061e's build, run the batch of
+  `dEQP-GLES3.functional.buffer.write.recreate_store.*` alone (`gpu-job --alone`, not the
+  quarantined command line) to find the case whose work hung the GPU, fix it, then lift the
+  quarantine (`tools/graphics-rig/resets lift`) and make the whole run and the table; report the
+  first three for their check. (2) The round's later items: vertex programs' storage through the
+  compute route, the 32nd passed value and KHR-GL33, the atomic counter cases, the device losses.
+- Built and tested on the x86-64 machine (96 processors, load 0.3 to 5): fmt clean, clippy with
+  warnings denied with and without Mesa (`--locked`), the nir crate's unit test 1 and route test
+  26 pass, wcontainers-opengl 11 pass (scratch `scripts/g9r6-lint.sh`, `logs/r6/lint6.log`).
+
+THE WHOLE RUN OF THIS RUN'S GUARD BUILD RESET THE RTX 3080'S DISPLAY DRIVER FOUR TIMES, and its
+results are not a measure. Job 77 (tree 55bce771, the guard, the conversions and the zerocopy byte
+views; desktop, one GPU job in the hazard group, 8 glcts at once, 09:40 to 10:03 desktop time; scratch
+`results/r6/full/<list>/results.csv`, log `logs/r6/full1.log`):
+- What happened: with a lost device no longer ending glcts, the batches whose case lost the device
+  (round 5's device losses: "the device was lost: Error", 8,412 refusals of that reason in
+  deqp-runner's logs) went on through their following cases, and a back end marked lost by a
+  validation error still had its device: four display driver resets (nvlddmkm, 09:45:30 to
+  09:48:43) during dEQP-GLES3, right after "the device was lost: Error" in the batch of
+  `buffer.write.recreate_store.random_1` (09:45:26), the other batches then lost theirs by
+  "Reset". The queue was held; this track recorded the cause (`resets record`, about 10:07) and the run
+  command `run-windows.ps1 -Driver wcontainers` stays quarantined. Not yet known: which case's
+  work hung the GPU.
+- Fixed since, not yet run on the GPU (e6e5061e): `Screen::backend` refuses every call once the
+  back end reports its device lost, so no context records work for a lost device; and the ES lists
+  keep glcts's stop on a lost context (e0ef3453), which the driver now reports, so a case with a
+  refused call or a lost device ends its own glcts and deqp-runner runs the rest in a new one, as
+  a crash did before. Before the quarantine is lifted the batch of
+  `dEQP-GLES3.functional.buffer.write.recreate_store.*` is to be run alone (`gpu-job --alone`) on
+  that build, and the case that hung found.
+- The counts, for what they show (cascades after device losses, not the driver's measure; against
+  round 5 run 6's table): dEQP-GLES2 17,037 of 17,037; dEQP-GLES3 43,374 of 44,298 (604 Pass to
+  Fail and 286 Pass to Flake, scattered over every group: the cascades; the 30 crashes now Fail);
+  dEQP-GLES31 37,003 of 37,268 (157 Pass to Fail, 80 Crash to Fail, 16 Crash to Pass, 1 Pass to
+  Crash); KHR-GLES2 438 of 438; KHR-GLES3 6,231 of 6,271 (40 Pass to Fail, 6 Crash to Pass);
+  KHR-GLES31 3,943 of 4,003; KHR-GLES32 1,337 of 1,388; KHR-GL33 and -GL46 no context. 109,363 of
+  110,703, 98.79%. The 24 Crash to Pass cases passed with a call refused and dropped, which the stop
+  on a lost context now ends as failures.
+- The last measure that stands is round 5 run 6's table below (5f72267f).
+
 G9 round 5 run 6 (2026-11-24). Settles what it could of the independent check of run 5 (the
 orchestrator's check of d9ad74aa: five blocking findings, five minor) and builds the largest
 "for want of work" item it named. G9's first part is reported ready for its next check; THE BAR IS
 STILL NOT WHOLLY MET (below). Each finding, and what was done:
-- Blocking, KHR-GL33 does not start (the driver reports OpenGL 3.1 core, 31 passed values against
+- Blocking, KHR-GL33 does not start (the driver reports OpenGL 3.1 core, 28 passed values against
   3.2's 32): NOT FIXED, skipped with this reason. Building the 32nd value needs the shaders
   track's pass-through reading the stage helper's records from storage (asked in G9 run 24, still
   "not started" in docs/status-graphics-shaders.md) and then a fragment program reading the value
@@ -919,6 +1031,10 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## For the owner
 
+- Round 6 run 1: the two version items below are no longer questions for the owner (the
+  orchestrator's round 6: build the 32nd passed value, report 3.2 and above only when true). They
+  stay for what they record; the build is this track's next item after the round's first three.
+
 - The programs part of G9's first bar cannot pass on the RTX 3080 as things stand (round 5 run
   3): Godot 4.7.2's compatibility renderer asks for an OpenGL 3.3 core context and bgfx's OpenGL
   renderer (at the rig's commit) for 4.3 core, and the driver reports 3.1 there, by the rule that
@@ -963,20 +1079,25 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
     Mesa drivers report OpenGL 3.2's minimum where their host falls short, and this one does not.
     The owner's rule forbids reporting a capability the driver lacks, so the screen stays at 3.1.
 
-- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (369 lines) and wcontainers-nir (119),
-  counted on 2026-11-24 (round 5 run 6) as the root list now counts them (lines holding the word
-  outside comments and attributes), stay on the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
-  driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
-  structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
-  Mesa's NIR through the C bridge. No vetted library gives a safe Gallium or NIR binding (bindgen
-  gives the declarations, every call still unsafe). Removing them means moving that glue into C
-  (the same work, no longer checked by Rust) or writing and vetting a safe binding of Gallium's
-  and NIR's structures, a project of its own. The few that are not the boundary (the transmutes of
-  the bridge's enum values, `slice::from_raw_parts` of its arrays) can go with zerocopy-style
-  checked conversions; not done yet. Asked: whether the boundary is the damn good reason the rule
-  allows, or which of the two the owner wants.
+- Unsafe code: wcontainers-opengl 361 lines and wcontainers-nir 113 at round 6 run 1 (the root
+  list's command), down from 369 and 119: the three lines round 5 run 6 added are gone (two bound
+  shaders read in one line, the evaluation program's storage pass-through one bridge call), the
+  five enum transmutes are checked conversions (zerocopy `TryFromBytes`), the `unbuilt!` stub's
+  transmute went with the stub, a query result is written once, and four byte views of the
+  driver's own words are zerocopy's. Of the removal list, left: the module pin (device.rs, through
+  libloading) and the plain union reads (view.rs, state.rs), not tried. The rest is the C boundary
+  (Gallium's entry points and NIR through the bridge), which waits on the owner's primitives
+  (Needs a primitive, below).
 
 ## How to run
+
+- G9 round 6 run 1: scratch `scripts/g9r6-lint.sh` (x86-64 machine) formats, lints with
+  warnings denied with and without Mesa (`--locked`), runs the nir crate's unit tests and route
+  test and the opengl crate's tests, and runs the literal check on a copy of the working tree,
+  printing this track's findings. The whole run is still `scripts/g9c6-run.sh <absolute log path>`
+  (a relative path lands beside the checkout, which the script enters first).
+  `programs-windows.ps1` takes `-Tolerance` (8) and `-KeptFrames` (10, 60, 120), which it hands
+  `compare-frames.py`.
 
 - G9 round 5 run 5: `scripts/g9c5-run.sh` and `scripts/g9c5-lint.sh` are round 5 run 3's under
   their names. The shaders overlay for `SHADERS_AT_HEAD=1` is now made with `git archive HEAD
@@ -1036,8 +1157,9 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   the Mesa build; the route test linked with a map, each kept object traced to its source).
   For the Windows driver, after its build on the desktop: `tools/graphics-rig/remote
   'C:\wc\graphics-nir\tools\python-3.13.1\tools\python.exe
-  crates\wcontainers-nir\mesa\linked-licences-windows.py C:\wc\graphics-nir\mesa\build .
-  C:\wc\graphics-nir\linked-licences-windows.txt'`, then scp the file back (about a minute).
+  crates\wcontainers-nir\mesa\linked-licences-windows.py C:\wc\graphics-nir\mesa\build . 60
+  C:\wc\graphics-nir\linked-licences-windows.txt'` (60: the lines at the top of a file searched
+  for its licence, round 6 run 1's third argument), then scp the file back (about a minute).
 
 - Stopping this track's own CTS run on the desktop (a run on a build known to be broken, which
   holds the GPU queue for everyone): scratch `scripts/stop-cts.ps1`, copied to
@@ -1431,6 +1553,11 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 round 6 run 1, both already in the workspace's lock file: zerocopy 0.8.63 (BSD-2-Clause OR
+  Apache-2.0 OR MIT, the workspace's own dependency) in wcontainers-nir, for the checked
+  conversions of the bridge's values; build-rs 0.3.6 (MIT OR Apache-2.0, the Cargo team's, already
+  used by the wasmtime executor's build) in wcontainers-opengl's build script, for Cargo's output
+  folder.
 - G9 round 5 run 3, testing tools on the desktop only, never linked into or shipped with anything:
   apitrace 14.0 for Windows (MIT, `doc\LICENSE.txt` of its release; its bundled Qt 5 libraries,
   LGPL, belong to its viewer, which is not used), downloaded at SHA-256
@@ -1601,9 +1728,10 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 - G9 run 25 (counted since round 5 run 2): the stencil of a blit written a bit at a time is
   counted and warned under `SlowPath::StencilWrittenByDraw`, the interface's name for stencil
-  written by one draw a bit (`blit::stencil_by_bits`); run 25 to 31 took it uncounted. Maps of multisampled textures
-  through a single-sampled one are not counted as a slow path: no faster route exists on any
-  back end, and only Mesa's own code makes such maps (OpenGL gives programs none).
+  written by one draw a bit (`blit::stencil_by_bits`); run 25 to 31 took it uncounted. (Corrected
+  in round 6 run 1: maps of multisampled textures through a single-sampled one, which Mesa's
+  transfer helper makes, were recorded here as no slow path. They are one, and uncounted: the
+  count needs the driver's own entry before Mesa's helper, a new foreign call; Needs a primitive.)
 
 - G9 run 17: a tessellation program's read of a control point at a constant index past the
   draw's input patch reads zero (route B, `missing_point_reads_zero`). OpenGL leaves the value
@@ -1629,9 +1757,13 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 - G9 run 12: a Mesa patch reports `OES_texture_storage_multisample_2d_array` only where the
   screen makes multisampled 2D arrays (st/mesa tied it to multisampled textures); it lives in
   `mesa/patches/` with Zink's until the fork 15.2 describes exists.
-- G9 run 12: an integer cube map's gather through a program that also samples it (made a 2D
-  array of faces) reads its face's edge texels past the edge, not the next face's; a program
-  that only gathers keeps the cube.
+- G9 run 12 (no longer so since round 6 run 1): an integer cube map's gather through a program
+  that also samples it (made a 2D array of faces) read its face's edge texels past the edge, not
+  the next face's, a known wrong result. Such a draw is now refused by name ("a gather of an
+  integer cube map the program also samples"; route test
+  `an_integer_cube_map_array_sampled_is_loaded_from_a_2d_array_of_its_faces` checks the bridge
+  reports it); the texels across the faces' edges are on the gap list. A program that only
+  gathers keeps the cube.
 
 - G9 run 11: indirect draws read their arguments back and draw as direct draws
   (`IndirectReadBack`), so every rewrite a direct draw takes (fans, restart, provoking vertex,
@@ -1833,6 +1965,14 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   the bound sampler's wraps and level bounds, which the program variant is keyed on (one variant
   per such sampler state). Cube maps and the border and mirrored-clamp wraps are refused by name
   until built.
+
+## Needs a primitive (round 6 rule: no new line with `unsafe`)
+
+- Counting maps of multisampled textures (`SlowPath::MultisampleCopyResolved` is the interface's
+  name for a copy made from the resolved source): `pipe_context::texture_map` is Mesa's
+  `u_transfer_helper_transfer_map` itself; counting the multisampled ones needs a Rust entry that
+  counts, then calls `u_transfer_helper_transfer_map(pipe, resource, level, usage, box, out)` (a
+  call into Mesa's C).
 
 ## Interface changes
 
@@ -2111,6 +2251,22 @@ None.
   through it.
 
 ## Literal check
+
+G9 round 6 run 1: 1 finding left in this track's files, of the check's 21 (x86-64 machine, on a
+copy of the working tree with a fresh git index, as the check of round 5 run 6 ran it; output in
+scratch `logs/r6/literals.out`; the whole workspace still exits 1 on other tracks' findings).
+Gone: `unbuilt!`'s three (the stub is gone), `OUT_DIR` in the build script (build-rs's
+`input::out_dir`), the two helper-set refusals (now `ok_or` messages), `GEOMETRY_OUTPUT_VERTICES`
+(named `GEOMETRY_EMITTED_VERTICES`: the check read the word "output" with 256 as another crate's
+`OUTPUT_MERGER_LOGIC_OP`), the 7 numbers of `compare-frames.py` (tolerance and kept frames passed in
+by `programs-windows.ps1`, the channel's largest value from Pillow, `utf8`) and the 6 of
+`linked-licences-windows.py` (argparse; the head size is its third argument; `utf8`); and the
+redefinition of `FIRST_INDEX` the check reported in host-process's tests against
+`tests/corpus/lavapipe.rs`'s (ours went: a queue index of 0 is the first). Left:
+`src/gallium.rs`'s `include!(concat!(env!("OUT_DIR"), "/gallium.rs"))`: the file name joined to
+`OUT_DIR` is read as a code string, and `include!` and `concat!` take only literals, so no form
+names it once; the baseline carries the same line of graphics-test-forward's `census.rs`. For the
+literal check's owner.
 
 G9 run 20: exit 1 at 9901c6eb (x86-64 machine, from a git bundle of agents; the clone, its
 build and the bundle deleted after; output in scratch `logs/g9r20-literals.out`). In
