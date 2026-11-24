@@ -47,10 +47,24 @@ pub enum OrderKind {
     Run,
     /// Stop.
     Finish,
+    /// As `Protect`, giving back one word: 0 when it was done, 1 when it was refused.
+    TryProtect,
+    /// Take every frame left, holding them; gives back how many as one word.
+    TakeEveryFrame,
+    /// Give back every frame `TakeEveryFrame` holds.
+    GiveFramesBack,
+    /// Make a shared block of `length` bytes; gives back its number as one word.
+    SharedNew,
+    /// Show shared block `value` from its start at `address` for `length` bytes.
+    SharedMap,
+    /// Write the link's bytes to shared block `value` at offset `address`.
+    SharedWrite,
+    /// Drop shared block `value`.
+    SharedDrop,
 }
 
 impl OrderKind {
-    pub const ALL: [OrderKind; 7] = [
+    pub const ALL: [OrderKind; 14] = [
         OrderKind::Begin,
         OrderKind::Write,
         OrderKind::Protect,
@@ -58,6 +72,13 @@ impl OrderKind {
         OrderKind::SetRegisters,
         OrderKind::Run,
         OrderKind::Finish,
+        OrderKind::TryProtect,
+        OrderKind::TakeEveryFrame,
+        OrderKind::GiveFramesBack,
+        OrderKind::SharedNew,
+        OrderKind::SharedMap,
+        OrderKind::SharedWrite,
+        OrderKind::SharedDrop,
     ];
 
     pub fn from_word(word: u64) -> Option<OrderKind> {
