@@ -317,6 +317,56 @@ fn main() -> windows::core::Result<()> {
         };
         b
     };
+    let sampler_state =
+        |desc: &D3D11_SAMPLER_DESC| -> windows::core::Result<Option<ID3D11SamplerState>> {
+            let mut s = None;
+            unsafe { device.CreateSamplerState(desc, Some(&mut s))? };
+            Ok(s)
+        };
+    // Runs `shader` in `groups` with `views` from t0, `samplers` from s0 and `stores` from u0, and
+    // takes the views and the stores away after.
+    let dispatch = |shader: &Option<ID3D11ComputeShader>,
+                    views: &[Option<ID3D11ShaderResourceView>],
+                    samplers: &[Option<ID3D11SamplerState>],
+                    stores: &[Option<ID3D11UnorderedAccessView>],
+                    (x, y, z): (u32, u32, u32)| {
+        let (no_views, no_stores) = (vec![None; views.len()], vec![None; stores.len()]);
+        let count = stores.len() as u32;
+        unsafe {
+            context.CSSetShader(shader.as_ref(), None);
+            context.CSSetShaderResources(0, Some(views));
+            context.CSSetSamplers(0, Some(samplers));
+            context.CSSetUnorderedAccessViews(0, count, Some(stores.as_ptr()), None);
+            context.Dispatch(x, y, z);
+            context.CSSetUnorderedAccessViews(0, count, Some(no_stores.as_ptr()), None);
+            context.CSSetShaderResources(0, Some(&no_views));
+        }
+    };
+    // Draws a triangle of `vertex` covering `target` with `pixel`, the constant buffers
+    // `constants` (vertex, pixel) at b0 and each run of `views` and `samplers` from its first
+    // slot, and takes the views and the target away after.
+    let draw = |target: &Option<ID3D11RenderTargetView>,
+                (vertex, pixel): (&Option<ID3D11VertexShader>, &Option<ID3D11PixelShader>),
+                [vertex_constants, pixel_constants]: [&Option<ID3D11Buffer>; 2],
+                views: &[(u32, &[Option<ID3D11ShaderResourceView>])],
+                samplers: &[(u32, &[Option<ID3D11SamplerState>])]| unsafe {
+        context.OMSetRenderTargets(Some(std::slice::from_ref(target)), None);
+        context.VSSetShader(vertex.as_ref(), None);
+        context.VSSetConstantBuffers(0, Some(std::slice::from_ref(vertex_constants)));
+        context.PSSetConstantBuffers(0, Some(std::slice::from_ref(pixel_constants)));
+        context.PSSetShader(pixel.as_ref(), None);
+        for &(first, run) in views {
+            context.PSSetShaderResources(first, Some(run));
+        }
+        for &(first, run) in samplers {
+            context.PSSetSamplers(first, Some(run));
+        }
+        context.Draw(3, 0);
+        for &(first, run) in views {
+            context.PSSetShaderResources(first, Some(&vec![None; run.len()]));
+        }
+        context.OMSetRenderTargets(None, None);
+    };
     unsafe { context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
 
     match case.as_str() {
@@ -392,9 +442,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let sampler = |filter| addressed(filter, D3D11_TEXTURE_ADDRESS_CLAMP);
             let (point, linear) = (
@@ -465,16 +513,13 @@ fn main() -> windows::core::Result<()> {
                     },
                     None,
                 )?;
-                unsafe {
-                    context.CSSetShader(read.as_ref(), None);
-                    context.CSSetShaderResources(0, Some(&[srv(&small, DXGI_FORMAT_UNKNOWN)]));
-                    context.CSSetSamplers(0, Some(&[point.clone(), linear.clone()]));
-                    let views = [uav(&out)];
-                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
-                    context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-                    context.CSSetShaderResources(0, Some(&[None]));
-                }
+                dispatch(
+                    &read,
+                    &[srv(&small, DXGI_FORMAT_UNKNOWN)],
+                    &[point.clone(), linear.clone()],
+                    &[uav(&out)],
+                    (1, 1, 1),
+                );
                 print(&format!("{name} gathers and samples"), &out, 16);
                 // Texel (x, y, z)'s channel c holds (x + 2y + 4z + c) / 4, so a channel's texels
                 // span 7/4; each of the three weights may be off by 1/256 of that span.
@@ -508,15 +553,8 @@ fn main() -> windows::core::Result<()> {
                         None,
                         Some(&mut view),
                     )?;
-                    context.CSSetShader(read3.as_ref(), None);
-                    context.CSSetShaderResources(0, Some(&[view]));
-                    context.CSSetSamplers(0, Some(&volume_samplers));
-                    let views = [uav(&out)];
-                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
-                    context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-                    context.CSSetShaderResources(0, Some(&[None]));
                 }
+                dispatch(&read3, &[view], &volume_samplers, &[uav(&out)], (1, 1, 1));
                 print(&format!("weighted {tolerance} {name} 3D samples"), &out, 16);
                 let desc = D3D11_TEXTURE2D_DESC {
                     Width: 4,
@@ -583,9 +621,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let samplers = [
                 sampler(D3D11_FILTER_MIN_MAG_MIP_POINT),
@@ -633,16 +669,8 @@ fn main() -> windows::core::Result<()> {
             };
             let (exact, filtered) = (made(3)?, made(1)?);
             let compute = |what: &str, shader: &Option<ID3D11ComputeShader>, view| {
-                unsafe {
-                    context.CSSetShader(shader.as_ref(), None);
-                    context.CSSetShaderResources(0, Some(&[view]));
-                    context.CSSetSamplers(0, Some(&samplers));
-                    let views = [uav(&exact), uav(&filtered)];
-                    context.CSSetUnorderedAccessViews(0, 2, Some(views.as_ptr()), None);
-                    context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 2, Some([None, None].as_ptr()), None);
-                    context.CSSetShaderResources(0, Some(&[None]));
-                }
+                let stores = [uav(&exact), uav(&filtered)];
+                dispatch(shader, &[view], &samplers, &stores, (1, 1, 1));
                 print(what, &exact, 16);
                 print(&format!("weighted {tolerance} {what}"), &filtered, 16);
             };
@@ -830,6 +858,8 @@ fn main() -> windows::core::Result<()> {
                 MaxLOD: f32::MAX,
                 ..Default::default()
             };
+            // Made holding -1 in each component, which a draw that did not run leaves.
+            let unwritten: Vec<u8> = [-1.0f32; 4].iter().flat_map(|v| v.to_le_bytes()).collect();
             let target = make(
                 &Tex {
                     w: 1,
@@ -838,24 +868,17 @@ fn main() -> windows::core::Result<()> {
                     samples: 1,
                     bind: D3D11_BIND_RENDER_TARGET,
                 },
-                None,
+                Some((&unwritten, 16)),
             )?;
-            let view = rtv(&target);
             viewport(1, 1);
-            let mut sampler = None;
-            unsafe {
-                device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
-                context.ClearRenderTargetView(view.as_ref().unwrap(), &[-1.0; 4]);
-                context.VSSetShader(vertex.as_ref(), None);
-                context.PSSetShader(pixel.as_ref(), None);
-                context.PSSetShaderResources(0, Some(&views[..VIEWS]));
-                context.PSSetShaderResources(127, Some(&views[VIEWS..]));
-                context.PSSetSamplers(0, Some(&[sampler.clone()]));
-                context.PSSetSamplers(15, Some(&[sampler]));
-                context.OMSetRenderTargets(Some(&[view]), None);
-                context.Draw(3, 0);
-                context.OMSetRenderTargets(None, None);
-            }
+            let sampler = [sampler_state(&sampler_desc)?];
+            draw(
+                &rtv(&target),
+                (&vertex, &pixel),
+                [&None, &None],
+                &[(0, &views[..VIEWS]), (127, &views[VIEWS..])],
+                &[(0, &sampler), (15, &sampler)],
+            );
             println!("slots: removed {:#010x}", removed());
             print("slots", &target, 16);
         }
@@ -1679,9 +1702,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s))? };
-                s
+                sampler_state(&desc)?
             };
             // Each clamp's five results in a row: two samples, two loads and a gather.
             let clamps = [1.5f32, 5.0, 0.25];
@@ -1743,12 +1764,8 @@ fn main() -> windows::core::Result<()> {
             let a = make(&at(DXGI_FORMAT_R11G11B10_FLOAT), None)?;
             let b = make(&at(DXGI_FORMAT_R16G16_UNORM), None)?;
             let c = make(&at(DXGI_FORMAT_R16G16B16A16_FLOAT), None)?;
-            unsafe {
-                context.CSSetShader(shader.as_ref(), None);
-                let views = [uav(&a), uav(&b), uav(&c)];
-                context.CSSetUnorderedAccessViews(0, 3, Some(views.as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-            }
+            let stores = [uav(&a), uav(&b), uav(&c)];
+            dispatch(&shader, &[], &[], &stores, (1, 1, 1));
             print("R11G11B10_FLOAT", &a, 4);
             print("R16G16_UNORM", &b, 4);
             print("R16G16B16A16_FLOAT", &c, 8);
@@ -1787,23 +1804,12 @@ fn main() -> windows::core::Result<()> {
                     float4 v = a[id.xy];
                     a[id.xy] = float4(0.5, 0.5, 0.5, v.a * 0.5 + v.r + v.g * 0.25 + 0.125);
                 }");
-            unsafe {
-                context.CSSetShader(shader.as_ref(), None);
-                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-                context.CSSetShader(read.as_ref(), None);
-                context.CSSetShaderResources(0, Some(&[srv(&a, DXGI_FORMAT_UNKNOWN)]));
-                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-                print("A8_UNORM", &a, 1);
-                print("read", &o, 4);
-                context.CSSetShaderResources(0, Some(&[None]));
-                context.CSSetShader(loaded.as_ref(), None);
-                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-            }
+            dispatch(&shader, &[], &[], &[uav(&a)], (1, 1, 1));
+            let view = [srv(&a, DXGI_FORMAT_UNKNOWN)];
+            dispatch(&read, &view, &[], &[uav(&o)], (1, 1, 1));
+            print("A8_UNORM", &a, 1);
+            print("read", &o, 4);
+            dispatch(&loaded, &[], &[], &[uav(&a)], (1, 1, 1));
             print("A8_UNORM loaded and stored", &a, 1);
         }
         // A colour map of eight texels sampled bilinearly and clamped at a coordinate a program
@@ -1855,9 +1861,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s))? };
-                s
+                sampler_state(&desc)?
             };
             let iterations = INSIDE_LOOPS / 4.0;
             let limits = constants([1280.0, 720.0, iterations, 0.0]);
@@ -1990,12 +1994,14 @@ fn main() -> windows::core::Result<()> {
                     float2 v = p.Load(int3(id.xy, 0));
                     o[id.xy] = asuint(v.x / v.y);
                 }");
-            unsafe {
-                context.CSSetShader(program.as_ref(), None);
-                context.CSSetShaderResources(0, Some(&[srv(&p, DXGI_FORMAT_UNKNOWN)]));
-                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
-                context.Dispatch(1, rows / u32::from(QUOTIENTS_A_DIVISOR), 1);
-            }
+            let groups = (1, rows / u32::from(QUOTIENTS_A_DIVISOR), 1);
+            dispatch(
+                &program,
+                &[srv(&p, DXGI_FORMAT_UNKNOWN)],
+                &[],
+                &[uav(&o)],
+                groups,
+            );
             print_rows("divisions", &o, 4, &|row| {
                 let bits = u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
                 if f32::from_bits(bits).is_nan() {
@@ -2433,9 +2439,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let point = sampler(D3D11_FILTER_MIN_MAG_MIP_POINT);
             let linear = sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR);
@@ -2492,20 +2496,14 @@ fn main() -> windows::core::Result<()> {
                     },
                     None,
                 )?;
-                let rt = rtv(&target);
-                unsafe {
-                    viewport(w, h);
-                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
-                    context.VSSetShader(full.as_ref(), None);
-                    context.VSSetConstantBuffers(0, Some(&[mip_constants[0].clone()]));
-                    context.PSSetConstantBuffers(0, Some(&[mip_constants[mip].clone()]));
-                    context.PSSetShader(shader.as_ref(), None);
-                    context.PSSetShaderResources(0, Some(std::slice::from_ref(view)));
-                    context.PSSetSamplers(0, Some(std::slice::from_ref(s)));
-                    context.Draw(3, 0);
-                    context.PSSetShaderResources(0, Some(&[None]));
-                    context.OMSetRenderTargets(None, None);
-                }
+                viewport(w, h);
+                draw(
+                    &rtv(&target),
+                    (&full, shader),
+                    [&mip_constants[0], &mip_constants[mip]],
+                    &[(0, std::slice::from_ref(view))],
+                    &[(0, std::slice::from_ref(s))],
+                );
                 print_rows(&format!("rounded {what}"), &target, 4, &|row| {
                     row.iter().map(|b| format!("{b:02x}")).collect()
                 });
@@ -3881,9 +3879,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let samplers = [
                 sampler(D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT),
