@@ -981,9 +981,15 @@ impl WebGpu {
                 },
                 "bitcast<f32>(v.x)".into(),
             ),
+            // x / (2^24 - 1) is x 2^-24 (1 + 2^-24 + ...): both products are exact and their sum
+            // rounds once, nearest to the quotient, where WGSL's division may be 2.5 ulp off.
             DepthSource::Unorm24 => (
                 "texture_2d<u32>",
-                format!("f32(v.x & {UNORM24_MAX}u) / {UNORM24_MAX}.0"),
+                format!(
+                    "f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f \
+                     + f32(v.x & {UNORM24_MAX}u) * 0x1p-{}f",
+                    2 * UNORM24_BITS
+                ),
             ),
             DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
         };
