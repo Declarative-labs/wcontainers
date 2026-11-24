@@ -58,6 +58,25 @@ back; whole.sh the suite and LTP; logs beside them).
   stand-in's runners 4, streams 18 and outside 8 pass.
 - The ARM64 machine's disk was full (117 MB left; links failed); this track's old build folder
   /work/target/kernel (63 GB) was removed.
+- The whole suite of this track's crates and the stand-ins at 3aa47f9a (whole.sh, job
+  kernel/20261124-132212-1323362, 13:24 to 14:53 UTC, load 8 to 17; 8 test threads; other
+  agents' uncommitted edits taken back; logs kc15/whole.log and kc15/suite.log): 454 passed, 35
+  failed, 8 ignored (136 result lines); clippy over this track's packages, the policy and the
+  runtime, all targets, warnings denied, status 0; fmt no diff. The 35 failures are exactly the
+  ARM list (kf7/fails7.txt; causes in the thirteenth run's entry: the machine's own Linux 7.0
+  as the reference). `a_terminal_closed_before_the_start_finished` and
+  `a_full_connection_hears_a_reset` passed; the stand-in printed no refusal. Python's tests took
+  4334 s (4388 s in the fourteenth run).
+- Thirty LTP verdicts in the same job (14:53 UTC, load 8 to 15): all 30 pass and match the
+  committed reference.
+
+Not done, for KC (what comes next, in order):
+- The cost above: find the hot atomic counts and borrows on a guest pipe round trip (perf on
+  the x86-64 machine, speed.sh) and cut those the one lock makes needless, without unsafe code
+  (fewer `Arc` clones on the call path; borrows taken once per call).
+- The owner's answer on the two unstable features and the moved marked impl (For the owner).
+- epoll_wait does not hear outside connections at once (fourteenth run); a check that fails a
+  test when the stand-in refuses a kernel request (today only printed).
 
 Started about 11:00 UTC on 2026-11-24 at 9bc830b2. Builds and tests on the ARM64 machine only.
 Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
@@ -120,9 +139,7 @@ Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
   slower, so none was started. Listed under "For the owner".
 
 Not done, for KC (what comes next, in order):
-- The five unsafe lines: waiting on the owner's choice between (a) and (b) under "For the
-  owner"; then steps 1 to 3 above, `[lints] workspace = true` in the crate, and its line out of
-  the root Cargo.toml's list.
+- The five unsafe lines: done in the fifteenth run.
 - epoll_wait does not hear outside connections at once (above); a program that learns of a reset
   through epoll after another connection's bytes can still miss it.
 - A check that fails a test when the stand-in refuses a kernel request (today only printed):
