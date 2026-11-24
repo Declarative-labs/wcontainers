@@ -393,17 +393,43 @@ unsafe extern "C" fn clear<B: Backend>(
     }
     let mut backend = context.screen().backend();
     let tracker = &mut context.tracker;
-    let colors = usize::from(context.framebuffer.state.nr_cbufs);
-    let mut done = Ok(());
-    for target in 0..colors {
-        if buffers & (PIPE_CLEAR_COLOR0 << target) != 0 {
-            done = done.and_then(|()| tracker.clear_color(&mut backend, target, color));
-        }
-    }
+    let state = &context.framebuffer.state;
+    let colors = usize::from(state.nr_cbufs);
     let depth = (buffers & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth));
     let stencil = (buffers & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil));
-    if depth.is_some() || stencil.is_some() {
-        done = done.and_then(|()| tracker.clear_depth_stencil(&mut backend, depth, stencil));
+    // A layered framebuffer is cleared on every layer, a layer at a time.
+    let layers = layers(state);
+    let set = tracker.targets().cloned();
+    let mut made = Vec::new();
+    let mut done = Ok(());
+    for layer in 0..layers {
+        if layer > 0 {
+            let mut twins = Vec::new();
+            let (targets, views, _) = layer_targets(&mut *backend, state, layer, &mut twins);
+            if !twins.is_empty() {
+                crate::state::refuse(format_args!(
+                    "a clear of a layered target drawn through a twin (not built)"
+                ));
+            }
+            made.extend(views);
+            done = done.and_then(|()| tracker.set_targets(&mut backend, targets));
+        }
+        for target in 0..colors {
+            if buffers & (PIPE_CLEAR_COLOR0 << target) != 0 {
+                done = done.and_then(|()| tracker.clear_color(&mut backend, target, color));
+            }
+        }
+        if depth.is_some() || stencil.is_some() {
+            done = done.and_then(|()| tracker.clear_depth_stencil(&mut backend, depth, stencil));
+        }
+    }
+    if layers > 1 {
+        if let Some(set) = set {
+            done = done.and_then(|()| tracker.set_targets(&mut backend, set));
+        }
+        for view in made {
+            backend.destroy(Object::TextureView(view));
+        }
     }
     if let Err(error) = done {
         eprintln!("{}: a clear: {error:?}", DRIVER_NAME.to_string_lossy());
@@ -435,7 +461,7 @@ fn clear_surface<B: Backend>(
     let made = context
         .tracker
         .close(backend)
-        .and_then(|()| surface_view::<B>(backend, surface).ok_or(NO_VIEW));
+        .and_then(|()| surface_view::<B>(backend, surface, surface.first_layer()).ok_or(NO_VIEW));
     let result = made.and_then(|(view, format)| {
         let rect = ScissorRect {
             x,
@@ -508,17 +534,17 @@ unsafe extern "C" fn clear_depth_stencil<B: Backend>(
     clear_surface(context, surface, value, x, y, width, height);
 }
 
-/// A view to draw into of one surface, with the format it is seen in.
+/// A view to draw into of layer `layer` of one surface's texture, with the format it is seen in.
 pub fn surface_view<B: Backend>(
     backend: &mut B,
     surface: &pipe_surface,
+    layer: u32,
 ) -> Option<(B::TextureView, wcontainers_gpu::Format)> {
     if surface.texture.is_null() {
         return None;
     }
     // SAFETY: a surface holds a live texture.
-    let (resource, layer) =
-        unsafe { Resource::<B>::of(surface.texture) }.layer(surface.first_layer());
+    let (resource, layer) = unsafe { Resource::<B>::of(surface.texture) }.layer(layer);
     let (texture, desc) = resource.texture()?;
     let format = crate::format::format(surface.format())?;
     if through_twin(backend, format, desc) {
@@ -566,16 +592,18 @@ fn through_twin<B: Backend>(
     colour && format.linear() != desc.format.linear() && !reinterprets
 }
 
-/// The pass tracker's target of one surface, with the view made for it; a target in another
-/// format than its texture's draws into a twin, added to `twins`.
+/// The pass tracker's target of layer `run` of one surface (its first layer and on), with the view
+/// made for it; a target in another format than its texture's draws into a twin, added to
+/// `twins`.
 fn target<B: Backend>(
     backend: &mut B,
     surface: &pipe_surface,
+    run: u32,
     twins: &mut Vec<view::Twin<B>>,
 ) -> Option<Target<B>> {
+    let first = surface.first_layer() + run;
     // SAFETY: a surface holds a live texture.
-    let (resource, layer) =
-        unsafe { Resource::<B>::of(surface.texture) }.layer(surface.first_layer());
+    let (resource, layer) = unsafe { Resource::<B>::of(surface.texture) }.layer(first);
     let (texture, desc) = resource.texture()?;
     let size = |n: u32| (n >> surface.level).max(1);
     let format = crate::format::format(surface.format())?;
@@ -610,7 +638,7 @@ fn target<B: Backend>(
         twins.push(twin);
         return Some(target);
     }
-    let (view, format) = surface_view(backend, surface)?;
+    let (view, format) = surface_view(backend, surface, first)?;
     let three_d = desc.dimension == TextureDimension::D3;
     Some(Target {
         view,
@@ -625,39 +653,28 @@ fn target<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_framebuffer_state<B: Backend>(
-    pipe: *mut pipe_context,
-    state: *const pipe_framebuffer_state,
-) {
-    // SAFETY: Mesa passes this driver's context and a framebuffer.
-    let (context, mut state) = unsafe { (Context::<B>::of(pipe), *state) };
-    for surface in surfaces(&mut state) {
-        let texture = std::mem::replace(&mut surface.texture, std::ptr::null_mut());
-        // SAFETY: the surfaces' textures are live; the copy takes its own references.
-        unsafe { resource::reference(&mut surface.texture, texture) };
-    }
-    let old = std::mem::replace(&mut context.framebuffer.state, state);
+/// The pass tracker's targets of layer `run` of each surface of `state`, the views made for them
+/// and their samples; targets in another format than their textures' draw into twins, added to
+/// `twins`.
+pub fn layer_targets<B: Backend>(
+    backend: &mut B,
+    state: &pipe_framebuffer_state,
+    run: u32,
+    twins: &mut Vec<view::Twin<B>>,
+) -> (PassTargets<B>, Vec<B::TextureView>, u32) {
     let mut targets = PassTargets {
         colors: [const { None }; MAX_COLOR_TARGETS],
         depth: None,
         empty: None,
     };
-    let screen = context.screen();
-    let mut guard = screen.backend();
-    let backend = &mut *guard;
     let mut views = Vec::new();
     let mut samples = u32::from(state.samples).max(1);
     let colors = usize::from(state.nr_cbufs);
-    // The old twins were copied back after their work.
-    for twin in std::mem::take(&mut context.framebuffer.twins) {
-        twin.release(|object| backend.destroy(object));
-    }
-    let mut twins = Vec::new();
     for (slot, surface) in targets.colors.iter_mut().zip(&state.cbufs[..colors]) {
         if surface.texture.is_null() {
             continue;
         }
-        let Some(made) = target(backend, surface, &mut twins) else {
+        let Some(made) = target(backend, surface, run, twins) else {
             continue;
         };
         views.push(made.view.clone());
@@ -668,7 +685,7 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
         });
     }
     if !state.zsbuf.texture.is_null()
-        && let Some(made) = target(backend, &state.zsbuf, &mut twins)
+        && let Some(made) = target(backend, &state.zsbuf, run, twins)
     {
         views.push(made.view.clone());
         samples = made.samples;
@@ -681,6 +698,45 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
             samples,
         });
     }
+    (targets, views, samples)
+}
+
+/// The layers of a layered framebuffer, which a draw naming layers and a clear go through one at
+/// a time: the fewest its targets have (OpenGL leaves a layer past any target's undefined), or
+/// its own count without targets; one where it is not layered.
+pub fn layers(state: &pipe_framebuffer_state) -> u32 {
+    let colors = usize::from(state.nr_cbufs);
+    state.cbufs[..colors]
+        .iter()
+        .chain(std::iter::once(&state.zsbuf))
+        .filter(|s| !s.texture.is_null())
+        .map(|s| s.last_layer().saturating_sub(s.first_layer()) + 1)
+        .min()
+        .unwrap_or_else(|| u32::from(state.layers))
+        .max(1)
+}
+
+unsafe extern "C" fn set_framebuffer_state<B: Backend>(
+    pipe: *mut pipe_context,
+    state: *const pipe_framebuffer_state,
+) {
+    // SAFETY: Mesa passes this driver's context and a framebuffer.
+    let (context, mut state) = unsafe { (Context::<B>::of(pipe), *state) };
+    for surface in surfaces(&mut state) {
+        let texture = std::mem::replace(&mut surface.texture, std::ptr::null_mut());
+        // SAFETY: the surfaces' textures are live; the copy takes its own references.
+        unsafe { resource::reference(&mut surface.texture, texture) };
+    }
+    let old = std::mem::replace(&mut context.framebuffer.state, state);
+    let screen = context.screen();
+    let mut guard = screen.backend();
+    let backend = &mut *guard;
+    // The old twins were copied back after their work.
+    for twin in std::mem::take(&mut context.framebuffer.twins) {
+        twin.release(|object| backend.destroy(object));
+    }
+    let mut twins = Vec::new();
+    let (targets, views, samples) = layer_targets(backend, &state, 0, &mut twins);
     context.framebuffer.samples = samples;
     context.framebuffer.twins = twins;
     if let Err(error) = context

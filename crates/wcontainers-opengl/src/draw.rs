@@ -10,18 +10,19 @@ use wcontainers_gpu::{
     BorderColor, BufferDesc, BufferRange, BufferUsage, CullMode, DOMAIN_PATCHES_BINDING,
     DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features, Filter, Format, FormatKind,
     FormatUse, HELPER_SET, HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource,
-    Interpolation, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, PassTracker, Program,
-    ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind, STORAGE_WORD,
-    SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage,
-    StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding, VertexFormat,
-    VertexLayoutDesc, Viewport, WriteMode, cut_scissors, helper_binding,
+    Interpolation, LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object,
+    PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
+    RingKind, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
+    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, cut_scissors,
+    helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
-    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
-    Stages, StreamOutput,
+    DomainSets, FinalDraw, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
+    STREAM_BUFFERS, StageDraw, StageError, StageIndex, Stages, StreamOutput,
 };
 
 use crate::context::Context;
@@ -127,6 +128,10 @@ pub(crate) struct Variant {
     /// The layers of the multisampled arrays bound where the program samples, by unit, which it
     /// reads a texture each.
     texture_layers: Vec<(u32, u32)>,
+    /// Where the pass-through of a geometry program writing `gl_Layer` passes the layer it names
+    /// (geometry programs, and fragment programs, which read their `gl_Layer` there; zero
+    /// without one).
+    named_layer: Option<u32>,
 }
 
 impl Variant {
@@ -551,7 +556,55 @@ fn fit_stages(module: &mut naga::Module, variant: &Variant) -> Result<(), String
     if let Some(alpha) = variant.second_source {
         outputs::second_source(module, alpha)?;
     }
+    read_named_layer(module, variant.named_layer);
     Ok(())
+}
+
+/// A fragment program's `gl_Layer` (the route's input at `NAMED_LAYER_INPUT`) read where the
+/// geometry program's pass-through passes the layer it names, at `at`; zero, as OpenGL reads it,
+/// where no earlier stage names one.
+fn read_named_layer(module: &mut naga::Module, at: Option<u32>) {
+    let is_layer = |a: &naga::FunctionArgument| {
+        matches!(
+            a.binding,
+            Some(naga::Binding::Location {
+                location: wcontainers_nir::direct::NAMED_LAYER_INPUT,
+                ..
+            })
+        )
+    };
+    for entry in &mut module.entry_points {
+        let function = &mut entry.function;
+        let Some(index) = function.arguments.iter().position(is_layer) else {
+            continue;
+        };
+        if let Some(at) = at {
+            if let Some(naga::Binding::Location { location, .. }) =
+                &mut function.arguments[index].binding
+            {
+                *location = at;
+            }
+            continue;
+        }
+        let zero = match module.types[function.arguments[index].ty].inner {
+            naga::TypeInner::Scalar(naga::Scalar {
+                kind: naga::ScalarKind::Uint,
+                ..
+            }) => naga::Literal::U32(0),
+            _ => naga::Literal::I32(0),
+        };
+        function.arguments.remove(index);
+        let index = index as u32;
+        for (_, e) in function.expressions.iter_mut() {
+            match e {
+                naga::Expression::FunctionArgument(i) if *i == index => {
+                    *e = naga::Expression::Literal(zero);
+                }
+                naga::Expression::FunctionArgument(i) if *i > index => *i -= 1,
+                _ => {}
+            }
+        }
+    }
 }
 
 /// One stage's program through the NIR route, for `variant`.
@@ -711,7 +764,21 @@ fn convert_geometry<B: Backend>(
     variant: &Variant,
     key: &[u8; wcontainers_shaders::cache::KEY_BYTES],
 ) -> Result<Built<B>, String> {
+    // A program naming layers passes the layer named on after its outputs, and its pass-through
+    // keeps a primitive naming a layer past the framebuffer's in the run of layer 0.
+    let (flags, linked) = match variant.named_layer {
+        Some(location) => (
+            VariantFlags::LAYER_FROM_STAGE,
+            LinkedValues {
+                location,
+                clip_distances: 0,
+            },
+        ),
+        None => Default::default(),
+    };
     let rewrites = VariantKey {
+        flags,
+        linked,
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
         output_interpolation: output_interpolation(&variant.interpolation),
         texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
@@ -1253,6 +1320,51 @@ const TEXEL_SAMPLER: SamplerDesc = SamplerDesc {
     border: BorderColor::TransparentBlack,
 };
 
+/// The stages a stage's bindings are visible to, the vertex program's (and an evaluation
+/// program's drawing tessellated points) to `vertex_visible`.
+fn stage_visibility(stage: Stage, vertex_visible: StageSet) -> StageSet {
+    match stage {
+        Stage::Vertex | Stage::TessEvaluation => vertex_visible,
+        Stage::Fragment => StageSet::FRAGMENT,
+        Stage::Compute | Stage::Geometry | Stage::TessControl => StageSet::COMPUTE,
+    }
+}
+
+/// The helper set of the stages' helper constants `blocks`, written to the ring; none without
+/// any.
+fn helper_set<B: Backend>(
+    backend: &mut B,
+    blocks: &[(Stage, Vec<u8>)],
+    vertex_visible: StageSet,
+) -> Result<Option<B::BindingSet>, String> {
+    if blocks.is_empty() {
+        return Ok(None);
+    }
+    let align = backend.caps().limits.min_uniform_offset_alignment;
+    let parts: Vec<&[u8]> = blocks.iter().map(|(_, bytes)| bytes.as_slice()).collect();
+    let mut offsets = vec![0; parts.len()];
+    let ring = backend
+        .write_buffer_ring(RingKind::Data, &parts, align, &mut offsets)
+        .map_err(|e| format!("{e:?}"))?;
+    let entries: Vec<_> = blocks
+        .iter()
+        .zip(offsets)
+        .map(|((stage, bytes), offset)| BindingEntry {
+            binding: helper_binding(stage.nir().shader_stage()),
+            stages: stage_visibility(*stage, vertex_visible),
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ring,
+                offset,
+                size: bytes.len() as u64,
+            }),
+        })
+        .collect();
+    backend
+        .create_binding_set(&entries)
+        .map(Some)
+        .map_err(|e| format!("{e:?}"))
+}
+
 /// Binds every resource the programs read, one set a stage, as the route's reflection numbers
 /// them, with the streams the vertex program fetches itself and its helper constants; the vertex
 /// program's visible to `vertex_visible`. What images are bound through goes to `made`, to
@@ -1272,42 +1384,14 @@ pub(crate) fn binding_sets<B: Backend>(
     let align = limits.min_uniform_offset_alignment;
     let storage_align = u64::from(limits.min_storage_offset_alignment);
     let largest_storage = limits.max_storage_buffer_size;
-    let visibility = |stage| match stage {
-        Stage::Vertex | Stage::TessEvaluation => vertex_visible,
-        Stage::Fragment => StageSet::FRAGMENT,
-        Stage::Compute | Stage::Geometry | Stage::TessControl => StageSet::COMPUTE,
-    };
+    let visibility = |stage| stage_visibility(stage, vertex_visible);
     // Every stage's helper constants, in the one helper set.
     let mut blocks = Vec::new();
     for &(stage, b) in built.iter().filter(|(_, b)| b.helper_size != 0) {
         let bytes = helper_block(b, stages.get(stage), pulled, storage_align, first_instance)?;
         blocks.push((stage, bytes));
     }
-    if !blocks.is_empty() {
-        let parts: Vec<&[u8]> = blocks.iter().map(|(_, bytes)| bytes.as_slice()).collect();
-        let mut offsets = vec![0; parts.len()];
-        let ring = backend
-            .write_buffer_ring(RingKind::Data, &parts, align, &mut offsets)
-            .map_err(|e| format!("{e:?}"))?;
-        let entries: Vec<_> = blocks
-            .iter()
-            .zip(offsets)
-            .map(|((stage, bytes), offset)| BindingEntry {
-                binding: helper_binding(stage.nir().shader_stage()),
-                stages: visibility(*stage),
-                resource: BindingResource::UniformBuffer(BufferRange {
-                    buffer: &ring,
-                    offset,
-                    size: bytes.len() as u64,
-                }),
-            })
-            .collect();
-        sets[HELPER_SET as usize] = Some(
-            backend
-                .create_binding_set(&entries)
-                .map_err(|e| format!("{e:?}"))?,
-        );
-    }
+    sets[HELPER_SET as usize] = helper_set(backend, &blocks, vertex_visible)?;
     for &(stage, built) in built {
         let bound = stages.get(stage);
         let visible = visibility(stage);
@@ -1949,9 +2033,11 @@ fn draw<B: Backend>(
     }
     // A geometry program emitting no vertex makes nothing to draw, stream or count.
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    if !gs.is_null() && unsafe { &*gs }.nir.geometry_vertices_out() == 0 {
+    let geometry_shader = unsafe { gs.as_ref() };
+    if geometry_shader.is_some_and(|g| g.nir.geometry_vertices_out() == 0) {
         return Ok(());
     }
+    let named_layer = geometry_shader.and_then(|g| g.named_layer);
     let bound = &context.bound;
     let (raster, depth_stencil, blend, elements) = (
         bound.raster,
@@ -2018,6 +2104,7 @@ fn draw<B: Backend>(
         },
         image_formats: image_formats(context.stages.get(Stage::Fragment)),
         texture_layers: texture_layers(context.stages.get(Stage::Fragment)),
+        named_layer,
         ..Variant::default()
     };
     if fragment.second_source.is_some() {
@@ -2058,6 +2145,7 @@ fn draw<B: Backend>(
         single_sampled: false,
         image_formats: Vec::new(),
         texture_layers: texture_layers(context.stages.get(Stage::Vertex)),
+        named_layer: None,
     };
     // SAFETY: as above.
     let vertex = fit_input_kinds(programs, backend, unsafe { &*vs }, vertex, elements)?;
@@ -2070,6 +2158,7 @@ fn draw<B: Backend>(
         border: border_in_program(context.stages.get(Stage::Geometry)),
         texture_layers: texture_layers(context.stages.get(Stage::Geometry)),
         interpolation: inputs,
+        named_layer,
         ..Variant::default()
     };
     // The evaluation program draws the tessellated points with the position's transform, for its
@@ -2282,6 +2371,29 @@ fn draw<B: Backend>(
                 .map_err(|e| format!("the tessellated points' set: {e:?}"))?,
         );
     }
+    // Behind a geometry program naming layers each run's helper set holds the fragment
+    // program's helper constants beside the pass-through's.
+    let layered = match &made {
+        Some(m) if m.selects => {
+            let storage_align = u64::from(backend.caps().limits.min_storage_offset_alignment);
+            let fragment = (built[1].helper_size != 0)
+                .then(|| {
+                    helper_block(
+                        built[1],
+                        context.stages.get(Stage::Fragment),
+                        &[],
+                        storage_align,
+                        info.start_instance,
+                    )
+                })
+                .transpose()?;
+            Some(LayeredHelpers {
+                fragment,
+                size: passthrough_helper_size(built[0])?,
+            })
+        }
+        _ => None,
+    };
     let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
     let layout = match &made {
         Some(m) => m.layout.clone(),
@@ -2355,90 +2467,141 @@ fn draw<B: Backend>(
     } else {
         None
     };
-    let mut scissors = Vec::new();
     // Targets drawn through twins see their textures as they are now.
     context
         .framebuffer
         .copy_into_twins(&mut context.tracker, backend)?;
-    let area = context
-        .tracker
-        .before_draw(backend, &[])
-        .map_err(|e| format!("{e:?}"))?;
-    let s = &bound.scissor;
-    let scissor = ScissorRect {
-        x: s.minx,
-        y: s.miny,
-        width: s.maxx.saturating_sub(s.minx),
-        height: s.maxy.saturating_sub(s.miny),
+    // A layered framebuffer is drawn a layer at a time (`LayerSplit`), each run into that
+    // layer's targets; another draws once.
+    let runs = match &layered {
+        Some(_) => crate::context::layers(&context.framebuffer.state),
+        None => 1,
     };
-    match (raster.scissor, area) {
-        (true, Some(area)) => cut_scissors(&[scissor], area, &mut scissors),
-        (true, None) => scissors.push(scissor),
-        (false, Some(area)) => scissors.push(area),
-        (false, None) => {}
+    if runs > 1 {
+        backend.slow_paths().hit(SlowPath::LayerSplit);
+        if !context.framebuffer.twins.is_empty() {
+            return refused(format_args!(
+                "a layered target drawn through a twin (not built)"
+            ));
+        }
     }
-    let samples = context.framebuffer.samples.clamp(1, u32::BITS);
-    let all = u32::MAX >> (u32::BITS - samples);
-    let mask = Some(bound.sample_mask & all).filter(|&m| samples > 1 && m != all);
-    let blocks = masked_blocks(&mut context.programs, backend, raster, mask)?;
-    let bound = &context.bound;
-    let passes = face_passes(
-        backend,
-        depth_stencil,
-        &blocks,
-        raster.cull,
-        triangles(topology),
-        bound.stencil_ref,
-    )?;
-    let base = DrawCall {
-        program: &program,
-        blend: &blend,
-        depth_stencil: &depth_stencil.block,
-        raster: &raster.block,
-        vertex_layout: &layout,
-        bindings: std::array::from_fn(|set| sets[set].as_ref()),
-        vertex_buffers: &streams,
-        index: None,
-        topology,
-        restart,
-        viewports: std::slice::from_ref(&viewport),
-        scissors: &scissors,
-        blend_constant,
-        stencil_reference: bound.stencil_ref,
-        immediates: &[],
-        range: DrawRange::Vertices {
-            first: 0,
-            count: 0,
-            first_instance: 0,
-            instances: 0,
-        },
-    };
-    for (depth_stencil, block, stencil_reference) in passes {
-        let pass = DrawCall {
+    let set = (runs > 1)
+        .then(|| context.tracker.targets().cloned())
+        .flatten();
+    let mut run_views = Vec::new();
+    for run in 0..runs {
+        if run > 0 {
+            let (targets, views, _) = crate::context::layer_targets(
+                backend,
+                &context.framebuffer.state,
+                run,
+                &mut Vec::new(),
+            );
+            run_views.extend(views);
+            context
+                .tracker
+                .set_targets(backend, targets)
+                .map_err(|e| format!("a layer's targets: {e:?}"))?;
+        }
+        if let Some(helpers) = &layered {
+            let count = if runs > 1 { runs } else { 0 };
+            let made = helpers.set(backend, run, count)?;
+            if let Some(old) = sets[HELPER_SET as usize].replace(made) {
+                backend.destroy(Object::BindingSet(old));
+            }
+        }
+        let mut scissors = Vec::new();
+        let area = context
+            .tracker
+            .before_draw(backend, &[])
+            .map_err(|e| format!("{e:?}"))?;
+        let s = &bound.scissor;
+        let scissor = ScissorRect {
+            x: s.minx,
+            y: s.miny,
+            width: s.maxx.saturating_sub(s.minx),
+            height: s.maxy.saturating_sub(s.miny),
+        };
+        match (raster.scissor, area) {
+            (true, Some(area)) => cut_scissors(&[scissor], area, &mut scissors),
+            (true, None) => scissors.push(scissor),
+            (false, Some(area)) => scissors.push(area),
+            (false, None) => {}
+        }
+        let samples = context.framebuffer.samples.clamp(1, u32::BITS);
+        let all = u32::MAX >> (u32::BITS - samples);
+        let mask = Some(bound.sample_mask & all).filter(|&m| samples > 1 && m != all);
+        let blocks = masked_blocks(&mut context.programs, backend, raster, mask)?;
+        let bound = &context.bound;
+        let passes = face_passes(
+            backend,
             depth_stencil,
-            raster: block,
-            stencil_reference,
+            &blocks,
+            raster.cull,
+            triangles(topology),
+            bound.stencil_ref,
+        )?;
+        let base = DrawCall {
+            program: &program,
+            blend: &blend,
+            depth_stencil: &depth_stencil.block,
+            raster: &raster.block,
+            vertex_layout: &layout,
+            bindings: std::array::from_fn(|set| sets[set].as_ref()),
+            vertex_buffers: &streams,
             index: None,
+            topology,
+            restart,
+            viewports: std::slice::from_ref(&viewport),
+            scissors: &scissors,
+            blend_constant,
+            stencil_reference: bound.stencil_ref,
+            immediates: &[],
             range: DrawRange::Vertices {
                 first: 0,
                 count: 0,
                 first_instance: 0,
                 instances: 0,
             },
-            ..base
         };
-        match &made {
-            Some(m) => draw_made(backend, &pass, &m.out),
-            None => draw_ranges(
-                backend,
-                &pass,
-                info,
-                draws,
-                read.as_ref(),
-                raster.host_provoking,
-                provoking,
-                drops_adjacency,
-            )?,
+        for (depth_stencil, block, stencil_reference) in passes {
+            let pass = DrawCall {
+                depth_stencil,
+                raster: block,
+                stencil_reference,
+                index: None,
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count: 0,
+                    first_instance: 0,
+                    instances: 0,
+                },
+                ..base
+            };
+            match &made {
+                Some(m) => draw_made(backend, &pass, &m.out),
+                None => draw_ranges(
+                    backend,
+                    &pass,
+                    info,
+                    draws,
+                    read.as_ref(),
+                    raster.host_provoking,
+                    provoking,
+                    drops_adjacency,
+                )?,
+            }
+        }
+    }
+    if runs > 1 {
+        if let Some(set) = set {
+            context
+                .tracker
+                .set_targets(backend, set)
+                .map_err(|e| format!("the framebuffer's targets: {e:?}"))?;
+        }
+        for view in run_views {
+            backend.destroy(Object::TextureView(view));
         }
     }
     for set in sets.into_iter().flatten() {
@@ -2469,6 +2632,71 @@ fn triangles(topology: Topology) -> bool {
 struct Made<B: Backend> {
     out: FinalDraw<B>,
     layout: B::VertexLayout,
+    /// Its geometry program names layers: it is drawn once a layer of a layered framebuffer
+    /// (`LayerSplit`), its pass-through keeping the primitives naming the run's.
+    selects: bool,
+}
+
+/// The helper constants of the draw of a geometry program naming layers, but the run's.
+struct LayeredHelpers {
+    /// The fragment program's block, where it has one.
+    fragment: Option<Vec<u8>>,
+    /// The bytes of the pass-through's block.
+    size: u32,
+}
+
+impl LayeredHelpers {
+    /// The helper set of run `run` of a framebuffer of `count` layers (zero where it is not
+    /// layered: every primitive is then drawn in the one run, as OpenGL draws it).
+    fn set<B: Backend>(
+        &self,
+        backend: &mut B,
+        run: u32,
+        count: u32,
+    ) -> Result<B::BindingSet, String> {
+        let mut block = vec![0; self.size as usize];
+        for slot in PASSTHROUGH_HELPERS.iter().chain([&PASSTHROUGH_LAYER_COUNT]) {
+            let word: u32 = match slot.value {
+                HelperValue::Layer => run,
+                HelperValue::LayerCount => count,
+                // OpenGL ES draws through one viewport.
+                HelperValue::Viewport => 0,
+                other => return Err(format!("the pass-through's helper constant {other:?}")),
+            };
+            let at = slot.offset as usize;
+            block
+                .get_mut(at..at + size_of::<u32>())
+                .ok_or("a pass-through's helper block without its run")?
+                .copy_from_slice(&word.to_le_bytes());
+        }
+        let mut blocks = vec![(Stage::Vertex, block)];
+        blocks.extend(self.fragment.clone().map(|b| (Stage::Fragment, b)));
+        helper_set(backend, &blocks, StageSet::VERTEX)?.ok_or_else(|| "a run's helper set".into())
+    }
+}
+
+/// Where a geometry program's converted forms hold its pass-through.
+const PASSTHROUGH_MODULE: usize = 1;
+
+/// The bytes of the helper block a geometry program's pass-through reads its run from.
+fn passthrough_helper_size<B: Backend>(built: &Built<B>) -> Result<u32, String> {
+    let module = &built
+        .converted
+        .as_ref()
+        .and_then(|c| c.modules.get(PASSTHROUGH_MODULE))
+        .ok_or("a geometry program without its pass-through")?
+        .module;
+    let binding = helper_binding(ShaderStage::Vertex);
+    module
+        .global_variables
+        .iter()
+        .find(|(_, g)| {
+            g.binding
+                .as_ref()
+                .is_some_and(|b| b.group == HELPER_SET && b.binding == binding)
+        })
+        .map(|(_, g)| module.types[g.ty].inner.size(module.to_ctx()))
+        .ok_or_else(|| "a pass-through without its run's helper constants".into())
 }
 
 /// The draw of what the stage helper made, as `pass` binds it otherwise: its vertices from the
@@ -2720,12 +2948,6 @@ fn run_stages<B: Backend>(
         };
         let stages = Stages::new(backend, vertex_forms, geometry_forms, declared.as_ref())
             .map_err(|e| format!("the stage helper: {e:?}"))?;
-        if stages.selects() {
-            stages.destroy(backend);
-            return refused(format_args!(
-                "a geometry program writing a layer or viewport (not built)"
-            ));
-        }
         let layout = match stages.vertex_layout() {
             Some(desc) => Some(
                 backend
@@ -2835,6 +3057,7 @@ fn run_stages<B: Backend>(
         (Some(out), Some(layout)) => Some(Made {
             out,
             layout: layout.clone(),
+            selects: staged.stages.selects(),
         }),
         _ => None,
     };
@@ -2994,12 +3217,6 @@ fn run_tessellated<B: Backend>(
             declared.as_ref(),
         )
         .map_err(|e| format!("the stage helper: {e:?}"))?;
-        if stages.selects() {
-            stages.destroy(backend);
-            return refused(format_args!(
-                "a geometry program writing a layer or viewport (not built)"
-            ));
-        }
         // The tessellated points are drawn without vertex streams, a geometry program's output
         // from its records.
         let desc = match geometry {
@@ -3110,6 +3327,7 @@ fn run_tessellated<B: Backend>(
         (Some(out), Some(layout)) => Some(Made {
             out,
             layout: layout.clone(),
+            selects: staged.stages.selects(),
         }),
         _ => None,
     })
