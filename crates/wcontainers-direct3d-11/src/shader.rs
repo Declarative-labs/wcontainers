@@ -1,6 +1,9 @@
 //! DXBC handed to the device: its stage from the container, and its conversion through the shaders
 //! crate into the common form.
 
+use wcontainers_directx_graphics_infrastructure::stage_registers::{
+    MOVED_INVALID, MOVED_ONTO_A_TYPE,
+};
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
     HelperSlot, HelperValue, LinkedValues, Reflection, ShaderModule, ShaderStage, SlotKind,
@@ -312,11 +315,6 @@ pub fn output_moves(
     }
     Some(moves)
 }
-
-/// Refused: stage values moved make a type equal to one the program has, which naga keeps once.
-const MOVED_ONTO_A_TYPE: &str = "stage values moved onto a type the program has";
-/// Refused: a program whose stage values moved fails validation.
-const MOVED_INVALID: &str = "a program whose stage values moved does not validate";
 
 /// Moves the values `c`'s program passes between stages (a vertex program's outputs, a pixel
 /// program's inputs) from and to the locations `moves` names, in its module and its reflection.

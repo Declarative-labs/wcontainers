@@ -1943,6 +1943,7 @@ fn main() -> windows::core::Result<()> {
             const GLYPHS: usize = 100;
             const QUAD_INDICES: u32 = 6;
             let (w, h) = (320u32, 180u32);
+            // standalone 300.0: atg-simplecomputepc's iteration count, its constant buffer's third value
             let iterations = 300.0;
             let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
             let fractal = cs(FRACTAL);
@@ -1958,7 +1959,7 @@ fn main() -> windows::core::Result<()> {
                 &at(8, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE),
                 Some((&bytes, 32)),
             )?;
-            let glyph_bytes: Vec<u8> = (0..16 * 16 * 4).map(|i| (i * 37 % 256) as u8).collect();
+            let glyph_bytes: Vec<u8> = (0..16 * 16 * 4).map(|i| (i * 37) as u8).collect();
             let glyphs = make(
                 &at(
                     16,
