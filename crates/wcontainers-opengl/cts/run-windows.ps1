@@ -9,13 +9,17 @@
 #
 # Results in $Root\cts\results\<driver>\<list>: deqp-runner's results.csv, failures.csv and the logs.
 # -Include takes regular expressions of case names (deqp-runner's --include-tests), to run groups alone.
+# -Cases names a folder of case lists named as the chosen lists' files: each case there runs in a glcts
+# of its own, so that a failure is its own case's and not one an earlier case left behind; results in
+# $Root\cts\results\<driver>-alone\<list>.
 param(
     [Parameter(Mandatory = $true)][string]$Driver,
     [string[]]$Lists = @(),
     [int]$Fraction = 1,
     [int]$FractionStart = 1,
     [int]$RunnerJobs = 0,
-    [string[]]$Include = @()
+    [string[]]$Include = @(),
+    [string]$Cases = ''
 )
 . (Join-Path $PSScriptRoot 'cts-windows.ps1')
 if ($RunnerJobs -le 0) { $RunnerJobs = $Jobs }
@@ -35,12 +39,19 @@ foreach ($list in $chosen) {
     $caselist = Join-Path $Mustpass $list
     $name = [IO.Path]::GetFileNameWithoutExtension($list)
     $output = Join-Path $Cts "results\$Driver\$name"
+    $groupArguments = @()
+    if ($Cases) {
+        $caselist = Join-Path $Cases ([IO.Path]::GetFileName($list))
+        if (-not (Test-Path $caselist)) { continue }
+        $output = Join-Path $Cts "results\$Driver-alone\$name"
+        $groupArguments = @('--tests-per-group', '1')
+    }
     # Through the long-path prefix: a case's log can be named past 260 characters.
     if (Test-Path $output) { Remove-Item -LiteralPath "\\?\$output" -Recurse -Force }
     $deqpArguments = Get-ListArguments $list
     Write-Output "cts: $name on $Driver, every ${Fraction}th case from $FractionStart, $RunnerJobs at once: $deqpArguments"
     & $Runner run --deqp $program --caselist $caselist --output $output --fraction $Fraction `
-        --fraction-start $FractionStart --jobs $RunnerJobs @includeArguments -- @deqpArguments | Select-Object -Last 3
+        --fraction-start $FractionStart --jobs $RunnerJobs @groupArguments @includeArguments -- @deqpArguments | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { $failed = $true }
 
     $results = Join-Path $output 'results.csv'
