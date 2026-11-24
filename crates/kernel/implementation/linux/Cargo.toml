@@ -22,6 +22,8 @@ wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+# The processor's state a thread runs from and stops at.
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 zerocopy.workspace = true
 etherparse.workspace = true
 object = { version = "0.41", default-features = false, features = ["read_core", "elf", "unaligned"] }
@@ -32,13 +34,14 @@ domain = { version = "0.12.3", default-features = false, features = ["alloc"] }
 rangemap = { version = "1.8.0", default-features = false }
 smallbox = { version = "0.8.9", default-features = false }
 spin = { version = "0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
+# The exception classes of ESR_EL1 (MIT OR Apache-2.0), as the arm64 processor's state gives them.
+aarch64-cpu = "12.0.0"
 
 [dev-dependencies]
 wcontainers-kernel-conformance = { path = "../../conformance" }
 # The stand-in executor and its test host, which make the kernel the suite runs on.
 wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
-wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
 

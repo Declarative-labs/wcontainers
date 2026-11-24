@@ -1388,15 +1388,25 @@ pub fn run_prepared(
     }
 }
 
+/// A kernel interface's kernel on the stand-in, with the embedder's state `State`.
+pub type InterfaceKernel<State> =
+    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>;
+
+/// A runner of an [`InterfaceKernel`].
+pub type InterfaceRunner<State> =
+    wcontainers_kernel_linux::KernelRunner<crate::standin::StandIn, State, TestHost>;
+
 /// A kernel with the container started on the stand-in, made through the kernel interface with
-/// `parallelism` runners: its first process, with `state`, is loaded and has not run.
+/// `parallelism` runners, and those runners: its first process, with `state`, is loaded and has
+/// not run.
 pub fn started_with_executor<State: Clone + Send + 'static>(
     prepared: Prepared,
     container: &Container<'_>,
     state: State,
     parallelism: std::num::NonZeroUsize,
 ) -> (
-    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>,
+    InterfaceKernel<State>,
+    Vec<InterfaceRunner<State>>,
     Arc<TestHost>,
 ) {
     use wcontainers_kernel::Kernel as _;
@@ -1454,8 +1464,9 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
             state,
         )
     };
-    let (kernel, _runners) = wcontainers_kernel_linux::KernelWithExecutor::new(config, parallelism);
-    (kernel, host)
+    let (kernel, runners) = wcontainers_kernel_linux::KernelWithExecutor::new(config, parallelism);
+    let runners = runners.collect();
+    (kernel, runners, host)
 }
 
 /// Fails to build unless every waiting call of the test host may move between host threads, as
@@ -1522,13 +1533,29 @@ pub fn program_not_run(
     .0
 }
 
+/// A kernel on the stand-in made through the kernel interface with `parallelism` runners, with a
+/// container started with the guest program `name`, built with `link_flags` into `out`, whose
+/// first process has not run; its runners; and its system.
+pub fn program_on_runners(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+) -> (
+    InterfaceKernel<u64>,
+    Vec<InterfaceRunner<u64>>,
+    Arc<TestHost>,
+) {
+    program_started(name, link_flags, out, parallelism, Default::default())
+}
+
 /// As [`program_not_run`], run until every thread waits with no deadline.
 pub fn program_waiting(
     name: &str,
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    let (mut started, host) = program_started(
+    let (mut started, _, host) = program_started(
         name,
         link_flags,
         out,
@@ -1559,7 +1586,7 @@ pub fn program_exit_code_with(
     parallelism: std::num::NonZeroUsize,
     options: wcontainers_kernel_linux::StartOptions<'static>,
 ) -> i32 {
-    let (mut started, host) = program_started(name, link_flags, out, parallelism, options);
+    let (mut started, _, host) = program_started(name, link_flags, out, parallelism, options);
     let status = run_started(&mut started, &host).expect("the program ends");
     exit_code(status)
 }
@@ -1610,7 +1637,8 @@ fn program_started(
     parallelism: std::num::NonZeroUsize,
     options: wcontainers_kernel_linux::StartOptions<'static>,
 ) -> (
-    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost>,
+    InterfaceKernel<u64>,
+    Vec<InterfaceRunner<u64>>,
     Arc<TestHost>,
 ) {
     let program = crate::guest::build(name, link_flags, out);

@@ -9,16 +9,18 @@ use core::any::Any;
 use core::marker::PhantomData;
 use core::num::NonZeroUsize;
 use core::ops::Range;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
-use wcontainers_abi::{Cpu, MemoryId};
-use wcontainers_executor::{Executor, PerThreadWatch};
+use wcontainers_abi::{Cpu, Event, Exit, MemoryId, Next};
+use wcontainers_executor::{ExecutionInterrupter, Executor, PerThreadWatch};
 use wcontainers_kernel as interface;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{MemoryError, TaskId, WatchesFor, WriteMemoryError};
 
 use crate::guest_machine::GuestMachine;
 use crate::process::Pid;
+use crate::running;
 use crate::suspend::{ProcessContext, SuspendedTask};
 use crate::system::{Unsupported, pid_of};
 
@@ -85,11 +87,16 @@ pub struct KernelWithExecutor<C: Executor, State, S> {
     types: PhantomData<fn() -> (State, S)>,
 }
 
-/// What a kernel and the contexts and tasks it handed out share: its state behind one lock, and
-/// what was let go of while another held that lock, for the next holder to drop.
+/// What a kernel, its runners and the contexts and tasks it handed out share: its state behind one
+/// lock, what was let go of while another held that lock, for the next holder to drop, and what
+/// ends a guest's turn when the kernel's interface waits for that lock.
 struct Shared<C: Executor> {
     inner: spin::Mutex<Inner<C>>,
     let_go: spin::Mutex<Vec<Box<dyn Any>>>,
+    /// The interrupter of the turn a runner runs under the lock, while it runs.
+    running: spin::Mutex<Option<C::Interrupter>>,
+    /// How many of the interface's calls wait for the lock; runners leave it to them.
+    waiting: AtomicUsize,
 }
 
 /// What [`KernelWithExecutor`]'s lock guards.
@@ -99,12 +106,61 @@ struct Inner<C: Executor> {
 }
 
 impl<C: Executor> Shared<C> {
-    /// Takes the lock, then drops what was let go of while another held it.
+    /// A kernel's shared parts, its state `inner`.
+    fn new(inner: Inner<C>) -> Self {
+        Self {
+            inner: spin::Mutex::new(inner),
+            let_go: spin::Mutex::new(Vec::new()),
+            running: spin::Mutex::new(None),
+            waiting: AtomicUsize::new(0),
+        }
+    }
+
+    /// Takes the lock, ending the turn of a guest that runs under it, then drops what was let go
+    /// of while another held it.
     fn lock(&self) -> spin::MutexGuard<'_, Inner<C>> {
-        let guard = self.inner.lock();
-        let let_go = core::mem::take(&mut *self.let_go.lock());
-        drop(let_go);
+        let guard = self.inner.try_lock().unwrap_or_else(|| {
+            self.waiting.fetch_add(1, Ordering::SeqCst);
+            if let Some(turn) = &*self.running.lock() {
+                turn.interrupt();
+            }
+            let guard = self.inner.lock();
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
+            guard
+        });
+        Self::dropped_let_go(&self.let_go);
         guard
+    }
+
+    /// Takes the lock for a runner, unless it is held or an interface call waits for it.
+    fn try_lock_for_runner(&self) -> Option<spin::MutexGuard<'_, Inner<C>>> {
+        if self.waiting.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
+        let guard = self.inner.try_lock()?;
+        Self::dropped_let_go(&self.let_go);
+        Some(guard)
+    }
+
+    /// Drops what was let go of while another held the lock.
+    fn dropped_let_go(let_go: &spin::Mutex<Vec<Box<dyn Any>>>) {
+        let let_go = core::mem::take(&mut *let_go.lock());
+        drop(let_go);
+    }
+
+    /// Keeps `turn`, the interrupter of the turn about to run under the lock, for the interface's
+    /// calls to end it, and ends it at once if one already waits.
+    fn turn_started(&self, turn: C::Interrupter) {
+        let mut running = self.running.lock();
+        if self.waiting.load(Ordering::SeqCst) != 0 {
+            turn.interrupt();
+        }
+        *running = Some(turn);
+    }
+
+    /// Forgets the interrupter of the turn that has ended.
+    fn turn_ended(&self) {
+        *self.running.lock() = None;
     }
 
     /// `value`, which shares the kernel's records, handed out.
@@ -247,10 +303,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
             process.embedder = Some(EmbedderData::new(data));
         }
         Ok(Self {
-            shared: Arc::new(Shared {
-                inner: spin::Mutex::new(Inner { kernel, executor }),
-                let_go: spin::Mutex::new(Vec::new()),
-            }),
+            shared: Arc::new(Shared::new(Inner { kernel, executor })),
             types: PhantomData,
         })
     }
@@ -335,6 +388,7 @@ where
         let shared = Arc::clone(&kernel.shared);
         let runners = (0..parallelism.get()).map(move |_| KernelRunner {
             shared: Arc::clone(&shared),
+            system: Arc::clone(&system),
             types: PhantomData,
         });
         (kernel, runners)
@@ -444,11 +498,12 @@ where
 /// What runs a [`KernelWithExecutor`]'s threads on one host thread.
 pub struct KernelRunner<C: Executor, State, S> {
     shared: Arc<Shared<C>>,
-    types: PhantomData<fn() -> (State, S)>,
+    system: Arc<S>,
+    types: PhantomData<fn() -> State>,
 }
 
-// SAFETY: as for `KernelWithExecutor`'s `Sync`: a runner reaches the kernel's state only under its
-// lock, and the bounds are the same.
+// SAFETY: as for `KernelWithExecutor`'s `Sync`: a runner reaches the kernel's state, and the
+// system, only under the kernel's lock, and the bounds are the same.
 unsafe impl<C, State, S> Send for KernelRunner<C, State, S>
 where
     C: Executor<TranslatorConfig: Send> + Send,
@@ -463,7 +518,7 @@ where
 
 impl<C, State, S> interface::Runner<C> for KernelRunner<C, State, S>
 where
-    C: Executor<TranslatorConfig: Send> + Send,
+    C: Cpu + Executor<TranslatorConfig: Send> + Send + 'static,
     State: Send,
     S: crate::System + Send,
     <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
@@ -471,12 +526,89 @@ where
     <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
     <S as wcontainers_system::StreamTransport>::Endpoint: Send,
 {
-    /// Not built: the executor interface has no call that runs a thread, so this kernel is driven
-    /// through [`crate::Kernel::next`] and [`crate::Kernel::exit`] on the executor it holds
-    /// ([`KernelWithExecutor::with_parts`]).
+    /// Runs the kernel's threads, one turn at a time under the kernel's lock, on `executor` and
+    /// the memories the kernel's own executor made, until none can run, the container ends, or
+    /// one of the kernel interface's calls waits for the lock (`Interrupted`; the turn running
+    /// then is ended). While another runner holds the lock, none can run on this one: it returns
+    /// `Idle` with no time.
+    ///
+    /// A turn runs until its thread traps: a time slice the kernel asks for is not kept, as
+    /// `execute` takes none.
     fn run(&mut self, executor: &mut C) -> interface::StopReason {
-        let _ = (executor, &self.shared);
-        unimplemented!("running through the kernel interface is not built")
+        let mut timer_told = false;
+        loop {
+            let Some(mut inner) = self.shared.try_lock_for_runner() else {
+                return if self.shared.waiting.load(Ordering::SeqCst) == 0 {
+                    interface::StopReason::Idle { until: None }
+                } else {
+                    interface::StopReason::Interrupted
+                };
+            };
+            let Inner {
+                kernel,
+                executor: machine,
+            } = &mut *inner;
+            match kernel.next() {
+                Next::Run { thread, resume, .. } => {
+                    let (_, registers, memory) = machine.thread_parts(thread);
+                    let exit = running::turn(executor, registers, memory, resume, |turn| {
+                        self.shared.turn_started(turn);
+                    });
+                    self.shared.turn_ended();
+                    kernel.exit(machine, &self.system, exit);
+                    if exit == Exit::Stop {
+                        return interface::StopReason::Interrupted;
+                    }
+                }
+                // The kernel's waits to settle, or the time it waits for may have come.
+                Next::Idle {
+                    until_nanoseconds: Some(0),
+                } => kernel.event(machine, &self.system, Event::Timer),
+                Next::Idle {
+                    until_nanoseconds: Some(_),
+                } if !timer_told => {
+                    timer_told = true;
+                    kernel.event(machine, &self.system, Event::Timer);
+                }
+                Next::Idle { until_nanoseconds } => {
+                    return interface::StopReason::Idle {
+                        until: until_nanoseconds.map(Duration::from_nanos),
+                    };
+                }
+                Next::Finished { status } => {
+                    return interface::StopReason::Finished(process_end(
+                        status,
+                        kernel.start_failure(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// How the container's first process ended, from its wait status `status` and the error that kept
+/// its program from starting, if one did.
+fn process_end(
+    status: i32,
+    start_failure: Option<interface::errno::Errno>,
+) -> interface::ProcessEnd {
+    if let Some(error) = start_failure {
+        return interface::ProcessEnd::NotStarted { error };
+    }
+    match crate::wait::decode(status) {
+        crate::wait::Ended::Exited(code) => interface::ProcessEnd::Exited {
+            code: u8::try_from(code).expect("an exit status is its low byte"),
+        },
+        crate::wait::Ended::Killed {
+            signal,
+            core_dumped,
+        } => interface::ProcessEnd::Signaled {
+            signal: u32::try_from(signal)
+                .ok()
+                .and_then(crate::siginfo::signal)
+                .expect("a process ends by a signal Linux names"),
+            core_dumped,
+        },
     }
 }
 
