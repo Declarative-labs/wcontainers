@@ -697,7 +697,10 @@ HLSL's `sign`, which gives an integer whatever its argument, so `asuint(sign(x))
 numbers; no subnormals or NaN, which the devices may flush or leave undefined) through scalar,
 two-, three- and four-component `sign` and an integer `sign`, each stored as its bits, on wgpu's
 Direct3D 12 path (naga's HLSL writer) and its Vulkan path. Drawn on the RTX 3080 in run 119
-(g6-r119 gpu1.log, seeds 1 to 4): 0 of 2,816 signs apart on each path and seed. @@UNDO@@ Its other G9 run 28 ask (domain
+(g6-r119 gpu1.log, seeds 1 to 4): 0 of 2,816 signs apart on each path and seed. With the change undone in the clone (the
+writer's old mapping, gpu2.log, `gpu-noclippy.sh`), the Direct3D 12 path gives 1,872 to 1,952 of
+2,816 apart at those seeds (the bits of the integers 1 and -1, for example `sign(1.2e31)` stored
+as `0x00000001`) and the Vulkan path 0, so the test catches it. Its other G9 run 28 ask (domain
 programs writing storage) is on the gap list ("G6 reported complete", this track's own group).
 
 ## For the NIR track: forced early tests through `rewrite` (its G9 run 23 ask)
@@ -764,7 +767,8 @@ Logs and scripts in scratch `graphics-shaders/g6-r116` (the clone `tip` moved th
 ## G6 run 32 (run 119, round 8 run 1): the sixth check's findings
 
 Logs and scripts are in scratch `graphics-shaders/g6-r119` (`arm1.log` to `arm5.log`, `gpu1.log`;
-`quick-cmd.txt`, `gdb-cmd.txt`, `cpu-cmd.txt`, `lit2-cmd.txt`, `gpu.sh`, `gpu1-cmd.txt`; the GPU
+`quick-cmd.txt`, `gdb-cmd.txt`, `cpu-cmd.txt`, `lit2-cmd.txt`, `gpu.sh`, `gpu1-cmd.txt`,
+`gpu-noclippy.sh`, `gpu2-cmd.txt`, `gpu2.log`; the GPU
 jobs run from the clone `g6-r116/tip`). Nothing was built on the Mac; it ran rustfmt of single
 files only. The check's own logs are in `graphics-shaders/check-g6-r12`.
 - Blocking, the literal check: settled (commits 963d3e322 and 9d374918d). "GLSL.std.450" is the
