@@ -290,17 +290,17 @@ fn a_fork_child_runs_its_parent_s_code_until_either_changes_it() {
     assert_eq!(after.codes_unshared, before.codes_unshared);
     // The child's loader writes new code: it stops sharing; the parent runs what it ran.
     rewrite_adding(&mut cpu, child, 5);
-    assert_eq!(cpu.counters().codes_unshared, before.codes_unshared + 1);
     assert_eq!(run_adding(&mut cpu, child, child_thread), 100 * 5 + 1000);
     assert_eq!(run_adding(&mut cpu, parent, parent_thread), SUM);
+    assert_eq!(cpu.counters().codes_unshared, before.codes_unshared + 1);
     // A second child shares the parent's code; this time the parent changes it.
     let second = cpu.memory_duplicate(parent).expect("fork");
     let second_thread = cpu.thread_new(second).expect("thread");
     rewrite_adding(&mut cpu, parent, 7);
-    assert_eq!(cpu.counters().codes_unshared, before.codes_unshared + 2);
     assert_eq!(run_adding(&mut cpu, parent, parent_thread), 100 * 7 + 1000);
     assert_eq!(run_adding(&mut cpu, second, second_thread), SUM);
     assert_eq!(run_adding(&mut cpu, child, child_thread), 100 * 5 + 1000);
+    assert_eq!(cpu.counters().codes_unshared, before.codes_unshared + 2);
 }
 
 /// A program that names its own addresses: a loop of 10 adds of 3, a call to a function that adds 1000, the next page's
