@@ -454,7 +454,6 @@ fn divisions_give_a_real_devices_quotient() {
 /// inside the program, after its driver changes its division (Gap list).
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "ours divides 1200 by 300 to 3.9999998 where WARP and the RTX 3080 inside the program give the correctly rounded 4; waits on the shaders crate's correctly rounded division (Asked of other tracks)"]
 fn colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it() {
     let args = ["colour_map_frames"];
     let warp = [("OWN_CASES_DRIVER", "warp")];
