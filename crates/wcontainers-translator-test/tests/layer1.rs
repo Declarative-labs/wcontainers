@@ -493,8 +493,8 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
 /// access one byte past the data and across it, at 2^32 - 1 with 8 bytes and at 2^32, a far-reaching SIB form, an
 /// `fs:` operand with a negative offset, strings with a large count upward and downward and with rsi or rdi at
 /// 2^32, 2^32 + 2^35, 2^40 and -1, bit tests whose offset reaches below the data or past 2^32, a push at the
-/// stack's bottom and at rsp 0, `call r` with rsp at 2^32 and 0, and the guest's 0x67 forms (an operand, `stos`,
-/// a bit test, `xlat`) and `maskmovq`. Every case ends as the CPU's, or as a named known difference (the wrapping
+/// stack's bottom and at rsp 0, `call r` with rsp at 2^32 and 0, the guest's 0x67 forms (an operand, `stos`, a
+/// bit test, `xlat`), `fxsave64` across 2^32 with and without 0x67, and `maskmovq`. Every case ends as the CPU's, or as a named known difference (the wrapping
 /// form's landing modulo 2^32 among them).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
@@ -599,6 +599,11 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
         &[(r(RAX), 0xffff_fff0), (r(RCX), 0x100)],
     ));
     cases.push(with(&[0x67, 0xd7], &[(r(RBX), WINDOW + DATA)]));
+    // fxsave64 [rax] and, under 0x67, [eax], whose parts cross 2^32 (the ninth check's case), and in the data.
+    for at in [0xffff_ffd6, DATA] {
+        cases.push(with(&[0x48, 0x0f, 0xae, 0x00], &[(r(RAX), at)]));
+        cases.push(with(&[0x67, 0x48, 0x0f, 0xae, 0x00], &[(r(RAX), at)]));
+    }
     // maskmovq mm0, mm1 at rdi in the data and past 2^32.
     for at in [DATA, DATA + (1 << 40)] {
         cases.push(with(&[0x0f, 0xf7, 0xc1], &[(r(RDI), at)]));

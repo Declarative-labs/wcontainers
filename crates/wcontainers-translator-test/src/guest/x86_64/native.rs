@@ -294,7 +294,9 @@ fn compare_one(
             if five_level_only(theirs) && matches!(ours, Stop::GeneralProtection | Stop::StackFault)
             {
                 Ok((Agreement::KnownFailure(FIVE_LEVEL_REFERENCE), ended))
-            } else if way == Way::InProcess(Check::Wrapping) && beyond_the_window(theirs) {
+            } else if way == Way::InProcess(Check::Wrapping)
+                && refused_exactly(reference, case, host, made)?
+            {
                 Ok((Agreement::KnownFailure(WRAPPED_LANDING), ended))
             } else if (meaning_differs_named(case) || ended == Ended::Refused)
                 && answered.is_some_and(|answered| answered == translated::<X86_64>(case))
@@ -310,17 +312,19 @@ fn compare_one(
 
 /// The wrapping form's named difference (docs/x86-native-output.md section 5): an address at or above 2^32 lands at
 /// its value modulo 2^32 inside the window, where the reference faults.
-const WRAPPED_LANDING: &str =
-    "the wrapping form's landing modulo 2^32, where the reference faults at or above 2^32";
+const WRAPPED_LANDING: &str = "the wrapping form's landing modulo 2^32, where the exact form refuses the address and agrees with the CPU";
 
-/// Whether the reference stopped as it does at an address at or above 2^32: a fault there, or general protection or
-/// a stack fault at an address that is not canonical.
-fn beyond_the_window(stop: Stop) -> bool {
-    match stop {
-        Stop::MemoryFault(address) => address >= WINDOW_BYTES,
-        Stop::GeneralProtection | Stop::StackFault => true,
-        _ => false,
-    }
+/// Whether the exact form agrees with the CPU on the case by refusing its address or by the inside's answer: the
+/// two forms then differ only where an address at or above 2^32 is taken modulo 2^32 by the wrapping one.
+fn refused_exactly(
+    reference: &mut Reference,
+    case: &Case,
+    host: HostMatches,
+    made: &NativeRequest,
+) -> Result<bool, String> {
+    let exact = Way::InProcess(Check::Exact);
+    Ok(compare_one(reference, case, host, exact, made)
+        .is_ok_and(|(_, ended)| matches!(ended, Ended::Refused | Ended::Answered(_))))
 }
 
 /// The reference machine has 5-level paging (cloud/x86/x86-machine.md): an access or a transfer to an address

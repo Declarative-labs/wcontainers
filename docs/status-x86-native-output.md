@@ -15,9 +15,76 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   its cause and owner. Fifteen independent checks of XN1; XN2 run 1 answered the fifteenth's five minor findings
   in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
   "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
-- XN2 (way I, the checked forms): partly built (run 1), see "XN2" below. Before run 1, `carry::carry_plain`
+- XN2 (way I, the checked forms): partly built (runs 1 and 2), see "XN2 run 2" and "XN2 (run 1)" below. Left:
+  the speed figures (needs layer 2's program blob in I, below) and the tests that need an executor. Before run 1, `carry::carry_plain`
   refused the in-process way by an assertion for every instruction, memory or not (the fifteenth check: `add rax,
   rcx` refused as `mov rax, [rcx]` was); that assertion is gone, and the one left refuses only a guest string in I.
+
+## XN2 run 2 (2026-11-24)
+
+Built:
+- Strings in I (`window::string`): each start the instruction uses probed in both forms (a start at or above 2^32
+  is the inside's, counted by it), `mov esi, esi` / `mov edi, edi`, rdi rebased by B from the area's fixed part
+  (new `FixedPart::window` and `window_negated`, read-only to the guest) around the copy, its rsi side on `gs:`;
+  the map holds rdi as `Held::Rebased(rdi)` meanwhile (new in wcontainers-guest-cpu, with `Fixup::Offset`; the
+  stop crate of arm64 has one `unreachable!` arm for each, commits 6d9ee13bc and fe6c66c38).
+- The fixes layer 1 in I found, listed under "Departures from the plan (XN2)": pushes and pops to memory commit at
+  their store; a call's lookup before its push; withheld registers' pushes and pops; the high-byte slot.
+- Native layer 1 in I (crates/wcontainers-translator-test, `native::compare_in_process`): the blob maps the case's
+  data and code at B + their addresses (B = 2^41), the probe's page at B - 2 pages and nothing else within 2^35
+  bytes below, FS on the thread area, GS on B, the guest's FS base in the area; a fault's address in the window
+  less B; a probe's fault is `Ended::Refused`, the guest as it started, answered by the meaning. Each case runs
+  uncounted and counted with a stop after every host instruction (every intermediate stop's registers read through
+  the map, `Rebased` and `Offset` included). Known kinds added: the wrapping form's landing modulo 2^32 (the
+  reference faulting at or above 2^32), and a refused run's meaning differing from the reference (as the
+  WebAssembly output's layer 1 does).
+
+Results (rented x86 machine, Xeon 8488C):
+- `the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64` (plan 7's way I cases, 60 in each form at first: one byte
+  past the data and across its end, 2^32 - 1 with 8 bytes and 2^32, a SIB index wrapping back into the data and one
+  reaching 2^43 past it, `fs:` with negative offsets, `rep movsb` and `rep stosb` with counts 2^20 and 0x1800 up
+  and down (DF) from inside the data and down from 0x10 past 0, `movsb`, `lodsb`, `rep stosb` with rsi or rdi at
+  2^32, 2^32 + 2^35, 2^40 and -1, `bt`/`bts` with offsets -64, 2^35, 0x200000005 and 5, `push rax` and `call rax`
+  with rsp at the data's bottom, 0, 8 and 2^32, `mov rax, [ebx]`, `stosb`, `bt` and `xlat` under 0x67, `maskmovq`
+  at the data and 2^40 past it): wrapping 53 as the CPU and 7 the named landing; exact 60 as the CPU; 0 failing
+  (load 14).
+- Layer 1 in I, every form, 20 cases, seed 5150 (load 8 to 18): wrapping 0 forms differ; exact 1,
+  `Fxrstor_m512byte` (`fxrstor [rsp-9]` with rsp past 2^47: reference general protection, the meaning a stack
+  fault), which the WebAssembly output's layer 1 fails the same way at that seed; now counted as the meaning's
+  difference (filed for the x86 track under "Coordination").
+- Layer 1 in I, every form (2,008), 200 cases, seeds 5150 and 2611 (load 12 to 65, 646 s at 48 jobs): exact 0
+  forms differ at both seeds (6,904 and 6,840 known cases: the reference's 5-level paging in 1,636 and 1,647 forms'
+  worth, the meaning's difference after a refusal or an answer in 19 and 14 forms, Intel's transcendentals in 4);
+  wrapping 0 forms differ at 5150, 1 at 2611: `vmaskmovps ymm6, ymm13, [r12+r12*2]` (c4 82 15 2c 34 64), its
+  address at 2^64 - 6, the reference's fault at 2 after the 64-bit wrap, ours at 2^32 + 2 (the guard page): the
+  named landing, which the classifier then recognised only by the reference's fault address at or above 2^32.
+  Fixed in the test: a wrapping failure is the named landing only when the same case's exact form agrees with the
+  CPU by a refusal or the inside's answer (the forms' accesses are the same cut instructions otherwise; the gathers,
+  which the exact form sends to the inside, are judged that way). Rerun of the wrapping form at both seeds, 200
+  cases (load 26 to 40): 0 forms differ; known cases 46,807 and 47,040, the named landing in 1,528 and 1,525 forms'
+  worth, the 5-level reference in 96, Intel's transcendentals in 2.
+- The window cases rerun with `fxsave64` across 2^32 with and without 0x67 added: wrapping 57 as the CPU and 7 the
+  named landing, exact 64 as the CPU.
+- The speculation probe made from the emitted code (scratch xn2r2/specemit.c fed by the test
+  `speculation_gadgets`, which prints the exact form's pieces of `movzx eax, byte [rbx]; shl eax, 12; mov eax,
+  [rax+100000h]`, the same after `lodsb`, and `bt [rax], rcx; setc al; ...` up to the piece's first call, and an
+  uncut control with each access's 0x67 and `mov esi, esi` taken out; output xn2r2/specemit.out): processor 5,
+  load 34 to 60, 100,000 rounds each with seeds 0x1234567 and 0xbeef01: the cut forms read the secret 0 times
+  in all six runs (the in-window byte 98,034 to 99,729 times); the uncut controls read it 99,121 to 99,770 times.
+- The window sweep (rented ARM64 machine, now with strings, about one in six instructions, and direct branches):
+  seed 0x5eed 20,000 cases (19,062 strings); seeds 0x2b17, 0x51, 0xdecaf 400,000 cases each (about 377,000
+  strings each): 0 outside.
+
+Left after run 2, in order:
+1. Speed per workload, each checked form against the unchecked one (bar 1.10 wrapping, 1.35 exact), and the
+   stack form against rsp held as B + rsp. Needs layer 2's program blob (native_programs.rs) in I: the program and
+   its stack at B + their addresses (the programs sit at 0x400000 and STACK_TOP 0x4810_0000, below 2^32), the
+   probe's page, FS on the area and GS on B, the routines reading the area on FS, and the blob's system calls given
+   host pointers (a guest pointer argument plus B: `write`'s buffer, and whatever else the benchmark set calls;
+   today the routines make the guest's call raw, right only where guest and host addresses agree). Then
+   `measure_benchmarks_natively_x86_64` per way, on an idle machine, `taskset`.
+2. Layer 2 and 3 in I (the same blob), which also gives the link and stop tests in I a program to run.
+3. Register-group and hostile-guest tests in I, and the X9 programs: an executor (gap item 1).
 
 ## XN2 (run 1, 2026-11-24)
 
@@ -73,7 +140,7 @@ Carried findings (the eighth and ninth checks), where each stands:
 - Crossing offset 2^32 under 0x67 (`fxsave64`): see the images in parts above.
 None of these has yet run against the CPU in I: that needs the harness below.
 
-Not built yet, in order:
+Not built yet, in order (as run 1 left it; items 1 to 3 are done in run 2):
 1. Strings in I (`carry/window.rs` refuses them by an assertion): the probe of rsi and rdi, `mov esi, esi` and
    `mov edi, edi`, rdi rebased by the window's base and back (plan 4). The map then needs plan 9's `Held::Rebased`
    (shared crate wcontainers-guest-cpu); adding the variant breaks the exhaustive match in
@@ -380,6 +447,16 @@ native_window -- --nocapture'` (any Linux machine: the tests decode, they run no
 `X86_WINDOW_SEED` and `X86_WINDOW_CASES` (decimal, or hex with 0x for the seed); summary line "seed ...: N cases, N
 pieces, ... 0 outside".
 
+Run 2's tests on the rented x86 machine (its own reference): `x86-run <checkout> --name x86-native-output --jobs 48
+-- 'WC_LAYER1_CASES=200 WC_LAYER1_SEED=5150 WC_LAYER1_JOBS=48 cargo test -q -p wcontainers-translator-test --test
+layer1 every_form_matches_the_cpu_in_process_x86_64 -- --nocapture'` (both forms, or `WC_LAYER1_CHECK=wrapping` or
+`exact`; summary lines "layer 1 in process, the ... form"); `cargo test -q -p wcontainers-translator-test --test
+layer1 the_window_cases -- --nocapture` (seconds; summary "the window's cases"). The speculation probe:
+`cargo test -q -p wcontainers-x86 --test native_window speculation_gadgets -- --ignored --nocapture | grep -E
+'^(load|lods|bt) ' > gadgets.txt` (any machine), then on the x86 machine scratch xn2r2/specemit.c built with `cc
+-O2 -mno-red-zone -fno-stack-protector -mfsgsbase` and run as `taskset -c 5 ./specemit 100000 <seed> <
+gadgets.txt` (copies in /work/probes/xn2 there).
+
 ## How to run XN1's tests
 
 `orchestrator/cloud/x86-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
@@ -462,12 +539,22 @@ way.
   dead: a fault taken after that `cmp` would show the guest the check's flags, not its own, and faults must carry
   exact registers (plan 8). So no limit word exists; the ceiling is 2^32 by the probe itself. Its cost is XN2's
   speed measurement to show.
-- A push is the store and then rsp's move as the commit point, a stop between them repeating the push; a pop,
-  `leave` and `ret` load into t and commit at rsp's move with t relocated. Plan 9's `Fixup::Offset` is not needed.
+- (Run 1 made a push commit at rsp's move after its store; native layer 1 in I, run 2, showed a stop between them
+  sees the stored bytes with the push not done. Run 2 follows the plan: the store is the commit point, rsp's move
+  plan 9's `Fixup::Offset`, now in wcontainers-guest-cpu. A pop to memory commits at its store the same way.) A pop
+  to a register, `leave` and `ret` load into t and commit at rsp's move with t relocated.
 - `pushf` and `enter` go to the inside in I (plan 4 builds `pushf` on the count stack): both are rare in compiled
   code, and the inside's answers exist.
-- A call through a register or memory in I pushes before the lookup's first level, so the exact push's probe uses
-  u (plan 4 counted a second stand-in).
+- A call through a register or memory in I: the exact form's probe of rsp - 8 comes before the lookup's first
+  level (u is free there), then the first level, then the push from the rax stand-in as in P, so no second
+  stand-in (plan 4 counted one). Run 1 had put the first level after the push, which layer 1 found: a target past
+  user space then faulted with the call's push done.
+- A withheld register's push in I is t's, loaded from its slot; its pop writes the slot (the window's pop), never
+  the slot form `pop fs:[slot]`, whose implicit stack access would not be cut (found by layer 1 in run 2: `pop r11`
+  read the host's rsp, outside the window).
+- An instruction naming ah, ch, dh or bh whose address the window puts in t takes the second stand-in slot: the
+  first may hold the register `carry::on_legacy` took for a RIP-relative operand (found by layer 1 in run 2, `add
+  dh, fs:[rip+d]`).
 - A 16-bit bit test borrows t as the count instead of a stand-in v; bit tests need no v in any width (the probe
   runs in u in place).
 - The exact form also probes the last byte of the forms the CPU makes in parts (answering the ninth check).
@@ -617,11 +704,17 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
 
 ## Coordination with other tracks (read theirs at the start of every run)
 
-- native-without-virtual-machine and the ARM64 native back end (asked in XN2 run 1): way I's strings on x86 need
-  plan 9's `Held::Rebased(u8)` in wcontainers-guest-cpu's `Held` (the guest's value is the host register less the
-  window's base B, rdi while a string runs). Adding it makes `held` in
-  crates/executor/implementation/arm64-stop/implementation.rs non-exhaustive; the proposed change there is one arm,
-  `Held::Rebased(_) => unreachable!(...)` (ARM64 rebases no register), or that track's own answer. Way I's area also
+- native-without-virtual-machine and the ARM64 native back end (asked in XN2 run 1, no answer by run 2, so made
+  in run 2 as proposed): wcontainers-guest-cpu's `Held` has `Rebased(u8)` (the guest's value is the host register
+  less the window's base B, rdi while a string runs in I) and `Fixup` has `Offset { register, by }` (rsp after a
+  push's store, plan 9); crates/executor/implementation/arm64-stop/implementation.rs has one `unreachable!` arm
+  for each (ARM64 code makes neither), commits 6d9ee13bc and fe6c66c38, each alone. Its tests still build (clippy
+  of the crate with all targets on the ARM64 machine); replace the arms with that track's own answer if wanted.
+- x86 track (XN2 run 2): `fxrstor [rsp-9]` (0f ae 4c 64 f7) with rsp past 2^47, layer 1 seed 5150 at 20 cases: the
+  reference gives general protection (the misaligned operand), the meaning a stack fault (the address); the
+  WebAssembly output's layer 1 fails it the same way (`WC_LAYER1_FORMS=Fxrstor_m512byte WC_LAYER1_CASES=20
+  WC_LAYER1_SEED=5150`). In I the exact form's probe refuses that address and the meaning answers, so native layer 1
+  in I counts it as the meaning's difference. Way I's area also
   gains `RegisterArea::fs_base` (the guest's FS base) and `kept_t`, and reads the window's page of zeros at B - 2
   pages (`area::PROBE_PAGE`); I's runner maps that page readable and the 2^35 bytes below it without access, as plan
   4's guards say.
@@ -764,6 +857,15 @@ Licences read from cargo tree on the rented machine.
 
 ## Security
 
+- XN2 run 2: no `unsafe` added (grep of carry.rs, carry/window.rs, native_window.rs and the test crate's native.rs
+  finds none); the C speculation probe is scratch, never built into anything shipped. The in-process way's
+  isolation: one window escape found and fixed by native layer 1 in I, a withheld register's pop written as the
+  slot form `pop fs:[slot]`, whose implicit read of the stack was on the host's rsp, not cut to the window (the
+  window sweep had not drawn it). Every guest access either form emits is cut to 32 bits on GS (the sweep, now with
+  strings: 0 outside in 1,220,000 cases), and the speculation probe made from the emitted code read the secret 0
+  times in 600,000 rounds where the uncut control read it about 99 percent of the time. The window base B and -B
+  are words of the fixed part, which the guest cannot write; the guest's FS base, which it can (area word), only
+  ever enters an address that is then cut. Hostile-guest suite in I: not yet (needs an executor, gap item 1).
 - Unsafe code: none in this track's code (carry.rs, carry/window.rs, native.rs, area.rs, strings.rs, answer.rs,
   x87.rs, fpu.rs, transcendental.rs, the test crate's native.rs, native_programs.rs and the tests, native_window.rs
   included; grep finds no `unsafe`, XN2 run 1); the
