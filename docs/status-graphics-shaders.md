@@ -804,7 +804,11 @@ Logs and scripts are in scratch `graphics-shaders/g6-r120` (`lit1.log` and `lit-
   submodules included) or third_party/naga. The lines name other tracks' crates
   (crates/executor/implementation 2,448, crates/processor-architecture/implementation 94, and
   fewer). Run 119's and run 105's sentences that said the check printed no line of this crate are
-  corrected in their sections: both ran without the history.
+  corrected in their sections: both ran without the history. Again at c7267a2cc, after this run's
+  other commits (lit2.log and `lit-out2/lit.txt`, load 34 to 52): "86 changes ... (compared with
+  its upstream c7267a2ccd43); growth is checked", 2,641 `+` and 59 `-`, no `>`, `~` or `!` line,
+  and no line whose path is in this crate or third_party/naga (some other tracks' lines name this
+  crate's constants in their notes only).
 - Minor, A11's places: dxil-spirv's container parser ended the process or took up to minutes on a
   signature's unchecked element count (the check's five cases). Fixed by a carried patch, with a
   test that fails without it (b14b4b8be; A11 on the gap list has the figures). The metadata places
@@ -828,7 +832,10 @@ Logs and scripts are in scratch `graphics-shaders/g6-r120` (`lit1.log` and `lit-
   tests 5 with "444 signatures refused"); the check's five container cases at seed 141421 each
   rejected in 0.011 to 0.013 s; the new test without the patch was stopped by hand after 10
   minutes at 256 GiB resident. Laptop (wasm1.log, load 0.1 to 4.5): the fuzz test built for
-  `wasm32-wasip1` with the patch, its 5 quick tests passed under wasmtime 38.0.4.
+  `wasm32-wasip1` with the patch, its 5 quick tests passed under wasmtime 38.0.4. Desktop
+  (gpu1.log, GPU queue task 74, 02:00 to 02:03, at b14b4b8be): Windows clippy of every target with
+  warnings denied clean; fuzz.rs's 5 quick tests passed natively ("444 signatures refused");
+  `tessellation_draw` on the RTX 3080, the file this run changed, 10 passed (every one "0 failed").
 
 ## G6 run 32 (run 119, round 8 run 1): the sixth check's findings
 
