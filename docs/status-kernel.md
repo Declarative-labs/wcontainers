@@ -8,6 +8,25 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, tenth run: the workspace check again at 9d374918
+
+Started about 06:33 UTC on 2026-11-24. The Mac only read, edited and committed. Scratch kernel/kc9
+(arm.sh, x86.sh, wait.sh, logs beside them).
+
+- Waited 06:37 to 07:15 UTC for the three other tracks' files: only layer1.rs changed (108d7566,
+  the native track), without the x86-64 cfg on the three functions.
+- The whole workspace's `cargo check --keep-going --all-targets` at 9d374918: on ARM64 (other
+  agents' uncommitted edits taken back, 07:15 UTC, load 3) it fails exactly as before, in
+  measured/tests.rs:59, layer1.rs 499, 690 and 715, and guest_memory.rs:222; on x86-64 (07:16 UTC,
+  load 158 from other jobs; the patch taking back others' edits did not upload, so this is the
+  working tree with them) only in measured/tests.rs:59.
+- No interface file differs from main: `git diff HEAD main` over every crates/<name>/*.rs lists
+  only crates/abi/host.rs (this track's abi crate) and wcontainers-opengl's build.rs (not an
+  interface). The owner's 22eaab2d (infallible icmp and raw getters) is on main and its interface
+  files equal agents'.
+
+Not done: as in the eighth run, KC's pass bar waits only on those three files.
+
 ## KC, eighth run: the workspace check on the x86-64 machine
 
 Started about 06:26 UTC on 2026-11-24 at 4403770d. The Mac only edited and committed. Scratch
@@ -1068,7 +1087,8 @@ side of each is worked around without changing the interface.
   that module has; the native track's) and
   crates/executor/implementation/hardware-virtualization/tests/guest_memory.rs:222 (ARM64 only, type
   annotations; the executors job's). Please hand each to its track; KC passes once they build.
-  Still unchanged at 06:35 UTC on 2026-11-24 (ninth run). The fixes as read: guest_memory.rs:222
+  Still unchanged at 06:35 UTC on 2026-11-24 (ninth run), and failing the same way at 9d374918
+  at 07:15 UTC (tenth run; layer1.rs changed in 108d7566 without the cfg). The fixes as read: guest_memory.rs:222
   compares `Vec<u64>` with `[]` (e.g. `assert!(reached.is_empty(), ..)`); layer1.rs's
   `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64`,
   `answered_as_the_meaning` and `the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64`
