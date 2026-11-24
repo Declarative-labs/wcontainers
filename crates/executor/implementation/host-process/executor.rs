@@ -741,6 +741,7 @@ impl HostProcessExecutor {
     }
 
     /// Counts and warns of a read or write of borrowed guest bytes the host refused.
+    #[cfg(target_arch = "aarch64")]
     pub(super) fn guest_bytes_refused(&mut self, error: CpuError) {
         self.counters.guest_bytes_refused += 1;
         eprintln!(
