@@ -8,6 +8,60 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, fifth run: the kernel's runners run through `execute`
+
+Started about 03:20 UTC on 2026-11-24 at 95201039. Every build and test ran on the ARM64 machine
+(name kernel-mem); the Mac only edited, formatted single files and committed. Scratch kernel/kc5
+(c1.sh to c3.sh, logs beside them).
+
+- `Runner::run` on `Executor::execute` was still not written (the executors job's conform-runner
+  stage had not started: its scratch was at repair-hv), so this run wrote it, as the notice of
+  2026-11-23 allows (f6ddaeac, lock line de652cf6). running.rs: a turn gives the thread's
+  registers as arm64's processor state, runs `execute` with a trap handler that records the
+  first trap and terminates, polls the future to its end (with `Waker::noop`), and gives the trap
+  back as the abi's `Exit` (`pc` after the `svc` for a call; illegal instruction, breakpoint and
+  alignment from the syndrome, as they have no hook). `KernelRunner::run` loops `next`, a turn,
+  `exit` under the kernel's lock, taken per turn; it returns `Idle` (with the kernel's time as a
+  `Duration` on the monotonic clock, after telling it `Timer` once), `Finished` (the wait status
+  as `ProcessEnd`, `NotStarted` with the start's error), `Interrupted`, or `Idle` with no time
+  while another runner holds the lock. The runners hold the system (`Arc<S>`) the config gave.
+- The kernel interface's calls end a running turn: the turn's interrupter is kept beside the lock
+  while it runs, and a call that finds the lock held raises it and waits; a runner leaves the lock
+  to such a call and returns `Interrupted` (executing.rs `Shared::lock`, `turn_started`).
+- The executor's processor state becomes arm64's by a `TypeId` check known at compile time
+  (`executors_own`), not by an `Architecture = Arm64` bound: that bound broke the runtime's
+  described.rs, which is generic over any executor (another track's file). A runner of an executor
+  of another architecture panics, named.
+- New tests (the stand-in's tests/runners.rs, guests spin.c and codewrite.c): hello (no C library)
+  and processors (C library, 4 runners) run to their end on a runner; a guest that never traps is
+  interrupted so `suspend_tasks` takes its thread; code the kernel writes over code that already
+  ran (a read from a pipe into an executable page) is what runs next, on a runner and on the
+  kernel's own driver (so unicorn drops its translations on `mem_write`, and `code_changed` doing
+  nothing is right for the stand-in). Kernel unit tests: new running.rs register round trip and
+  hook-less traps.
+- Measured on the ARM64 machine (03:35 to 03:40 UTC, load 7 to 10): clippy over abi, kernel,
+  kernel suite, stand-in and inside, all targets, warnings denied, status 0; kernel unit tests 24,
+  kernel conformance 17, stand-in's runners 4, processors 1, round_trips 6, hello 1, faults 1,
+  align 1 (2 ignored), embedder 36, the stand-in's executor conformance 21 pass.
+- The whole workspace's `cargo check --all-targets` (03:24 UTC, before these commits) fails only in
+  other tracks' crates being conformed now: the simulation and wasmtime executors (missing
+  `Interrupter`, `VolatileBytes` from its old place) and wcontainers-translator-test's layer1
+  (`guest::x86_64::native`). Nothing of this track's. The wasmtime executor had another agent's
+  edits in progress, so the remote copy took its committed files plus kc5/wasmtime-vb.patch for
+  every build above; the Mac's copy was not touched.
+- No commit of this run touches an interface file.
+- The placement request of 2026-11-23 (mappings low first, independent of the executor's
+  ceiling, the size from `MachineDescription`) is taken as part of the next milestone, KF, whose
+  placement work it continues; `GuestMachine` keeps `C: Cpu` only for `address_space` until then.
+
+Not done, in order:
+- A time slice: `execute` takes none, so a turn runs until its thread traps; a guest thread that
+  spins without a call starves the others until one of the interface's calls ends its turn.
+- The runtime's `RunInterrupter` reaches no running turn (the `Kernel` interface has no call to
+  interrupt one); the runtime's stop closure was for the old executors' stop flags.
+- The ninth KF run's whole suite and LTP comparison (job kernel/20261124-024108-1615225) were still
+  in the suite at 03:40 (51 test binaries done); read them next.
+
 ## Guest memory on the executor's memory spaces, first run
 
 Started about 03:00 UTC on 2026-11-24 at 533f6bde. Builds and tests ran on the ARM64 machine
@@ -653,7 +707,15 @@ its renamed part.
   guest still gets -41. The same holds for 515 to 4095 (515 is ENOIOCTLCMD, which `Errno` does not
   name; 512, 513, 514 and 516 are named and come back `WellKnown`): the hook gets `Ok` of the raw
   value, and the guest the error.
-- KC, third run: `Runner::run(&mut self, executor)` is not built. `Kernel::new` makes
+- KC, fifth run: `Runner::run` is built on `execute` (see that section). Three things for you:
+  a turn keeps no time slice, as `execute` takes none (a guest that spins without a call holds
+  its runner's turn until a kernel interface call ends it); the runtime's interrupter cannot reach
+  a running turn, as the `Kernel` interface has no interrupt call; and the processor state is
+  checked to be arm64's at compile time through `TypeId` rather than by a bound, since the
+  runtime's `LocalSystem<E>` names the kernel for any executor `E`. Example: a guest with two
+  threads, one in `for (;;);` and one waiting on a 1 ms timer, never runs the second.
+- KC, third run (answered by the fifth run's runner; kept for the record):
+  `Runner::run(&mut self, executor)` is not built. `Kernel::new` makes
   `parallelism` runners, each panicking as not built; the kernel runs one thread at a time,
   within any parallelism, and from the fourth run tells its programs that `parallelism`
   processors are online. Corrected in the fourth run: the executor interface does have a call
