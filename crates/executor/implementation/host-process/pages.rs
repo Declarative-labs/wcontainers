@@ -40,6 +40,9 @@ pub mod control {
     pub const FILTER_LENGTH: usize = COMMAND_COUNT;
     /// The turn that starts a stub.
     pub const START: u32 = 1;
+
+    /// Every 32-bit word of a control page; every other byte is reached only as part of a 64-bit word.
+    pub(crate) const WORDS32: [usize; 1] = [ANSWER];
 }
 
 /// Byte offsets in a register page.
@@ -80,6 +83,9 @@ pub mod register {
     /// The thread's registers in the hardware, as a [`wcontainers_abi::RegisterBlock`], little endian: what a
     /// [`super::Resume::Enter`] loads and what an exit from translated code saves.
     pub const REGISTERS: usize = 256;
+
+    /// Every 32-bit word of a register page; every other byte is reached only as part of a 64-bit word.
+    pub(crate) const WORDS32: [usize; 4] = [REQUEST, THREAD_ID, EXIT_CLEAR, TAKEN];
 
     const _: () = assert!(EXIT_SYNDROME < REGISTERS);
     #[cfg(target_arch = "aarch64")]
@@ -333,7 +339,8 @@ impl ThreadPages {
             reason = "views the shared thread pages as atomics, which no safe call can give"
         )]
         // SAFETY: the mapping is page-aligned, readable and writable, lives as long as `self`, and is only ever
-        // accessed through atomics here; the stub's own accesses are another process's.
+        // accessed through atomics here, each byte at one size (`word32`, `word64`); the stub's own accesses are
+        // another process's.
         unsafe {
             core::slice::from_raw_parts(
                 self.mapping.as_ptr().cast::<AtomicU32>(),
@@ -367,18 +374,133 @@ impl ThreadPages {
     }
 
     pub(crate) fn control32(&self, thread: usize, offset: usize) -> &AtomicU32 {
-        &self.words32()[Self::control_offset(thread, offset) / size_of::<u32>()]
+        let at = Self::control_offset(thread, word32(&control::WORDS32, offset));
+        &self.words32()[at / size_of::<u32>()]
     }
 
     pub(crate) fn control64(&self, thread: usize, offset: usize) -> &AtomicU64 {
-        &self.words64()[Self::control_offset(thread, offset) / size_of::<u64>()]
+        let at = Self::control_offset(thread, word64(&control::WORDS32, offset));
+        &self.words64()[at / size_of::<u64>()]
     }
 
     pub(crate) fn register32(&self, thread: usize, offset: usize) -> &AtomicU32 {
-        &self.words32()[Self::register_offset(thread, offset) / size_of::<u32>()]
+        let at = Self::register_offset(thread, word32(&register::WORDS32, offset));
+        &self.words32()[at / size_of::<u32>()]
     }
 
     pub(crate) fn register64(&self, thread: usize, offset: usize) -> &AtomicU64 {
-        &self.words64()[Self::register_offset(thread, offset) / size_of::<u64>()]
+        let at = Self::register_offset(thread, word64(&register::WORDS32, offset));
+        &self.words64()[at / size_of::<u64>()]
+    }
+}
+
+/// `offset`, if it is one of the page's 32-bit words. Each byte of the thread pages is reached at one size only:
+/// Rust makes racing atomic accesses of different sizes over the same bytes undefined behaviour.
+fn word32(words32: &[usize], offset: usize) -> usize {
+    assert!(
+        words32.contains(&offset),
+        "{offset} is not a 32-bit word of a thread page"
+    );
+    offset
+}
+
+/// `offset`, if it starts a 64-bit word that holds none of the page's 32-bit words.
+fn word64(words32: &[usize], offset: usize) -> usize {
+    assert!(
+        offset.is_multiple_of(size_of::<u64>())
+            && !words32
+                .iter()
+                .any(|word| word / size_of::<u64>() == offset / size_of::<u64>()),
+        "{offset} is not a 64-bit word of a thread page"
+    );
+    offset
+}
+
+const _: () = {
+    let mut index = 0;
+    while index < control::WORDS32.len() {
+        assert!(control::WORDS32[index].is_multiple_of(size_of::<u32>()));
+        index += 1;
+    }
+    let mut index = 0;
+    while index < register::WORDS32.len() {
+        assert!(register::WORDS32[index].is_multiple_of(size_of::<u32>()));
+        index += 1;
+    }
+    assert!(REGISTER_PAGES_OFFSET >= THREADS_PER_PROCESS * THREAD_PAGE_SIZE);
+    assert!(THREAD_PAGE_SIZE.is_multiple_of(size_of::<u64>()));
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Before the check, `control64(0, ANSWER)` gave a 64-bit atomic over the 32-bit answer word, so safe code of
+    /// this crate could race two sizes over the same bytes.
+    #[test]
+    #[should_panic(expected = "is not a 64-bit word")]
+    fn a_32_bit_word_is_never_reached_at_64_bits() {
+        let pages = ThreadPages::new().expect("thread pages");
+        let _ = pages.control64(0, control::ANSWER);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a 64-bit word")]
+    fn the_64_bit_word_holding_a_32_bit_one_is_refused() {
+        let pages = ThreadPages::new().expect("thread pages");
+        let _ = pages.register64(0, register::REQUEST);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a 32-bit word")]
+    fn a_64_bit_word_is_never_reached_at_32_bits() {
+        let pages = ThreadPages::new().expect("thread pages");
+        let _ = pages.register32(0, register::EXIT);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a 64-bit word")]
+    fn a_misaligned_offset_is_refused_not_rounded() {
+        let pages = ThreadPages::new().expect("thread pages");
+        let _ = pages.control64(0, control::RESUME + 4);
+    }
+
+    #[test]
+    fn every_named_word_is_reached_at_its_own_size() {
+        let pages = ThreadPages::new().expect("thread pages");
+        for offset in control::WORDS32 {
+            pages.control32(0, offset);
+        }
+        for offset in register::WORDS32 {
+            pages.register32(THREADS_PER_PROCESS - 1, offset);
+        }
+        for offset in [
+            control::RESUME,
+            control::COMMAND_COUNT,
+            control::TOUCH_ADDRESS,
+            control::TOUCH_VALUE,
+            control::ENTER_AT,
+            control::COMMANDS,
+            THREAD_PAGE_SIZE - size_of::<u64>(),
+        ] {
+            pages.control64(0, offset);
+        }
+        for offset in [
+            register::TRANSLATED,
+            register::EXIT,
+            register::EXIT_VALUE,
+            register::STOPS_IN_TURN,
+            register::STOPS_IN_PUBLISH,
+            register::STOPS_IN_WAIT,
+            register::STOPS_IN_END,
+            register::EXIT_DETAIL,
+            register::STOPS_IN_CALL,
+            register::VECTORS_BY_RETURN,
+            register::CALL_SCRATCH,
+            register::EXIT_SYNDROME,
+            register::REGISTERS,
+        ] {
+            pages.register64(0, offset);
+        }
     }
 }
