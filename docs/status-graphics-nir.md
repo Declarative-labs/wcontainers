@@ -28,9 +28,12 @@ glsl_reference 10 and 2 ignored):
   face's coordinates on the face the direction picks (OpenGL's chain rule,
   `cube_face_derivative`), not the difference of the faces of the coordinate and the coordinate
   plus the gradient, which crossed to another face for KHR `texture_cube_map_array.sampling`'s
-  gradients of four face widths. Not yet run on the rig at the time of writing.
+  gradients of four face widths. Both KHR `texture_cube_map_array.sampling` cases pass in the
+  whole run below.
 - Storage buffers and images in geometry and control programs (01fbd941): both run as compute
-  work in the stage helper, so the screen reports them as for compute programs. Evaluation
+  work in the stage helper, so the screen reports them as for compute programs: 1,126 cases that
+  were NotSupported run and pass (below), 3 run and fail (dEQP-GLES31
+  `builtin_functions.common.sign.float_*_tess_control`, not yet read). Evaluation
   programs still have none (their drawn form is a vertex program, and the WebGPU back end writes
   no storage there): KHR-GLES32 `constant_expressions`' 232 evaluation cases stay NotSupported.
 - A blit the blitter does not make is refused with its formats (300ed5b6).
@@ -52,6 +55,45 @@ that crashed or failed pass: dEQP-GLES31 `geometry_shading.layered` 21 and `inst
 `texture_cube_map_array.color_depth_attachments` and `stencil_attachments_*` 3 each. No case that
 passed fails (`texture_cube_map_array.image_op_compute_sh` moved from pass to flake, a known
 flake in KHR-GLES32 already).
+
+THE TABLE, run 27's whole run at 01fbd941's driver (every change above; desktop, RTX 3080, one GPU
+job that built and ran, 8 glcts at once, 18:01 to 18:35 desktop time, other tracks' jobs queued
+beside; scratch `results/g9r27/full/<list>/results.csv`, log `logs/g9r27/full-b.log`;
+`scripts/g9r25-table.py g9r27/full g9r26/full` compares), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,000, Warn 6, Fail 22, Crash 2, Skip 135: 17,006 of 17,030,
+  99.86%.
+- dEQP-GLES3: 44,768; Pass 44,192, Warn 5, Fail 57, Crash 33, Skip 481: 44,197 of 44,287, 99.80%.
+- dEQP-GLES31: 37,802; Pass 36,478, Fail 44, Crash 116, Flake 4, Skip 1,160: 36,478 of 36,642,
+  99.55%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,198, Fail 3, Crash 69, Skip 228: 6,198 of 6,270, 98.85%.
+- KHR-GLES31: 4,101; Pass 3,690, Fail 20, Crash 50, Skip 341: 3,690 of 3,760, 98.14%.
+- KHR-GLES32: 1,405; Pass 1,090, Fail 11, Crash 46, Timeout 1, Skip 257: 1,090 of 1,148, 94.95%.
+  NotSupported: `constant_expressions` 232 (the evaluation programs', above),
+  `ext_texture_shadow_lod` 15 (not reported), `geometry_shader` 5, `texture_cube_map_array` 2,
+  `tessellation_shader` 2, `shader_macros` 1.
+- KHR-GL33: 9,886; Pass 9,081, Fail 13, Crash 270, Skip 522: 9,081 of 9,364, 96.98%.
+- KHR-GL46 (19,714): no 4.6 context (G9's second part).
+- The bar's measure, every list that starts: 118,178 of 118,939 run, 99.36%, above the 92.9%
+  floor (run 26: 99.29%). With KHR-GLES32's 257 NotSupported counted as failed: 118,178 of
+  119,196, 99.15%.
+- Against run 26's whole run: cases that crashed or failed pass: dEQP-GLES31 62 (the layered
+  output, `copy_image` none), KHR-GLES31 13 and KHR-GLES32 12 (layered output, cube map array
+  sampling), dEQP-GLES3 2; NotSupported cases that run and pass: dEQP-GLES31 648, KHR-GLES31 239,
+  KHR-GLES32 239 (storage in geometry and control programs).
+- Cases that passed in run 26 and fail or flake, all of the intermittent storage coherence family
+  that earlier whole runs show as flakes (each was Flake in run 23 and run 25's two runs, or moves
+  between Pass and Flake): dEQP-GLES31 `compute.basic.image_barrier_single` and
+  `synchronization.inter_invocation.ssbo_atomic_overwrite` (Fail),
+  `image_load_store.*.qualifiers.volatile_*` 3 and `inter_invocation.image_atomic_read_write`
+  (Flake). KHR-GLES31 `tessellation_shader.vertex.vertex_ordering` went from timeout to fail.
+- The run's process refusals, most first: device lost 562 (KHR-GL33's BC textures most of them),
+  an evaluation program reading the point size 144 (asked of the shaders track), sampling an
+  integer texture 126, the stage helper's buffer size 56, a border on a comparison sampler 56,
+  comparisons with a bias or gradients 34, the 96-bit blits 64 (refusal now with formats: blit
+  formats 16 to 15 of textures 24 and 15 or 19, which fits a four-channel 32-bit texture against
+  three-channel ones, as read above), a variable of another mode 26. Layered geometry output no
+  longer refuses.
 
 G9 run 26 (2026-11-23, round 4's fourth run). Built this run, each linted with warnings denied
 with and without Mesa and the nir crate's route tests passed on the x86-64 machine (19 of 19):
@@ -383,9 +425,9 @@ against run 22's whole run at d8bb7a2e (scratch `results/g9r23/full/<list>/resul
   layered geometry output 56, a border on a comparison sampler 52, comparisons with a bias or
   gradients 34.
 
-G9's FIRST PART IS COMPLETE for its independent check (run 26: the table to check against is
-run 26's whole run above, every list whole at one driver, 99.29% against the 92.9% floor, with its
-regressions and their fixes; run 25's and run 23's are kept as history). As run 23 left it: every list that starts was run whole at
+G9's FIRST PART IS COMPLETE for its independent check (run 27: the table to check against is
+run 27's whole run above, every list whole at one driver, 99.36% against the 92.9% floor; run 26's,
+25's and 23's are kept as history). As run 23 left it: every list that starts was run whole at
 one driver (KHR-GLES32 at the same driver with Mesa's WGL patch), the bar's measure is 98.71%
 against the 92.9% floor, and every failing group is in the gap list below with its cause and
 owner, those not yet read named as such. The check asked for: a sample of each list on the rig
@@ -397,16 +439,14 @@ The suite of both crates at 7e686f27 (x86-64 machine, load 21 to 25): fmt clean;
 warnings denied clean with and without Mesa; with Mesa 30 tests pass and 2 are ignored (route 17,
 glsl_reference 10 and 2 ignored, glsl_buffers 2, one more), without it none build that need it.
 
-Next, in order (run 26):
-1. The independent check of G9's first part, against run 26's whole run below (a sample of each
+Next, in order (run 27):
+1. The independent check of G9's first part, against run 27's whole run above (a sample of each
    list on the rig, the NotSupported groups, the RTX 3080's own OpenGL on today's failing groups).
-2. Layered geometry output (dEQP `geometry_shading.layered` and `instanced`, KHR `geometry_shader`
-   layered cases, `texture_cube_map_array` with layers): the design is in the gap list; with it,
-   clears of layered framebuffers on every layer.
-3. Wide points (KHR-GL33 `restart_mode`, the NotSupported wide-point groups); integer cube map
-   arrays sampled with gradients.
-4. Still not traced: the 96-bit `copy_image` blits (rgb32f to the integer formats), the
-   run-time gather offsets at edges, `advanced-copyImage-cs`,
+2. Storage in evaluation programs (KHR-GLES32 `constant_expressions`' 232 NotSupported): run an
+   evaluation program writing storage as compute work and draw its records, as a geometry
+   program's are; the three `sign.*_tess_control` failures, not yet read.
+3. Wide points (KHR-GL33 `restart_mode`, the NotSupported wide-point groups).
+4. Still not traced: the run-time gather offsets at edges, `advanced-copyImage-cs`,
    `advanced-allMips-cs`, `advanced-sync-imageAccess2`, `basic-glsl-misc-fs`, the storage
    coherence of `synchronization` and `advanced-readWrite-case1-cs`.
 5. This track's causes found and not built: an input read at the centroid and at an offset,
@@ -414,6 +454,8 @@ Next, in order (run 26):
 6. Built but not this track's to end: the point size between staged stages (shaders track,
    asked), the stencil blit's slow path name (interface track, asked).
 7. G9's second part (OpenGL 4.0, so that KHR-GL46 starts) after the check.
+
+The 96-bit `copy_image` blits are read (run 27, above) and asked of the WebGPU back end track.
 
 Run 25's list, kept for its readings: its items 1 and the 96-bit blits are done in run 26; its
 item 2 is read in run 26's gap list rows; "ASTC against 128-bit `copy_image`" was a misreading
@@ -436,6 +478,15 @@ Run 24's list, kept for its readings (items done in run 25 are marked in the gap
    3D texture).
 
 ## Gap list (G9's first part, at e742e0be)
+
+Run 27's changes to the rows below: done, the layered rows (dEQP-GLES31 `geometry_shading.layered`
+and `instanced`, KHR `geometry_shader.layered_*`, `texture_cube_map_array` attachments with
+layers, `tessellation_geometry_interaction...geometry_scatter_layers`) and KHR
+`texture_cube_map_array.sampling`'s integer gradients. `copy_image.non_compressed
+.viewclass_96_bits` 32 crashes: cause read (st/mesa holds `GL_RGB32F` in four channels, the
+integer formats in three), owner the WebGPU back end track (the render use of the three-channel
+formats, asked). New: dEQP-GLES31 `builtin_functions.common.sign.float_*_tess_control` 3 Fail,
+not yet read (this track).
 
 Run 26's changes to the rows below (the groups run 25 left not yet read, read from run 25's kept
 `.qpa` files, copied to scratch `results/g9r25/qpa`):
