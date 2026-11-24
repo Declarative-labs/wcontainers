@@ -19,7 +19,9 @@ pub struct HeapMapping {
 
 impl HeapMapping {
     pub fn new(count: usize) -> Arc<HeapMapping> {
-        Arc::new(HeapMapping { words: (0..count).map(|_| AtomicU64::new(0)).collect() })
+        Arc::new(HeapMapping {
+            words: (0..count).map(|_| AtomicU64::new(0)).collect(),
+        })
     }
 }
 

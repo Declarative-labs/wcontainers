@@ -10,7 +10,9 @@ mod volatile_bytes {
     use super::*;
 
     wcontainers_volatile_bytes_conformance::tests!(
-        Words::new(HeapMapping::new(WORDS)).part(3..WORDS as u64 * 8 - 1).expect("the offsets lie inside the mapping")
+        Words::new(HeapMapping::new(WORDS))
+            .part(3..WORDS as u64 * 8 - 1)
+            .expect("the offsets lie inside the mapping")
     );
 }
 

@@ -42,7 +42,8 @@ mod file {
 
     /// Returns a memory file of the length, sealed against shrinking when asked.
     fn memory_file(length: u64, sealed: bool) -> OwnedFd {
-        let file = memfd_create("words", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).expect("a memory file");
+        let file = memfd_create("words", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING)
+            .expect("a memory file");
         ftruncate(&file, length).expect("the file grows");
         if sealed {
             fcntl_add_seals(&file, SealFlags::SHRINK).expect("the file takes the seal");
@@ -62,29 +63,45 @@ mod file {
         use super::*;
 
         wcontainers_volatile_bytes_conformance::tests!(
-            words().part(3..LENGTH as u64 - 1).expect("the offsets lie inside the mapping")
+            words()
+                .part(3..LENGTH as u64 - 1)
+                .expect("the offsets lie inside the mapping")
         );
     }
 
     #[test]
     fn refuses_a_file_that_can_shrink() {
         let file = memory_file(LENGTH as u64, false);
-        assert!(matches!(HostMapping::file(file.as_fd(), 0, LENGTH), Err(FileError::Unsealed)));
+        assert!(matches!(
+            HostMapping::file(file.as_fd(), 0, LENGTH),
+            Err(FileError::Unsealed)
+        ));
     }
 
     #[test]
     fn refuses_offsets_past_the_end_of_the_file() {
         let file = memory_file(LENGTH as u64, true);
-        assert!(matches!(HostMapping::file(file.as_fd(), 8, LENGTH), Err(FileError::Short)));
-        assert!(matches!(HostMapping::file(file.as_fd(), u64::MAX - 7, 8), Err(FileError::Short)));
-        assert!(matches!(HostMapping::file(file.as_fd(), 4, 8), Err(FileError::Length)));
+        assert!(matches!(
+            HostMapping::file(file.as_fd(), 8, LENGTH),
+            Err(FileError::Short)
+        ));
+        assert!(matches!(
+            HostMapping::file(file.as_fd(), u64::MAX - 7, 8),
+            Err(FileError::Short)
+        ));
+        assert!(matches!(
+            HostMapping::file(file.as_fd(), 4, 8),
+            Err(FileError::Length)
+        ));
     }
 
     #[test]
     fn sees_what_another_mapping_of_the_file_writes() {
         let file = memory_file(LENGTH as u64, true);
-        let first = Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
-        let second = Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
+        let first =
+            Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
+        let second =
+            Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
         assert_eq!(first.store(3, u64::MAX), Ok(()));
         assert_eq!(second.load(3), Ok(u64::MAX));
     }

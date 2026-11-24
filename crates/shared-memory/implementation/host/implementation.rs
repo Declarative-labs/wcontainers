@@ -53,7 +53,11 @@ impl HostMapping {
 
     /// Maps the memory file's bytes from the offset for the length, shared with whatever else maps the file.
     #[cfg(target_os = "linux")]
-    pub fn file(file: BorrowedFd<'_>, offset: u64, length: usize) -> Result<Arc<HostMapping>, FileError> {
+    pub fn file(
+        file: BorrowedFd<'_>,
+        offset: u64,
+        length: usize,
+    ) -> Result<Arc<HostMapping>, FileError> {
         use rustix::fs::{SealFlags, fcntl_get_seals, fstat, fstatfs};
 
         if length == 0 || !length.is_multiple_of(WORD) || !offset.is_multiple_of(WORD as u64) {
@@ -66,23 +70,35 @@ impl HostMapping {
             return Err(FileError::HugePages);
         }
         let size = u64::try_from(fstat(file).map_err(io::Error::from)?.st_size).unwrap_or(u64::MIN);
-        if offset.checked_add(length as u64).is_none_or(|end| end > size) {
+        if offset
+            .checked_add(length as u64)
+            .is_none_or(|end| end > size)
+        {
             return Err(FileError::Short);
         }
-        let map = MmapOptions::new().offset(offset).len(length).map_raw(&file)?;
+        let map = MmapOptions::new()
+            .offset(offset)
+            .len(length)
+            .map_raw(&file)?;
         Ok(Arc::new(HostMapping::aligned(map)))
     }
 
     /// Wraps a mapping whose start is a page plus a multiple of 8, so aligned to 8.
     fn aligned(map: MmapRaw) -> HostMapping {
-        assert!(map.as_ptr().cast::<u64>().is_aligned() && !map.as_ptr().is_null(), "a mapping starts aligned to 8");
+        assert!(
+            map.as_ptr().cast::<u64>().is_aligned() && !map.as_ptr().is_null(),
+            "a mapping starts aligned to 8"
+        );
         HostMapping { map }
     }
 }
 
 impl Sealed for HostMapping {}
 
-#[expect(unsafe_code, reason = "memory the host mapped, which only `Words` reaches")]
+#[expect(
+    unsafe_code,
+    reason = "memory the host mapped, which only `Words` reaches"
+)]
 // SAFETY: `MmapRaw` keeps the range mapped readable and writable until it drops, and nothing here remaps or unmaps it.
 // Anonymous memory never traps; a file is sealed against shrinking and was at least as long as the range when mapped,
 // so it stays so, and it is not on the huge-page file system. `aligned` checked the start, and both constructors the
