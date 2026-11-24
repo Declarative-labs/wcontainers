@@ -228,8 +228,8 @@ impl Stub {
     }
 
     /// Writes the stub's start into thread 0's control page: the filter, which the stub reads, and the start's turn.
-    pub(crate) fn write_start(pages: &ThreadPages) {
-        let filter = stub_filter();
+    pub(crate) fn write_start(pages: &ThreadPages, frames_without_vectors: bool) {
+        let filter = stub_filter(frames_without_vectors);
         assert!(
             filter.len() * size_of::<u64>() <= crate::layout::THREAD_PAGE_SIZE - control::COMMANDS,
             "the stub's filter outgrew its page"
@@ -789,7 +789,7 @@ impl Stub {
     }
 
     /// Whether the stub's socket has hung up, which only its end does.
-    fn hung_up(&self) -> Result<bool, Errno> {
+    pub(crate) fn hung_up(&self) -> Result<bool, Errno> {
         let mut socket = [PollFd::new(&self.socket, PollFlags::IN)];
         let ready = rustix::event::poll(&mut socket, Some(&Timespec::default()))?;
         Ok(ready > 0 && socket[0].revents().contains(PollFlags::HUP))

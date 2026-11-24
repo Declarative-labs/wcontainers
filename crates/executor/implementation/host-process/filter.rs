@@ -211,8 +211,9 @@ impl Program {
 /// bytes past the code area's execute-only over exactly the slot table; `mprotect` inside the guest area, never
 /// executable; `munmap` inside the guest area;
 /// `clone` of a thread of the stub only; `recvmsg` on its socket without waiting and `close` of a received block;
-/// `sched_setaffinity` of the calling thread only; on ARM64 `rt_sigreturn`. Anything else kills the stub.
-pub(crate) fn stub_filter() -> Vec<sock_filter> {
+/// `sched_setaffinity` of the calling thread only; `rt_sigreturn` only on an ARM64 host whose signal frames hold no
+/// FP/SIMD record. Anything else kills the stub.
+pub(crate) fn stub_filter(frames_without_vectors: bool) -> Vec<sock_filter> {
     let mut program = Program {
         ops: Vec::new(),
         labels: Vec::new(),
@@ -250,14 +251,19 @@ pub(crate) fn stub_filter() -> Vec<sock_filter> {
     ] {
         program.jump(BPF_JEQ | BPF_K, number, Target::Label(to), Target::Next);
     }
-    // A handler whose frame holds no FP/SIMD registers returns through it to save them (gVisor on ARM64).
+    // A handler whose frame holds no FP/SIMD registers returns through it to save them (gVisor on ARM64); where the
+    // host's frames hold them, a guest that forges a frame into that route is killed here.
     #[cfg(target_arch = "aarch64")]
-    program.jump(
-        BPF_JEQ | BPF_K,
-        linux::__NR_rt_sigreturn,
-        Target::Label(allow),
-        Target::Next,
-    );
+    if frames_without_vectors {
+        program.jump(
+            BPF_JEQ | BPF_K,
+            linux::__NR_rt_sigreturn,
+            Target::Label(allow),
+            Target::Next,
+        );
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = frames_without_vectors;
     program.always(kill);
 
     program.place(mmap);

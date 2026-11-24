@@ -233,6 +233,8 @@ pub struct Zygote {
     /// A number no other zygote of this process has, which its stubs carry.
     number: u64,
     reaped: bool,
+    /// The host's signal frames hold no FP/SIMD record, so its stubs' filters let a handler return through its frame.
+    frames_without_vectors: bool,
 }
 
 /// The forking thread's restartable-sequences registration, as the C library describes it.
@@ -341,14 +343,25 @@ impl Zygote {
         .map_err(Unavailable::Host)?;
         drop((memfd, theirs, reservation));
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let zygote = Self {
+        #[cfg_attr(
+            not(target_arch = "aarch64"),
+            expect(unused_mut, reason = "set by ARM64's frame probe")
+        )]
+        let mut zygote = Self {
             socket: Mutex::new(ours),
             process: child,
             number: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             reaped: false,
+            frames_without_vectors: false,
         };
         match zygote.ask(Request::Ping, 0, &[]) {
-            Ok(_) => Ok(zygote),
+            Ok(_) => {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    zygote.frames_without_vectors = zygote.probe_frames()?;
+                }
+                Ok(zygote)
+            }
             Err(_) => match zygote.end() {
                 Ok(Ended::Exited(status)) => Err(ZygoteEnd::from_status(status)
                     .map_or(Unavailable::Host(Errno::CHILD), Unavailable::Zygote)),
@@ -373,10 +386,64 @@ impl Zygote {
         self.ask(Request::Ping, 0, &[]).map(drop)
     }
 
+    /// Whether the host's signal frames hold no FP/SIMD record, as found at the zygote's start, so its stubs' handlers
+    /// may return through their frames.
+    pub fn frames_without_vectors(&self) -> bool {
+        self.frames_without_vectors
+    }
+
+    /// Whether the host's signal frames hold no FP/SIMD record: a stub whose filter refuses a return through its frame
+    /// is stopped in a spinning turn, which its handler ends where the frame holds them, and is killed for where not.
+    #[cfg(target_arch = "aarch64")]
+    fn probe_frames(&self) -> Result<bool, Unavailable> {
+        use crate::pages::Resume;
+        use crate::stub::TurnEnd;
+        let mut stub = self.fork_stub()?;
+        let spinning = stub.new_thread().ok_or(Unavailable::Host(Errno::NOMEM))?;
+        let made = stub.turn(0, &[spinning]).map_err(Unavailable::Host)?;
+        if !matches!(made, TurnEnd::Done { .. }) {
+            return Err(Unavailable::Host(Errno::PROTO));
+        }
+        let turn = stub
+            .begin(1, &[], Resume::Spin)
+            .map_err(Unavailable::Host)?;
+        let end = loop {
+            // A stop sent before the thread is in its turn is ignored, so they are sent until one ends it.
+            match stub.stop(1) {
+                Ok(()) | Err(Errno::SRCH) => {}
+                Err(errno) => return Err(Unavailable::Host(errno)),
+            }
+            let within = std::time::Duration::from_millis(1);
+            if let Some(end) = stub
+                .wait_within(1, turn, within)
+                .map_err(Unavailable::Host)?
+            {
+                break end;
+            }
+            if stub.hung_up().map_err(Unavailable::Host)? {
+                break TurnEnd::StubEnded;
+            }
+        };
+        let process = stub.process();
+        if end != TurnEnd::StubEnded {
+            self.kill(process).map_err(Unavailable::Host)?;
+        }
+        let ended = self.reap(process).map_err(Unavailable::Host)?;
+        match (end, ended) {
+            (TurnEnd::Stopped { .. }, _) => Ok(false),
+            (TurnEnd::StubEnded, Ended::Killed(signal))
+                if signal == linux_raw_sys::general::SIGSYS =>
+            {
+                Ok(true)
+            }
+            _ => Err(Unavailable::Host(Errno::PROTO)),
+        }
+    }
+
     /// Forks a stub with its own socket, thread pages and memory, and waits until it has installed its filter.
     pub fn fork_stub(&self) -> Result<Stub, Unavailable> {
         let pages = ThreadPages::new().map_err(Unavailable::Host)?;
-        Stub::write_start(&pages);
+        Stub::write_start(&pages, self.frames_without_vectors);
         let memory = rustix::fs::memfd_create("wcontainers guest memory", MemfdFlags::CLOEXEC)
             .map_err(Unavailable::Host)?;
         rustix::fs::ftruncate(&memory, OUR_AREA as u64).map_err(Unavailable::Host)?;

@@ -1144,3 +1144,72 @@ fn entered_block_from(seed: u64) -> wcontainers_abi::RegisterBlock {
     loaded.tpidr_el0 = rng.u64(..);
     loaded
 }
+
+/// Where the host's signal frames hold FP/SIMD records, a stop's handler forged into the return through its frame (x15
+/// set at its first choice of that route, as a sibling rewriting the frame's record word would make it) is killed by
+/// the stub's filter, so translated code is never left by a frame the guest wrote.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn a_handler_forged_into_the_return_through_its_frame_is_killed() {
+    use wcontainers_arm64::encode;
+    use wcontainers_executor_host_process::zygote::Ended;
+    const ROUTE: u8 = 15;
+    let zygote = zygote();
+    if zygote.frames_without_vectors() {
+        eprintln!(
+            "this host's frames hold no FP/SIMD record: the return through the frame is its own route"
+        );
+        return;
+    }
+    let mut stub = zygote.fork_stub().expect("fork");
+    let made = stub.new_thread().expect("an index");
+    assert_eq!(
+        stub.turn(0, &[made]),
+        Ok(TurnEnd::Done {
+            commands_applied: 1
+        })
+    );
+    let turn = stub.begin(1, &[], Resume::Spin).expect("begin");
+    std::thread::sleep(SPIN_LIMIT / 4);
+    let thread = Pid::from_raw(stub.reported_thread_id(1) as i32);
+    ptrace::seize(thread, ptrace::Options::empty()).expect("seize");
+    ptrace::interrupt(thread).expect("interrupt");
+    match waitpid(thread, Some(WaitPidFlag::__WALL)).expect("wait for the stop") {
+        WaitStatus::PtraceEvent(_, _, event) if event == libc::PTRACE_EVENT_STOP => {}
+        other => panic!("the spinning thread stopped as {other:?}"),
+    }
+    let traced = Traced { thread };
+    let choice = encode::compare_branch(true, ROUTE, 0).expect("a cbnz");
+    // A signal given with a step is delivered only from a step's stop, not from the interrupt's.
+    assert!(matches!(traced.step(TURN_LIMIT), Stepped::At(_)));
+    let mut stepped = traced.step_sending(Some(STOP), TURN_LIMIT);
+    for _ in 0..MOST_STEPS {
+        let Stepped::At(at) = stepped else {
+            panic!("the handler ended its step as {stepped:?} before its route's choice")
+        };
+        let word = u32::from_le_bytes(
+            code(thread, at, size_of::<u32>())[..size_of::<u32>()]
+                .try_into()
+                .expect("a word"),
+        );
+        if encode::retarget(word, 0) == Ok(choice) {
+            let mut registers = ptrace::getregs(thread).expect("registers");
+            registers.regs[usize::from(ROUTE)] = registers.sp;
+            ptrace::setregs(thread, registers).expect("forge the route");
+            traced.detach(None);
+            assert_eq!(
+                stub.wait(1, turn),
+                Ok(TurnEnd::StubEnded),
+                "the forged route ended the turn"
+            );
+            assert_eq!(
+                zygote.reap(stub.process()),
+                Ok(Ended::Killed((Signal::SIGSYS as i32).unsigned_abs())),
+                "the filter killed the stub"
+            );
+            return;
+        }
+        stepped = traced.step(TURN_LIMIT);
+    }
+    panic!("no choice of the route within {MOST_STEPS} steps of the handler");
+}

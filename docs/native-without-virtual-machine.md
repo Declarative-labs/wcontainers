@@ -481,10 +481,15 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   added to the frame's mask (so the stop is blocked there as after a jump, and its unblock is unchanged); a handler
   that ends the thread or the stub needs none. A stop or fault in translated code saves the general registers from
   the frame as before and returns into a routine that stores the FP/SIMD registers the host restored (counted per
-  guest process, "signal frame without FP/SIMD registers", warned once per guest process). The stub's filter allows
-  `rt_sigreturn` on ARM64 for it, which gives an escaped stub nothing it lacks (it already sets its own registers,
-  and `rt_sigprocmask` and `sigaltstack` are allowed as they come). Forced on every handler on Linux, the stop,
-  floor and step tests pass too.
+  guest process, "signal frame without FP/SIMD registers", warned once per guest process). The route is chosen
+  per frame from the frame's first record word, which lies on a signal stack the guest's other threads can write,
+  so the choice itself is no defence: as built (W1 round 4 run 5) each zygote finds at its start whether this
+  host's frames hold the record (a stub whose filter refuses `rt_sigreturn` is stopped in a spinning turn: it
+  publishes the stop where they do, and is killed by the filter where they do not), and the stubs' filters allow
+  `rt_sigreturn` on ARM64 only on a host whose frames lack it. On Linux a handler forged into the route is killed
+  (tests/step.rs, forged by tracing). Where it is allowed it gives an escaped stub nothing it lacks (it already
+  sets its own registers, and `rt_sigprocmask` and `sigaltstack` are allowed as they come). Forced on every
+  handler on Linux, the stop, floor and step tests pass too.
   So no signal mask is changed on a kernel entry path but a resume that carries commands (a mask change is a host
   system call: 125 ns on Graviton4 and 87 to 89 ns on the Xeon, W0 probe run 3).
 - A slice (`Next::Run { slice_nanoseconds }`): P: the runner's futex wait carries the slice as its time-out and
@@ -1019,8 +1024,9 @@ does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback 
   `clone` with 4.1's thread flags; `recvmsg` on its socket with `MSG_DONTWAIT` (a block's memfd, sent before the
   turn that maps it, so it never waits) (and `write` on it with parallel threads); `close` of descriptor 0 (the
   block's, once mapped); `sched_setaffinity` on the calling
-  thread; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`; on ARM64 `rt_sigreturn`, used only where a signal
-  frame holds no FP/SIMD registers (gVisor, 3.6); on x86-64 `membarrier`, and
+  thread; `rt_sigprocmask`; `sigaltstack`; `exit`; `exit_group`; on ARM64 `rt_sigreturn`, allowed by the stubs'
+  filters only on a host whose signal frames hold no FP/SIMD registers (gVisor, 3.6), found at the zygote's start;
+  on x86-64 `membarrier`, and
   `arch_prctl` (`ARCH_SET_GS` only) where the host lacks FSGSBASE (3.10).
 - I adds: `timer_create`, `timer_settime` and `timer_delete` for slices, `rt_sigreturn`; `arch_prctl` on x86-64
   hosts without FSGSBASE. No process is ever made, so I runs where `fork` is refused.
@@ -1457,7 +1463,9 @@ them.
     write (item 3). A sibling thread that rewrites the frame's pc between the handler's store and the host's read
     in `rt_sigreturn` (a few microseconds under systrap) runs at a pc of its choosing in its stub: an escape from
     translation, bounded by the stub's filter and by gVisor itself. Accept it there, or make P unavailable under
-    such a host (the evaluator then chooses I). Linux hosts never take this route.
+    such a host (the evaluator then chooses I). On a host whose frames hold the record (Linux) the route can still
+    be forged by a sibling rewriting the frame's record word, since the choice is made per frame; there the stubs'
+    filters refuse `rt_sigreturn`, so a forged route kills the stub (found at each zygote's start, W1 round 4 run 5).
 
 ## 13. Milestones
 
