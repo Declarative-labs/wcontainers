@@ -12,21 +12,26 @@
 //! leaving the window, the state after it at a faulting stack probe; a fault at the reference's own address.
 //! Pieces of two to eight such instructions are translated as one piece too, against the reference run one
 //! instruction at a time (a piece naming x15 or x24 keeps u and the base in two it does not name, counted); and every form is run in displaced code (rule e), from a stack pointer outside the
-//! window. A collision (one register named twice where Arm leaves the result open) runs in the reference with the
+//! window. Pieces with direct branches, forward inside them and past their end, and a loop counted down in a
+//! register, after a part naming nearly every register in half of them (so that only the loop can keep u and the
+//! base in registers of its own), run against the reference followed through its branches until it leaves the
+//! piece's instructions. A collision (one register named twice where Arm leaves the result open) runs in the reference with the
 //! registers the meaning does not write renamed to free ones.
 //!
 //! A quarter of the drawn words name the stack pointer, a quarter name one register twice, and a quarter have an immediate offset of zero (an access at
 //! its base, which the way cuts by its own addressing), which random words rarely do. Knobs:
-//! `WCHP_IN_PROCESS_CASES` cases per form, `WCHP_IN_PROCESS_PIECES` pieces of several instructions, `WCHP_SEED`.
+//! `WCHP_IN_PROCESS_CASES` cases per form, `WCHP_IN_PROCESS_PIECES` pieces of several instructions,
+//! `WCHP_IN_PROCESS_BRANCHY` pieces with branches, `WCHP_SEED`.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use unicorn_engine::{Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, Unicorn};
 use wcontainers_abi::{LOWEST_ADDRESS, PAGE_SIZE};
-use wcontainers_arm64::encode::{self, field};
+use wcontainers_arm64::carry::LINK;
+use wcontainers_arm64::encode::{self, ZERO, field, form};
 use wcontainers_arm64::thread_state::{
     COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
@@ -39,11 +44,12 @@ use wcontainers_executor_arm64_stop::in_process::{self, Resolution};
 use wcontainers_executor_arm64_stop::{
     AFTER_PAGE, AfterPage, FloatStatus, GuestState, Interrupted, Piece, Resolved, Stop, Taken,
 };
-use wcontainers_guest_cpu::{Guest, InsideCall, Native, Route};
+use wcontainers_guest_cpu::{Guest, HostCode, InsideCall, Native, Route};
 use wcontainers_translator::{LookAhead, NativeRequest, translate_native_request};
 
 const CASES_VARIABLE: &str = "WCHP_IN_PROCESS_CASES";
 const PIECES_VARIABLE: &str = "WCHP_IN_PROCESS_PIECES";
+const BRANCHY_VARIABLE: &str = "WCHP_IN_PROCESS_BRANCHY";
 /// Pieces of several instructions unless told otherwise.
 const DEFAULT_PIECES: u64 = 1000;
 /// The most instructions in a piece of several.
@@ -60,6 +66,10 @@ const RN_FIELD: u32 = 0x1f << 5;
 const RD_FIELD: u32 = 0x1f;
 /// A pair's second data register field, Rt2.
 const RT2_FIELD: u32 = 0x1f << 10;
+/// The second source register field, Rm.
+const RM_FIELD: u32 = 0x1f << 16;
+/// Every field a register an access or a branch names is in.
+const REGISTER_FIELDS: [u32; 4] = [RD_FIELD, RN_FIELD, RT2_FIELD, RM_FIELD];
 
 /// Arm's names of the fields that hold an access's immediate offset from its base.
 const OFFSET_FIELDS: [&str; 3] = ["imm12", "imm9", "imm7"];
@@ -110,6 +120,17 @@ const STEPS: usize = 10_000;
 const COUNT_START: u64 = 1 << 40;
 /// The bytes of an instruction.
 const INSTRUCTION: u64 = 4;
+/// The furthest bytes an access reaches from its address before the immediate: the largest immediate offset of an
+/// unsigned 12-bit field scaled by 8, and the largest access (Arm ARM, LDR (immediate); LD4).
+const ACCESS_REACH: u64 = 4095 * 8 + 64;
+/// Instructions past a piece's end whose entry slots end its run: the furthest a drawn branch goes.
+const EXITS_PAST: u64 = 4;
+/// The most instructions of a loop's body in a piece with branches.
+const BODY_LENGTH: usize = 5;
+/// The most turns of such a loop.
+const TURNS: u64 = 4;
+/// The most guest instructions the reference runs of one piece with branches.
+const REFERENCE_STEPS: usize = 400;
 
 /// A seeded case: an instruction and the guest's state before it.
 #[derive(Clone, Debug)]
@@ -125,9 +146,10 @@ struct Case {
     memory: Vec<Vec<u8>>,
 }
 
-/// The guest's state after an instruction.
+/// The guest's state after an instruction, and where it goes on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct State {
+    pc: u64,
     x: [u64; GENERAL],
     sp: u64,
     nzcv: u64,
@@ -148,6 +170,8 @@ enum Outcome {
     Call(InsideCall),
     /// An access outside the slot's window and the 4 GiB beside it, or to a canary: never allowed.
     Stray(u64),
+    /// The translated code still running after [`STEPS`] host instructions.
+    Running,
 }
 
 fn setting(name: &str, default: u64) -> u64 {
@@ -337,6 +361,36 @@ fn reference(case: &Case, pc: u64) -> Outcome {
     unicorn
         .mem_write(pc, &renamed.word.to_le_bytes())
         .expect("the instruction");
+    // The emulator decodes the word after the one instruction it runs, and a branch's target, whatever their bytes:
+    // each is a `udf` for the run, so that no word the emulator cannot decode is decoded, unless an access may read
+    // it.
+    let i = decode(case.word);
+    let target = match i {
+        I::Branch { offset, .. }
+        | I::BranchCond { offset, .. }
+        | I::CompareBranch { offset, .. }
+        | I::TestBranch { offset, .. } => Some(pc.wrapping_add_signed(offset)),
+        _ => None,
+    };
+    let reads = |at: u64| {
+        start_address(&i, &case.x, case.sp).is_some_and(|(_, a)| a.abs_diff(at) <= ACCESS_REACH)
+            || matches!(i.memory_access(), Some(m) if matches!(m.address, Address::Literal { .. }))
+    };
+    let guarded: Vec<(u64, [u8; size_of::<u32>()])> = [Some(pc + INSTRUCTION), target]
+        .into_iter()
+        .flatten()
+        .filter(|&at| at != pc && (CODE..CODE + PAGE_SIZE).contains(&at) && !reads(at))
+        .map(|at| {
+            let mut bytes = [0; size_of::<u32>()];
+            unicorn.mem_read(at, &mut bytes).expect("a code word");
+            (at, bytes)
+        })
+        .collect();
+    for &(at, _) in &guarded {
+        unicorn
+            .mem_write(at, &encode::exception(form::UDF, 0).to_le_bytes())
+            .expect("a code word");
+    }
     for (n, &value) in case.x.iter().enumerate() {
         unicorn.reg_write(x_register(n), value).expect("a register");
     }
@@ -370,6 +424,9 @@ fn reference(case: &Case, pc: u64) -> Outcome {
     if ran.is_err() {
         return Outcome::Exception(u32::MAX);
     }
+    for (at, bytes) in guarded {
+        unicorn.mem_write(at, &bytes).expect("a code word");
+    }
     // The guest's own word in its code page, unless the access itself wrote there.
     let mut there = [0; size_of::<u32>()];
     unicorn.mem_read(pc, &mut there).expect("the instruction");
@@ -383,6 +440,7 @@ fn reference(case: &Case, pc: u64) -> Outcome {
         q[n] = case.q[n];
     }
     Outcome::Done(Box::new(State {
+        pc: unicorn.reg_read(RegisterARM64::PC).expect("pc"),
         x: std::array::from_fn(|n| {
             if renamed.restore.contains(&n) {
                 case.x[n]
@@ -443,16 +501,8 @@ fn kept(unicorn: &Unicorn<'_, ()>, at: u64) -> (RegisterPage, AfterPage) {
     (page, after)
 }
 
-/// Guest instructions `words` at [`CODE`], from the case's state, translated for `way`, an in-process way of slot
-/// [`SLOT`], as one piece and run in its window, with what its stop resolves to.
-fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resolution>) {
-    let base = way.window_base();
-    let other = Way::InProcess {
-        slot: OTHER_SLOT,
-        displaced: false,
-        kept: Kept::USUAL,
-    }
-    .window_base();
+/// Guest instructions `words` at [`CODE`] as one piece for `way`: their bytes and the piece.
+fn translation(words: &[u32], way: Way) -> (Vec<u8>, HostCode) {
     let look_ahead = match words.len() {
         1 => LookAhead::None,
         n => LookAhead::Bounded(u32::try_from(n).expect("a short piece")),
@@ -466,6 +516,20 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let code =
         translate_native_request::<Arm64>(&bytes, CODE, &request, &way, &()).expect("translated");
+    (bytes, code)
+}
+
+/// Guest instructions `words` at [`CODE`], from the case's state, translated for `way`, an in-process way of slot
+/// [`SLOT`], as one piece and run in its window, with what its stop resolves to.
+fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resolution>) {
+    let base = way.window_base();
+    let other = Way::InProcess {
+        slot: OTHER_SLOT,
+        displaced: false,
+        kept: Kept::USUAL,
+    }
+    .window_base();
+    let (bytes, code) = translation(words, way);
     let mut unicorn = emulator();
     map_regions(&mut unicorn, case, base);
     unicorn
@@ -508,20 +572,34 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
             .mem_write(at, &guest[usize::from(r)].to_le_bytes())
             .expect("a withheld register's guest value");
     }
-    let next_slot = way.slot(CODE + bytes.len() as u64);
+    // The entry slots of the piece's addresses and a few past its end, where its exits go: reaching one's first word
+    // ends the run there.
+    let slots = way.slot(CODE)..=way.slot(CODE + bytes.len() as u64 + EXITS_PAST * INSTRUCTION);
     let entries = IN_PROCESS_ENTRIES & !(PAGE_SIZE - 1);
-    for page in [next_slot & !(PAGE_SIZE - 1), entries] {
+    let slot_pages = (slots.start() & !(PAGE_SIZE - 1)..=*slots.end()).step_by(PAGE_SIZE as usize);
+    for page in slot_pages.chain([entries]) {
         unicorn
             .mem_map(page, PAGE_SIZE, Prot::ALL)
             .expect("a landing page");
     }
     let into = faults.clone();
     unicorn
-        .add_code_hook(next_slot, next_slot, move |unicorn, _, _| {
-            first(&into, Outcome::Done(Box::default()));
+        .add_code_hook(*slots.start(), *slots.end(), move |unicorn, address, _| {
+            let pc = way.slot_target(address);
+            if way.slot(pc) == address {
+                first(
+                    &into,
+                    Outcome::Done(Box::new(State {
+                        pc,
+                        ..State::default()
+                    })),
+                );
+            } else {
+                first(&into, Outcome::Stray(address));
+            }
             unicorn.emu_stop().expect("stopped");
         })
-        .expect("the exit's hook");
+        .expect("the exits' hook");
     let into = faults.clone();
     unicorn
         .add_code_hook(
@@ -604,8 +682,8 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
         .expect("flags");
     write_vectors(&unicorn, &case.q);
     let ran = unicorn.emu_start(HOST_CODE, 0, 0, STEPS);
-    match faults.take() {
-        Some((Outcome::Done(_), _)) => {}
+    let pc = match faults.take() {
+        Some((Outcome::Done(state), _)) => state.pc,
         Some((outcome, None)) => return (outcome, None),
         Some((outcome, Some(t))) => {
             let (page, after) = kept(&unicorn, REGISTER_PAGE);
@@ -630,8 +708,9 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
             );
             return (outcome, resolution);
         }
+        None if ran.is_ok() => return (Outcome::Running, None),
         None => panic!("the translated code ended without an outcome: {ran:?}"),
-    }
+    };
     let mut page = vec![0; PAGE_SIZE as usize];
     unicorn
         .mem_read(REGISTER_PAGE, &mut page)
@@ -641,6 +720,7 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
         u64::from_le_bytes(page[at..at + size_of::<u64>()].try_into().expect("a word"))
     };
     let done = Outcome::Done(Box::new(State {
+        pc,
         x: std::array::from_fn(|n| {
             if way.withheld().contains(&(n as u8)) {
                 word(withheld_word(way, n as u8))
@@ -726,6 +806,9 @@ fn other_registers(i: &I) -> Vec<Reg> {
 /// The fields in which two states differ.
 fn differences(expected: &State, got: &State) -> String {
     let mut out = Vec::new();
+    if expected.pc != got.pc {
+        out.push(format!("pc {:#x} not {:#x}", got.pc, expected.pc));
+    }
     for n in 0..GENERAL {
         if expected.x[n] != got.x[n] {
             out.push(format!("x{n} {:#x} not {:#x}", got.x[n], expected.x[n]));
@@ -1041,7 +1124,7 @@ struct Tally {
 /// Whether the piece of `words` keeps u or the base in other registers than between pieces.
 fn kept_elsewhere(way: Way, words: &[u32]) -> bool {
     let instructions: Vec<I> = words.iter().map(|&w| decode(w)).collect();
-    Arm64::piece_way(&way, &instructions).moves_kept()
+    (Arm64::part_ways(&way, &[&instructions], &[]).iter()).any(|w| w.moves_kept())
 }
 
 /// A word of `form`: a quarter name the stack pointer as their base or source, an eighth as their destination too
@@ -1317,6 +1400,252 @@ fn in_process_pieces_of_several_instructions_agree_with_the_reference() {
     eprintln!(
         "seed {seed:#x}, {pieces} pieces of 2 to {PIECE_LENGTH}: {tally:?}, {ended} ran to their end, \
          {stopped_inside} stopped after their first instruction, {} failing",
+        failures.len()
+    );
+    for why in failures.iter().take(8) {
+        eprintln!("FAIL {}", why.chars().take(4000).collect::<String>());
+    }
+    assert!(failures.is_empty(), "{} pieces disagree", failures.len());
+}
+
+/// Whether any register field of `word` holds register `r`, whatever its form uses the field for.
+fn names_register(word: u32, r: u8) -> bool {
+    (REGISTER_FIELDS.iter()).any(|&f| (word & f) >> f.trailing_zeros() == u32::from(r))
+}
+
+/// Words naming every general register below the link register, two at a time, and writing none:
+/// `orr xzr, xB, xC`.
+fn crowded_words() -> Vec<u32> {
+    (0..LINK)
+        .step_by(2)
+        .map(|b| encode::logical_register(form::ORR_SHIFTED, ZERO, b, b + 1))
+        .collect()
+}
+
+/// A direct branch, call or test and branch.
+fn direct(i: &I) -> bool {
+    matches!(
+        i,
+        I::Branch { .. } | I::BranchCond { .. } | I::CompareBranch { .. } | I::TestBranch { .. }
+    )
+}
+
+/// A presented word of a direct branch form, retargeted `offset` bytes from itself.
+fn branch_word(form: &forms::Form, offset: i64, rng: &mut fastrand::Rng) -> u32 {
+    loop {
+        let word = form.word(rng.u32(..));
+        if form.presented(word) && direct(&decode(word)) {
+            break encode::retarget(word, offset).expect("a short branch");
+        }
+    }
+}
+
+/// The guest instruction a stop resolved to: the state's, before it, or the one before for a stack probe.
+fn stopped_pc(resolution: &Resolution) -> Option<u64> {
+    match resolution {
+        Resolution::Resolved(Resolved::Stop(_, state))
+        | Resolution::Outside { state, .. }
+        | Resolution::Displaced(state) => Some(state.pc),
+        Resolution::Probed(state) => Some(state.pc - INSTRUCTION),
+        Resolution::Resolved(_) => None,
+    }
+}
+
+/// Pieces with direct branches and a loop, against the reference followed through its branches. Each piece is,
+/// in order: in half of them, a part naming every register below x30 ([`crowded_words`]); a body of one to
+/// [`BODY_LENGTH`] instructions, accesses as the pieces of several draw them and, one in four, a direct branch
+/// (b, bl, b.cond, bc.cond, cbz, cbnz, tbz, tbnz, of any register or condition); in three quarters a loop back to
+/// the body's start, counted down in x15, x24 or another register from one to [`TURNS`] (`sub` then `cbnz`), which
+/// no word of the body names; and up to two more such instructions. Each branch goes forward, inside the piece or
+/// up to [`EXITS_PAST`] instructions past it, never to the loop's own branch. The translated piece runs once; the
+/// reference runs from the piece's start one instruction at a time, from the state the one before left, through
+/// its branches, until it leaves the piece's instructions, where the translated piece must have ended at the same
+/// guest address (through that address's entry slot) with the same state; or until it stops, or the translated
+/// piece's stop resolves to its instruction with an outcome the single instructions' rules accept, where the two
+/// must agree as theirs do. A branch to an instruction the piece holds that leaves through its slot fails, but for
+/// a call, whose target the translator does not follow.
+/// Knobs: `WCHP_IN_PROCESS_BRANCHY` pieces, `WCHP_SEED`.
+#[test]
+fn in_process_pieces_with_branches_and_loops_agree_with_the_reference() {
+    let pieces = setting(BRANCHY_VARIABLE, DEFAULT_PIECES);
+    let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let shows = |form: &forms::Form, word: u32| form.presented(word) && wanted(&decode(word));
+    let changed: Vec<&forms::Form> = (forms::all().iter())
+        .filter(|form| (0..TRIES).any(|_| shows(form, drawn(form, &mut rng))))
+        .collect();
+    let branches: Vec<&forms::Form> = (forms::all().iter())
+        .filter(|form| {
+            (0..TRIES).any(|_| {
+                let word = form.word(rng.u32(..));
+                form.presented(word) && direct(&decode(word))
+            })
+        })
+        .collect();
+    let mut tally = Tally::default();
+    let (mut crowded, mut looped, mut loops_kept_elsewhere, mut left, mut steps_run) =
+        (0, 0, 0, 0, 0);
+    let mut failures: Vec<String> = Vec::new();
+    for _ in 0..pieces {
+        let mut words = if rng.bool() {
+            crowded_words()
+        } else {
+            Vec::new()
+        };
+        crowded += u64::from(!words.is_empty());
+        let counter = match rng.u32(0..3) {
+            0 => CHECK,
+            1 => BASE,
+            _ => loop {
+                let r = rng.u8(..LINK);
+                if !WITHHELD.contains(&r) {
+                    break r;
+                }
+            },
+        };
+        let looping = rng.u32(0..4) != 0;
+        let head = words.len();
+        // Branches are written once the piece's length is known.
+        let mut branching = Vec::new();
+        let mut instruction = |words: &mut Vec<u32>, rng: &mut fastrand::Rng| {
+            if rng.u32(0..4) == 0 {
+                branching.push(words.len());
+                words.push(0);
+                return;
+            }
+            words.push(loop {
+                let form = changed[rng.usize(..changed.len())];
+                let word = drawn(form, rng);
+                if shows(form, word) && !(looping && names_register(word, counter)) {
+                    break word;
+                }
+            });
+        };
+        for _ in 0..rng.usize(1..=BODY_LENGTH) {
+            instruction(&mut words, &mut rng);
+        }
+        let back = looping.then(|| {
+            words.push(encode::add_immediate(counter, counter, -1).expect("one fits"));
+            let at = words.len();
+            let offset = -(((at - head) as u64 * INSTRUCTION) as i64);
+            words.push(encode::compare_branch(true, counter, offset).expect("a short loop"));
+            at
+        });
+        for _ in 0..rng.usize(0..=2) {
+            instruction(&mut words, &mut rng);
+        }
+        let length = words.len();
+        for at in branching {
+            let to = loop {
+                let to = rng.usize(at + 1..length + EXITS_PAST as usize);
+                if Some(to) != back {
+                    break to;
+                }
+            };
+            let form = branches[rng.usize(..branches.len())];
+            words[at] = branch_word(form, ((to - at) as u64 * INSTRUCTION) as i64, &mut rng);
+        }
+        looped += u64::from(looping);
+        if let Some(back) = back.filter(|_| head > 0) {
+            loops_kept_elsewhere += u64::from(kept_elsewhere(WAY, &words[head..=back]));
+        }
+        let mut case = case_for(words[0], &mut rng);
+        case.tag = None;
+        if looping {
+            case.x[usize::from(counter)] = rng.u64(1..=TURNS);
+        }
+        let code = (REGIONS.iter())
+            .position(|&(start, ..)| start == CODE)
+            .expect("the code region");
+        let bytes = words.iter().flat_map(|w| w.to_le_bytes());
+        for (into, byte) in case.memory[code].iter_mut().zip(bytes) {
+            *into = byte;
+        }
+        let initial = case.clone();
+        let (translated, resolution) = translated(&case, &words, WAY);
+        let held: BTreeSet<u64> = (translation(&words, WAY).1.spans.iter())
+            .map(|s| s.guest)
+            .collect();
+        let stop = resolution.as_ref().and_then(stopped_pc);
+        tally.cases += 1;
+        tally.resolved += u64::from(resolution.is_some());
+        let mut pc = CODE;
+        let mut steps = 0;
+        let why = loop {
+            let k = usize::try_from((pc - CODE) / INSTRUCTION).expect("a short piece");
+            case.word = words[k];
+            let through_stack = start_address(&decode(case.word), &case.x, case.sp)
+                .is_some_and(|(base, _)| base == Reg::Sp);
+            if through_stack && !case.sp.is_multiple_of(STACK_ALIGNMENT) {
+                tally.stack_unaligned += 1;
+                break match (&translated, stop) {
+                    (Outcome::Call(InsideCall::Misaligned), Some(p)) if p == pc => {
+                        resolution_disagreement(
+                            &case,
+                            pc,
+                            &Outcome::Exception(u32::MAX),
+                            &translated,
+                            resolution.as_ref(),
+                        )
+                    }
+                    _ => None,
+                };
+            }
+            let reference = reference(&case, pc);
+            // In a loop the same instruction runs again: the turn the translated piece stopped in is the one whose
+            // outcome and state its stop agrees with.
+            let stops_here = stop == Some(pc)
+                && disagreement(&case, &reference, &translated, &mut Tally::default()).is_none()
+                && resolution_disagreement(&case, pc, &reference, &translated, resolution.as_ref())
+                    .is_none();
+            let Outcome::Done(state) = &reference else {
+                break disagreement(&case, &reference, &translated, &mut tally).or_else(|| {
+                    resolution_disagreement(&case, pc, &reference, &translated, resolution.as_ref())
+                });
+            };
+            if stops_here {
+                break disagreement(&case, &reference, &translated, &mut tally).or_else(|| {
+                    resolution_disagreement(&case, pc, &reference, &translated, resolution.as_ref())
+                });
+            }
+            steps += 1;
+            if steps > REFERENCE_STEPS {
+                break Some(format!(
+                    "the reference ran {REFERENCE_STEPS} instructions in the piece"
+                ));
+            }
+            // A call leaves through its exit even to an instruction the piece holds: its target is not followed.
+            let call = matches!(decode(case.word), I::Branch { link: true, .. });
+            let called = call && matches!(&translated, Outcome::Done(t) if t.pc == state.pc);
+            if !held.contains(&state.pc) || called {
+                left += u64::from(matches!(translated, Outcome::Done(_)));
+                break match &translated {
+                    Outcome::Done(_) => disagreement(&case, &reference, &translated, &mut tally),
+                    other => Some(format!(
+                        "the reference left the piece for {:#x}, the translated piece gives {other:x?}",
+                        state.pc
+                    )),
+                };
+            }
+            pc = state.pc;
+            case = next_case(0, state);
+        };
+        steps_run += steps;
+        if let Some(why) = why {
+            let words: Vec<String> = words
+                .iter()
+                .map(|w| format!("{w:#010x} {:?}", decode(*w)))
+                .collect();
+            failures.push(format!(
+                "{}: {why}; the translated piece {translated:x?}, resolved to {resolution:x?}\ncase {initial:x?}",
+                words.join("; ")
+            ));
+        }
+    }
+    eprintln!(
+        "seed {seed:#x}, {pieces} pieces with branches: {crowded} crowded, {looped} looping, \
+         {loops_kept_elsewhere} crowded loops keeping u or the base elsewhere, {left} left through an exit, \
+         {steps_run} reference steps: {tally:?}, {} failing",
         failures.len()
     );
     for why in failures.iter().take(8) {
