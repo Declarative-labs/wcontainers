@@ -16,6 +16,7 @@ use wcontainers_executor_hardware_virtualization_inside::boot::{
 use wcontainers_executor_hardware_virtualization_inside::layout::{IMAGE, MEMORY_BASE, linear};
 use wcontainers_executor_hardware_virtualization_inside::link::{Link, Start};
 use wcontainers_guest_cpu::Guest;
+use zerocopy::IntoBytes;
 
 #[cfg(target_os = "macos")]
 pub mod hvf;
@@ -277,16 +278,8 @@ pub const STACK_PAGES: u64 = 16;
 pub fn load(memory: &Memory, image: &[u8], cpus: u64) -> Result<Loaded> {
     // The ELF reader needs its headers aligned, which embedded bytes are not.
     let mut aligned = vec![0u64; image.len().div_ceil(size_of::<u64>())];
-    // SAFETY: the vector holds at least the image's bytes.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            image.as_ptr(),
-            aligned.as_mut_ptr().cast::<u8>(),
-            image.len(),
-        )
-    };
-    // SAFETY: the vector's bytes, the image's length.
-    let image = unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), image.len()) };
+    aligned.as_mut_bytes()[..image.len()].copy_from_slice(image);
+    let image = &aligned.as_bytes()[..image.len()];
     let file = object::File::parse(image).map_err(|e| Error::Image(e.to_string()))?;
     let mut end = MEMORY_BASE;
     for segment in file.segments() {

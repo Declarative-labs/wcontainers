@@ -81,13 +81,7 @@ const NOT_RUN_BY_A_THREAD: i32 = libc::pid_t::MIN;
 
 thread_local! {
     /// The calling thread's number, which the stop signal is sent to.
-    static THREAD: i32 = this_thread();
-}
-
-#[expect(unsafe_code, reason = "gettid, which neither std nor a dependency wraps, moved here from the virtual CPU's making")]
-fn this_thread() -> i32 {
-    // SAFETY: a plain query.
-    unsafe { libc::gettid() }
+    static THREAD: i32 = rustix::thread::gettid().as_raw_nonzero().get();
 }
 
 // SAFETY: the mapping is the kernel's shared run page, which is written only through atomics here.

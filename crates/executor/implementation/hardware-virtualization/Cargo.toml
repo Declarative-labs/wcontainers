@@ -39,6 +39,8 @@ postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
 # Writes a kept translation whole under a name of its own, then puts it in place.
 tempfile = "3.27.0"
+# The inside's image as aligned words, guest records as bytes, and zeroed links in tests.
+zerocopy = { workspace = true, features = ["alloc"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 applevisor = "1.0.0"
@@ -51,6 +53,8 @@ kvm-bindings = "0.14.2"
 vmm-sys-util = "0.15.0"
 # The first interrupt number the host raises.
 arm-gic = "0.11.0"
+# The calling thread's id, which the stop signal is sent to.
+rustix = { version = "1.1.6", features = ["thread"] }
 
 [build-dependencies]
 # The names of the build environment.
@@ -61,8 +65,8 @@ cc = "1.11.2"
 [dev-dependencies]
 # The stop test's seeded waits and the structure test's seeded words.
 fastrand = "2.5.0"
-# The floor cases' messages.
-zerocopy.workspace = true
+# The host's page size.
+rustix = { version = "1.1.6", features = ["param"] }
 # Layer 1's cases and the WebAssembly output's outcomes, which the differential test compares with.
 wcontainers-translator-test = { path = "../../../wcontainers-translator-test" }
 proptest = "1.12.0"

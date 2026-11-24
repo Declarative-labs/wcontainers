@@ -179,8 +179,7 @@ pub fn machine(
 }
 
 pub fn page_size() -> u64 {
-    // SAFETY: a plain query.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
+    rustix::param::page_size() as u64
 }
 
 pub fn load_average() -> String {
