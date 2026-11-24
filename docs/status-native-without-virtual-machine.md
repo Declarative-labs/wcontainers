@@ -29,8 +29,29 @@ the primitives (Needs a primitive, "Form I").
   pointer in the window +0.0% (7). Every pair's spread within 0.6 points but one (immediate offset, +14.2 to
   +17.5). This is the check's cost per access shape on fixed loops of one access in about seven instructions; the
   cost per workload needs the executor.
-- Next without unsafe: the bounds-check-bypass test as translated code in a stub, the same way (the gadget
-  translated for both ways, the process way's uncut access as the control), timed by host words around it.
+- Built, b6790e367: tests/in_process_speculation.rs, W2's bounds-check-bypass test on translated code, natively
+  in a stub as above. A guest gadget behind its own check against a bound it loads (flushed before each call), one
+  per access shape (at base, immediate offset, register offset, pair, load-acquire, vector `ldr q`, structure
+  `ld1`, through the stack pointer), each with its address in a register and again loaded from flushed memory;
+  translated for the in-process way and, as the uncut control, the process way. Host words around it (built from
+  Arm's forms by name, the counter's `mrs` found by decoding) flush one of 32 probe copies, make 64 calls with one
+  in four (and the last) to an address in the next slot's window whose page the stub has read, and time one line
+  (the secret's, the in-window byte's, an untouched one's or the training byte's) by `cntvct_el0`; a line is cached
+  below the midpoint of the training line's and an untouched line's medians. Seeds 1 and 2 at 2,000 rounds a shape
+  and way, Graviton4, 17:55 UTC, load 26 to 31 (spec-seed1-arm.out, spec-seed2-arm.out): the control read the
+  secret in 69.4% to 100% of its rounds for every shape (100% for each shape with its address in a register); the
+  in-process way in 0% for every shape but one (0.2%, one round, "structure, address loaded", seed 2), where an
+  untouched line's rate is 0 to 0.2%. The in-window byte under the cut address was never cached under the
+  in-process way either: on this core the way's own check stops the access before its dependent load, even when
+  the address waits on memory, so the cut (measured as a host program in W1 run 6) is the second line here and
+  this test does not exercise it. Its first version found nothing in either way: the secret's page was not in the
+  stub's page tables, and a load under speculation takes no fault; the stub now reads it once first.
+- Not built: the wrapping form. It is a second way in the shared translator that the plan builds only if the owner
+  allows it (section 12, decision 2), and one clean way is the rule until he does; once he does, in_process_cost
+  measures it beside the exact form in one run.
+- Bar items this settles, as far as they can go without the executor: the memory check's cost per access shape (not
+  per workload), and the speculation test on translated code (the gadget in a stub; in form I's own process it waits
+  on the executor).
 
 Scratch w2/run4 (check.sh and check2.sh with `SEEDS`, `CASES`, `PIECES`; pieces.sh; check-vm.sh; mutate-base.sh,
 mutate-pieces.sh, mutate-displaced.sh; outputs *-arm.out; `tree` is a git repository of HEAD plus this run's files,
@@ -1737,8 +1758,8 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
   access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
   checked, and displaced code (rule e) is built and checked (W2 run 4); collisions are checked, and the way's code
-  runs natively in a stub at window base 0, its cost per access shape measured (W2 run 5). The in-process executor
-  itself waits for
+  runs natively in a stub at window base 0, its cost per access shape measured and the bounds-check-bypass test
+  run on it (W2 run 5). The in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
   when sp is back in the window, never link displaced pieces) and every measured item of W2's bar.
@@ -1778,7 +1799,8 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 ## How to run
 
 - Since W2 run 5: scratch w2/run5. check.sh runs clippy and the in-process test (`SEEDS`, `CASES`, `PIECES`);
-  cost.sh runs `in_process_cost` (`ITERATIONS`, `ROUNDS`), ignored by default; send each inline, as
+  cost.sh runs `in_process_cost` (`ITERATIONS`, `ROUNDS`) and spec.sh `in_process_speculation` (`ROUNDS`, `SEED`),
+  both ignored by default; send each inline, as
   `arm-run . --name nwvm -- "SEEDS='1 2'; $(cat check.sh)"`.
 
 - Since round 4 run 5: scratch w1/r4e-run5. check.sh is round 6's with a time limit per binary (`LIMIT`, seconds);

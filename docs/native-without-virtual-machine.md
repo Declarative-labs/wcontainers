@@ -179,7 +179,13 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
      a prediction, so it needs no barrier (Cranelift masks its bounds-checked heap accesses for the same reason). The
      wrapping form (5.2) is safe by the same construction. Measured on Graviton4 for every shape above that loads
      speculatively (section 11, W1 run 6): behind a check with a long window the uncut access read a byte outside
-     the window in about 98% of tries and the cut one never did, reading its in-window byte instead.
+     the window in about 98% of tries and the cut one never did, reading its in-window byte instead. As translated
+     code (W2 run 5, host-process tests/in_process_speculation.rs, run natively in a P stub with the window at 0):
+     a guest gadget behind its own slow check, eight shapes, each with its address in a register and loaded from
+     memory, refused calls to an address in the next slot's window; the process way's translation (uncut) read the
+     secret in 69% to 100% of rounds, the in-process way's in none beyond an untouched line's rate (0 to 0.2%).
+     There the way's own check stopped the access before its dependent load even when the address waited on memory
+     (the in-window byte was never read either), so on this core the cut is the second line, not the one exercised.
    - **The stack pointer.** sp holds the host address (slot base plus the guest's sp), since an ARM64 access
      through sp cannot be rebased. The rules keep one invariant: at every guest instruction boundary the guest's sp
      is inside its window, [0, 2^32).
