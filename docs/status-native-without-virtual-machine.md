@@ -28,7 +28,7 @@ executor stays blocked. No line with `unsafe` added; four removed (root count 13
   load 9 to 12: busybox, interrupt, copy, forged, in_process_attacks); on the Xeon pages, zygote, stub, files, host,
   threads, stop, touch, memory, slice, placement, embedder and step pass (test3-x86.out); the zygote test in the
   release profile passes on both, the section in the binary (release1-x86.out, release2-arm.out).
-- Changed, 6653d7241 (run 13's finding): the busybox speed test's model takes the host's own process creation and
+- Changed, 0a4b90994 (run 13's finding): the busybox speed test's model takes the host's own process creation and
   end, a subshell of the reference's `sh` (10,000 of `( : )` less the same loop of `:`), not our stub's fork, which it
   prints beside (Departures). Graviton4, 1,000 programs, second run: dev profile (busybox1-arm.out, load 8) 3.98,
   3.90, 4.24 s against models of 0.78 to 0.82 s, 4.97 to 5.17 times; release (busybox2-arm.out, load 12 to 14)
