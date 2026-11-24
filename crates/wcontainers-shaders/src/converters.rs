@@ -3,16 +3,16 @@
 //! own WebAssembly build; natively with the feature `contained-converters` they run as their own
 //! WebAssembly module under wasmtime instead, so that no shader can end, exhaust or stall the host.
 
-#[cfg(converters_module)]
+#[cfg(all(feature = "contained-converters", not(target_os = "wasi")))]
 mod module;
 
-#[cfg(not(converters_module))]
+#[cfg(not(all(feature = "contained-converters", not(target_os = "wasi"))))]
 mod linked;
 
-#[cfg(converters_module)]
+#[cfg(all(feature = "contained-converters", not(target_os = "wasi")))]
 use module as route;
 
-#[cfg(not(converters_module))]
+#[cfg(not(all(feature = "contained-converters", not(target_os = "wasi"))))]
 use linked as route;
 
 use crate::ir::slot;
@@ -28,12 +28,12 @@ mod exports {
     pub const DXIL_DECLARED_REGISTERS: &str = "wcs_dxil_declared_registers";
     pub const DXIL_VIEWS: &str = "wcs_dxil_views";
     #[cfg_attr(
-        not(converters_module),
+        not(all(feature = "contained-converters", not(target_os = "wasi"))),
         expect(dead_code, reason = "the linked route frees by symbol")
     )]
     pub const FREE: &str = "wcs_free";
     #[cfg_attr(
-        not(converters_module),
+        not(all(feature = "contained-converters", not(target_os = "wasi"))),
         expect(dead_code, reason = "the linked route lends Rust's bytes")
     )]
     pub const ALLOCATE: &str = "wcs_allocate";
@@ -112,7 +112,7 @@ pub(crate) enum Failure {
     /// The converter's run ended before it returned (a trap, its memory bound or its instruction
     /// bound), as the reason says.
     #[cfg_attr(
-        not(converters_module),
+        not(all(feature = "contained-converters", not(target_os = "wasi"))),
         expect(
             dead_code,
             reason = "linked converters that end, end the process or module with them"

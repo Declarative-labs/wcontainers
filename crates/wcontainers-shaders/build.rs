@@ -233,10 +233,6 @@ fn main() {
             .as_bytes(),
     );
     let objects_hash = hasher.finalize().to_hex().to_string();
-    println!("cargo::rustc-check-cfg=cfg({MODULE_CFG})");
-    if route == Route::Module {
-        println!("cargo::rustc-cfg={MODULE_CFG}");
-    }
 
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let linked = route != Route::Module;
@@ -584,13 +580,16 @@ enum Route {
     Module,
 }
 
-/// The cfg the crate's sources read for the module route.
-const MODULE_CFG: &str = "converters_module";
+/// The variables cargo gives a build script for its target's system and for the module route's
+/// feature, and the system of the crate's own WebAssembly build.
+const TARGET_SYSTEM: &str = "CARGO_CFG_TARGET_OS";
+const MODULE_FEATURE: &str = "CARGO_FEATURE_CONTAINED_CONVERTERS";
+const WEBASSEMBLY_SYSTEM: &str = "wasi";
 
 fn route() -> Route {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
+    if std::env::var(TARGET_SYSTEM).as_deref() == Ok(WEBASSEMBLY_SYSTEM) {
         Route::Wasi
-    } else if std::env::var_os("CARGO_FEATURE_CONTAINED_CONVERTERS").is_some() {
+    } else if std::env::var_os(MODULE_FEATURE).is_some() {
         Route::Module
     } else {
         Route::Native
