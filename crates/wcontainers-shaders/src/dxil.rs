@@ -19,10 +19,10 @@ mod widths;
 
 use crate::ConvertError;
 use crate::container::{self, Element, signature};
+use crate::converters::{self, Entry, Failure};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_int, c_void};
 use naga::{
     AddressSpace, Binding, BuiltIn, Expression, Function, FunctionArgument, GlobalVariable, Handle,
     Literal, Module, Range, Scalar, ScalarKind, Span, Statement, StructMember, Type, TypeInner,
@@ -33,82 +33,18 @@ use wcontainers_gpu::{
     StageValue, SystemValue, VariantKey, helper_binding,
 };
 
-unsafe extern "C" {
-    fn wcs_dxil_to_spirv(
-        data: *const u8,
-        size: usize,
-        samples: u32,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        table: *mut *mut u32,
-        table_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_constant_sizes(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_compared_gather_channels(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_declared_registers(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_views(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_free(p: *mut c_void);
-}
-
 /// The reason the carried patch of dxil-spirv's reader logs for a type of LLVM outside DXIL
 /// (`converter-patches/dxil-spirv/bc/module.cpp.patch`).
 const OUTSIDE_DXIL: &str = "LLVM type outside DXIL";
 
-/// The refusal of the C side's reason in `error`: by name for a type outside DXIL, otherwise
-/// dxil-spirv's own reason.
-fn rejected(error: *mut c_char) -> ConvertError {
-    let reason = reason(error);
-    match reason == OUTSIDE_DXIL {
-        true => ConvertError::Unsupported(crate::refusal::TYPE_OUTSIDE_DXIL),
-        false => ConvertError::Rejected(reason),
+/// The refusal of a call that gave nothing: by name for a type outside DXIL, otherwise the
+/// converter's own reason (a log line, its line end dropped).
+fn rejected(failure: Failure) -> ConvertError {
+    let (Failure::Refused(reason) | Failure::Ended(reason)) = failure;
+    match reason.trim_end() {
+        OUTSIDE_DXIL => ConvertError::Unsupported(crate::refusal::TYPE_OUTSIDE_DXIL),
+        reason => ConvertError::Rejected(reason.into()),
     }
-}
-
-/// The reason in `error` from the C side (a log line, its line end dropped), freed.
-fn reason(error: *mut c_char) -> String {
-    if error.is_null() {
-        return String::from("dxil-spirv gave no reason");
-    }
-    // SAFETY: a NUL-terminated string from the C side, freed right after.
-    let s = unsafe { core::ffi::CStr::from_ptr(error) }
-        .to_string_lossy()
-        .trim_end()
-        .into();
-    unsafe { wcs_free(error.cast()) };
-    s
-}
-
-/// Words the C side allocated, copied out and freed.
-fn words(out: *mut u32, words: usize) -> Vec<u32> {
-    // SAFETY: `out` holds `words` words written by the C side, freed right after.
-    let v = unsafe { core::slice::from_raw_parts(out, words) }.to_vec();
-    unsafe { wcs_free(out.cast()) };
-    v
 }
 
 /// The resource classes of Direct3D 12 the SPIR-V's descriptor sets name (`cpp/boundary.h`).
@@ -128,68 +64,31 @@ type Resources = Vec<Resource>;
 /// DXIL to SPIR-V words, the targets' sample count fixed where `samples` is not zero, with the
 /// resources the SPIR-V's bindings index.
 fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertError> {
-    let mut out = core::ptr::null_mut();
-    let mut words = 0;
-    let mut table = core::ptr::null_mut();
-    let mut table_words = 0;
-    let mut error = core::ptr::null_mut();
-    // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status = unsafe {
-        wcs_dxil_to_spirv(
-            dxil.as_ptr(),
-            dxil.len(),
-            samples.into(),
-            &mut out,
-            &mut words,
-            &mut table,
-            &mut table_words,
-            &mut error,
-        )
-    };
-    if status != 0 {
-        return Err(rejected(error));
-    }
-    let spirv = self::words(out, words);
-    let resources = self::words(table, table_words)
-        .as_chunks::<TRIPLE>()
-        .0
-        .to_vec();
-    Ok((spirv, resources))
+    let [spirv, table] =
+        converters::call(&converters::DXIL_TO_SPIRV, dxil, samples.into()).map_err(rejected)?;
+    let resources = converters::words(&table).as_chunks::<TRIPLE>().0.to_vec();
+    Ok((converters::words(&spirv), resources))
 }
 
-/// The status the C side returns for a call that succeeded.
-const SUCCESS: c_int = 0;
-
-/// A C side reader of the DXIL's module, giving words it allocated.
-type ListReader =
-    unsafe extern "C" fn(*const u8, usize, *mut *mut u32, *mut usize, *mut *mut c_char) -> c_int;
-
-/// The words `read` gives for `dxil`.
-fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError> {
-    let mut out = core::ptr::null_mut();
-    let mut n = 0;
-    let mut error = core::ptr::null_mut();
-    // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status = unsafe { read(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
-    if status != SUCCESS {
-        return Err(rejected(error));
-    }
-    Ok(words(out, n))
+/// The words `entry` gives for `dxil`.
+fn resource_list(dxil: &[u8], entry: &Entry<1>) -> Result<Vec<u32>, ConvertError> {
+    let [words] = converters::call(entry, dxil, 0).map_err(rejected)?;
+    Ok(converters::words(&words))
 }
 
 /// (space, register, size in bytes) of every constant buffer the DXIL declares.
 fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
-    resource_list(dxil, wcs_dxil_constant_sizes)
+    resource_list(dxil, &converters::DXIL_CONSTANT_SIZES)
 }
 
 /// The channel of each comparison gather the DXIL calls, `u32::MAX` for one not constant.
 fn compared_gather_channels(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
-    resource_list(dxil, wcs_dxil_compared_gather_channels)
+    resource_list(dxil, &converters::DXIL_COMPARED_GATHER_CHANNELS)
 }
 
 /// Every register the DXIL's resource list declares, used by the program or not, as resources.
 fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
-    Ok(resource_list(dxil, wcs_dxil_declared_registers)?
+    Ok(resource_list(dxil, &converters::DXIL_DECLARED_REGISTERS)?
         .as_chunks::<TRIPLE>()
         .0
         .to_vec())
@@ -198,7 +97,7 @@ fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
 /// The views of the DXIL's resource list, as `cpp/dxil.cpp`'s `views` gives them
 /// (`container::dxil_views`).
 pub(crate) fn views(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
-    resource_list(dxil, wcs_dxil_views)
+    resource_list(dxil, &converters::DXIL_VIEWS)
 }
 
 /// The largest constant buffer, in bytes, which dxil-spirv declares for every dynamically indexed one.

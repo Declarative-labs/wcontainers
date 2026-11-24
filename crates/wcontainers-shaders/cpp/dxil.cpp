@@ -472,65 +472,61 @@ int views(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, c
   return give(words, out, out_words, error);
 }
 
+// A reader of the module giving one list of words.
+using ListReader = int (*)(const uint8_t*, size_t, uint32_t**, size_t*, char**);
+
+// Runs `read` with its result in `slots`.
+int list(ListReader read, const uint8_t* data, size_t size, uintptr_t* slots) {
+  uint32_t* out = nullptr;
+  size_t out_words = 0;
+  char* error = nullptr;
+  int status = read(data, size, &out, &out_words, &error);
+  wcs::fill(slots, out, out_words, nullptr, 0, error);
+  return status;
 }
 
-// Returns 0 and the views of the resource list (`views`) in `out` (free with wcs_free), or nonzero with
-// the reason in `error`.
-extern "C" int wcs_dxil_views(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
-                              char** error) {
-  *out = nullptr;
-  *out_words = 0;
-  *error = nullptr;
-  return wcs::contained("dxil-spirv", error, [&] { return views(data, size, out, out_words, error); });
 }
 
-// Returns 0 and the constant buffers' (space, register, size in bytes) triples in `out` (free with
-// wcs_free), or nonzero with the reason in `error`.
-extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
-                                       char** error) {
-  *out = nullptr;
-  *out_words = 0;
-  *error = nullptr;
-  return wcs::contained("dxil-spirv", error, [&] { return constant_sizes(data, size, out, out_words, error); });
+// Each list reader returns 0 and its words in `slots`, or nonzero with the reason; `samples` is
+// unused. The views of the resource list (`views`):
+extern "C" int wcs_dxil_views(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+  (void)samples;
+  return list(views, data, size, slots);
 }
 
-// Returns 0 and the channel of every comparison gather the module calls (`compared_gather_channels`) in
-// `out` (free with wcs_free), or nonzero with the reason in `error`.
-extern "C" int wcs_dxil_compared_gather_channels(const uint8_t* data, size_t size, uint32_t** out,
-                                                 size_t* out_words, char** error) {
-  *out = nullptr;
-  *out_words = 0;
-  *error = nullptr;
-  return wcs::contained("dxil-spirv", error,
-                        [&] { return compared_gather_channels(data, size, out, out_words, error); });
+// The constant buffers' (space, register, size in bytes) triples:
+extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+  (void)samples;
+  return list(constant_sizes, data, size, slots);
 }
 
-// Returns 0 and the (class, space, register) triples of every register the resource list declares in
-// `out` (free with wcs_free), or nonzero with the reason in `error`.
-extern "C" int wcs_dxil_declared_registers(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
-                                           char** error) {
-  *out = nullptr;
-  *out_words = 0;
-  *error = nullptr;
-  return wcs::contained("dxil-spirv", error,
-                        [&] { return declared_registers(data, size, out, out_words, error); });
+// The channel of every comparison gather the module calls (`compared_gather_channels`):
+extern "C" int wcs_dxil_compared_gather_channels(const uint8_t* data, size_t size, uint32_t samples,
+                                                 uintptr_t* slots) {
+  (void)samples;
+  return list(compared_gather_channels, data, size, slots);
 }
 
-// Returns 0, the SPIR-V in `out` and the resources' (class, space, register) triples in `table` (both
-// freed with wcs_free), or nonzero with the reason in `error`.
-extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out,
-                                 size_t* out_words, uint32_t** table, size_t* table_words, char** error) {
-  *out = nullptr;
-  *out_words = 0;
-  *table = nullptr;
-  *table_words = 0;
-  *error = nullptr;
-  return wcs::contained("dxil-spirv", error, [&] {
-    int status = convert(data, size, samples, out, out_words, table, table_words, error);
-    if (status != 0 && *out) {
-      std::free(*out);
-      *out = nullptr;
-    }
-    return status;
-  });
+// The (class, space, register) triples of every register the resource list declares:
+extern "C" int wcs_dxil_declared_registers(const uint8_t* data, size_t size, uint32_t samples,
+                                           uintptr_t* slots) {
+  (void)samples;
+  return list(declared_registers, data, size, slots);
+}
+
+// Returns 0, the SPIR-V and the resources' (class, space, register) triples in words in `slots`, or
+// nonzero with the reason.
+extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+  uint32_t* out = nullptr;
+  size_t out_words = 0;
+  uint32_t* table = nullptr;
+  size_t table_words = 0;
+  char* error = nullptr;
+  int status = convert(data, size, samples, &out, &out_words, &table, &table_words, &error);
+  if (status != 0 && out) {
+    std::free(out);
+    out = nullptr;
+  }
+  wcs::fill(slots, out, out_words, table, table_words, error);
+  return status;
 }

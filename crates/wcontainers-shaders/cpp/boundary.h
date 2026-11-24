@@ -1,13 +1,13 @@
-// What both converter boundaries share: copying a reason out, keeping dxbc-spirv's errors as the
-// reason, and keeping a converter's failure (an exception or an assertion, which `cpp/assert` turns
-// into one) inside the call as an error.
+// What both converter boundaries share: the slots every entry fills, copying a reason out, and
+// keeping dxbc-spirv's errors as the reason. Both are built without C++ exceptions: a converter's
+// failure (an assertion, `cpp/assert`, or a throw) ends its module instance, which the host reports
+// as a refused conversion.
 
 #pragma once
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <exception>
 #include <string>
 
 #include "util/util_log.h"
@@ -70,6 +70,31 @@ enum class ViewValue : uint32_t {
   eUint,
 };
 
+// The words every boundary function fills, given as its last argument: two buffers it allocated with
+// malloc (free each with wcs_free) and their element counts, and the reason a call failed (a
+// NUL-terminated string, also from malloc) and its length. An entry giving one buffer leaves the
+// second empty.
+enum class Slot : uint32_t {
+  eFirst,
+  eFirstCount,
+  eSecond,
+  eSecondCount,
+  eReason,
+  eReasonLength,
+  eCount,
+};
+
+// Writes an entry's buffers and reason into `slots`.
+inline void fill(uintptr_t* slots, const void* first, size_t first_count, const void* second,
+                 size_t second_count, const char* reason) {
+  slots[uint32_t(Slot::eFirst)] = reinterpret_cast<uintptr_t>(first);
+  slots[uint32_t(Slot::eFirstCount)] = first_count;
+  slots[uint32_t(Slot::eSecond)] = reinterpret_cast<uintptr_t>(second);
+  slots[uint32_t(Slot::eSecondCount)] = second_count;
+  slots[uint32_t(Slot::eReason)] = reinterpret_cast<uintptr_t>(reason);
+  slots[uint32_t(Slot::eReasonLength)] = reason ? std::strlen(reason) : 0;
+}
+
 // Keeps the first error dxbc-spirv reports on this thread while it lives, as the reason a call failed.
 class ErrorLog : public dxbc_spv::util::Logger {
 public:
@@ -86,31 +111,6 @@ inline char* copy(const std::string& s) {
   if (out)
     std::memcpy(out, s.c_str(), s.size() + 1);
   return out;
-}
-
-// Runs `f`, returning its status. Where C++ exceptions are on (native builds), an exception leaving the
-// converter becomes status 3 with its text in `error`; without them (WebAssembly) it ends the module
-// instance, which the host reports as a failed conversion.
-template <typename F>
-int contained(const char* who, char** error, F&& f) {
-#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
-  auto fail = [&](const std::string& what) {
-    std::free(*error);
-    *error = copy(std::string(who) + " failed: " + what);
-    return 3;
-  };
-  try {
-    return f();
-  } catch (const std::exception& e) {
-    return fail(e.what());
-  } catch (...) {
-    return fail("an exception of unknown type");
-  }
-#else
-  (void)who;
-  (void)error;
-  return f();
-#endif
 }
 
 }

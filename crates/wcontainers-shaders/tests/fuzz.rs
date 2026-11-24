@@ -7,37 +7,28 @@
 //! the corpus in `WCONTAINERS_SHADER_CORPUS`. Each case is written to stderr before it runs, so a case
 //! that ends the process names itself; `WCONTAINERS_FUZZ_FIRST` starts at that case.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use cap::Cap;
+use std::alloc::System;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use wcontainers_gpu::VariantKey;
 use wcontainers_shaders::{ConvertError, Source, container, convert, token};
 
-/// The largest single allocation the test's Rust code may make: a larger one is refused, as on a host
-/// short of memory, so a size taken unchecked from the bytecode ends the test on every machine.
-const LARGEST_ALLOCATION: usize = 1 << 30;
-
-struct Bounded;
-
-// SAFETY: every call is passed on to the system allocator unchanged, or refused with a null pointer.
-unsafe impl GlobalAlloc for Bounded {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if layout.size() > LARGEST_ALLOCATION {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: the caller's layout, as `GlobalAlloc::alloc` requires.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` came from `System.alloc` with this layout.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
+/// The most the test's Rust code may hold at once: an allocation past it is refused, as on a host short
+/// of memory, so a size taken unchecked from the bytecode ends the test on every machine. The
+/// converters' own memory is their module's, bounded by its instance.
+const LARGEST_HOLDING: usize = 1 << 30;
 
 #[global_allocator]
-static ALLOCATOR: Bounded = Bounded;
+static ALLOCATOR: Cap<System> = Cap::new(System, LARGEST_HOLDING);
+
+/// How a refusal says the converter's run ended rather than refused (`src/converters/module.rs`).
+const ENDINGS: [&str; 2] = [" stopped: ", " ran past "];
+
+/// A case taking longer than this is named as slow.
+const SLOW: Duration = Duration::from_secs(1);
 
 /// xorshift64, seeded.
 struct Rng(u64);
@@ -98,11 +89,12 @@ fn signing_again_gives_the_compilers_checksum() {
 }
 
 #[test]
-#[ignore = "seeded fuzz, a long run (WCONTAINERS_FUZZ_SEED, WCONTAINERS_FUZZ_CASES); a known failure: \
-            malformed DXIL can end the process inside dxil-spirv, in its bitcode reader and, after the \
-            reader accepted the module, in its converter's metadata reads (its metadata helpers, and \
-            casts made in place where it declares stage inputs, outputs, patch constants and geometry \
-            streams) and its instruction emission (gap A11)"]
+#[cfg_attr(
+    target_os = "wasi",
+    ignore = "a known failure in the crate's own WebAssembly build, which links the converters into \
+              its module: malformed DXIL can end that module inside dxil-spirv (gap A11; natively the \
+              converters run in a module of their own)"
+)]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     let number = |name: &str, default: u64| {
         std::env::var(name)
@@ -161,7 +153,13 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
         } else {
             Source::Dxbc(&b)
         };
-        let class = match convert(source, &VariantKey::default(), None) {
+        let start = Instant::now();
+        let converted = convert(source, &VariantKey::default(), None);
+        let took = start.elapsed();
+        if took > SLOW {
+            eprintln!("case {case} seed {seed}: slow, {took:?}");
+        }
+        let class = match converted {
             Ok(_) => "ok".into(),
             Err(e @ (ConvertError::Malformed(_) | ConvertError::Invalid(_))) => {
                 // Refused, but by our lowering's own checks or naga's validation rather than by a
@@ -172,6 +170,14 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
                     .take(2)
                     .collect::<Vec<_>>()
                     .join(":")
+            }
+            Err(e @ ConvertError::Rejected(_))
+                if ENDINGS.iter().any(|w| e.to_string().contains(w)) =>
+            {
+                // The converter's run ended (a trap or a bound): listed per case with what it wrote.
+                eprintln!("case {case} seed {seed}: ended: {e}");
+                let e = e.to_string();
+                e.split(':').take(3).collect::<Vec<_>>().join(":")
             }
             Err(e) => format!("{e}").split(':').next().unwrap().to_string(),
         };
@@ -298,7 +304,7 @@ const FAR_REGISTER: u32 = 0x3fff_ffff;
 
 /// A signed shader (model 5.1) declaring a sampler array whose last register is far past any
 /// binding: refused by name, where its register list once asked for gigabytes (past
-/// [`LARGEST_ALLOCATION`]) and ended the process.
+/// [`LARGEST_HOLDING`]) and ended the process.
 #[test]
 fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/ps_spaces.dxbc");

@@ -1,6 +1,9 @@
-//! Builds the C++ converters into the crate with the `cc` crate, and names the whole converter's
-//! sources (the C++, this crate's Rust and the carried naga) in `WCS_CONVERTER_SOURCES` for the
-//! content key. The file lists come from the converters' meson and CMake files.
+//! Builds the C++ converters with the `cc` crate: for WebAssembly into the crate, natively into a
+//! module of their own that the crate runs under wasmtime (`converters.wasm`, kept in the repository
+//! with the hash of the sources it was built from, so that a native build needs no SDK). Names the
+//! whole converter's sources (the C++, this crate's Rust and the carried naga) in
+//! `WCS_CONVERTER_SOURCES` for the content key. The file lists come from the converters' meson and
+//! CMake files.
 
 use std::path::{Path, PathBuf};
 
@@ -85,6 +88,34 @@ const IR_ENUMS: &[HeaderEnum] = &[
 /// The directory of this crate's own C++ boundary.
 const BOUNDARY: &str = "cpp";
 
+/// The converters' module as built from the sources whose hash `MODULE_SOURCES` holds.
+const MODULE: &str = "converters.wasm";
+const MODULE_SOURCES: &str = "converters.blake3";
+
+/// The boundary's functions the module exports, and the C library's allocator, which the host calls
+/// to place a shader in the module's memory.
+const EXPORTS: &[(&str, &str)] = &[
+    ("DXBC_TO_IR", "wcs_dxbc_to_ir"),
+    ("DXIL_TO_SPIRV", "wcs_dxil_to_spirv"),
+    ("DXIL_CONSTANT_SIZES", "wcs_dxil_constant_sizes"),
+    (
+        "DXIL_COMPARED_GATHER_CHANNELS",
+        "wcs_dxil_compared_gather_channels",
+    ),
+    ("DXIL_DECLARED_REGISTERS", "wcs_dxil_declared_registers"),
+    ("DXIL_VIEWS", "wcs_dxil_views"),
+    ("FREE", "wcs_free"),
+    ("ALLOCATE", "malloc"),
+];
+
+/// The module's stack, in bytes: Rust's for WebAssembly, with which every corpus converts in the
+/// crate's own WebAssembly build. It lies first in the module's memory, so an overflow traps.
+const MODULE_STACK: usize = 1 << 20;
+
+/// The optimisation level the module is built at, whatever the crate's profile, so that every
+/// build of the same sources gives the same bytes.
+const MODULE_OPTIMISATION: u32 = 2;
+
 /// Changes carried to the converters until upstream has them: `<converter>/<file>.patch` here is a
 /// unified diff of `<file>`, one of the converter's compiled sources, which is then compiled from
 /// the build directory in place of the submodule's.
@@ -104,6 +135,7 @@ const BOUNDARY_ENUMS: &[HeaderEnum] = &[
     ("boundary.h", "ViewShape", "view_shape", "u32"),
     ("boundary.h", "ViewValue", "view_value", "u32"),
     ("boundary.h", "ViewRange", "view_range", "u32"),
+    ("boundary.h", "Slot", "slot", "usize"),
 ];
 
 const DXIL_SPIRV: &[&str] = &[
@@ -186,52 +218,46 @@ fn main() {
     let mut sources = blake3::Hasher::new();
     hash_files(&mut sources, &cpp);
     let sources = sources.finalize().to_hex().to_string();
-    let mut objects = blake3::Hasher::new();
-    objects.update(sources.as_bytes());
-    objects.update(
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(sources.as_bytes());
+    hasher.update(
         std::env::var("WASI_SDK_PATH")
             .unwrap_or_default()
             .as_bytes(),
     );
-    let objects = objects.finalize().to_hex().to_string();
+    let objects_hash = hasher.finalize().to_hex().to_string();
 
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let mut build = base();
-    build
-        .std("c++17")
-        .include(root)
-        .define("DXBC_SPV_ENABLE_SM5", None);
-    add_sources(&mut build, &build_dir, root, DXBC_SPIRV);
-    build.file("cpp/dxbc.cpp");
-    compile(&build, "dxbc_spirv", &objects);
-
-    // dxil-spirv (C++14, built as C++17 as its CMake does where it reads dxbc-spirv), with its own
-    // glslang SPIR-V builder, bitcode reader and SPIRV-Headers. Its bitcode module also reads
-    // dxbc-spirv's IR, from our one copy of dxbc-spirv.
-    let mut build = base();
-    build
-        .std("c++17")
-        .flag_if_supported("-fno-rtti")
-        .include(dxil)
-        .include(dxil.join("debug"))
-        .include(dxil.join("util"))
-        .include(dxil.join("bc"))
-        .include(dxil.join("third_party/glslang-spirv"))
-        .include(dxil.join("third_party/bc-decoder"))
-        .include(dxil.join("third_party/spirv-headers/include/spirv/unified1"))
-        .include(root)
-        .include(root.join("ir"))
-        .define("HAVE_LLVMBC", None)
-        .define("AMD_EXTENSIONS", None)
-        .define("DXBC_SPV_ENABLE_SM5", None)
-        .define("NOMINMAX", None);
-    add_sources(&mut build, &build_dir, dxil, DXIL_SPIRV);
-    build.file("cpp/dxil.cpp");
-    compile(&build, "dxil_spirv", &objects);
-    // Linked after both, which call it.
-    let mut build = base();
-    build.file("cpp/assertion.cpp");
-    compile(&build, "wcs_assertion", &objects);
+    let linked = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi");
+    let sdk = std::env::var("WASI_SDK_PATH").ok();
+    if linked {
+        let sdk =
+            sdk.expect("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly");
+        let base = linked_base(&sdk);
+        for (name, build) in libraries(&base, &build_dir, root, dxil) {
+            let objects = objects(&build, name, &objects_hash);
+            base.clone().objects(objects).compile(name);
+        }
+    } else if let Some(sdk) = sdk {
+        let built = module(&sdk, &build_dir, root, dxil, &objects_hash);
+        let recorded = std::fs::read_to_string(MODULE_SOURCES).unwrap_or_default();
+        let same = std::fs::read(MODULE).ok() == Some(std::fs::read(&built).unwrap());
+        std::fs::write(build_dir.join(MODULE_SOURCES), &sources).unwrap();
+        assert!(
+            same && recorded.trim() == sources,
+            "the committed {MODULE} is not this build of its sources: copy {} and {} into the crate",
+            built.display(),
+            build_dir.join(MODULE_SOURCES).display()
+        );
+    } else {
+        let recorded = std::fs::read_to_string(MODULE_SOURCES).unwrap_or_default();
+        assert!(
+            recorded.trim() == sources,
+            "the converters' sources changed since {MODULE} was built: build the crate natively with \
+             WASI_SDK_PATH naming wasi-sdk 25, which says what to copy"
+        );
+    }
+    exports(&build_dir.join("exports.rs"));
 
     ir_codes(
         &[(root, IR_ENUMS), (Path::new(BOUNDARY), BOUNDARY_ENUMS)],
@@ -252,12 +278,115 @@ fn main() {
         converter.finalize().to_hex()
     );
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
-    for watched in [BOUNDARY, PATCHES, "dxbc-spirv", "dxil-spirv", "src"] {
+    for watched in [
+        BOUNDARY,
+        PATCHES,
+        "dxbc-spirv",
+        "dxil-spirv",
+        "src",
+        MODULE,
+        MODULE_SOURCES,
+    ] {
         println!("cargo:rerun-if-changed={watched}");
     }
     if naga.exists() {
         println!("cargo:rerun-if-changed={}", naga.display());
     }
+}
+
+/// The converters' three libraries, each `base` with its sources: dxbc-spirv, dxil-spirv (C++14,
+/// built as C++17 as its CMake does where it reads dxbc-spirv, with its own glslang SPIR-V builder,
+/// bitcode reader and SPIRV-Headers; its bitcode module also reads dxbc-spirv's IR, from our one
+/// copy), and the assertion both call, linked after them.
+fn libraries(
+    base: &cc::Build,
+    build_dir: &Path,
+    root: &Path,
+    dxil: &Path,
+) -> [(&'static str, cc::Build); 3] {
+    let mut dxbc = base.clone();
+    dxbc.std("c++17")
+        .include(root)
+        .define("DXBC_SPV_ENABLE_SM5", None);
+    add_sources(&mut dxbc, build_dir, root, DXBC_SPIRV);
+    dxbc.file("cpp/dxbc.cpp");
+
+    let mut dxil_spirv = base.clone();
+    dxil_spirv
+        .std("c++17")
+        .flag_if_supported("-fno-rtti")
+        .include(dxil)
+        .include(dxil.join("debug"))
+        .include(dxil.join("util"))
+        .include(dxil.join("bc"))
+        .include(dxil.join("third_party/glslang-spirv"))
+        .include(dxil.join("third_party/bc-decoder"))
+        .include(dxil.join("third_party/spirv-headers/include/spirv/unified1"))
+        .include(root)
+        .include(root.join("ir"))
+        .define("HAVE_LLVMBC", None)
+        .define("AMD_EXTENSIONS", None)
+        .define("DXBC_SPV_ENABLE_SM5", None)
+        .define("NOMINMAX", None);
+    add_sources(&mut dxil_spirv, build_dir, dxil, DXIL_SPIRV);
+    dxil_spirv.file("cpp/dxil.cpp");
+
+    let mut assertion = base.clone();
+    assertion.file("cpp/assertion.cpp");
+    [
+        ("dxbc_spirv", dxbc),
+        ("dxil_spirv", dxil_spirv),
+        ("wcs_assertion", assertion),
+    ]
+}
+
+/// Builds the converters' module (a WebAssembly reactor exporting `EXPORTS`) with the SDK at `sdk`
+/// and returns where it is.
+fn module(sdk: &str, build_dir: &Path, root: &Path, dxil: &Path, hash: &str) -> PathBuf {
+    let mut base = common();
+    base.target(MODULE_TARGET)
+        .opt_level(MODULE_OPTIMISATION)
+        .debug(false)
+        .flag(format!("-ffile-prefix-map={}=out", build_dir.display()));
+    wasm(&mut base, sdk);
+    let mut objects = Vec::new();
+    for (name, build) in libraries(&base, build_dir, root, dxil) {
+        objects.extend(self::objects(&build, name, hash));
+    }
+    let out = build_dir.join(MODULE);
+    let mut link = std::process::Command::new(format!("{sdk}/bin/clang++"));
+    link.arg(format!("--target={MODULE_TARGET}"))
+        .arg(format!("--sysroot={sdk}/share/wasi-sysroot"))
+        .arg("-mexec-model=reactor")
+        .arg("-Wl,--strip-debug")
+        .arg(format!("-Wl,-z,stack-size={MODULE_STACK}"))
+        .arg("-Wl,--stack-first")
+        .args(
+            EXPORTS
+                .iter()
+                .map(|(_, name)| format!("-Wl,--export={name}")),
+        )
+        .args(&objects)
+        .arg("-o")
+        .arg(&out);
+    let status = link.status().expect("the SDK's clang++ runs");
+    assert!(status.success(), "linking {MODULE} failed: {link:?}");
+    out
+}
+
+/// The target the module is built for.
+const MODULE_TARGET: &str = "wasm32-wasip1";
+
+/// Writes `EXPORTS` as Rust constants of the module `exports`, the names the host calls.
+fn exports(out: &Path) {
+    let mut rust = String::from(
+        "/// The names the converters' module exports, from `build.rs`.\n#[allow(dead_code)]\npub mod exports {\n",
+    );
+    for (constant, name) in EXPORTS {
+        rust += &format!("    pub const {constant}: &str = \"{name}\";\n");
+    }
+    rust += "}\n";
+    std::fs::write(out, rust).unwrap();
 }
 
 /// Adds the converter's `files` under `root` to `build`, each with its carried patch applied
@@ -403,10 +532,10 @@ fn screaming(name: &str) -> String {
     out
 }
 
-/// Compiles `build` into the static library `name`, reusing the objects of an earlier run while
-/// `hash` (of everything that makes them) is unchanged, so that a change to the Rust sources alone,
-/// which reruns this script for the content key, compiles no C++.
-fn compile(build: &cc::Build, name: &str, hash: &str) {
+/// Compiles `build`'s sources into objects kept under the name `name`, reusing those of an earlier
+/// run while `hash` (of everything that makes them) is unchanged, so that a change to the Rust sources
+/// alone, which reruns this script for the content key, compiles no C++.
+fn objects(build: &cc::Build, name: &str, hash: &str) -> Vec<PathBuf> {
     let dir = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(format!("{name}-objects"));
     let stamp = dir.join("hash");
     let list = |dir: &Path| -> Vec<PathBuf> {
@@ -418,19 +547,17 @@ fn compile(build: &cc::Build, name: &str, hash: &str) {
         objects.sort();
         objects
     };
-    let objects = if std::fs::read_to_string(&stamp).ok().as_deref() == Some(hash) {
-        list(&dir)
-    } else {
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        for (i, object) in build.compile_intermediates().iter().enumerate() {
-            let file = object.file_name().unwrap().to_string_lossy();
-            std::fs::copy(object, dir.join(format!("{i:03}-{file}"))).unwrap();
-        }
-        std::fs::write(&stamp, hash).unwrap();
-        list(&dir)
-    };
-    base().objects(objects).compile(name);
+    if std::fs::read_to_string(&stamp).ok().as_deref() == Some(hash) {
+        return list(&dir);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (i, object) in build.compile_intermediates().iter().enumerate() {
+        let file = object.file_name().unwrap().to_string_lossy();
+        std::fs::copy(object, dir.join(format!("{i:03}-{file}"))).unwrap();
+    }
+    std::fs::write(&stamp, hash).unwrap();
+    list(&dir)
 }
 
 /// Hashes the files under each `(path, recursive)` (a path may be one file) by name and contents,
@@ -482,33 +609,39 @@ fn list_files(paths: &[(PathBuf, bool)]) -> Vec<PathBuf> {
     files
 }
 
-/// The common C++ setup: the converters' assertions as `cpp/assert` defines them, C++ exceptions on
-/// natively (so the boundary contains them), and for WebAssembly wasi-sdk's clang, libc and libc++
-/// (exceptions off).
-fn base() -> cc::Build {
+/// The common C++ setup: the converters' assertions as `cpp/assert` defines them.
+fn common() -> cc::Build {
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .include("cpp/assert")
         .include(BOUNDARY)
         .warnings(false);
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
-        build.flag("-fno-exceptions");
-        let sdk = std::env::var("WASI_SDK_PATH")
-            .expect("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly");
-        let lib = format!("{sdk}/share/wasi-sysroot/lib/wasm32-wasip1");
-        build
-            .compiler(format!("{sdk}/bin/clang++"))
-            .flag(format!("--sysroot={sdk}/share/wasi-sysroot"))
-            .cpp_link_stdlib(None);
-        // Only libc++ is taken from the SDK; libc stays Rust's own, so the two never mix.
-        let out = std::env::var("OUT_DIR").unwrap();
-        for name in ["libc++.a", "libc++abi.a"] {
-            std::fs::copy(format!("{lib}/{name}"), format!("{out}/{name}")).unwrap();
-        }
-        println!("cargo:rustc-link-search=native={out}");
-        println!("cargo:rustc-link-lib=static=c++");
-        println!("cargo:rustc-link-lib=static=c++abi");
+    build
+}
+
+/// `build` made to compile with wasi-sdk's clang, libc and libc++ (C++ exceptions off: a failure
+/// inside a converter ends its module instance).
+fn wasm(build: &mut cc::Build, sdk: &str) {
+    build
+        .flag("-fno-exceptions")
+        .compiler(format!("{sdk}/bin/clang++"))
+        .flag(format!("--sysroot={sdk}/share/wasi-sysroot"))
+        .cpp_link_stdlib(None);
+}
+
+/// The setup of the converters linked into the crate's own WebAssembly build: only libc++ is taken
+/// from the SDK; libc stays Rust's own, so the two never mix.
+fn linked_base(sdk: &str) -> cc::Build {
+    let mut build = common();
+    wasm(&mut build, sdk);
+    let lib = format!("{sdk}/share/wasi-sysroot/lib/wasm32-wasip1");
+    let out = std::env::var("OUT_DIR").unwrap();
+    for name in ["libc++.a", "libc++abi.a"] {
+        std::fs::copy(format!("{lib}/{name}"), format!("{out}/{name}")).unwrap();
     }
+    println!("cargo:rustc-link-search=native={out}");
+    println!("cargo:rustc-link-lib=static=c++");
+    println!("cargo:rustc-link-lib=static=c++abi");
     build
 }

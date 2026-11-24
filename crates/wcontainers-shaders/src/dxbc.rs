@@ -1,65 +1,16 @@
 //! The call into dxbc-spirv (C++, built by `build.rs`).
 
 use crate::ConvertError;
+use crate::converters::{self, DXBC_TO_IR, Failure};
 use crate::ir::{Ir, code};
-use alloc::string::String;
-use core::ffi::{c_char, c_int, c_void};
-
-unsafe extern "C" {
-    fn wcs_dxbc_to_ir(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u8,
-        out_size: *mut usize,
-        sizes: *mut *mut u32,
-        sizes_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_free(p: *mut c_void);
-}
 
 /// DXBC to dxbc-spirv's legalised IR.
 pub fn to_ir(dxbc: &[u8]) -> Result<Ir, ConvertError> {
-    let mut out = core::ptr::null_mut();
-    let mut size = 0;
-    let mut sizes = core::ptr::null_mut();
-    let mut sizes_words = 0;
-    let mut error = core::ptr::null_mut();
-    // SAFETY: the pointers are valid for the call; the C side allocates `out`, `sizes` and `error`
-    // with malloc.
-    let status = unsafe {
-        wcs_dxbc_to_ir(
-            dxbc.as_ptr(),
-            dxbc.len(),
-            &mut out,
-            &mut size,
-            &mut sizes,
-            &mut sizes_words,
-            &mut error,
-        )
-    };
-    if status != 0 {
-        let reason = if error.is_null() {
-            String::from("dxbc-spirv gave no reason")
-        } else {
-            // SAFETY: a NUL-terminated string from the C side, freed right after.
-            let s = unsafe { core::ffi::CStr::from_ptr(error) }
-                .to_string_lossy()
-                .into();
-            unsafe { wcs_free(error.cast()) };
-            s
-        };
-        return Err(ConvertError::Rejected(reason));
-    }
-    // SAFETY: `out` holds `size` bytes and `sizes` holds `sizes_words` words written by the C side,
-    // both freed right after.
-    let ir = Ir::decode(unsafe { core::slice::from_raw_parts(out, size) });
-    let declared: alloc::vec::Vec<u32> =
-        unsafe { core::slice::from_raw_parts(sizes, sizes_words) }.to_vec();
-    unsafe {
-        wcs_free(out.cast());
-        wcs_free(sizes.cast());
-    }
+    let [ir, declared] = converters::call(&DXBC_TO_IR, dxbc, 0).map_err(
+        |(Failure::Refused(reason) | Failure::Ended(reason))| ConvertError::Rejected(reason),
+    )?;
+    let declared = converters::words(&declared);
+    let ir = Ir::decode(&ir);
     let mut ir = ir.ok_or_else(|| ConvertError::Malformed("the IR did not decode".into()))?;
     declared_sizes(&mut ir, &declared);
     ir.spaces = crate::container::shader_model(dxbc) >= Some(DIRECT3D_12_NUMBERING);

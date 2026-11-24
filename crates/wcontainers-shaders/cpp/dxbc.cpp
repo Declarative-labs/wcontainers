@@ -99,20 +99,19 @@ int convert(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, u
 
 }
 
-// Returns 0 with the serialised IR in `out` and the dynamically indexed constant buffers' (space,
-// register, size) triples in `sizes` (free both with wcs_free), or nonzero with the reason in `error`
-// (free with wcs_free).
-extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size,
-                              uint32_t** sizes, size_t* sizes_words, char** error) {
-  *out = nullptr;
-  *out_size = 0;
-  *sizes = nullptr;
-  *sizes_words = 0;
-  *error = nullptr;
+// Returns 0 with the serialised IR in bytes and the dynamically indexed constant buffers' (space,
+// register, size) triples in words in `slots`, or nonzero with the reason. `samples` is unused.
+extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint32_t samples, uintptr_t* slots) {
+  (void)samples;
+  uint8_t* out = nullptr;
+  size_t out_size = 0;
+  uint32_t* sizes = nullptr;
+  size_t sizes_words = 0;
+  char* error = nullptr;
   wcs::ErrorLog log;
-  return wcs::contained("dxbc-spirv", error, [&] {
-    return convert(data, size, out, out_size, sizes, sizes_words, error, log);
-  });
+  int status = convert(data, size, &out, &out_size, &sizes, &sizes_words, &error, log);
+  wcs::fill(slots, out, out_size, sizes, sizes_words, error);
+  return status;
 }
 
 extern "C" void wcs_free(void* p) {

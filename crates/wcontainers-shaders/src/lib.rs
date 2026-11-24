@@ -8,6 +8,7 @@ pub mod builtin;
 pub mod cache;
 mod common;
 pub mod container;
+mod converters;
 mod dxbc;
 mod dxil;
 mod ir;

@@ -1,6 +1,6 @@
 // Stands in for the C library's assert.h in the converters' builds: a failed assertion calls
-// `wcs_assert_failed` (cpp/assertion.cpp), which throws where exceptions are on, so malformed bytecode
-// becomes a refused conversion instead of ending the process. No include guard, as the standard's.
+// `wcs_assert_failed` (cpp/assertion.cpp), which names it before the module instance ends, so a
+// refused conversion says which assertion failed. No include guard, as the standard's.
 
 #undef assert
 #ifdef NDEBUG
