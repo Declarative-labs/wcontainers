@@ -128,6 +128,24 @@ const GLSL_VERSION: c_uint = 330;
 const GLSL_COMPATIBILITY_VERSION: c_uint = 130;
 const ESSL_VERSION: c_uint = 320;
 
+/// OpenGL 3.1's GLSL version, the core profile's where the passed values are fewer than OpenGL
+/// 3.2 requires.
+const GLSL_3_1_VERSION: c_uint = 140;
+
+/// The least components OpenGL 3.2 lets a fragment program take in and a geometry program pass on
+/// (<https://registry.khronos.org/OpenGL-Refpages/gl4/html/glGet.xhtml#:~:text=GL_MAX_FRAGMENT_INPUT_COMPONENTS>).
+const GL_3_2_PASSED_COMPONENTS: c_uint = 128;
+
+/// The core profile's GLSL version: 3.30's where the passed values meet OpenGL 3.2's minimums,
+/// otherwise OpenGL 3.1's, so that no version is reported whose minimums are not met.
+pub(crate) fn glsl_version(limits: &wcontainers_gpu::Limits) -> c_uint {
+    if passed_values(limits) * naga::VectorSize::Quad as c_uint >= GL_3_2_PASSED_COMPONENTS {
+        GLSL_VERSION
+    } else {
+        GLSL_3_1_VERSION
+    }
+}
+
 /// A geometry program's limits, the least `OES_geometry_shader` allows:
 /// the stage helper sizes its records by the program's own declarations.
 const GEOMETRY_OUTPUT_VERTICES: c_uint = 256;
@@ -215,7 +233,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.constant_buffer_offset_alignment = limits.min_uniform_offset_alignment;
     caps.max_constant_buffer_size = limits.max_uniform_buffer_size;
     caps.max_varyings = passed_values(limits);
-    caps.glsl_feature_level = GLSL_VERSION;
+    caps.glsl_feature_level = glsl_version(limits);
     caps.glsl_feature_level_compatibility = GLSL_COMPATIBILITY_VERSION;
     caps.essl_feature_level = ESSL_VERSION;
     let filters = |format| ours.formats.get(format).contains(FormatUse::FILTER);
@@ -230,6 +248,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // Views' swizzles are applied in the programs that read them (`SwizzleInShader`).
     caps.texture_swizzle = true;
     caps.depth_clip_disable = ours.has(Features::DEPTH_CLAMP);
+    caps.polygon_offset_clamp = ours.has(Features::DEPTH_BIAS_CLAMP);
     caps.max_dual_source_render_targets = c_uint::from(ours.has(Features::DUAL_SOURCE_BLEND));
     let timestamps = ours.has(Features::TIMESTAMPS);
     caps.query_timestamp = timestamps;
@@ -481,5 +500,95 @@ pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
     match crate::device::webgpu() {
         Some((backend, name)) => screen(backend, name),
         None => std::ptr::null_mut(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcontainers_gpu::Backend;
+    use wcontainers_gpu_test::Recorder;
+
+    use super::*;
+
+    /// The values Direct3D 12 passes between stages through wgpu, beside the position
+    /// (`D3D12_VS_OUTPUT_REGISTER_COUNT` less one), and the vertex inputs it takes (less the
+    /// vertex and instance numbers).
+    const DIRECT3D_12_INTER_STAGE_SLOTS: u32 = 31;
+    const DIRECT3D_12_VERTEX_ATTRIBUTES: u32 = 30;
+
+    /// The vertex inputs that let the pass-through take OpenGL 3.2's 32 values beside its own.
+    const VERTEX_ATTRIBUTES_FOR_32_VALUES: u32 = 34;
+    const INTER_STAGE_SLOTS_FOR_32_VALUES: u32 = 32;
+
+    fn caps_with(inter_stage_slots: u32, vertex_attributes: u32, clamp: bool) -> Caps {
+        Recorder::with_caps(|caps| {
+            caps.limits.inter_stage_slots = inter_stage_slots;
+            caps.limits.vertex_attributes = vertex_attributes;
+            caps.features.set(Features::DEPTH_BIAS_CLAMP, clamp);
+        })
+        .caps()
+        .clone()
+    }
+
+    fn filled(ours: &Caps) -> pipe_caps {
+        let mut caps = pipe_caps::default();
+        fill_caps(&mut caps, ours);
+        caps
+    }
+
+    #[test]
+    fn the_core_profile_is_opengl_3_1_where_fewer_values_pass_than_3_2_requires() {
+        let ours = caps_with(
+            DIRECT3D_12_INTER_STAGE_SLOTS,
+            DIRECT3D_12_VERTEX_ATTRIBUTES,
+            true,
+        );
+        let caps = filled(&ours);
+        assert_eq!(
+            caps.max_varyings,
+            DIRECT3D_12_VERTEX_ATTRIBUTES - PASS_THROUGH_INPUTS
+        );
+        assert!(caps.max_varyings * (naga::VectorSize::Quad as c_uint) < GL_3_2_PASSED_COMPONENTS);
+        assert_eq!(caps.glsl_feature_level, GLSL_3_1_VERSION);
+        assert_eq!(caps.essl_feature_level, ESSL_VERSION);
+    }
+
+    #[test]
+    fn the_core_profile_is_opengl_3_3_where_32_values_pass() {
+        let ours = caps_with(
+            INTER_STAGE_SLOTS_FOR_32_VALUES,
+            VERTEX_ATTRIBUTES_FOR_32_VALUES,
+            true,
+        );
+        let caps = filled(&ours);
+        assert_eq!(
+            caps.max_varyings * naga::VectorSize::Quad as c_uint,
+            GL_3_2_PASSED_COMPONENTS
+        );
+        assert_eq!(caps.glsl_feature_level, GLSL_VERSION);
+    }
+
+    #[test]
+    fn polygon_offset_clamp_follows_the_back_ends_depth_bias_clamp() {
+        for clamp in [false, true] {
+            let ours = caps_with(
+                DIRECT3D_12_INTER_STAGE_SLOTS,
+                DIRECT3D_12_VERTEX_ATTRIBUTES,
+                clamp,
+            );
+            assert_eq!(filled(&ours).polygon_offset_clamp, clamp);
+        }
+    }
+
+    #[test]
+    fn the_point_coordinate_passes_only_where_both_the_stages_and_the_pass_through_take_it() {
+        let ours = caps_with(
+            DIRECT3D_12_INTER_STAGE_SLOTS,
+            DIRECT3D_12_VERTEX_ATTRIBUTES,
+            true,
+        );
+        let last = passed_values(&ours.limits);
+        assert!(point_coordinate_passes(&ours.limits, last - 1));
+        assert!(!point_coordinate_passes(&ours.limits, last + 1));
     }
 }
