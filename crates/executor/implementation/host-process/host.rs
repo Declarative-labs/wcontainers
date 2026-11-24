@@ -69,6 +69,17 @@ impl HostProcessHost {
     /// Holds a CPU for a runner: the one held by the fewest runners and not found contended in the last second (the
     /// lowest number on a tie), or, when every one was, the one held by the fewest.
     pub fn take_cpu(&self) -> usize {
+        self.take(false)
+            .expect("a process may use at least one CPU")
+    }
+
+    /// Holds a CPU not found contended in the last second for a runner that moves, the one held by the fewest runners
+    /// (the lowest number on a tie); none when every one was.
+    pub fn take_uncontended_cpu(&self) -> Option<usize> {
+        self.take(true)
+    }
+
+    fn take(&self, uncontended_only: bool) -> Option<usize> {
         let mut table = self
             .cpus
             .lock()
@@ -86,11 +97,9 @@ impl HostProcessHost {
                 })
                 .min_by_key(|cpu| (table.held[*cpu], *cpu))
         };
-        let cpu = fewest(true)
-            .or_else(|| fewest(false))
-            .expect("a process may use at least one CPU");
+        let cpu = fewest(true).or_else(|| (!uncontended_only).then(|| fewest(false)).flatten())?;
         table.held[cpu] += 1;
-        cpu
+        Some(cpu)
     }
 
     /// Lets a runner's CPU go.

@@ -399,10 +399,9 @@ impl HostProcessExecutor {
         if let Some(code) = self.codes.get_mut(memory.0 as usize)
             && let Some(code) = code.take()
             && let Some((first, last, _)) = code.loaded_last
+            && let Some(after) = self.translations.after.get_mut(&(first, last))
         {
-            if let Some(after) = self.translations.after.get_mut(&(first, last)) {
-                after.next = None;
-            }
+            after.next = None;
         }
     }
 

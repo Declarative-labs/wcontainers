@@ -3,6 +3,8 @@
 //!   test's loop at once, timed at every exit (knobs `WCHP_CALLS`, `WCHP_PER_BATCH`);
 //! - bench.c's eight workloads run plainly as host programs, under form P and under the WebAssembly output, each in
 //!   the kernel's loop with the seeded test policy, in alternating rounds (knob `WCHP_ROUNDS`), outputs checked equal;
+//! - placement: the getppid loop with work between calls after a move off a contended CPU against a free one, and the
+//!   moves with every CPU of the set contended (knobs `WCHP_CALLS`, `WCHP_WORK`, `WCHP_SET`, `WCHP_SECONDS`);
 //! - busybox `sh` starting programs in a loop (knob `WCHP_PROGRAMS`), twice on one executor, the second reusing the
 //!   first's translations, against the reference's own time in Docker and the model of plan 13.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -11,13 +13,14 @@ mod guest_build;
 mod kernel_host;
 
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use guest_build::{PROGRAMS, compile, freestanding};
 use kernel_host::{Program, REALTIME_NANOSECONDS, run_container};
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
-use wcontainers_abi::{Cpu, Exit, Permissions, RegisterBlock, Resume, Warning};
+use wcontainers_abi::{Cpu, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
@@ -100,14 +103,38 @@ impl Answer for Timed {
 
 /// `calls` getppid calls in a loop on a new memory of `cpu`, every exit timed.
 fn getppid_loop(cpu: &mut HostProcessExecutor, calls: u64) -> Vec<u32> {
-    let words = [
+    let (memory, thread) = loop_guest(cpu, 0);
+    let samples = loop_calls(cpu, thread, calls);
+    cpu.thread_drop(thread);
+    cpu.memory_drop(memory);
+    samples
+}
+
+/// The register the work between calls counts down in.
+const WORK: u8 = 10;
+
+/// A memory holding the getppid loop with `work` turns of a loop of a subtraction and a branch between calls, and its
+/// thread.
+fn loop_guest(cpu: &mut HostProcessExecutor, work: u16) -> (MemoryId, ThreadId) {
+    let mut words = Vec::new();
+    if work > 0 {
+        words.extend([
+            encode::movz(WORK, work, 0),
+            encode::add_immediate(WORK, WORK, -1).expect("an add"),
+            encode::compare_branch(true, WORK, -INSTRUCTION).expect("cbnz"),
+        ]);
+    }
+    words.extend([
         encode::movz(SYSCALL_NUMBER, GETPPID, 0),
         encode::exception(form::SVC, 0),
         encode::add_immediate(COUNTER, COUNTER, -1).expect("an add"),
-        encode::compare_branch(true, COUNTER, -3 * INSTRUCTION).expect("cbnz"),
+    ]);
+    let back = -(words.len() as i64) * INSTRUCTION;
+    words.extend([
+        encode::compare_branch(true, COUNTER, back).expect("cbnz"),
         encode::movz(SYSCALL_NUMBER, EXIT, 0),
         encode::exception(form::SVC, 0),
-    ];
+    ]);
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let memory = cpu.memory_new().expect("memory");
     cpu.set_permissions(memory, CODE, PAGE, Permissions::READ | Permissions::EXECUTE)
@@ -115,6 +142,11 @@ fn getppid_loop(cpu: &mut HostProcessExecutor, calls: u64) -> Vec<u32> {
     cpu.write(memory, CODE, &bytes).expect("the code");
     cpu.code_changed(memory, CODE, PAGE, &[CODE]);
     let thread = cpu.thread_new(memory).expect("thread");
+    (memory, thread)
+}
+
+/// `calls` getppid calls of the loop `thread` runs, from its start, every exit timed.
+fn loop_calls(cpu: &mut HostProcessExecutor, thread: ThreadId, calls: u64) -> Vec<u32> {
     let mut registers = RegisterBlock::ZERO;
     registers.pc = CODE;
     registers.x[usize::from(COUNTER)] = calls;
@@ -124,10 +156,135 @@ fn getppid_loop(cpu: &mut HostProcessExecutor, calls: u64) -> Vec<u32> {
         samples: Vec::with_capacity(calls as usize),
     };
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, Turn::Free, &mut timed);
-    cpu.thread_drop(thread);
-    cpu.memory_drop(memory);
     assert_eq!(timed.samples.len() as u64, calls, "every call came back");
     timed.samples
+}
+
+/// The median of the gaps between calls, the first (which holds the turn's start) left out.
+fn median_gap(samples: &[u32]) -> f64 {
+    let mut gaps: Vec<f64> = samples[1..].iter().map(|&gap| f64::from(gap)).collect();
+    median(&mut gaps)
+}
+
+/// The calls of each loop the placement measurements run, and the work between them (about 10 us on Graviton4).
+fn placement_knobs() -> (u64, u16) {
+    (
+        knob("WCHP_CALLS", 20_000),
+        u16::try_from(knob("WCHP_WORK", 30_000)).expect("WCHP_WORK fits 16 bits"),
+    )
+}
+
+/// Pins the calling thread to `cpus`.
+fn pin_to(cpus: &[usize]) {
+    let mut set = rustix::thread::CpuSet::new();
+    for &cpu in cpus {
+        set.set(cpu);
+    }
+    rustix::thread::sched_setaffinity(None, &set).expect("pin");
+}
+
+/// A thread spinning on `cpu` until `spinning` is cleared.
+fn spinner(cpu: usize, spinning: &Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    let spinning = spinning.clone();
+    std::thread::spawn(move || {
+        pin_to(&[cpu]);
+        while spinning.load(Ordering::Relaxed) {
+            std::hint::spin_loop();
+        }
+    })
+}
+
+/// Plan 13's placement item: with a program spinning on the runner's CPU, the runner moves once and the guest's getppid
+/// loop with work between calls runs within 5% of the same loop on a free CPU, both measured here (knobs `WCHP_CALLS`,
+/// `WCHP_WORK`).
+#[test]
+#[ignore = "a measurement, run on its own"]
+fn placement_after_a_move_runs_as_on_a_free_cpu() {
+    let (calls, work) = placement_knobs();
+    let mut cpu = HostProcessExecutor::new(host());
+    let (memory, thread) = loop_guest(&mut cpu, work);
+    loop_calls(&mut cpu, thread, calls / 10);
+    let free = median_gap(&loop_calls(&mut cpu, thread, calls));
+    let first = cpu.runner_cpu().expect("placed");
+    let before = cpu.counters().placement_moves;
+    let spinning = Arc::new(AtomicBool::new(true));
+    let other = spinner(first, &spinning);
+    let started = Instant::now();
+    let mut loops = 0;
+    while cpu.counters().placement_moves == before && started.elapsed() < Duration::from_secs(10) {
+        loop_calls(&mut cpu, thread, calls / 100);
+        loops += 1;
+    }
+    let took = started.elapsed();
+    let moved = cpu.runner_cpu().expect("placed");
+    let after = median_gap(&loop_calls(&mut cpu, thread, calls));
+    let moves = cpu.counters().placement_moves - before;
+    spinning.store(false, Ordering::Relaxed);
+    other.join().expect("the spinner");
+    // The same loop on the CPU it moved to, now free too, as the measure the move is held to.
+    let free_there = median_gap(&loop_calls(&mut cpu, thread, calls));
+    cpu.thread_drop(thread);
+    cpu.memory_drop(memory);
+    println!(
+        "placement: free CPU {first} {free:.0} ns a call; a program spinning there, moved to {moved} after {loops} \
+         loops of {} calls ({took:?}), {moves} moves; then {after:.0} ns a call; with the program ended \
+         {free_there:.0} ns there; {:.4} times that, {:.4} times the first; load {}",
+        calls / 100,
+        after / free_there,
+        after / free,
+        load().trim()
+    );
+    assert_eq!(moves, 1, "one move");
+    assert!(
+        after <= free_there * 1.05,
+        "{after:.0} ns against {free_there:.0} ns"
+    );
+}
+
+/// Plan 13's placement item: with every CPU of the embedder's set contended by a spinning program, the runner moves at
+/// most once a second (knobs `WCHP_SET`, the set's CPUs, the first the process may use, default 4; `WCHP_SECONDS`,
+/// default 10; `WCHP_CALLS`, `WCHP_WORK`).
+#[test]
+#[ignore = "a measurement, run on its own"]
+fn placement_with_every_cpu_contended_moves_at_most_once_a_second() {
+    let (calls, work) = placement_knobs();
+    let seconds = knob("WCHP_SECONDS", 10);
+    let allowed = rustix::thread::sched_getaffinity(None).expect("affinity");
+    let set: Vec<usize> = (0..rustix::thread::CpuSet::MAX_CPU)
+        .filter(|&cpu| allowed.is_set(cpu))
+        .take(knob("WCHP_SET", 4) as usize)
+        .collect();
+    // The host reads the CPUs it may use from the thread that makes it.
+    pin_to(&set);
+    let host = Arc::new(HostProcessHost::new().expect("the host is refused"));
+    let spinning = Arc::new(AtomicBool::new(true));
+    let others: Vec<_> = set.iter().map(|&cpu| spinner(cpu, &spinning)).collect();
+    let mut cpu = HostProcessExecutor::new(host);
+    let (memory, thread) = loop_guest(&mut cpu, work);
+    let started = Instant::now();
+    let mut loops = 0;
+    while started.elapsed() < Duration::from_secs(seconds) {
+        loop_calls(&mut cpu, thread, calls / 100);
+        loops += 1;
+    }
+    cpu.thread_drop(thread);
+    cpu.memory_drop(memory);
+    let took = started.elapsed();
+    spinning.store(false, Ordering::Relaxed);
+    for other in others {
+        other.join().expect("a spinner");
+    }
+    let moves = cpu.counters().placement_moves;
+    println!(
+        "placement on CPUs {set:?}, each with a program spinning: {moves} moves in {took:?} ({loops} loops of {} \
+         calls); load {}",
+        calls / 100,
+        load().trim()
+    );
+    assert!(
+        moves as f64 <= took.as_secs_f64().ceil(),
+        "{moves} moves in {took:?}"
+    );
 }
 
 /// The guest's getppid round trip: the median over batches of the mean per call (as W0's futex slot reports it),

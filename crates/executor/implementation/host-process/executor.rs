@@ -119,6 +119,9 @@ const SAMPLE_EVERY: Duration = Duration::from_millis(10);
 /// A CPU whose share falls below this fraction of the busy time (as numerator over denominator) is contended.
 const CONTENDED_BELOW: (u128, u128) = (3, 4);
 
+/// The least time between two moves of a runner.
+const MOVES_APART: Duration = Duration::from_secs(1);
+
 /// The CPU the runner thread holds, and its sampling window (plan 4.3).
 struct Runner {
     cpu: usize,
@@ -128,6 +131,10 @@ struct Runner {
     own: Duration,
     /// Each stub given a turn in the window, with its process's CPU clock before its first.
     stubs: Vec<(Pid, Duration)>,
+    /// The CPU time in the window of its stubs that ended, read before they did.
+    ended: Duration,
+    /// When it last moved.
+    moved: Option<Instant>,
 }
 
 /// The executor's counts of its slow and notable paths.
@@ -485,6 +492,8 @@ impl HostProcessExecutor {
             busy: Duration::ZERO,
             own: Duration::ZERO,
             stubs: Vec::new(),
+            ended: Duration::ZERO,
+            moved: None,
         });
         self.start_window();
         cpu
@@ -514,6 +523,7 @@ impl HostProcessExecutor {
             runner.busy = Duration::ZERO;
             runner.own = own.unwrap_or_default();
             runner.stubs.clear();
+            runner.ended = Duration::ZERO;
         }
         if own.is_err() {
             self.no_samples();
@@ -542,6 +552,21 @@ impl HostProcessExecutor {
         }
     }
 
+    /// Keeps the window's CPU time of a stub about to end, whose clock cannot be read once it has.
+    fn note_stub_end(&mut self, stub: Pid) {
+        let Some(runner) = &mut self.runner else {
+            return;
+        };
+        let Some(held) = runner.stubs.iter().position(|(held, _)| *held == stub) else {
+            return;
+        };
+        let (_, at) = runner.stubs.swap_remove(held);
+        match process_clock(stub) {
+            Ok(now) => runner.ended += now.saturating_sub(at),
+            Err(_) => self.start_window(),
+        }
+    }
+
     /// Adds a turn's time to the window; past 10 ms of it, the CPU's share (the runner's and its stubs' CPU time over
     /// the busy time) decides whether the runner moves to the CPU the host would give now.
     fn account(&mut self, turn: Duration) {
@@ -564,16 +589,20 @@ impl HostProcessExecutor {
             self.start_window();
             return;
         };
-        let used = own.saturating_sub(runner.own) + stubs;
+        let used = own.saturating_sub(runner.own) + stubs + runner.ended;
         let (part, whole) = CONTENDED_BELOW;
         let cpu = runner.cpu;
         if used.as_nanos() * whole < runner.busy.as_nanos() * part {
             self.host.mark_contended(cpu);
-            let new = self.host.take_cpu();
-            self.host.release_cpu(if new == cpu { new } else { cpu });
-            if new != cpu {
+            // Where every CPU was found contended in the last second, or it moved less than a second ago, the runner
+            // stays.
+            let settled = runner.moved.is_some_and(|at| at.elapsed() < MOVES_APART);
+            if !settled && let Some(new) = self.host.take_uncontended_cpu() {
+                self.host.release_cpu(cpu);
                 let new = self.pin(new);
-                self.runner.as_mut().expect("placed").cpu = new;
+                let runner = self.runner.as_mut().expect("placed");
+                runner.cpu = new;
+                runner.moved = Some(Instant::now());
                 self.counters.placement_moves += 1;
             }
         }
@@ -1116,6 +1145,8 @@ impl Cpu for HostProcessExecutor {
         let last = *last;
         memory.indices.clear();
         memory.spare = None;
+        let process = memory.stub.process();
+        self.note_stub_end(process);
         let stub = &self.memory(id).stub;
         if stub.end(last).is_err() {
             let _ = self.host.kill(stub);
