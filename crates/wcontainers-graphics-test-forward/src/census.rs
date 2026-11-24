@@ -231,8 +231,10 @@ pub fn configure() {
     config();
 }
 
+/// The census's settings, read from the environment on first use (a test sets them directly).
+static CONFIG: OnceLock<Option<Config>> = OnceLock::new();
+
 fn config() -> Option<&'static Config> {
-    static CONFIG: OnceLock<Option<Config>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
             let out = PathBuf::from(std::env::var_os("WC_OUT")?);
@@ -1219,27 +1221,36 @@ fn read12(
             }),
         },
     };
-    let to = D3D12_TEXTURE_COPY_LOCATION {
-        pResource: unsafe { transmute_copy(&readback) },
+    /// A copy location holding a reference of its own to its resource (an AddRef), given back when
+    /// it drops.
+    struct Location(D3D12_TEXTURE_COPY_LOCATION);
+    impl Drop for Location {
+        fn drop(&mut self) {
+            let held = std::mem::replace(&mut self.0.pResource, ManuallyDrop::new(None));
+            drop(ManuallyDrop::into_inner(held));
+        }
+    }
+    let to = Location(D3D12_TEXTURE_COPY_LOCATION {
+        pResource: ManuallyDrop::new(Some(readback.clone())),
         Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
         Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
             PlacedFootprint: footprint,
         },
-    };
-    let from = D3D12_TEXTURE_COPY_LOCATION {
-        pResource: unsafe { transmute_copy(&back) },
+    });
+    let from = Location(D3D12_TEXTURE_COPY_LOCATION {
+        pResource: ManuallyDrop::new(Some(back.clone())),
         Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
         Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
             SubresourceIndex: 0,
         },
-    };
+    });
     let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
     unsafe {
         list.ResourceBarrier(&[barrier(
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_COPY_SOURCE,
         )]);
-        list.CopyTextureRegion(&to, 0, 0, 0, &from, None);
+        list.CopyTextureRegion(&to.0, 0, 0, 0, &from.0, None);
         list.ResourceBarrier(&[barrier(
             D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_PRESENT,
@@ -1508,8 +1519,12 @@ mod tests {
     /// entry the function it calls in the end, so every call is counted once, on the copy.
     #[test]
     fn a_copy_of_a_patched_table_counts_each_call_once() {
-        // SAFETY: set before any census call reads it, in the one test that uses it.
-        unsafe { std::env::set_var("WC_OUT", std::env::temp_dir()) };
+        // The census is on, as with WC_OUT set: set before any census call reads it, in the one
+        // test that uses it.
+        let _ = CONFIG.set(Some(Config {
+            out: std::env::temp_dir(),
+            capture: Vec::new(),
+        }));
         let interface = "ID3D12GraphicsCommandList";
         let names = methods(interface);
         let at = |name: &str| names.iter().position(|n| *n == name).unwrap();

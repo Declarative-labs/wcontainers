@@ -33,6 +33,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 [build-dependencies]
 object = { version = "0.41.0", default-features = false, features = ["read_core", "pe", "std"] }
 
-# TODO: remove this crate's 197 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 188 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
