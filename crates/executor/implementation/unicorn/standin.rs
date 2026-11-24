@@ -27,7 +27,7 @@ use wcontainers_executor::{
     ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::encoding::{IMM16, RN};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::syndrome::{
     FaultStatus, WRITE_NOT_READ, encode_syndrome,
@@ -46,16 +46,27 @@ pub const SPACE_32_BIT: u64 = 1 << 32;
 /// sets (Chrome's 16 GiB).
 pub const SPACE_64_BIT: u64 = 16 << 30;
 
-/// QEMU's exception numbers, as unicorn's interrupt hook reports them.
+// QEMU's exception numbers, as unicorn's interrupt hook reports them.
+/// [EXCP_UDEF](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_UNDEFINED: u32 = 1;
+/// [EXCP_SWI](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_SYSCALL: u32 = 2;
+/// [EXCP_DATA_ABORT](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_DATA_ABORT: u32 = 4;
+/// [EXCP_BKPT](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_BREAKPOINT: u32 = 7;
+/// [EXCP_HVC](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
+const EXCEPTION_HYPERVISOR_CALL: u32 = 11;
+/// [EXCP_SMC](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
+const EXCEPTION_SECURE_MONITOR_CALL: u32 = 13;
 
 /// The most bytes a guest space maps in unicorn as one region, a level 2 block of pages.
 ///
 /// Unicorn flushes each page of a region it unmaps, so a change of one page costs this much at most.
 const LARGEST_GUEST_REGION: u64 = PAGE_SIZE * (PAGE_SIZE / size_of::<u64>() as u64);
+
+/// The [DFSC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=DFSC%2C%20bits%20%5B5%3A0%5D) of an alignment fault.
+pub const ALIGNMENT_FAULT_STATUS: u64 = 0b10_0001;
 
 /// The count of instructions or of microseconds that unicorn takes as no limit.
 const UNICORN_NO_LIMIT: usize = 0;
@@ -347,20 +358,15 @@ impl Memory {
         if let Some((start, (end, base))) = self.shared.range(..=address).next_back()
             && address < *end
         {
-            // SAFETY: the offset is inside the block, which outlives every range that shows it.
-            return (
-                unsafe { base.add((address - start) as usize) },
-                end - address,
-            );
+            return (base.wrapping_add((address - start) as usize), end - address);
         }
         let next_shared = self
             .shared
             .range(address..)
             .next()
             .map_or(self.end, |(start, _)| *start);
-        // SAFETY: the address is inside the address space, which `bytes` covers.
         (
-            unsafe { self.bytes.as_mut_ptr().add(address as usize) },
+            self.bytes.as_mut_ptr().wrapping_add(address as usize),
             next_shared - address,
         )
     }
@@ -401,8 +407,7 @@ impl Memory {
         let mut taken = Vec::new();
         for range_start in overlapping {
             let (range_end, base) = self.shared.remove(&range_start).expect("range");
-            // SAFETY: offsets inside the block.
-            let at = |address: u64| unsafe { base.add((address - range_start) as usize) };
+            let at = |address: u64| base.wrapping_add((address - range_start) as usize);
             if range_start < start {
                 self.shared.insert(range_start, (start, base));
             }
@@ -468,6 +473,10 @@ impl Memory {
             let length = (page - run_start) * PAGE_SIZE;
             // SAFETY: the pointer is inside `bytes` or a block, which live as long as unicorn maps them,
             // and unicorn only touches them while the stand-in runs a thread or is asked to.
+            #[expect(
+                unsafe_code,
+                reason = "unicorn reaches a guest's bytes only through host memory it is given; its safe mem_map copies nothing in and shares nothing between spaces"
+            )]
             unsafe {
                 self.unicorn
                     .mem_map_ptr(address, length, prot(permissions), pointer.cast())
@@ -613,8 +622,7 @@ impl StandIn {
                 .iter()
                 .find(|(old, length, _)| (*old..old + length).contains(&address))
                 .expect("a shared range shows a block");
-            // SAFETY: the same offset inside the copy, which is as long as the original.
-            unsafe { new.add(address - old) }
+            new.wrapping_add(address - old)
         };
         let memories = self
             .memories
@@ -753,6 +761,14 @@ impl Memory {
         self.save_registers(registers)
             .expect("reading registers from unicorn");
         let stopped = std::mem::take(self.unicorn.get_data_mut());
+        // QEMU leaves the program counter after a call to a higher level; at EL0 the call is undefined and the
+        // program counter stays on it.
+        if matches!(
+            stopped.exception,
+            Some(EXCEPTION_HYPERVISOR_CALL | EXCEPTION_SECURE_MONITOR_CALL)
+        ) {
+            registers.pc -= INSTRUCTION_BYTES;
+        }
         (self.to_exit(result, &stopped, registers), stopped.instructions)
     }
 
@@ -794,9 +810,12 @@ impl Memory {
             (_, Some(EXCEPTION_UNDEFINED)) if !pc.is_multiple_of(INSTRUCTION_BYTES) => {
                 Exit::AlignmentFault { address: pc }
             }
-            (_, Some(EXCEPTION_UNDEFINED)) | (Err(uc_error::INSN_INVALID), None) => {
-                Exit::IllegalInstruction
-            }
+            // Unicorn runs at EL1, where HVC and SMC may reach a higher level; at EL0 both are undefined.
+            (
+                _,
+                Some(EXCEPTION_UNDEFINED | EXCEPTION_HYPERVISOR_CALL | EXCEPTION_SECURE_MONITOR_CALL),
+            )
+            | (Err(uc_error::INSN_INVALID), None) => Exit::IllegalInstruction,
             // Permission and mapping faults come through the fault hook, so a data abort here is QEMU's
             // alignment check.
             (_, Some(EXCEPTION_DATA_ABORT)) => return Err(Unsupported::AlignmentFault { pc }),
@@ -888,7 +907,14 @@ impl wcontainers_executor::Executor for StandIn {
                 let (exit, instructions) =
                     memory.run_turn(&mut registers, None, None, Some(Arc::clone(&raised)));
                 self.last_instructions = instructions;
-                let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
+                let exit = match exit {
+                    Ok(exit) => exit,
+                    Err(Unsupported::AlignmentFault { pc }) => {
+                        let exception = to_alignment_exception(read_instruction(memory, pc), &registers);
+                        return to_processor(&registers, Some(exception));
+                    }
+                    Err(unknown) => panic!("{unknown:?}"),
+                };
                 let permission_at =
                     |address| to_page_permission(memory.read_permissions(address));
                 match exit {
@@ -995,17 +1021,23 @@ impl wcontainers_executor::Executor for StandIn {
         let mut registers = to_register_block(processor);
         let (exit, instructions) = space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None, None);
         self.last_instructions = instructions;
-        let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
-        // The abi leaves the program counter after a system call; an exception leaves it on the instruction.
-        if let Exit::Syscall(_) = exit {
-            registers.pc = pc;
-        }
-        let exception = to_exception(exit, word, pc, |address| {
-            pages
-                .get(&(address - address % PAGE_SIZE))
-                .copied()
-                .unwrap_or(PagePermission::Unmapped)
-        });
+        let exception = match exit {
+            Ok(exit) => {
+                // The abi leaves the program counter after a system call; an exception leaves it on the
+                // instruction.
+                if let Exit::Syscall(_) = exit {
+                    registers.pc = pc;
+                }
+                to_exception(exit, word, pc, |address| {
+                    pages
+                        .get(&(address - address % PAGE_SIZE))
+                        .copied()
+                        .unwrap_or(PagePermission::Unmapped)
+                })
+            }
+            Err(Unsupported::AlignmentFault { .. }) => Some(to_alignment_exception(word, &registers)),
+            Err(unknown) => panic!("{unknown:?}"),
+        };
         *processor = to_processor(&registers, exception);
         for (page, before) in writable.iter().zip(before) {
             report_changed_bytes(*page, &before, &read_page(*page), &mut on_memory_mutated);
@@ -1165,6 +1197,25 @@ fn to_exception(
     })
 }
 
+/// Returns the exception of an alignment fault of the instruction `word`, which takes its address from its base register.
+fn to_alignment_exception(word: u32, registers: &RegisterBlock) -> Exception {
+    // QEMU checks alignment only on the exclusive, compare-and-swap and atomic instructions, which all take their
+    // address from Rn with no offset; real ARM64 faults the same way on an exclusive one.
+    let base = usize::try_from(RN.read(word)).expect("a register number fits in an index");
+    match registers.x.get(base) {
+        Some(address) => Exception {
+            syndrome: encode_syndrome(ESR_EL1::EC::Value::DataAbortLowerEL, ALIGNMENT_FAULT_STATUS),
+            fault_address: Some(*address),
+        },
+        // Rn 31 names the stack pointer, which is checked first: misaligned for the access, it is misaligned for
+        // the stack pointer alignment check Linux turns on.
+        None => Exception {
+            syndrome: encode_syndrome(ESR_EL1::EC::Value::SPAlignmentFault, u64::MIN),
+            fault_address: None,
+        },
+    }
+}
+
 impl Cpu for StandIn {
     fn address_space(&self) -> AddressSpace {
         AddressSpace { end: self.end }
@@ -1270,8 +1321,7 @@ impl Cpu for StandIn {
         {
             return Err(CpuError::BadAddress);
         }
-        // SAFETY: the offset is inside the block.
-        let base = unsafe { block.bytes.as_mut_ptr().add(offset as usize) };
+        let base = block.bytes.as_mut_ptr().wrapping_add(offset as usize);
         let memory = self.memories.get_mut(&memory).expect("memory exists");
         memory.range(address, length)?;
         memory.unshare(address, address + length);

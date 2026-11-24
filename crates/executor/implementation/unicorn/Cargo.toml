@@ -79,6 +79,6 @@ path = "conformance.rs"
 runtime = ["dep:wcontainers-arm64"]
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
-# TODO: of this crate's 37 uses, remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
+# TODO: of this crate's 32 uses, remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

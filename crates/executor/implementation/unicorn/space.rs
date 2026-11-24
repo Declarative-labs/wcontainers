@@ -1,8 +1,8 @@
 //! The stand-in's guest memory: one unicorn instance for each space, its bytes in host pages spaces share.
 //!
 //! Each address shows host pages through a view: its own, another space's for a mapping, or new ones holding
-//! the bytes of a copy. Unicorn maps the pages that allow something, and a page allowing nothing too, without
-//! access, while the kernel reads or writes it.
+//! the bytes of a copy. Unicorn maps the pages that allow something, and one allowing nothing, without access,
+//! while the kernel reaches it.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -164,6 +164,8 @@ impl Space {
             self.views.insert(start, view);
         }
         self.memory.remap(addresses.start, addresses.end);
+        // Its guest may write the new pages where the addresses allow it.
+        self.touch_writable(addresses);
         drop(replaced);
     }
 
@@ -171,6 +173,24 @@ impl Space {
     fn touch(&self, addresses: Range<u64>) {
         for (start, view) in self.list_views(addresses) {
             view.pages.touch(view.offset..view.offset + (view.end - start));
+        }
+    }
+
+    /// Notes that the host pages shown where the addresses allow writing may hold bytes.
+    fn touch_writable(&self, addresses: Range<u64>) {
+        let writable = |page: u64| self.memory.pages[to_index(page)].contains(Permissions::WRITE);
+        let last = addresses.end / PAGE_SIZE;
+        let mut page = addresses.start / PAGE_SIZE;
+        while page < last {
+            let run_start = page;
+            while page < last && writable(page) {
+                page += 1;
+            }
+            if page > run_start {
+                self.touch(run_start * PAGE_SIZE..page * PAGE_SIZE);
+            } else {
+                page += 1;
+            }
         }
     }
 }
@@ -209,9 +229,12 @@ impl UnicornSpace {
         self.space.borrow_mut().memory.run_turn(registers, slice_nanoseconds, deadline, interrupt)
     }
 
-    /// Returns what the page at the address allows.
+    /// Returns what the page at the address allows, nothing past the end of the space.
     pub(crate) fn read_permissions(&self, address: u64) -> Permissions {
-        self.space.borrow().memory.pages[to_index(address / PAGE_SIZE)]
+        usize::try_from(address / PAGE_SIZE)
+            .ok()
+            .and_then(|page| self.space.borrow().memory.pages.get(page).copied())
+            .unwrap_or_else(Permissions::empty)
     }
 
     /// Returns the addresses if they lie inside the space, and whole pages where `whole_pages` asks it.
@@ -268,10 +291,7 @@ impl MemorySpace for UnicornSpace {
         let mut space = self.space.borrow_mut();
         let pages = to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end / PAGE_SIZE);
         space.memory.pages[pages].fill(allowed);
-        // Its guest may write what it allows.
-        if !allowed.is_empty() {
-            space.touch(addresses.clone());
-        }
+        space.touch_writable(addresses.clone());
         space.memory.remap(addresses.start, addresses.end);
         Ok(())
     }
