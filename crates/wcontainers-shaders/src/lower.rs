@@ -5090,6 +5090,46 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_ADD | c::I_ADD => bin(self, b, B::Add, rs)?,
             c::F_SUB | c::I_SUB => bin(self, b, B::Subtract, rs)?,
             c::F_MUL | c::I_MUL => bin(self, b, B::Multiply, rs)?,
+            c::F_DIV if rs == Scalar::F32 => {
+                // Direct3D's `div` correctly rounded, as WARP gives it: the device's quotient
+                // refined once by its fused remainder, kept where it or the refined one is zero,
+                // infinite or NaN.
+                let a = self.get_as(b, r[0], rs)?;
+                let d = self.get_as(b, r[1], rs)?;
+                let q = self.bin(b, B::Divide, a, d);
+                let negated = self.add(
+                    b,
+                    Expression::Unary {
+                        op: UnaryOperator::Negate,
+                        expr: d,
+                    },
+                );
+                let remainder = self.math(b, M::Fma, &[negated, q, a]);
+                let one = self.splat_lit(b, Literal::F32(1.0), res.size)?;
+                let reciprocal = self.bin(b, B::Divide, one, d);
+                let refined = self.math(b, M::Fma, &[remainder, reciprocal, q]);
+                let size = self.math(b, M::Abs, &[refined]);
+                let largest = self.splat_lit(b, Literal::F32(f32::MAX), res.size)?;
+                let finite = self.bin(b, B::LessEqual, size, largest);
+                let zero = self.splat_lit(b, Literal::F32(0.0), res.size)?;
+                let nonzero = self.bin(b, B::NotEqual, q, zero);
+                let kept = self.add(
+                    b,
+                    Expression::Select {
+                        condition: finite,
+                        accept: refined,
+                        reject: q,
+                    },
+                );
+                self.add(
+                    b,
+                    Expression::Select {
+                        condition: nonzero,
+                        accept: kept,
+                        reject: q,
+                    },
+                )
+            }
             c::F_DIV | c::U_DIV => bin(self, b, B::Divide, rs)?,
             c::U_MOD => bin(self, b, B::Modulo, rs)?,
             // Direct3D's `mad` may be fused; `fma` leaves the device the same choice it has for it.
