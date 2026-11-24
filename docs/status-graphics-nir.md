@@ -42,6 +42,42 @@ run 25's run B: 2,427 of 2,447 run pass; 101 failures and 31 NotSupported cases 
 fail are all `geometry_shading.layered` (layered geometry output, below), 5 of them the
 multisampled array cases that were NotSupported. No case that passed fails.
 
+THE TABLE, run 26's whole run at 0a8c3ed1's driver (the three changes above; desktop, RTX 3080,
+one GPU job that built and ran, 8 glcts at once, about 16:10 to 16:50 desktop time, other tracks'
+jobs queued beside; scratch `results/g9r26/full/<list>/results.csv`, log `logs/g9r26/full.log`,
+case notes `logs/g9r26/case-notes.txt`), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,000, Warn 6, Fail 22, Crash 2, Skip 135: 17,006 of 17,030,
+  99.86%.
+- dEQP-GLES3: 44,768; Pass 44,190, Warn 5, Fail 59, Crash 33, Skip 481: 44,195 of 44,287, 99.79%.
+- dEQP-GLES31: 37,802; Pass 35,774, Fail 39, Crash 177, Flake 1, Skip 1,811: 35,774 of 35,991,
+  99.40%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,198, Fail 3, Crash 69, Skip 228: 6,198 of 6,270, 98.85%.
+- KHR-GLES31: 4,101; Pass 3,438, Fail 21, Crash 61, Timeout 1, Skip 580: 3,438 of 3,521, 97.64%.
+- KHR-GLES32: 1,405; Pass 838, Fail 13, Crash 56, Flake 2, Skip 496: 838 of 909, 92.19%.
+- KHR-GL33: 9,886; Pass 9,081, Fail 13, Crash 270, Skip 522: 9,081 of 9,364, 96.98%.
+- KHR-GL46 (19,714): no 4.6 context (G9's second part).
+- The bar's measure, every list that starts: 116,968 of 117,810 run, 99.29%, above the 92.9%
+  floor. With KHR-GLES32's 496 NotSupported counted as failed: 116,968 of 118,306, 98.87%.
+- Against run 25's run B: cases that failed or crashed and pass: dEQP-GLES31 356
+  (`copy_image.mixed` 256, `state_query` 89, `texture.multisample` 10, one more), KHR-GL33 51
+  (`texture_swizzle` of target 8, the multisampled array), KHR-GLES31 and -GLES32
+  `geometry_shader.layered_fbo` 2 each; NotSupported cases that run and pass: 31.
+- REGRESSIONS against run B, each found and handled this run: dEQP-GLES31 `copy_image
+  .non_compressed.viewclass_96_bits` rgb32i to rgb32ui and back 32 (passed; crashed with "a blit
+  Gallium's blitter does not make") and the rgb32f ones still crashing: the four-channel bit copy
+  of 0a8c3ed1 made things worse, so it was taken back (a5de181d); KHR-GLES31
+  `texture_stencil8.multisample` 1 (passed; lost the device on "Texture view dimension D2Array
+  cannot be used with a multisampled texture": a stand-in for a multisampled array view of
+  another kind was made as a multisampled 2D array; fixed in 15234898, a multisampled array's
+  views being 2D and its stand-in read for every layer). One more: `image_load_store.3d
+  .qualifiers.coherent_r32f` passed and fails, one of the intermittent coherence family.
+- New crashes where cases were NotSupported (13): `geometry_shading.layered` and `instanced` of
+  multisampled arrays 7 (layered geometry output), `builtin_functions.texture_size.samples_*
+  _texture_*2d_array` 6 ("BindingsBeyondLimit": the cases' arrays have more layers than the
+  stage's free texture bindings; the shaders crate's split binds every layer even for a program
+  that only reads the size, asked of the shaders track below).
+
 G9 run 25 (2026-11-23, round 4's third run). Built this run, each linted with warnings denied and
 the nir crate's route tests passed on the x86-64 machine (19 of 19); results on the rig below:
 - Maps of multisampled textures go through Mesa's transfer helper (`u_transfer_helper`, MIT,
@@ -291,9 +327,9 @@ against run 22's whole run at d8bb7a2e (scratch `results/g9r23/full/<list>/resul
   layered geometry output 56, a border on a comparison sampler 52, comparisons with a bias or
   gradients 34.
 
-G9's FIRST PART IS COMPLETE for its independent check (run 25: the table to check against is
-run 25's run B above, every list whole at one driver, 98.97% against the 92.9% floor; run 23's
-below is kept as history). As run 23 left it: every list that starts was run whole at
+G9's FIRST PART IS COMPLETE for its independent check (run 26: the table to check against is
+run 26's whole run above, every list whole at one driver, 99.29% against the 92.9% floor, with its
+regressions and their fixes; run 25's and run 23's are kept as history). As run 23 left it: every list that starts was run whole at
 one driver (KHR-GLES32 at the same driver with Mesa's WGL patch), the bar's measure is 98.71%
 against the 92.9% floor, and every failing group is in the gap list below with its cause and
 owner, those not yet read named as such. The check asked for: a sample of each list on the rig
@@ -1307,6 +1343,13 @@ None.
 
 ## Requests to other tracks
 
+- Shaders track (G9 run 26): the multisampled array split (`variant/layers.rs`) adds a binding for
+  every layer of `VariantKey::texture_layers` whatever the program does with the array; a program
+  that only queries its size or layer count needs layer 0 alone, and one that loads needs only the
+  layers it can reach. As it is, an array of more layers than the stage's free texture bindings
+  is refused ("BindingsBeyondLimit"; dEQP-GLES31 `builtin_functions.texture_size.samples_*
+  _texture_*2d_array` 6, which query only sizes). Asked: bind the layers only where a load reads
+  them.
 - Shaders track (G9 run 25): a staged built-in for the point size (`staged::BuiltIn` has none),
   passed between the stages the stage helper runs and from the vertex stage into them, and
   dropped at its final draw: a tessellation or geometry program reading `gl_in[].gl_PointSize`
