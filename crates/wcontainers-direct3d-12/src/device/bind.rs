@@ -19,6 +19,11 @@ use crate::list::{
 };
 use crate::root::{RootParameterKind, RootSignatureDesc};
 
+/// The refusal of an unordered access view whose dimension the program does not declare, which
+/// Direct3D 12 leaves undefined.
+pub(super) const OTHER_UAV_DIMENSION: &str =
+    "an unordered access view of another dimension than the program declares";
+
 /// One binding of one stage's program.
 #[derive(Clone, Debug)]
 pub(super) struct StageBinding {
@@ -926,7 +931,9 @@ impl<B: Backend> Device<B> {
         writable: bool,
     ) -> Result<Held<B>, Error> {
         if v.flags & 1 != 0 || v.stride != 0 {
-            return Err(Error::Invalid("a raw or structured view of a typed buffer"));
+            return Err(Error::NotImplemented(
+                "a raw or structured view where the program declares a typed buffer",
+            ));
         }
         let width = match self.resources.get(v.resource.0 as usize) {
             Some(Resource {
@@ -1120,11 +1127,7 @@ impl<B: Backend> Device<B> {
             UAV_DIMENSION_TEXTURE1D | UAV_DIMENSION_TEXTURE2D => ViewDimension::D2,
             UAV_DIMENSION_TEXTURE1DARRAY | UAV_DIMENSION_TEXTURE2DARRAY => ViewDimension::D2Array,
             UAV_DIMENSION_TEXTURE3D => ViewDimension::D3,
-            UAV_DIMENSION_BUFFER => {
-                return Err(Error::NotImplemented(
-                    "typed buffer views bound as storage textures",
-                ));
-            }
+            UAV_DIMENSION_BUFFER => return Err(Error::NotImplemented(OTHER_UAV_DIMENSION)),
             _ => return Err(Error::Invalid("an unordered access view's dimension")),
         };
         // Array sizes past the texture's layers (such as -1) take the layers left, as for
@@ -1152,9 +1155,7 @@ impl<B: Backend> Device<B> {
                  program declaring {:?}",
                 v.dimension, b.binding, shape.dimension
             ));
-            return Err(Error::NotImplemented(
-                "an unordered access view of another dimension than the program declares",
-            ));
+            return Err(Error::NotImplemented(OTHER_UAV_DIMENSION));
         }
         self.texture_view(
             v.resource,

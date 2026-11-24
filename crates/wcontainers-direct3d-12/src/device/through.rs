@@ -6,7 +6,7 @@
 //! decodes and encodes the view's format.
 
 use super::*;
-use crate::list::ResourceView;
+use crate::list::{ResourceView, UAV_DIMENSION_BUFFER};
 use bind::StageBinding;
 
 /// The copies a bound view read through a buffer needs around its draw or dispatch.
@@ -37,6 +37,9 @@ impl<B: Backend> Device<B> {
             return Err(Error::NotImplemented(
                 "storage textures read through a buffer in a vertex or geometry shader",
             ));
+        }
+        if v.dimension == UAV_DIMENSION_BUFFER {
+            return Err(Error::NotImplemented(bind::OTHER_UAV_DIMENSION));
         }
         let slot = b.binding.slot();
         if slot >= 64 {
