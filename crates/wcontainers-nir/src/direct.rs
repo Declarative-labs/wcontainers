@@ -26,6 +26,7 @@ use wcontainers_shaders::staged::{
     HullProgram, Partitioning, Place, StageVariable, TessellationDomain, TessellatorOutput,
 };
 use wcontainers_shaders::typed::{TypedAtomic, TypedBuffer};
+use zerocopy::TryFromBytes;
 
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
@@ -264,7 +265,7 @@ enum Kind {
 
 /// The ALU operations of `WC_ALU_OPS` in `bridge/flat.h`, in its order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Alu {
     Mov,
@@ -379,7 +380,7 @@ enum Alu {
 
 /// The intrinsics of `WC_INTRINSICS` in `bridge/flat.h`, in its order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Intrinsic {
     LoadDeref,
@@ -435,7 +436,7 @@ enum Intrinsic {
 
 /// An atomic operation, by `enum wc_atomic_op`.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Atomic {
     Add,
@@ -452,7 +453,7 @@ enum Atomic {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Deref {
     Var,
@@ -462,7 +463,7 @@ enum Deref {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum TexOp {
     Sample,
@@ -1439,14 +1440,14 @@ impl Builder<'_> {
             let mut at = derefs.get(&atomic.src[0].def).copied();
             while let Some(d) = at {
                 match deref_kind(d.op) {
-                    Deref::Array => at = derefs.get(&d.src[0].def).copied(),
-                    Deref::Struct => {
+                    Some(Deref::Array) => at = derefs.get(&d.src[0].def).copied(),
+                    Some(Deref::Struct) => {
                         if let Some(parent) = derefs.get(&d.src[0].def) {
                             self.atomic_fields.push((parent.ty, d.value[0]));
                             if signed {
                                 // Blocks of one layout share a type whatever their words'
                                 // signedness: a block variable's own field is keyed by it.
-                                if matches!(deref_kind(parent.op), Deref::Var) {
+                                if matches!(deref_kind(parent.op), Some(Deref::Var)) {
                                     self.signed_block_fields.push((parent.value[0], d.value[0]));
                                 } else {
                                     self.signed_atomic_fields.push((parent.ty, d.value[0]));
@@ -1455,14 +1456,15 @@ impl Builder<'_> {
                         }
                         break;
                     }
-                    Deref::Var => {
+                    Some(Deref::Var) => {
                         self.atomic_vars.push(d.value[0]);
                         if signed {
                             self.signed_atomic_vars.push(d.value[0]);
                         }
                         break;
                     }
-                    Deref::Cast => break,
+                    // A value the bridge does not write is refused where the deref is converted.
+                    Some(Deref::Cast) | None => break,
                 }
             }
         }
@@ -1477,12 +1479,12 @@ impl Builder<'_> {
             let mut at = derefs.get(&atomic.src[0].def).copied();
             while let Some(d) = at {
                 match deref_kind(d.op) {
-                    Deref::Array => at = derefs.get(&d.src[0].def).copied(),
-                    Deref::Var => {
+                    Some(Deref::Array) => at = derefs.get(&d.src[0].def).copied(),
+                    Some(Deref::Var) => {
                         self.atomic_images.push(d.value[0]);
                         break;
                     }
-                    Deref::Struct | Deref::Cast => break,
+                    Some(Deref::Struct | Deref::Cast) | None => break,
                 }
             }
         }
@@ -1496,12 +1498,12 @@ impl Builder<'_> {
             let mut at = Some(*d);
             while let Some(step) = at {
                 let signed = match deref_kind(step.op) {
-                    Deref::Array => {
+                    Some(Deref::Array) => {
                         at = derefs.get(&step.src[0].def).copied();
                         continue;
                     }
-                    Deref::Struct => derefs.get(&step.src[0].def).is_some_and(|parent| {
-                        if matches!(deref_kind(parent.op), Deref::Var) {
+                    Some(Deref::Struct) => derefs.get(&step.src[0].def).is_some_and(|parent| {
+                        if matches!(deref_kind(parent.op), Some(Deref::Var)) {
                             self.signed_block_fields
                                 .contains(&(parent.value[0], step.value[0]))
                         } else {
@@ -1509,8 +1511,8 @@ impl Builder<'_> {
                                 .contains(&(parent.ty, step.value[0]))
                         }
                     }),
-                    Deref::Var => self.signed_atomic_vars.contains(&step.value[0]),
-                    Deref::Cast => false,
+                    Some(Deref::Var) => self.signed_atomic_vars.contains(&step.value[0]),
+                    Some(Deref::Cast) | None => false,
                 };
                 if signed {
                     self.signed_derefs.insert(d.def);
@@ -2433,36 +2435,26 @@ fn source_count(op: Alu, components: u32) -> u32 {
     }
 }
 
-fn alu_op(raw: u32) -> Alu {
-    if raw < Alu::Unsupported as u32 {
-        // SAFETY: Alu is repr(u32) with every value below Unsupported a variant, in the bridge's order.
-        unsafe { std::mem::transmute::<u32, Alu>(raw) }
-    } else {
-        Alu::Unsupported
-    }
+/// The variant of `T` the bridge wrote as `raw`; `None` for a value that is none of them.
+fn variant<T: TryFromBytes>(raw: u32) -> Option<T> {
+    T::try_read_from_bytes(&raw.to_ne_bytes()).ok()
 }
 
-fn deref_kind(raw: u32) -> Deref {
-    // SAFETY: the bridge writes only Deref's values as a deref's operation.
-    unsafe { std::mem::transmute::<u32, Deref>(raw) }
+fn alu_op(raw: u32) -> Alu {
+    variant(raw).unwrap_or(Alu::Unsupported)
+}
+
+/// A deref's operation; `None` for a value the bridge does not write, refused where converted.
+fn deref_kind(raw: u32) -> Option<Deref> {
+    variant(raw)
 }
 
 fn atomic_op(raw: u32) -> Atomic {
-    if raw < Atomic::Other as u32 {
-        // SAFETY: as alu_op, for Atomic.
-        unsafe { std::mem::transmute::<u32, Atomic>(raw) }
-    } else {
-        Atomic::Other
-    }
+    variant(raw).unwrap_or(Atomic::Other)
 }
 
 fn intrinsic_op(raw: u32) -> Intrinsic {
-    if raw < Intrinsic::Unsupported as u32 {
-        // SAFETY: as alu_op, for Intrinsic.
-        unsafe { std::mem::transmute::<u32, Intrinsic>(raw) }
-    } else {
-        Intrinsic::Unsupported
-    }
+    variant(raw).unwrap_or(Intrinsic::Unsupported)
 }
 
 impl Builder<'_> {
@@ -3060,7 +3052,12 @@ impl Builder<'_> {
     }
 
     fn deref(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
-        let kind = deref_kind(i.op);
+        let kind = deref_kind(i.op).ok_or_else(|| {
+            unsupported(format_args!(
+                "a deref operation the bridge does not write ({})",
+                i.op
+            ))
+        })?;
         let e = match kind {
             Deref::Var => self.places[i.value[0] as usize]
                 .ok_or_else(|| unsupported(format_args!("a variable the module does not have")))?,
@@ -4177,8 +4174,12 @@ impl Builder<'_> {
 
     fn tex(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
         use ScalarKind::{Float, Sint, Uint};
-        // SAFETY: the bridge writes only TexOp's values here.
-        let op = unsafe { std::mem::transmute::<u32, TexOp>(i.op) };
+        let op = variant::<TexOp>(i.op).ok_or_else(|| {
+            unsupported(format_args!(
+                "a texture operation the bridge does not write ({})",
+                i.op
+            ))
+        })?;
         let texture = self.tex_src(i, TexSrc::Texture).ok_or_else(|| {
             unsupported(format_args!(
                 "a texture instruction without a texture deref"
@@ -5313,4 +5314,21 @@ pub fn rewrite(
         .pop()
         .ok_or_else(|| ConvertError::Rewrite(NO_MODULE.into()))?;
     Ok((module, converted.reflection))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_value_the_bridge_does_not_write_is_no_variant() {
+        assert_eq!(deref_kind(Deref::Cast as u32), Some(Deref::Cast));
+        assert_eq!(deref_kind(Deref::Cast as u32 + 1), None);
+        assert_eq!(variant::<TexOp>(TexOp::Gather as u32 + 1), None);
+        assert_eq!(variant::<TexOp>(TexOp::Gather as u32), Some(TexOp::Gather));
+        assert_eq!(alu_op(Alu::B2b32 as u32), Alu::B2b32);
+        assert_eq!(alu_op(u32::MAX), Alu::Unsupported);
+        assert_eq!(atomic_op(Atomic::Other as u32 + 1), Atomic::Other);
+        assert_eq!(intrinsic_op(u32::MAX), Intrinsic::Unsupported);
+    }
 }

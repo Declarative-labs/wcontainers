@@ -20,6 +20,7 @@ naga = { workspace = true, features = ["spv-in"] }
 spirv = "0.4"
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-shaders = { path = "../wcontainers-shaders" }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
 ash = { version = "0.38", default-features = false, features = ["std", "debug"] }
@@ -46,6 +47,6 @@ cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# TODO: remove this crate's 98 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 113 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
