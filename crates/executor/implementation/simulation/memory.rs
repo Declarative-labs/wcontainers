@@ -240,7 +240,6 @@ impl MemorySpace for SimulatedMemory {
         }
     }
 
-
     #[ensures(match result { Ok(_) => Self::inside(addresses.start@, addresses.end@), Err(_) => !Self::inside(addresses.start@, addresses.end@) })]
     fn borrow(&self, addresses: Range<u64>) -> Result<SimulatedBytes<'_>, InvalidAddressError> {
         check_inside(&addresses)?;
