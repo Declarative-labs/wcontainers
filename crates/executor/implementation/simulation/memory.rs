@@ -556,7 +556,7 @@ impl MemorySpace for SimulatedMemory {
                     == if page == start { entry@ } else { space_of(pages_before, table.unmade@).page(page) });
                 lemma_next(addresses, start);
             }
-            start = start + contract::PAGE_SIZE;
+            start += contract::PAGE_SIZE;
         }
         proof {
             let after = table.space();
@@ -597,7 +597,7 @@ impl MemorySpace for SimulatedMemory {
                     == other_space@.page((other_addresses.end - (index + 1) * contract::PAGE_SIZE) as u64).frame,
             decreases end,
         {
-            end = end - contract::PAGE_SIZE;
+            end -= contract::PAGE_SIZE;
             frames.push(other.make_frame(end, Tracked(other_space)));
         }
         let (mut table, held) = self.pages.acquire();
@@ -660,7 +660,7 @@ impl MemorySpace for SimulatedMemory {
                     == if page == start { entry@ } else { space_of(pages_before, table.unmade@).page(page) });
                 lemma_next(addresses, start);
             }
-            start = start + contract::PAGE_SIZE;
+            start += contract::PAGE_SIZE;
         }
         proof {
             let after = table.space();
@@ -761,7 +761,7 @@ impl MemorySpace for SimulatedMemory {
             proof {
                 done = done.insert(key);
             }
-            index = index + 1;
+            index += 1;
         }
         proof {
             let after = table.space();
@@ -845,8 +845,9 @@ impl MemorySpace for SimulatedMemory {
                     contract::whole_pages(addresses, addressable()),
                 decreases end,
             {
-                end = end - contract::PAGE_SIZE;
+                end -= contract::PAGE_SIZE;
                 let ghost start = (addresses.start + (end - other_start)) as u64;
+                #[allow(clippy::manual_map, reason = "Verus would need a specification for the closure `map` takes")]
                 let page = match other_table.pages.get(&end) {
                     Some(found) => Some(copy_page(found, Ghost(fresh(before, from, start)))),
                     None => None,
@@ -926,7 +927,7 @@ impl MemorySpace for SimulatedMemory {
                     before.page(page)
                 });
             }
-            start = start + contract::PAGE_SIZE;
+            start += contract::PAGE_SIZE;
         }
         proof {
             let after = table.space();

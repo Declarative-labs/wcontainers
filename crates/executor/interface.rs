@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+// Proofs of what a caller can count on: only Verus reads them, nothing runs them.
+#[cfg(verus_only)]
 pub mod caller_proofs;
 pub mod memory_space;
 

@@ -195,10 +195,7 @@ pub trait MemorySpace: Sized {
             decreases addresses.end - start,
         {
             let end = addresses.end.min(start.saturating_add(PAGE_SIZE));
-            let bytes = match self.borrow(start..end) {
-                Ok(bytes) => bytes,
-                Err(error) => return Err(error),
-            };
+            let bytes = self.borrow(start..end)?;
             bytes.write(&zeros[..(end - start) as usize]);
             start = end;
         }
