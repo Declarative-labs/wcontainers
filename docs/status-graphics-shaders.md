@@ -208,6 +208,8 @@ code of the tip; load 7 to 29 of 96 cores, three fuzz seeds running beside from 
   `variants_draw_as_the_native_feature_does` (`depth_clamp`). compute_draw passes 17 of 17 again:
   a53d6d4c2 (the Direct3D 11 track's) keeps the device's quotient now, so run 2's two division
   failures are gone; the division entry under "New for the owner" may be settled by that track.
+- Left on the desktop: `C:\wc\target\phase-2-graphics-shaders` (this run's build folder; the
+  remote command to delete it waited behind a GPU job and was stopped). Delete it next run.
 - Literal check with history at 4ad8c9989 (`lit3.log`): no line in this crate's files or naga;
   two baseline lines the build script briefly named were put back when naming them made a growth
   line in another track's file (a constant of the same value), net zero.
