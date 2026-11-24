@@ -3,6 +3,39 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 2 (2026-11-24): the translator's in-process way, built and checked under an emulator
+
+Scratch w2/run2 (check.sh, check-vm.sh; outputs *-arm.out). Graviton4.
+- Built: `wcontainers_arm64::Way::InProcess { slot }` (plan 3.2 item 1, exact form; the plan's 3.2 has an "As built
+  for I" paragraph). Withheld x15 (u) and x24 (base) besides x18, x23, x28, their guest values the two words after
+  the register page; every access through a general register checked (`ubfx u, a, #32, #24; cbnz`) and cut
+  (`add t, base, wA, uxtw`), register offsets summed first, writebacks through u with a fix-up; the stack
+  pointer's rules a to d and f (e, displaced, is the floor's and not built); literal loads, `dc` by address,
+  exclusives and the jump through a register (one `add` more) in the window; direct exits through the slot's own
+  table; calls to I's entries. Out-of-window cases read the mark at base + 2^32. No unsafe code anywhere in it.
+- The test: host-process tests/in_process_way.rs, unicorn-engine (GPL-2.0, test only) running the translated code in
+  slot 1's window against the same guest instruction at its own addresses. Every presented form that accesses
+  memory or names sp as a value (555 to 556 forms), seeded registers near the mapped regions' and the window's edges,
+  outside it, tagged; the guest's pages at their own addresses and in slot 2's window are canaries. Knobs
+  `WCHP_IN_PROCESS_CASES` (per form), `WCHP_SEED`. Accepted differences, each counted: the reference's CPU has
+  FEAT_LSE2 and no Top Byte Ignore and runs no unmonitored store exclusive as a write, and does no cache maintenance
+  check; a crossing access's probe faults one byte into the faulting page (the stop gives the page's first byte).
+  Seeds 1 to 6 at 16 cases a form (8,876 to 8,881 cases each): no form disagreed and nothing reached a canary
+  (before the last two accepted rules seed 3 had one form, `dc` outside the window, which the emulator does not
+  fault on). Per seed about 1,600 outside-the-window marks, 1,700 misalignments, 60 stack pointers displaced.
+- Not checked by it: the position map at a stop (the stop crate does not know the way yet), a fault's registers,
+  sp not 16-aligned, collisions (the meaning's choice), and translated pieces longer than one instruction.
+- Verdicts before the commits (1063e043c translator, 5f1e4783e test, fb5ce611f lock), Graviton4, 15:44 to 15:56 UTC,
+  load 18 to 51 on 96 cores (check-arm.out, check-vm-arm.out): clippy with warnings denied clean on the arm64 crate
+  and host-process; the arm64, translator, guest-cpu and stop crate tests pass; in_process_way seeds 1 to 6 at 16
+  cases a form pass (8,876 to 8,881 cases each; per seed 2,487 to 2,623 marks, 1,691 to 1,780 misalignments, 57 to
+  65 displaced, 19 to 39 tagged sums the emulator cannot model); host-process with /dev/kvm denied: differential
+  seeds 1 to 3 at 64 cases (about 251,300 runs each, 0 failing), floor 6 passed 1 ignored, step 10, translated 2,
+  run 14, kernel 12 passed; the VM executor with KVM: native 32,562 cases 0 failing, exits, floor, registers,
+  host_branches, interrupts and probe pass.
+- Next for form I without unsafe: the stop crate's resolution for the way (sp less the base, the two page words,
+  the mark read as the instruction's fault or as displaced), then the register-offset fusion the plan measured.
+
 ## W2 run 1 (2026-11-24): W1's seventh check settled; form I waits on primitives
 
 Scratch w2/run1 (check.sh is round 4 run 5's; outputs *-arm.out). Graviton4, /dev/kvm denied.
@@ -1581,11 +1614,12 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
   primitive); when they land, each use here becomes a call of one.
-- W2 (form I): build the translator's `InProcess` way first (plan 3.2 item 1, `wcontainers_arm64::way::Way` and
-  carry.rs's `access`, with the stop crate and host-process matching the new variant), each step keeping the ARM64
-  translator suites and the VM executor's tests passing on the rented machines; test its checks' exactness by
-  running its output with the window's base 0 in form P's stubs or under the Unicorn executor in tests. The
-  in-process executor itself waits for the primitives named under Needs a primitive, "Form I".
+- W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2). Next without
+  unsafe: the stop crate's resolution for it (sp less the window's base, the two words after the register page,
+  the mark at base + 2^32 read as the instruction's own fault from its operand or as sp displaced), then a test
+  that resolves stops of in_process_way's translated cases; the register-offset fusion (`[base, wA, uxtw]`, one
+  instruction less) and longer pieces in that test. The in-process executor itself waits for the primitives named
+  under Needs a primitive, "Form I".
 - W3 now also carries the x86 native output track's in-process tests (interface-changes.md, 2026-11-24): the link,
   register-group and hostile-guest tests in the in-process way, the ymm upper halves across a call into the inside,
   the X9 programs natively in that way with figures, and 0x67 string instructions through the inside
@@ -1850,7 +1884,15 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   translator, guest-cpu and stop crate tests pass; the VM executor's exits, native (32,562 cases, 0 failing), floor,
   registers, host_branches, interrupts and probe tests pass with KVM; host-process's differential, floor, step,
   translated, run and kernel tests pass with /dev/kvm denied. The machine way is unchanged (its call is one `brk`).
-- For the translator track, not done: the InProcess way (plan 3.2 item 1 and two more withheld registers), W2's.
+- W2 run 2, crates/wcontainers-arm64 (way.rs, carry.rs, encode.rs, native.rs): `Way::InProcess { slot }` with its
+  constants (`WINDOW_BITS`, `SLOT_BITS`, `IN_PROCESS_SLOTS`, `IN_PROCESS_ENTRIES`, `OUTSIDE`, `CHECK` x15, `BASE` x24,
+  `IN_PROCESS_WITHHELD_AT`) and `Way::window_base`, `Way::withheld`; carry.rs's withheld registers now come from the
+  way (`free`, `free_pair`, `withheld_slot`, `known_targets`, `test_aligned_bases` take it; `Native::test_loop_invariant`
+  passes it); the page test and its probes take their scratch register (`page_crossing`); `encode::load_unscaled_32`
+  and the form `LDUR_32` are new. The machine and process ways' output is unchanged, with one exception: a loop's
+  aligned base is no longer taken as tested for an access whose base is a stand-in that happens to be that register
+  (a stand-in holds another register's value). Verified on Graviton4: in "W2 run 2" below.
+- For the translator track, not done: the InProcess way's wrapping form and its register-offset fusion.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
   for `ThreadOrdering::Parallel`; calling the stopper (plan 8 item 3) from `suspend_tasks`, `suspend_threads`,
@@ -2124,6 +2166,9 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since W2 run 2, for host-process's in_process_way test only: unicorn-engine 2.1.5 (GPL-2.0, already in the lock file
+as the VM executor's tests' and the unicorn executor's), never a dependency of the library.
 
 Since W1 round 8 run 1: memmap2 0.9.12 (MIT OR Apache-2.0, already in the lock file) for the thread pages' and the
 code area's mappings in the embedder, made and unmapped by its safe `MmapRaw`.

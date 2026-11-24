@@ -245,6 +245,20 @@ part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `
 4. **The replay check** (native.md section 5.7): `TPIDRRO_EL0` is the host kernel's in a host process, so the stop
    word is a word of the thread's register page: `ldr t, [page, #stop]; sub t, t, c; cbz t, stop`. As of W1 the
    native output emits no replay check in any way (none reads `TPIDRRO_EL0`), so nothing changes here yet.
+As built for I (W2 run 2, `wcontainers_arm64::Way::InProcess { slot }`, the exact form only): `u` is x15 and
+`base` x24 (the next two by native.md 3.3's static count, 29.2 and 30.3 per 1000), their guest values the two words
+after the register page. Every failed check, and every new stack pointer outside the window by (d), reads one byte
+at the window's base plus 2^32 (`way::OUTSIDE`, unmapped by 3.1) out of line: the floor finds there either the
+instruction's own fault (the access's address from its operand) or a stack pointer to take displaced (e), by the
+span's instruction; no new call code. An access with an immediate is `add t, base, wA, uxtw` then the copied word
+on t; a register offset becomes `[t, xzr, <its extend>]` after its sum is checked (one instruction more than the
+measured `[base, wA, uxtw]`, kept for now); a written back base gets its new value in u before the access and from
+u after it, with a fix-up between, so the copied word's own writeback lands on t and a base that collides with a
+data register needs no other rule. A literal outside the window is known when translated. Exclusives keep and
+compare guest addresses and access through u. The direct exits' slot table is the slot's (`2^46 | k << 35`), so
+a translation belongs to one slot. Floor entries at 2^45 + 2^32 (`way::IN_PROCESS_ENTRIES`). Rule (c)'s limit is
+`LOWEST_ADDRESS` less a page (60 KiB). Not built: the displaced mode (e) and the floor's reading of the mark, the
+stop crate's resolution for the way (sp rebased, the two words after the page), and the wrapping form.
 The slot table's base and reach, the entries' address and size are `wcontainers_arm64::way`'s constants, which the
 host-process layout asserts; stops resolve through `wcontainers-executor-arm64-stop` with the way as a parameter.
 Withheld registers: the VM form's three (count x18, scratch x23, register page x28) in P; two more in I (`base`
