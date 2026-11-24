@@ -5196,6 +5196,8 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-configurable",
  "wcontainers-distinguishing-state-generator-input-domain",
