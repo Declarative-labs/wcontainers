@@ -5,6 +5,44 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 run 28 (2026-11-23, round 4's sixth run). Built this run, each linted with warnings denied
+with and without Mesa and the nir crate's route, glsl_reference and glsl_buffers tests passed on
+the x86-64 machine (20, 10 and 2 ignored, 1):
+- Integer sampling at a unit holding no integer texture (db56594d). A program sampling an integer
+  sampler where the bound texture is not an integer one (OpenGL leaves the result undefined;
+  st/mesa binds its fallback texture at units without one) was refused ("sampling an integer
+  texture", 126 process refusals in run 27, KHR-GLES3 `copy_tex_image_conversions.required` 63
+  crashes, whose programs declare every sampler of one kind and sample only some). Now the shader
+  records the units it samples integers at (`wc_nir_integer_sampled_units`, `Shader::integer_sampled`)
+  and such a unit takes `UNDEFINED_INTEGER_SAMPLER` (the first level's nearest texel, clamped to
+  the edge), read from the stand-in of the program's kind (c1d5158c's). An integer texture whose
+  sampler has no nearest form (the mirrored clamp) is still refused.
+- An evaluation program's `gl_PatchVerticesIn` (0609fd1d). Mesa's linker makes it a constant
+  variable (`nir_var_mem_constant`, the control program's output count), which the route refused
+  ("a variable of another mode", 26 process refusals: KHR `tessellation_shader.single.max_patch_vertices`,
+  `..._PatchVerticesIn`, dEQP-GLES31 `tessellation.shader_input_output.patch_vertices_in_tes`,
+  `tessellation_geometry_interaction.feedback` 6). Every program's constants are now locals stored
+  on entry (`nir_lower_constant_to_temp`, `nir_lower_variable_initializers` in `wc_nir_flatten`).
+- `isnan` (f65650f4): a float compared with itself (`feq`/`fneu` of one value) is the common
+  form's NaN test (`RelationalFunction::IsNan`), which naga writes from the bits on WGSL and as
+  `isnan` on HLSL, where a compiler assuming no NaN may fold `x != x` (dEQP-GLES3 and -GLES31
+  `common.isnan.*_highp_*` 12 Fail in run 27).
+- A sampler's level-of-detail bias (d30f8a32): it was refused, and the screen reported a largest
+  bias of 0 (Gallium's default), so st/mesa clamped every bias away and dEQP-GLES3
+  `state_query.floats.max_texture_lod_bias_*` (4 Fail) saw less than ES 3.0's 2.0. Now the bias is
+  added in the program (`VariantKey::lod_bias`, `HelperValue::LodBias`, `SlowPath::LodBiasInShader`,
+  the shaders crate's rewrite), and the screen reports 15.99, the bound WGSL and Direct3D clamp a
+  sample's bias to. A bias on an integer texture's sampler is refused by name (not built).
+- The face is a system value (`fs_face_is_integer_sysval`, d30f8a32): `gl_FrontFacing` was an input
+  at Mesa's slot 24, which the route refuses (dEQP-GLES2 and -GLES3
+  `builtin_variable.frontfacing`, 2 crashes).
+- Read, not this track's: every failing `sign` case is the carried naga's HLSL `sign`, which
+  returns an integer (asked of the shaders track under "Requests", 30 cases); storage in an
+  evaluation program needs the stage helper's cull route for a domain program writing storage
+  (asked of the shaders track).
+- Unsafe code: wcontainers-nir 110, wcontainers-opengl 367 (the shader's integer units, the
+  bias's sampler); the root list carries both (4938d8d1). No dependency or licence was added.
+
 G9 run 27 (2026-11-23, round 4's fifth run). Built this run, each linted with warnings denied
 with and without Mesa and the nir crate's route tests passed on the x86-64 machine (20 of 20;
 glsl_reference 10 and 2 ignored):
@@ -1463,6 +1501,25 @@ runs up to G9 run 8, `git show 8d7f5472:...` G9 run 9, `git show cb0371e1:...` G
 None.
 
 ## Requests to other tracks
+
+- Shaders track (G9 run 28): the carried naga's HLSL writer writes `MathFunction::Sign` as HLSL's
+  `sign`, which returns `int` (or `intN`) for a float argument; a float `sign` whose bits are then
+  taken (`asuint(sign(x))`, as a storage write or an integer target's output inlines it) gives
+  `0x00000001` for 1.0. Read from dEQP-GLES31 `common.sign.float_*_tess_control` (`sign(1.0)`
+  written as `0x00000001`); the same cause fits every other failing `sign` case of the table
+  (dEQP-GLES3 `common.sign.vec*_fragment` 9 and `precision.sign.*_fragment` 9, dEQP-GLES31
+  `common.sign.float_*_compute` 3 and `precision.sign.*_compute.scalar` 3) and `precision
+  .normalize.*_compute.scalar` 3 (GLSL's `normalize` of a scalar is `sign`). Asked: write a float
+  `sign` in the argument's float type (`float(sign(x))`, `floatN(sign(x))`); 30 cases.
+- Shaders track (G9 run 28): an evaluation program writing storage, without a geometry program
+  after it, is drawn as a vertex program, where the WebGPU back end writes no storage; so the
+  driver reports no storage blocks or images for evaluation programs (KHR-GLES32
+  `constant_expressions`' 232 evaluation cases NotSupported). `Stages::tessellated_with` already
+  runs a domain program as compute without a geometry stage when it writes cull distances (the
+  cull route, `domain_cull_programs`). Asked: the same route for a domain program writing storage
+  (`writes_storage` of a domain module), as `stored_programs` is for a vertex program, under
+  `SlowPath::VertexStorageAsCompute`. The driver then binds its storage as it does a geometry
+  program's and reports it.
 
 - WebGPU back end track (G9 run 27): `Rgb32Float`, `Rgb32Uint` and `Rgb32Sint` are held in
   four-channel textures, which the host renders into, but are reported without a render use, so
