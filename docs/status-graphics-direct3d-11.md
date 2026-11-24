@@ -11,8 +11,9 @@ round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents 
 
 ## Where things stand
 
-G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of 2026-11-22) is NOT complete:
-two items of its bar stand, each waiting on another party (round 6 run 5). The device reports the
+G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of 2026-11-22) is reported
+complete for its check (round 6 run 6), as the orchestrator asked once its two rulings were applied;
+two items of the bar stay failing and are on the Gap list with their owners (below). The device reports the
 highest level whose every format requirement of Microsoft's tables (their video columns aside,
 Departures) and whose per-stage slots it serves: the RTX 3080 device (WebGPU build, wgpu on
 Direct3D 12) is 11_0 with every requirement met and tested; the WebGPU build without
@@ -22,10 +23,19 @@ would be 9_3. What stands:
 - atg-simplecomputepc (a real difference by the orchestrator's ruling of 2026-11-23): the fix is
   a correctly rounded division in the shaders crate's conversion, asked of that track with a
   ready, measured patch (Asked of other tracks; Gap list). Its isolated test stays ignored until
-  then.
-- The bar's two WebGL 2 items fail since that build truthfully reports 9_3; a route to 10_0
-  there (packed views) is possible, not built, and spans three crates; asked of the orchestrator
-  (For the orchestrator).
+  then. The shaders track's status (its run 113) holds that the division is not its crate's to
+  change, so the two tracks disagree on whose it is; the orchestrator decides (For the
+  orchestrator).
+- The bar's two WebGL 2 items: absent on that back end by the feature level rule since round 6
+  run 6 (Departures), as ruling (2) of 2026-11-23 did for the texture-formats-tier1 item: the
+  build is truthfully 9_3, which has neither ability; their three tests are known failures named
+  for that cause and no longer count against the bar. The packed views route to 10_0 there is
+  described (Gap list), not built.
+
+G4h round 6 run 6 (2026-11-24, from about 06:00 Pacific):
+- Nothing of the shaders crate changed since run 5 (its division is as before, r9/div.patch still
+  applies to lower.rs at 3dcd74e4); no new ruling on the WebGL 2 items, so they take ruling (2)'s
+  form (Departures) and the milestone is reported for its check with the Gap list as it stands.
 
 G4h round 6 run 5 (2026-11-24, from about 03:40 Pacific), the eighth round's check:
 - atg-simplecomputepc: ruled (ruling (1)), so the fix is the shaders crate's division, asked of
@@ -795,15 +805,17 @@ Listed cases of section 12, each with its test against real Direct3D:
 - Every listed case passes against real Direct3D on WebGPU, but the two cases without
   texture-formats-tier1 (or 16-bit norm), which need an 11_0 device that configuration truthfully
   is not (the truthful-level item above, superseded by the orchestrator's ruling of 2026-11-23).
-- Failing since round 6 run 3: the WebGL 2 cases ("per-target blends on WebGL 2 without
+- Absent on the WebGL 2 build by the feature level rule (round 6 run 6, ruling (2)'s form;
+  failing since round 6 run 3): the WebGL 2 cases ("per-target blends on WebGL 2 without
   OES_draw_buffers_indexed", "`resinfo` on WebGL 2", run through the WebGL 2 build). Their tests
   (`targets_blended_and_masked_each_their_own_way_at_10_0`, `view_sizes_and_level_counts_at_10_0`,
   `an_empty_slots_size_and_level_count_at_10_0`) make 10_0 devices, which the WebGL 2 build
   truthfully refuses (the WebGL 2 item of the level costs above); they are ignored on that build
   with that reason, and the check's run of them with `--include-ignored` fails (refused device).
   At 9_3 neither ability exists to test: `resinfo` is shader model 4's, and 9_3 has no
-  independent blends. They pass again when the WebGL 2 build serves 10_0 (the packed views route,
-  not built) or are ruled as the texture-formats-tier1 item was (For the orchestrator).
+  independent blends. Recorded as the texture-formats-tier1 item was ruled: absent on that back
+  end, not counted against the bar. They pass again when the WebGL 2 build serves 10_0 (the
+  packed views route, not built; For the orchestrator).
 - Failing: constant buffers updated per draw, counted on the WebGPU back end itself (com.rs
   `constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu`, ignored as a known
   failure): after each buffer's first draw, 2 more bind groups for 2 more draws, for
@@ -973,8 +985,8 @@ In order:
 1. atg-simplecomputepc: when the shaders crate's correctly rounded division lands (Asked, patch
    r9/div.patch), un-ignore `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`
    and run it, `divisions_give_a_real_devices_quotient`, the colour map case and the program
-   through the rig; then the whole bar once more and report G4h complete.
-   The WebGL 2 bar items: as the orchestrator rules (For the orchestrator).
+   through the rig, then the whole bar once more.
+   The WebGL 2 bar items: as recorded unless the orchestrator rules to build packed views.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
    Once the shaders crate accepts unread clip distances behind a geometry shader (Asked), run
    d3d10core test_clip_distance through the WebGL 2 build again.
@@ -1347,6 +1359,11 @@ listed case of section 12 has its test against real Direct3D.
   storage rectangles through the shaders crate's storage clear program; 3D target rectangles copied
   into each slice from a cleared slice.
 - The library draws through wgpu on Direct3D 12 only.
+- The bar's two WebGL 2 items (per-target blends without OES_draw_buffers_indexed, `resinfo`)
+  are recorded as absent on the WebGL 2 build by the feature level rule, the form ruling (2) of
+  2026-11-23 gave the texture-formats-tier1 item, though no ruling names them (round 6 run 6):
+  that build is truthfully 9_3, and 9_3 has neither shader model 4's `resinfo` nor independent
+  blends, so the bar cannot ask them of it without asking for a level it does not meet.
 
 ## For the orchestrator
 
@@ -1354,17 +1371,20 @@ listed case of section 12 has its test against real Direct3D.
   ours must give the answer both real implementations agree on in the program, which is the
   correctly rounded quotient (Gap list). That is a change to the shaders crate's conversion of
   `div`, which is not this track's to make; it is asked of the shaders track with a patch ready
-  and measured (Asked of other tracks). The shaders track's own question of its run 113 ("whose it
-  is") is answered by where the code is: the conversion is in its crate. The program and its
-  isolated test stay failing until that lands; nothing else stands in their way.
+  and measured (Asked of other tracks). The shaders track's status (its run 113, unchanged at
+  its run 120) holds that its division equals real Direct3D 11's bits and is not its to change,
+  so the two tracks disagree on whose it is. This track may not edit that crate. Needed from you:
+  tell the shaders track to apply r9/div.patch (it applies to lower.rs at 3dcd74e4), or give the
+  change to this track. The program and its isolated test stay failing until then; nothing else
+  stands in their way.
 - The WebGL 2 bar items (per-target blends without OES_draw_buffers_indexed, `resinfo` on WebGL 2)
-  fail since the WebGL 2 build truthfully reports 9_3 (Gap list, listed cases). A route to 10_0
-  there is possible but not built: views past the 16 texture units packed into one texture and
-  read, filtered and addressed by the program (Gap list, WebGL 2 item). It needs an interface
-  binding, the WebGL 2 back end's copies and a program variant of the shaders crate: several runs
-  over three crates, two of them other tracks'. Asked: build it as part of G4h (and then which
-  track does each piece), or rule the two items as you ruled the texture-formats-tier1 item
-  (absent on that back end by the feature level rule, their tests known failures named for it).
+  fail since the WebGL 2 build truthfully reports 9_3. With no ruling on them, round 6 run 6
+  recorded them in ruling (2)'s form (absent on that back end by the feature level rule, their
+  tests known failures named for it, not counted against the bar; Departures). If you want them
+  built instead: the route to 10_0 there is views past the 16 texture units packed into one
+  texture and read, filtered and addressed by the program (Gap list, WebGL 2 item); it needs an
+  interface binding, the WebGL 2 back end's copies and a program variant of the shaders crate,
+  several runs over three crates, two of them other tracks'.
 
 ## For the owner
 
