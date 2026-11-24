@@ -5940,6 +5940,8 @@ dependencies = [
  "socket2 0.6.5",
  "tar",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-configurable",
  "wcontainers-executor",
@@ -5959,6 +5961,7 @@ dependencies = [
  "wcontainers-system",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
  "zerocopy",
  "zstd",
 ]
