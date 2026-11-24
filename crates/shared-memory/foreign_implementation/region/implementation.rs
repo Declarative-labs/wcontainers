@@ -138,7 +138,7 @@ impl Region {
                 tv_nsec: libc::c_long::from(timeout.subsec_nanos() as i32),
             })
         });
-        match futex(word, libc::FUTEX_WAIT, expected, timeout.as_ref()) {
+        match futex(word, FutexOperation::Wait, expected, timeout.as_ref()) {
             Ok(_)
             | Err(
                 rustix::io::Errno::AGAIN | rustix::io::Errno::INTR | rustix::io::Errno::TIMEDOUT,
@@ -151,7 +151,7 @@ impl Region {
     pub(crate) fn wake(&self, at: u64, limit: u32) -> Result<u32, crate::WaitError> {
         let word = self.word::<u32>(at)?;
         let woken =
-            futex(word, libc::FUTEX_WAKE, limit, None).map_err(crate::WaitError::Refused)?;
+            futex(word, FutexOperation::Wake, limit, None).map_err(crate::WaitError::Refused)?;
         Ok(u32::try_from(woken).unwrap_or(u32::MAX))
     }
 
@@ -190,22 +190,37 @@ pub(crate) unsafe fn copy(to: *mut u8, from: *const u8, length: usize) {
     }
 }
 
+/// The only futex operations `futex` makes; neither writes memory of this program.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FutexOperation {
+    /// `FUTEX_WAIT`: sleeps while the word holds the value, until woken or the timeout passes.
+    Wait,
+    /// `FUTEX_WAKE`: wakes at most the value's number of threads waiting on the word.
+    Wake,
+}
+
 /// The futex system call on the 4 bytes at the address, which rustix takes only as a reference; returns the number the
 /// call returns, which for a wake is the number of threads woken.
 #[cfg(target_os = "linux")]
 pub(crate) fn futex(
     word: *mut u32,
-    operation: libc::c_int,
+    operation: FutexOperation,
     value: u32,
     timeout: Option<&libc::timespec>,
 ) -> Result<usize, rustix::io::Errno> {
     let timeout = timeout.map_or(core::ptr::null(), core::ptr::from_ref);
+    let operation = match operation {
+        FutexOperation::Wait => libc::FUTEX_WAIT,
+        FutexOperation::Wake => libc::FUTEX_WAKE,
+    };
     #[expect(
         unsafe_code,
         reason = "the futex system call, on an address the kernel itself checks"
     )]
-    // SAFETY: the kernel reads the 4 bytes at `word` and the timeout, which is null or lives for the call, and writes no
-    // memory of this program; an address it cannot read gives EFAULT.
+    // SAFETY: the operation is `FUTEX_WAIT` or `FUTEX_WAKE`, the only two `FutexOperation` holds. For either the kernel
+    // reads at most the 4 bytes at `word` and the timeout, which is null or lives for the call, and writes no memory of
+    // this program; an address it cannot read gives EFAULT.
     let result = unsafe {
         libc::syscall(
             libc::SYS_futex,

@@ -1,45 +1,45 @@
 # native.sh, miri.sh and kani.sh, one job, on the code named by each "code" line (checks/tree.sh)
-x86-run: job gmcweak/20261124-220741-3971618 (re-attach: x86-run --attach gmcweak 20261124-220741-3971618; stop: x86-run --stop gmcweak 20261124-220741-3971618)
-arm-run: job gmcweak/20261124-220741-3971618 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 20.41 14.10 12.48, jobs 96
-arm-run: in /work/src/gmcweak, build directory /work/target/gmcweak
+x86-run: job gmcfutex/20261124-224018-3701284 (re-attach: x86-run --attach gmcfutex 20261124-224018-3701284; stop: x86-run --stop gmcfutex 20261124-224018-3701284)
+arm-run: job gmcfutex/20261124-224018-3701284 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 5.42 10.60 12.37, jobs 96
+arm-run: in /work/src/gmcfutex, build directory /work/target/gmcfutex
 arm-run: command: bash crates/shared-memory/checks/native.sh; MIRI_HOME=/work/eup bash crates/shared-memory/checks/miri.sh; KANI_HOME=/work/ktrial bash crates/shared-memory/checks/kani.sh
 arm-run: LIBCLANG_PATH=/nix/store/adr7l6vazpqqjy2wab0v27pzp17c4sq6-clang-21.1.8-lib/lib CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-latomic
 unpacking 'github:hercules-ci/flake-parts/024633cd702b10285db5cb19b40ad48d2399ba60?narHash=sha256-zTwuwezD0w3hpga6a6P8emidzAZFyWqlNeRBlpWOOl8%3D' into the Git cache...
 unpacking 'github:oxalica/rust-overlay/404b7a5537f0adc6e5c558a1b94612e683dec504?narHash=sha256-12C5ef8a3endLXBvLOVR/jynM9EHGgP1t%2By5uBorwx4%3D' into the Git cache...
-code fec8c953d6929ba9
-===== x86_64 native suites load 19.41 14.00 12.45
-     Running unittests interface.rs (/work/target/gmcweak/debug/deps/wcontainers_shared_memory-2463344efc7c0d31)
-     Running attack/attacks.rs (/work/target/gmcweak/debug/deps/attacks-f47ebd7d2a45f94f)
-     Running foreign_implementation/host/guard.rs (/work/target/gmcweak/debug/deps/guard-750d4448689bc357)
+code 4739c1b4433827b2
+===== x86_64 native suites load 5.42 10.60 12.37
+     Running unittests interface.rs (/work/target/gmcfutex/debug/deps/wcontainers_shared_memory-2463344efc7c0d31)
+     Running attack/attacks.rs (/work/target/gmcfutex/debug/deps/attacks-f47ebd7d2a45f94f)
+     Running foreign_implementation/host/guard.rs (/work/target/gmcfutex/debug/deps/guard-750d4448689bc357)
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running foreign_implementation/heap/conformance.rs (/work/target/gmcweak/debug/deps/heap-b2d7096b9d9b5785)
-     Running foreign_implementation/host/conformance.rs (/work/target/gmcweak/debug/deps/host-e1dbab23a5fefae5)
+     Running foreign_implementation/heap/conformance.rs (/work/target/gmcfutex/debug/deps/heap-b2d7096b9d9b5785)
+     Running foreign_implementation/host/conformance.rs (/work/target/gmcfutex/debug/deps/host-e1dbab23a5fefae5)
 test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
-     Running foreign_implementation/host/process.rs (/work/target/gmcweak/debug/deps/process-2294bd5f7d3e2de9)
+     Running foreign_implementation/host/process.rs (/work/target/gmcfutex/debug/deps/process-2294bd5f7d3e2de9)
 test the_other_process ... test the_other_process ... test the_other_process ... 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.05s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.09s
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
-     Running attack/refused.rs (/work/target/gmcweak/debug/deps/refused-a0e9efb3c9898db8)
-     Running unittests conformance.rs (/work/target/gmcweak/debug/deps/wcontainers_shared_memory_conformance-a3caefa2bccbe6d5)
--- the same suites optimized load 18.42 13.97 12.46
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.06s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.12s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+     Running attack/refused.rs (/work/target/gmcfutex/debug/deps/refused-a0e9efb3c9898db8)
+     Running unittests conformance.rs (/work/target/gmcfutex/debug/deps/wcontainers_shared_memory_conformance-a3caefa2bccbe6d5)
+-- the same suites optimized load 7.02 10.77 12.41
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.04s
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 -- what the guard and process tests saw
-copied every length up to 257 bytes, and longer ones up to all 8192, at both edges at 0x716b20665000, after 1 tries
+copied every length up to 257 bytes, and longer ones up to all 8192, at both edges at 0x7fee32847000, after 1 tries
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.05s
-13146800 bytes read while another process wrote; 9069 bytes seen changed
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.09s
+13146800 bytes read while another process wrote; 9113 bytes seen changed
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.08s
 203947256 bytes copied in beside the bytes another process wrote
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
 -- clippy
@@ -176,13 +176,13 @@ error: test failed, to rerun pass `-p wcontainers-shared-memory --test guard`
 result copy-starts-one-byte-early: a test fails (cargo status 101)
 ===== wrong change swap-is-a-load-and-a-store: > Ok(unsafe { let old = word.read_volatile(); word.write_volatile(value); old })
 anonymous::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
-file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
 anonymous::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
-thread 'anonymous::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (402659) panicked at crates/shared-memory/conformance/conformance.rs:707:5:
-thread 'file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (402696) panicked at crates/shared-memory/conformance/conformance.rs:707:5:
-thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (402658) panicked at crates/shared-memory/conformance/conformance.rs:768:5:
-thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (402695) panicked at crates/shared-memory/conformance/conformance.rs:768:5:
+file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
+thread 'anonymous::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (127025) panicked at crates/shared-memory/conformance/conformance.rs:707:5:
+thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (127024) panicked at crates/shared-memory/conformance/conformance.rs:768:5:
+thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (127063) panicked at crates/shared-memory/conformance/conformance.rs:768:5:
+thread 'file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (127064) panicked at crates/shared-memory/conformance/conformance.rs:707:5:
 result swap-is-a-load-and-a-store: a test fails (cargo status 101)
 ===== wrong change compare-exchange-is-a-load-and-a-store: > let exchanged: Result<u32, u32> = unsafe {
 > let old = word.read_volatile();
@@ -191,62 +191,66 @@ anonymous::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 anonymous::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
 file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
-thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (697394) panicked at crates/shared-memory/conformance/conformance.rs:760:5:
-thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (697449) panicked at crates/shared-memory/conformance/conformance.rs:760:5:
-thread 'anonymous::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (697395) panicked at crates/shared-memory/conformance/conformance.rs:698:5:
-thread 'file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (697450) panicked at crates/shared-memory/conformance/conformance.rs:698:5:
+thread 'anonymous::counts_and_swaps_without_losing_a_value_across_threads' (418195) panicked at crates/shared-memory/conformance/conformance.rs:760:5:
+thread 'file::counts_and_swaps_without_losing_a_value_across_threads' (418232) panicked at crates/shared-memory/conformance/conformance.rs:760:5:
+thread 'anonymous::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (418196) panicked at crates/shared-memory/conformance/conformance.rs:698:5:
+thread 'file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words' (418233) panicked at crates/shared-memory/conformance/conformance.rs:698:5:
 result compare-exchange-is-a-load-and-a-store: a test fails (cargo status 101)
 ===== wrong change range-one-byte-long: > if end > 1 + u64::try_from(length).map_err(|_| OutsideError)? {
-error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
-  process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-e1dbab23a5fefae5 --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+anonymous::refuses_offsets_outside --- FAILED
+file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::refuses_offsets_outside --- FAILED
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (715982) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:32:13:
 result range-one-byte-long: a test fails (cargo status 101)
 ===== wrong change misaligned-word-accepted: > if false && !index.is_multiple_of(size) {
-thread 'anonymous::refuses_offsets_outside' (993017) panicked at crates/shared-memory/foreign_implementation/region/implementation.rs:79:35:
+thread 'anonymous::refuses_offsets_outside' (1010995) panicked at crates/shared-memory/foreign_implementation/region/implementation.rs:79:35:
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-e1dbab23a5fefae5 --quiet` (signal: 6, SIGABRT: process abort signal)
 result misaligned-word-accepted: a test fails (cargo status 101)
 ===== wrong change part-past-its-memory: > if offsets.start > offsets.end || offsets.end > self.len() + 1 {
-anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 anonymous::parts_stay_inside --- FAILED
+anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
 file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::parts_stay_inside --- FAILED
-thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (993588) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:41:5:
+thread 'anonymous::parts_stay_inside' (1011312) panicked at crates/shared-memory/conformance/conformance.rs:305:9:
 result part-past-its-memory: a test fails (cargo status 101)
 ===== wrong change length-rounded-to-a-page: > let region = unsafe { Region::new(base, map.len().next_multiple_of(4096)) };
-anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-...error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-e1dbab23a5fefae5 --quiet` (signal: 11, SIGSEGV: invalid memory reference)
 result length-rounded-to-a-page: a test fails (cargo status 101)
 ===== wrong change grow-seal-accepted: > if !fcntl_get_seals(file).is_ok_and(|seals| seals.intersects(SealFlags::SHRINK | SealFlags::GROW)) {
-error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+...error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
   process didn't exit successfully: `/work/target/gmc-mutn/debug/deps/host-e1dbab23a5fefae5 --quiet` (signal: 7, SIGBUS: access to undefined memory)
 result grow-seal-accepted: a test fails (cargo status 101)
 ===== wrong change length-unchecked: > if false && offset
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-file::refuses_offsets_past_the_end_of_the_file --- FAILED
 file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1289494) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (1289522) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
-thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (1289478) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
-test result: FAILED. 50 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+file::refuses_offsets_past_the_end_of_the_file --- FAILED
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1308006) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (1307979) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (1308030) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+test result: FAILED. 50 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result length-unchecked: a test fails (cargo status 101)
 ===== wrong change size-read-before-the-seals: > size: u64,
 > let size = u64::try_from(fstat(file).map_err(io::Error::from)?.st_size)
 > .unwrap_or(u64::MIN);
 file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end --- FAILED
-thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (1291350) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
-test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (1308299) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
+test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result size-read-before-the-seals: a test fails (cargo status 101)
 ===== wrong change huge-pages-allowed: > if false && fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32
 file::refuses_huge_pages --- FAILED
-thread 'file::refuses_huge_pages' (1305691) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:277:9:
+thread 'file::refuses_huge_pages' (1317455) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:277:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result huge-pages-allowed: a test fails (cargo status 101)
@@ -256,95 +260,95 @@ error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result base-one-word-late: a test fails (cargo status 101)
 ===== wrong change base-at-the-page-start: > let base = map.as_mut_ptr().wrapping_sub(map.as_ptr() as usize % 4096);
 file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
-thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (1600765) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:418:13:
+thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (1612070) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:418:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result base-at-the-page-start: a test fails (cargo status 101)
 ===== the seal check accepting seals that cannot be read, with TMPDIR on tmpfs (/dev/shm: tmpfs) and on disk (/work/target/gmc-disk: ext2/ext3)
 ===== wrong change unreadable-seals-accepted-tmpdir-on-tmpfs: > if !fcntl_get_seals(file).map_or(true, |seals| seals.contains(SealFlags::SHRINK)) {
 file::refuses_a_file_that_cannot_be_sealed --- FAILED
-thread 'file::refuses_a_file_that_cannot_be_sealed' (1902173) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:235:9:
+thread 'file::refuses_a_file_that_cannot_be_sealed' (1915868) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:235:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result unreadable-seals-accepted-tmpdir-on-tmpfs: a test fails (cargo status 101)
 ===== wrong change unreadable-seals-accepted-tmpdir-on-disk: > if !fcntl_get_seals(file).map_or(true, |seals| seals.contains(SealFlags::SHRINK)) {
 file::refuses_a_file_that_cannot_be_sealed --- FAILED
-thread 'file::refuses_a_file_that_cannot_be_sealed' (2197377) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:235:9:
+thread 'file::refuses_a_file_that_cannot_be_sealed' (2205555) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:235:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result unreadable-seals-accepted-tmpdir-on-disk: a test fails (cargo status 101)
 ===== every other length and offset check of the host mapping
 ===== wrong change anonymous-zero-length-accepted: > if false {
 anonymous::refuses_no_length --- FAILED
-thread 'anonymous::refuses_no_length' (2491829) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:107:9:
+thread 'anonymous::refuses_no_length' (2498502) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:107:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result anonymous-zero-length-accepted: a test fails (cargo status 101)
 ===== wrong change anonymous-maps-one-byte-more: > let map = MmapRaw::from(MmapOptions::new().len(length + 1).map_anon()?);
 anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (2784687) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:24:5:
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (2782658) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:24:5:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result anonymous-maps-one-byte-more: a test fails (cargo status 101)
 ===== wrong change file-zero-length-accepted: > if !offset.is_multiple_of(size_of::<u64>() as u64) {
 file::refuses_no_length --- FAILED
-thread 'file::refuses_no_length' (3079491) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:246:13:
+thread 'file::refuses_no_length' (3054877) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:246:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result file-zero-length-accepted: a test fails (cargo status 101)
 ===== wrong change file-offset-any: > if length == 0 {
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3370819) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3352472) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result file-offset-any: a test fails (cargo status 101)
 ===== wrong change file-offset-multiple-of-4: > if length == 0 || !offset.is_multiple_of(4) {
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3665314) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3644963) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result file-offset-multiple-of-4: a test fails (cargo status 101)
 ===== wrong change file-offset-multiple-of-16: > if length == 0 || !offset.is_multiple_of(16) {
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3956546) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
-thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (3956577) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:416:65:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3956575) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:381:13:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3956608) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3938072) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:381:13:
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3938044) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
+thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (3938074) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:416:65:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3938114) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 result file-offset-multiple-of-16: a test fails (cargo status 101)
 ===== wrong change file-length-whole-words-only: > if length == 0 || length % 8 != 0 || !offset.is_multiple_of(size_of::<u64>() as u64) {
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (57753) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (57781) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (57794) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (46783) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (46908) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (46852) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
 test result: FAILED. 50 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result file-length-whole-words-only: a test fails (cargo status 101)
 ===== wrong change file-end-one-byte-past-the-file: > .is_none_or(|end| end > size + 1)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (353168) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (353128) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (391552) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (391483) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result file-end-one-byte-past-the-file: a test fails (cargo status 101)
 ===== wrong change file-end-at-the-file-end-refused: > .is_none_or(|end| end >= size)
-file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
 file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
-file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
-file::loads_stores_swaps_and_exchanges_words --- FAILED
-file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
+file::counts_its_bytes --- FAILED
 file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
-file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
+file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
+file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
+file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
+file::loads_stores_swaps_and_exchanges_words --- FAILED
 result file-end-at-the-file-end-refused: a test fails (cargo status 101)
 ===== wrong change file-end-wraps: > .checked_add(0).map(|offset| offset.wrapping_add(length as u64))
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (942173) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (1135308) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result file-end-wraps: a test fails (cargo status 101)
@@ -362,227 +366,227 @@ error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result region-one-byte-long: a test fails (cargo status 101)
 ===== wrong change region-one-byte-short: > let region = unsafe { Region::new(base, map.len() - 1) };
 anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
 file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
+file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 anonymous::copies_long_lengths_exactly --- FAILED
-thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1238837) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:24:5:
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1641734) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:24:5:
 result region-one-byte-short: a test fails (cargo status 101)
 ===== the offset check weakened: another bound, another modulus, off by one, another value; each with TMPDIR on tmpfs and on disk
 ===== wrong change offset-checked-only-below-a-page: > if length == 0 || (offset < 4096 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1533934) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1978411) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-a-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1829906) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2301903) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-a-page: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-to-a-page: > if length == 0 || (offset <= 4096 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2125710) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2664271) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-to-a-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2418090) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2994686) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-to-a-page: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-below-a-word: > if length == 0 || (offset < 8 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2715193) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3348114) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-a-word: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3012099) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3652154) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-a-word: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-below-two-pages: > if length == 0 || (offset < 8192 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3310879) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3952948) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-two-pages: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3604415) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (4171577) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-two-pages: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-below-2-to-the-32: > if length == 0 || (offset < 1 << 32 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3900143) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (235647) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-2-to-the-32: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2214) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (534714) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-2-to-the-32: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-below-2-to-the-63: > if length == 0 || (offset < 1 << 63 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (297737) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (828591) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-2-to-the-63: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (595906) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1124095) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-2-to-the-63: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-below-the-last-word: > if length == 0 || (offset < u64::MAX - 7 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (899681) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1429877) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-the-last-word: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1195121) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1726814) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:343:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-below-the-last-word: a test fails (cargo status 101)
 ===== wrong change offset-checked-only-from-a-page: > if length == 0 || (offset >= 4096 && !offset.is_multiple_of(size_of::<u64>() as u64)) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1502706) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2023804) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-from-a-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1790177) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2321635) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-checked-only-from-a-page: a test fails (cargo status 101)
 ===== wrong change offset-multiple-of-2: > if length == 0 || !offset.is_multiple_of(2) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2082758) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
-test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2621051) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.01s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-multiple-of-2: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2365184) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (2918875) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result offset-multiple-of-2: a test fails (cargo status 101)
 ===== wrong change offset-one-more-checked: > if length == 0 || !offset.wrapping_add(1).is_multiple_of(size_of::<u64>() as u64) {
 -- TMPDIR=/dev/shm (tmpfs)
-file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
-file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
-file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
 file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::refuses_a_descriptor_that_cannot_write --- FAILED
 file::loads_stores_swaps_and_exchanges_words --- FAILED
+file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+file::parts_stay_inside --- FAILED
+file::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes --- FAILED
+file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
 result offset-one-more-checked: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
-file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
-file::counts_its_bytes --- FAILED
-file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
-file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
+file::loads_stores_swaps_and_exchanges_words --- FAILED
+file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
 file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
 result offset-one-more-checked: a test fails (cargo status 101)
 ===== wrong change offset-one-less-checked: > if length == 0 || !offset.wrapping_sub(1).is_multiple_of(size_of::<u64>() as u64) {
 -- TMPDIR=/dev/shm (tmpfs)
-file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
-file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
-file::counts_its_bytes --- FAILED
+file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
 file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
+file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
+file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
 file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
+file::counts_its_bytes --- FAILED
 file::loads_stores_swaps_and_exchanges_words --- FAILED
 result offset-one-less-checked: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
-file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
-file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
-file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
-file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
+file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
 file::counts_its_bytes --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
+file::loads_stores_swaps_and_exchanges_words --- FAILED
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 result offset-one-less-checked: a test fails (cargo status 101)
 ===== wrong change offset-end-checked-in-its-place: > if length == 0 || !offset.wrapping_add(length as u64).is_multiple_of(size_of::<u64>() as u64) {
 -- TMPDIR=/dev/shm (tmpfs)
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (3823683) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3823755) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (3823769) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3823787) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (222125) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (222097) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (222171) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (222181) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 result offset-end-checked-in-its-place: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (4163905) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
-thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (4163898) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (4163931) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (4163937) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (525364) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (525373) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (525379) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (525359) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
 result offset-end-checked-in-its-place: a test fails (cargo status 101)
 ===== wrong change offset-length-checked-in-its-place: > if length == 0 || !(length as u64).is_multiple_of(size_of::<u64>() as u64) {
 -- TMPDIR=/dev/shm (tmpfs)
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
-file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (353339) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (353491) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (353503) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (353367) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (828630) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (828679) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (828652) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (828663) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 result offset-length-checked-in-its-place: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (694892) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (694939) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
-thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (694967) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (694980) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+file::refuses_every_offset_that_is_not_a_multiple_of_8 --- FAILED
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1122913) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:301:65:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1122930) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (1122957) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_every_offset_that_is_not_a_multiple_of_8' (1122951) panicked at crates/shared-memory/foreign_implementation/host/implementation.rs:81:9:
 result offset-length-checked-in-its-place: a test fails (cargo status 101)
 ===== the end check weakened: another bound, rounded, off by one, wrapping or cut to 32 bits; each with TMPDIR on tmpfs and on disk
 ===== wrong change end-to-the-end-of-the-last-page: > .is_none_or(|end| end > size.next_multiple_of(4096))
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1060419) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1423765) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-the-end-of-the-last-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1386552) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1720708) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-the-end-of-the-last-page: a test fails (cargo status 101)
@@ -590,46 +594,46 @@ result end-to-the-end-of-the-last-page: a test fails (cargo status 101)
 -- TMPDIR=/dev/shm (tmpfs)
 file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
 file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
-file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_its_bytes --- FAILED
-file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
 file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
-file::loads_stores_swaps_and_exchanges_words --- FAILED
 file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
+file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
+file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
 result end-to-the-byte-before-the-end-of-the-last-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::copies_exactly_around_word_cache_line_and_page_boundaries --- FAILED
-file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
-file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
 file::copies_in_keeping_the_bytes_beside_them_that_another_thread_writes --- FAILED
+file::counts_and_swaps_without_losing_a_value_across_threads --- FAILED
 file::counts_and_swaps_without_losing_a_value_while_another_thread_writes_bytes_of_the_same_words --- FAILED
-file::loads_stores_swaps_and_exchanges_words --- FAILED
-file::counts_its_bytes --- FAILED
+file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
+file::keeps_the_bytes_beside_it_that_another_thread_writes --- FAILED
 file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+file::loads_stores_swaps_and_exchanges_words --- FAILED
 result end-to-the-byte-before-the-end-of-the-last-page: a test fails (cargo status 101)
 ===== wrong change end-to-the-end-of-the-last-word: > .is_none_or(|end| end > size.next_multiple_of(8))
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1754978) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2022778) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-the-end-of-the-last-word: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2077371) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2315161) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-the-end-of-the-last-word: a test fails (cargo status 101)
 ===== wrong change end-to-an-even-byte: > .is_none_or(|end| end > size.next_multiple_of(2))
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2433127) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2615240) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-an-even-byte: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2763596) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2912357) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-an-even-byte: a test fails (cargo status 101)
@@ -637,16 +641,16 @@ result end-to-an-even-byte: a test fails (cargo status 101)
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3118157) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3118213) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3221944) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3222021) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-a-word-past-the-file: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3431947) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3431997) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3540763) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3540752) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-a-word-past-the-file: a test fails (cargo status 101)
@@ -654,76 +658,76 @@ result end-a-word-past-the-file: a test fails (cargo status 101)
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3732756) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3732805) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3846580) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3846612) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-a-page-past-the-file: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
-file::refuses_offsets_past_the_end_of_the_file --- FAILED
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3987505) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (3987413) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.01s
+file::refuses_offsets_past_the_end_of_the_file --- FAILED
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (4146226) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (4146262) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-a-page-past-the-file: a test fails (cargo status 101)
 ===== wrong change end-to-the-start-of-the-last-page-refused: > .is_none_or(|end| end > size / 4096 * 4096)
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (14160) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
-thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (14163) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:416:65:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (251200) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (251202) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:416:65:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-the-start-of-the-last-page-refused: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (309465) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
-thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (309466) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:416:65:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (549026) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:367:45:
+thread 'file::maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte' (549027) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:416:65:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-to-the-start-of-the-last-page-refused: a test fails (cargo status 101)
 ===== wrong change end-checked-only-for-files-of-a-page: > .is_none_or(|end| size >= 4096 && end > size)
 -- TMPDIR=/dev/shm (tmpfs)
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (605653) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (605622) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
-test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (850190) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (850224) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-checked-only-for-files-of-a-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (605956) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (605923) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
-test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (850553) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::a_shrink_then_seal_racing_the_checks_never_maps_past_the_end' (850499) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:487:9:
+test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-checked-only-for-files-of-a-page: a test fails (cargo status 101)
 ===== wrong change end-checked-only-past-a-page: > .is_none_or(|end| end > 4096 && end > size)
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (607770) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (852393) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-checked-only-past-a-page: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (907394) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1149080) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-checked-only-past-a-page: a test fails (cargo status 101)
 ===== wrong change end-checked-only-below-2-to-the-32: > .is_none_or(|end| end < 1 << 32 && end > size)
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (1207234) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (1447064) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-checked-only-below-2-to-the-32: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (1505740) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (1743446) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-checked-only-below-2-to-the-32: a test fails (cargo status 101)
@@ -731,72 +735,72 @@ result end-checked-only-below-2-to-the-32: a test fails (cargo status 101)
 -- TMPDIR=/dev/shm (tmpfs)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (1805087) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:381:13:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (1805129) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2041357) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:381:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (2041396) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-without-the-offset: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2102039) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:381:13:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (2102067) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2341914) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:381:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (2341959) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-without-the-offset: a test fails (cargo status 101)
 ===== wrong change end-without-the-length: > .is_none_or(|_| offset >= size)
 -- TMPDIR=/dev/shm (tmpfs)
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2398390) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (2398422) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+thread 'file::refuses_offsets_past_the_end_of_the_file' (2636957) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2636934) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-without-the-length: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
-file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2696992) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
-thread 'file::refuses_offsets_past_the_end_of_the_file' (2697015) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further --- FAILED
+thread 'file::refuses_offsets_past_the_end_of_the_file' (2932898) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::maps_a_file_that_is_not_whole_pages_to_its_last_byte_and_no_further' (2932886) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:374:21:
 test result: FAILED. 51 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-without-the-length: a test fails (cargo status 101)
 ===== wrong change end-length-cut-to-32-bits: > .checked_add(length as u32 as u64)
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (2995953) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3236255) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-length-cut-to-32-bits: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3293539) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3534905) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-length-cut-to-32-bits: a test fails (cargo status 101)
 ===== wrong change end-offset-cut-to-32-bits: > if (offset as u32 as u64)
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3594589) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (3835592) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-offset-cut-to-32-bits: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (3895333) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (4131688) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-offset-cut-to-32-bits: a test fails (cargo status 101)
 ===== wrong change end-compared-as-signed: > .is_none_or(|end| end as i64 > size as i64)
 -- TMPDIR=/dev/shm (tmpfs)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (8750) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (235406) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-compared-as-signed: a test fails (cargo status 101)
 -- TMPDIR=/work/target/gmc-disk (ext2/ext3)
 file::refuses_offsets_past_the_end_of_the_file --- FAILED
-thread 'file::refuses_offsets_past_the_end_of_the_file' (310495) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
+thread 'file::refuses_offsets_past_the_end_of_the_file' (532426) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:323:13:
 test result: FAILED. 52 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
 result end-compared-as-signed: a test fails (cargo status 101)
@@ -811,7 +815,7 @@ result behind-the-alignment-assert-removed: every test passes
 warning: unused import: `set_parent_process_death_signal`
 12 | use rustix::process::{Pid, Signal, getppid, kill_process, set_parent_process_death_signal};
 the_other_process_ends_when_the_process_that_started_it_is_killed --- FAILED
-thread 'the_other_process_ends_when_the_process_that_started_it_is_killed' (1211052) panicked at crates/shared-memory/foreign_implementation/host/process.rs:180:5:
+thread 'the_other_process_ends_when_the_process_that_started_it_is_killed' (1431377) panicked at crates/shared-memory/foreign_implementation/host/process.rs:180:5:
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 30.01s
 error: test failed, to rerun pass `-p wcontainers-shared-memory --test process`
 result parent-death-signal-unset: a test fails (cargo status 101)
@@ -819,23 +823,23 @@ result parent-death-signal-unset: a test fails (cargo status 101)
 cargo status 101
 warning: unused import: `set_parent_process_death_signal`
 12 | use rustix::process::{Pid, Signal, getppid, kill_process, set_parent_process_death_signal};
-thread 'the_other_process' (1262949) panicked at crates/shared-memory/conformance/conformance.rs:518:17:
+thread 'the_other_process' (1456707) panicked at crates/shared-memory/conformance/conformance.rs:518:17:
+test the_other_process ... FAILED
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.03s
-thread 'copies_in_keeping_the_bytes_beside_them_that_another_process_writes' (1262936) panicked at crates/shared-memory/conformance/conformance.rs:552:9:
-thread 'reads_only_values_bytes_held_while_another_process_writes_mixed_sizes' (1262938) panicked at crates/shared-memory/conformance/conformance.rs:379:13:
-thread 'uses_words_holding_only_values_held_while_another_process_writes_mixed_sizes' (1262941) panicked at crates/shared-memory/conformance/conformance.rs:442:17:
-other processes still running 3 s after the test ended: 2
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
+  process didn't exit successfully: `/work/target/gmc-plant/debug/deps/process-2294bd5f7d3e2de9 --quiet` (signal: 6, SIGABRT: process abort signal)
+other processes still running 3 s after the test ended: 4
 ===== planted fault, a copy one byte long, in the process test: with the parent-death signal; other processes before: 0
 cargo status 101
-thread 'the_other_process' (1278424) panicked at crates/shared-memory/conformance/conformance.rs:518:17:
+test the_other_process ... uses_words_holding_only_values_held_while_another_process_writes_mixed_sizes --- FAILED
+thread 'the_other_process' (1460598) panicked at crates/shared-memory/conformance/conformance.rs:518:17:
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
   process didn't exit successfully: `/work/target/gmc-plant/debug/deps/process-2294bd5f7d3e2de9 --quiet` (signal: 6, SIGABRT: process abort signal)
 other processes still running 3 s after the test ended: 0
-done load 7.47 15.10 14.05
-code fec8c953d6929ba9
-===== miri 0.1.0 (20fe935d50 2026-11-23) load 7.47 15.10 14.05
+done load 7.74 13.79 13.76
+code 4739c1b4433827b2
+===== miri 0.1.0 (20fe935d50 2026-11-23) load 7.74 13.79 13.76
 -- stacked borrows
      Running attack/attacks.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/3494effbea09773c/out/attacks-3494effbea09773c)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
@@ -860,7 +864,7 @@ test anonymous::reads_only_values_bytes_held_while_another_thread_writes_mixed_s
 test anonymous::uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
 test anonymous::waits_until_woken ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
 test result: ok. 13 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 106.73s
-wall 93 s
+wall 98 s
 -- -Zmiri-tree-borrows
      Running attack/attacks.rs (/work/target/gmc-miri/miri/x86_64-unknown-linux-gnu/debug/build/wcontainers-shared-memory/3494effbea09773c/out/attacks-3494effbea09773c)
 warning: Miri does not support optimizations: the opt-level is ignored. The only effect of selecting a Cargo profile that enables optimizations (such as --release) is to apply its remaining settings, such as whether debug assertions and overflow checks are enabled.
@@ -885,7 +889,7 @@ test anonymous::reads_only_values_bytes_held_while_another_thread_writes_mixed_s
 test anonymous::uses_words_holding_only_values_held_while_another_thread_writes_mixed_sizes ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
 test anonymous::waits_until_woken ... ignored, under Miri the memory is a Rust allocation, where threads racing is a data race; native only
 test result: ok. 13 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 106.33s
-wall 101 s
+wall 108 s
 ===== wrong change heap-one-byte-long, heap suite and attacks under Miri: > let region = unsafe { Region::new(base, words.len() * size_of::<u64>() + 1) };
 test offsets_and_lengths_at_the_edges_and_at_overflow ... error: Undefined Behavior: memory access failed: attempting to access 33 bytes, but got alloc55304 which is only 32 bytes from the end of the allocation
  = note: Undefined Behavior occurred here
@@ -894,44 +898,44 @@ test offsets_and_lengths_at_the_edges_and_at_overflow ... error: Undefined Behav
 test a_zero_length_region ... error: Undefined Behavior: pointer not dereferenceable: pointer must point to some allocation, but got 0x8[noalloc] which is a dangling pointer (it has no provenance)
  = note: Undefined Behavior occurred here
  = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
-done load 2.14 8.52 11.62
-code fec8c953d6929ba9
-kani CBMC 6.11.0, load 2.14 8.52 11.62
-one_word::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 3.81
-one_word::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 3.83
-one_word::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 4.01
-one_word::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 4 s, load 4.01
-one_word::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 4.25
-one_word::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 4.68
-one_word::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 12 s, load 4.95
-one_word::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 6 s, load 12.16
-two_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 3.81
-two_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 3.92
-two_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 4.01
-two_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 4.25
-two_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 4.39
-two_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 4.68
-two_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 16 s, load 11.59
-two_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 11.59
-three_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 3.81
-three_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 3.92
-three_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 4.01
-three_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 4.25
-three_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 4.39
-three_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 4.94
-three_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 17 s, load 10.90
-three_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 10.90
-four_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 3.81
-four_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 3.92
-four_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 4.01
-four_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 4.39
-four_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 4.68
-four_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 10 s, load 4.95
-four_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 19 s, load 10.18
-four_words::waits_and_wakes_only_on_words_inside:  ** 0 of 720 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 9.61
-all: 32 successful, 0 failed, covers unsatisfied in 0, wall 70 s
+done load 14.26 13.45 13.54
+code 4739c1b4433827b2
+kani CBMC 6.11.0, load 14.26 13.45 13.54
+one_word::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 20.29
+one_word::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 19.39
+one_word::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 18.19
+one_word::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 17.46
+one_word::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 5 s, load 17.50
+one_word::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 16.82
+one_word::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 13 s, load 14.72
+one_word::waits_and_wakes_only_on_words_inside:  ** 0 of 732 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 14.10
+two_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 20.29
+two_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 19.39
+two_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 18.19
+two_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 17.46
+two_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 17.50
+two_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 16.03
+two_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 15 s, load 14.10
+two_words::waits_and_wakes_only_on_words_inside:  ** 0 of 732 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 13.30
+three_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 20.29
+three_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 18.56
+three_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 18.19
+three_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 6 s, load 17.46
+three_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 16.82
+three_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 10 s, load 15.31
+three_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 16 s, load 13.30
+three_words::waits_and_wakes_only_on_words_inside:  ** 0 of 732 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 12.47
+four_words::counts_the_bytes_mapped:  ** 0 of 372 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 9 s, load 20.29
+four_words::loads_stores_and_swaps_only_8_byte_words_inside:  ** 0 of 785 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 18.56
+four_words::loads_stores_and_exchanges_only_4_byte_words_inside:  ** 0 of 882 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 9 s, load 17.46
+four_words::reads_exactly_the_bytes_asked:  ** 0 of 615 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 7 s, load 17.50
+four_words::writes_exactly_the_bytes_given:  ** 0 of 709 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 8 s, load 16.03
+four_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 739 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 11 s, load 14.72
+four_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1014 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 19 s, load 12.47
+four_words::waits_and_wakes_only_on_words_inside:  ** 0 of 732 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 11.63
+all: 32 successful, 0 failed, covers unsatisfied in 0, wall 75 s
 ===== wrong change: a read one byte past the end accepted
 1
-two_words::reads_exactly_the_bytes_asked:  ** 2 of 616 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- FAILED  wall 5 s, load 9.00
+two_words::reads_exactly_the_bytes_asked:  ** 2 of 616 failed (6 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- FAILED  wall 4 s, load 10.78
 done
-arm-run: exit 0 after 786 s, load 9.00 9.30 11.65
+arm-run: exit 0 after 777 s, load 10.78 13.22 13.49

@@ -77,10 +77,13 @@ Paths are under foreign_implementation/; `checks/review.sh` fails when a cited l
        }
    }
    ```
-9. region/implementation.rs:209, `libc::syscall(SYS_futex, word, ...)` in `futex`: rustix takes the word only as `&AtomicU32`.
+9. region/implementation.rs:224, `libc::syscall(SYS_futex, word, ...)` in `futex`: rustix takes the word only as `&AtomicU32`.
+   The function takes a `FutexOperation`, which holds only `Wait` and `Wake`, so the call is `FUTEX_WAIT` or `FUTEX_WAKE`;
+   for these the kernel reads at most the word and the timeout and writes no memory of this program.
 10. host/implementation.rs:103, `unsafe { Region::new(base, map.len()) }` over memmap2's `MmapRaw`. For a memory file it
-    rests on three things done in order on one borrowed descriptor: the seals are read and hold `F_SEAL_SHRINK`, then
-    the size is read, then the file is mapped. Two limits:
+    rests on four things done in order on one borrowed descriptor: the seals are read and hold `F_SEAL_SHRINK`, then
+    the file system is read and is not the huge-page one (host/implementation.rs:135, :138), then the size is read,
+    then the file is mapped. Two limits:
     - The type does not enforce the order. `ShrinkSealedFile::new` reads the seals and `map` reads the size, but code
       in that module could read the size in `new` first and keep it. What catches that order is the test
       `a_shrink_then_seal_racing_the_checks_never_maps_past_the_end` (the wrong change `size-read-before-the-seals`
@@ -189,7 +192,7 @@ Where there is no C library (the floor, `no_std`): another implementation of the
 Every log names the code it ran on: `checks/tree.sh` hashes every file of the crate but the logs and this page, and
 native.sh, miri.sh and kani.sh print it first. `checks/review.sh` (run on the Mac before each commit) fails when a log
 names other code, when this page's unsafe count differs from the code's, when a cited `checks/` file is missing, or
-when a comment cites this page for a measurement. Final run: code fec8c953d6929ba9, both machines, in one job each; the host suite has 53 tests
+when a comment cites this page for a measurement. Final run: code 4739c1b4433827b2, both machines, in one job each; the host suite has 53 tests
 (MEASURED, checks/x86.log, arm.log; review.sh: "10 unsafe items, 0 failed").
 
 MEASURED, both machines, debug and release:
@@ -221,8 +224,9 @@ MEASURED, both machines, debug and release:
 - Lengths and offsets: the file mapping refuses a length of zero, an offset that is not a multiple of 8, and bytes
   past the file's end, and maps every other length, whole words or not (the anonymous one refuses only zero). What is
   shown is that each wrong change listed in native.sh fails a test on both machines (MEASURED, checks/x86.log and
-  arm.log, lines "result ...: a test fails"): 59 changes, the 28 to the offset and end checks each run with `TMPDIR`
-  on tmpfs and on ext4. Nothing shows that a change not listed there fails. Listed:
+  arm.log, lines "result ...: a test fails"): 58 distinct changes in 87 results. The 28 to the offset and end checks
+  each run twice, with `TMPDIR` on tmpfs and on ext4; the change accepting seals that cannot be read runs twice under
+  two names, once per temporary folder; the other 29 run once. Nothing shows that a change not listed there fails. Listed:
   - removed or made stricter: anonymous and file length zero accepted, anonymous and file mapping one byte more, the
     offset unchecked or checked to 16, lengths limited to whole words, the end refused at the file's end or at the
     start of its last page, the file mapped from one word on, the region one byte long or short;

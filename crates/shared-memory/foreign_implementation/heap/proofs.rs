@@ -262,11 +262,11 @@ fn parts_read_to_a_sink_and_write_from_a_source(count: usize) {
 #[cfg(target_os = "linux")]
 fn futex(
     _: *mut u32,
-    operation: libc::c_int,
+    operation: crate::foreign_implementation::region::FutexOperation,
     value: u32,
     _: Option<&libc::timespec>,
 ) -> Result<usize, rustix::io::Errno> {
-    if operation == libc::FUTEX_WAIT {
+    if operation == crate::foreign_implementation::region::FutexOperation::Wait {
         Err(rustix::io::Errno::TIMEDOUT)
     } else {
         Ok(value as usize)
