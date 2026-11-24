@@ -39,7 +39,7 @@ wcontainers-route-resolver-host = { path = "../../../route-resolver/implementati
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [dev-dependencies]
 wcontainers-raw-sockets-conformance = { path = "../../conformance" }
