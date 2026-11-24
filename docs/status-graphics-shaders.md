@@ -117,7 +117,7 @@ out of the integer twins as BGRA is (targets and storage clears of it stay refus
 Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
 96's section).
 
-## G6 reported complete for its independent check (round 7, run 115): the gap list
+## G6 reported complete for its independent check (round 7, run 116): the gap list
 
 G6 is reported complete on the crate as it stands, as round 7 of 2026-11-23 asks, with every item
 still open below under its cause and its owner. Run 113 settled the findings of G6's independent
@@ -128,9 +128,14 @@ the drawn failures at the check's seeds listed, the items of "Known gaps" added.
 the findings of the check of run 114 (its section below): A10 measured on the cull route and on
 lines too, the NIR track's G9 run 23 ask built (`rewrite` and forced early tests), the NIR track's
 G9 run 24 asks and the rest of "Known gaps" put on this list, a DXBC container through the DXIL
-route refused by name.
+route refused by name. Run 116 settled the findings of the check of run 115 (its section below):
+the module route's NaN into a signed normalised typed view fixed and drawn, the clamped samples at
+seed 8118 measured as A18's level decision (the device sampler route equal to Direct3D on the GPU
+in every texel), the line case of seed 8120 placed by the tests as A10's snap, and the check's
+minor items put on this list (A32's cause found, A36 new, the NIR track's G9 run 25 and 26 asks,
+A11's new figures).
 The pass bar item by item, with its figures, is the section "G6: the pass bar item by item"
-further down; the gap numbers (A1 to A35) are its entries, which hold each item's measurements.
+further down; the gap numbers (A1 to A36) are its entries, which hold each item's measurements.
 Bar items 1 (corpus), 2 (Chrome), 5 (built-in programs) and 6 (the cache) are met. Items 3
 (variant fields and flags) and 4 (geometry, tessellation and stream output against real
 Direct3D) are met but for the items below.
@@ -221,7 +226,18 @@ The owner's ruling (asked under "New for the owner"; today's behaviour kept):
   seeded indices), whose centre line crosses row 40 at x = 24.0002, 0.0002 pixels from the corner
   of the two pixels' diamonds. Direct3D's snapped cut end turns that line about its uncut end by up
   to 1/512 of a pixel at the cut, about 0.0005 at this row, which is enough to move the crossing to
-  the other pixel. So this too is the snap of the vertex clipping makes. And where a pixel centre lies exactly on a plane, Direct3D's fill rule
+  the other pixel. So this too is the snap of the vertex clipping makes. Since run 116 the tests
+  place such texels themselves (`cut_line_decision`, tests/geometry_draw.rs): for each line a plane
+  cuts, how far its crossing of the texel's centre line lies from the boundary between the two
+  pixels it may light, in units of how far the snapped ends (Direct3D's cut ends against the
+  program's whole line's ends) can move it there. G6's check of run 115 found the `vs_cull`
+  LineStrip 9 from 1 x2 case of seed 8120 unplaced (4 texels, two one-pixel swaps on row 24, 7.2 to
+  9.1 pixels from the cut end); drawn again in run 116 on the RTX 3080 (g6-r116 gpu1.log, seed 8120,
+  1 case): both routes "4 texels apart by more than 2: ... 4 within a snap's reach of a cut line's
+  pixel decision" (the line from vertex 7 to vertex 8, cut at 0.78 of its length, crosses row 24
+  0.0012 pixels from the boundary, where the snaps reach 0.0039), and every triangle case apart at
+  that seed has its texel within a subpixel step of a clipped edge; every failing placement of the
+  seed is so placed. And where a pixel centre lies exactly on a plane, Direct3D's fill rule
   decides where the program keeps a distance of zero (Known gaps, run 38; seen only with a plane
   through pixel centres). WARP clips as the GPU does (largest 1 apart), so ours lies up to 21 to 99
   from both. The plan's claim that the variant keeps "exactly the set of pixels clipping leaves"
@@ -231,12 +247,24 @@ The owner's ruling (asked under "New for the owner"; today's behaviour kept):
   interpolated by its kind, the pixel program not discarding there: a change in how fronts key the
   pixel program, so an interface decision too; draws with no geometry or cull stage would keep the
   loss). Asked under "New for the owner" (runs 114 and 115).
-- A18: `filtering_in_the_program_matches_direct3d`'s second comparison (against WebGPU's own
-  sampler) has no level-of-detail allowance where its main comparison has one (4 of 4,096 texels at
-  one seed, at a level decision). Takes the ruling that the main comparison's allowance applies to
-  it too. G6's check of run 114 reproduced it at seed 6037 (Rgba8Unorm, bias, both routes, linear
-  [false, true, true], scale [0.25, 2.0]): 4 of 4,096 texels past 0.0078125 against WebGPU's own
-  sampler, where the main comparison gives 0 (4 before moving the level of detail).
+- A18: the second comparison of `filtering_in_the_program_matches_direct3d` and
+  `clamped_samples_match_direct3d` (the program's own filtering against WebGPU's own sampler, one
+  function, `samples_match_direct3d`) lacks the two rules its main comparison applies: a texel at a
+  level decision (within the allowance with the level of detail moved by 1/256) and a texel where
+  the GPU and WARP themselves differ are allowed there and failed here. Takes the ruling that the
+  main comparison's rules apply to it too. G6's check of run 114 reproduced it at seed 6037 (4 of
+  4,096 texels). G6's check of run 115 found `clamped_samples_match_direct3d` failing at seed 8118
+  and 8128 and took it for a fault of run 113's lowering of the per-sample clamp; measured in run
+  116 (g6-r116 gpu2.log and gpu3.log, the test now counts both rules for this comparison): at 8118
+  (min point, mag linear, mip point; the sample's clamp of 1.5 lifts every texel of a magnified
+  picture to a level of detail of 1.5, half way between two levels) every texel apart is at a level decision
+  (2,999 of 2,999 `implicit`, 3,375 of 3,375 `bias`, 3,461 of 3,461 `gradients`, both routes),
+  and WebGPU's own sampler through the lowering is 0 texels from Direct3D on the GPU; at 8128
+  `bias` both texels apart lie where the GPU and WARP differ (they differ in 837 texels by up to
+  0.62 there; the lowering through WebGPU's own sampler lies 217 texels and up to 0.22 from the GPU,
+  inside that spread); `filtering_in_the_program` at 8121 `bias`, 4 texels, all where the GPU and
+  WARP differ, and at 8118 `bias` 4, all at a level decision. Every failure of this comparison at
+  the check's seeds 8111 to 8130 is so placed; the main comparisons pass there.
 
 An interface decision (the interface track's, or the owner's; asked of the interface track in run
 113, whose status file, unchanged since 2026-11-18, records none of them yet):
@@ -253,7 +281,10 @@ Another track (each asked under "Asked of other tracks"; where the owner's statu
 record agreement yet, it is said). G6's check of run 113 found that no named track's own status
 file yet records agreement to any item given it here (the interface track's last changed
 2026-11-18; several of these tracks are idle). This track cannot write another track's file; only
-the orchestrator can have them confirm, so these items stand as asked, not as agreed:
+the orchestrator can have them confirm, so these items stand as asked, not as agreed. G6's check
+of run 115 found the same at 2453a26e6 (the Direct3D 12 front's list of open shaders items, the
+Direct3D 11 front's aliased lines and atg-simplecomputepc division, the WebGL 2 track naming neither
+A31 nor `SAMPLE_QUALIFIER_EXTENSION`, the rig with no line allowance for A6); unchanged in run 116:
 - The WebGL 2 track: A31 (`gathers_by_samples` floors the footprint at full precision where
   Direct3D rounds to 1/256 of a texel: 6 and 7 of 4,096 texels); its public
   `SAMPLE_QUALIFIER_EXTENSION`, which the corpus test copies (the one hole of item 2). Its status
@@ -323,7 +354,8 @@ by name, not drawn, or unharmful while a feature is declared absent; its entry s
 - A11: signed but malformed DXIL still ends the process in dxil-spirv's bitcode reader: 9 of
   3,000 cases at seed 31337 after run 113's carried checks of the entry points (23 before); G6's
   check of run 113 found 14 of 4,000 at seed 4242 (arm2.log there: `std::terminate` "without an
-  active exception" and SIGSEGV, every one a .dxil case, none DXBC), its casts calling
+  active exception" and SIGSEGV, every one a .dxil case, none DXBC), and its check of run 115 30 of
+  8,000 at seed 27183 (the same two kinds, every one a .dxil case, none DXBC), its casts calling
   `std::terminate` by design and types it did not find. Natively one guest shader can thus end the
   host process (a hostile-guest exposure; in the browser the module traps instead). Takes a carried
   patch of the reader (its casts are in a header) or upstream's. And DXBC register indices past
@@ -343,6 +375,16 @@ by name, not drawn, or unharmful while a feature is declared absent; its entry s
   conventions, as `provoking` is given); a geometry program writing as many locations as the device
   has attributes needs one attribute more for the position (takes a pass-through reading the
   records from storage by the vertex index).
+- The NIR track's G9 run 25 and 26 asks (its "Requests to other tracks"; not started): a staged
+  built-in for the point size, passed between the stage helper's stages and from the vertex stage
+  into them and dropped at the final draw (`staged::BuiltIn` has none, so a tessellation or
+  geometry program reading or writing the point size is refused: 144 process refusals in its run
+  23, KHR-GLES31 and -GLES32 `tessellation_shader`; takes a built-in of the helper's records, which
+  only the helper can place at a location the device's inter-stage limit leaves free); and the
+  multisampled array split (`variant/layers.rs`) binding every layer of `texture_layers` whatever
+  the program reads, so a program only querying sizes is refused `BindingsBeyondLimit` past the
+  stage's free texture bindings (6 dEQP-GLES31 `texture_size.samples_*_2d_array` cases; takes
+  binding only the layers a load can reach).
 - Alpha-antialiased lines on WebGL 2 (A5, run 45): the coverage is a box filter's, within 52 of the
   RTX 3080's in the drawn test (its stated allowance); the RTX 3080 draws a line's end at about 0.64
   where ours gives 0.5, and nothing past it where ours fades over half a pixel. Lines are cut at
@@ -377,13 +419,17 @@ by name, not drawn, or unharmful while a feature is declared absent; its entry s
   a patch list into the replay on WebGL 2.
 - A24 and A27: refusals by name of forms no file of any corpus meets (listed there by kind).
 - A26: a negated unordered comparison as a branch's condition on WebGL 2 (not drawn). A30: the
-  check's `sqrt` form of `saturate` of a NaN (not yet in `ps_compare`). A32: the cause of the DXIL
-  `f32tof16` overflow difference between the back ends. A34: `min16i as def32` sign extension (no
+  check's `sqrt` form of `saturate` of a NaN (not yet in `ps_compare`). A32: `f32tof16` rounding to
+  nearest where the device does, past the half's range on the DXIL route (no clamp there) and in
+  its subnormal range on both routes (wgpu's Vulkan path; its entry has the cause). A34: `min16i as def32` sign extension (no
   one rule found on both devices yet).
 - A21's `gs_instances` (one colour texel apart by 1, dxc's build, seed 5257) did not fail at
   seeds 977 to 984 or at the check's 7341 to 7352; WARP's figure is printed when it fails and not
   yet measured. (A10 is under the owner's ruling, A12 under the orchestrator's rule, above.)
 - A33: the DXIL passes' hand-walked SPIR-V moved onto rspirv (no behaviour change).
+- A36: a point sample's texel picked at full precision in the program's own filtering, where a
+  coordinate within a subtexel step of a texel's edge lets the devices pick the other (one texel
+  at the check's seed 8130, R16Unorm `gradients`; its entry has what was tried).
 - A29: three drawn binaries need `--test-threads 1` on the desktop (ANGLE asserts with contexts in
   several threads); the tests' WebGL 2 use is not serialised yet.
 - "Also open" (end of the gap list): `rewrite` refusing arrays of buffers; `SampleClamp` of a
@@ -546,6 +592,37 @@ hint) is dropped too. A program forcing early tests with a reflection that has n
 refused as `Malformed("a fragment program forcing early tests with a reflection of no pixel
 extras")`. Test: `a_fragment_program_forcing_early_tests_carries_them_in_its_pixel_extras`
 (tests/rewrite.rs; passes on the ARM64 machine, arm1.log of run 115).
+
+## G6 run 29 (run 116, round 7 run 5): the fourth check's findings
+
+Logs and scripts in scratch `graphics-shaders/g6-r116` (the clone `tip` moved there from g6-r115;
+`gpu1-cmd.txt` to `gpu3-cmd.txt`, `quick-cmd.txt`; `gpu1.log` to `gpu3.log`, `gpu-suite.log`,
+`arm1.log`, `arm2.log`). Nothing built on the Mac. The check's own logs are in
+`graphics-shaders/check-g6-r10`.
+- BLOCKING, NaN into a signed normalised typed view through `typed::buffers` gave -127: fixed. The
+  encode (`variant/texel.rs`, `encode`) found NaN by `v == v`, which a compiler may fold; it now
+  tests the float's bits (magnitude above infinity's), as the routes' `f32tof16` does. Drawn on the
+  RTX 3080 (gpu1.log, seed 8117, 1 case): `typed_buffers_match_direct3d`,
+  `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` and the third typed test pass; "seed 8117
+  module u0 ([Bgrx8Unorm, Rg32Uint, R8Sint, Bgrx8Unorm, Rgba8Snorm, R32Uint]): 0 elements apart".
+- BLOCKING, `clamped_samples_match_direct3d` at seed 8118: not a fault of run 113's lowering. The
+  check's own figure shows the lowering through WebGPU's own sampler 0 texels from Direct3D on the
+  GPU; what differs is the program's own filtering against that sampler, at the level decision the
+  clamp of 1.5 puts every texel on, which the main comparison allows and this one does not: A18.
+  The test now prints, for this comparison, the texels each of the main comparison's rules allows;
+  at the check's seeds every failing texel is allowed by one (A18 on the gap list has the figures;
+  gpu2.log at seeds 8111 to 8130 gives the check's failures exactly, 8 in each test, and seeds 1 to
+  8 pass). Nothing was loosened.
+- A10's line case at seed 8120 (minor): placed by the tests (`cut_line_decision`), see A10.
+- 8130 R16Unorm `gradients` (minor): A36, new. Picking a point sample's texel at 1/256 of a texel
+  was tried and undone (it passed 8130 and failed three other seeds).
+- `f32tof16` on wgpu's Vulkan path (minor): A32's cause found from the check's measurement (the
+  DXIL route's conversion has no clamp; half-subnormal results round as the device rounds); A32's
+  entry and the gap list say what it takes. Not built in this run.
+- The owners' agreement (minor): unchanged; only the orchestrator can have them confirm.
+- The NIR track's G9 run 25 ask (minor) and its G9 run 26 ask: on the gap list, this track's own.
+- A11 at seed 27183 (minor): its figures added; the fuzz test stays failing.
+- No unsafe code added; the count stays 94.
 
 ## G6 run 28 (run 115, round 7 run 4): the third check's findings
 
@@ -3258,7 +3335,10 @@ The gap list (every item of the pass bar not met):
   derivatives, as warp computes it) is not bit for bit the GPU's. Waits: nobody (a texel's level
   of detail at a decision). Takes: either the GPU's level of detail computation matched exactly
   (not documented for the RTX 3080), or the owner ruling that the main comparison's allowance
-  applies to this comparison too; the test is left as it is meanwhile.
+  applies to this comparison too; the test is left as it is meanwhile. Since run 116 the same
+  comparison of `clamped_samples_match_direct3d` is counted here too, and the test prints for each
+  failure how many of its texels each of the main comparison's two rules allows (the gap list's
+  A18 has the figures at the check's seeds 8111 to 8130: every failing texel is so allowed).
 - A19. Normalised codes with halves toward zero (`variant::texel::encode`, run 65, the Direct3D 11
   front's ask from its measurement on the RTX 3080: 0.5 into a 16-bit normalised texture held as
   its integer twin gives 0x7fff there): built, but no drawn test of this crate writes an exact
@@ -3555,12 +3635,22 @@ The gap list (every item of the pass bar not met):
   1e35` finite (f32tof16 gives 0x7bff and 0xfbff, `isinf` false), where Direct3D 11 with fxc's
   build gives infinity (0x7c00 and 0xfc00, `isinf` true). Our WebGPU gives Direct3D 11's answer for
   the DXIL build (107 of 4,096 texels differ from Direct3D 12), our WebGL 2 gives Direct3D 12's;
-  both DXBC routes are exact. Cause: not found. The DXBC route's `f32tof16` tests finiteness by its
-  bits (since 0b412922); the DXIL route goes through dxil-spirv's half conversion and the back ends'
-  compilers, and it is not measured whether Direct3D 12's compiler or ANGLE's keeps the product
-  finite. Waits: nobody (an overflow to infinity in a dxc build). Takes: dxc's disassembly of the
-  case read for the product's form, the converted WGSL and GLSL compared at it, the case added to
-  the own shaders and drawn on both routes against Direct3D 12.
+  both DXBC routes are exact. Cause, found from G6's check of run 115 (its own `cs_c10_float`,
+  check-g6-r10 gpu-own.log): Direct3D's `f32tof16` rounds toward zero (the functional
+  specification; dxil-spirv's `emit_legacy_f32_to_f16_instruction` says so and leaves it out as
+  too costly). The DXBC route clamps finite values to the half's range before converting (lower.rs,
+  `CONVERT_F32TO_PACKED_F16`, tested by their bits); the DXIL route converts with a bare
+  `PackHalf2x16`, so where the device's conversion rounds to nearest a finite value past the half's
+  largest becomes infinity: on wgpu's Vulkan path 0x477ff000, 0x4f000000, 0x7f7fffff and
+  0x4b800001 give 0x7c00 for Direct3D's 0x7bff, 0xcf000000 gives 0xfc00 for 0xfbff (262 to 267
+  words a seed on dxc's build), while wgpu's Direct3D 12 path gives every word. Second, results in
+  the half's subnormal range: wgpu's Vulkan path on the RTX 3080 rounds them to nearest where
+  Direct3D truncates (0x3727c5ac gives 0xa8 for Direct3D's 0xa7), on both routes (35 to 41 words a
+  seed on fxc's build); the integer program of the same check was exact. Waits: nobody (no front,
+  corpus program or real program has met it; Chrome on Windows draws through Direct3D 12, which
+  gives every word). Takes: the DXIL route's conversion clamped as the DXBC route's (a pass on
+  dxil-spirv's SPIR-V or a carried patch of its conversion), and the subnormal range converted in
+  the program with truncation on both routes (a few integer operations a conversion).
 - A33. The DXIL route's passes on dxil-spirv's SPIR-V walk and re-write raw words by hand
   (src/dxil/staged.rs, geometry.rs, tessellation.rs, and before them registers.rs and widths.rs:
   instruction walking, literal strings, entry points and execution modes, stub functions, the id
@@ -3587,6 +3677,19 @@ The gap list (every item of the pass bar not met):
   `frexp_gives_direct3d_12s_parts` (fxc's build, named there as known). Waits: nobody. Takes: the
   owner's word on whether to follow the devices (turn the fold off, a carried patch) against the
   game upstream names; not changed here, as following it could break that game.
+- A36 (run 116, G6's check of run 115). Filtering in the program picks a point sample's texel from
+  the coordinate at full precision (`filter_level`, `variant/filter.wgsl`); where the coordinate lies
+  within a subtexel step of a texel's edge the devices may pick the other texel. Measured: at the
+  check's seed 8130 (`filtering_in_the_program_matches_direct3d`, R16Unorm `gradients`, min and mag
+  point, mip linear, both routes and back ends) texel (50, 7) gives 0.41505 where the RTX 3080
+  gives 0.42844 and WARP 0.42506 (the two within the allowance of each other), past the allowance
+  from both, and moving the level of detail by 1/256 does not bring it in. Run 116 picked the texel
+  from the coordinate rounded to the nearest 1/256 of a texel instead (the linear footprint's
+  precision): 8130 then passed, but 8113 (R32Float `offset`, R16Unorm `implicit` and `gradients`),
+  8115 and seed 2 failed where they had passed (g6-r116 gpu1.log), so the devices' point pick is
+  neither; the change was undone. Waits: nobody (one texel at one seed of 20; no front or real
+  program has shown it). Takes: the devices' point pick measured at coordinates placed across a
+  texel's edge in steps finer than 1/256 (on the RTX 3080 and WARP), then that rule in the program.
 - Also open but not on the pass bar's words, for the fronts' real programs (arrays of constant and
   structured buffers on the DXIL route convert since run 87, its section): `rewrite` refusing
   arrays of buffers (its input's binding arrays of blocks; `src/dxil/buffer_arrays.rs` would serve
@@ -3660,13 +3763,14 @@ G6a run 5's tip):
 
 ## Next
 
-0. G6 is reported complete for its independent check (run 115, round 7). After the check, the gap
+0. G6 is reported complete for its independent check (run 116, round 7). After the check, the gap
    list of "G6 reported complete" in the order the fronts need it; items waiting on another track
    or a ruling are not worked until those come. The order below holds for this track's own parts.
 1. This track's own open parts of the gap list ("G6 reported complete", its last group), in the
    order the fronts need them: the NIR track's G9 run 24 asks of the
    stage helper (output sizing after tessellation, OpenGL's strip-with-adjacency order, records
-   read from storage past the device's attributes), A7's pixel shader reading `SV_PrimitiveID` behind a geometry shader
+   read from storage past the device's attributes), its G9 run 25 and 26 asks (a staged point size,
+   binding only the layers a load reaches), A32's clamp and subnormal conversion, A36, A7's pixel shader reading `SV_PrimitiveID` behind a geometry shader
    that does not write it (measured first on the RTX 3080 and WARP), A26's WebGL 2 part for
    branches (selects done in run 99), A33 (rspirv), a logic operation into a multisampled target
    (A4), the line routes' near-plane cut under `VIEWPORT_DEPTH_FLIP` (A5), stream output from a
@@ -5352,6 +5456,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `Error::InvalidImageExpression` where it unwrapped `None` and panicked. For upstream as it stands.
 
 ## How to run
+
+- Run 116's scripts in scratch `graphics-shaders/g6-r116` are run 115's with its folder. The clone's
+  `refs/remotes/origin/agents` must name a commit GitHub's `agents` holds (`git ls-remote origin
+  agents` in the worktree, then `git update-ref` in the clone): the GPU job bundles only the commits
+  past it, and a local commit of another track not yet pushed failed the job ("Repository lacks
+  these prerequisite commits"). In a desktop command, `if exist X rmdir X&& ...` runs the rest only
+  when X exists (one job did nothing).
 
 - Run 115's scripts in scratch `graphics-shaders/g6-r115` are run 114's with its folder (the clone
   `tip` moved there from g6-r114), plus `cpu2-cmd.txt` (rustfmt, clippy, every CPU test binary with
