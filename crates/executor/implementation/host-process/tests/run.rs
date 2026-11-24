@@ -360,6 +360,117 @@ fn code_placed_at_another_base_runs_from_its_kept_translation_moved_there() {
     assert!(translations(&cpu) > made, "translated again at {CODE:#x}");
 }
 
+/// The pages of the chained program, and the one whose add [`chained_program`] can change.
+const CHAINED_PAGES: u64 = 8;
+const CHANGED_PAGE: u64 = 3;
+const CHANGED_ADD: u32 = 100;
+
+/// One page after another, the page at index i adding i + 1 to x0 and branching to the next; the last calls getpid,
+/// then exit. With `changed`, page [`CHANGED_PAGE`] adds [`CHANGED_ADD`] instead.
+fn chained_program(changed: bool) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for page in 0..CHAINED_PAGES - 1 {
+        let added = if changed && page == CHANGED_PAGE {
+            CHANGED_ADD
+        } else {
+            page as u32 + 1
+        };
+        let mut words = vec![
+            encode::add_immediate(0, 0, i64::from(added)).expect("an add"),
+            encode::branch(false, PAGE as i64 - INSTRUCTION).expect("b"),
+        ];
+        words.resize(PAGE as usize / size_of::<u32>(), 0);
+        bytes.extend(words.iter().flat_map(|w| w.to_le_bytes()));
+    }
+    let [getpid, exit] = [syscall(GETPID), syscall(EXIT)];
+    bytes.extend(getpid.iter().chain(&exit).flat_map(|w| w.to_le_bytes()));
+    bytes
+}
+
+/// The chained program's sum in x0 at its getpid, as made.
+fn chained_sum(changed: bool) -> u64 {
+    let sum = (1..CHAINED_PAGES).sum::<u64>();
+    if changed {
+        sum - (CHANGED_PAGE + 1) + u64::from(CHANGED_ADD)
+    } else {
+        sum
+    }
+}
+
+/// Runs the chained program at `base` in a memory of its own, `not_executable` a page left readable only; its first
+/// exit, x0 there, and how many pieces were loaded ahead meanwhile.
+fn run_chained_at(
+    cpu: &mut HostProcessExecutor,
+    base: u64,
+    changed: bool,
+    not_executable: Option<u64>,
+) -> (Exit, u64, u64) {
+    let ahead = cpu.counters().pieces_loaded_ahead;
+    let memory = cpu.memory_new().expect("memory");
+    cpu.set_permissions(
+        memory,
+        base,
+        CHAINED_PAGES * PAGE,
+        Permissions::READ | Permissions::EXECUTE,
+    )
+    .expect("code");
+    if let Some(page) = not_executable {
+        cpu.set_permissions(memory, base + page * PAGE, PAGE, Permissions::READ)
+            .expect("not executable");
+    }
+    cpu.write(memory, base, &chained_program(changed))
+        .expect("the code");
+    cpu.code_changed(memory, base, CHAINED_PAGES * PAGE, &[base]);
+    let thread = cpu.thread_new(memory).expect("thread");
+    let mut registers = RegisterBlock::ZERO;
+    registers.pc = base;
+    cpu.set_registers(thread, &registers);
+    let seen = run_to_exit(cpu, thread);
+    let (exit, registers, _) = &seen.exits[0];
+    let (exit, sum) = (*exit, registers.x[0]);
+    cpu.thread_drop(thread);
+    cpu.memory_drop(memory);
+    (exit, sum, cpu.counters().pieces_loaded_ahead - ahead)
+}
+
+#[test]
+fn pieces_an_earlier_memory_loaded_next_are_loaded_ahead_only_where_their_code_and_permissions_are_the_same()
+ {
+    let mut cpu = executor();
+    let base = 0x2_0000_0000;
+    let getpid =
+        |exit: Exit| matches!(exit, Exit::Syscall(call) if call.number.0 == u64::from(GETPID));
+    // The first memory stops at every page.
+    let (exit, sum, ahead) = run_chained_at(&mut cpu, base, false, None);
+    assert!(getpid(exit), "{exit:?}");
+    assert_eq!((sum, ahead), (chained_sum(false), 0));
+    // The next one, here and at another base, loads every later page and the code after the getpid at its first stop.
+    for at in [base, 0x7_1234_5000] {
+        let (exit, sum, ahead) = run_chained_at(&mut cpu, at, false, None);
+        assert!(getpid(exit), "at {at:#x}: {exit:?}");
+        assert_eq!(
+            (sum, ahead),
+            (chained_sum(false), CHAINED_PAGES),
+            "at {at:#x}"
+        );
+    }
+    // Code that differs is not loaded ahead: its own add is what runs. The pages before it are loaded at the first
+    // stop, and the pages after the one after it at the stop there.
+    let (exit, sum, ahead) = run_chained_at(&mut cpu, base, true, None);
+    assert!(getpid(exit), "{exit:?}");
+    assert_eq!((sum, ahead), (chained_sum(true), CHAINED_PAGES - 2));
+    // Nor is a page the guest may not run, though the changed page now is: running into it is the guest's fault there.
+    let (exit, _, ahead) = run_chained_at(&mut cpu, base, true, Some(CHANGED_PAGE + 2));
+    assert_eq!(
+        exit,
+        Exit::MemoryFault {
+            address: base + (CHANGED_PAGE + 2) * PAGE,
+            access: Access::Execute
+        }
+    );
+    assert_eq!(ahead, CHANGED_PAGE + 1);
+}
+
 #[test]
 fn a_process_s_thread_past_its_last_index_is_refused_and_counted() {
     let mut cpu = executor();

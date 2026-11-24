@@ -161,6 +161,8 @@ pub struct Counters {
     pub zeros_written: u64,
     /// Exits handed to the kernel other than a turn's end: system calls, faults and the rest (plan 7's k).
     pub kernel_entries: u64,
+    /// Pieces loaded after one a thread stopped for, as an earlier memory starting from the same piece loaded them.
+    pub pieces_loaded_ahead: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
