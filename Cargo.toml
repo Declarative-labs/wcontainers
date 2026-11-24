@@ -52,7 +52,7 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/wcontainers-gpu-webgl (162)
 #   crates/wcontainers-nir (113)
 #   crates/wcontainers-translator-test (101)
-#   crates/wcontainers-shaders (75: 4 in the linked converters of its WebAssembly build, 71 in its Windows tests calling real Direct3D)
+#   crates/wcontainers-shaders (75: 4 in its linked converters, the native default and its WebAssembly build, 71 in its Windows tests calling real Direct3D)
 #   crates/wcontainers-gpu-webgpu (30)
 #   crates/internet-protocol/implementation/linux-socket-options (2)
 #   crates/route-resolver/conformance (2)
