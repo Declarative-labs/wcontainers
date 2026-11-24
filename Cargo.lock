@@ -5531,6 +5531,7 @@ dependencies = [
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "domain",
  "etherparse",
  "flate2",
