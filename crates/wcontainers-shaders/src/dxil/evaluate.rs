@@ -828,36 +828,27 @@ fn direct3d_centroid(
 
 /// How dxil-spirv decorated the position input of `spirv`: `Centroid` or `Sample` where the program
 /// declares it so (naga's reader keeps no sampling for a built-in).
-pub(super) fn position_sampling(code: &[u32]) -> Option<Sampling> {
-    use super::words::{COUNT_SHIFT, HEADER, OPCODE_MASK, decorate};
-    use spirv::{BuiltIn as SpvBuiltIn, Decoration, Op};
-    let mut position = None;
-    let mut decorated = Vec::new();
-    let mut at = HEADER;
-    while let Some(&first) = code.get(at) {
-        let count = (first >> COUNT_SHIFT) as usize;
-        let Some(w) = code.get(at..at + count).filter(|_| count > 0) else {
-            break;
-        };
-        if Op::from_u32(first & OPCODE_MASK) == Some(Op::Decorate) && count > decorate::DECORATION {
-            let target = w[decorate::TARGET];
-            match Decoration::from_u32(w[decorate::DECORATION]) {
-                Some(Decoration::BuiltIn)
-                    if w.get(decorate::LITERAL) == Some(&(SpvBuiltIn::FragCoord as u32)) =>
-                {
-                    position = Some(target);
-                }
-                Some(Decoration::Centroid) => decorated.push((target, Sampling::Centroid)),
-                Some(Decoration::Sample) => decorated.push((target, Sampling::Sample)),
-                _ => {}
-            }
-        }
-        at += count;
-    }
-    let position = position?;
-    decorated
+pub(super) fn position_sampling(spirv: &rspirv::dr::Module) -> Option<Sampling> {
+    use super::staged::{DECORATION_LITERAL, DECORATION_TARGET, decorates, id};
+    use rspirv::dr::Operand;
+    use spirv::{BuiltIn as SpvBuiltIn, Decoration};
+    let position = spirv.annotations.iter().find_map(|i| {
+        let built_in = i.operands.get(DECORATION_LITERAL);
+        (decorates(i, Decoration::BuiltIn)
+            && built_in == Some(&Operand::BuiltIn(SpvBuiltIn::FragCoord)))
+        .then(|| id(i, DECORATION_TARGET))
+        .flatten()
+    })?;
+    spirv.annotations.iter().find_map(|i| {
+        let sampling = [
+            (Decoration::Centroid, Sampling::Centroid),
+            (Decoration::Sample, Sampling::Sample),
+        ]
         .into_iter()
-        .find_map(|(target, sampling)| (target == position).then_some(sampling))
+        .find(|(d, _)| decorates(i, *d))?
+        .1;
+        (id(i, DECORATION_TARGET) == Some(position)).then_some(sampling)
+    })
 }
 
 /// Moves the position of a program declaring it at the centroid there: once the reader has stored

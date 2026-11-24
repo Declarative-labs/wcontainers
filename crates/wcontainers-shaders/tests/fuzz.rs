@@ -304,144 +304,73 @@ fn a_globally_coherent_view_is_refused_by_name() {
     );
 }
 
-/// One SPIR-V instruction: its word count (the first word's high half) and opcode, then its operands.
-fn instruction(words: &mut Vec<u32>, op: spirv::Op, operands: &[u32]) {
-    let count = u32::try_from(operands.len() + 1).unwrap();
-    words.push((count << u16::BITS) | op as u32);
-    words.extend_from_slice(operands);
-}
-
 /// A fragment program sampling a texture through a storage texture in the sampler's place, as
 /// damaged DXIL once made dxil-spirv write: the carried SPIR-V reader refuses it with an error
 /// instead of panicking (which ends a WebAssembly instance).
 #[test]
-fn a_sample_through_no_sampler_is_an_error_of_the_reader() {
+fn a_sample_through_no_sampler_is_an_error_of_the_reader() -> Result<(), rspirv::dr::Error> {
+    use rspirv::binary::Assemble;
+    use rspirv::dr::Operand;
     use spirv::{
-        AddressingModel, Capability, Decoration, Dim, ExecutionMode, ExecutionModel, ImageFormat,
-        MemoryModel, Op, StorageClass,
+        AddressingModel, Capability, Decoration, Dim, ExecutionMode, ExecutionModel,
+        FunctionControl, ImageFormat, MemoryModel, StorageClass,
     };
-    let mut bound = 0;
-    let mut id = || {
-        bound += 1;
-        bound
-    };
-    let (void, function_type, float, vec2, vec4) = (id(), id(), id(), id(), id());
-    let (texture_type, sampled_type, storage_type) = (id(), id(), id());
-    let (texture_pointer, storage_pointer, output_pointer) = (id(), id(), id());
-    let (texture, storage, output, zero, coordinate) = (id(), id(), id(), id(), id());
-    let (main, label, texture_value, storage_value, sampled, colour) =
-        (id(), id(), id(), id(), id(), id());
-    // The entry point's name as a SPIR-V string: its bytes and at least one zero, in whole words.
-    let mut name = wcontainers_shaders::ENTRY_POINT.as_bytes().to_vec();
-    name.resize((name.len() / size_of::<u32>() + 1) * size_of::<u32>(), 0);
-    let (name, _) = name.as_chunks::<{ size_of::<u32>() }>();
-    let name = name.iter().map(|c| u32::from_le_bytes(*c));
-    let entry_point: Vec<u32> = [ExecutionModel::Fragment as u32, main]
-        .into_iter()
-        .chain(name)
-        .chain([output])
-        .collect();
-
-    let mut words = vec![
-        spirv::MAGIC_NUMBER,
-        u32::from(spirv::MAJOR_VERSION) << u16::BITS,
-        0,
-        bound + 1,
-        0,
-    ];
-    let w = &mut words;
-    instruction(w, Op::Capability, &[Capability::Shader as u32]);
-    instruction(
-        w,
-        Op::MemoryModel,
-        &[AddressingModel::Logical as u32, MemoryModel::GLSL450 as u32],
-    );
-    instruction(w, Op::EntryPoint, &entry_point);
-    instruction(
-        w,
-        Op::ExecutionMode,
-        &[main, ExecutionMode::OriginUpperLeft as u32],
-    );
-    instruction(w, Op::Decorate, &[output, Decoration::Location as u32, 0]);
+    /// `Sampled` of an image used with a sampler, and of a storage image.
+    const WITH_SAMPLER: u32 = 1;
+    const STORAGE: u32 = 2;
+    let mut b = rspirv::dr::Builder::new();
+    b.capability(Capability::Shader);
+    b.memory_model(AddressingModel::Logical, MemoryModel::GLSL450);
+    let void = b.type_void();
+    let function_type = b.type_function(void, []);
+    let float = b.type_float(32, None);
+    let vec2 = b.type_vector(float, 2);
+    let vec4 = b.type_vector(float, 4);
+    let mut image =
+        |sampled, format| b.type_image(float, Dim::Dim2D, 0, 0, 0, sampled, format, None);
+    let texture_type = image(WITH_SAMPLER, ImageFormat::Unknown);
+    let storage_type = image(STORAGE, ImageFormat::R32f);
+    let sampled_type = b.type_sampled_image(texture_type);
+    let uniform = StorageClass::UniformConstant;
+    let texture_pointer = b.type_pointer(None, uniform, texture_type);
+    let storage_pointer = b.type_pointer(None, uniform, storage_type);
+    let output_pointer = b.type_pointer(None, StorageClass::Output, vec4);
+    let texture = b.variable(texture_pointer, None, uniform, None);
+    let storage = b.variable(storage_pointer, None, uniform, None);
+    let output = b.variable(output_pointer, None, StorageClass::Output, None);
+    b.decorate(output, Decoration::Location, [Operand::LiteralBit32(0)]);
     for (binding, variable) in [texture, storage].into_iter().enumerate() {
         let binding = u32::try_from(binding).unwrap();
-        instruction(
-            w,
-            Op::Decorate,
-            &[variable, Decoration::DescriptorSet as u32, 0],
+        b.decorate(
+            variable,
+            Decoration::DescriptorSet,
+            [Operand::LiteralBit32(0)],
         );
-        instruction(
-            w,
-            Op::Decorate,
-            &[variable, Decoration::Binding as u32, binding],
+        b.decorate(
+            variable,
+            Decoration::Binding,
+            [Operand::LiteralBit32(binding)],
         );
     }
-    instruction(w, Op::TypeVoid, &[void]);
-    instruction(w, Op::TypeFunction, &[function_type, void]);
-    instruction(w, Op::TypeFloat, &[float, 32]);
-    instruction(w, Op::TypeVector, &[vec2, float, 2]);
-    instruction(w, Op::TypeVector, &[vec4, float, 4]);
-    let image = |result, usage, format: ImageFormat| {
-        [
-            result,
-            float,
-            Dim::Dim2D as u32,
-            0,
-            0,
-            0,
-            usage,
-            format as u32,
-        ]
-    };
-    instruction(
-        w,
-        Op::TypeImage,
-        &image(texture_type, 1, ImageFormat::Unknown),
+    let zero = b.constant_bit32(float, 0);
+    let coordinate = b.constant_composite(vec2, [zero, zero]);
+    let main = b.begin_function(void, None, FunctionControl::NONE, function_type)?;
+    b.begin_block(None)?;
+    let texture_value = b.load(texture_type, None, texture, None, [])?;
+    let storage_value = b.load(storage_type, None, storage, None, [])?;
+    let sampled = b.sampled_image(sampled_type, None, texture_value, storage_value)?;
+    let colour = b.image_sample_implicit_lod(vec4, None, sampled, coordinate, None, [])?;
+    b.store(output, colour, None, [])?;
+    b.ret()?;
+    b.end_function()?;
+    b.entry_point(
+        ExecutionModel::Fragment,
+        main,
+        wcontainers_shaders::ENTRY_POINT,
+        [output],
     );
-    instruction(w, Op::TypeSampledImage, &[sampled_type, texture_type]);
-    instruction(w, Op::TypeImage, &image(storage_type, 2, ImageFormat::R32f));
-    let uniform = StorageClass::UniformConstant as u32;
-    instruction(
-        w,
-        Op::TypePointer,
-        &[texture_pointer, uniform, texture_type],
-    );
-    instruction(
-        w,
-        Op::TypePointer,
-        &[storage_pointer, uniform, storage_type],
-    );
-    instruction(
-        w,
-        Op::TypePointer,
-        &[output_pointer, StorageClass::Output as u32, vec4],
-    );
-    instruction(w, Op::Variable, &[texture_pointer, texture, uniform]);
-    instruction(w, Op::Variable, &[storage_pointer, storage, uniform]);
-    instruction(
-        w,
-        Op::Variable,
-        &[output_pointer, output, StorageClass::Output as u32],
-    );
-    instruction(w, Op::Constant, &[float, zero, 0]);
-    instruction(w, Op::ConstantComposite, &[vec2, coordinate, zero, zero]);
-    instruction(w, Op::Function, &[void, main, 0, function_type]);
-    instruction(w, Op::Label, &[label]);
-    instruction(w, Op::Load, &[texture_type, texture_value, texture]);
-    instruction(w, Op::Load, &[storage_type, storage_value, storage]);
-    instruction(
-        w,
-        Op::SampledImage,
-        &[sampled_type, sampled, texture_value, storage_value],
-    );
-    instruction(
-        w,
-        Op::ImageSampleImplicitLod,
-        &[vec4, colour, sampled, coordinate],
-    );
-    instruction(w, Op::Store, &[output, colour]);
-    instruction(w, Op::Return, &[]);
-    instruction(w, Op::FunctionEnd, &[]);
+    b.execution_mode(main, ExecutionMode::OriginUpperLeft, []);
+    let words = b.module().assemble();
 
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let options = naga::front::spv::Options::default();
@@ -455,4 +384,5 @@ fn a_sample_through_no_sampler_is_an_error_of_the_reader() {
         ),
         "{read:?}"
     );
+    Ok(())
 }

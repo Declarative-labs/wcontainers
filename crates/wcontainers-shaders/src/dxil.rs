@@ -303,7 +303,8 @@ pub(crate) fn lower(
     if !container::holds_dxil(dxil) {
         return Err(ConvertError::Rejected(NO_DXIL_CHUNK.into()));
     }
-    let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
+    let (words, mut resources) = to_spirv(dxil, variant.samples)?;
+    let mut spirv = staged::load(&words)?;
     if let Some(name) = absent_extension(&spirv) {
         return Err(ConvertError::Unsupported(name));
     }
@@ -1856,89 +1857,22 @@ fn slot_kind(class: u32) -> Option<SlotKind> {
     }
 }
 
-/// SPIR-V's physical layout (its specification, 2.3 and 2.2.1): the header's words before the first
-/// instruction, and where an instruction's first word keeps its word count and its opcode.
-pub(crate) mod words {
-    pub const HEADER: usize = 5;
-    /// The header's word holding the bound of the module's ids.
-    pub const BOUND: usize = 3;
-    pub const COUNT_SHIFT: u32 = u16::BITS;
-    pub const OPCODE_MASK: u32 = u16::MAX as u32;
-
-    /// `OpDecorate`'s words (3.32.2): the target, the decoration, then its first literal.
-    pub mod decorate {
-        pub const TARGET: usize = 1;
-        pub const DECORATION: usize = 2;
-        pub const LITERAL: usize = 3;
-        pub const DECORATE_WORDS: usize = LITERAL + 1;
-    }
-
-    /// `OpTypeInt`'s words (3.32.6): the result, the width, then the signedness.
-    pub mod type_int {
-        pub const SIGNEDNESS: usize = 3;
-        pub const TYPE_INT_WORDS: usize = SIGNEDNESS + 1;
-    }
-
-    /// `OpTypeImage`'s words (3.32.6) up to its format; the access qualifier may follow.
-    pub mod type_image {
-        pub const SAMPLED_TYPE: usize = 2;
-        pub const DIM: usize = 3;
-        pub const SAMPLED: usize = 7;
-        pub const FORMAT: usize = 8;
-        pub const TYPE_IMAGE_WORDS: usize = FORMAT + 1;
-        /// `Sampled` of an image used without a sampler: a storage image.
-        pub const STORAGE: u32 = 2;
-    }
-
-    /// `OpTypePointer`'s and `OpVariable`'s third word: the pointee type, the storage class.
-    pub const POINTER_TYPE: usize = 3;
-    pub const VARIABLE_STORAGE_CLASS: usize = 3;
-    pub const POINTER_WORDS: usize = POINTER_TYPE + 1;
-
-    /// A type declaration's result id.
-    pub const RESULT_ID: usize = 1;
-    /// An instruction's result type and result id, where it has both.
-    pub const RESULT_TYPE: usize = 1;
-    pub const RESULT_AFTER_TYPE: usize = 2;
-    /// An atomic instruction's pointer, after its result type and result.
-    pub const ATOMIC_POINTER: usize = 3;
-}
-
 /// The name of the feature WebGPU lacks that `spirv` asks for by a SPIR-V extension: fragment
 /// interlock (rasterizer ordered views), the stencil reference from a pixel program, and the layer
 /// or viewport chosen before the geometry stage. The names are the DXBC route's.
-fn absent_extension(spirv: &[u32]) -> Option<&'static str> {
-    use spirv::{BuiltIn, Decoration, Op};
-    let mut extensions = Vec::new();
-    let mut layer = false;
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return None;
-        }
-        let w = &spirv[at + 1..at + count];
-        match Op::from_u32(spirv[at] & words::OPCODE_MASK) {
-            Some(Op::Extension) => {
-                let name: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
-                extensions.push(name);
-            }
-            // OpDecorate: the target, the decoration, then the built-in.
-            Some(Op::Decorate)
-                if w.get(1) == Some(&(Decoration::BuiltIn as u32))
-                    && w.get(2) == Some(&(BuiltIn::Layer as u32)) =>
-            {
-                layer = true;
-            }
-            _ => {}
-        }
-        at += count;
-    }
+fn absent_extension(spirv: &rspirv::dr::Module) -> Option<&'static str> {
+    use rspirv::dr::Operand;
+    use spirv::{BuiltIn, Decoration};
     let has = |name: &str| {
-        extensions
+        spirv
+            .extensions
             .iter()
-            .any(|e| e.split(|&b| b == 0).next() == Some(name.as_bytes()))
+            .any(|e| e.operands.first() == Some(&Operand::LiteralString(name.into())))
     };
+    let layer = spirv.annotations.iter().any(|i| {
+        staged::decorates(i, Decoration::BuiltIn)
+            && i.operands.get(staged::DECORATION_LITERAL) == Some(&Operand::BuiltIn(BuiltIn::Layer))
+    });
     let (_, name) = ABSENT_EXTENSIONS.iter().find(|(e, _)| has(e))?;
     Some(match *name {
         crate::refusal::VIEWPORT_ARRAY_INDEX if layer => crate::refusal::RENDER_TARGET_ARRAY_INDEX,
@@ -1961,7 +1895,7 @@ const ABSENT_EXTENSIONS: [(&str, &str); 3] = [
 
 /// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it
 /// works on, which naga's reader makes a compare-exchange loop.
-fn atomic_signedness_differs(spirv: &[u32]) -> bool {
+fn atomic_signedness_differs(spirv: &rspirv::dr::Module) -> bool {
     use spirv::Op;
     use std::collections::HashMap;
     const SIGNED: [Op; 2] = [Op::AtomicSMin, Op::AtomicSMax];
@@ -1975,40 +1909,32 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
         Op::ImageTexelPointer,
         Op::FunctionParameter,
     ];
+    /// `OpTypeInt`'s signedness, after its width; an atomic instruction's pointer.
+    const SIGNEDNESS: usize = 1;
+    const ATOMIC_POINTER: usize = 0;
     // Signedness of integer types, pointee of pointer types, type of each result.
     let mut signed = HashMap::new();
     let mut pointee = HashMap::new();
     let mut types = HashMap::new();
     let mut atomics = Vec::new();
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return false;
-        }
-        let Some(op) = Op::from_u32(spirv[at] & words::OPCODE_MASK) else {
-            at += count;
-            continue;
-        };
-        let w = &spirv[at..at + count];
-        match op {
-            Op::TypeInt if w.len() >= words::type_int::TYPE_INT_WORDS => {
-                signed.insert(w[words::RESULT_ID], w[words::type_int::SIGNEDNESS] != 0);
+    for i in spirv.all_inst_iter() {
+        let op = i.class.opcode;
+        match (op, i.result_id) {
+            (Op::TypeInt, Some(result)) => {
+                signed.insert(result, staged::literal(i, SIGNEDNESS) != Some(0));
             }
-            Op::TypePointer if w.len() >= words::POINTER_WORDS => {
-                pointee.insert(w[words::RESULT_ID], w[words::POINTER_TYPE]);
+            (Op::TypePointer, Some(result)) => {
+                pointee.extend(staged::id(i, staged::POINTEE).map(|p| (result, p)));
             }
-            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op))
-                && w.len() > words::ATOMIC_POINTER =>
-            {
-                atomics.push((SIGNED.contains(&op), w[words::ATOMIC_POINTER]));
+            _ if SIGNED.contains(&op) || UNSIGNED.contains(&op) => {
+                atomics.extend(staged::id(i, ATOMIC_POINTER).map(|p| (SIGNED.contains(&op), p)));
             }
             _ => {}
         }
-        if POINTERS.contains(&op) && w.len() > words::RESULT_AFTER_TYPE {
-            types.insert(w[words::RESULT_AFTER_TYPE], w[words::RESULT_TYPE]);
+        if let (true, Some(ty), Some(result)) = (POINTERS.contains(&op), i.result_type, i.result_id)
+        {
+            types.insert(result, ty);
         }
-        at += count;
     }
     atomics.iter().any(|&(op_signed, pointer)| {
         types

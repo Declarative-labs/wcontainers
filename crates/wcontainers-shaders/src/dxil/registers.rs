@@ -19,38 +19,28 @@ pub(crate) const COMPONENTS: u32 = VectorSize::Quad as u32;
 
 /// Gives every stage variable of `spirv` the location `register * COMPONENTS + component`, so that
 /// naga's reader, which drops SPIR-V's component, keeps each packed value apart and the component known.
-pub(crate) fn encode(spirv: &mut [u32]) {
-    use super::words;
-    use spirv::{Decoration, Op};
-    let mut components = Vec::new();
-    let mut locations = Vec::new();
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return;
+pub(crate) fn encode(spirv: &mut rspirv::dr::Module) {
+    use super::staged::{DECORATION_LITERAL, DECORATION_TARGET, decorates, id, literal};
+    use rspirv::dr::Operand;
+    use spirv::Decoration;
+    let components: Vec<(u32, u32)> = spirv
+        .annotations
+        .iter()
+        .filter(|i| decorates(i, Decoration::Component))
+        .filter_map(|i| Some((id(i, DECORATION_TARGET)?, literal(i, DECORATION_LITERAL)?)))
+        .collect();
+    for i in spirv.annotations.iter_mut() {
+        if !decorates(i, Decoration::Location) {
+            continue;
         }
-        let (target, decoration, literal) = (
-            at + words::decorate::TARGET,
-            at + words::decorate::DECORATION,
-            at + words::decorate::LITERAL,
-        );
-        if spirv[at] & words::OPCODE_MASK == Op::Decorate as u32 && literal < at + count {
-            if spirv[decoration] == Decoration::Component as u32 {
-                components.push((spirv[target], spirv[literal]));
-            } else if spirv[decoration] == Decoration::Location as u32 {
-                locations.push(literal);
-            }
-        }
-        at += count;
-    }
-    for literal in locations {
-        let target = spirv[literal - words::decorate::LITERAL + words::decorate::TARGET];
+        let target = id(i, DECORATION_TARGET);
         let component = components
             .iter()
-            .find(|(t, _)| *t == target)
+            .find(|(t, _)| Some(*t) == target)
             .map_or(0, |c| c.1);
-        spirv[literal] = spirv[literal] * COMPONENTS + component;
+        if let Some(Operand::LiteralBit32(location)) = i.operands.get_mut(DECORATION_LITERAL) {
+            *location = *location * COMPONENTS + component;
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 //! form around the program's own functions, and the instructions the reader lacks made calls of empty
 //! functions that pass fills.
 
-use super::{registers, words};
+use super::registers;
 use crate::ConvertError;
 use crate::container::Element;
 use crate::ir::{Basic, Ty, sysval};
@@ -13,31 +13,27 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use naga::{Handle, Module, TypeInner};
-use spirv::{Decoration, ExecutionMode, ExecutionModel, Op, StorageClass};
+use rspirv::dr::{self, Instruction, Operand};
+use spirv::{Decoration, ExecutionMode, ExecutionModel, FunctionControl, Op, StorageClass};
 use wcontainers_gpu::StageValue;
 
-/// `OpEntryPoint`'s words (3.32.5): the execution model, the function, then its name.
-const ENTRY_MODEL: usize = 1;
-const ENTRY_FUNCTION: usize = 2;
-const ENTRY_NAME: usize = 3;
-/// `OpExecutionMode`'s words: the entry point, the mode, then its literals.
-const MODE_ENTRY: usize = 1;
-const MODE: usize = 2;
-const MODE_LITERAL: usize = 3;
-/// `OpConstant`'s value, after its result type and result.
-pub(super) const CONSTANT_VALUE: usize = 3;
-/// `OpFunction`'s function type, after its result type, result and control.
-const FUNCTION_TYPE: usize = 4;
-/// `OpFunction`'s words.
-const FUNCTION_WORDS: usize = FUNCTION_TYPE + 1;
-/// `OpFunctionCall`'s words without arguments: the result type, the result and the function.
-const CALL_WORDS: usize = 4;
-/// `OpName`'s words before its string: the target.
-const NAME_WORDS: usize = 2;
-/// `OpLabel`'s words.
-const LABEL_WORDS: usize = 2;
-/// `OpTypePointer`'s storage class.
-pub(super) const POINTER_STORAGE_CLASS: usize = 2;
+/// `OpEntryPoint`'s operands (3.32.5): the execution model, the function, its name, then its
+/// interface.
+const ENTRY_MODEL: usize = 0;
+const ENTRY_FUNCTION: usize = 1;
+const ENTRY_INTERFACE: usize = 3;
+/// `OpExecutionMode`'s operands: the entry point, the mode, then its literals.
+const MODE_ENTRY: usize = 0;
+const MODE_LITERAL: usize = 2;
+/// `OpDecorate`'s operands: the target, the decoration, then its literal.
+pub(super) const DECORATION_TARGET: usize = 0;
+pub(super) const DECORATION: usize = 1;
+pub(super) const DECORATION_LITERAL: usize = 2;
+/// `OpFunction`'s function type, after its control.
+const FUNCTION_TYPE: usize = 1;
+/// `OpTypePointer`'s and `OpVariable`'s storage class, and the pointer's pointee.
+pub(super) const STORAGE_CLASS: usize = 0;
+pub(super) const POINTEE: usize = 1;
 /// A compute program's one invocation a group.
 const LOCAL_SIZE: [u32; 3] = [1, 1, 1];
 
@@ -61,9 +57,9 @@ pub(super) struct Interface {
 pub(super) struct Entry {
     pub main: u32,
     /// The entry point's execution modes, with their first literal (zero where none).
-    pub modes: Vec<(u32, u32)>,
+    pub modes: Vec<(ExecutionMode, u32)>,
     pub values: Vec<Interface>,
-    /// Every integer constant's id and value.
+    /// Every 32-bit constant's id and value.
     pub constants: Vec<(u32, u32)>,
 }
 
@@ -73,126 +69,124 @@ impl Entry {
     }
 
     pub fn has_mode(&self, mode: ExecutionMode) -> bool {
-        self.modes.iter().any(|m| m.0 == mode as u32)
+        self.modes.iter().any(|m| m.0 == mode)
     }
 
     pub fn mode_literal(&self, mode: ExecutionMode) -> Option<u32> {
-        self.modes.iter().find(|m| m.0 == mode as u32).map(|m| m.1)
+        self.modes.iter().find(|m| m.0 == mode).map(|m| m.1)
     }
 }
 
-/// One instruction's words, from `at`.
-pub(super) fn instruction(spirv: &[u32], at: usize) -> Option<&[u32]> {
-    let count = (*spirv.get(at)? >> words::COUNT_SHIFT) as usize;
-    (count != 0 && at + count <= spirv.len()).then(|| &spirv[at..at + count])
+/// The SPIR-V dxil-spirv wrote, read into rspirv's module.
+pub(super) fn load(words: &[u32]) -> Result<dr::Module, ConvertError> {
+    rspirv::dr::load_words(words).map_err(|e| ConvertError::Malformed(format!("SPIR-V: {e}")))
 }
 
-pub(super) fn opcode(i: &[u32]) -> u32 {
-    i[0] & words::OPCODE_MASK
+/// Operand `n` of `i` if it is an id.
+pub(super) fn id(i: &Instruction, n: usize) -> Option<u32> {
+    match i.operands.get(n) {
+        Some(&Operand::IdRef(id)) => Some(id),
+        _ => None,
+    }
 }
 
-pub(super) fn header(op: Op, count: usize) -> u32 {
-    ((count as u32) << words::COUNT_SHIFT) | op as u32
+/// Operand `n` of `i` if it is a 32-bit literal (a built-in counted as its number).
+pub(super) fn literal(i: &Instruction, n: usize) -> Option<u32> {
+    match i.operands.get(n) {
+        Some(&Operand::LiteralBit32(v)) => Some(v),
+        Some(&Operand::BuiltIn(b)) => Some(b as u32),
+        _ => None,
+    }
 }
 
-/// The words a literal string takes, its terminating zero included.
-fn string_words(w: &[u32]) -> usize {
-    w.iter()
-        .position(|word| word.to_le_bytes().contains(&0))
-        .map_or(w.len(), |p| p + 1)
-}
-
-/// A literal string's words.
-fn string(s: &str) -> Vec<u32> {
-    let mut bytes = Vec::from(s.as_bytes());
-    bytes.push(0);
-    bytes.resize(bytes.len().next_multiple_of(size_of::<u32>()), 0);
-    bytes
-        .as_chunks::<{ size_of::<u32>() }>()
-        .0
-        .iter()
-        .map(|&c| u32::from_le_bytes(c))
-        .collect()
+/// Whether `i` is an `OpDecorate` of `decoration`.
+pub(super) fn decorates(i: &Instruction, decoration: Decoration) -> bool {
+    i.class.opcode == Op::Decorate
+        && i.operands.get(DECORATION) == Some(&Operand::Decoration(decoration))
 }
 
 /// The entry point of `spirv` if it is of `model`, with its stage variables.
-pub(super) fn entry(spirv: &[u32], model: ExecutionModel) -> Option<Entry> {
-    let mut found = None;
-    let mut modes = Vec::new();
-    let mut constants = Vec::new();
-    let mut classes = Vec::new();
-    let mut decorations = Vec::new();
+pub(super) fn entry(spirv: &dr::Module, model: ExecutionModel) -> Option<Entry> {
+    let mut main = None;
     let mut interface = Vec::new();
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
-        match Op::from_u32(opcode(i)) {
-            Some(Op::EntryPoint) => {
-                if i[ENTRY_MODEL] != model as u32 {
-                    return None;
-                }
-                found = Some(i[ENTRY_FUNCTION]);
-                let names = string_words(&i[ENTRY_NAME..]);
-                interface.extend_from_slice(&i[ENTRY_NAME + names..]);
-            }
-            Some(Op::ExecutionMode) => modes.push((
-                i[MODE_ENTRY],
-                i[MODE],
-                i.get(MODE_LITERAL).copied().unwrap_or(0),
-            )),
-            Some(Op::Decorate) if i.len() > words::decorate::DECORATION => decorations.push((
-                i[words::decorate::TARGET],
-                i[words::decorate::DECORATION],
-                i.get(words::decorate::LITERAL).copied(),
-            )),
-            Some(Op::Constant) if i.len() > CONSTANT_VALUE => {
-                constants.push((i[words::RESULT_AFTER_TYPE], i[CONSTANT_VALUE]))
-            }
-            Some(Op::Variable) if i.len() > words::VARIABLE_STORAGE_CLASS => classes.push((
-                i[words::RESULT_AFTER_TYPE],
-                i[words::VARIABLE_STORAGE_CLASS],
-            )),
-            _ => {}
+    for e in &spirv.entry_points {
+        if e.operands.get(ENTRY_MODEL) != Some(&Operand::ExecutionModel(model)) {
+            return None;
         }
-        at += i.len();
+        main = id(e, ENTRY_FUNCTION);
+        interface.extend(
+            e.operands
+                .iter()
+                .skip(ENTRY_INTERFACE)
+                .filter_map(Operand::id_ref_any),
+        );
     }
-    let main = found?;
+    let main = main?;
+    let modes = spirv
+        .execution_modes
+        .iter()
+        .filter(|m| id(m, MODE_ENTRY) == Some(main))
+        .filter_map(|m| match m.operands.get(MODE_ENTRY + 1) {
+            Some(&Operand::ExecutionMode(mode)) => Some((
+                mode,
+                literal(m, MODE_LITERAL)
+                    .or_else(|| id(m, MODE_LITERAL))
+                    .unwrap_or(0),
+            )),
+            _ => None,
+        })
+        .collect();
+    let globals = &spirv.types_global_values;
+    let constants = globals
+        .iter()
+        .filter(|i| i.class.opcode == Op::Constant)
+        .filter_map(|i| Some((i.result_id?, literal(i, 0)?)))
+        .collect();
+    let class = |id: u32| {
+        globals
+            .iter()
+            .find_map(|i| match i.operands.get(STORAGE_CLASS) {
+                Some(&Operand::StorageClass(c))
+                    if i.class.opcode == Op::Variable && i.result_id == Some(id) =>
+                {
+                    Some(c)
+                }
+                _ => None,
+            })
+    };
     let mut values = Vec::new();
-    for &id in &interface {
-        let side = match classes.iter().find(|c| c.0 == id).map(|c| c.1) {
-            Some(c) if c == StorageClass::Input as u32 => Side::Input,
-            Some(c) if c == StorageClass::Output as u32 => Side::Output,
+    for &value in &interface {
+        let side = match class(value) {
+            Some(StorageClass::Input) => Side::Input,
+            Some(StorageClass::Output) => Side::Output,
             _ => continue,
         };
         let decoration = |d: Decoration| {
-            decorations
+            spirv
+                .annotations
                 .iter()
-                .find(|x| x.0 == id && x.1 == d as u32)
-                .map(|x| x.2)
+                .find(|i| decorates(i, d) && id(i, DECORATION_TARGET) == Some(value))
         };
-        let literal = |d: Decoration| decoration(d).flatten();
+        let decorated = |d: Decoration| decoration(d).and_then(|i| literal(i, DECORATION_LITERAL));
         values.push(Interface {
-            id,
+            id: value,
             side,
-            location: literal(Decoration::Location),
-            builtin: literal(Decoration::BuiltIn),
-            stream: literal(Decoration::Stream).unwrap_or(0),
+            location: decorated(Decoration::Location),
+            builtin: decorated(Decoration::BuiltIn),
+            stream: decorated(Decoration::Stream).unwrap_or(0),
             patch: decoration(Decoration::Patch).is_some(),
         });
     }
     Some(Entry {
         main,
-        modes: modes
-            .into_iter()
-            .filter(|m| m.0 == main)
-            .map(|m| (m.1, m.2))
-            .collect(),
+        modes,
         values,
         constants,
     })
 }
 
 /// The stand-in function an instruction becomes a call of, if any.
-pub(super) type StandInCall<'a> = dyn Fn(&[u32]) -> Result<Option<u32>, ConvertError> + 'a;
+pub(super) type StandInCall<'a> = dyn Fn(&Instruction) -> Result<Option<u32>, ConvertError> + 'a;
 
 /// What [`privatise`] makes of a program.
 pub(super) struct Privatise<'a> {
@@ -218,8 +212,8 @@ pub(super) fn value_name(prefix: &str, k: usize) -> String {
 pub(super) struct Ids(u32);
 
 impl Ids {
-    pub fn of(spirv: &[u32]) -> Ids {
-        Ids(spirv[words::BOUND])
+    pub fn of(spirv: &dr::Module) -> Ids {
+        Ids(spirv.header.as_ref().map_or(1, |h| h.bound))
     }
 
     pub fn next(&mut self) -> u32 {
@@ -227,144 +221,121 @@ impl Ids {
         self.0 - 1
     }
 
-    /// The module's bound past the ids given.
-    pub fn bound(&self) -> u32 {
-        self.0
+    /// Makes the module's bound pass the ids given.
+    pub fn store(self, spirv: &mut dr::Module) {
+        if let Some(h) = spirv.header.as_mut() {
+            h.bound = self.0;
+        }
     }
 }
 
-/// Whether `op` belongs before the module's annotations (names included).
-pub(super) fn preamble(op: Op) -> bool {
-    matches!(
-        op,
-        Op::Capability
-            | Op::Extension
-            | Op::ExtInstImport
-            | Op::MemoryModel
-            | Op::EntryPoint
-            | Op::ExecutionMode
-            | Op::String
-            | Op::SourceExtension
-            | Op::Source
-            | Op::SourceContinued
-            | Op::Name
-            | Op::MemberName
-            | Op::ModuleProcessed
+/// An `OpName` naming `id` `s`.
+pub(super) fn name(id: u32, s: &str) -> Instruction {
+    Instruction::new(
+        Op::Name,
+        None,
+        None,
+        alloc::vec![Operand::IdRef(id), s.into()],
     )
 }
 
-/// An `OpName` naming `id` `s`.
-pub(super) fn name(out: &mut Vec<u32>, id: u32, s: &str) {
-    let s = string(s);
-    out.push(header(Op::Name, NAME_WORDS + s.len()));
-    out.push(id);
-    out.extend(s);
-}
-
-/// `OpEntryPoint` instruction `i` without the interface variables `staged` names.
-pub(super) fn without_interface(i: &[u32], staged: &dyn Fn(u32) -> bool) -> Vec<u32> {
-    let names = string_words(&i[ENTRY_NAME..]);
-    let kept: Vec<u32> = i[ENTRY_NAME + names..]
-        .iter()
-        .copied()
-        .filter(|&id| !staged(id))
-        .collect();
-    let mut out = Vec::from(&i[..ENTRY_NAME + names]);
-    out[0] = header(Op::EntryPoint, ENTRY_NAME + names + kept.len());
-    out.extend(kept);
-    out
+/// Drops the names and decorations of the ids `dropped` names, and the ids from the entry points'
+/// interfaces.
+pub(super) fn forget(spirv: &mut dr::Module, dropped: &dyn Fn(u32) -> bool) {
+    for e in &mut spirv.entry_points {
+        let mut at = 0;
+        e.operands.retain(|o| {
+            at += 1;
+            at <= ENTRY_INTERFACE || !o.id_ref_any().is_some_and(dropped)
+        });
+    }
+    let named = |i: &Instruction, op: Op| i.class.opcode == op && id(i, 0).is_some_and(dropped);
+    spirv.debug_names.retain(|i| !named(i, Op::Name));
+    spirv.annotations.retain(|i| !named(i, Op::Decorate));
 }
 
 /// Makes `p.entry`'s values private and named, its entry point of `p.model` (one invocation a group
 /// for compute) without its execution modes, and the instructions `p.calls` names calls of the
 /// stand-in functions, placed before the first function.
 pub(super) fn privatise(
-    spirv: &mut Vec<u32>,
-    ids: &mut Ids,
+    spirv: &mut dr::Module,
+    mut ids: Ids,
     p: &Privatise,
 ) -> Result<(), ConvertError> {
     let main = p.entry.main;
-    let staged = |id: u32| p.values.iter().any(|v| v.id == id);
     // main's own result type (void) and function type serve the stand-ins.
-    let mut signature = None;
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
-        if Op::from_u32(opcode(i)) == Some(Op::Function) && i[words::RESULT_AFTER_TYPE] == main {
-            signature = Some((i[words::RESULT_TYPE], i[FUNCTION_TYPE]));
-        }
-        at += i.len();
-    }
-    let (void, function_type) = signature.ok_or(ConvertError::Malformed(NO_MAIN.into()))?;
+    let def = spirv
+        .functions
+        .iter()
+        .find(|f| f.def_id() == Some(main))
+        .and_then(|f| f.def.as_ref());
+    let (void, function_type) = def
+        .and_then(|d| Some((d.result_type?, id(d, FUNCTION_TYPE)?)))
+        .ok_or(ConvertError::Malformed(NO_MAIN.into()))?;
     let labels: Vec<u32> = p.stand_ins.iter().map(|_| ids.next()).collect();
-    let private = |class: u32| p.classes.iter().any(|&c| c as u32 == class);
 
-    let mut out = Vec::from(&spirv[..words::HEADER]);
-    let mut named = false;
-    let mut functions_placed = false;
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
-        at += i.len();
-        let op = Op::from_u32(opcode(i));
-        if !named && !op.is_some_and(preamble) {
-            named = true;
-            for (k, v) in p.values.iter().enumerate() {
-                name(&mut out, v.id, &value_name(p.prefix, k));
+    forget(spirv, &|id| p.values.iter().any(|v| v.id == id));
+    for (k, v) in p.values.iter().enumerate() {
+        spirv.debug_names.push(name(v.id, &value_name(p.prefix, k)));
+    }
+    for (f, n) in p.stand_ins {
+        spirv.debug_names.push(name(*f, n));
+    }
+    for f in &mut spirv.functions {
+        for i in f.blocks.iter_mut().flat_map(|b| &mut b.instructions) {
+            if let Some(target) = (p.calls)(i)? {
+                let call = alloc::vec![Operand::IdRef(target)];
+                *i = Instruction::new(Op::FunctionCall, Some(void), Some(ids.next()), call);
             }
-            for (f, n) in p.stand_ins {
-                name(&mut out, *f, n);
-            }
-        }
-        if let Some(target) = (p.calls)(i)? {
-            let result = ids.next();
-            out.extend([header(Op::FunctionCall, CALL_WORDS), void, result, target]);
-            continue;
-        }
-        match op {
-            Some(Op::EntryPoint) => {
-                let mut kept = without_interface(i, &staged);
-                kept[ENTRY_MODEL] = p.model as u32;
-                out.extend(kept);
-                if p.model == ExecutionModel::GLCompute {
-                    out.push(header(Op::ExecutionMode, MODE_LITERAL + LOCAL_SIZE.len()));
-                    out.extend([i[ENTRY_FUNCTION], ExecutionMode::LocalSize as u32]);
-                    out.extend(LOCAL_SIZE);
-                }
-            }
-            Some(Op::ExecutionMode) if i[MODE_ENTRY] == main => {}
-            Some(Op::Name) if staged(i[words::RESULT_ID]) => {}
-            Some(Op::Decorate) if staged(i[words::decorate::TARGET]) => {}
-            Some(Op::TypePointer) | Some(Op::Variable) => {
-                let class = match op {
-                    Some(Op::TypePointer) => POINTER_STORAGE_CLASS,
-                    _ => words::VARIABLE_STORAGE_CLASS,
-                };
-                let mut i = Vec::from(i);
-                if private(i[class]) {
-                    i[class] = StorageClass::Private as u32;
-                }
-                out.extend(i);
-            }
-            Some(Op::Function) if !functions_placed => {
-                functions_placed = true;
-                for (&(f, _), &label) in p.stand_ins.iter().zip(&labels) {
-                    let control = spirv::FunctionControl::NONE.bits();
-                    out.extend([
-                        header(Op::Function, FUNCTION_WORDS),
-                        void,
-                        f,
-                        control,
-                        function_type,
-                    ]);
-                    out.extend([header(Op::Label, LABEL_WORDS), label]);
-                    out.extend([header(Op::Return, 1), header(Op::FunctionEnd, 1)]);
-                }
-                out.extend_from_slice(i);
-            }
-            _ => out.extend_from_slice(i),
         }
     }
-    out[words::BOUND] = ids.bound();
-    *spirv = out;
+    for model in spirv
+        .entry_points
+        .iter_mut()
+        .filter_map(|e| e.operands.get_mut(ENTRY_MODEL))
+    {
+        *model = Operand::ExecutionModel(p.model);
+    }
+    spirv
+        .execution_modes
+        .retain(|m| id(m, MODE_ENTRY) != Some(main));
+    if p.model == ExecutionModel::GLCompute {
+        let mut operands = alloc::vec![
+            Operand::IdRef(main),
+            Operand::ExecutionMode(ExecutionMode::LocalSize)
+        ];
+        operands.extend(LOCAL_SIZE.map(Operand::LiteralBit32));
+        let mode = Instruction::new(Op::ExecutionMode, None, None, operands);
+        spirv.execution_modes.insert(0, mode);
+    }
+    for i in &mut spirv.types_global_values {
+        if let (Op::TypePointer | Op::Variable, Some(Operand::StorageClass(class))) =
+            (i.class.opcode, i.operands.get_mut(STORAGE_CLASS))
+            && p.classes.contains(class)
+        {
+            *class = StorageClass::Private;
+        }
+    }
+    let stand_ins = p.stand_ins.iter().zip(labels).map(|(&(f, _), label)| {
+        let control = Operand::FunctionControl(FunctionControl::NONE);
+        let operands = alloc::vec![control, Operand::IdRef(function_type)];
+        dr::Function {
+            def: Some(Instruction::new(
+                Op::Function,
+                Some(void),
+                Some(f),
+                operands,
+            )),
+            end: Some(Instruction::new(Op::FunctionEnd, None, None, Vec::new())),
+            parameters: Vec::new(),
+            blocks: alloc::vec![dr::Block {
+                label: Some(Instruction::new(Op::Label, None, Some(label), Vec::new())),
+                instructions: alloc::vec![Instruction::new(Op::Return, None, None, Vec::new())],
+            }],
+        }
+    });
+    spirv.functions.splice(0..0, stand_ins);
+    ids.store(spirv);
     Ok(())
 }
 

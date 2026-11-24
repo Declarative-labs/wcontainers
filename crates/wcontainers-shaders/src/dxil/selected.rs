@@ -5,7 +5,6 @@
 //! from the helper constants.
 
 use super::staged::{self, Ids};
-use super::words;
 use crate::ConvertError;
 use crate::container::Element;
 use crate::ir::{Basic, interp, scalar};
@@ -15,6 +14,7 @@ use naga::{
     Binding, Expression, FunctionArgument, Interpolation, Module, Scalar, ScalarKind, Span,
     Statement,
 };
+use rspirv::dr::{self, Instruction, Operand};
 use spirv::{BuiltIn, ExecutionModel, Op, StorageClass};
 use wcontainers_gpu::{
     HelperValue, Reflection, ShaderStage, SystemValue, VariantFlags, VariantKey,
@@ -22,12 +22,8 @@ use wcontainers_gpu::{
 
 /// The prefix of the names given to the private variables.
 const VALUE_NAME: &str = "ps_selected";
-/// `OpTypePointer`'s pointee, after its result and storage class.
-const POINTER_POINTEE: usize = 3;
 /// The argument taking the layer a geometry stage's pass-through passes.
 const LAYER_ARGUMENT: &str = "named_layer";
-/// `OpVariable`'s result type.
-const VARIABLE_TYPE: usize = 1;
 
 /// Why a pixel shader's selection input is malformed.
 const NO_POINTER: &str = "a stage variable without its pointer type";
@@ -54,7 +50,7 @@ fn selection(builtin: u32) -> Option<Selected> {
 
 /// Makes a Fragment entry point's layer and viewport inputs private and named, and returns them in
 /// that order.
-pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Vec<Selected>, ConvertError> {
+pub(crate) fn prepare(spirv: &mut dr::Module) -> Result<Vec<Selected>, ConvertError> {
     let Some(entry) = staged::entry(spirv, ExecutionModel::Fragment) else {
         return Ok(Vec::new());
     };
@@ -68,64 +64,60 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Vec<Selected>, ConvertErro
         return Ok(Vec::new());
     }
     let staged = |id: u32| inputs.iter().any(|i| i.0 == id);
+    staged::forget(spirv, &staged);
+    for (k, (id, _)) in inputs.iter().enumerate() {
+        spirv
+            .debug_names
+            .push(staged::name(*id, &staged::value_name(VALUE_NAME, k)));
+    }
     // Each variable's pointer type, and a private pointer to the same type for it.
     let mut ids = Ids::of(spirv);
-    let mut types = Vec::new();
-    let mut at = words::HEADER;
-    while let Some(i) = staged::instruction(spirv, at) {
-        if Op::from_u32(staged::opcode(i)) == Some(Op::Variable)
-            && staged(i[words::RESULT_AFTER_TYPE])
-        {
-            types.push((i[words::RESULT_AFTER_TYPE], i[VARIABLE_TYPE]));
-        }
-        at += i.len();
-    }
-    let mut out = Vec::from(&spirv[..words::HEADER]);
+    let is_variable =
+        |i: &Instruction| i.class.opcode == Op::Variable && i.result_id.is_some_and(staged);
+    let types: Vec<u32> = spirv
+        .types_global_values
+        .iter()
+        .filter(|i| is_variable(i))
+        .filter_map(|i| i.result_type)
+        .collect();
     let mut privates: Vec<(u32, u32)> = Vec::new();
-    let mut named = false;
-    let mut at = words::HEADER;
-    while let Some(i) = staged::instruction(spirv, at) {
-        at += i.len();
-        let op = Op::from_u32(staged::opcode(i));
-        if !named && !matches!(op, Some(o) if staged::preamble(o)) {
-            named = true;
-            for (k, (id, _)) in inputs.iter().enumerate() {
-                staged::name(&mut out, *id, &staged::value_name(VALUE_NAME, k));
-            }
-        }
-        match op {
-            Some(Op::EntryPoint) => out.extend(staged::without_interface(i, &staged)),
-            Some(Op::Name) if staged(i[words::RESULT_ID]) => {}
-            Some(Op::Decorate) if staged(i[words::decorate::TARGET]) => {}
-            Some(Op::TypePointer) => {
-                out.extend_from_slice(i);
-                let pointer = i[words::RESULT_ID];
-                if types.iter().any(|t| t.1 == pointer) {
-                    let private = ids.next();
-                    out.extend([
-                        staged::header(Op::TypePointer, i.len()),
-                        private,
-                        StorageClass::Private as u32,
-                        i[POINTER_POINTEE],
-                    ]);
-                    privates.push((pointer, private));
-                }
-            }
-            Some(Op::Variable) if staged(i[words::RESULT_AFTER_TYPE]) => {
-                let mut i = Vec::from(i);
-                i[VARIABLE_TYPE] = privates
+    let mut globals = Vec::with_capacity(spirv.types_global_values.len());
+    for mut i in core::mem::take(&mut spirv.types_global_values) {
+        if is_variable(&i) {
+            i.result_type = Some(
+                privates
                     .iter()
-                    .find(|p| p.0 == i[VARIABLE_TYPE])
+                    .find(|p| Some(p.0) == i.result_type)
                     .ok_or_else(|| ConvertError::Malformed(NO_POINTER.into()))?
-                    .1;
-                i[words::VARIABLE_STORAGE_CLASS] = StorageClass::Private as u32;
-                out.extend(i);
-            }
-            _ => out.extend_from_slice(i),
+                    .1,
+            );
+            i.operands[staged::STORAGE_CLASS] = Operand::StorageClass(StorageClass::Private);
+            globals.push(i);
+            continue;
+        }
+        let pointer = (i.class.opcode == Op::TypePointer)
+            .then_some(i.result_id)
+            .flatten()
+            .filter(|p| types.contains(p));
+        let pointee = staged::id(&i, staged::POINTEE);
+        globals.push(i);
+        if let (Some(pointer), Some(pointee)) = (pointer, pointee) {
+            let private = ids.next();
+            let operands = alloc::vec![
+                Operand::StorageClass(StorageClass::Private),
+                Operand::IdRef(pointee)
+            ];
+            globals.push(Instruction::new(
+                Op::TypePointer,
+                None,
+                Some(private),
+                operands,
+            ));
+            privates.push((pointer, private));
         }
     }
-    out[words::BOUND] = ids.bound();
-    *spirv = out;
+    spirv.types_global_values = globals;
+    ids.store(spirv);
     Ok(inputs.into_iter().map(|(_, s)| s).collect())
 }
 

@@ -5,7 +5,6 @@
 //! point and patch constant functions, and the domain program's inputs.
 
 use super::staged::{self, Entry, Ids, Interface, Privatise};
-use super::words;
 use crate::ConvertError;
 use crate::container::Element;
 use crate::ir::builtin;
@@ -18,6 +17,7 @@ use crate::lower::hull::{
 use crate::stage::tess;
 use alloc::vec::Vec;
 use naga::Module;
+use rspirv::dr::{self, Operand};
 use spirv::{BuiltIn, ExecutionMode, ExecutionModel, Op, StorageClass};
 use wcontainers_gpu::{SourceStage, StageExtras, StageValue};
 
@@ -32,12 +32,12 @@ const NO_DOMAIN: &str = "a tessellation stage without its domain";
 const NO_OUTPUT: &str = "a hull shader without its partitioning or output primitive";
 const NO_INPUT_POINTS: &str = "a tessellation stage without its input control point count";
 
-/// `OpTypeArray`'s length.
-const ARRAY_LENGTH: usize = 3;
-/// The pointer an access chain starts from and a load reads, after the result type and result.
-const READ_POINTER: usize = words::RESULT_AFTER_TYPE + 1;
+/// `OpTypeArray`'s length, after its element type.
+const ARRAY_LENGTH: usize = 1;
+/// The pointer an access chain starts from and a load reads.
+const READ_POINTER: usize = 0;
 /// The pointer a store or copy writes, and the one a copy reads.
-const WRITTEN_POINTER: usize = 1;
+const WRITTEN_POINTER: usize = 0;
 const COPIED_POINTER: usize = WRITTEN_POINTER + 1;
 /// Where an instruction a function runs names a pointer it reads or writes through.
 const POINTER_OPERANDS: [(Op, &[usize]); 6] = [
@@ -48,8 +48,8 @@ const POINTER_OPERANDS: [(Op, &[usize]); 6] = [
     (Op::Store, &[WRITTEN_POINTER]),
     (Op::CopyMemory, &[WRITTEN_POINTER, COPIED_POINTER]),
 ];
-/// `OpFunctionCall`'s first argument.
-const CALL_ARGUMENTS: usize = 4;
+/// `OpFunctionCall`'s first argument, after the function.
+const CALL_ARGUMENTS: usize = 1;
 
 /// What a hull or domain shader declares, read from its SPIR-V before the reader takes it.
 pub(crate) struct Declared {
@@ -112,7 +112,10 @@ fn staged_values(stage: SourceStage, entry: &Entry) -> Vec<&Interface> {
 
 /// Makes a hull shader's SPIR-V a compute program and a domain shader's a vertex program naga's reader
 /// takes, and returns what it declared; `None` for any other execution model. `dxil` is the container.
-pub(crate) fn prepare(spirv: &mut Vec<u32>, dxil: &[u8]) -> Result<Option<Declared>, ConvertError> {
+pub(crate) fn prepare(
+    spirv: &mut dr::Module,
+    dxil: &[u8],
+) -> Result<Option<Declared>, ConvertError> {
     let (stage, entry) = match staged::entry(spirv, ExecutionModel::TessellationControl) {
         Some(e) => (SourceStage::Hull, e),
         None => match staged::entry(spirv, ExecutionModel::TessellationEvaluation) {
@@ -149,10 +152,9 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>, dxil: &[u8]) -> Result<Option<Declar
         }
         _ => (ExecutionModel::Vertex, &[StorageClass::Input][..]),
     };
-    let mut ids = Ids::of(spirv);
     staged::privatise(
         spirv,
-        &mut ids,
+        Ids::of(spirv),
         &Privatise {
             entry: &entry,
             values: &staged_values(stage, &entry),
@@ -173,68 +175,63 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>, dxil: &[u8]) -> Result<Option<Declar
 /// A domain shader's control point inputs of a patch of none: dxil-spirv declares them input arrays of
 /// none, which naga's reader refuses. They are dropped (variables, their types, names and decorations)
 /// where no function reads them, and refused by name otherwise.
-fn drop_arrays_of_none(spirv: &mut Vec<u32>, entry: &Entry) -> Result<(), ConvertError> {
+fn drop_arrays_of_none(spirv: &mut dr::Module, entry: &Entry) -> Result<(), ConvertError> {
     let (mut arrays, mut pointers, mut variables) = (Vec::new(), Vec::new(), Vec::new());
-    let mut uses = Vec::new();
-    let mut at = words::HEADER;
-    while let Some(i) = staged::instruction(spirv, at) {
-        at += i.len();
-        let op = Op::from_u32(staged::opcode(i));
-        match op {
-            Some(Op::TypeArray)
-                if i.len() > ARRAY_LENGTH && entry.constant(i[ARRAY_LENGTH]) == Some(0) =>
+    for i in &spirv.types_global_values {
+        let Some(result) = i.result_id else {
+            continue;
+        };
+        match i.class.opcode {
+            Op::TypeArray
+                if staged::id(i, ARRAY_LENGTH).and_then(|n| entry.constant(n)) == Some(0) =>
             {
-                arrays.push(i[words::RESULT_ID])
+                arrays.push(result)
             }
-            Some(Op::TypePointer)
-                if i.len() > words::POINTER_TYPE
-                    && i[staged::POINTER_STORAGE_CLASS] == StorageClass::Input as u32
-                    && arrays.contains(&i[words::POINTER_TYPE]) =>
+            Op::TypePointer
+                if i.operands.get(staged::STORAGE_CLASS)
+                    == Some(&Operand::StorageClass(StorageClass::Input))
+                    && staged::id(i, staged::POINTEE).is_some_and(|t| arrays.contains(&t)) =>
             {
-                pointers.push(i[words::RESULT_ID])
+                pointers.push(result)
             }
-            Some(Op::Variable)
-                if i.len() > words::RESULT_AFTER_TYPE
-                    && pointers.contains(&i[words::RESULT_TYPE]) =>
-            {
-                variables.push(i[words::RESULT_AFTER_TYPE])
+            Op::Variable if i.result_type.is_some_and(|t| pointers.contains(&t)) => {
+                variables.push(result)
             }
-            Some(Op::FunctionCall) => uses.extend(i.get(CALL_ARGUMENTS..).unwrap_or(&[])),
-            _ => {
-                let operands = POINTER_OPERANDS.iter().find(|(o, _)| Some(*o) == op);
-                uses.extend(
-                    operands
-                        .into_iter()
-                        .flat_map(|(_, w)| w.iter())
-                        .filter_map(|&w| i.get(w)),
-                );
-            }
+            _ => {}
         }
     }
     if variables.is_empty() {
         return Ok(());
     }
-    if uses.iter().any(|u| variables.contains(u)) {
+    // Whether an instruction reads or writes through one of the variables.
+    let reaches = |i: &dr::Instruction| {
+        let op = i.class.opcode;
+        let at: Vec<usize> = match op {
+            Op::FunctionCall => (CALL_ARGUMENTS..i.operands.len()).collect(),
+            _ => POINTER_OPERANDS
+                .iter()
+                .find(|(o, _)| *o == op)
+                .map_or(Vec::new(), |(_, w)| w.to_vec()),
+        };
+        at.into_iter()
+            .any(|w| staged::id(i, w).is_some_and(|p| variables.contains(&p)))
+    };
+    if spirv
+        .functions
+        .iter()
+        .flat_map(|f| f.all_inst_iter())
+        .any(reaches)
+    {
         return Err(ConvertError::Unsupported(
             crate::refusal::DOMAIN_WITHOUT_CONTROL_POINTS,
         ));
     }
     let dropped =
         |id: u32| arrays.contains(&id) || pointers.contains(&id) || variables.contains(&id);
-    let mut out = Vec::from(&spirv[..words::HEADER]);
-    let mut at = words::HEADER;
-    while let Some(i) = staged::instruction(spirv, at) {
-        at += i.len();
-        match Op::from_u32(staged::opcode(i)) {
-            Some(Op::EntryPoint) => out.extend(staged::without_interface(i, &dropped)),
-            Some(Op::Name) if dropped(i[words::RESULT_ID]) => {}
-            Some(Op::Decorate) if dropped(i[words::decorate::TARGET]) => {}
-            Some(Op::TypeArray | Op::TypePointer) if dropped(i[words::RESULT_ID]) => {}
-            Some(Op::Variable) if dropped(i[words::RESULT_AFTER_TYPE]) => {}
-            _ => out.extend_from_slice(i),
-        }
-    }
-    *spirv = out;
+    staged::forget(spirv, &dropped);
+    spirv
+        .types_global_values
+        .retain(|i| !i.result_id.is_some_and(dropped));
     Ok(())
 }
 
