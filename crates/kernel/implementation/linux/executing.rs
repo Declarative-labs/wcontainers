@@ -653,12 +653,108 @@ where
 mod tests {
     use super::*;
 
-    /// An executor with nothing to configure.
+    use wcontainers_executor::memory_space::{
+        CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+    };
+
+    /// An executor with nothing to configure, which has no memory to run on.
     struct Plain;
+
+    /// What `Plain` has no instance of: its memory, that memory's bytes and an interrupter.
+    enum Absent {}
+
+    impl Absent {
+        /// Any value at all, as there is no `Absent` to ask.
+        fn anything<T>(&self) -> T {
+            match *self {}
+        }
+    }
+
+    impl MemorySpace for Absent {
+        type Bytes<'space> = Absent;
+
+        fn borrow(&self, _addresses: Range<u64>) -> Result<Absent, InvalidAddressError> {
+            match *self {}
+        }
+
+        fn set_permissions(
+            &self,
+            _addresses: Range<u64>,
+            _allowed: wcontainers_abi::Permissions,
+        ) -> Result<(), InvalidAddressError> {
+            match *self {}
+        }
+
+        fn map_from(
+            &self,
+            _addresses: Range<u64>,
+            _other: &Self,
+            _other_start: u64,
+        ) -> Result<(), MapMemoryError> {
+            match *self {}
+        }
+
+        fn unmap_from(&self, _addresses: Range<u64>) -> Result<(), InvalidAddressError> {
+            match *self {}
+        }
+
+        fn copy_from(
+            &self,
+            _addresses: Range<u64>,
+            _other: &Self,
+            _other_start: u64,
+        ) -> Result<(), CopyMemoryError> {
+            match *self {}
+        }
+    }
+
+    impl VolatileBytes for Absent {
+        fn len(&self) -> u64 {
+            match *self {}
+        }
+
+        fn read(&self, _into: &mut [u8]) -> usize {
+            match *self {}
+        }
+
+        fn write(&self, _bytes: &[u8]) -> usize {
+            match *self {}
+        }
+    }
+
+    impl wcontainers_executor::ExecutionInterrupter for Absent {
+        fn interrupt(&self) {
+            match *self {}
+        }
+    }
+
+    /// Why `Plain` gives no memory.
+    #[derive(Debug, PartialEq, Eq)]
+    struct NoMemory;
 
     impl Executor for Plain {
         type Architecture = wcontainers_processor_architecture_arm64::Arm64;
         type TranslatorConfig = ();
+        type GuestMemory = Absent;
+        type Interrupter = Absent;
+        type CreateGuestMemoryError = NoMemory;
+
+        fn create_guest_memory(&self) -> Result<Absent, NoMemory> {
+            Err(NoMemory)
+        }
+
+        fn execute<'execution>(
+            &'execution mut self,
+            _processor: wcontainers_processor_architecture_arm64::Processor,
+            memory: &'execution Absent,
+            _handler: &'execution mut impl wcontainers_executor::TrapHandler,
+        ) -> (
+            impl core::future::Future<Output = wcontainers_processor_architecture_arm64::Processor>
+            + 'execution,
+            Absent,
+        ) {
+            (core::future::ready(memory.anything()), memory.anything())
+        }
 
         fn execute_single_instruction_in_place(
             &mut self,
