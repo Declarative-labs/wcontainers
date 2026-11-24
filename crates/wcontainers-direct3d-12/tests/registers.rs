@@ -253,12 +253,16 @@ fn draw(
         .collect()
 }
 
-/// `floats` rounded to 1/1024 and hashed (FNV-1a over each as eight little-endian bytes), as the
+/// The step the check that measured real Direct3D 12 rounded its floats to before hashing them,
+/// 1/1024 (a power of two, so dividing by it is exact).
+const STEP: f32 = 0.000_976_562_5;
+
+/// `floats` rounded to [`STEP`] and hashed (FNV-1a over each as eight little-endian bytes), as the
 /// check that measured real Direct3D 12 hashed its targets.
 fn rounded(floats: &[f32]) -> u64 {
     floats
         .iter()
-        .flat_map(|v| ((v * 1024.0).round() as i64).to_le_bytes())
+        .flat_map(|v| ((v / STEP).round() as i64).to_le_bytes())
         .fold(0xcbf2_9ce4_8422_2325, |h, b| {
             (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
         })
@@ -339,7 +343,7 @@ fn registers_behind_geometry_and_domain_shaders_and_beside_linked_values_draw_as
             DRAWN_BEHIND_DOMAIN,
         ),
         (
-            "linked",
+            "beside linked clip distances",
             [LINKED_VS, none, none, none, LINKED_PS],
             TOPOLOGY_TRIANGLELIST,
             DRAWN_BESIDE_LINKED,

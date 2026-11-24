@@ -123,6 +123,37 @@ The pass bar, item by item (results under "Results of runs 56 and 57"):
   in features-differing.txt under its cause; the level and use tests above.
 - The own program's 35 cases equal to real Direct3D 12.
 
+## Results of run 58
+
+2026-11-24, RTX 3080, desktop shared (other tracks' jobs held the queue for up to 20 minutes at
+a time). The whole chain (scratch bin/rest58.sh, logs run58/) on bc98cbd4 with the worktree's
+Cargo.lock (another track's lines uncommitted), every figure held:
+- Test files (run58/full1.log): 189 of 198, the same 9 as runs 52 to 56, the same lines.
+- Own program (run58/check1.log): draw 0 of 4096 pixels beyond 1; 35 of 35 cases equal;
+  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38; features 154 of 872 differ,
+  outputs 22 of 110, answers 2 of 40, none beyond real.
+- Shader runner (run58/runner1.log): 219 of 302, the same 83 failing files as run 56.
+- Microsoft's two samples equal (0 pixels beyond 8); Godot's 2D platformer equal; Godot's 3D
+  platformer the same one pixel (1 of 518,400 beyond 8, difference 48 at 921,317).
+- bgfx 01-cubes, 26-occlusion, 35-dynamic, 38-bloom and 37 (b1-*.log, p1-bgfx37.log): every frame
+  of both our runs within the allowance (726 to 1194 pixels beyond 8 of 20,480).
+- Scenes (scenes1.log): 110 pass, 5 fail, 1 absent, the same as run 56; Wine's five dxgi tests the
+  same 3 of 5.
+- GPU tests (gpu1.log): the use test and both stage register tests pass.
+- Every test of the infrastructure crate and this front on the desktop at bc98cbd4's code
+  (run58/test1.log): all pass (unit 20, answers 2, cache 1, declared 1, device 20, front 15, gpu
+  4, registers 2, swapchain 11, infrastructure 2). Lint with warnings denied of the interface,
+  the infrastructure crate, this front and the Direct3D 11 front (run58/lint1.log): clean.
+- tests/registers.rs again after naming its rounding step (run58/gpu4.log): both pass.
+- Literal check (run58/lit3.log, the whole tree on the desktop's copy): no finding of this run's
+  code. It lists bind.rs's two wrapped messages as changed only because the desktop's checkout
+  ends their lines with `\r\n` (the baseline holds `\n`); on the rented ARM64 machine run 57
+  found them equal.
+- The check's cases and this run's (run58/own1.log, own2.log; own.sh lays them into the clone
+  `tip2`, never committed): ic58-gs-registers, ic58-linked (20, 29, 30 values), ic58-packed and
+  r58-registers (behind a geometry shader, behind a domain shader, beside linked clip distances)
+  equal on real, WARP and ours.
+
 ## Results of runs 56 and 57
 
 2026-11-23, RTX 3080, desktop shared (the OpenGL track's conformance runs held the GPU queue for
@@ -731,8 +762,10 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 
 1. Keep the crates building after each merge the orchestrator makes into `agents`; keep the
    literal check free of this track's findings. Apply the rig patch (sync56.sh does, in the
-   clone only) for test file runs. Run 57's scripts (scratch bin/): `rest56.sh` (the whole chain
-   on `tip`), `verify57.sh <n> <runner files>` (with `ANSWERS=1` also the use test) on `tip2`,
+   clone only) for test file runs. Run 58's scripts: bin/`rest58.sh` (the whole chain on
+   `tip`), run58/`test58.sh <n>` (lint and every test on `tip2`), run58/`own.sh <n> <cases>`
+   (own cases of the checks and of run 58 on real, WARP and ours, on `tip2`); run 57's
+   `verify57.sh <n> <runner files>` (with `ANSWERS=1` also the use test) on `tip2`,
    `armcheck57c.sh` (lint and the tests without a GPU, the ARM64 machine) on `tip3`; `tip2`'s
    desktop copy needs the submodule step the script carries.
 2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
