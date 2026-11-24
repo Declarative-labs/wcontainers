@@ -179,6 +179,9 @@ pub enum Ended {
     /// The in-process way's probe refused an address at or above 2^32, the guest as it started: the inside runs the
     /// instruction as the meaning does.
     Refused,
+    /// The exact form's probe of an rsp written at or above 2^32, after the instruction (docs/x86-native-output.md
+    /// section 5): the guest as the instruction left it.
+    StackRefused,
     /// Not run natively, for this reason.
     NotRun(&'static str),
 }
@@ -265,17 +268,38 @@ fn compare_one(
         return Ok((Agreement::KnownFailure(TRAP_OR_ALIGNMENT_FLAG), ended));
     }
     // The hardware keeps MXCSR's flags exact, as the meaning does when told to keep them.
-    let case = &Case {
+    let mut case = Case {
         tracking: true,
         ..case.clone()
     };
-    let (mut outcome, ended, _) = run_request(reference, case, host, way, made, STOP_NOT_REACHED)?;
+    // In process a thread's rsp is in the window (docs/x86-native-output.md section 4): one past it starts there
+    // modulo 2^32, for the reference too.
+    if matches!(way, Way::InProcess(_)) && case.state.0[RSP] > u128::from(WINDOW_BYTES) {
+        case.state.0[RSP] %= u128::from(WINDOW_BYTES);
+        RSP_INTO_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let case = &case;
+    let ran = run_request(reference, case, host, way, made, STOP_NOT_REACHED);
+    // The second call of a float status instruction runs the meaning, which faults where the wrapping form's access
+    // landed modulo 2^32.
+    if let Err(report) = &ran
+        && report.starts_with(SECOND_CALL_FAULTED)
+        && way == Way::InProcess(Check::Wrapping)
+        && refused_exactly(reference, case, host, made)?
+    {
+        return Ok((Agreement::KnownFailure(WRAPPED_LANDING), Ended::Exit));
+    }
+    let (mut outcome, ended, _) = ran?;
     // A repeated string under the count or on a stepping piece is the inside's run of it on the hardware, the
     // reference's own.
     let hardware = (counted || made.step)
         && ended == Ended::Answered(InsideCall::Answer)
         && repeated_string(case);
-    if matches!(ended, Ended::Exit | Ended::Fault | Ended::Lookup) || hardware {
+    if matches!(
+        ended,
+        Ended::Exit | Ended::Fault | Ended::Lookup | Ended::StackRefused
+    ) || hardware
+    {
         // Seen through a signal frame, as the reference's run is, it is read as the reference's is.
         let seen = outcome.clone();
         X86_64::reconcile(case, &mut outcome, &seen);
@@ -310,6 +334,14 @@ fn compare_one(
     }
 }
 
+const SECOND_CALL_FAULTED: &str = "the second call faulted";
+
+/// The in-process runs whose case started with rsp past the window, taken modulo 2^32.
+pub static RSP_INTO_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The exact form's runs that ended `StackRefused`.
+pub static RSP_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The wrapping form's named difference (docs/x86-native-output.md section 5): an address at or above 2^32 lands at
 /// its value modulo 2^32 inside the window, where the reference faults.
 const WRAPPED_LANDING: &str = "the wrapping form's landing modulo 2^32, where the exact form refuses the address and agrees with the CPU";
@@ -323,8 +355,14 @@ fn refused_exactly(
     made: &NativeRequest,
 ) -> Result<bool, String> {
     let exact = Way::InProcess(Check::Exact);
-    Ok(compare_one(reference, case, host, exact, made)
-        .is_ok_and(|(_, ended)| matches!(ended, Ended::Refused | Ended::Answered(_))))
+    Ok(
+        compare_one(reference, case, host, exact, made).is_ok_and(|(_, ended)| {
+            matches!(
+                ended,
+                Ended::Refused | Ended::Answered(_) | Ended::StackRefused
+            )
+        }),
+    )
 }
 
 /// The reference machine has 5-level paging (cloud/x86/x86-machine.md): an access or a transfer to an address
@@ -583,7 +621,7 @@ fn float_status_after(
     memory.data.copy_from_slice(data);
     let mut tracking = case.tracking;
     wcontainers_x86::answer::float_status_after(status, &mut block, &mut tracking, &mut memory)
-        .map_err(|fault| format!("the second call faulted: {fault:?}"))?;
+        .map_err(|fault| format!("{SECOND_CALL_FAULTED}: {fault:?}"))?;
     SECOND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     block.rip = next;
     thread.copy_from_slice(block.as_bytes());
@@ -750,10 +788,18 @@ fn run_request(
             && reading.memory_base() == U
             && reading.memory_displacement64() == 1u64.wrapping_sub(PROBE_PAGE);
         let ended = if signal == SIGSEGV && probe {
-            if span.side != Side::Before {
-                return Err(format!("a probe after the commit point, at host {at}"));
+            let stack = span.relocated.iter().any(|r| usize::from(r.guest) == RSP);
+            match span.side {
+                Side::Before => Ended::Refused,
+                // The exact form's rsp written at or above 2^32: the instruction done, the guest's rsp in the span.
+                Side::After if stack => {
+                    RSP_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ended::StackRefused
+                }
+                Side::After => {
+                    return Err(format!("a probe after the commit point, at host {at}"));
+                }
             }
-            Ended::Refused
         } else if signal == SIGSEGV && second && second_level.contains(&record.address) {
             if made.step {
                 Err::<(), _>("a stepping piece reached the lookup's second level")?;
@@ -803,7 +849,13 @@ fn run_request(
             let span = in_piece(at.rip)
                 .ok_or_else(|| format!("a step outside the piece, at {:#x}", at.rip))?;
             count_at(&at, span)?;
-            let now = guest_state(case, step, &at, area, span, base)?;
+            let mut now = guest_state(case, step, &at, area, span, base)?;
+            // The wrapping form's rsp written past the window is the guest's value until its cut to 32 bits, the
+            // named landing (docs/x86-native-output.md section 5).
+            let rsp_held = span.relocated.iter().any(|r| usize::from(r.guest) == RSP);
+            if way == Way::InProcess(Check::Wrapping) && rsp_held {
+                now.0[RSP] %= u128::from(WINDOW_BYTES);
+            }
             let (want, want_changed) = match span.side {
                 Side::Before => (&case.state, &Vec::new()),
                 Side::After => (&state, &changed),
@@ -839,7 +891,7 @@ fn run_request(
         (state, changed, pointers) = (after.0, after.1, Some(after.2));
     }
     let stop = match ended {
-        Ended::Exit | Ended::Lookup => Stop::Landed(state.0[RIP] as u64),
+        Ended::Exit | Ended::Lookup | Ended::StackRefused => Stop::Landed(state.0[RIP] as u64),
         Ended::Fault => X86_64::reference_stop(
             &Signal {
                 number: signal,
@@ -940,7 +992,8 @@ pub static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// The guest's address of a fault at host `address`: less the window's base where it lies in the window or its guard
 /// pages.
 fn guest_address(address: u64, signal: u32, base: u64) -> u64 {
-    let near = base.wrapping_sub(PROBE_PAGE)..base + WINDOW_BYTES + PAGE;
+    // Above the window, as far as rsp at its top plus a 32-bit displacement reaches.
+    let near = base.wrapping_sub(PROBE_PAGE)..base + 2 * WINDOW_BYTES;
     if base != 0 && matches!(signal, SIGSEGV | SIGBUS) && near.contains(&address) {
         address.wrapping_sub(base)
     } else {
@@ -1068,6 +1121,8 @@ fn guest_state(
     for (k, &w) in WITHHELD.iter().enumerate() {
         general[usize::from(w)] = area.withheld[k];
     }
+    // In process rsp holds B more than the guest's, unless the span holds the guest's elsewhere.
+    general[RSP] = general[RSP].wrapping_sub(base);
     // In process FS holds the thread area, and the guest's FS base is the area's word.
     let mut fs_base = if base == 0 {
         record.fs_base
@@ -1433,6 +1488,11 @@ fn prologue(case: &Case, stepping: bool, base: u64) -> Result<Vec<u8>, IcedError
         a.mov(general_register(n), qword_ptr(t + (n as u64 * WORD) as i32))?;
     }
     a.mov(rsp, qword_ptr(t + (rsp_number as u64 * WORD) as i32))?;
+    if base != 0 {
+        // In process rsp is B plus the guest's.
+        a.mov(u, base)?;
+        a.lea(rsp, qword_ptr(rsp + u))?;
+    }
     a.mov(count, 0u64)?;
     a.mov(u, 0u64)?;
     a.mov(t, PIECE)?;

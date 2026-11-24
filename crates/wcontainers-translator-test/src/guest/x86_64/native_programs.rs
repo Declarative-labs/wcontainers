@@ -19,8 +19,8 @@ use crate::progress::{Counted, Position};
 use crate::reference::{BlobRequest, Reference};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
-    AsmMemoryOperand, AsmRegister64, CodeAssembler, CodeLabel, ecx, qword_ptr, r10, r11, r12, r13,
-    r14, rax, rbx, rcx, rdi, rdx, rsi, rsp,
+    AsmMemoryOperand, AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r10, r11, r12, r13, r14,
+    rax, rbx, rcx, rdi, rdx, rsi, rsp,
 };
 use linux_raw_sys::general::{SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, sigaltstack};
 use std::collections::BTreeMap;
@@ -898,22 +898,18 @@ fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedE
                 )?;
             }
             Answer::Flags => {
-                // The flags as the guest has them, by `pushfq` on a stack of the blob's own, then stored at the
-                // guest's rsp - 8 in the window.
+                // The flags as the guest has them, by `pushfq` on a stack of the blob's own, then pushed on the
+                // guest's, which rsp holds in the window.
                 let rsp_kept = scratch_word(core::mem::offset_of!(Scratch, rsp));
                 a.mov(rsp_kept, rsp)?;
                 a.mov(rsp, stack_top(area))?;
                 a.pushfq()?;
                 a.pop(t)?;
                 a.mov(rsp, rsp_kept)?;
-                a.mov(dispatch, rcx)?;
-                a.lea(ecx, qword_ptr(rsp - WORD as i32))?;
                 let mut store = a.create_label();
                 a.set_label(&mut store)?;
-                a.mov(qword_ptr(rcx).gs(), t)?;
+                a.push(t)?;
                 copies.push(store);
-                a.lea(rsp, qword_ptr(rsp - WORD as i32))?;
-                a.mov(rcx, dispatch)?;
             }
         }
         a.mov(t, site.t)?;
@@ -1269,6 +1265,11 @@ fn prologue(blob: &Blob, laid: &Laid, at: &Places, way: Way) -> Result<Vec<u8>, 
             continue;
         }
         a.mov(general_register(n), qword_ptr(label))?;
+    }
+    if base != 0 {
+        // In process rsp is B plus the guest's.
+        a.mov(t, base)?;
+        a.lea(rsp, qword_ptr(rsp + t))?;
     }
     a.mov(count, 0u64)?;
     a.mov(u, 0u64)?;

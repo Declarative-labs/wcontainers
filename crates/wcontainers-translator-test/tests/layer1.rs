@@ -455,7 +455,7 @@ fn every_form_matches_the_cpu_natively_x86_64() {
 fn every_form_matches_the_cpu_in_process_x86_64() {
     use std::sync::atomic::Ordering::Relaxed;
     use wcontainers_translator_test::guest::x86_64::native::{
-        REFERENCE_HOST, REFUSED, compare_in_process,
+        REFERENCE_HOST, REFUSED, RSP_INTO_WINDOW, compare_in_process,
     };
     use wcontainers_x86::native::Check;
     let count = setting("WC_LAYER1_CASES", 64) as u32;
@@ -465,7 +465,7 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
         if only.as_deref().is_some_and(|only| only != name) {
             continue;
         }
-        let refused = REFUSED.load(Relaxed);
+        let (refused, into_window) = (REFUSED.load(Relaxed), RSP_INTO_WINDOW.load(Relaxed));
         let ended = Mutex::new(BTreeMap::<String, u64>::new());
         let failures = run_forms::<X86_64>(
             X86_64::forms(),
@@ -479,9 +479,11 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
         );
         eprintln!(
             "layer 1 in process, the {name} form, the cases by how they ended: {:?}; the probe refusing an \
-             address and the meaning answering in {} runs; {} forms differ",
+             address and the meaning answering in {} runs; a case's rsp past the window taken modulo 2^32 in {} \
+             runs; {} forms differ",
             ended.into_inner().unwrap(),
             REFUSED.load(Relaxed) - refused,
+            RSP_INTO_WINDOW.load(Relaxed) - into_window,
             failures.len()
         );
         differing += failures.len();
