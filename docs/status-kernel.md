@@ -49,6 +49,11 @@ Started about 03:20 UTC on 2026-11-24 at 95201039. Every build and test ran on t
   (`guest::x86_64::native`). Nothing of this track's. The wasmtime executor had another agent's
   edits in progress, so the remote copy took its committed files plus kc5/wasmtime-vb.patch for
   every build above; the Mac's copy was not touched.
+- Again at the tip (03:41 UTC, load 9 to 12, kc5/c4.log): it fails only in other tracks' tests:
+  hardware-virtualization's tests/guest_memory.rs (type annotations), host-process's
+  tests/forged.rs (`libc::SEGV_ACCERR`), precise-instruction-set-measured's tests (an `Executor`
+  without the new items) and wcontainers-translator-test's layer1. Clippy over this track's
+  packages, all targets, warnings denied, with no remote patch: status 0.
 - No commit of this run touches an interface file.
 - The placement request of 2026-11-23 (mappings low first, independent of the executor's
   ceiling, the size from `MachineDescription`) is taken as part of the next milestone, KF, whose
