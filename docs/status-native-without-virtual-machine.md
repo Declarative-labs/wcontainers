@@ -1045,13 +1045,13 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     see: a data abort's alignment status ignored (the native output checks alignment itself where the form needs it,
     so the path is not reached on Graviton4), and the PC-alignment syndrome taken as unknown (the stop crate then
     answers a landing at the misaligned target, and P's load of that pc gives the same alignment fault).
-
   - Final verdicts from this run's tree, every test binary once with /dev/kvm denied, each first proving the device
     cannot be opened (scratch w1/r7run2/all-arm.out, all-x86.out): Graviton4 (load 17 to 74) every binary passes but
     the known precise-set test (20 of 21 in conformance); the Xeon (load 36 to 54) 50 passed, none failed (the
     translated-code binaries build no tests there). Clippy with warnings denied clean on every target on both. An
     earlier attempt failed to build for a few minutes on the kernel track's commit in progress (388f03d7), not ours.
     No new unsafe code.
+
 ## W1 not complete: the gap list
 
 W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
