@@ -441,7 +441,8 @@ impl Dc {
         )?;
         let mapped = f.map(&staging, 0, desc::map::READ, 0)?;
         let pitch = self.pitch();
-        for (y, row) in self.bits.chunks_exact_mut(pitch).enumerate() {
+        for y in 0..self.height as usize {
+            let row = &mut self.bits[y * pitch..][..pitch];
             let from = &mapped.data[y * mapped.row_pitch as usize..][..pitch];
             row.iter_mut().zip(from).for_each(|(t, f)| *t = f.get());
         }
