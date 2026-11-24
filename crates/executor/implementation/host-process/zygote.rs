@@ -89,7 +89,12 @@ mod frame {
     const _: () = assert!(offset_of!(libc::sock_fprog, len) == 0);
 }
 
-/// What a stub's thread puts below its stack pointer to receive a shared block's memfd: offsets from the new one.
+/// The bytes a shared block's receive spans on the register page, from its `RECEIVE`.
+pub(crate) const RECEIVE_SIZE: usize = block_frame::SIZE;
+/// Where in it the one byte received lands.
+pub(crate) const RECEIVE_BYTE: usize = block_frame::BYTE;
+
+/// What a stub's thread writes on its register page to receive a shared block's memfd: offsets from `RECEIVE`.
 mod block_frame {
     use core::mem::{offset_of, size_of};
 
@@ -99,19 +104,16 @@ mod block_frame {
     pub const HEADER_IOVEC_COUNT: usize = HEADER + offset_of!(libc::msghdr, msg_iovlen);
     pub const HEADER_CONTROL: usize = HEADER + offset_of!(libc::msghdr, msg_control);
     pub const HEADER_CONTROL_LENGTH: usize = HEADER + offset_of!(libc::msghdr, msg_controllen);
-    /// The one `iovec`, over one byte.
-    pub const IOVEC: usize = HEADER + size_of::<libc::msghdr>();
-    pub const IOVEC_LENGTH: usize = IOVEC + offset_of!(libc::iovec, iov_len);
-    pub const BYTE: usize = IOVEC + size_of::<libc::iovec>();
-    /// One control message of one descriptor.
+    /// The one byte the control page's `iovec` names.
+    pub const BYTE: usize = HEADER + size_of::<libc::msghdr>();
+    /// One control message of one descriptor, whose number the stub never reads: it is `BLOCK_FD`.
     pub const CONTROL: usize = BYTE + size_of::<u64>();
     pub const CONTROL_LEVEL: usize = CONTROL + offset_of!(libc::cmsghdr, cmsg_level);
     pub const CONTROL_TYPE: usize = CONTROL + offset_of!(libc::cmsghdr, cmsg_type);
-    pub const CONTROL_DESCRIPTOR: usize = CONTROL + size_of::<libc::cmsghdr>();
     /// The control message's length with its descriptor, and the room it takes.
     pub const CONTROL_FULL: usize = size_of::<libc::cmsghdr>() + size_of::<i32>();
     pub const CONTROL_SIZE: usize = CONTROL_FULL.next_multiple_of(size_of::<usize>());
-    /// The whole frame, keeping the stack pointer's alignment.
+    /// The whole receive.
     pub const SIZE: usize = (CONTROL + CONTROL_SIZE).next_multiple_of(16);
 
     // The assembly zeroes the header as seven words and reads the level and type as one pair.

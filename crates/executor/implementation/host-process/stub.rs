@@ -227,11 +227,13 @@ impl Stub {
         }
     }
 
-    /// Writes the stub's start into thread 0's control page: the filter, which the stub reads, and the start's turn.
+    /// Writes the stub's start: every control page's records, then into thread 0's the filter, which the stub reads,
+    /// and the start's turn.
     pub(crate) fn write_start(pages: &ThreadPages, frames_without_vectors: bool) {
+        pages.write_records();
         let filter = stub_filter(frames_without_vectors);
         assert!(
-            filter.len() * size_of::<u64>() <= crate::layout::THREAD_PAGE_SIZE - control::COMMANDS,
+            filter.len() * size_of::<u64>() <= control::COMMANDS_END - control::COMMANDS,
             "the stub's filter outgrew its page"
         );
         for (index, instruction) in filter.iter().enumerate() {
@@ -678,6 +680,16 @@ impl Stub {
     fn give(&self, thread: usize, commands: &[Command], resume: Resume) -> Result<u32, Errno> {
         if commands.len() > control::MAX_COMMANDS {
             return Err(Errno::TOOBIG);
+        }
+        let mut places = commands.iter().filter_map(|command| match command {
+            Command::Place { cpu } => Some(*cpu),
+            _ => None,
+        });
+        if let Some(cpu) = places.next() {
+            if places.next().is_some() {
+                return Err(Errno::INVAL);
+            }
+            self.pages.write_cpu_set(thread, cpu)?;
         }
         let answer = self.pages.control32(thread, control::ANSWER);
         let turn = answer.load(Ordering::Relaxed).wrapping_add(1);

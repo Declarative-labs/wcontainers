@@ -1,17 +1,20 @@
 //! Each guest thread's two pages shared with the embedder: its control page, which the stub only reads and obeys,
 //! and its register page, which the stub writes and the embedder only trusts as far as it checks.
 
+use core::mem::offset_of;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use rustix::fs::MemfdFlags;
 use rustix::io::Errno;
 use rustix::mm::ProtFlags;
 
 use crate::layout::{
-    CODE_AREA, CODE_AREA_SIZE, REGISTER_PAGES_OFFSET, SLOT_TABLE, SLOT_TABLE_SIZE,
-    THREAD_PAGE_SIZE, THREAD_PAGES_SIZE, THREADS_PER_PROCESS,
+    CODE_AREA, CODE_AREA_SIZE, REGISTER_PAGES, REGISTER_PAGES_OFFSET, SIGNAL_STACK_SIZE,
+    SIGNAL_STACKS, SLOT_TABLE, SLOT_TABLE_SIZE, THREAD_PAGE_SIZE, THREAD_PAGES_SIZE,
+    THREADS_PER_PROCESS,
 };
+use crate::zygote::RECEIVE_BYTE;
 
 /// Byte offsets in a control page.
 pub mod control {
@@ -29,12 +32,33 @@ pub mod control {
     pub const TOUCH_VALUE: usize = 32;
     /// The address in the code area a [`super::Resume::Enter`] branches to.
     pub const ENTER_AT: usize = 40;
+    /// The `iovec` a shared block's receive hands the host kernel: one byte at the register page's
+    /// [`super::register::RECEIVE`].
+    pub const IOVEC: usize = 48;
     /// The first command; each is [`COMMAND_SIZE`] bytes.
     pub const COMMANDS: usize = 64;
     /// A command's bytes: its kind with its permissions above bit 32, an address, a length and a file offset.
     pub const COMMAND_SIZE: usize = 32;
+    /// The `stack_t` naming the thread's own signal stack, for `sigaltstack`.
+    pub const STACK_RECORD: usize = THREAD_PAGE_SIZE - size_of::<libc::stack_t>();
+    /// The CPU set a [`super::Command::Place`] moves the thread to, for `sched_setaffinity`.
+    pub const CPU_SET: usize = STACK_RECORD - size_of::<libc::cpu_set_t>();
+    /// Where the commands, or the start's filter, must end.
+    pub const COMMANDS_END: usize = CPU_SET;
     /// The commands one page holds.
-    pub const MAX_COMMANDS: usize = (THREAD_PAGE_SIZE - COMMANDS) / COMMAND_SIZE;
+    pub const MAX_COMMANDS: usize = (COMMANDS_END - COMMANDS) / COMMAND_SIZE;
+
+    // The embedder writes these records as 64-bit words.
+    const _: () = assert!(
+        ENTER_AT + 8 <= IOVEC
+            && IOVEC + size_of::<libc::iovec>() <= COMMANDS
+            && size_of::<libc::stack_t>() == 3 * size_of::<u64>()
+            && core::mem::offset_of!(libc::stack_t, ss_sp) == 0
+            && core::mem::offset_of!(libc::stack_t, ss_flags) == 8
+            && core::mem::offset_of!(libc::stack_t, ss_size) == 16
+            && size_of::<libc::cpu_set_t>().is_multiple_of(size_of::<u64>())
+            && COMMANDS + MAX_COMMANDS * COMMAND_SIZE <= CPU_SET
+    );
     /// A stub's start is thread 0's turn [`START`]: its page then holds the filter's instruction count here and its
     /// instructions at `COMMANDS`, and the stub reports `Done` once the filter is installed.
     pub const FILTER_LENGTH: usize = COMMAND_COUNT;
@@ -83,11 +107,16 @@ pub mod register {
     /// The thread's registers in the hardware, as a [`wcontainers_abi::RegisterBlock`], little endian: what a
     /// [`super::Resume::Enter`] loads and what an exit from translated code saves.
     pub const REGISTERS: usize = 256;
+    /// A shared block's receive, which only the stub uses: its `msghdr`, the one byte and the control message, as
+    /// the zygote's `block_frame` lays them out.
+    pub const RECEIVE: usize =
+        (REGISTERS + size_of::<wcontainers_abi::RegisterBlock>()).next_multiple_of(16);
 
     /// Every 32-bit word of a register page; every other byte is reached only as part of a 64-bit word.
     pub(crate) const WORDS32: [usize; 4] = [REQUEST, THREAD_ID, EXIT_CLEAR, TAKEN];
 
     const _: () = assert!(EXIT_SYNDROME < REGISTERS);
+    const _: () = assert!(RECEIVE + crate::zygote::RECEIVE_SIZE <= crate::layout::THREAD_PAGE_SIZE);
     #[cfg(target_arch = "aarch64")]
     const _: () =
         assert!(size_of::<wcontainers_arm64::thread_state::RegisterPage>() <= TRANSLATED_SIZE);
@@ -166,7 +195,7 @@ pub enum Command {
     /// Maps the code area's memfd past the code area's bytes, which the stub receives first on its socket,
     /// execute-only over the whole slot table, then closes it.
     MapSlots,
-    /// Moves the thread applying it to one CPU, as its runner's.
+    /// Moves the thread applying it to one CPU, as its runner's; a turn carries at most one.
     Place {
         /// The CPU's number.
         cpu: usize,
@@ -378,6 +407,53 @@ impl ThreadPages {
         &self.words64()[at / size_of::<u64>()]
     }
 
+    /// Writes into every control page the records the stub hands the host kernel to read and never builds itself:
+    /// its receive's `iovec` and its signal stack's `stack_t`.
+    pub(crate) fn write_records(&self) {
+        for thread in 0..THREADS_PER_PROCESS {
+            let byte =
+                REGISTER_PAGES + thread * THREAD_PAGE_SIZE + register::RECEIVE + RECEIVE_BYTE;
+            let iovec = [
+                (offset_of!(libc::iovec, iov_base), byte as u64),
+                (offset_of!(libc::iovec, iov_len), 1),
+            ];
+            let stack = [
+                (
+                    offset_of!(libc::stack_t, ss_sp),
+                    (SIGNAL_STACKS + thread * SIGNAL_STACK_SIZE) as u64,
+                ),
+                (offset_of!(libc::stack_t, ss_flags), 0),
+                (offset_of!(libc::stack_t, ss_size), SIGNAL_STACK_SIZE as u64),
+            ];
+            for (at, word) in iovec
+                .map(|(at, word)| (control::IOVEC + at, word))
+                .into_iter()
+                .chain(stack.map(|(at, word)| (control::STACK_RECORD + at, word)))
+            {
+                self.control64(thread, at).store(word, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Writes the set of `cpu` alone into a thread's control page, for its next [`Command::Place`]; `INVAL` if no set
+    /// holds it.
+    pub(crate) fn write_cpu_set(&self, thread: usize, cpu: usize) -> Result<(), Errno> {
+        let bits = u64::BITS as usize;
+        if cpu >= size_of::<libc::cpu_set_t>() * 8 {
+            return Err(Errno::INVAL);
+        }
+        for word in 0..size_of::<libc::cpu_set_t>() / size_of::<u64>() {
+            let value = if word == cpu / bits {
+                1 << (cpu % bits)
+            } else {
+                0
+            };
+            self.control64(thread, control::CPU_SET + word * size_of::<u64>())
+                .store(value, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     pub(crate) fn register32(&self, thread: usize, offset: usize) -> &AtomicU32 {
         let at = Self::register_offset(thread, word32(&register::WORDS32, offset));
         &self.words32()[at / size_of::<u32>()]
@@ -497,5 +573,45 @@ mod tests {
         ] {
             pages.register64(0, offset);
         }
+    }
+
+    /// Records the stub hands the host kernel lie on its read-only control page, so a guest store cannot change
+    /// them between the stub's check and its call.
+    #[test]
+    fn every_thread_s_records_name_its_own_receive_byte_and_signal_stack() {
+        let pages = ThreadPages::new().expect("thread pages");
+        pages.write_records();
+        for thread in [0, 1, THREADS_PER_PROCESS - 1] {
+            let word = |at| pages.control64(thread, at).load(Ordering::Relaxed);
+            let register_page = (REGISTER_PAGES + thread * THREAD_PAGE_SIZE) as u64;
+            let byte = word(control::IOVEC);
+            assert!(byte >= register_page + register::RECEIVE as u64);
+            assert!(
+                byte < register_page + (register::RECEIVE + crate::zygote::RECEIVE_SIZE) as u64
+            );
+            assert_eq!(word(control::IOVEC + 8), 1);
+            assert_eq!(
+                word(control::STACK_RECORD),
+                (SIGNAL_STACKS + thread * SIGNAL_STACK_SIZE) as u64
+            );
+            assert_eq!(word(control::STACK_RECORD + 8), 0);
+            assert_eq!(word(control::STACK_RECORD + 16), SIGNAL_STACK_SIZE as u64);
+        }
+    }
+
+    #[test]
+    fn a_cpu_set_holds_its_cpu_alone_and_one_past_the_set_is_refused() {
+        let pages = ThreadPages::new().expect("thread pages");
+        let bits = size_of::<libc::cpu_set_t>() * 8;
+        let words = bits / 64;
+        for cpu in [0, 63, 64, 130, bits - 1] {
+            pages.write_cpu_set(2, cpu).expect("a cpu inside the set");
+            for word in 0..words {
+                let expected = if word == cpu / 64 { 1 << (cpu % 64) } else { 0 };
+                let at = control::CPU_SET + word * 8;
+                assert_eq!(pages.control64(2, at).load(Ordering::Relaxed), expected);
+            }
+        }
+        assert_eq!(pages.write_cpu_set(2, bits), Err(Errno::INVAL));
     }
 }
