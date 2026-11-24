@@ -5,6 +5,61 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 6 run 5 (2026-11-24). Settles the independent check of run 4 where it could, and says
+where it could not. G9'S FIRST PART IS NOT COMPLETE: its bar is not met (KHR-GL33 does not start)
+and the exact occlusion count is reported but not built. Each finding:
+- Blocking, the bar: NOT FIXED, skipped for want of room this run; it is this track's next build
+  (the 32nd passed value, Next below). The whole-run table is still run 4's (below): 110,672 of
+  111,012 GLES cases (99.69%), and with KHR-GL33's 9,364 counted as failed 91.94%, under the 92.9%
+  floor. Counting the 68 cases that pass alone (gap list) as passed would give 110,740 (99.75%) and
+  92.00%, still under it. CORRECTED, what the driver makes (the check's probe, not run again here):
+  a desktop core context of OpenGL 3.1 only when asked with the forward-compatible flag (Mesa makes
+  no 3.1 context without it unless its compatibility profile reaches 3.1); no 3.2 or 3.3 context of
+  either profile (the 28 passed values); a legacy (compatibility) context of OpenGL 2.1, GLSL 1.20,
+  where the RTX 3080 gives 4.6. Earlier sections saying "the driver reports OpenGL 3.1" mean the
+  forward-compatible core context only.
+- Blocking, the literal check: build.rs's finding is gone and the bindings are included from
+  Cargo's `OUT_DIR` (00747edc); ONE FINDING STAYS, `"/gallium.rs"` in `src/gallium.rs`, the file
+  name `include!` must be given as a literal (no constant can stand there; the same line is
+  accepted in the baseline for the shaders, x86 and graphics-test-forward crates). For the owner.
+  Run 3's "no finding in this track's files" was WRONG: its check ran in a copy with a fresh git
+  history and its grep showed only the history lines; this run's check greps this track's paths
+  (scratch `scripts/g9r6e-check.sh`, log `logs/r6e/check1.log`, x86-64 machine, load 0 to 8).
+- Blocking, causes placed by position in a batch log: FIXED by running every one of run 4's 340
+  failing cases alone (gap list, its first block): 68 pass alone, among them the 22 KHR-GLES31
+  tessellation cases filed under another case's refusal; the 272 that fail alone each carry their
+  own first note.
+- Blocking, the exact occlusion count: NOT FIXED, skipped for want of room this run. Read for the
+  build: the interface's `OcclusionCounter` keeps each counted draw's `DrawCall` and replays it,
+  so every guest draw site of `draw.rs` (`draw_made`, `draw_rewritten`, `draw_ranges`,
+  `draw_squares`) hands it the call with a counting program (the route's fragment module writing
+  1.0 at location 0, storage writes removed, as `wcontainers-direct3d-11`'s `counting.rs` does for
+  its own modules), and every buffer or texture write, copy, clear, blit and change of targets
+  flushes it first, including the index ring's reuse. The screen still reports it (the cap also
+  carries OpenGL ES 3.0's `ANY_SAMPLES_PASSED`, which is built).
+- Blocking, the status file contradicting itself: CORRECTED (Departures "G9 run 10" and "G9 run
+  16", For the owner's unsafe paragraph, the wide lines filed "for want of work" in both places
+  since the plan names `WideLinesAsQuads`), and `state::refused`'s comment.
+- Minor, after a device loss an ES 3.0 glcts goes on: cause read from Mesa's source (gap list);
+  every context now reports a reset once the device is lost (95a67ca7), so a context made to be
+  told learns of a loss even where its own calls were not refused.
+- Minor, the module pin by name: it now warns with the reason when the module cannot be kept
+  loaded (no back end then, as before).
+- Minor, the `texture3d_cubemap_posy` loss in a batch, the 432 NotSupported cases the RTX 3080
+  passes, `rasterization.interpolation.projected` in the multisample list, and a refused call
+  dropped without notice to a program that did not ask for reset notification: listed (gap list,
+  NotSupported, Needs a primitive), not built.
+- Unsafe: unchanged, wcontainers-opengl 356 and wcontainers-nir 113 (the root list's command, at
+  HEAD and in the worktree); no line with `unsafe` added.
+- Built and tested: clippy with Mesa and warnings denied, the nir route test 27 pass,
+  wcontainers-opengl 11 pass, rustfmt (x86-64 machine, `logs/r6e/check1.log`); the Windows build in
+  the alone run's job and again for the module pin's warning (`logs/r6e/winbuild.log`).
+- Next, in order: the 32nd passed value (the stage helper's pass-through reading its records from
+  storage by vertex index, 28 to 31, in `crates/wcontainers-shaders` under round 6's permission;
+  then the 32nd value fetched by the fragment program) and KHR-GL33's run; the exact occlusion
+  count (above); the 8 device losses (gap list); the evaluation point size (72 cases); the stage
+  helper's buffer sizes for `primitive_bounding_box` (28); the rest of the gap list.
+
 G9 round 6 run 4 (2026-11-24). Run 3's work is now run on the GPU, and its table replaces run 2's
 (which overstated the measure by its refused passes). THE BAR IS STILL NOT WHOLLY MET: KHR-GL33
 does not start (OpenGL 3.1, 28 passed values), so with it counted as failed the measure is under
@@ -917,6 +972,79 @@ Next, in order:
 
 ## Gap list (G9's first part, at round 5 run 2's whole run; round 5 runs 3 and 5's changes marked)
 
+Round 6 run 5: EVERY ONE of round 6 run 4's 340 failing cases run again, each in a glcts of its own
+(`run-windows.ps1 -Cases`, deqp-runner `--tests-per-group 1`; the job alone on the GPU, job of tree 5e6a1abf,
+15:23:52 to 15:25:45 desktop time, no display reset; scratch `results/r6e`, case lists `cases/r6e`, log
+`logs/r6e/alone.log`; each case's own first driver note and glcts verdict by
+`scripts/alone_notes.py results/r6e`, output `results/r6e-notes.tsv`). A process holding one case
+gives that case's own refusals, so these causes are confirmed by running, and they REPLACE the
+causes below that were placed by a case's position in a batch log (the independent check showed
+that method filing a case under the refusal of the case before it). Results:
+- 68 pass alone, so their failure in the whole run comes from an earlier case of their batch (a
+  refusal or device loss the context carried on): dEQP-GLES3 33 (`fbo.blit.conversion` 11,
+  `.default_framebuffer` 3, `.rect` 2, `texture.specification` 9, `fbo.color.repeated_clear` 4,
+  `vertex_arrays.single_attribute` 2, `texture.vertex` 1, `fbo.stencil.attach` 1), KHR-GLES3 6
+  (`framebuffer_completeness` 3, `texture_lod_basic` 1, `packed_depth_stencil` blit and clear of
+  `depth32f_stencil8`), KHR-GLES31 24 (`tessellation_control_to_tessellation_evaluation` 18, all
+  `..._point_mode_disabled`; `tessellation_shader_tessellation.TCS_TES` and `.input_patch_discard`;
+  `compilation_and_linking_errors.tc_` and `te_non_arrayed_per_vertex_input_blocks`;
+  `advanced-allMips-cs`; `basic-atomic-case3-vsfs`), dEQP-GLES31 5 (`compute.basic.image_barrier_single`,
+  `image_load_store` `2d_array` and `3d` `qualifiers.volatile_r32i`, `synchronization.inter_invocation`
+  `image_atomic_read_write` and `ssbo_atomic_alias_overwrite`). CORRECTED: the 22 KHR-GLES31
+  tessellation cases among them were filed below under "evaluation point size" and "control
+  barrier"; their refusals were the previous case's. The whole-run table still counts all 68 as
+  failed (the strict count). The cause that they are not ended with their predecessor in dEQP-GLES3
+  and KHR-GLES3, read from Mesa's source and not proven by a run: `_mesa_GetGraphicsResetStatusARB`
+  answers `GL_NO_ERROR` for any context made without reset notification, whatever the driver
+  reports, and glcts asks for none under `--deqp-terminate-on-device-lost=disable` (Departures, G9
+  run 16). Since this run every context also reports a reset once the device is lost (95a67ca7),
+  which a context made to be told now learns even when its own calls were not refused.
+- 272 fail alone (3 of them Flake), each with its own first note:
+  - Evaluation program reading the built-in point size, 72 (KHR-GLES31 36, KHR-GLES32 36, the
+    `..._point_mode_enabled` and `gl_PointSize` cases): refused "not taken: a Evaluation program's
+    input of the built-in PointSize". This track's.
+  - The stage helper's buffer above the back end's largest, 28 (dEQP-GLES31
+    `primitive_bounding_box` tessellation and geometry cases): "the stage helper: Gpu(Invalid(\"buffer
+    larger than max_buffer_size\"))". This track's (the stage helper's sizes for the draw).
+  - Border colour on comparison, 28 (dEQP-GLES31 `texture.border_clamp` 24, KHR-GLES31 2, KHR-GLES32
+    2): `BorderInShaderOnComparison` refused by the shaders crate's rewrite. Shaders track.
+  - Blits Gallium's blitter does not make, 32 (dEQP-GLES31, formats 15 of textures 24/19 and 24/15):
+    this track's.
+  - Texture comparison with bias or gradients 17, at a level other than 0 8 (dEQP-GLES3): absent
+    on WebGPU (`textureSampleCompare` takes neither), as filed below.
+  - Bindings beyond the limit 6 (dEQP-GLES31), `ResourceArrayPair` 2 (KHR-GLES31, -GLES32): the
+    shaders crate's rewrite. Shaders track.
+  - Points drawn as squares while streaming or after tessellation 6 (KHR-GLES31
+    `shader_image_size` `-vs-`): as below.
+  - Early fragment tests forced before storage writes 5 (dEQP-GLES31 4, KHR-GLES31 1): this track's.
+  - Control program reading outputs after `barrier()` 7 (KHR-GLES31 3, KHR-GLES32 3, dEQP-GLES31
+    1): this track's.
+  - Vertex `memoryBarrier()` 2 and a fragment program's forbidden operation 1 (KHR-GLES31): as below.
+  - Patches from indices in memory or of single bytes 2 (KHR-GLES31, -GLES32): this track's.
+  - Device losses, 8: dEQP-GLES3 `fbo.color.tex3d.rgb565` and `.rgb5_a1` (the WebGPU back end's 2D
+    view of a 3D texture, validation error), `texsubimage2d_pbo.pbo_bounds_2d` (validation error,
+    "conflicting usages"), the 16-bit depth cases `texsubimage2d_depth.depth_component16`,
+    `texsubimage3d_depth.depth_component16_2d_array` and `_cube_array` (dEQP-GLES31) and KHR-GLES32
+    `texture_compatibility.texsubimage_format_depth_component16_uint` ("part of a 16-bit depth
+    level", the WebGPU back end's), KHR-GLES31 `advanced-sync-imageAccess` ("Unexpected error
+    variant", untraced). Each is still to be traced to its call and fixed: a device loss is never an
+    acceptable outcome of a guest's draw.
+  - No refusal and no device note, a wrong value, 48: dEQP-GLES31 `synchronization` 11 (storage
+    coherence), `opaque_type_indexing.atomic_counter.*_tessellation_evaluation` 4 (the stage
+    helper's evaluation invocations past the point total), `geometry_shading.input
+    .triangle_strip_adjacency.vertex_count_8` to `_12` 5, `vertex_transform_feedback` overflow 2,
+    `program_interface_query...separable_tess_ctrl.empty` 1; KHR-GLES31 and -GLES32
+    `geometry_shader.adjacency` triangle strips 4, `gpu_shader5` `precise_qualifier` 2,
+    `texture_gather_offset_color_clamp_to_*` 4, `uniform_blocks_array_indexing` 2,
+    `texture_buffer_atomic_functions` 2; KHR-GLES31 `arrays_of_arrays...InteractionFunctionCalls1
+    _var_type_index_8`, `advanced-copyImage-cs`, `advanced-sync-imageAccess2`,
+    `advanced-readWrite-case1-cs`, `image_op_compute_sh` (Flake), `interpolate_at_offset_check
+    .rgba8i` 3; dEQP-GLES3 `rasterization.fbo.rbo_multisample_max` lines 2 and
+    `texture.units.2_units.only_cube.7`. Each this track's to trace, as filed below where it is.
+- Found beside it by the independent check of run 4: dEQP-GLES3
+  `rasterization.interpolation.projected` fails in the multisample configuration's list (not one
+  of 15.2's lists; the RTX 3080 passes it). Untraced; this track's.
+
 Round 6 run 4's whole run (`results/r6d/full`, 340 failing GLES cases; `scripts/g9c1-gaps.py
 results/r6d/full` assigns 303 to the items of this list, the other 37 are the first item). Read
 case by case from the process logs (`scripts/case-notes.ps1`, scratch `results/r6d/case-notes.txt`,
@@ -993,7 +1121,9 @@ Found by the independent check of run 2, each this track's unless said:
 - NotSupported groups that the RTX 3080's OpenGL runs (the check's skip-system): absent for want
   of work, not by the plan, wherever the plan names a route: `EXT_clip_cull_distance` (about 205 of
   KHR-GLES3's 227, `CullDistanceAsGeometry`), `viewport_array` 16 (`MultiViewportSplit`), wide
-  lines (dEQP-GLES3 and -GLES31, 40 and more), `KHR_blend_equation_advanced_coherent` 35;
+  lines (dEQP-GLES3 and -GLES31, 40 and more; the plan's route `WideLinesAsQuads`, 15.4 and
+  15.7, is not yet in the interface: CORRECTED in round 6 run 5, the NotSupported listing below
+  said "by the plan" for them, and both now say this), `KHR_blend_equation_advanced_coherent` 35;
   `shader_group_vote` 5, `program_binary` 14, `sRGB_R8` and multiview have no route in the plan.
   Listed work, not started.
 
@@ -1185,12 +1315,13 @@ plan names the absence), "absent on WebGPU" (the host has no form; the plan does
 the owner), or "for want of work" (the interface gives a way: this track's, or the owner named).
 - dEQP-GLES2 (128): `fbo.render` 91 "Not supported", `multisample` 16 (no multisample default
   framebuffer), `debug_marker` 3: as NVIDIA. Wide lines 17 (`rasterization` 9, `clipping.line` 8):
-  by the plan (1-pixel lines on WebGPU). `multisampled_render_to_texture.readpixels` 1
+  for want of work (1-pixel lines on WebGPU; the plan's route `WideLinesAsQuads`, 15.4 and 15.7,
+  is not yet in the interface). `multisampled_render_to_texture.readpixels` 1
   (EXT_multisampled_render_to_texture): for want of work (this track; a multisampled twin resolved
   at the pass's end would give it).
 - dEQP-GLES3 (470): `transform_feedback` 333 (implementation limits), sRGB RG8 32, `multisample
-  .default_framebuffer` 16, `fbo.blit` separate depth and stencil 12: as NVIDIA. Wide lines 28: by
-  the plan. sRGB R8 32 (`texture.filtering` 24, `.format` 8; EXT_texture_sRGB_R8): absent on WebGPU
+  .default_framebuffer` 16, `fbo.blit` separate depth and stencil 12: as NVIDIA. Wide lines 28: for
+  want of work (as dEQP-GLES2's). sRGB R8 32 (`texture.filtering` 24, `.format` 8; EXT_texture_sRGB_R8): absent on WebGPU
   (no `r8unorm-srgb`; a twin of another format would be a slow path the interface does not name).
   `shader_api.program_binary` 14 (no binary formats): for want of work (this track; Mesa's own
   program binaries need the driver's shader cache key). `fbo.multiview` 3 (OVR_multiview): absent
@@ -1208,8 +1339,8 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   Sample counts 121 (`sample_variables`, `multisample_interpolation`, `min_sample_shading`,
   `texture.multisample`), `framebuffer_fetch` 56, sRGB RG8 15, `multisample.default_framebuffer`
   8, sample mask words 5, multisampled default framebuffer 2, `geometry_shading` 2048 components
-  1, `srgb_write_control` 1: as NVIDIA. Wide lines 40 (`primitive_bounding_box.wide_lines`): by the
-  plan. Coherent advanced blending 35 (KHR_blend_equation_advanced_coherent): absent on WebGPU (no
+  1, `srgb_write_control` 1: as NVIDIA. Wide lines 40 (`primitive_bounding_box.wide_lines`): for
+  want of work (as dEQP-GLES2's). Coherent advanced blending 35 (KHR_blend_equation_advanced_coherent): absent on WebGPU (no
   ordered access to the target in fragment programs). `layout_binding` 45 ("not enough uniforms":
   storage and images in vertex and evaluation programs), `shaders.linkage` 30 and
   `opaque_type_indexing` 12 (storage, atomic counters and images in vertex and evaluation
@@ -1258,6 +1389,13 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## For the owner
 
+- Round 6 run 5: the literal check keeps one finding in this track's files, `"/gallium.rs"` in
+  `crates/wcontainers-opengl/src/gallium.rs` (`include!(concat!(env!("OUT_DIR"), "/gallium.rs"))`):
+  `include!` takes only literals, so the generated file's name cannot be a constant there. Its
+  earlier form, `include!(env!("WCONTAINERS_GALLIUM_BINDINGS"))`, was a finding too. The same line
+  is accepted in `literals.baseline` for three other crates; this one is not added to it. Either the
+  checker accepts a file name inside `include!(concat!(env!("OUT_DIR"), ...))`, or the line stays
+  a finding.
 - Round 6 run 1: the two version items below are no longer questions for the owner (the
   orchestrator's round 6: build the 32nd passed value, report 3.2 and above only when true). They
   stay for what they record; the build is this track's next item after the round's first three.
@@ -1306,17 +1444,27 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
     Mesa drivers report OpenGL 3.2's minimum where their host falls short, and this one does not.
     The owner's rule forbids reporting a capability the driver lacks, so the screen stays at 3.1.
 
-- Unsafe code: wcontainers-opengl 361 lines and wcontainers-nir 113 at round 6 run 1 (the root
+- Unsafe code: wcontainers-opengl 356 lines and wcontainers-nir 113 at round 6 run 4 (the root
   list's command), down from 369 and 119: the three lines round 5 run 6 added are gone (two bound
   shaders read in one line, the evaluation program's storage pass-through one bridge call), the
   five enum transmutes are checked conversions (zerocopy `TryFromBytes`), the `unbuilt!` stub's
-  transmute went with the stub, a query result is written once, and four byte views of the
-  driver's own words are zerocopy's. Of the removal list, left: the module pin (device.rs, through
-  libloading) and the plain union reads (view.rs, state.rs), not tried. The rest is the C boundary
+  transmute went with the stub, a query result is written once, four byte views of the driver's
+  own words are zerocopy's (run 1), the module pin is libloading's and four stubs that touch no
+  pointer are plain functions (run 4). Of the removal list, left: the plain union reads (view.rs,
+  state.rs), not tried. The rest is the C boundary
   (Gallium's entry points and NIR through the bridge), which waits on the owner's primitives
   (Needs a primitive, below).
 
 ## How to run
+
+- G9 round 6 run 5: `scripts/g9r6e-run.sh <absolute log> [<lists> [<regexes>]]` is run 3's whole
+  run; with `CASES=<desktop folder>` it runs each case of the case lists there (files named as the
+  mustpass lists, e.g. `gles31-main.txt`) in a glcts of its own (`run-windows.ps1 -Cases`; results in
+  `C:\wc\graphics-nir\cts\results\wcontainers-alone`). Make the lists of a run's failures with
+  `grep -v ',Pass,\|,Skip,\|,Warn,' <run>/<list>/results.csv | cut -d, -f1`, copy them to the desktop
+  (run 5's: `C:\wc\graphics-nir\cases\r6e`), fetch the results and read each case's own note with
+  `python3 -I scripts/alone_notes.py <results>`. `scripts/g9r6e-check.sh <log> [<route filter>]`:
+  rustfmt, clippy with Mesa, the route and opengl tests and this track's literal findings (x86-64).
 
 - G9 round 6 run 4: the whole run is still `scripts/g9r6c-run.sh <absolute log> [<lists>]`;
   `scripts/g9r6d-quick.sh <filter> <absolute log>` is run 2's lint and tests without `--locked`
@@ -2009,8 +2157,11 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   the mustpass configuration alone. With glcts's default (on), its desktop packages call
   `glGetGraphicsResetStatus` after every case although they load it only from `GL_KHR_robustness`
   or OpenGL 4.5, so on a 3.3 context without it every case dies at its first frame. The option
-  also stops glcts asking for a lose-context-on-reset context, which our driver cannot report
-  either way. A lost device still ends its cases as crashes or failures; nothing is waived.
+  also stops glcts asking for a lose-context-on-reset context. Since round 6 run 1 the driver
+  reports resets (`device_reset_status_query`, `get_device_reset_status`), so with this option a
+  context made without reset notification is never told of one: Mesa's
+  `_mesa_GetGraphicsResetStatusARB` answers no error for it whatever the driver says (gap list's
+  first item, round 6 run 5). A lost device still ends its cases as crashes or failures; nothing is waived.
 - G9 run 15: texel buffers take the interface's texture route (a copy per bind), not its storage
   route: the shaders crate's storage route decodes formats only inside its own DXBC and DXIL
   routes, and route B has no entry to it. A copy per bind is a counted slow path; a copy only
@@ -2052,9 +2203,12 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   texel OpenGL's cube map table and nearest rule pick, in a program variant keyed on the bound
   samplers (WebGPU loads no cube texel and gathers only the base level). Its level of detail comes
   from the face coordinates' derivatives, as OpenGL's does.
-- G9 run 10: the driver ends the process when the back end reports its device lost; a context of
-  OpenGL ES 3.0 without robustness has no way to tell a program, and going on would make every
-  later call read nothing.
+- G9 run 10 to round 5: the driver ended the process when the back end reported its device lost.
+  Since round 6 run 1 no guest call ends the process: a refused call, or any call into a lost back
+  end, is dropped and its context reports itself reset (`state::guest_call`,
+  `get_device_reset_status`; since round 6 run 5 every context reports a reset once the device is
+  lost). A program whose context was made without reset notification is not told (Needs a
+  primitive).
 - G9 run 10: route B reads NIR's `fcanonicalize` as the value itself.
 
 - G9 run 5: llvmpipe's LLVM on Windows is built from LLVM's source on the desktop rather than
@@ -2529,6 +2683,11 @@ None.
   through it.
 
 ## Literal check
+
+G9 round 6 run 5: ONE finding in this track's files, `"/gallium.rs"` (For the owner); build.rs's
+is gone (00747edc). Run 3's "no finding" below was WRONG (Where it stands, run 5). The check now
+greps this track's paths in its output (scratch `scripts/g9r6e-check.sh`); the whole check exits 1
+for other tracks' findings.
 
 G9 round 6 run 3: NO finding in this track's files (x86-64 machine, a copy of the working tree with
 a fresh git index, scratch `scripts/g9r6c-literals.sh`). The `include!` finding went as the
