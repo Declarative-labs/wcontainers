@@ -16,7 +16,6 @@ use wcontainers_nir::mesa::Swizzle;
 use crate::context::Context;
 use crate::gallium::*;
 use crate::resource::{self, Resource};
-use crate::screen::DRIVER_NAME;
 use crate::state::refused;
 
 /// One sampler view: Gallium's struct first, then the interface's view, or why there is none.
@@ -1400,10 +1399,7 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
     }
     let mut backend = context.screen().backend();
     if let Err(error) = context.tracker.close(&mut backend) {
-        eprintln!(
-            "{}: closing a pass: {error:?}",
-            DRIVER_NAME.to_string_lossy()
-        );
+        crate::state::refuse(format_args!("closing a pass: {error:?}"));
     }
     match (src.buffer(), dst.buffer(), src.texture(), dst.texture()) {
         (Some(from), Some(to), _, _) => {

@@ -299,10 +299,7 @@ unsafe extern "C" fn flush<B: Backend>(
     let context = unsafe { Context::<B>::of(pipe) };
     let mut backend = context.screen().backend();
     if let Err(error) = context.tracker.close(&mut backend) {
-        eprintln!(
-            "{}: closing a pass: {error:?}",
-            DRIVER_NAME.to_string_lossy()
-        );
+        state::refuse(format_args!("closing a pass: {error:?}"));
     }
     query::start_reads(context, &mut backend);
     let done = backend.submit();
@@ -432,13 +429,13 @@ unsafe extern "C" fn clear<B: Backend>(
         }
     }
     if let Err(error) = done {
-        eprintln!("{}: a clear: {error:?}", DRIVER_NAME.to_string_lossy());
+        state::refuse(format_args!("a clear: {error:?}"));
     }
     if let Err(error) = context
         .framebuffer
         .copy_back_twins(&mut context.tracker, &mut backend)
     {
-        eprintln!("{}: a clear: {error}", DRIVER_NAME.to_string_lossy());
+        state::refuse(format_args!("a clear: {error}"));
     }
 }
 
@@ -474,7 +471,7 @@ fn clear_surface<B: Backend>(
         cleared
     });
     if let Err(error) = result {
-        eprintln!("{}: a clear: {error:?}", DRIVER_NAME.to_string_lossy());
+        state::refuse(format_args!("a clear: {error:?}"));
     }
 }
 
@@ -743,10 +740,10 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
         .framebuffer
         .copy_into_twins(&mut context.tracker, backend)
     {
-        eprintln!("{}: framebuffer: {error}", DRIVER_NAME.to_string_lossy());
+        state::refuse(format_args!("framebuffer: {error}"));
     }
     if let Err(error) = context.tracker.set_targets(backend, targets) {
-        eprintln!("{}: framebuffer: {error:?}", DRIVER_NAME.to_string_lossy());
+        state::refuse(format_args!("framebuffer: {error:?}"));
     }
     drop(guard);
     for view in std::mem::replace(&mut context.framebuffer.views, views) {
@@ -766,10 +763,7 @@ unsafe extern "C" fn texture_barrier<B: Backend>(pipe: *mut pipe_context, _: c_u
     let context = unsafe { Context::<B>::of(pipe) };
     let mut backend = context.screen().backend();
     if let Err(error) = context.tracker.close(&mut backend) {
-        eprintln!(
-            "{}: closing a pass: {error:?}",
-            DRIVER_NAME.to_string_lossy()
-        );
+        state::refuse(format_args!("closing a pass: {error:?}"));
     }
 }
 

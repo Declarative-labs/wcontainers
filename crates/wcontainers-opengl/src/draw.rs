@@ -1068,6 +1068,13 @@ fn convert_evaluation<B: Backend>(
     })
 }
 
+/// Whether a draw's forced early tests can give another result than tests after the program: a
+/// depth or stencil test is made on an attached target and the program's results depend on when
+/// it runs (`forced`, [`Built::early_tests`]). Elsewhere both orders draw alike.
+fn early_tests_matter(forced: Option<bool>, attached: bool, tested: bool) -> bool {
+    forced == Some(true) && attached && tested
+}
+
 /// Whether a fragment program forces early depth and stencil tests, which the shaders crate's
 /// rewrite moves into its pixel extras.
 fn forces_early_tests(module: &naga::Module) -> bool {
@@ -2348,11 +2355,11 @@ fn draw<B: Backend>(
     let programs = &mut context.programs;
     // The fragment program first: the last stage's outputs are interpolated as its inputs.
     let built_fragment = programs.built_for(backend, fragment_shader, &fragment)?;
-    // Forced early tests are the same as tests after the program where no test is made or the
-    // program's results do not depend on when they run.
-    let tested = !context.framebuffer.state.zsbuf.texture.is_null()
-        && (depth_stencil.depth || depth_stencil.stencil);
-    if built_fragment.early_tests == Some(true) && tested {
+    if early_tests_matter(
+        built_fragment.early_tests,
+        !context.framebuffer.state.zsbuf.texture.is_null(),
+        depth_stencil.depth || depth_stencil.stencil,
+    ) {
         return refused(format_args!(
             "early depth and stencil tests a fragment program forces before its storage writes, \
              discards or depth (EarlyTestsInShader, not built)"
@@ -4712,4 +4719,22 @@ fn widen(indices: &[u8], restart: bool) -> Vec<u8> {
             wide.to_le_bytes()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::early_tests_matter;
+
+    #[test]
+    fn forced_early_tests_matter_only_for_a_dependent_program_tested_on_an_attached_target() {
+        assert!(early_tests_matter(Some(true), true, true));
+        for (forced, attached, tested) in [
+            (Some(true), false, true),
+            (Some(true), true, false),
+            (Some(false), true, true),
+            (None, true, true),
+        ] {
+            assert!(!early_tests_matter(forced, attached, tested));
+        }
+    }
 }

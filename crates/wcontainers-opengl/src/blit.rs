@@ -4,8 +4,8 @@
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Backend, Extent, Format, FormatKind, FormatUse, Origin, TextureDesc, TextureDimension,
-    TextureRegion,
+    Backend, Extent, Format, FormatKind, FormatUse, Origin, SlowPath, TextureDesc,
+    TextureDimension, TextureRegion,
 };
 
 use crate::context::Context;
@@ -372,6 +372,12 @@ fn stencil_by_bits<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) 
     } else {
         std::ptr::null()
     };
+    // One draw a bit (and sample) writes the stencil, as for a stencil copy the host makes whole.
+    context
+        .screen()
+        .backend()
+        .slow_paths()
+        .hit(SlowPath::StencilWrittenByDraw);
     // SAFETY: as above.
     save(context, unsafe { &mut *blitter });
     // SAFETY: as above; both resources are live textures of this driver.

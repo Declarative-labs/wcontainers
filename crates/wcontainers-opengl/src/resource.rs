@@ -338,7 +338,7 @@ unsafe fn transfer(
 /// Closes the context's open pass, as every read back and copy needs.
 fn outside_pass<B: Backend>(context: &mut Context<B>, backend: &mut B) {
     if let Err(error) = context.tracker.close(backend) {
-        eprintln!("{}: closing a pass: {error:?}", screen_name());
+        crate::state::refuse(format_args!("closing a pass: {error:?}"));
     }
 }
 
