@@ -18,7 +18,14 @@ Scratch w2/run1 (check.sh is round 4 run 5's; outputs *-arm.out). Graviton4, /de
     design track (gap list, Requests to other tracks; removed from For the owner).
   - [minor] The Met line read as 12 of 12 against the WebAssembly output: corrected (10 against it; `code` and
     `blocks` against the program on the host; turns differ for multi-process programs).
-  - [minor] The account's "today" line updated to 3.16 to 3.31. Its re-measure on a quiet machine: see below.
+  - [minor] The account's "today" line updated to 3.16 to 3.31. Its re-measure on a quiet machine: not done, the
+    machine was not quiet. account.sh was run again unchanged at the quietest this run saw (15:05 to 15:07 UTC, load
+    10.6 rising to 17.9 on 96 cores; account1-arm.out): the plain build's second runs were 3.38 to 3.86 times the
+    model (models 1.08 to 1.16 s), above round 4 run 5's 3.16 to 3.31 at load 8 to 11, so the figures move with the
+    machine's load. CPU 41's profile: embedder 58.0%, stubs 40.0%, other processes 2.0%, no idle share this time
+    (7.7% before); the largest parts the embedder's own code 31.2%, its `pread` 9.0%, the stubs' exits 5.8%, page
+    faults 5.8% and filter installs 4.5%, translated guest code 2.6%. The account's parts were not re-derived from
+    the timers; it stays the basis, its load stated, until a quiet machine exists (none of these rounds had one).
   - [minor] A refused read or write of borrowed guest bytes moved none silently: settled, c143b4001, counted
     (`Counters::guest_bytes_refused`) and warned ("guest bytes refused"). No test makes the host refuse a `pread` of
     a stub's own memfd; the memory, embedder, files and copy binaries pass with it (check1-arm.out, load 11 to 14).
@@ -28,6 +35,9 @@ Scratch w2/run1 (check.sh is round 4 run 5's; outputs *-arm.out). Graviton4, /de
   (Needs a primitive, "Form I", with the exact code). So crates/executor/implementation/in-process is not created
   and nothing of form I is measured; the crossover table cannot exist yet. What W2 can build meanwhile is the
   translator's `InProcess` way (code generation only), next.
+- Verdicts at the run's end (commit 541ea68c0's crate), Graviton4, /dev/kvm denied, 15:09 to 15:13 UTC, load 13 to
+  16 (whole-arm.out): clippy with warnings denied clean; the 23 test binaries 124 passed, 1 failed (the known
+  precise-set test, 20 of 21), 10 ignored (the library's own 6 were not run this time).
 
 ## Where busybox sh's factor of four goes, and why the bar of 1.25 cannot be met by this design (2026-11-24)
 
