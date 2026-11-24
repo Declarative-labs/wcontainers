@@ -9,6 +9,15 @@ use wcontainers_gpu::{
 
 use crate::format::{self, FormatExtensions};
 
+/// The format at index `i` of [`FormatCaps`] (its number, which serde's derive reads as the variant's
+/// position).
+fn format_at(i: usize) -> Format {
+    use serde::Deserialize;
+    use serde::de::value::{Error, U32Deserializer};
+    Format::deserialize(U32Deserializer::<Error>::new(i as u32))
+        .expect("every index below Format::COUNT is a format")
+}
+
 pub fn caps(
     gl: &glow::Context,
     platform: &crate::platform::Platform,
@@ -134,8 +143,7 @@ pub fn caps(
         samples: [0; Format::COUNT],
     };
     for i in 0..Format::COUNT {
-        // SAFETY: every index below COUNT is a Format, which is repr(u16) and fieldless.
-        let format: Format = unsafe { core::mem::transmute(i as u16) };
+        let format = format_at(i);
         formats.uses[i] = format::uses(format, format_ext);
         if formats.uses[i].is_empty() {
             continue;
