@@ -123,12 +123,17 @@ refined once by its fused remainder), because atg-simplecomputepc's 1200 / 300 c
 both real implementations give 4 (154,515 pixels from them; that track's status, Gap list).
 Its effect on this crate's tests, settled by that track on 2026-11-24 (a53d6d4c2, 25d84e56f): the
 refinement keeps the device's quotient where the fused remainder is below the normal range and
-flushed (quotients just above the range's bottom), so it is WARP's answer, not a correctly rounded
-one, there; and tests/compute_draw.rs's comparisons (`atomics_and_counters_match_direct3d`,
-`storage_views_at_any_first_element_match_direct3d`, `nan_rules_match_direct3d`) now run every case
-on WARP too and accept a word or counter equal to either real Direct3D 11's, the graphics bar of
-2026-11-22. Measured: the whole compute_draw file 17 of 17 on the RTX 3080 at f6c1bd56 (that
-track's scratch logs/r12-compute.log). This settles the two failures listed under G6w run 2.
+flushed (quotients just above the range's bottom), so there it is the device's answer (the RTX
+3080's, measured: a in 2^-126 to 2^-110 over b in 2^0 to 2^12), 1 ULP from WARP's, not WARP's and
+not a correctly rounded one; and tests/compute_draw.rs's comparisons
+(`atomics_and_counters_match_direct3d`, `storage_views_at_any_first_element_match_direct3d`,
+`nan_rules_match_direct3d`) now run every case on WARP too and accept ours where it is one real
+Direct3D 11's answer as a whole, every word and counter of the GPU's or every word and counter of
+WARP's, the graphics bar of 2026-11-22 (word by word in 25d84e56f; per case since G4i run 1).
+Measured: the whole compute_draw file 17 of 17 on the RTX 3080 at f6c1bd56 with the word-by-word
+rule (that track's scratch logs/r12-compute.log) and 17 of 17 with the per-case rule at trial
+af01b1af (seeds 1 to 4, logs/r13b-compute.log). This settles the two failures listed under G6w
+run 2.
 
 ## G6w run 3: both routes kept, the linked one the default; the check's findings
 
