@@ -756,7 +756,10 @@ mod tests {
                 let (variant, value) = variant
                     .split_once('=')
                     .unwrap_or_else(|| panic!("{name}::{variant} has no discriminant"));
-                (variant.trim().to_string(), value.trim().parse().expect("a number"))
+                (
+                    variant.trim().to_string(),
+                    value.trim().parse().expect("a number"),
+                )
             })
             .collect()
     }
@@ -783,46 +786,64 @@ mod tests {
             codes.len()
         }
         let lsb = AddressLeastSignificantBit::new(0).expect("bit 0");
-        let checked = check("SegmentationFaultCode", &[
-            SegmentationFaultCode::SEGV_MAPERR,
-            SegmentationFaultCode::SEGV_ACCERR,
-            SegmentationFaultCode::SEGV_BNDERR(AddressBounds { lower: 0, upper: 0 }),
-            SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
-            SegmentationFaultCode::SEGV_ACCADI,
-            SegmentationFaultCode::SEGV_ADIDERR,
-            SegmentationFaultCode::SEGV_ADIPERR,
-            SegmentationFaultCode::SEGV_MTEAERR,
-            SegmentationFaultCode::SEGV_MTESERR,
-            SegmentationFaultCode::SEGV_CPERR,
-        ]) + check("BusErrorCode", &[
-            BusErrorCode::BUS_ADRALN,
-            BusErrorCode::BUS_ADRERR,
-            BusErrorCode::BUS_OBJERR,
-            BusErrorCode::BUS_MCEERR_AR(lsb),
-            BusErrorCode::BUS_MCEERR_AO(lsb),
-        ]) + check("TrapCode", &[
-            TrapCode::TRAP_BRKPT,
-            TrapCode::TRAP_TRACE,
-            TrapCode::TRAP_BRANCH,
-            TrapCode::TRAP_HWBKPT,
-            TrapCode::TRAP_UNK,
-            TrapCode::TRAP_PERF {
-                data: PerfEventSignalData(0),
-                event_type: PerfEventType(0),
-                delivery: PerfEventDelivery::Synchronous,
-            },
-        ]) + check("ChildTerminationCode", &[
-            ChildTerminationCode::CLD_EXITED(ExitStatus(0)),
-            ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
-            ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
-        ]) + check("ChildStateCode", &[
-            ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
-            ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
-            ChildStateCode::CLD_CONTINUED,
-        ]) + check("BadSystemCallCode", &[
-            BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
-            BadSystemCallCode::SYS_USER_DISPATCH,
-        ]);
+        let checked = check(
+            "SegmentationFaultCode",
+            &[
+                SegmentationFaultCode::SEGV_MAPERR,
+                SegmentationFaultCode::SEGV_ACCERR,
+                SegmentationFaultCode::SEGV_BNDERR(AddressBounds { lower: 0, upper: 0 }),
+                SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
+                SegmentationFaultCode::SEGV_ACCADI,
+                SegmentationFaultCode::SEGV_ADIDERR,
+                SegmentationFaultCode::SEGV_ADIPERR,
+                SegmentationFaultCode::SEGV_MTEAERR,
+                SegmentationFaultCode::SEGV_MTESERR,
+                SegmentationFaultCode::SEGV_CPERR,
+            ],
+        ) + check(
+            "BusErrorCode",
+            &[
+                BusErrorCode::BUS_ADRALN,
+                BusErrorCode::BUS_ADRERR,
+                BusErrorCode::BUS_OBJERR,
+                BusErrorCode::BUS_MCEERR_AR(lsb),
+                BusErrorCode::BUS_MCEERR_AO(lsb),
+            ],
+        ) + check(
+            "TrapCode",
+            &[
+                TrapCode::TRAP_BRKPT,
+                TrapCode::TRAP_TRACE,
+                TrapCode::TRAP_BRANCH,
+                TrapCode::TRAP_HWBKPT,
+                TrapCode::TRAP_UNK,
+                TrapCode::TRAP_PERF {
+                    data: PerfEventSignalData(0),
+                    event_type: PerfEventType(0),
+                    delivery: PerfEventDelivery::Synchronous,
+                },
+            ],
+        ) + check(
+            "ChildTerminationCode",
+            &[
+                ChildTerminationCode::CLD_EXITED(ExitStatus(0)),
+                ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
+                ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
+            ],
+        ) + check(
+            "ChildStateCode",
+            &[
+                ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
+                ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
+                ChildStateCode::CLD_CONTINUED,
+            ],
+        ) + check(
+            "BadSystemCallCode",
+            &[
+                BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
+                BadSystemCallCode::SYS_USER_DISPATCH,
+            ],
+        );
         assert_eq!(checked, 29);
     }
 
