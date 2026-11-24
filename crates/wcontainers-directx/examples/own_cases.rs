@@ -2056,7 +2056,7 @@ fn main() -> windows::core::Result<()> {
                     );
                     context.Unmap(window, 0);
                     context.CSSetConstantBuffers(0, Some(&[Some(window.clone())]));
-                    context.CSSetShaderResources(0, Some(&[map_view.clone()]));
+                    context.CSSetShaderResources(0, Some(std::slice::from_ref(&map_view)));
                     context.CSSetSamplers(0, Some(&[map_sampler.clone()]));
                     context.CSSetShader(fractal.as_ref(), None);
                     context.CSSetUnorderedAccessViews(0, 1, Some(&store), None);
@@ -2085,10 +2085,10 @@ fn main() -> windows::core::Result<()> {
                     context.IASetIndexBuffer(index_buffer.as_ref(), DXGI_FORMAT_R16_UINT, 0);
                     // The result drawn over the target, after the glyphs' corners, as the program
                     // appends it; then the glyphs from the buffer's start.
-                    context.PSSetShaderResources(0, Some(&[target_view.clone()]));
+                    context.PSSetShaderResources(0, Some(std::slice::from_ref(&target_view)));
                     write(&quads(1, 2.0), D3D11_MAP_WRITE_NO_OVERWRITE, GLYPHS * 4);
                     context.DrawIndexed(QUAD_INDICES, GLYPHS as u32 * QUAD_INDICES, 0);
-                    context.PSSetShaderResources(0, Some(&[glyph_view.clone()]));
+                    context.PSSetShaderResources(0, Some(std::slice::from_ref(&glyph_view)));
                     write(&quads(GLYPHS, 0.04), D3D11_MAP_WRITE_DISCARD, 0);
                     context.DrawIndexed(GLYPHS as u32 * QUAD_INDICES, 0, 0);
                     context.PSSetShaderResources(0, Some(&[None]));
