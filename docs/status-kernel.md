@@ -25,7 +25,27 @@ Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
   a host call per outside item per wait, against epoll's point); listed.
 - siginfo.rs's test, from the unsafe job's commit 0427f705, was not formatted: formatted
   (3cd3fcd1).
-- The whole suite at 74e2ca54: see the next entry once it ends (job kernel/20261124-111636-2370477).
+- The whole suite of this track's crates and the stand-ins at 7c765bfd (which holds 74e2ca54;
+  whole.sh, job kernel/20261124-111636-2370477, 11:17 to 12:46 UTC, load 8 to 19; 8 test threads;
+  other agents' uncommitted edits taken back; logs kc14/log and kc14/suite.log): 451 passed, 36
+  failed, 8 ignored; clippy over this track's packages, all targets, warnings denied, status 0;
+  fmt no diff. `a_full_connection_hears_a_reset` passed. 35 failures are exactly the ARM list
+  (kf7/fails7.txt), each with the cause the thirteenth run's entry gives (the machine's own Linux
+  7.0 as the reference). The 36th:
+  - `a_terminal_closed_before_the_start_finished` (streams): the stand-in's new check (56e15fbe7,
+    executors job) panicked, "a block of shared pages is dropped while a memory still shows it".
+    At the tip (with 03706cc0, where the stand-in refuses such a drop by name and keeps the
+    block) the test passed 5 of 5 alone but the stand-in printed `DroppingAShownBlock { block:
+    SharedId(1) and (2), shown_in: [MemoryId(11)] }` in each (t2.sh). A kernel defect: when the
+    first start's ends could not be made yet (the start waits for the backend), `start_first`
+    returned without dropping the memory it had loaded the program into, loaded it again on the
+    next try, and later dropped the file blocks that leaked memory still showed (abi/cpu.rs:88).
+    Fixed (36c9d5cf): that memory is dropped on that path. With it: no refusal in 5 of 5 runs and
+    the whole streams binary 18 of 18, kernel clippy clean (t3.sh, 12:51 UTC, load 19). The whole
+    suite was not run again after this narrow fix. No test fails on a refusal of the stand-in
+    yet (it only prints): listed.
+- Thirty LTP verdicts in the same job (12:46 UTC, load 16): all 30 pass and match the committed
+  reference.
 - The five unsafe lines of executing.rs (the two `unsafe impl`, `unsafe fn new`, `unsafe fn start`
   and its call) are NOT removed. Which way: the state must become `Send` by its types. Keeping it
   on one thread behind a `Send` handle cannot work here: the interface asks `Kernel: Sync` and
@@ -49,6 +69,15 @@ Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
   Step 2 is the owner's ruling (an unstable feature in the kernel, or `Send` in the system's
   interfaces), and without it steps 1 and 3 remove no unsafe line while making every borrow
   slower, so none was started. Listed under "For the owner".
+
+Not done, for KC (what comes next, in order):
+- The five unsafe lines: waiting on the owner's choice between (a) and (b) under "For the
+  owner"; then steps 1 to 3 above, `[lints] workspace = true` in the crate, and its line out of
+  the root Cargo.toml's list.
+- epoll_wait does not hear outside connections at once (above); a program that learns of a reset
+  through epoll after another connection's bytes can still miss it.
+- A check that fails a test when the stand-in refuses a kernel request (today only printed):
+  the driver could fail a run whose `StandIn::refused()` is not empty.
 
 ## KC, thirteenth run: the three files fixed, the workspace builds, the quiet suite and LTP
 
