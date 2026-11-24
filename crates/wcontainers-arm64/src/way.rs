@@ -15,10 +15,12 @@ pub enum Way {
     Process,
     /// The kernel in process: the guest process in slot `slot`'s window, its host address [`window_base`] plus
     /// its guest address, every access checked and cut to the window, calls into the floor's entries at
-    /// [`IN_PROCESS_ENTRIES`].
+    /// [`IN_PROCESS_ENTRIES`]. `displaced`: code for a thread whose stack pointer is outside the window (rule e of
+    /// section 3.2), which holds the guest's own stack pointer and checks and cuts every access through it, and whose
+    /// exits all reach the floor.
     ///
     /// [`window_base`]: Way::window_base
-    InProcess { slot: u16 },
+    InProcess { slot: u16, displaced: bool },
 }
 
 /// Guest addresses below 2^`PROCESS_REACH_BITS` have a slot in the process way: its ceiling.
@@ -38,6 +40,9 @@ pub const SLOT_BITS: u32 = WINDOW_BITS + 1;
 pub const IN_PROCESS_SLOTS: u16 = (1 << (PROCESS_REACH_BITS - SLOT_BITS)) - 1;
 /// The floor's first entry in process, past the process way's zygote; the entry of code `c` is `c` entries further.
 pub const IN_PROCESS_ENTRIES: u64 = (1 << 45) + (1 << 32) + PROCESS_ENTRY_BYTES;
+/// The in-process way's displaced code's slot table: that of slot 0's window, which is no guest's, so it is never
+/// mapped, and every exit of displaced code reaches the floor as a fault there.
+pub const DISPLACED_SLOTS: u64 = PROCESS_SLOTS;
 /// The in-process way's mark, at this many bytes past a window's base: translated code reads a byte there when an
 /// access's address or a new stack pointer is outside the window, so that the floor finds the instruction's own
 /// fault or takes the stack pointer outside its window.
@@ -81,7 +86,12 @@ impl Way {
         match self {
             Self::Machine => mirror::MIRROR,
             Self::Process => PROCESS_SLOTS,
-            Self::InProcess { .. } => PROCESS_SLOTS | self.window_base() << SLOT_SHIFT,
+            Self::InProcess {
+                displaced: false, ..
+            } => PROCESS_SLOTS | self.window_base() << SLOT_SHIFT,
+            Self::InProcess {
+                displaced: true, ..
+            } => DISPLACED_SLOTS,
         }
     }
 
@@ -99,7 +109,17 @@ impl Way {
     pub const fn window_base(self) -> u64 {
         match self {
             Self::Machine | Self::Process => 0,
-            Self::InProcess { slot } => (slot as u64) << SLOT_BITS,
+            Self::InProcess { slot, .. } => (slot as u64) << SLOT_BITS,
+        }
+    }
+
+    /// The host stack pointer less the guest's: the window's base in process, unless displaced.
+    pub const fn stack_base(self) -> u64 {
+        match self {
+            Self::InProcess {
+                displaced: true, ..
+            } => 0,
+            _ => self.window_base(),
         }
     }
 

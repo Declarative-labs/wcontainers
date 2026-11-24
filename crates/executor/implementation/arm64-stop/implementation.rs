@@ -30,7 +30,13 @@ pub const GENERAL: usize = RegisterBlock::ZERO.x.len();
 pub const SYSCALL_NUMBER: usize = 8;
 
 /// The in-process way's withheld registers past the other ways' three, whose guest values are just after the page.
-pub const AFTER_PAGE: usize = Way::InProcess { slot: 0 }.withheld().len() - WITHHELD.len();
+pub const AFTER_PAGE: usize = Way::InProcess {
+    slot: 0,
+    displaced: false,
+}
+.withheld()
+.len()
+    - WITHHELD.len();
 
 /// The guest values of the in-process way's withheld registers past the other ways' three, in the way's order.
 pub type AfterPage = [u64; AFTER_PAGE];
@@ -282,7 +288,7 @@ fn state_of(
     }
     GuestState {
         x,
-        sp: hardware.sp.wrapping_sub(way.window_base()),
+        sp: hardware.sp.wrapping_sub(way.stack_base()),
         pc,
         flags: hardware.state & condition_flags(),
         count: hardware.x[usize::from(COUNT)] - u64::from(lead),
@@ -684,7 +690,7 @@ fn rejoin_in(
     }
     let hardware = Interrupted {
         x,
-        sp: state.sp.wrapping_add(way.window_base()),
+        sp: state.sp.wrapping_add(way.stack_base()),
         pc: 0,
         state: state.flags,
         fpsr: float.fpsr,
@@ -695,8 +701,8 @@ fn rejoin_in(
 
 /// Resolution in the in-process way (docs/native-without-virtual-machine.md section 3.2 item 1): a thread's
 /// guest values of [`wcontainers_arm64::way::CHECK`] and [`BASE`] are the words after its register page, its
-/// guest stack pointer the host's less the window's base, and a read of the way's mark ([`OUTSIDE`]) is an
-/// access outside the window or a stack pointer leaving it.
+/// guest stack pointer the host's less the window's base (the host's itself in displaced code), and a read of the
+/// way's mark ([`OUTSIDE`]) is an access outside the window or a stack pointer leaving it.
 pub mod in_process {
     use super::{
         AfterPage, FloatStatus, GuestState, Interrupted, Piece, Resolved, Taken, access_first,
@@ -731,13 +737,13 @@ pub mod in_process {
         (address & ((1 << TAG_LOW) - 1)) >> WINDOW_BITS != 0
     }
 
-    /// [`super::resolve`] for slot `slot`'s window, with `after` the words after the register page.
+    /// [`super::resolve`] for an in-process way, with `after` the words after the register page.
     #[expect(
         clippy::too_many_arguments,
         reason = "resolve's, and the words after the page"
     )]
     pub fn resolve(
-        slot: u16,
+        way: Way,
         piece: &Piece<'_>,
         taken: Taken,
         h: &Interrupted,
@@ -746,12 +752,14 @@ pub mod in_process {
         float: &mut FloatStatus,
         memory: &mut dyn FnMut(u64, &mut [u8]),
     ) -> Option<Resolution> {
-        let way = Way::InProcess { slot };
+        debug_assert!(matches!(way, Way::InProcess { .. }), "an in-process way");
+        // Displaced code makes no stack probe.
+        let displaced = way.stack_base() != way.window_base();
         let offset = h.pc.wrapping_sub(piece.base);
         if offset < piece.length as u64 {
             let span = span_at(piece.spans, piece.length, offset as u32)?;
             let mark = way.window_base() | OUTSIDE;
-            let probe = span.side != Side::Before && span.stopping == Stopping::Plain;
+            let probe = !displaced && span.side != Side::Before && span.stopping == Stopping::Plain;
             match taken {
                 Taken::Access { fault, .. } if fault == mark && span.side == Side::Before => {
                     float.enter(h.fpsr);
@@ -777,11 +785,11 @@ pub mod in_process {
                     alignment: false,
                     ..
                 } if probe && h.sp.wrapping_sub(fault) <= PROBE_BELOW => {
-                    return interrupted(slot, piece, h, page, after, float, memory)
+                    return interrupted(way, piece, h, page, after, float, memory)
                         .map(Resolution::Probed);
                 }
                 Taken::StackAlignment if probe => {
-                    return interrupted(slot, piece, h, page, after, float, memory)
+                    return interrupted(way, piece, h, page, after, float, memory)
                         .map(Resolution::Probed);
                 }
                 _ => {}
@@ -790,9 +798,9 @@ pub mod in_process {
         resolve_in(way, piece, taken, h, page, after, float, memory).map(Resolution::Resolved)
     }
 
-    /// [`super::interrupted`] for slot `slot`'s window, with `after` the words after the register page.
+    /// [`super::interrupted`] for an in-process way, with `after` the words after the register page.
     pub fn interrupted(
-        slot: u16,
+        way: Way,
         piece: &Piece<'_>,
         h: &Interrupted,
         page: &RegisterPage,
@@ -800,45 +808,30 @@ pub mod in_process {
         float: &mut FloatStatus,
         memory: &mut dyn FnMut(u64, &mut [u8]),
     ) -> Option<GuestState> {
-        interrupted_in(
-            Way::InProcess { slot },
-            piece,
-            h,
-            page,
-            after,
-            float,
-            memory,
-        )
+        interrupted_in(way, piece, h, page, after, float, memory)
     }
 
-    /// [`super::rejoin`] for slot `slot`'s window, with the words to put after the register page. The guest's
-    /// stack pointer is inside its window: a displaced thread does not rejoin translated code.
+    /// [`super::rejoin`] for an in-process way, with the words to put after the register page: the displaced way
+    /// where the guest's stack pointer is outside its window.
     pub fn rejoin(
-        slot: u16,
+        way: Way,
         state: &GuestState,
         page: RegisterPage,
         float: &FloatStatus,
         register_page: u64,
     ) -> (Interrupted, RegisterPage, AfterPage) {
-        rejoin_in(Way::InProcess { slot }, state, page, float, register_page)
+        rejoin_in(way, state, page, float, register_page)
     }
 
-    /// [`super::set_register`] for slot `slot`'s window, with `after` the words after the register page.
+    /// [`super::set_register`] for an in-process way, with `after` the words after the register page.
     pub fn set_register(
-        slot: u16,
+        way: Way,
         register: u8,
         value: u64,
         hardware: &mut Interrupted,
         page: &mut RegisterPage,
         after: &mut AfterPage,
     ) {
-        set_in(
-            Way::InProcess { slot },
-            register,
-            value,
-            hardware,
-            page,
-            after,
-        );
+        set_in(way, register, value, hardware, page, after);
     }
 }

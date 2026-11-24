@@ -880,9 +880,33 @@ fn stack_check(out: &mut Out) {
     );
 }
 
-/// `sub rd, sp, base`: the guest's stack pointer (in process).
-fn guest_stack(rd: Register) -> u32 {
-    encode::add_extended(true, rd, ZERO, BASE, false, u64::BITS, 0).expect("registers fit")
+/// `sub rd, sp, base`: the guest's stack pointer (in process); displaced, `mov rd, sp`, which holds it.
+fn guest_stack(way: Way, rd: Register) -> u32 {
+    if displaced(way) {
+        encode::add_immediate(rd, ZERO, 0).expect("zero fits")
+    } else {
+        encode::add_extended(true, rd, ZERO, BASE, false, u64::BITS, 0).expect("registers fit")
+    }
+}
+
+/// Whether the way is the in-process way's displaced code (rule e of section 3.2): the stack pointer holds the
+/// guest's own, outside the window, and every access through it is checked and cut as through any other register.
+fn displaced(way: Way) -> bool {
+    matches!(
+        way,
+        Way::InProcess {
+            displaced: true,
+            ..
+        }
+    )
+}
+
+/// `mov` of `from` into a written back base register, the stack pointer's write being an `add`.
+fn write_back(base: Reg, from: Register) -> u32 {
+    match base {
+        Reg::Sp => encode::add_immediate(ZERO, from, 0).expect("zero fits"),
+        _ => encode::move_register(number(base), from),
+    }
 }
 
 /// The test of the stack pointer's alignment that SA0 makes of an access through it, where the access goes
@@ -903,6 +927,8 @@ fn stack_alignment(out: &mut Out) {
 /// instruction itself (rules a and b); any other is checked and cut to the window.
 fn access_in_process(out: &mut Out, route: Route, i: &I, word: u32) {
     let m = i.memory_access().expect("an access");
+    // Displaced, every access through the stack pointer is checked and cut as through any other register.
+    let stack_kept = !displaced(out.way);
     let align = (route == Route::Aligned).then_some(m.bytes);
     let post = match *i {
         I::SimdMemory {
@@ -942,7 +968,7 @@ fn access_in_process(out: &mut Out, route: Route, i: &I, word: u32) {
             address,
             ..
         } if rt == rt2 => {
-            if base_of(&address) == Some(Reg::Sp) {
+            if base_of(&address) == Some(Reg::Sp) && stack_kept {
                 return vector_pair_into_one(out, &m, bytes, rt);
             }
             let name = match bytes {
@@ -960,10 +986,10 @@ fn access_in_process(out: &mut Out, route: Route, i: &I, word: u32) {
                 (vec![first], load)
             });
         }
-        _ if stack_immediate && post.is_none() => {
+        _ if stack_immediate && post.is_none() && stack_kept => {
             access(out, &m, one_element(i), align, &[], word);
         }
-        _ if base_of(&m.address) == Some(Reg::Sp) && post.is_some() => {
+        _ if base_of(&m.address) == Some(Reg::Sp) && post.is_some() && stack_kept => {
             stack_post_register(out, &m, post.expect("a register"), word);
         }
         _ => {
@@ -1003,7 +1029,7 @@ fn access_in_window(
             shift,
         } => {
             let from = if base == Reg::Sp {
-                out.put(guest_stack(SCRATCH));
+                out.put(guest_stack(out.way, SCRATCH));
                 SCRATCH
             } else {
                 number(base)
@@ -1020,6 +1046,14 @@ fn access_in_window(
                 )
                 .expect("a load's extend fits an add's"),
             );
+            (SCRATCH, 0)
+        }
+        Address::Offset { offset, .. } | Address::PreIndex { offset, .. } if base == Reg::Sp => {
+            out.put(guest_stack(out.way, SCRATCH));
+            (SCRATCH, offset)
+        }
+        Address::PostIndex { .. } if base == Reg::Sp => {
+            out.put(guest_stack(out.way, SCRATCH));
             (SCRATCH, 0)
         }
         Address::Offset { offset, .. } | Address::PreIndex { offset, .. } => (number(base), offset),
@@ -1078,12 +1112,11 @@ fn access_in_window(
     let next = out.next();
     out.commit(access, next);
     if written_back.is_some() {
-        let base = number(base);
         out.code.fixup(Fixup::Move {
-            register: base,
+            register: number(base),
             from: CHECK,
         });
-        out.put(encode::move_register(base, CHECK));
+        out.put(write_back(base, CHECK));
         out.code.fixed();
     }
 }
@@ -1095,7 +1128,7 @@ fn stack_post_register(out: &mut Out, m: &MemoryAccess, n: Register, word: u32) 
     if m.bytes > 1 {
         page_crossing(out, m, false, &m.address, CHECK);
     }
-    out.put(guest_stack(CHECK));
+    out.put(guest_stack(out.way, CHECK));
     out.put(
         encode::add_extended(false, CHECK, CHECK, n, false, u64::BITS, 0).expect("registers fit"),
     );
@@ -1122,6 +1155,10 @@ const STACK_STEP: u64 = wcontainers_abi::LOWEST_ADDRESS - PAGE_SIZE;
 /// An instruction that reads or writes the stack pointer as a value, in process (section 3.2 item 1, rules c and
 /// d, and the read of the guest's stack pointer); false, with nothing written, for any other.
 fn stack_pointer_in_process(out: &mut Out, i: &I, word: u32) -> bool {
+    // Displaced, the stack pointer is the guest's own, read and written as it is.
+    if displaced(out.way) {
+        return false;
+    }
     let next = out.next();
     let (rd, rn, operand, width) = match *i {
         I::AddSub {
@@ -1141,7 +1178,7 @@ fn stack_pointer_in_process(out: &mut Out, i: &I, word: u32) -> bool {
     }
     let reads = |out: &mut Out, w: u32| {
         if rn == Reg::Sp {
-            out.put(guest_stack(SCRATCH));
+            out.put(guest_stack(out.way, SCRATCH));
             encode::replace(w, field::RN, SCRATCH.into()).expect("a register fits")
         } else {
             w
@@ -1630,7 +1667,9 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     }
     // In process the slot is the host address's: the target cut to the window, plus the window's base.
     let (source, reach, table) = match way {
-        Way::InProcess { .. } => {
+        Way::InProcess {
+            displaced: false, ..
+        } => {
             out.put(window_address(SCRATCH, source));
             (SCRATCH, PROCESS_REACH_BITS, PROCESS_SLOTS)
         }
@@ -1906,7 +1945,7 @@ fn exclusive(out: &mut Out, i: &I) {
             // which reads register 31 as zero, takes it from t.
             let untag = if rn == Reg::Sp {
                 let copy = if in_process {
-                    guest_stack(SCRATCH)
+                    guest_stack(out.way, SCRATCH)
                 } else {
                     encode::add_immediate(SCRATCH, number(rn), 0).expect("zero fits")
                 };
@@ -2015,8 +2054,17 @@ fn exclusive(out: &mut Out, i: &I) {
             // The base as the guest's address, compared with the remembered one, and as the host's, accessed.
             let (base, host) = match (in_process, rn) {
                 (false, _) => (number(rn), number(rn)),
+                // Displaced, the stack pointer is the guest's address, and its host address is made as any other's,
+                // with the check SA0 would make of an access through it.
+                (true, Reg::Sp) if displaced(out.way) => {
+                    stack_alignment(out);
+                    out.put(guest_stack(out.way, SCRATCH));
+                    window_check(out, SCRATCH);
+                    out.put(window_address(CHECK, SCRATCH));
+                    (number(rn), CHECK)
+                }
                 (true, Reg::Sp) => {
-                    out.put(guest_stack(CHECK));
+                    out.put(guest_stack(out.way, CHECK));
                     (CHECK, number(rn))
                 }
                 (true, _) => {
