@@ -117,6 +117,11 @@ out of the integer twins as BGRA is (targets and storage clears of it stay refus
 Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
 96's section).
 
+Requests to other tracks (from the Direct3D 11 track, 2026-11-24, by the orchestrator's ruling): 48f3959dd
+changed src/lower.rs so a 32-bit float `div` is correctly rounded as WARP gives it (the device's quotient
+refined once by its fused remainder), because atg-simplecomputepc's 1200 / 300 came out 3.9999998 where
+both real implementations give 4 (154,515 pixels from them; that track's status, Gap list).
+
 ## G6w run 1: the converters natively as their own WebAssembly module
 
 G6 passed its independent check on 2026-11-24 (round 8, tip e881cbf5b). Milestone G6w: run the
