@@ -482,9 +482,14 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   slice's stop only once the thread has written the turn it took to its register page (`TAKEN`, looked at every
   1 ms), or 100 ms after the slice at the latest (the word is the guest's to forge, which delays only its own stop).
   Measured (W1 run 4, Graviton4): without that, a 1 ms slice on a CPU shared with a spinning program ran 104 ms.
-- A turn that must end at an exact count is the VM form's open decision 10; until the owner rules it runs one host
-  instruction at a time, which in a host process is not available (no single-step without ptrace): such a turn is
-  refused as the VM form refuses it without the count (`Failure`, "turn limit without stepping"), counted.
+- A turn that must end at an exact count is the VM form's open decision 10. Until the owner rules, P has no
+  single-step (not without ptrace), so an executor made for a container whose policy gives count limits
+  (`HostProcessExecutor::exact`, a stand-in for the embedder's choice) translates every piece as one instruction,
+  never linked and never given a slot, as the VM form's look-ahead none: every way out lands on an empty slot, the
+  thread comes back at every instruction's end, and a limited turn ends at the first end where the count reached the
+  limit, with no slice. That costs a turn per guest instruction, the slow path "turn with a count limit run in
+  steps", counted per limited turn. An ordinary executor (linked pieces) ends a limited turn past its count, as 4.6
+  says, counted "turn limit passed".
 
 ### 3.7 What protects us from the guest
 
@@ -909,9 +914,9 @@ none), so the host's lazy SVE handling never adds to its wakes.
 
 As built (W1 round 3 run 2): the kernel's loop (`wcontainers_runtime_single_kernel::drive`) runs P through the
 runtime's `Execution` trait, as it runs the WebAssembly output and the VM form's inside; that is the one module
-that implements an executor trait. A counted turn cannot stop at its exact count in a host process (no stepping
+that implements an executor trait. With linked pieces a counted turn cannot stop at its exact count (no stepping
 without ptrace): it ends at the first exit at or after the count, or when a slice of one nanosecond per unit of its
-limit sends the stop, counted "turn limit passed".
+limit sends the stop, counted "turn limit passed". The exact executor of 3.6 ends it exactly.
 
 `Kernel::new(config, parallelism)` gives N runners; the embedder runs each on a thread of its own with an executor
 handle of its own (section 8). A runner's `run` asks the kernel for the next thread under the kernel's lock, lets the
@@ -1443,15 +1448,13 @@ them.
 the slot table's base (10), and, for the comparisons of addresses, memory size and the count with the WebAssembly
 output, the kernel's K2 (3.1), which is in the kernel: the kernel test gives both outputs the WebAssembly output's
 ceiling and memory size and compares wait status, output, root files, addresses, memory size and the turns of
-one-thread programs. Two tests of this bar are not built, and W1 is not met without them (status file, gap list):
-`differential` at every look-ahead (P translates at one look-ahead; per instruction, the executor suite's precise-set
-test compares P with the WebAssembly translator's meaning), and `count_at_every_stop`. The second needs P to end a turn
-at the counted event its limit names; P ends such a turn at the first exit at or after the limit, or where the slice's
-stop lands, so none of its stops is at a counted event. Ending it there needs pieces of one instruction for a
-count-limited turn (as the VM form's N3 ends one by single steps) or the owner's decision 10; the count would then be
-compared with the VM executor's, which shares the native output and the count's definition (the WebAssembly output
-ends a limited turn at its own stop checks, another quantity). Built meanwhile, and weaker: turns limited to one
-counted event change nothing (`turns_limited_to_one_counted_event_change_nothing`). Does not need the owner's interface items (section 8): the kernel is driven by 4.6's
+one-thread programs. `differential` at every look-ahead is not built, and W1 is not met without it (status file, gap
+list; per instruction, the executor suite's precise-set test compares P's lone pieces with the WebAssembly
+translator's meaning). `count_at_every_stop` is built on 3.6's exact executor (pieces of one instruction, as the VM
+form's look-ahead none) and compares the returns and the hash of their positions (count and pc) with the VM executor's,
+which shares the native output and the count's definition (the WebAssembly output ends a limited turn at its own stop
+checks, another quantity): one test per program of the VM form's set, bench, calls and jumptables. Also kept: turns of
+the ordinary executor limited to one counted event change nothing (`turns_limited_to_one_counted_event_change_nothing`). Does not need the owner's interface items (section 8): the kernel is driven by 4.6's
 `with_parts` loop, the executors are made by their crates' own constructors, and the kernel is not yet given the
 stopper. Builds: the shared layout, floor, code area, memory with copy-on-write, stops (section 3), the zygote and
 stubs, the control and register pages, placement and the runners (section 4), the start-up probe and the seccomp
@@ -1462,8 +1465,8 @@ filter. Pass bar, every item on the rented ARM64 machine:
   registers and memory equal the WebAssembly output's at every look-ahead, with and without the count
   (`differential`, the VM form's differential test, seeded, with its case knob; cases run recorded; not built, see
   this milestone's opening);
-- the count at every stop is identical to the reference's (`count_at_every_stop`, a stop at every counted event;
-  not built, see this milestone's opening for the reason, the reference it needs and what is built);
+- the count at every stop is identical to the reference's (`count_at_every_stop`, a stop at every counted event,
+  under the exact executor, against the VM executor's returns and hash of positions);
 - the zygote survives its own migration between CPUs (the fourth check's case: moved 200 times, answering after
   each), and no registration of restartable sequences is left in it or in a stub;
 - the adversarial cases, each a kept test: a fork while a sibling thread is in a system call and another writes a

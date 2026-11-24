@@ -981,6 +981,35 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     on both. No new unsafe code.
   - Recorded, not changed: the plan's bar change of 944f8917 (Departures), the 150 ms allowed for a killed stub's end
     (Departures), `Execution::restored` not built (gap list, For the owner), the precise-set test (as before).
+- W1 round 7 run 1 (2026-11-24), `count_at_every_stop` built (scratch w1/r7run1):
+  - Conforming: nothing new (start-arm.out: the suite and the interrupter as round 6, the precise-set test failing as
+    known).
+  - The exact executor (plan 3.6): `HostProcessExecutor::exact(host)`, a stand-in for the embedder's choice for a
+    container whose policy gives count limits (For the owner). Every piece is one instruction, never linked and never
+    given a slot (`lone`, what the single-instruction executor already used), so every way out lands on an empty slot
+    and a limited turn ends at the first instruction's end where the count reached the limit, with no slice: a turn
+    per guest instruction, the slow path "turn with a count limit run in steps", counted per limited turn. The
+    ordinary executor is unchanged (limits passed, counted). The single-instruction path now gives `run_translated`
+    its start count as the limit instead of a special case.
+  - Every return from translated code is counted and its count and pc hashed (`positions()`, rustc-hash's FxHasher,
+    as the VM inside's `positions`), so the two compare.
+  - Tests (tests/kernel.rs), one per program of the VM form's set, each with every turn limited to one counted event:
+    status and output as the run without limits, no turn past its limit, returns and hash equal to the VM executor's.
+    bench (built with the VM test's `-mcpu=generic+reserve_x18`) 177,072 returns, hash 10937141521840235265: EQUAL;
+    calls 3,004, 18260131204484228776: EQUAL; jumptables: P 5,482 returns (hash 590264501367005601), the VM 5,484:
+    FAILS, kept failing as a known failure. The VM's three figures were measured again this run on Graviton4 with KVM
+    (vm1-arm.out, the same as N4 runs 15 to 21; that run's VM kernel test then fails later at `blocks`, "memory
+    fault" 8 against 10, the recorded hardware difference). Ceiling none or the WebAssembly output's gives P the same
+    figures.
+  - Diagnosis so far (diag-count.py patches the remote copy only): at every instruction run under the exact executor
+    in the three programs, P's count rose by exactly the definition's events of that instruction
+    (`counted` of the shared finder; 0 mismatches), and jumptables has 72 exits on P's side, every one a system call,
+    a fault or the one illegal instruction. So the two missing returns are exits the VM side gives that P does not (or
+    P handles inside), not a count difference; which (the VM's code-changed path or its page faults are the likely
+    places: the program rewrites code it ran) is not found.
+  - Verdicts from this run's tree, every binary once with /dev/kvm denied, each first proving the device cannot be
+    opened (all1-arm.out, Graviton4, load 19 to 25): 115 passed, 2 failed (the known precise-set test, and jumptables'
+    count above); clippy with warnings denied clean on every target on Graviton4 and on the Xeon. No new unsafe code.
 
 ## W1 not complete: the gap list
 
@@ -1005,13 +1034,10 @@ known:
   where the WebAssembly side has its recorded faults and equal the program run on the host (round 6); busybox's 56
   `text` and `files` commands give the reference's output (run 3). Turns limited to one counted event change
   nothing (round 6's name). NOT BUILT, so the bar is not met: `differential` (exits, registers and memory at every
-  look-ahead; P translates at one look-ahead; per instruction, the executor suite's precise-set test compares P
-  with the WebAssembly translator's meaning), and `count_at_every_stop`: P never stops at a counted event (it ends
-  a limited turn at the next exit or where the slice's stop lands), so its count at a stop is compared with
-  nothing. Next: end a count-limited turn exactly, with pieces of one instruction for such a turn (as the VM form's
-  N3 does by single steps; a slow path, named and counted) or as the owner's decision 10 says, then compare the
-  count and position at every stop with the VM executor's on Graviton4 (same native output and count definition;
-  the WebAssembly output counts another quantity).
+  look-ahead; P translates at one look-ahead, or lone pieces under the exact executor; per instruction, the executor
+  suite's precise-set test compares P with the WebAssembly translator's meaning). `count_at_every_stop` is built
+  (round 7 run 1): bench and calls equal the VM executor's returns and hash; jumptables does not (5,482 returns
+  against 5,484, the count itself following the definition at every instruction): NOT MET until that is found.
 - `Execution::restored` (the runtime's save of a process) is `unimplemented!` under P: a save panics. Not built;
   For the owner.
 - x86-64: the executor, kernel and busybox suites build no tests on the Xeon (0 tests in conformance, kernel, run,
@@ -1043,8 +1069,9 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## Next
 
-- W1 is not complete (gap list). In order: `count_at_every_stop` (a count-limited turn ended exactly, then compared
-  with the VM executor), busybox `sh`'s bar, the round trip's margin, the adversarial fork with a writing sibling,
+- W1 is not complete (gap list). In order: jumptables' two missing returns under `count_at_every_stop` (find which
+  exits the VM side gives: its inside can print through the link's Print request in a remote copy; compare its exit
+  list with diag-count.py's), busybox `sh`'s bar, the round trip's margin, the adversarial fork with a writing sibling,
   `differential`, `Execution::restored`; x86-64 and form I are W3's and W2's.
 - busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
   the key's hash, comparing the code, cloning and moving a moved translation, placing, the slot) and the memory calls
@@ -1074,6 +1101,10 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## How to run
 
+- Since round 7 run 1: scratch w1/r7run1. check.sh is round 6's; `set -- kernel:count_at_every_stop` runs the three
+  count tests. vm-positions.sh runs the VM executor's kernel test with KVM (send under another name, e.g. `--name
+  nwvmvm`) and prints its stops and hashes. diag-count.py patches a remote copy's native.rs to check the count at every
+  lone instruction against the definition and print every exit (vm-positions and diag runs: vm1-arm.out, p*-arm.out).
 - Since round 6: scratch w1/r6run1. check.sh (`set -- <binary>[:<filter>] ...`) runs clippy, then those test
   binaries with /dev/kvm denied and their results shown; interrupts.sh runs the early-interrupt test for 3 seeds at
   `CASES`, then applies `PATCH` (base64 of undo-fix.patch, the fix reversed) in the remote copy and runs it again;
@@ -1272,6 +1303,11 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
+- Decision 10 under P (round 7 run 1): a turn limited to a count ends exactly only under `HostProcessExecutor::exact`,
+  a stand-in constructor for the embedder's choice (the VM inside's `exact_replay` is its twin), which runs every guest
+  instruction as a turn. The ordinary executor ends such a turn
+  past its count, counted "turn limit passed", as before. Whether the choice is the embedder's, the policy's or a
+  translated compare at counted events (option B) is decision 10.
 - `Execution::restored` (runtime single-kernel: a new executor holding the same memories, for a copy of a process
   made at a save) is `unimplemented!` under P: a save panics. P's memories are stub processes held by one executor;
   a restored executor would share the stubs and code areas through the host. Not built in W1.
@@ -1477,6 +1513,9 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since round 7 run 1, ARM64 only: rustc-hash 2.1.3 (Apache-2.0 OR MIT, already in the lock file, the VM inside's
+version) for the hash of positions, so it equals the VM executor's.
 
 Since round 3 run 5, ARM64 only: wcontainers-volatile-bytes, wcontainers-byte-sink and wcontainers-byte-source, all
 this workspace's (the owner's interfaces the memory space's bytes implement).
