@@ -23,10 +23,10 @@ use wcontainers_guest_cpu::position::{Fixup, Held, Resume, Side, Span};
 use wcontainers_guest_cpu::{Guest, InsideCall};
 use wcontainers_translator::{LookAhead, NativeRequest, translate_native_request};
 use wcontainers_x86::Fxsave;
-use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, NO_STOP, RegisterArea};
+use wcontainers_x86::area::{FIRST_LEVEL, FIXED, FixedPart, NO_STOP, PROBE_PAGE, RegisterArea};
 use wcontainers_x86::carry::{COUNT, FS_BASE_NUMBER, T, U, WITHHELD};
 use wcontainers_x86::cpuid::{AVX_STATE_BYTES, AVX_STATE_OFFSET, XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
-use wcontainers_x86::native::{HostMatches, Target, Way};
+use wcontainers_x86::native::{Check, HostMatches, Target, Way};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// What the probe finds on the rented x86-64 machine, the reference (a Xeon 8488C with 5-level paging,
@@ -72,6 +72,20 @@ pub(super) const ALTERNATE_STACK: u64 = LOAD - (2 << 20);
 pub(super) const ALTERNATE_STACK_BYTES: u64 = 16 * PAGE;
 const STACK_TOP: u64 = LOAD - (4 << 20);
 const STACK_BYTES: u64 = 16 * PAGE;
+/// The in-process way's window base B: the window's 2^32 bytes, the page above them, and the probe's page and the
+/// 2^35 bytes below it clear of every other part of the blob.
+const WINDOW_BASE: u64 = 1 << 41;
+/// The window's bytes.
+const WINDOW_BYTES: u64 = 1 << u32::BITS;
+
+/// The window's base in `way`: guest address a is at host B + a in process, at a in the other ways.
+fn window(way: Way) -> u64 {
+    match way {
+        Way::InProcess(_) => WINDOW_BASE,
+        Way::Machine | Way::Process => 0,
+    }
+}
+
 /// The signals a stop raises, which the handler takes.
 pub(super) const STOP_SIGNALS: [u32; 5] = [SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV];
 
@@ -162,6 +176,9 @@ pub enum Ended {
     Answered(InsideCall),
     /// A target at or above `USER_END`, which the inside answers by the meaning's rule.
     FarTarget,
+    /// The in-process way's probe refused an address at or above 2^32, the guest as it started: the inside runs the
+    /// instruction as the meaning does.
+    Refused,
     /// Not run natively, for this reason.
     NotRun(&'static str),
 }
@@ -193,16 +210,17 @@ pub fn compare(
     case: &Case,
     host: HostMatches,
 ) -> Result<(Agreement, Ended), String> {
-    let first = compare_one(reference, case, host, &request(false, false, false))?;
-    compare_one(reference, case, host, &request(true, false, false))
+    let way = Way::Process;
+    let first = compare_one(reference, case, host, way, &request(false, false, false))?;
+    compare_one(reference, case, host, way, &request(true, false, false))
         .map_err(|report| format!("with the count: {report}"))?;
-    compare_one(reference, case, host, &request(false, false, true))
+    compare_one(reference, case, host, way, &request(false, false, true))
         .map_err(|report| format!("on a stepping piece: {report}"))?;
-    compare_one(reference, case, host, &request(true, true, true)).map_err(|report| {
+    compare_one(reference, case, host, way, &request(true, true, true)).map_err(|report| {
         format!("on a stepping piece with the count and a replay check that goes on: {report}")
     })?;
     if first.1 != Ended::NotRun(TRAP_OR_ALIGNMENT_FLAG) {
-        let stopped = run_request(reference, case, host, &request(true, true, false), 0)
+        let stopped = run_request(reference, case, host, way, &request(true, true, false), 0)
             .map_err(|report| format!("at a replay check that stops: {report}"))?;
         if stopped.1 != Ended::Answered(InsideCall::Stop) {
             return Err(format!(
@@ -215,6 +233,21 @@ pub fn compare(
     Ok(first)
 }
 
+/// [`compare`] in the in-process way's form `check`: translated without the count, and with it and stopped by the
+/// trap flag after every host instruction (stepping pieces and the replay check are the host process's).
+pub fn compare_in_process(
+    reference: &mut Reference,
+    case: &Case,
+    host: HostMatches,
+    check: Check,
+) -> Result<(Agreement, Ended), String> {
+    let way = Way::InProcess(check);
+    let first = compare_one(reference, case, host, way, &request(false, false, false))?;
+    compare_one(reference, case, host, way, &request(true, false, false))
+        .map_err(|report| format!("with the count: {report}"))?;
+    Ok(first)
+}
+
 /// The runs that stopped at their replay check, the guest as it started and the count the stop word.
 pub static STOPS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -222,6 +255,7 @@ fn compare_one(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
+    way: Way,
     made: &NativeRequest,
 ) -> Result<(Agreement, Ended), String> {
     let counted = made.exact_replay;
@@ -235,7 +269,7 @@ fn compare_one(
         tracking: true,
         ..case.clone()
     };
-    let (mut outcome, ended, _) = run_request(reference, case, host, made, STOP_NOT_REACHED)?;
+    let (mut outcome, ended, _) = run_request(reference, case, host, way, made, STOP_NOT_REACHED)?;
     // A repeated string under the count or on a stepping piece is the inside's run of it on the hardware, the
     // reference's own.
     let hardware = (counted || made.step)
@@ -248,7 +282,11 @@ fn compare_one(
     }
     let ours = outcome.stop;
     // An answer that is the meaning's differs from the reference only where the meaning does.
-    let answered = matches!(ended, Ended::Answered(_) | Ended::FarTarget).then(|| outcome.clone());
+    let answered = matches!(
+        ended,
+        Ended::Answered(_) | Ended::FarTarget | Ended::Refused
+    )
+    .then(|| outcome.clone());
     match compare_outcome::<X86_64>(reference, case, outcome) {
         Ok(agreement) => Ok((agreement, ended)),
         Err(report) => {
@@ -256,6 +294,8 @@ fn compare_one(
             if five_level_only(theirs) && matches!(ours, Stop::GeneralProtection | Stop::StackFault)
             {
                 Ok((Agreement::KnownFailure(FIVE_LEVEL_REFERENCE), ended))
+            } else if way == Way::InProcess(Check::Wrapping) && beyond_the_window(theirs) {
+                Ok((Agreement::KnownFailure(WRAPPED_LANDING), ended))
             } else if meaning_differs_named(case)
                 && answered.is_some_and(|answered| answered == translated::<X86_64>(case))
             {
@@ -265,6 +305,21 @@ fn compare_one(
                 Err(report)
             }
         }
+    }
+}
+
+/// The wrapping form's named difference (docs/x86-native-output.md section 5): an address at or above 2^32 lands at
+/// its value modulo 2^32 inside the window, where the reference faults.
+const WRAPPED_LANDING: &str =
+    "the wrapping form's landing modulo 2^32, where the reference faults at or above 2^32";
+
+/// Whether the reference stopped as it does at an address at or above 2^32: a fault there, or general protection or
+/// a stack fault at an address that is not canonical.
+fn beyond_the_window(stop: Stop) -> bool {
+    match stop {
+        Stop::MemoryFault(address) => address >= WINDOW_BYTES,
+        Stop::GeneralProtection | Stop::StackFault => true,
+        _ => false,
     }
 }
 
@@ -569,7 +624,7 @@ pub fn run_with_pointers(
         stop: false,
         step: false,
     };
-    run_request(reference, case, host, &made, NO_STOP)
+    run_request(reference, case, host, Way::Process, &made, NO_STOP)
 }
 
 /// [`run_with_pointers`] of a piece made as `made` asks, the thread's stop word `stop_word`. A stepping piece's
@@ -578,21 +633,22 @@ fn run_request(
     reference: &mut Reference,
     case: &Case,
     host: HostMatches,
+    way: Way,
     made: &NativeRequest,
     stop_word: u64,
 ) -> Result<(Outcome, Ended, Option<Pointers>), String> {
+    let base = window(way);
     let checked = made.exact_replay;
     let target = Target {
         host,
         offer: X86_64::case_offer(case),
     };
-    let code =
-        translate_native_request::<X86_64>(case.code.code(), CODE, made, &Way::Process, &target)
-            .ok_or("no instruction at the case's start")?;
+    let code = translate_native_request::<X86_64>(case.code.code(), CODE, made, &way, &target)
+        .ok_or("no instruction at the case's start")?;
     if code.bytes.len() as u64 > PIECE_ROOM {
         return Err(format!("a piece of {} bytes", code.bytes.len()));
     }
-    let blob = blob(case, &code.bytes, checked, stop_word);
+    let blob = blob(case, &code.bytes, checked, stop_word, way);
     let ran = reference.blob(&BlobRequest {
         bytes: &blob,
         load: LOAD,
@@ -679,10 +735,21 @@ fn run_request(
             && reading.memory_base() == U
             && reading.memory_index() == T;
         let first = reading.mnemonic() == Mnemonic::Mov
-            && reading.memory_segment() == Register::GS
+            && reading.memory_segment() == way.area_segment()
             && reading.memory_index() == U
             && reading.memory_displacement64() == FIRST_LEVEL as u64;
-        let ended = if signal == SIGSEGV && second && second_level.contains(&record.address) {
+        // The in-process way's probe: `mov u, gs:[u + 1 - PROBE_PAGE]`.
+        let probe = base != 0
+            && reading.mnemonic() == Mnemonic::Mov
+            && reading.memory_segment() == Register::GS
+            && reading.memory_base() == U
+            && reading.memory_displacement64() == 1u64.wrapping_sub(PROBE_PAGE);
+        let ended = if signal == SIGSEGV && probe {
+            if span.side != Side::Before {
+                return Err(format!("a probe after the commit point, at host {at}"));
+            }
+            Ended::Refused
+        } else if signal == SIGSEGV && second && second_level.contains(&record.address) {
             if made.step {
                 Err::<(), _>("a stepping piece reached the lookup's second level")?;
             }
@@ -699,7 +766,7 @@ fn run_request(
             record.code, record.address
         ));
     };
-    let mut state = guest_state(case, &record, &host, &area, span)?;
+    let mut state = guest_state(case, &record, &host, &area, span, base)?;
     if checked {
         let (instruction, _) =
             <X86_64 as Guest>::decode(case.code.code()).ok_or("no instruction to count")?;
@@ -731,7 +798,7 @@ fn run_request(
             let span = in_piece(at.rip)
                 .ok_or_else(|| format!("a step outside the piece, at {:#x}", at.rip))?;
             count_at(&at, span)?;
-            let now = guest_state(case, step, &at, area, span)?;
+            let now = guest_state(case, step, &at, area, span, base)?;
             let (want, want_changed) = match span.side {
                 Side::Before => (&case.state, &Vec::new()),
                 Side::After => (&state, &changed),
@@ -772,11 +839,21 @@ fn run_request(
             &Signal {
                 number: signal,
                 code: record.code as u32,
-                address: record.address,
+                address: guest_address(record.address, signal, base),
                 pc: state.0[RIP] as u64,
             },
             case.code.length,
         ),
+        Ended::Refused => {
+            if state != case.state || !changed.is_empty() {
+                return Err(format!(
+                    "the probe refused with the guest changed: {}",
+                    differences(&case.state, &state)
+                ));
+            }
+            REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok((translated::<X86_64>(case), ended, None));
+        }
         Ended::Answered(_) | Ended::FarTarget => {
             if state != case.state || !changed.is_empty() {
                 return Err(format!(
@@ -799,6 +876,13 @@ fn run_request(
                     // checked against the WebAssembly output's in layers 2 and 3).
                     STRINGS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok((on_reference::<X86_64>(reference, case), ended, None));
+                }
+                if base != 0 && i.iced.mnemonic() != Mnemonic::Syscall {
+                    // In process the inside runs the forms the window has no sequence for (strings with 0x67 or a
+                    // segment, the masked stores and `xlat` on a segment, the exact form's gathers) as the meaning
+                    // does.
+                    MEANING_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok((translated::<X86_64>(case), ended, None));
                 }
                 if i.iced.mnemonic() != Mnemonic::Syscall {
                     return Err(format!(
@@ -840,6 +924,23 @@ fn run_request(
         ended,
         pointers,
     ))
+}
+
+/// The in-process runs that called the inside for a form the meaning runs, the guest as it started.
+pub static MEANING_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The runs whose probe refused an address, the guest as it started, which the meaning then answers.
+pub static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The guest's address of a fault at host `address`: less the window's base where it lies in the window or its guard
+/// pages.
+fn guest_address(address: u64, signal: u32, base: u64) -> u64 {
+    let near = base.wrapping_sub(PROBE_PAGE)..base + WINDOW_BYTES + PAGE;
+    if base != 0 && matches!(signal, SIGSEGV | SIGBUS) && near.contains(&address) {
+        address.wrapping_sub(base)
+    } else {
+        address
+    }
 }
 
 /// The runs that ended at the Trap route's call, whose trap by `native::trap` was the meaning's.
@@ -930,12 +1031,17 @@ fn guest_state(
     host: &HostState,
     area: &RegisterArea,
     span: &Span,
+    base: u64,
 ) -> Result<State, String> {
     let mut registers = host.general;
     for fixup in &span.fixups {
         match *fixup {
             Fixup::Constant { register, value } | Fixup::Address { register, value } => {
                 registers[usize::from(register)] = value;
+            }
+            Fixup::Offset { register, by } => {
+                let at = &mut registers[usize::from(register)];
+                *at = at.wrapping_add_signed(by.into());
             }
             Fixup::X87Pointer(_) | Fixup::FloatStatus => {}
             other => return Err(format!("a fix-up this guest never makes: {other:?}")),
@@ -949,6 +1055,7 @@ fn guest_state(
                 .get(usize::from(at)..usize::from(at) + WORD as usize)
                 .map(|w| u64::from_le_bytes(w.try_into().expect("a word")))
                 .ok_or_else(|| format!("a word past the register area at {at}")),
+            Held::Rebased(r) if base != 0 => Ok(registers[usize::from(r)].wrapping_sub(base)),
             Held::Rebased(r) => Err(format!("register {r} rebased outside the in-process way")),
         }
     };
@@ -956,7 +1063,12 @@ fn guest_state(
     for (k, &w) in WITHHELD.iter().enumerate() {
         general[usize::from(w)] = area.withheld[k];
     }
-    let mut fs_base = record.fs_base;
+    // In process FS holds the thread area, and the guest's FS base is the area's word.
+    let mut fs_base = if base == 0 {
+        record.fs_base
+    } else {
+        area.fs_base
+    };
     for r in &span.relocated {
         if r.guest == FS_BASE_NUMBER {
             fs_base = held(r.held)?;
@@ -1024,7 +1136,8 @@ fn guest_state(
 
 /// The blob of a case and its piece: the prologue, the handler, the piece, the block, the XSAVE image, the data
 /// area's bytes and the thread area's first two pages.
-fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
+fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64, way: Way) -> Vec<u8> {
+    let base = window(way);
     let mut bytes = vec![0u8; (FIRST - LOAD) as usize];
     let mut put = |at: u64, part: &[u8]| {
         let at = (at - LOAD) as usize;
@@ -1032,9 +1145,9 @@ fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
     };
     put(
         PROLOGUE,
-        &prologue(case, stepping).expect("the prologue assembles"),
+        &prologue(case, stepping, base).expect("the prologue assembles"),
     );
-    let handler = handler().expect("the handler assembles");
+    let handler = handler(base).expect("the handler assembles");
     assert!(
         HANDLER + handler.len() as u64 <= RESUME,
         "the handler fits its page"
@@ -1045,7 +1158,7 @@ fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
         RESTORER,
         &restorer(RESTORER).expect("the restorer assembles"),
     );
-    let step = step_handler().expect("the stepping handler assembles");
+    let step = step_handler(base).expect("the stepping handler assembles");
     assert!(
         STEP_HANDLER + step.len() as u64 <= PIECE,
         "the stepping handler fits its page"
@@ -1099,8 +1212,15 @@ fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
     }
     put(XSAVE_IMAGE, &xsave_image(s));
     put(DATA_IMAGE, &start_data(case));
+    // A null FS selector keeps the FS base; any other clears it, as the reference loads it.
+    let fs_base = if s[SELECTORS + 2] == 0 {
+        s[FS] as u64
+    } else {
+        0
+    };
     let mut area = RegisterArea {
         gs_base: s[GS] as u64,
+        fs_base: if base == 0 { 0 } else { fs_base },
         ..RegisterArea::default()
     };
     for (k, &w) in WITHHELD.iter().enumerate() {
@@ -1113,8 +1233,8 @@ fn blob(case: &Case, piece: &[u8], stepping: bool, stop_word: u64) -> Vec<u8> {
             _ => ENTRY_TRAPS + k as u64 * ENTRY_STRIDE,
         }),
         stop: stop_word,
-        window: 0,
-        window_negated: 0,
+        window: base,
+        window_negated: base.wrapping_neg(),
     };
     put(AREA + FIXED as u64, fixed.as_bytes());
     bytes
@@ -1195,20 +1315,25 @@ pub(super) fn protect(
 }
 
 /// The code that sets the case up and enters the piece.
-fn prologue(case: &Case, stepping: bool) -> Result<Vec<u8>, IcedError> {
+fn prologue(case: &Case, stepping: bool, base: u64) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
     let read_write = libc::PROT_READ | libc::PROT_WRITE;
     // The data area with the case's bytes, its last page read-only.
-    map(&mut a, DATA, DATA_BYTES, read_write)?;
-    copy(&mut a, DATA, DATA_IMAGE, DATA_BYTES)?;
+    let data = base + DATA;
+    map(&mut a, data, DATA_BYTES, read_write)?;
+    copy(&mut a, data, DATA_IMAGE, DATA_BYTES)?;
     protect(
         &mut a,
-        DATA + DATA_WRITABLE,
+        data + DATA_WRITABLE,
         DATA_READ_ONLY,
         libc::PROT_READ,
     )?;
+    if base != 0 {
+        // The probe's page of zeros below the window; nothing else is mapped within 2^35 bytes under it.
+        map(&mut a, base - PROBE_PAGE, PAGE, libc::PROT_READ)?;
+    }
     // The code area: the filler, and the instruction at CODE.
-    let (code_start, code_bytes) = (CODE - X86_64::CODE_SPAN, 2 * X86_64::CODE_SPAN);
+    let (code_start, code_bytes) = (base + CODE - X86_64::CODE_SPAN, 2 * X86_64::CODE_SPAN);
     map(&mut a, code_start, code_bytes, read_write)?;
     a.mov(rdi, code_start)?;
     a.mov(eax, u32::from(X86_64::FILLER))?;
@@ -1216,7 +1341,7 @@ fn prologue(case: &Case, stepping: bool) -> Result<Vec<u8>, IcedError> {
     a.rep().stosb()?;
     copy(
         &mut a,
-        CODE,
+        base + CODE,
         BLOCK + INSTRUCTION_AT,
         u64::from(case.code.length),
     )?;
@@ -1263,7 +1388,7 @@ fn prologue(case: &Case, stepping: bool) -> Result<Vec<u8>, IcedError> {
         )?;
     }
     // The thread area on GS; the case's FS base and selectors (one of FS not null clears its base, as the
-    // reference loads it).
+    // reference loads it). In process the thread area is on FS and the window on GS, set after the selectors.
     a.mov(rax, AREA)?;
     a.wrgsbase(rax)?;
     a.mov(rbx, BLOCK)?;
@@ -1277,6 +1402,12 @@ fn prologue(case: &Case, stepping: bool) -> Result<Vec<u8>, IcedError> {
     if case.state.0[FS_SELECTOR] != 0 {
         a.mov(eax, dword_ptr(rbx + (SELECTORS_AT + 2 * WORD) as i32))?;
         a.mov(fs, ax)?;
+    }
+    if base != 0 {
+        a.mov(rax, AREA)?;
+        a.wrfsbase(rax)?;
+        a.mov(rax, base)?;
+        a.wrgsbase(rax)?;
     }
     // x87, SSE and AVX state.
     a.mov(rbx, XSAVE_IMAGE)?;
@@ -1313,15 +1444,15 @@ fn resume() -> Result<Vec<u8>, IcedError> {
 
 /// The stop handler: writes the stop's record, the data area and the register area to standard output and ends
 /// the process.
-fn handler() -> Result<Vec<u8>, IcedError> {
+fn handler(base: u64) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
-    write_stop(&mut a)?;
+    write_stop(&mut a, base)?;
     system_call(&mut a, libc::SYS_exit_group, &[0])?;
     a.assemble(HANDLER)
 }
 
 /// The trap flag's handler: writes a stop in the piece as the stop handler does, and returns.
-fn step_handler() -> Result<Vec<u8>, IcedError> {
+fn step_handler(base: u64) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
     let context = core::mem::offset_of!(libc::ucontext_t, uc_mcontext);
     let frame_rip = context
@@ -1334,7 +1465,7 @@ fn step_handler() -> Result<Vec<u8>, IcedError> {
     a.mov(rcx, PIECE_ROOM)?;
     a.cmp(rax, rcx)?;
     a.jae(back)?;
-    write_stop(&mut a)?;
+    write_stop(&mut a, base)?;
     a.set_label(&mut back)?;
     a.ret()?;
     a.assemble(STEP_HANDLER)
@@ -1348,8 +1479,8 @@ pub(super) fn restorer(at: u64) -> Result<Vec<u8>, IcedError> {
 }
 
 /// A handler's writing of its stop: the record from rdi (the signal), rsi (its information) and rdx (the
-/// context), then the record, the data area and the register area to standard output.
-fn write_stop(a: &mut CodeAssembler) -> Result<(), IcedError> {
+/// context), then the record, the data area (at `base` + DATA) and the register area to standard output.
+fn write_stop(a: &mut CodeAssembler, base: u64) -> Result<(), IcedError> {
     use linux_raw_sys::general::{__sifields__bindgen_ty_5, siginfo__bindgen_ty_1__bindgen_ty_1};
     let field = |offset: usize| (RECORD_AT as usize + offset) as i32;
     let info_code = core::mem::offset_of!(siginfo__bindgen_ty_1__bindgen_ty_1, si_code) as i32;
@@ -1402,7 +1533,7 @@ fn write_stop(a: &mut CodeAssembler) -> Result<(), IcedError> {
     a.rep().movsb()?;
     for (from, bytes) in [
         (BLOCK + RECORD_AT, size_of::<Record>() as u64),
-        (DATA, DATA_BYTES),
+        (base + DATA, DATA_BYTES),
         (AREA, size_of::<RegisterArea>() as u64),
     ] {
         system_call(

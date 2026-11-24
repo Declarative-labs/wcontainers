@@ -7,10 +7,11 @@ use iced_x86::{
     Register,
 };
 use wcontainers_guest_cpu::HostCode;
-use wcontainers_guest_cpu::position::{Held, Resume};
+use wcontainers_guest_cpu::position::{Fixup, Held, Resume};
 
 use super::{
-    AREA_WORD, T, T_LOW, T_NUMBER, U, U_LOW, bytes_of, full, load_area, put, sized, store_area,
+    AREA_WORD, T, T_LOW, T_NUMBER, U, U_LOW, WITHHELD, bytes_of, full, load_area, put, sized,
+    store_area, withheld_slot,
 };
 use crate::area::{
     GUEST_FS_BASE, GUEST_GS_BASE, KEPT_T, PROBE_PAGE, STAND_IN_VALUES, WINDOW, WINDOW_NEGATED,
@@ -34,15 +35,21 @@ pub(super) fn reaches_memory(i: &Iced) -> bool {
 }
 
 /// Writes host instruction `i`, which reaches guest memory, in the window's form `check`, with `resume` its commit
-/// point.
-pub(super) fn access(check: Check, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
+/// point; `probed`: a push whose stack the exact form has probed already ([`probe_stack`]).
+pub(super) fn access(
+    check: Check,
+    code: &mut HostCode,
+    i: &Iced,
+    resume: Option<Resume>,
+    probed: bool,
+) {
     use Mnemonic::*;
     let form = Form {
         exact: check == Check::Exact,
         way: Way::InProcess(check),
     };
     match i.mnemonic() {
-        Push => push(form, code, i, resume),
+        Push => push(form, code, i, resume, probed),
         Pop => pop(form, code, i, resume),
         Leave => leave(form, code, i, resume),
         Xlatb | Maskmovq | Maskmovdqu | Vmaskmovdqu => implicit(form, code, i, resume),
@@ -152,6 +159,23 @@ fn on(i: &Iced, base: Register) -> Iced {
     out.set_memory_displ_size(0);
     out.set_segment_prefix(Register::GS);
     out
+}
+
+/// The exact form's probe of the `bytes` below rsp a push stores, made before it where u is needed in between (a
+/// call through a register or memory, whose lookup's first level is read before the push).
+pub(super) fn probe_stack(check: Check, code: &mut HostCode, bytes: i64) {
+    if check == Check::Exact {
+        put(
+            code,
+            &Iced::with2(
+                Code::Lea_r64_m,
+                U,
+                MemoryOperand::with_base_displ(full(RSP), -bytes),
+            )
+            .expect("the push's address"),
+        );
+        probe(code, U);
+    }
 }
 
 /// The flag-free probe of the address in `x` (section 4): u reads the page of zeros at B - 2 pages when bits 32 to 63
@@ -318,7 +342,8 @@ fn explicit(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
         return finish(code, &at, resume);
     }
     // ah, ch, dh and bh exclude a REX prefix, so the address goes to a register of the first eight but rsp, kept
-    // in the area meanwhile; such an instruction names no withheld register, so the first stand-in slot is free.
+    // in the area meanwhile; such an instruction names no withheld register, and the first stand-in slot may hold
+    // the register a RIP-relative operand's address took (`carry::on_legacy`), so the second is free.
     let mut info = InstructionInfoFactory::new();
     let used: Vec<u8> = info
         .info(i)
@@ -329,14 +354,15 @@ fn explicit(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
     let legacy = (RAX..R8)
         .find(|n| *n != RSP && !used.contains(n))
         .expect("a byte instruction leaves a legacy register free");
-    put(code, &store_area(form.way, STAND_IN_VALUES, full(legacy)));
-    code.relocate(legacy, Held::Page(STAND_IN_VALUES as u16));
+    let own = STAND_IN_VALUES + AREA_WORD;
+    put(code, &store_area(form.way, own, full(legacy)));
+    code.relocate(legacy, Held::Page(own as u16));
     put(
         code,
         &Iced::with2(Code::Mov_r64_rm64, full(legacy), x).expect("the address"),
     );
     finish(code, &on(&at, full(legacy)), resume);
-    put(code, &load_area(form.way, full(legacy), STAND_IN_VALUES));
+    put(code, &load_area(form.way, full(legacy), own));
     code.home(legacy);
 }
 
@@ -375,26 +401,31 @@ fn move_stack(code: &mut HostCode, base: u8, by: i64, resume: Option<Resume>) {
     finish(code, &lea, resume);
 }
 
-/// A push: the store below the guest's rsp, then rsp moved, its commit point; a stop between them makes the push
-/// again, storing the same value at the same place.
-fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
+/// A push: the store below the guest's rsp, its commit point, then rsp moved, which a stop there makes as a fix-up.
+/// A withheld register's value comes from its slot through t.
+fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>, probed: bool) {
     let bytes = -i64::from(i.stack_pointer_increment());
     let word = bytes == i64::from(W64 / 8);
+    let (load, into) = if word {
+        (Code::Mov_r64_rm64, T)
+    } else {
+        (Code::Mov_r16_rm16, T_WORD)
+    };
     let store = match i.op0_kind() {
         OpKind::Register | OpKind::Memory => {
             let source = if i.op0_kind() == OpKind::Memory {
-                let (code_of, into) = if word {
-                    (Code::Mov_r64_rm64, T)
-                } else {
-                    (Code::Mov_r16_rm16, T_WORD)
-                };
                 let placeholder = MemoryOperand::with_base(full(RAX));
-                let load =
-                    Iced::with2(code_of, into, placeholder).expect("the pushed value's load");
-                explicit(form, code, &with_operand_of(load, i), None);
+                let read = Iced::with2(load, into, placeholder).expect("the pushed value's load");
+                explicit(form, code, &with_operand_of(read, i), None);
                 into
             } else {
-                i.op0_register()
+                let g = general(i.op0_register()).expect("a general register");
+                if WITHHELD.contains(&g.number) {
+                    put(code, &load_area(form.way, T, withheld_slot(g.number)));
+                    into
+                } else {
+                    i.op0_register()
+                }
             };
             let code_of = if word {
                 Code::Mov_rm64_r64
@@ -412,20 +443,28 @@ fn push(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
         ),
     }
     .expect("the push's store");
-    if form.exact {
-        put(
-            code,
-            &Iced::with2(
-                Code::Lea_r64_m,
-                U,
-                MemoryOperand::with_base_displ(full(RSP), -bytes),
-            )
-            .expect("the push's address"),
-        );
-        probe(code, U);
+    if !probed {
+        probe_stack(check_of(form), code, bytes);
     }
-    finish(code, &store, None);
-    move_stack(code, RSP, -bytes, resume);
+    finish(code, &store, resume);
+    let by = i32::try_from(-bytes).expect("a push's size");
+    code.fixup(Fixup::Offset { register: RSP, by });
+    let lea = Iced::with2(
+        Code::Lea_r64_m,
+        full(RSP),
+        MemoryOperand::with_base_displ(full(RSP), -bytes),
+    )
+    .expect("the stack pointer's move");
+    put(code, &lea);
+    code.fixed();
+}
+
+fn check_of(form: Form) -> Check {
+    if form.exact {
+        Check::Exact
+    } else {
+        Check::Wrapping
+    }
 }
 
 /// A pop: the load into t, then rsp moved, its commit point, after which t holds the popped register.
@@ -446,12 +485,15 @@ fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
             let number = general(i.op0_register())
                 .expect("a general register")
                 .number;
+            let withheld = WITHHELD.contains(&number);
             if !word {
-                put(
-                    code,
-                    &Iced::with2(Code::Mov_r64_rm64, T, full(number))
-                        .expect("the rest of the register"),
-                );
+                let rest = if withheld {
+                    load_area(form.way, T, withheld_slot(number))
+                } else {
+                    Iced::with2(Code::Mov_r64_rm64, T, full(number))
+                        .expect("the rest of the register")
+                };
+                put(code, &rest);
             }
             finish(
                 code,
@@ -460,13 +502,24 @@ fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
             );
             move_stack(code, RSP, bytes, resume);
             code.relocate(number, Held::Register(T_NUMBER));
-            put(
-                code,
-                &Iced::with2(Code::Mov_r64_rm64, full(number), T).expect("the popped register"),
-            );
+            let written = if withheld {
+                store_area(form.way, withheld_slot(number), T)
+            } else {
+                Iced::with2(Code::Mov_r64_rm64, full(number), T).expect("the popped register")
+            };
+            put(code, &written);
             code.home(number);
         }
         _ => {
+            // A RIP-relative destination's address is in t already: the value goes to u.
+            let names_t = [i.memory_base(), i.memory_index()]
+                .iter()
+                .any(|r| r.full_register() == T);
+            let into = match (names_t, word) {
+                (false, _) => into,
+                (true, true) => U,
+                (true, false) => U_WORD,
+            };
             finish(
                 code,
                 &Iced::with2(load, into, stack(0)).expect("the pop's load"),
@@ -496,7 +549,7 @@ fn pop(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
                 finish(code, &cut(&store(into)), None);
             } else {
                 // The destination's address takes t and its probe u: the value waits in the area meanwhile.
-                put(code, &store_area(form.way, KEPT_T, T));
+                put(code, &store_area(form.way, KEPT_T, full_of(into)));
                 let (x, at) = operand_address(form, code, &store(if word { U } else { U_WORD }));
                 if form.exact {
                     probe(code, x);
@@ -716,4 +769,9 @@ fn string(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
         rebase(code, WINDOW_NEGATED);
         code.home(RDI);
     }
+}
+
+/// The 64-bit register of a general register.
+fn full_of(r: Register) -> Register {
+    general(r).map_or(r, |g| full(g.number))
 }

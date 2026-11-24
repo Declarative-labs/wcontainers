@@ -7,7 +7,7 @@ use iced_x86::{
     IntelFormatter, Mnemonic, OpAccess, OpKind, Register,
 };
 use wcontainers_guest_cpu::HostCode;
-use wcontainers_guest_cpu::position::{Held, Side};
+use wcontainers_guest_cpu::position::{Fixup, Held, Side};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::{PROBE_PAGE, WINDOW};
 use wcontainers_x86::carry::{T, U};
@@ -394,6 +394,17 @@ fn a_stack_access_is_explicit_and_rsp_moves_last() {
     // The pop's commit point is rsp's move, after which t holds rbx until it is written.
     let piece = piece(&bytes(hex), WRAPPING, false).expect("a piece");
     let host = host(&piece.bytes);
+    // The push's is its store: a stop at rsp's move after it moves rsp as a fix-up.
+    let (moving, _) = host[1];
+    let span = piece.span(moving as u32).expect("a span");
+    assert_eq!(span.side, Side::After);
+    assert_eq!(
+        span.fixups,
+        [Fixup::Offset {
+            register: wcontainers_x86::RSP,
+            by: -8
+        }]
+    );
     let (moved, _) = host[3];
     assert_eq!(piece.span(moved as u32).expect("a span").side, Side::Before);
     let (written, _) = host[4];
@@ -556,4 +567,26 @@ fn a_string_is_probed_cut_and_rebased() {
     );
     // With the guest's 0x67 the inside answers it.
     assert!(!shape("67 aa c3", EXACT).contains(&Stosb));
+}
+
+/// Forms whose window sequences met a withheld register, a RIP-relative stack operand or an image at rsp: each
+/// is made in both forms, counted and not.
+#[test]
+fn stack_and_withheld_forms_are_made() {
+    for hex in [
+        "66 41 5f c3",
+        "41 5b c3",
+        "66 41 8f c3 c3",
+        "8f 05 ce ff ff ff c3",
+        "66 41 52 c3",
+        "41 53 c3",
+        "0f ae 4c 64 f7 c3",
+        "41 ff 33 c3",
+    ] {
+        for way in WAYS {
+            for counted in [false, true] {
+                assert!(piece(&bytes(hex), way, counted).is_some(), "{hex}");
+            }
+        }
+    }
 }

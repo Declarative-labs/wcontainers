@@ -446,6 +446,49 @@ fn every_form_matches_the_cpu_natively_x86_64() {
     );
 }
 
+/// The in-process way's two checked forms (docs/x86-native-output.md sections 4 and 8): every form's cases
+/// translated in each, run on this machine with the case's memory in a window with its guard pages and the probe's
+/// page, and compared with its CPU, uncounted and counted with a stop after every host instruction. `WC_LAYER1_CHECK`
+/// takes one form (`wrapping` or `exact`), both otherwise.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn every_form_matches_the_cpu_in_process_x86_64() {
+    use std::sync::atomic::Ordering::Relaxed;
+    use wcontainers_translator_test::guest::x86_64::native::{
+        REFERENCE_HOST, REFUSED, compare_in_process,
+    };
+    use wcontainers_x86::native::Check;
+    let count = setting("WC_LAYER1_CASES", 64) as u32;
+    let only = std::env::var("WC_LAYER1_CHECK").ok();
+    let mut differing = 0;
+    for (name, check) in [("wrapping", Check::Wrapping), ("exact", Check::Exact)] {
+        if only.as_deref().is_some_and(|only| only != name) {
+            continue;
+        }
+        let refused = REFUSED.load(Relaxed);
+        let ended = Mutex::new(BTreeMap::<String, u64>::new());
+        let failures = run_forms::<X86_64>(
+            X86_64::forms(),
+            count,
+            " in process",
+            |reference, _, case| {
+                let (agreement, how) = compare_in_process(reference, case, REFERENCE_HOST, check)?;
+                *ended.lock().unwrap().entry(format!("{how:?}")).or_default() += 1;
+                Ok(agreement)
+            },
+        );
+        eprintln!(
+            "layer 1 in process, the {name} form, the cases by how they ended: {:?}; the probe refusing an \
+             address and the meaning answering in {} runs; {} forms differ",
+            ended.into_inner().unwrap(),
+            REFUSED.load(Relaxed) - refused,
+            failures.len()
+        );
+        differing += failures.len();
+    }
+    assert_eq!(differing, 0, "forms differ from the CPU in process");
+}
+
 /// The inside's answer to `cpuid` and `xgetbv` (docs/x86-native-output.md 3.5) is the meaning's, for every leaf
 /// with each sub-leaf of its table and past it, for leaves above the highest, and for each register `xgetbv` names;
 /// the upper halves of the registers read are set, as the instructions read only the lower ones.

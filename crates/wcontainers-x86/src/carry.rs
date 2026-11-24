@@ -491,6 +491,8 @@ enum Written<'a> {
     /// The guest's own bytes.
     Bytes(&'a [u8]),
     Instruction(&'a Iced),
+    /// A push whose stack the in-process way's exact form has probed already.
+    Probed(&'a Iced),
 }
 
 /// Writes a host instruction that may reach guest memory, with `resume` its commit point: the one place each way's
@@ -504,16 +506,17 @@ fn access(way: Way, code: &mut HostCode, written: Written, resume: Option<Resume
                 decoded = crate::decode::decode(bytes).expect("a guest instruction").0;
                 &decoded.iced
             }
-            Written::Instruction(i) => i,
+            Written::Instruction(i) | Written::Probed(i) => i,
         };
         if window::reaches_memory(i) {
-            return window::access(check, code, i, resume);
+            let probed = matches!(written, Written::Probed(_));
+            return window::access(check, code, i, resume, probed);
         }
     }
     let at = code.offset() as u64;
     let bytes = match written {
         Written::Bytes(bytes) => bytes.to_vec(),
-        Written::Instruction(i) => bytes_of(i, at),
+        Written::Instruction(i) | Written::Probed(i) => bytes_of(i, at),
     };
     match resume {
         Some(resume) => code.commit(&bytes, resume),
@@ -606,6 +609,14 @@ fn rewritten(
     reach: Reach,
 ) {
     let next = Resume::At(address.wrapping_add(i.iced.len() as u64));
+    let stack = matches!(guest.mnemonic(), Mnemonic::Push | Mnemonic::Pop)
+        && guest.op0_kind() == OpKind::Register;
+    if stack && let Way::InProcess(_) = way {
+        // The window's push and pop take a withheld register's value from its slot and write it there.
+        code.slow(NativeReason::WithheldRegisterNamed);
+        access(way, code, Written::Instruction(guest), Some(next));
+        return;
+    }
     if reach == Reach::Plain
         && let Some(on) = on_slot(way, guest)
     {
@@ -1171,8 +1182,12 @@ fn transfer(
             if ins.mnemonic() == Call {
                 place_address(code, T, next);
                 let push = Iced::with1(Code::Push_r64, T).expect("a push");
-                access(way, code, Written::Instruction(&push), None);
-                code.after(Resume::At(target));
+                access(
+                    way,
+                    code,
+                    Written::Instruction(&push),
+                    Some(Resume::At(target)),
+                );
                 exit(way, code, target, None, homes);
             } else {
                 exit(way, code, target, Some(Resume::At(target)), homes);
@@ -1180,26 +1195,25 @@ fn transfer(
         }
         Jmp | Call => {
             into_t(way, code, i, address);
-            // In process the push's probe takes u, so the lookup's first level comes after the commit point.
-            let in_process = matches!(way, Way::InProcess(_));
-            if !in_process {
-                first_level(way, code);
+            let call = ins.mnemonic() == Call;
+            // In process the exact form's probe of the push takes u, so it comes before the lookup's first level,
+            // which a target past user space faults on with nothing of the call done.
+            if call && let Way::InProcess(check) = way {
+                window::probe_stack(check, code, i64::from(SLOT));
             }
-            if ins.mnemonic() == Call {
+            first_level(way, code);
+            let through = Resume::Through(Held::Register(T_NUMBER));
+            if call {
                 let own = STAND_IN_VALUES;
                 put(code, &store_area(way, own, full(RAX)));
                 code.relocate(RAX, page(own));
                 place_address(code, full(RAX), next);
                 let push = Iced::with1(Code::Push_r64, full(RAX)).expect("a push");
-                access(way, code, Written::Instruction(&push), None);
-                code.after(Resume::Through(Held::Register(T_NUMBER)));
+                access(way, code, Written::Probed(&push), Some(through));
                 put(code, &load_area(way, full(RAX), own));
                 code.home(RAX);
             } else {
-                code.after(Resume::Through(Held::Register(T_NUMBER)));
-            }
-            if in_process {
-                first_level(way, code);
+                code.after(through);
             }
             onward(way, code);
         }
