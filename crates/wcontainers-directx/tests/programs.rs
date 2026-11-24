@@ -450,8 +450,9 @@ fn divisions_give_a_real_devices_quotient() {
 /// atg-simplecomputepc's dispatch over 30 frames, each also drawing the result and 100 quads from
 /// another texture as the program does: the colour inside the set is the map's first texel, the
 /// correctly rounded quotient 1200 / 300 = 4, as WARP gives it in every frame. Compared with WARP
-/// alone: the draws change nothing on WARP, and the RTX 3080 gives ours' answer here and WARP's only
-/// inside the program, after its driver changes its division (Gap list).
+/// alone: the draws change nothing on WARP, and the RTX 3080 gives its own quotient here, 1 ULP
+/// short (red 1), and WARP's only inside the program, after its driver changes its division (Gap
+/// list).
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it() {
