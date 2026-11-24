@@ -35,7 +35,8 @@ foreach ($list in $chosen) {
     $caselist = Join-Path $Mustpass $list
     $name = [IO.Path]::GetFileNameWithoutExtension($list)
     $output = Join-Path $Cts "results\$Driver\$name"
-    if (Test-Path $output) { Remove-Item -Recurse -Force $output }
+    # Through the long-path prefix: a case's log can be named past 260 characters.
+    if (Test-Path $output) { Remove-Item -LiteralPath "\\?\$output" -Recurse -Force }
     $deqpArguments = Get-ListArguments $list
     Write-Output "cts: $name on $Driver, every ${Fraction}th case from $FractionStart, $RunnerJobs at once: $deqpArguments"
     & $Runner run --deqp $program --caselist $caselist --output $output --fraction $Fraction `
