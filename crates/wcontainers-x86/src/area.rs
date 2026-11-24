@@ -34,6 +34,9 @@ pub struct RegisterArea {
 pub struct FixedPart {
     /// The host address of the inside's routine for each call, by its code (P and I).
     pub entries: [u64; InsideCall::ALL.len()],
+    /// The thread's stop word: the count at which a replay check stops it, a value no count reaches on every
+    /// other thread (docs/native.md 5.7).
+    pub stop: u64,
 }
 
 /// How many registers translated code keeps for itself: the count and two scratch registers (section 3.4).
@@ -55,6 +58,10 @@ pub const HOME_VALUES: usize = core::mem::offset_of!(RegisterArea, homes);
 pub const FIXED: usize = PAGE_SIZE as usize;
 /// The inside's routine for call code k is at `ENTRIES + 8 * k`.
 pub const ENTRIES: usize = FIXED + core::mem::offset_of!(FixedPart, entries);
+/// The stop word of a thread no replay stops: no count reaches it.
+pub const NO_STOP: u64 = u64::MAX;
+/// The stop word, as an offset from the segment base.
+pub const STOP_WORD: usize = FIXED + core::mem::offset_of!(FixedPart, stop);
 /// The lookup's first level (section 3.3): 2^32 words, word m the second-level table of guest region m (bits 32
 /// to 63 of a target) less m << 35.
 pub const FIRST_LEVEL: usize = FIXED + PAGE_SIZE as usize;

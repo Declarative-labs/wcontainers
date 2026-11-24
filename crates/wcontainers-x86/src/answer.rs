@@ -12,9 +12,9 @@ use crate::x87::{
     OPCODE_BITS, REGISTER_MASK, STORED_STATUS_SHIFT, STORED_TAGS_SHIFT, TOP_SHIFT, Unit, VALUE_LOW,
 };
 use crate::{
-    ALIGNMENT_CHECK, ARITHMETIC_FLAGS, DEFAULT32, DF, FCW_AT_START, Fxsave, ID, MXCSR_WRITABLE, NT,
-    Offer, QUIET32, RAX, RBP, RBX, RCX, RDX, RSP, SegmentRegister, TF, X86Block, XMM_BYTES, ZF,
-    is_canonical,
+    ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DEFAULT32, DF, FCW_AT_START, Fxsave, ID,
+    MXCSR_WRITABLE, NT, Offer, QUIET32, RAX, RBP, RBX, RCX, RDX, RSP, SegmentRegister, TF,
+    X86Block, XMM_BYTES, ZF, is_canonical,
 };
 use wcontainers_guest_cpu::position::{Base, Operand, Segment};
 use zerocopy::IntoBytes;
@@ -149,6 +149,10 @@ pub enum Question {
     Reciprocal(Reciprocal),
     /// `popf` of this many bytes.
     PopFlags {
+        bytes: u8,
+    },
+    /// `pushf` of this many bytes, which a stepping piece routes here (TF set).
+    PushFlags {
         bytes: u8,
     },
     /// A descriptor-table instruction; `operand` is the selector it reads, or where it stores.
@@ -522,6 +526,15 @@ pub fn answer(
                 .map_err(Fault::Memory)?;
             block.gpr[general(RSP)] = from.wrapping_add(bytes.into());
             load_rflags(block, u64::from_le_bytes(word), bytes, &mut notes);
+        }
+        Question::PushFlags { bytes } => {
+            // rflags as user code sees it, as the meaning's `pushf` gives it.
+            let value = (block.rflags | u64::from(block.flags) | ALWAYS).to_le_bytes();
+            let at = block.gpr[general(RSP)].wrapping_sub(bytes.into());
+            memory
+                .write(at, &value[..usize::from(bytes)])
+                .map_err(Fault::Memory)?;
+            block.gpr[general(RSP)] = at;
         }
         Question::Descriptor { read, operand } => descriptor(block, memory, read, operand)?,
         Question::SegmentRead { from, to } => {

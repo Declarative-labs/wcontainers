@@ -8,8 +8,10 @@ use iced_x86::{
 };
 use wcontainers_guest_cpu::position::Side;
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route};
-use wcontainers_translator::{LookAhead, translate_native_for};
-use wcontainers_x86::area::{ENTRIES, FIRST_CALL_VECTOR, WITHHELD_VALUES};
+use wcontainers_translator::{
+    LookAhead, NativeRequest, translate_native_for, translate_native_request,
+};
+use wcontainers_x86::area::{ENTRIES, FIRST_CALL_VECTOR, STOP_WORD, WITHHELD_VALUES};
 use wcontainers_x86::carry::{AREA_WORD, COUNT, T, U, WITHHELD, names_withheld};
 use wcontainers_x86::native::{HostMatches, Target, Way};
 use wcontainers_x86::{Offer, V3, X86_64, decode, general_register};
@@ -75,6 +77,46 @@ fn listing(code: &[u8]) -> String {
 
 fn translate(code: &[u8], address: u64, way: Way, exact: bool) -> Option<HostCode> {
     translate_native_for::<X86_64>(code, address, LookAhead::Full, exact, &way, &target())
+}
+
+/// The piece of `code` at `address` made as asked: with the replay check before its start (`stop`), or as a
+/// stepping piece.
+fn translate_made(
+    code: &[u8],
+    address: u64,
+    way: Way,
+    exact: bool,
+    stop: bool,
+    step: bool,
+) -> Option<HostCode> {
+    let made = NativeRequest {
+        look_ahead: LookAhead::Full,
+        exact_replay: exact,
+        stop,
+        step,
+    };
+    translate_native_request::<X86_64>(code, address, &made, &way, &target())
+}
+
+/// The calls into the inside a piece makes, in the order they are laid out.
+fn calls(piece: &HostCode, way: Way) -> Vec<InsideCall> {
+    host(&piece.bytes)
+        .into_iter()
+        .filter_map(|(_, i)| {
+            let code = match way {
+                Way::Machine if i.mnemonic() == Mnemonic::Int => {
+                    i.immediate8().checked_sub(FIRST_CALL_VECTOR)?.into()
+                }
+                Way::Machine => return None,
+                _ if i.mnemonic() == Mnemonic::Jmp && i.memory_segment() == Register::GS => {
+                    let from = i.memory_displacement64().checked_sub(ENTRIES as u64)?;
+                    u16::try_from(from / AREA_WORD as u64).ok()?
+                }
+                _ => return None,
+            };
+            InsideCall::from_code(code)
+        })
+        .collect()
 }
 
 /// Checks one piece against its own position map and the guest code it came from, giving what was broken.
@@ -143,16 +185,14 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
                 at.relocated
             ));
         }
-        // An exit's call never comes back: the code after it is another way's.
-        let exit_call = match way {
-            Way::Machine => {
-                u16::from(i.immediate8()) == u16::from(FIRST_CALL_VECTOR) + InsideCall::Exit.code()
-            }
+        // An exit's call never comes back, nor a stepping piece's Step: the code after it is another way's.
+        let leaving = |kind: InsideCall| match way {
+            Way::Machine => u16::from(i.immediate8()) == u16::from(FIRST_CALL_VECTOR) + kind.code(),
             _ => {
-                i.memory_displacement64()
-                    == (ENTRIES + AREA_WORD * usize::from(InsideCall::Exit.code())) as u64
+                i.memory_displacement64() == (ENTRIES + AREA_WORD * usize::from(kind.code())) as u64
             }
         };
+        let exit_call = leaving(InsideCall::Exit) || leaving(InsideCall::Step);
         let back = offset + i.len();
         if exit_call {
             continue;
@@ -178,7 +218,14 @@ fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -
         let Some((i, length)) = guest.get(offset..).and_then(decode) else {
             continue;
         };
-        if X86_64::route(&way, &i, &target()) != Route::Copy || exact && repeated_string(&i.iced) {
+        // A stepping piece sends `pushf` and a repeated string to the inside.
+        let stepped = piece.stepping
+            && (repeated_string(&i.iced)
+                || matches!(i.iced.mnemonic(), Mnemonic::Pushf | Mnemonic::Pushfq));
+        if X86_64::route(&way, &i, &target()) != Route::Copy
+            || exact && repeated_string(&i.iced)
+            || stepped
+        {
             continue;
         }
         let end = piece.spans[k + 1].start as usize;
@@ -456,8 +503,19 @@ fn pieces_decode_and_match_their_maps() {
             continue;
         }
         for way in WAYS {
-            for exact in [false, true] {
-                let Some(mut piece) = translate(&guest, AT, way, exact) else {
+            // The count, the replay check and a stepping piece, each as a way makes them.
+            let made = [
+                (false, false, false),
+                (true, false, false),
+                (true, true, false),
+                (false, false, true),
+                (true, true, true),
+            ];
+            for (exact, stop, step) in made {
+                if step && way != Way::Process {
+                    continue;
+                }
+                let Some(mut piece) = translate_made(&guest, AT, way, exact, stop, step) else {
                     continue;
                 };
                 piece.finish();
@@ -465,7 +523,8 @@ fn pieces_decode_and_match_their_maps() {
                 instructions += piece.spans.len() as u64;
                 if let Some(what) = broken(&piece, &guest, AT, way, exact) {
                     panic!(
-                        "case {case} of seed {seed:#x} ({way:?}, count {exact}): {what}\nguest \
+                        "case {case} of seed {seed:#x} ({way:?}, count {exact}, stop {stop}, step \
+                         {step}): {what}\nguest \
                          {guest:02x?}\n{}",
                         listing(&piece.bytes)
                     );
@@ -825,6 +884,107 @@ fn a_trap_and_its_map() {
         assert_eq!(piece.spans[0].guest, AT);
         assert_eq!(piece.spans[0].side, Side::Before);
     }
+}
+
+/// A stepping piece holds one guest instruction and goes on only through the call of kind Step: never an exit a
+/// loader may link, a loop of its own or the lookup's second level; `pushf` and a repeated string are the
+/// inside's, a debug trap after a host instruction would not be the guest's.
+#[test]
+fn a_stepping_piece_leaves_only_through_the_inside() {
+    use wcontainers_guest_cpu::NativeReason;
+    let way = Way::Process;
+    for (hex, answered) in [
+        ("90 90", false),
+        ("eb fe", false),
+        ("74 05", false),
+        ("e2 fe", false),
+        ("e8 00 00 00 00", false),
+        ("c3", false),
+        ("ff e0", false),
+        ("41 ff 13", false),
+        ("f3 a4", true),
+        ("9c", true),
+        ("66 9c", true),
+        ("0f 0b", false),
+    ] {
+        for exact in [false, true] {
+            let piece = translate_made(&bytes(hex), AT, way, exact, false, true).expect("a piece");
+            let all = calls(&piece, way);
+            let what = format!("{hex}, count {exact}: {all:?}\n{}", listing(&piece.bytes));
+            assert!(piece.exits.is_empty(), "{what}");
+            assert_eq!(piece.sites_of(NativeReason::GuestSingleStep), 1, "{what}");
+            assert!(piece.spans.iter().all(|s| s.guest == AT), "{what}");
+            assert!(!all.contains(&InsideCall::Exit), "{what}");
+            assert_eq!(all.contains(&InsideCall::Answer), answered, "{what}");
+            assert_eq!(all.contains(&InsideCall::Step), hex != "0f 0b", "{what}");
+            let second_level = host(&piece.bytes)
+                .iter()
+                .any(|(_, i)| i.mnemonic() == Mnemonic::Jmp && i.memory_base() == U);
+            assert!(!second_level, "{what}");
+        }
+    }
+}
+
+/// The machine way steps on the hardware's TF, so it is never asked for a stepping piece.
+#[test]
+#[should_panic(expected = "this way steps on the hardware")]
+fn the_machine_way_makes_no_stepping_piece() {
+    translate_made(&bytes("90"), AT, Way::Machine, false, false, true);
+}
+
+/// The replay check (section 3.7) comes first, before the count's add, writes no flag, and calls the inside with
+/// kind Stop where the stop word less the count is zero; a branch back to the stop point goes through it again.
+#[test]
+fn the_replay_check_comes_first_and_writes_no_flag() {
+    use Mnemonic::*;
+    for way in WAYS {
+        let piece =
+            translate_made(&bytes("48 ff c8 75 fb"), AT, way, true, true, false).expect("a piece");
+        let code = host(&piece.bytes);
+        let what = listing(&piece.bytes);
+        let mnemonics: Vec<Mnemonic> = code.iter().take(7).map(|(_, i)| i.mnemonic()).collect();
+        assert_eq!(mnemonics, [Mov, Mov, Not, Lea, Jrcxz, Mov, Jmp], "{what}");
+        assert_eq!(
+            code[1].1.memory_displacement64(),
+            STOP_WORD as u64,
+            "{what}"
+        );
+        assert_eq!(code[3].1.memory_index(), COUNT, "{what}");
+        for (_, i) in &code[..7] {
+            assert_eq!(i.rflags_modified(), 0, "{what}");
+        }
+        assert_eq!(
+            calls(&piece, way).first(),
+            Some(&InsideCall::Stop),
+            "{what}"
+        );
+        let after = code
+            .iter()
+            .position(|(_, i)| i.op0_register() == COUNT && i.mnemonic() == Lea)
+            .expect("the count's add");
+        assert!(after > 7, "the count's add follows the check\n{what}");
+        let back = code
+            .iter()
+            .find(|(_, i)| i.mnemonic() == Jne)
+            .expect("the branch back");
+        assert_eq!(
+            back.1.near_branch_target(),
+            0,
+            "the loop goes back through the check\n{what}"
+        );
+        assert_eq!(
+            code.iter().filter(|(_, i)| i.mnemonic() == Jrcxz).count(),
+            1,
+            "no loop copy without the check\n{what}"
+        );
+    }
+}
+
+/// A stop point needs the count it compares.
+#[test]
+#[should_panic(expected = "a stop point needs the count")]
+fn a_stop_point_without_the_count_is_refused() {
+    translate_made(&bytes("90"), AT, Way::Process, false, true, false);
 }
 
 /// The count's add is the first instruction of a counted run and touches no flag.

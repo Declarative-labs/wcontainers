@@ -11,7 +11,7 @@ use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, PATCH_BYTES, Pat
 use crate::USER_END;
 use crate::area::{
     ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_GS_BASE, HOME_VALUES, STAND_IN_VALUES,
-    WITHHELD_VALUES, X87_CONTROL, X87_IP,
+    STOP_WORD, WITHHELD_VALUES, X87_CONTROL, X87_IP,
 };
 use crate::decode::Instruction;
 use crate::native::Way;
@@ -756,9 +756,13 @@ fn carry_plain(
     let next = address.wrapping_add(bytes.len() as u64);
     let repeated =
         crate::meaning::is_string(i) && (i.iced.has_rep_prefix() || i.iced.has_repne_prefix());
-    if repeated && code.lead_after_commit() < code.lead() {
-        // The count takes the meaning's passes, which the hardware's run of it does not show.
-        code.slow(NativeReason::RepeatedStringCounted);
+    let counted_string = repeated && code.lead_after_commit() < code.lead();
+    // A stepping thread's string traps after each pass, which the hardware's run of it does not.
+    if counted_string || (repeated && code.stepping) {
+        if counted_string {
+            // The count takes the meaning's passes, which the hardware's run of it does not show.
+            code.slow(NativeReason::RepeatedStringCounted);
+        }
         call(way, code, InsideCall::Answer);
         code.after(Resume::At(next));
         return;
@@ -871,6 +875,47 @@ fn x87_control_check(way: Way, code: &mut HostCode) {
     code.restore(after);
 }
 
+/// Writes the replay check before an instruction (section 3.7): the call of kind Stop where the thread's stop word
+/// equals the count, no flag written, rcx borrowed into t.
+pub fn stop_check(way: Way, code: &mut HostCode) {
+    let rcx = full(crate::operand::RCX);
+    put(
+        code,
+        &Iced::with2(Code::Mov_r64_rm64, T, rcx).expect("rcx kept"),
+    );
+    code.relocate(crate::operand::RCX, Held::Register(T_NUMBER));
+    put(code, &load_area(way, rcx, STOP_WORD));
+    put(code, &Iced::with1(Code::Not_rm64, rcx).expect("a not"));
+    // `not` gives minus the stop word less one, so this is the count less the stop word.
+    let difference = MemoryOperand::new(rcx, COUNT, 1, 1, 1, false, Register::None);
+    put(
+        code,
+        &Iced::with2(Code::Lea_r64_m, rcx, difference).expect("the difference"),
+    );
+    let back = Iced::with2(Code::Mov_r64_rm64, rcx, T).expect("rcx back");
+    let back_length = bytes_of(&back, 0).len();
+    let short = |to: u64| Iced::with_branch(Code::Jmp_rel8_64, to).expect("a jump");
+    let short_length = bytes_of(&short(0), 0).len();
+    let equal = |to: u64| Iced::with_branch(Code::Jrcxz_rel8_64, to).expect("a jrcxz");
+    let at = code.offset();
+    let stop = at + bytes_of(&equal(0), 0).len() + back_length + short_length;
+    code.push(&bytes_of(&equal(stop as u64), at as u64));
+    let relocated = code.snapshot();
+    put(code, &back);
+    code.home(crate::operand::RCX);
+    // Over the stop's call, patched once its length is known.
+    let over = code.offset();
+    code.push(&bytes_of(&short((over + short_length) as u64), over as u64));
+    let going_on = code.snapshot();
+    code.restore(relocated);
+    put(code, &back);
+    code.home(crate::operand::RCX);
+    call(way, code, InsideCall::Stop);
+    let end = code.offset();
+    code.patch(over, &bytes_of(&short(end as u64), over as u64));
+    code.restore(going_on);
+}
+
 /// After a copied x87 instruction that is not a control one: its guest address stored as the guest's FIP, the
 /// hardware's holding a host address (section 3.1).
 fn x87_pointer(way: Way, code: &mut HostCode, address: u64) {
@@ -944,14 +989,25 @@ pub fn call(way: Way, code: &mut HostCode, kind: InsideCall) {
 }
 
 /// Writes the exit to direct guest `target`: a `jmp rel32`, first pointed at the call into the inside after it,
-/// after an add that brings the count back to the guest's where it is ahead; the call leaves a loop's `homes`.
+/// after an add that brings the count back to the guest's where it is ahead; the call leaves a loop's `homes`. In
+/// a stepping piece it is the call of kind Step alone.
 pub fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Resume>, homes: &Homes) {
-    if target >= USER_END {
+    if code.stepping || target >= USER_END {
         if let Some(resume) = commit {
             code.after(resume);
         }
         homes.leave(way, code);
-        call(way, code, InsideCall::Exit);
+        let kind = if code.stepping {
+            assert_eq!(
+                code.lead(),
+                0,
+                "a stepping piece's count is the guest's at its end"
+            );
+            InsideCall::Step
+        } else {
+            InsideCall::Exit
+        };
+        call(way, code, kind);
         return;
     }
     let lead = code.lead_after_commit();
@@ -1086,7 +1142,7 @@ fn transfer(
             } else {
                 code.after(Resume::Through(Held::Register(T_NUMBER)));
             }
-            second_level(code);
+            onward(way, code);
         }
         Ret => {
             let top = MemoryOperand::with_base(full(RSP));
@@ -1105,7 +1161,7 @@ fn transfer(
                 &bytes_of(&lea, at),
                 Resume::Through(Held::Register(T_NUMBER)),
             );
-            second_level(code);
+            onward(way, code);
         }
         _ if ins.is_jcc_short_or_near() => {
             let target = direct(ins.near_branch64());
@@ -1115,7 +1171,7 @@ fn transfer(
             jcc.set_near_branch64(at as u64);
             let bytes = bytes_of(&jcc, at as u64);
             let length = bytes.len();
-            let linkable = code.lead_after_commit() == 0;
+            let linkable = code.lead_after_commit() == 0 && !code.stepping;
             code.commit(&bytes, Resume::At(next));
             if linkable {
                 // iced numbers the conditions from 1 in the order of a `jcc`'s low four bits.
@@ -1241,6 +1297,21 @@ fn first_level(way: Way, code: &mut HostCode) {
         code,
         &Iced::with2(Code::Mov_r64_rm64, U, level).expect("the first level"),
     );
+}
+
+/// Where a jump, call or return through t goes on: the lookup's second level, or in a stepping piece the call of
+/// kind Step with the target moved to u, since the process way's call writes t.
+fn onward(way: Way, code: &mut HostCode) {
+    if code.stepping {
+        put(
+            code,
+            &Iced::with2(Code::Mov_r64_rm64, U, T).expect("the target kept"),
+        );
+        code.after(Resume::Through(Held::Register(U_NUMBER)));
+        call(way, code, InsideCall::Step);
+    } else {
+        second_level(code);
+    }
 }
 
 /// The lookup's second level: the jump to the host entry of the piece at t.

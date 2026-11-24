@@ -1,7 +1,8 @@
 //! The inside's answer to a near transfer whose target is at or above 2^47 (docs/x86-native-output.md section
 //! 3.3), from code at the top of user space, where a rel32 or rel8 reaches past it: the guest's 4-level rule as
 //! the reference applies it: general protection leaving the registers as they were, a call's return address
-//! written first (the Xeon's `call rax` to 2^63 writes it, as the meaning does).
+//! written first (the Xeon's `call rax` to 2^63 writes it, as the meaning does). And `pushf`, which a stepping
+//! piece sends to the inside, with the guest's TF.
 
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_x86::answer::{
@@ -9,7 +10,8 @@ use wcontainers_x86::answer::{
 };
 use wcontainers_x86::native::{far_transfer, question};
 use wcontainers_x86::{
-    ARITHMETIC_FLAGS, Offer, RCX, RSP, USER_END, USER_TOP, V3, X86Block, decode, is_canonical,
+    ALWAYS, ARITHMETIC_FLAGS, DF, Offer, RCX, RSP, TF, USER_END, USER_TOP, V3, X86Block, decode,
+    is_canonical,
 };
 use zerocopy::FromZeros;
 
@@ -220,5 +222,33 @@ fn a_far_target_through_a_register_or_the_stack_follows_the_same_rule() {
             NearTransfer::Call { .. } => assert_eq!(rsp, STACK - 16),
             NearTransfer::Return { .. } => assert_eq!(rsp, STACK),
         }
+    }
+}
+
+/// `pushf` answered by the inside pushes the guest's TF, which the hardware's is not in a stepping piece, with the
+/// flags and the bits always set; with 66, the low 16 bits.
+#[test]
+fn the_inside_pushes_the_guests_trap_flag() {
+    const CF_ZF: u64 = 0x41;
+    for (code, bytes) in [(&[0x9c][..], 8), (&[0x66, 0x9c][..], 2)] {
+        let mut bytes16 = code.to_vec();
+        bytes16.resize(16, 0);
+        let (i, _) = decode(&bytes16).expect("decodes");
+        let q = question(&i).expect("a question for pushf");
+        assert_eq!(q, Question::PushFlags { bytes });
+        let mut after = block(0, CF_ZF, STACK - 8);
+        after.rflags = TF | DF;
+        let mut stack = Stack(vec![0; STACK_BYTES]);
+        let mut constants = Consts::new().expect("constants");
+        let offer = Offer::new(V3).expect("the v3 offer");
+        answer(q, &mut after, offer, &mut constants, &mut stack).expect("answered");
+        let at = STACK - 8 - u64::from(bytes);
+        assert_eq!(after.gpr[usize::from(RSP)], at);
+        let mut slot = [0; 8];
+        stack
+            .read(at, &mut slot[..usize::from(bytes)])
+            .expect("the slot");
+        let mask = u64::MAX >> (u64::BITS - u32::from(bytes) * u8::BITS);
+        assert_eq!(u64::from_le_bytes(slot), (TF | DF | CF_ZF | ALWAYS) & mask);
     }
 }

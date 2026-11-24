@@ -151,7 +151,13 @@ impl Native for X86_64 {
         homes: &carry::Homes,
         code: &mut HostCode,
     ) {
-        let route = route(*way, i, &target.host, &target.offer);
+        let route =
+            if code.stepping && matches!(i.iced.mnemonic(), Mnemonic::Pushf | Mnemonic::Pushfq) {
+                // The hardware's TF is clear in a stepping piece, the guest's set.
+                Route::Kernel
+            } else {
+                route(*way, i, &target.host, &target.offer)
+            };
         if route == Route::Kernel && host_differs(*way, i, &target.host) {
             code.slow(NativeReason::HostModelResultRouted);
         }
@@ -196,6 +202,16 @@ impl Native for X86_64 {
 
     fn write_place(code: &mut [u8], place: &AddressPlace) {
         carry::write_place(code, place);
+    }
+
+    /// The machine and the in-process way run the guest's TF on the hardware (section 3.6).
+    fn steps(way: &Way) -> bool {
+        *way == Way::Process
+    }
+
+    fn stop_check(way: &Way, code: &mut HostCode) -> bool {
+        carry::stop_check(*way, code);
+        true
     }
 }
 
@@ -297,6 +313,9 @@ pub fn question(i: &Instruction) -> Option<Question> {
             })
         }
         Popf | Popfq => Question::PopFlags {
+            bytes: crate::operand::stack_bytes(i) as u8,
+        },
+        Pushf | Pushfq => Question::PushFlags {
             bytes: crate::operand::stack_bytes(i) as u8,
         },
         Sldt | Str | Smsw | Sgdt | Sidt | Verr | Verw => Question::Descriptor {
