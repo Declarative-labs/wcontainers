@@ -1068,6 +1068,12 @@ side of each is worked around without changing the interface.
   that module has; the native track's) and
   crates/executor/implementation/hardware-virtualization/tests/guest_memory.rs:222 (ARM64 only, type
   annotations; the executors job's). Please hand each to its track; KC passes once they build.
+  Still unchanged at 06:35 UTC on 2026-11-24 (ninth run). The fixes as read: guest_memory.rs:222
+  compares `Vec<u64>` with `[]` (e.g. `assert!(reached.is_empty(), ..)`); layer1.rs's
+  `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64`,
+  `answered_as_the_meaning` and `the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64`
+  (and the tests calling the helper) lack the `#[cfg(all(target_os = "linux", target_arch =
+  "x86_64"))]` their siblings have; measured/tests.rs's `Counted` needs the executor's new items.
 
 - KF, seventh run: `Start::ceiling` (the highest address the executor can give now, if below
   the address space's end) has no embedder that sets it today: the single-kernel runtime and
