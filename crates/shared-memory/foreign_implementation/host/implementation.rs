@@ -1,17 +1,14 @@
-#![cfg(unix)]
-
 use std::io;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+use crate::Mapped;
+use crate::arithmetic::WORD;
+use crate::seal::Sealed;
 use memmap2::{MmapOptions, MmapRaw};
 #[cfg(target_os = "linux")]
 use rustix::fd::BorrowedFd;
 use thiserror::Error;
-use wcontainers_shared_memory::{Mapped, Sealed};
-
-/// The bytes of one word.
-const WORD: usize = size_of::<u64>();
 
 /// Memory the host mapped for this program, readable and writable, and unmapped when the value drops.
 pub struct HostMapping {
@@ -100,10 +97,11 @@ impl Sealed for HostMapping {}
     reason = "memory the host mapped, which only `Words` reaches"
 )]
 // SAFETY: `MmapRaw` keeps the range mapped readable and writable until it drops, and nothing here remaps or unmaps it.
-// Anonymous memory never traps; a file is sealed against shrinking and was at least as long as the range when mapped,
-// so it stays so, and it is not on the huge-page file system. `aligned` checked the start, and both constructors the
-// length, which never changes. Only `base` hands out the address. Whatever else writes the bytes (another process, or
-// the kernel through the file) writes only the file's pages.
+// Anonymous memory never traps; a file is sealed against shrinking, which no descriptor of it can undo, and was at
+// least as long as the range when mapped, so it stays so, and it is not on the huge-page file system. `aligned` checked
+// the start, and both constructors the length, which is the mapping's own and never changes. Only `base` hands out the
+// address. Whatever else reaches the bytes (another mapping of the file, another process, or the kernel through the
+// file) is an outside agent and writes only the file's pages.
 unsafe impl Mapped for HostMapping {
     fn base(&self) -> NonNull<u64> {
         NonNull::new(self.map.as_mut_ptr().cast()).expect("a mapping is never at address 0")

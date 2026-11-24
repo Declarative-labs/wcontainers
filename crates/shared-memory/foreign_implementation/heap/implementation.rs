@@ -1,18 +1,12 @@
-#![no_std]
-
-extern crate alloc;
-
-#[cfg(kani)]
-mod proofs;
-
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicU64;
 
-use wcontainers_shared_memory::{Mapped, Sealed};
+use crate::Mapped;
+use crate::seal::Sealed;
 
-/// Words on this program's heap, zero when made.
+/// Words on this program's heap, zero when made, built only for Miri and Kani, which cannot run a host's mapping.
 pub struct HeapMapping {
     words: Box<[AtomicU64]>,
 }

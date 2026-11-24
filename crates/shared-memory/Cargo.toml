@@ -11,18 +11,58 @@ publish = false
 [lib]
 path = "interface.rs"
 
+[features]
+# The host's mappings, which need the standard library: anonymous memory, and a memory file sealed against shrinking.
+host = ["dep:memmap2", "dep:libc", "rustix/fs", "rustix/std"]
+
 [dependencies]
 thiserror = { version = "2.0.21", default-features = false }
 wcontainers-byte-sink = { path = "../byte-sink" }
 wcontainers-byte-source = { path = "../byte-source" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# The futex wait and wake, which take the word's low half as an `&AtomicU32`.
-rustix = { version = "1.1.6", default-features = false, features = ["thread"] }
+[target.'cfg(unix)'.dependencies]
+# Maps and unmaps with safe calls; its raw mapping hands out the address and nothing else.
+memmap2 = { version = "0.9.12", optional = true }
 
-# A low-level primitive: its 3 uses of unsafe (the unsafe trait `Mapped` and the two `from_ptr` calls) are each marked.
+[target.'cfg(target_os = "linux")'.dependencies]
+# The futex wait and wake, which take the word's low half as an `&AtomicU32`; and the host file's seals, size and file
+# system, all with safe calls.
+rustix = { version = "1.1.6", default-features = false, features = ["thread"] }
+# The magic number of the huge-page file system, whose memory files can fault for want of pages.
+libc = { version = "0.2.191", optional = true }
+
+[dev-dependencies]
+wcontainers-shared-memory-conformance = { path = "conformance" }
+wcontainers-volatile-bytes-conformance = { path = "../volatile-bytes/conformance" }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+wcontainers-byte-source = { path = "../byte-source" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Memory files, their seals and second descriptors, which the host's tests change under a mapping.
+rustix = { version = "1.1.6", features = ["fs"] }
+
+[[test]]
+name = "host"
+path = "foreign_implementation/host/conformance.rs"
+required-features = ["host"]
+
+[[test]]
+name = "heap"
+path = "foreign_implementation/heap/conformance.rs"
+
+[[test]]
+name = "attacks"
+path = "attack/attacks.rs"
+
+[[test]]
+name = "refused"
+path = "attack/refused.rs"
+required-features = ["host"]
+
+# A low-level primitive: its 5 uses of unsafe (the unsafe trait `Mapped`, the slice of a mapping's words, a word's low
+# half for the futex, and `unsafe impl Mapped` for the host's mappings and for the heap's words) are each marked.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(refused, values(any()))"] }

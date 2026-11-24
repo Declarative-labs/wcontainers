@@ -2,14 +2,13 @@
 //! (one harness per count: a box of a symbolic size makes the solver run out of 130 GB), and every offset, length and
 //! content. Each check of bytes picks one byte at any index, so that it covers them all without a loop. An empty
 //! mapping is left to the tests: Kani cannot follow the dangling address of an empty box.
-//! Run with `cargo kani -p wcontainers-shared-memory-heap -Z stubbing`.
+//! Run with `cargo kani -p wcontainers-shared-memory -Z stubbing`.
 
 use alloc::vec::Vec;
 
-use wcontainers_shared_memory::{OutsideError, Words};
 use wcontainers_volatile_bytes::VolatileBytes;
 
-use crate::HeapMapping;
+use crate::{HeapMapping, OutsideError, Words};
 
 /// The most words a mapping holds in these checks.
 const WORDS: usize = 4;
@@ -214,7 +213,7 @@ mod futex {
 
 #[cfg(target_os = "linux")]
 fn waits_and_wakes_on_the_low_half_of_words_inside(count: usize) {
-    use wcontainers_shared_memory::WaitError;
+    use crate::WaitError;
 
     let (words, before) = any_words(count);
     let index: u64 = kani::any();

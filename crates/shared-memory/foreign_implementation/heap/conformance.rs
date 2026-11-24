@@ -1,5 +1,7 @@
-use wcontainers_shared_memory::Words;
-use wcontainers_shared_memory_heap::HeapMapping;
+//! The heap mapping exists only under Miri and Kani, so this suite runs only under Miri.
+#![cfg(miri)]
+
+use wcontainers_shared_memory::{HeapMapping, Words};
 
 /// The words of each mapping: those the suite needs, and three more.
 const WORDS: usize = wcontainers_shared_memory_conformance::NEEDED as usize + 3;

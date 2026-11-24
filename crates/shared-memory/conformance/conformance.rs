@@ -276,6 +276,10 @@ macro_rules! tests {
 
         #[cfg(target_os = "linux")]
         #[test]
+        #[cfg_attr(
+            miri,
+            ignore = "Miri refuses rustix's futex call for its argument's type, before this crate's code is reached"
+        )]
         fn waits_until_woken() {
             $crate::waits_until_woken($words);
         }

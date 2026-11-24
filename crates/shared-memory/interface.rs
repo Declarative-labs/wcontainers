@@ -1,6 +1,25 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(all(feature = "host", unix))]
+extern crate std;
+
+mod arithmetic;
+mod foreign_implementation {
+    #[cfg(any(miri, kani))]
+    #[path = "heap/implementation.rs"]
+    pub(crate) mod heap;
+    #[cfg(all(feature = "host", unix))]
+    #[path = "host/implementation.rs"]
+    pub(crate) mod host;
+    #[cfg(kani)]
+    #[path = "heap/proofs.rs"]
+    mod proofs;
+}
+/// Holds the trait no other crate can name, so that only this crate's mappings implement [`Mapped`].
+mod seal {
+    pub trait Sealed {}
+}
 
 use alloc::sync::Arc;
 use alloc::vec;
@@ -17,16 +36,22 @@ use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_volatile_bytes::VolatileBytes;
 
-/// The bytes of one word.
-const WORD: usize = size_of::<u64>();
+use crate::arithmetic::{WORD, plan};
+#[cfg(any(miri, kani))]
+pub use crate::foreign_implementation::heap::HeapMapping;
+#[cfg(all(feature = "host", target_os = "linux"))]
+pub use crate::foreign_implementation::host::FileError;
+#[cfg(all(feature = "host", unix))]
+pub use crate::foreign_implementation::host::{AnonymousError, HostMapping};
 
 /// Memory that something outside this program may change at any moment.
 ///
 /// # Safety
 /// While the value lives: the bytes from `base` for `len` stay mapped readable and writable as ordinary memory, and
 /// reaching them never traps; `base` is aligned to 8 and `len` is a multiple of 8, and neither changes; this program
-/// reaches them only through [`Words`]; no unsafe code of this program trusts their contents; whatever else writes them
-/// changes no other memory of this program.
+/// reaches them at `base` only through [`Words`], and any other address of the same bytes (another mapping of their
+/// file) and any system call on them counts as an outside agent; no unsafe code of this program trusts their contents;
+/// whatever else writes them changes no other memory of this program.
 #[expect(
     unsafe_code,
     reason = "the promise each mapping makes, on which `Words` reaches its bytes"
@@ -35,15 +60,12 @@ const WORD: usize = size_of::<u64>();
     clippy::len_without_is_empty,
     reason = "`Words` asks a mapping its length once and never whether it is empty"
 )]
-pub unsafe trait Mapped: Send + Sync + Sealed {
+pub unsafe trait Mapped: Send + Sync + seal::Sealed {
     fn base(&self) -> NonNull<u64>;
 
     /// Returns the number of bytes mapped.
     fn len(&self) -> usize;
 }
-
-/// Marks the mappings whose `unsafe impl Mapped` was reviewed; implement it only beside such an impl.
-pub trait Sealed {}
 
 /// The only way to reach a [`Mapped`]: aligned 8-byte atomic accesses, and no reference or pointer into it given out.
 pub struct Words {
@@ -110,19 +132,20 @@ impl Words {
         Ok(self.word(index)?.swap(value, Ordering::AcqRel))
     }
 
-    /// Copies the bytes from the byte offset into the whole buffer, one `Relaxed` load per word.
+    /// Copies the bytes from the byte offset into the whole buffer, one `Relaxed` load of each word they touch and no
+    /// load of any other word, or, if any of them lies outside, touches neither the words nor the buffer.
     pub fn read(&self, at: u64, into: &mut [u8]) -> Result<(), OutsideError> {
-        self.end(at, into.len())?;
-        let (low, mut index) = split(at)?;
+        let plan = plan(self.count, at, into.len()).ok_or(OutsideError)?;
+        let mut index = plan.index;
         let all = self.all();
-        let (head, body) = into.split_at_mut(((WORD - low) % WORD).min(into.len()));
+        let (head, body) = into.split_at_mut(plan.head);
         if !head.is_empty() {
             let value = all
                 .get(index)
                 .ok_or(OutsideError)?
                 .load(Ordering::Relaxed)
                 .to_ne_bytes();
-            head.copy_from_slice(&value[low..low + head.len()]);
+            head.copy_from_slice(&value[plan.low..plan.low + head.len()]);
             index += 1;
         }
         let (whole, tail) = body.as_chunks_mut::<WORD>();
@@ -142,15 +165,15 @@ impl Words {
         Ok(())
     }
 
-    /// Copies the whole buffer to the bytes from the byte offset; a word only partly covered is written by a
-    /// compare-and-exchange that keeps its other bytes.
+    /// Copies the whole buffer to the bytes from the byte offset, touching no other word, and a word only partly covered
+    /// by a compare-and-exchange that keeps its other bytes; or, if any byte lies outside, touches no word.
     pub fn write(&self, at: u64, bytes: &[u8]) -> Result<(), OutsideError> {
-        self.end(at, bytes.len())?;
-        let (low, mut index) = split(at)?;
+        let plan = plan(self.count, at, bytes.len()).ok_or(OutsideError)?;
+        let mut index = plan.index;
         let all = self.all();
-        let (head, body) = bytes.split_at(((WORD - low) % WORD).min(bytes.len()));
+        let (head, body) = bytes.split_at(plan.head);
         if !head.is_empty() {
-            merge(all.get(index).ok_or(OutsideError)?, low, head);
+            merge(all.get(index).ok_or(OutsideError)?, plan.low, head);
             index += 1;
         }
         let (whole, tail) = body.as_chunks::<WORD>();
@@ -200,26 +223,13 @@ impl Words {
 
     /// Returns the bytes at the offsets.
     pub fn part(&self, offsets: Range<u64>) -> Result<Part<'_>, OutsideError> {
-        if offsets.start > offsets.end || offsets.end > self.bytes() {
-            return Err(OutsideError);
-        }
+        let (start, length) =
+            arithmetic::part(self.count, offsets.start, offsets.end).ok_or(OutsideError)?;
         Ok(Part {
             words: self,
-            start: offsets.start,
-            length: offsets.end - offsets.start,
+            start,
+            length,
         })
-    }
-
-    /// Returns the number of bytes mapped.
-    fn bytes(&self) -> u64 {
-        (self.count * WORD) as u64
-    }
-
-    /// Returns the offset just past the bytes at `at`, if they all lie inside the mapping.
-    fn end(&self, at: u64, length: usize) -> Result<u64, OutsideError> {
-        at.checked_add(length as u64)
-            .filter(|&end| end <= self.bytes())
-            .ok_or(OutsideError)
     }
 
     /// Returns the word at the index, if it lies inside the mapping.
@@ -241,9 +251,9 @@ impl Words {
             reason = "the one place the words of a mapping become atomics"
         )]
         // SAFETY: `Mapped` promises that the `count` words from `base` stay mapped readable and writable as ordinary
-        // memory, aligned to 8 and reached only through `Words`, while the mapping lives; `self` holds it for as long as
-        // the slice lives. An `AtomicU64` has the size and alignment of a `u64`, and every access of this program to
-        // the words is an 8-byte atomic operation through this slice.
+        // memory, aligned to 8, while the mapping lives, and that this program reaches them at `base` only through
+        // `Words`, everything else being an outside agent; `self` holds the mapping for as long as the slice lives. An
+        // `AtomicU64` has the size and alignment of a `u64`, and every access through this slice is an 8-byte atomic.
         let all = unsafe { core::slice::from_raw_parts(base, self.count) };
         all
     }
@@ -265,12 +275,6 @@ impl Words {
         let low = unsafe { AtomicU32::from_ptr(half) };
         Ok(low)
     }
-}
-
-/// Returns the byte offset's place in its word, and the word's index.
-fn split(at: u64) -> Result<(usize, usize), OutsideError> {
-    let index = usize::try_from(at / WORD as u64).map_err(|_| OutsideError)?;
-    Ok(((at % WORD as u64) as usize, index))
 }
 
 /// Writes the bytes into the word from its byte `low`, keeping its other bytes as they are at the exchange.

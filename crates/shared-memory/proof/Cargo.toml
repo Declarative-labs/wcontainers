@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-shared-memory-proof"
+description = "The Verus proof of a copy of the shared-memory crate's offset arithmetic, and the test that the copy and the code agree."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "agreement.rs"
+
+[dependencies]
+# Only for its `verus!` macro, which drops the proof's clauses when the copy is built for the agreement test.
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["std"] }
+
+# Not a member of the repository's workspace, so that vstd stays out of its lock file and no crate can depend on this.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "allow" }
