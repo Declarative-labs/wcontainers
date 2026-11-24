@@ -104,6 +104,10 @@ const MODULE_LINK: &[&str] = &[
     "-o",
 ];
 
+/// How the module is built again after its sources change.
+const REBUILD: &str =
+    "build the crate natively with wasi-sdk 25 named as for WebAssembly, which says what to copy";
+
 /// The optimisation level the module is built at, whatever the crate's profile, so that every
 /// build of the same sources gives the same bytes.
 const MODULE_OPTIMISATION: u32 = 2;
@@ -293,9 +297,9 @@ fn main() {
             let recorded = std::fs::read_to_string(MODULE_SOURCES).unwrap_or_default();
             assert!(
                 recorded.trim() == sources,
-                "the converters' sources changed since {} was built: build the crate natively with \
-                 the environment naming wasi-sdk 25 as for WebAssembly, which says what to copy",
-                MODULE
+                "the converters' sources changed since {} was built: {}",
+                MODULE,
+                REBUILD
             );
         }
     }
