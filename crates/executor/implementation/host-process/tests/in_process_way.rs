@@ -11,7 +11,8 @@
 //! be the reference's: the state before the instruction at a fault, an alignment call, the mark or a stack pointer
 //! leaving the window, the state after it at a faulting stack probe; a fault at the reference's own address.
 //! Pieces of two to eight such instructions are translated as one piece too, against the reference run one
-//! instruction at a time.
+//! instruction at a time; and every form is run in displaced code (rule e), from a stack pointer outside the
+//! window.
 //!
 //! A quarter of the drawn words name the stack pointer, and a quarter have an immediate offset of zero (an access at
 //! its base, which the way cuts by its own addressing), which random words rarely do. Knobs:
@@ -62,6 +63,15 @@ const OFFSET_FIELDS: [&str; 3] = ["imm12", "imm9", "imm7"];
 /// The slot whose window the translated code runs in, and another whose window it must never reach.
 const SLOT: u16 = 1;
 const OTHER_SLOT: u16 = 2;
+/// The way of the slot's ordinary code, and of its displaced code (rule e).
+const WAY: Way = Way::InProcess {
+    slot: SLOT,
+    displaced: false,
+};
+const DISPLACED: Way = Way::InProcess {
+    slot: SLOT,
+    displaced: true,
+};
 /// The general registers, x0 to x30.
 const GENERAL: usize = 31;
 /// The vector registers.
@@ -324,12 +334,15 @@ fn kept(unicorn: &Unicorn<'_, ()>, at: u64) -> (RegisterPage, AfterPage) {
     (page, after)
 }
 
-/// Guest instructions `words` at [`CODE`], from the case's state, translated for the in-process way as one piece
-/// and run in slot [`SLOT`]'s window, with what its stop resolves to.
-fn translated(case: &Case, words: &[u32]) -> (Outcome, Option<Resolution>) {
-    let way = Way::InProcess { slot: SLOT };
+/// Guest instructions `words` at [`CODE`], from the case's state, translated for `way`, an in-process way of slot
+/// [`SLOT`], as one piece and run in its window, with what its stop resolves to.
+fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resolution>) {
     let base = way.window_base();
-    let other = Way::InProcess { slot: OTHER_SLOT }.window_base();
+    let other = Way::InProcess {
+        slot: OTHER_SLOT,
+        displaced: false,
+    }
+    .window_base();
     let look_ahead = match words.len() {
         1 => LookAhead::None,
         n => LookAhead::Bounded(u32::try_from(n).expect("a short piece")),
@@ -474,7 +487,7 @@ fn translated(case: &Case, words: &[u32]) -> (Outcome, Option<Resolution>) {
         unicorn.reg_write(x_register(n), value).expect("a register");
     }
     unicorn
-        .reg_write(RegisterARM64::SP, base + case.sp)
+        .reg_write(RegisterARM64::SP, way.stack_base().wrapping_add(case.sp))
         .expect("sp");
     unicorn
         .reg_write(RegisterARM64::NZCV, case.nzcv)
@@ -492,7 +505,7 @@ fn translated(case: &Case, words: &[u32]) -> (Outcome, Option<Resolution>) {
                 spans: &code.spans,
             };
             let resolution = in_process::resolve(
-                SLOT,
+                way,
                 &piece,
                 t.taken,
                 &t.h,
@@ -528,7 +541,7 @@ fn translated(case: &Case, words: &[u32]) -> (Outcome, Option<Resolution>) {
         sp: unicorn
             .reg_read(RegisterARM64::SP)
             .expect("sp")
-            .wrapping_sub(base),
+            .wrapping_sub(way.stack_base()),
         nzcv: unicorn.reg_read(RegisterARM64::NZCV).expect("flags"),
         q: read_vectors(&unicorn),
         memory: read_regions(&unicorn, base),
@@ -539,7 +552,7 @@ fn translated(case: &Case, words: &[u32]) -> (Outcome, Option<Resolution>) {
 /// Whether the instruction is one the in-process way changes: an access, a cache or zeroing operation by address,
 /// or an instruction naming the stack pointer as a value.
 fn wanted(i: &I) -> bool {
-    let route = Arm64::route(&Way::InProcess { slot: SLOT }, i, &());
+    let route = Arm64::route(&WAY, i, &());
     match route {
         // A collision's result is the meaning's choice, which the emulator need not make.
         Route::Collision => false,
@@ -749,9 +762,10 @@ fn disagreement(
             }
             (a != b).then(|| format!("fault at {b:#x}, the reference's at {a:#x}"))
         }
-        (Outcome::Fault(_), Outcome::Mark) => {
+        // An access whose first byte is the window's top faults at the mark's own host address.
+        (Outcome::Fault(f), Outcome::Mark) => {
             match start_address(&i, &case.x, case.sp) {
-                Some((_, a)) if outside(a) => {
+                Some((_, a)) if outside(a) || outside(*f) => {
                     tally.outside += 1;
                     None
                 }
@@ -940,6 +954,40 @@ fn at_base(form: &forms::Form, word: u32) -> u32 {
 
 #[test]
 fn in_process_way_agrees_with_the_reference_and_stays_in_its_window() {
+    every_form(WAY, |_| None);
+}
+
+/// Every form as [`in_process_way_agrees_with_the_reference_and_stays_in_its_window`] runs it, in displaced code
+/// (rule e) from a stack pointer outside the window: above it, below zero, far outside, tagged, and at the host
+/// addresses of the translated code, the register page and the other slot's stack, where an access through the
+/// stack pointer that was not checked and cut would succeed. Knobs as that test's.
+#[test]
+fn displaced_code_agrees_with_the_reference_and_stays_in_its_window() {
+    every_form(DISPLACED, |rng| {
+        let window = 1u64 << WINDOW_BITS;
+        let other = Way::InProcess {
+            slot: OTHER_SLOT,
+            displaced: false,
+        }
+        .window_base();
+        let sp = match rng.u32(0..6) {
+            0 => window + rng.u64(0..PAGE_SIZE),
+            1 => 0u64.wrapping_sub(rng.u64(1..=PAGE_SIZE)),
+            2 => window * rng.u64(1..1 << 8) + rng.u64(0..window),
+            3 => rng.u64(1..1 << (u64::BITS - TAG_LOW)) << TAG_LOW | rng.u64(0..STACK_TOP),
+            4 => {
+                let near = [HOST_CODE, REGISTER_PAGE, other + STACK_TOP - PAGE_SIZE];
+                near[rng.usize(0..near.len())] + rng.u64(0..PAGE_SIZE)
+            }
+            _ => rng.u64(window..),
+        };
+        Some(sp & !(STACK_ALIGNMENT - 1))
+    });
+}
+
+/// Every presented form the way changes, `WCHP_IN_PROCESS_CASES` cases each, translated for `way` and run against
+/// the reference, from a stack pointer `stack` gives, if it gives one.
+fn every_form(way: Way, stack: impl Fn(&mut fastrand::Rng) -> Option<u64>) {
     let cases = setting(CASES_VARIABLE, DEFAULT_CASES);
     let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
     let mut rng = fastrand::Rng::with_seed(seed);
@@ -960,9 +1008,12 @@ fn in_process_way_agrees_with_the_reference_and_stays_in_its_window() {
                 decode(word).memory_access().map(|m| m.address),
                 Some(Address::Offset { offset: 0, .. })
             ));
-            let case = case_for(word, &mut rng);
+            let mut case = case_for(word, &mut rng);
+            if let Some(sp) = stack(&mut rng) {
+                case.sp = sp;
+            }
             let reference = reference(&case, CODE);
-            let (translated, resolution) = translated(&case, &[word]);
+            let (translated, resolution) = translated(&case, &[word], way);
             tally.cases += 1;
             let why = disagreement(&case, &reference, &translated, &mut tally).or_else(|| {
                 resolution_disagreement(&case, CODE, &reference, &translated, resolution.as_ref())
@@ -977,7 +1028,7 @@ fn in_process_way_agrees_with_the_reference_and_stays_in_its_window() {
         tally.forms += u64::from(found > 0);
     }
     eprintln!(
-        "seed {seed:#x}, {cases} cases per form: {tally:?}, {} forms failing",
+        "{way:?}, seed {seed:#x}, {cases} cases per form: {tally:?}, {} forms failing",
         failures.len()
     );
     for (form, why) in &failures {
@@ -1056,7 +1107,7 @@ fn in_process_pieces_of_several_instructions_agree_with_the_reference() {
             *into = byte;
         }
         let initial = case.clone();
-        let (translated, resolution) = translated(&case, &words);
+        let (translated, resolution) = translated(&case, &words, WAY);
         let stop = resolution.as_ref().and_then(|r| stopped_at(r, length));
         tally.cases += 1;
         tally.resolved += u64::from(resolution.is_some());
