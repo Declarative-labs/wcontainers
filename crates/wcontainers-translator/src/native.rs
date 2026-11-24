@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use wcontainers_guest_cpu::position::DirectExit;
-use wcontainers_guest_cpu::{FlowKind, HostCode, Native, Route, count_placement, counted};
+use wcontainers_guest_cpu::{
+    FlowKind, HostCode, Native, NativeReason, Route, count_placement, counted,
+};
 
 use crate::LookAhead;
 
@@ -71,7 +73,48 @@ pub fn translate_native_for<G: Native>(
     way: &G::Way,
     target: &G::Target,
 ) -> Option<HostCode> {
+    let request = NativeRequest {
+        look_ahead,
+        exact_replay,
+        stop: false,
+        step: false,
+    };
+    translate_native_request::<G>(code, address, &request, way, target)
+}
+
+/// What a piece is asked for besides its bytes, address, way and target; all of it is part of the cache key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NativeRequest {
+    pub look_ahead: LookAhead,
+    /// Whether the count's adds are written (see [`translate_native`]).
+    pub exact_replay: bool,
+    /// Whether the piece starts with the replay check (docs/native.md 5.7) before its first instruction, wherever
+    /// the code reaches it from; needs `exact_replay`. Its parts make no loop copies, so every turn passes the
+    /// check.
+    pub stop: bool,
+    /// Whether the piece is a stepping piece ([`HostCode::stepping`]) for a guest thread whose trap flag is set:
+    /// its first instruction alone, made for a way that [`Native::steps`].
+    pub step: bool,
+}
+
+/// [`translate_native_for`] with a stop point or a single step.
+pub fn translate_native_request<G: Native>(
+    code: &[u8],
+    address: u64,
+    request: &NativeRequest,
+    way: &G::Way,
+    target: &G::Target,
+) -> Option<HostCode> {
+    let &NativeRequest {
+        look_ahead,
+        exact_replay,
+        stop,
+        step,
+    } = request;
+    assert!(!step || G::steps(way), "this way steps on the hardware");
+    assert!(!stop || exact_replay, "a stop point needs the count");
     let limit = match look_ahead {
+        _ if step => 1,
         LookAhead::None => 1,
         LookAhead::Bounded(n) => usize::try_from(n).unwrap_or(usize::MAX).max(1),
         LookAhead::Full => usize::MAX,
@@ -190,6 +233,9 @@ pub fn translate_native_for<G: Native>(
         })
         .collect();
     let settled_nothing = G::LoopInvariant::default();
+    // A loop copy would leave a stop point's check behind after its first turn, and a stepping piece is one
+    // instruction that only leaves.
+    let copies_made = !stop && !step;
     // One instruction's add and code, after the current straight-line part's instructions so far (`part`).
     let carry_one = |out: &mut HostCode,
                      k: usize,
@@ -213,6 +259,10 @@ pub fn translate_native_for<G: Native>(
         part.push((here, h.instruction));
     };
     let mut out = HostCode::new();
+    out.stepping = step;
+    if step {
+        out.slow(NativeReason::GuestSingleStep);
+    }
     // The host offset of each part's start and the count's lead there, by guest address.
     let mut entries = BTreeMap::new();
     // The current straight-line part's instructions so far, with their guest addresses.
@@ -227,9 +277,18 @@ pub fn translate_native_for<G: Native>(
             entries.insert(here, (out.offset(), leads[p]));
             out.enter_ahead(leads[p]);
             part.clear();
-            if let Some(branch) = G::test_loop_invariant(way, &mut out, &invariants[p]) {
+            if let Some(branch) = copies_made
+                .then(|| G::test_loop_invariant(way, &mut out, &invariants[p]))
+                .flatten()
+            {
                 tested.push((p, branch));
             }
+        }
+        if stop && k == 0 {
+            assert!(
+                G::stop_check(way, &mut out),
+                "this guest's output writes no replay check"
+            );
         }
         carry_one(&mut out, k, &mut part, &settled_nothing);
         let next = h.at + h.length;
@@ -272,6 +331,10 @@ pub fn translate_native_for<G: Native>(
         );
         copies.push((written..out.exits.len(), start, head, leads[p]));
     }
+    assert!(
+        !step || out.exits.is_empty(),
+        "a stepping piece leaves through no exit a loader may link"
+    );
     for (n, exit) in std::mem::take(&mut out.exits).into_iter().enumerate() {
         // A copy's branch back to its start stays in the copy.
         let within = copies
