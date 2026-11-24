@@ -8,6 +8,48 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, fourteenth run: the reset heard at once; the five unsafe lines need one ruling
+
+Started about 11:00 UTC on 2026-11-24 at 9bc830b2. Builds and tests on the ARM64 machine only.
+Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
+
+- `a_full_connection_hears_a_reset` fixed in the kernel (74e2ca54): poll, ppoll, select and
+  getsockopt SO_ERROR first poll the kept wait of each looked-at socket's outside connection
+  once (`Waiting::poll_now`, `outside::hear_now`), and the host's future asks the socket itself
+  when polled, so a reset the host had before bytes the program read on another connection is
+  known, as on Linux. Cost: one host poll per outside connection a guest's poll or select looks
+  at, and nothing for other files. A new unit test,
+  `a_call_polled_now_answers_before_its_waker_fires_and_only_itself`. Kernel clippy and fmt clean, unit tests 26 pass, the reset test alone
+  10 of 10 and the whole outside binary 3 of 3 (t1.log, 11:14 UTC, load 9 to 12). Not covered:
+  epoll_wait still answers from what the waits reported (looking at every item there would cost
+  a host call per outside item per wait, against epoll's point); listed.
+- siginfo.rs's test, from the unsafe job's commit 0427f705, was not formatted: formatted
+  (3cd3fcd1).
+- The whole suite at 74e2ca54: see the next entry once it ends (job kernel/20261124-111636-2370477).
+- The five unsafe lines of executing.rs (the two `unsafe impl`, `unsafe fn new`, `unsafe fn start`
+  and its call) are NOT removed. Which way: the state must become `Send` by its types. Keeping it
+  on one thread behind a `Send` handle cannot work here: the interface asks `Kernel: Sync` and
+  `Runner: Send`, its calls come from any host thread, and a `no_std` crate has no thread of its
+  own to keep the state on (nor has a browser's main thread for it). What the `Send` way takes:
+  1. The kernel's records: `Rc`/`Weak` to `Arc`/`sync::Weak` (84, 43 and 185 `Rc::` sites),
+     `RefCell` to `AtomicRefCell` (crate atomic_refcell, MIT OR Apache-2.0, `no_std`, the same
+     `borrow`/`borrow_mut` names; 86 types, about 1,600 borrow sites), `Cell` to atomics (26),
+     `dyn Any` to `dyn Any + Send + Sync` (16). Mechanical, in 30 files, but each borrow then
+     costs two atomic operations that the one kernel lock makes useless (not measured).
+  2. The system's waiting calls kept as `SmallBox<dyn Future + Send>`: stable Rust cannot ask an
+     interface's `async fn` future to be `Send` in generic code. Measured this run (rtn/,
+     rustc 1.99.0 on the ARM64 machine): with `#![feature(return_type_notation)]`, which the
+     workspace's `RUSTC_BOOTSTRAP=1` already lets through, `S: Readiness<H,
+     wait_until_ready(..): Send>` compiles and the kept call drops on another thread; without
+     the gate, E0554. The other way is the interface writing `fn ..(..) -> impl Future<Output =
+     ..> + Send` for `wait_until_ready`, `send_request`, `receive_notice` and `resolve_domain`.
+  3. The guest memories: `Executor::GuestMemory` need not be `Send`; the kernel's impl can ask it
+     in its bounds, and the stand-in's `UnicornSpace` (`RefCell<Space>`, executors job's crate)
+     must then be made `Send`.
+  Step 2 is the owner's ruling (an unstable feature in the kernel, or `Send` in the system's
+  interfaces), and without it steps 1 and 3 remove no unsafe line while making every borrow
+  slower, so none was started. Listed under "For the owner".
+
 ## KC, thirteenth run: the three files fixed, the workspace builds, the quiet suite and LTP
 
 Started about 07:50 UTC on 2026-11-24 at b80efb96. Every build and test ran on the rented
@@ -940,6 +982,19 @@ its renamed part.
 
 ## For the owner
 
+- KC, fourteenth run: the kernel's last five unsafe lines (executing.rs) go only when the
+  kernel's state is `Send` by its types, and that needs one ruling from you. The kernel keeps the
+  system's waiting calls (the futures of `wait_until_ready`, `send_request`, `receive_notice`,
+  `resolve_domain`), and stable Rust cannot require an `async fn`'s future to be `Send` in
+  generic code. Example: `S: Readiness<H>` gives no way to write that `S::wait_until_ready(..)`'s
+  future is `Send`, so `SmallBox<dyn Future + Send>` of it does not compile. Either (a) the
+  kernel crate uses `#![feature(return_type_notation)]` (measured: works on the pinned 1.99.0
+  under the workspace's `RUSTC_BOOTSTRAP=1`; tied to an unstable feature until it stabilizes),
+  or (b) those four methods are written `fn ..(..) -> impl Future<Output = ..> + Send` in the
+  interfaces (every host already has `Send` futures, I expect; not checked for each). Either way
+  the rest is the kernel's: about 1,600 `RefCell` borrows become `AtomicRefCell` borrows (two
+  atomic operations each, though the kernel's one lock already orders them) and `Rc` becomes
+  `Arc`; and the executor's `GuestMemory` must be `Send` (the stand-in's is not). Which one?
 - Guest memory, first run: `KernelWithExecutor`'s `unsafe impl Sync` now also covers the guest
   memory spaces, which need not be `Send` (the stand-in's holds `Rc` and `RefCell`); they are
   reached only under the kernel's lock. Sound forms: a `GuestMemory: Send` bound (the stand-in's
