@@ -3,6 +3,7 @@
 //! stop resolved to the guest's state through the stop crate.
 
 use std::cell::OnceCell;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -510,7 +511,8 @@ impl HostProcessExecutor {
         {
             return Ok(());
         }
-        let Some(mut at) = self.load_piece(memory, pc, true)? else {
+        let mut read = HashMap::new();
+        let Some(mut at) = self.load_piece(memory, pc, true, &mut read)? else {
             unreachable!("a piece is made where none is kept")
         };
         if self.lone {
@@ -553,7 +555,7 @@ impl HostProcessExecutor {
             if code.pieces.contains_key(&next) {
                 break;
             }
-            match self.load_piece(memory, next, false) {
+            match self.load_piece(memory, next, false, &mut read) {
                 Ok(Some(found)) => {
                     self.counters.pieces_loaded_ahead += 1;
                     (at, at_pc) = (found, next);
@@ -569,12 +571,14 @@ impl HostProcessExecutor {
     }
 
     /// Loads a piece at guest `pc` and gives where its translation is kept; where `make` is clear, only one kept, and
-    /// none where none is kept, the code has none or the code area is full.
+    /// none where none is kept, the code has none or the code area is full. `read` holds the guest pages read so far
+    /// by one load, by address, so each is read once.
     fn load_piece(
         &mut self,
         memory: MemoryId,
         pc: u64,
         make: bool,
+        read: &mut HashMap<u64, Vec<u8>>,
     ) -> Result<Option<KeptAt>, Exit> {
         if !pc.is_multiple_of(INSTRUCTION) {
             return Err(Exit::AlignmentFault { address: pc });
@@ -594,9 +598,16 @@ impl HostProcessExecutor {
             return Err(refused);
         }
         // The rest of the page: a piece never runs on into another page, whose permissions may differ.
-        let mut source = vec![0; (page + PAGE_SIZE - pc) as usize];
-        self.read_guest(memory, pc, &mut source)
-            .map_err(|_| refused)?;
+        let bytes = match read.entry(page) {
+            Entry::Occupied(bytes) => bytes.into_mut(),
+            Entry::Vacant(entry) => {
+                let mut bytes = vec![0; PAGE_SIZE as usize];
+                self.read_guest(memory, page, &mut bytes)
+                    .map_err(|_| refused)?;
+                entry.insert(bytes)
+            }
+        };
+        let mut source = bytes[(pc - page) as usize..].to_vec();
         let Some((piece, at)) = self.translate(pc, &source, make) else {
             return Ok(None);
         };
