@@ -190,8 +190,21 @@ impl Memory {
             at >= MEMORY_BASE && at < MEMORY_BASE + self.length,
             "outside guest memory"
         );
-        // SAFETY: inside the reservation.
-        unsafe { self.host.as_ptr().add((at - MEMORY_BASE) as usize) }
+        self.host.as_ptr().wrapping_add((at - MEMORY_BASE) as usize)
+    }
+
+    /// Whether the `length` bytes from guest-physical `at` all lie in guest memory.
+    pub fn contains(&self, at: u64, length: u64) -> bool {
+        at >= MEMORY_BASE
+            && at
+                .checked_add(length)
+                .is_some_and(|end| end <= MEMORY_BASE + self.length)
+    }
+
+    /// The host address of the `length` bytes from guest-physical `at`, which must all lie in guest memory.
+    pub fn host_bytes(&self, at: u64, length: u64) -> *mut u8 {
+        assert!(self.contains(at, length), "outside guest memory");
+        self.host.as_ptr().wrapping_add((at - MEMORY_BASE) as usize)
     }
 
     /// Returns the bytes from guest-physical `at`, for one copy while no virtual CPU writes them.
@@ -201,12 +214,9 @@ impl Memory {
         reason = "the one view of guest memory the monitor reads through, moved here from the single step machine"
     )]
     fn bytes(&self, at: u64, length: u64) -> &[u8] {
-        assert!(
-            at + length <= MEMORY_BASE + self.length,
-            "inside guest memory"
-        );
+        let host = self.host_bytes(at, length);
         // SAFETY: inside the reservation, which the guest does not touch while it is not running.
-        unsafe { std::slice::from_raw_parts(self.host(at), length as usize) }
+        unsafe { std::slice::from_raw_parts(host, length as usize) }
     }
 
     /// Returns the bytes from guest-physical `at` to write, for one copy while no virtual CPU touches them.
@@ -216,12 +226,9 @@ impl Memory {
         reason = "the one view of guest memory the monitor writes through, moved here from the single step machine"
     )]
     fn bytes_mut(&mut self, at: u64, length: u64) -> &mut [u8] {
-        assert!(
-            at + length <= MEMORY_BASE + self.length,
-            "inside guest memory"
-        );
+        let host = self.host_bytes(at, length);
         // SAFETY: as above, and the borrow of `self` keeps the bytes from being lent twice.
-        unsafe { std::slice::from_raw_parts_mut(self.host(at), length as usize) }
+        unsafe { std::slice::from_raw_parts_mut(host, length as usize) }
     }
 }
 
@@ -284,21 +291,30 @@ pub fn load(memory: &Memory, image: &[u8], cpus: u64) -> Result<Loaded> {
     let mut end = MEMORY_BASE;
     for segment in file.segments() {
         let data = segment.data().map_err(|e| Error::Image(e.to_string()))?;
-        let at = segment.address() - linear(0);
         if segment.address() < IMAGE {
             return Err(Error::Image(format!(
                 "segment at {:#x} is below the image's address",
                 segment.address()
             )));
         }
+        let at = segment.address() - linear(0);
+        if !memory.contains(at, segment.size().max(data.len() as u64)) {
+            return Err(Error::Image(format!(
+                "segment at {:#x} does not fit guest memory",
+                segment.address()
+            )));
+        }
+        let host = memory.host_bytes(at, data.len() as u64);
         // SAFETY: the segment lies in guest memory, which is ours.
-        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), memory.host(at), data.len()) };
+        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), host, data.len()) };
         end = end.max(at + segment.size());
     }
     let boot_root = end.next_multiple_of(PAGE_SIZE);
     write_boot_map(boot_root, memory.length(), |at, entry| {
-        // SAFETY: the boot map lies in guest memory, after the image.
-        unsafe { ptr::write(memory.host(at).cast::<u64>(), entry) }
+        let host = memory.host_bytes(at, size_of::<u64>() as u64).cast::<u64>();
+        assert!(host.is_aligned(), "a boot map entry is a whole word");
+        // SAFETY: the boot map lies in guest memory, after the image, and the entry is aligned.
+        unsafe { ptr::write(host, entry) }
     });
     let links = boot_root + BOOT_MAP_BYTES;
     let stacks = links + cpus * PAGE_SIZE;
@@ -328,8 +344,10 @@ pub fn boot<C: VirtualCpu>(
         free: loaded.free,
         ..start
     };
-    // SAFETY: the start record's page lies in guest memory and is this CPU's.
-    unsafe { ptr::write(memory.host(page).cast::<Start>(), start) };
+    let host = memory.host_bytes(page, size_of::<Start>() as u64).cast::<Start>();
+    assert!(host.is_aligned(), "a start record starts its page");
+    // SAFETY: the start record lies in guest memory, aligned, and its page is this CPU's.
+    unsafe { ptr::write(host, start) };
     let features = cpu.get(Register::MemoryModelFeatures)?;
     let BootRegisters {
         mair,

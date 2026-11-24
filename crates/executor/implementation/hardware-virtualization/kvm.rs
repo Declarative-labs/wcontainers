@@ -296,9 +296,14 @@ impl crate::VirtualMachine for KvmVirtualMachine {
     /// Private anonymous memory reads as zeros once its pages are dropped, and KVM drops its own mappings of
     /// them with them.
     fn give_back(&self, memory: &Memory, at: u64, length: u64) -> Result<()> {
-        // SAFETY: the range is guest memory, which the caller no longer needs.
-        let done =
-            unsafe { libc::madvise(memory.host(at).cast(), length as usize, libc::MADV_DONTNEED) };
+        if !memory.contains(at, length) {
+            return Err(refused(format_args!(
+                "giving back {length:#x} bytes at {at:#x}, which are not all guest memory"
+            )));
+        }
+        let host = memory.host_bytes(at, length);
+        // SAFETY: the whole range is guest memory, which the caller no longer needs.
+        let done = unsafe { libc::madvise(host.cast(), length as usize, libc::MADV_DONTNEED) };
         if done != 0 {
             return Err(Error::Host(std::io::Error::last_os_error()));
         }
@@ -594,5 +599,47 @@ impl crate::Stopper for KvmStopper {
             return Err(Error::Host(std::io::Error::last_os_error()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcontainers_executor_hardware_virtualization_inside::layout::MEMORY_BASE;
+
+    use super::KernelVirtualMachine;
+    use crate::{Hypervisor, Memory, VirtualMachine};
+
+    /// Bytes of each reservation: whole pages whether the host's pages are 4 KiB or 64 KiB.
+    const RESERVATION: u64 = 1 << 16;
+
+    /// Reservations made at most before two are neighbors.
+    const TRIES: usize = 64;
+
+    /// A range given back that runs past guest memory is refused, and the host memory after it keeps its bytes.
+    #[test]
+    fn giving_back_past_guest_memory_is_refused() {
+        let machine = KernelVirtualMachine::machine(1).expect("a machine");
+        // The host maps a new reservation next to an earlier one, unless other tests' mappings come between.
+        let after = |memory: &Memory| memory.host(MEMORY_BASE).wrapping_add(RESERVATION as usize);
+        let mut reserved: Vec<Memory> = Vec::new();
+        let (lower, mut upper) = loop {
+            assert!(reserved.len() < TRIES, "two reservations are neighbors");
+            let memory = Memory::reserve(RESERVATION).expect("reserving memory");
+            if let Some(i) = (reserved.iter()).position(|m| after(&memory) == m.host(MEMORY_BASE)) {
+                break (memory, reserved.swap_remove(i));
+            }
+            if let Some(i) = (reserved.iter()).position(|m| after(m) == memory.host(MEMORY_BASE)) {
+                break (reserved.swap_remove(i), memory);
+            }
+            reserved.push(memory);
+        };
+        upper.bytes_mut(MEMORY_BASE, 1)[0] = 0xa5;
+        let given = machine.give_back(&lower, MEMORY_BASE, 2 * RESERVATION);
+        assert_eq!(
+            upper.bytes(MEMORY_BASE, 1)[0],
+            0xa5,
+            "the neighbor's byte survives"
+        );
+        assert!(given.is_err(), "the range is refused");
     }
 }

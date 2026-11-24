@@ -260,14 +260,10 @@ mod hosted {
             protocol::Request::Write => {
                 let Write { at } = page.get();
                 let bytes = page.data();
-                // SAFETY: the inside gave this frame for the write and runs nothing from it until answered.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        bytes.as_ptr(),
-                        shared.memory.host(at),
-                        bytes.len(),
-                    )
-                };
+                let host = shared.memory.host_bytes(at, bytes.len() as u64);
+                // SAFETY: the bytes lie in guest memory; the inside gave this frame for the write and runs nothing
+                // from it until answered.
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), host, bytes.len()) };
             }
             protocol::Request::Report => {
                 let Report { case, passed } = page.get();
