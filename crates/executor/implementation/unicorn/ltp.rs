@@ -339,11 +339,12 @@ pub fn run_ours(
             }
             next += 1;
         }
-        let mut status = 0;
-        // SAFETY: a plain wait for any child, not waiting.
-        let ended = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if ended > 0 {
-            if let Some((index, started)) = running.remove(&ended) {
+        // Any child that has ended, not waiting for one.
+        let ended = rustix::process::waitpid(None, rustix::process::WaitOptions::NOHANG)
+            .ok()
+            .flatten();
+        if let Some((ended, _)) = ended {
+            if let Some((index, started)) = running.remove(&ended.as_raw_pid()) {
                 let line = ended_line(&tests[index], &log_path(logs, &tests[index]), started);
                 report(&line);
                 lines[index] = Some(line);
@@ -356,11 +357,10 @@ pub fn run_ours(
             .map(|(pid, _)| *pid)
             .collect();
         for pid in late {
-            // SAFETY: the child is ours and has not been reaped.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
-            }
+            // The child is ours and not yet reaped, so its id is still its own.
+            let child = rustix::process::Pid::from_raw(pid).expect("a child's id");
+            let _ = rustix::process::kill_process(child, rustix::process::Signal::KILL);
+            let _ = rustix::process::waitpid(Some(child), rustix::process::WaitOptions::empty());
             let (index, started) = running.remove(&pid).expect("a running test");
             let line = Line {
                 id: tests[index].id(),
@@ -425,12 +425,9 @@ fn run_one(
     // The suite's tests run for spans of the clock, as long as the reference's.
     prepared.wall_clock = true;
     let file = std::fs::File::create(log).expect("the log");
-    // SAFETY: points this process's standard output and error at the log.
-    unsafe {
-        use std::os::fd::AsRawFd;
-        libc::dup2(file.as_raw_fd(), 1);
-        libc::dup2(file.as_raw_fd(), 2);
-    }
+    // This process's standard output and error go to the log.
+    let _ = rustix::stdio::dup2_stdout(&file);
+    let _ = rustix::stdio::dup2_stderr(&file);
     let started = Instant::now();
     // A run whose kernel ends no turn and takes no backend answer for this long is stuck in one
     // call or one turn: a hang.
