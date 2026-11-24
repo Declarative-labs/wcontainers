@@ -713,8 +713,9 @@ fn compare_compute<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
 }
 
 /// The cases run by Direct3D 11 on the GPU and on WARP and by `backend` from both builds, at each
-/// seed; the names of those where a word or a counter of ours equals neither real implementation's
-/// (they differ where Direct3D leaves a result free, such as a division's last bit).
+/// seed; the names of those where ours is neither real implementation's answer as a whole, every
+/// word and counter of the GPU's or every word and counter of WARP's (they differ where Direct3D
+/// leaves a result free, such as a division's last bit).
 fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) -> Vec<String> {
     let real = |driver| d3d11::create(driver, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
     let gpu = real(wcontainers_graphics_test::Driver::Hardware);
@@ -756,7 +757,15 @@ fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) ->
             ordered(&case, &mut made);
             compared += 1;
             let word = |w: &[u8]| u32::from_le_bytes(w.try_into().unwrap());
-            let mut apart = 0;
+            // Words and counters of ours that differ from one real implementation's run.
+            let apart = |real: &Ran| {
+                let words: usize = (real.views.iter().zip(&made.views))
+                    .map(|(a, o)| a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count())
+                    .sum();
+                words + usize::from(real.counters != made.counters)
+            };
+            let (from_gpu, from_warp) = (apart(&reference), apart(&software));
+            let mut shown = 0;
             for (slot, ((a, s), o)) in reference
                 .views
                 .iter()
@@ -765,26 +774,22 @@ fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) ->
                 .enumerate()
             {
                 for (w, ((x, z), y)) in a.chunks(4).zip(s.chunks(4)).zip(o.chunks(4)).enumerate() {
-                    if y != x && y != z {
-                        apart += 1;
-                        if apart <= 8 {
-                            eprintln!(
-                                "  view {slot} word {w}: direct3d {:#010x}, warp {:#010x}, ours {:#010x}",
-                                word(x),
-                                word(z),
-                                word(y)
-                            );
-                        }
+                    if (y != x || y != z) && shown < 8 {
+                        shown += 1;
+                        eprintln!(
+                            "  view {slot} word {w}: direct3d {:#010x}, warp {:#010x}, ours {:#010x}",
+                            word(x),
+                            word(z),
+                            word(y)
+                        );
                     }
                 }
             }
             eprintln!(
-                "{name}: counters direct3d {:?}, warp {:?}, ours {:?}; {apart} words apart from both",
+                "{name}: counters direct3d {:?}, warp {:?}, ours {:?}; {from_gpu} words and counters apart from the gpu's, {from_warp} from warp's",
                 reference.counters, software.counters, made.counters
             );
-            if apart > 0
-                || (reference.counters != made.counters && software.counters != made.counters)
-            {
+            if from_gpu > 0 && from_warp > 0 {
                 failures.push(name);
             }
         }
