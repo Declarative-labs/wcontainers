@@ -39,7 +39,7 @@ use crate::link::LINK_BYTES;
 use crate::reason::{
     ASKED_THE_HOST, CODE_AREA_EMPTIED, CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
     GUEST_PHYSICAL_SPACE_FULL, IDENTIFIERS_RAN_OUT, LARGE_ENTRY_SPLIT, MEMORY_COPIED_AT_FORK,
-    MEMORY_FAULT, NOT_YET_TRANSLATED, RESERVATION_BROKEN, TURN_LIMIT_STEPPED,
+    MEMORY_FAULT, NOT_YET_TRANSLATED, RESERVATION_BROKEN, SHOWN_BLOCK_KEPT, TURN_LIMIT_STEPPED,
 };
 use crate::routines::{FloatControl, Placed, Routines, Vectors};
 use crate::stop::{
@@ -328,6 +328,8 @@ pub struct NativeCpu {
     global: Table,
     memories: BTreeMap<MemoryId, Memory>,
     shared: BTreeMap<SharedId, Block>,
+    /// Blocks the kernel dropped while a memory still showed them, kept until none does.
+    dropped: Vec<SharedId>,
     /// Boxed, so that a run takes its thread out and puts it back without copying it.
     threads: BTreeMap<ThreadId, Box<Thread>>,
     next_id: u32,
@@ -482,6 +484,7 @@ impl NativeCpu {
             global,
             memories: BTreeMap::new(),
             shared: BTreeMap::new(),
+            dropped: Vec::new(),
             threads: BTreeMap::new(),
             next_id: 0,
             next_asid: Some(FIRST_PROCESS_IDENTIFIER),
@@ -868,7 +871,37 @@ impl NativeCpu {
             }
         }
         self.memory(memory)?.shown.remove(range);
+        self.give_dropped_blocks_back();
         Ok(())
+    }
+
+    /// Whether a memory shows the shared block or a page of one holds a frame of it.
+    fn shows(&self, shared: SharedId) -> bool {
+        self.memories.values().any(|m| {
+            m.shown.iter().any(|(_, s)| s.block == shared)
+                || m.pages.values().any(|p| p.shared == Some(shared))
+        })
+    }
+
+    /// Gives back the frames of every dropped block no memory shows any more.
+    fn give_dropped_blocks_back(&mut self) {
+        let unshown: Vec<SharedId> = self
+            .dropped
+            .iter()
+            .copied()
+            .filter(|&shared| !self.shows(shared))
+            .collect();
+        for shared in unshown {
+            self.dropped.retain(|&d| d != shared);
+            if let Some(block) = self.shared.remove(&shared) {
+                with_frames(|frames| {
+                    block
+                        .into_iter()
+                        .flatten()
+                        .for_each(|frame| frames.give(frame))
+                });
+            }
+        }
     }
 
     /// Drops the pieces translated from a range.
@@ -1661,6 +1694,7 @@ impl Cpu for NativeCpu {
                 global.top_entry(top) != m.space.inside.top_entry(top)
             });
         });
+        self.give_dropped_blocks_back();
     }
 
     fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
@@ -1827,6 +1861,7 @@ impl Cpu for NativeCpu {
             },
         );
         self.forget_changed_code(memory, address, length);
+        self.give_dropped_blocks_back();
         Ok(())
     }
 
@@ -1888,15 +1923,18 @@ impl Cpu for NativeCpu {
         Ok(())
     }
 
+    /// The block's frames are given back, unless a memory still shows it: that memory's pages would map
+    /// frames given to another. The drop is then refused (counted as [`SHOWN_BLOCK_KEPT`]) and the block kept
+    /// until no memory shows it.
     fn shared_drop(&mut self, shared: SharedId) {
-        if let Some(block) = self.shared.remove(&shared) {
-            with_frames(|frames| {
-                block
-                    .into_iter()
-                    .flatten()
-                    .for_each(|frame| frames.give(frame))
-            });
+        if !self.shared.contains_key(&shared) || self.dropped.contains(&shared) {
+            return;
         }
+        self.dropped.push(shared);
+        if self.shows(shared) {
+            self.slow(SHOWN_BLOCK_KEPT, 1, shared.0.into());
+        }
+        self.give_dropped_blocks_back();
     }
 
     fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
