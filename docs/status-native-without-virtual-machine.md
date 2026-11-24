@@ -41,6 +41,11 @@ in the root manifest is still 9).
   it. Without a ruling: ending a stub without waiting (reaped later) and starting the next one ahead take those waits
   off a program's path only where another CPU is free; pinned they move no work, since stubs run on their runner's
   CPU. Not built.
+- Verified at the end: clippy with warnings denied clean on both machines; on Graviton4 every test binary passes but
+  the known `agrees_with_precise_instruction_set` (whole1-arm.out, load 14 to 22: pages, conformance, zygote, stub,
+  files, host, threads, stop, touch, memory, slice, placement, embedder, floor, step, translated, run, kernel,
+  busybox, interrupt, copy, forged, in_process_attacks, in_process_way, differential); on the Xeon pages, zygote,
+  stub, files, host, threads, stop, touch, memory, slice, placement, embedder and step pass (whole1-x86.out).
 
 ## W2 run 15 (2026-11-24, round 5 run 7): an address place written without an allocation, and where a program's time goes now
 
