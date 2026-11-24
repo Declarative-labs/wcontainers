@@ -51,6 +51,16 @@ the floor. Done this run:
   `set_clip_state`) are plain `extern "C" fn`; the root list says 356 (df246a53). wcontainers-nir
   stays 113. No line with `unsafe` was added.
 - The vertex `memoryBarrier()` item, read: absent on WebGPU (gap list), not built.
+- Next, in order: why a lost ES 3.0 context does not end its glcts (above; 37 cases); the 32nd
+  passed value and KHR-GL33 (the round's next item, not started: it needs the stage helper's
+  pass-through to read its records from storage by vertex index, lifting 28 to 31, and then the
+  32nd value fetched by the fragment program from those records, by the primitive's index
+  (`Features::PRIMITIVE_INDEX`) and barycentric weights it works out from the fragment's position
+  and the three records' positions; where the back end lacks the primitive index the version stays
+  3.1); the 4 atomic-counter evaluation cases (the domain program's compute form is dispatched for
+  the tessellator's bound of points, `helper.rs` `groups(points, 1)`, and its invocations past the
+  real point total, word 5 of the tessellator's counts, should end before the program runs); the
+  6 `shader_image_size` `-vs-` refusals; the untraced losses.
 - Built and tested on the x86-64 machine (load 15 to 28): clippy with Mesa and warnings denied, the
   nir crate's route test 27 pass, wcontainers-opengl 11 pass (`logs/r6d/quick1.log`); the Windows
   build of the libloading change in the whole run's job.
@@ -1308,6 +1318,13 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 ## How to run
 
+- G9 round 6 run 4: the whole run is still `scripts/g9r6c-run.sh <absolute log> [<lists>]`;
+  `scripts/g9r6d-quick.sh <filter> <absolute log>` is run 2's lint and tests without `--locked`
+  (for while another track's manifest is ahead of the lock file); `scripts/case-log.ps1 <list>
+  <case> [<lines>]` (copied to `C:\wc\graphics-nir`) prints the process log from a case on and
+  the log's first refusals; `scripts/batch-events.ps1 <list> <log>` the refusals, losses and
+  failures of one batch's log in order. glcts is rebuilt with `remote powershell -File
+  crates\wcontainers-opengl\cts\build-windows.ps1` whenever a patch in `cts/patches` changes.
 - G9 round 6 run 2: scratch `scripts/g9r6b-run.sh <absolute log> [<lists> [<regexes>]]` is round
   5 run 6's run as a GPU job alone (`gpu-job --alone`); `scripts/g9r6b-lint.sh` is run 1's lint
   under its name; `scripts/g9r6b-quick.sh <route test filter> <log>` runs the nir route test,
