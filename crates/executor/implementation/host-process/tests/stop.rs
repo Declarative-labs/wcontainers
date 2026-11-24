@@ -12,7 +12,7 @@ use rustix::mm::ProtFlags;
 use wcontainers_executor_host_process::layout::GUEST_START;
 use wcontainers_executor_host_process::pages::{Command, Resume};
 use wcontainers_executor_host_process::probe::HostProbe;
-use wcontainers_executor_host_process::stub::{Stub, TurnEnd};
+use wcontainers_executor_host_process::stub::{StopsLanded, Stub, TurnEnd};
 use wcontainers_executor_host_process::zygote::{Ended, Zygote};
 
 /// One embedder process has one zygote place, so tests running at once start theirs one at a time.
@@ -37,6 +37,9 @@ const PAGE: usize = 4096;
 
 /// How long stops are sent back to back to a thread told to end.
 const FLOOD: Duration = Duration::from_secs(1);
+
+/// How many stops of the flood are sent before the thread is told to end.
+const FLOODED: u64 = 10_000;
 
 /// How soon after such a flood the thread has ended.
 const AFTER_FLOOD: Duration = Duration::from_millis(100);
@@ -241,24 +244,41 @@ fn stops_landing_anywhere_never_lose_repeat_or_split_a_turn() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(host_thread_count(&stub), 2);
-    // Thread 1 is told to end under stops sent back to back for a while: they may hold it in its handler while they
-    // come faster than it runs, but none is left pending after them, so it ends soon after the last.
-    let flood_sent = std::thread::scope(|scope| {
+    // Thread 1 is told to end under stops sent back to back, once FLOODED of them have been sent and some have landed:
+    // they may hold it in its handler while they come faster than it runs, but none is left pending after them, so
+    // it ends soon after the last.
+    let before = stub.stops_landed(1);
+    let landed_count = |landed: StopsLanded| {
+        landed.in_turn + landed.in_publish + landed.in_wait + landed.in_end + landed.in_call
+    };
+    let flooding = AtomicU64::new(0);
+    let (before_end, flood_sent) = std::thread::scope(|scope| {
         let flood = scope.spawn(|| {
             let until = Instant::now() + FLOOD;
-            let mut sent = 0u64;
             while Instant::now() < until && target.stop().is_ok() {
-                sent += 1;
+                flooding.fetch_add(1, Ordering::Relaxed);
             }
-            sent
         });
+        let until = Instant::now() + FLOOD / 2;
+        while (flooding.load(Ordering::Relaxed) < FLOODED
+            || landed_count(stub.stops_landed(1)) == landed_count(before))
+            && Instant::now() < until
+        {
+            std::hint::spin_loop();
+        }
+        let before_end = flooding.load(Ordering::Relaxed);
         stub.end_thread(1).expect("end");
-        flood.join().expect("flood")
+        flood.join().expect("flood");
+        (before_end, flooding.load(Ordering::Relaxed))
     });
     let gone = stub.thread_gone(1, AFTER_FLOOD).expect("wait");
+    let landed = stub.stops_landed(1);
     eprintln!(
-        "ending under {flood_sent} stops, landed {:?}",
-        stub.stops_landed(1)
+        "ending under {flood_sent} stops ({before_end} before the end was asked), landed {landed:?}"
+    );
+    assert!(
+        before_end >= FLOODED && landed_count(landed) > landed_count(before),
+        "the flood had not begun when the end was asked: {before_end} sent, landed {before:?} then {landed:?}"
     );
     assert!(
         gone,
