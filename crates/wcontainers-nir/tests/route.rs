@@ -645,6 +645,44 @@ fn inputs_read_at_an_offset_or_a_sample_are_moved_from_where_the_host_interpolat
     }
 }
 
+const EARLY_TESTS: &str = "#version 450
+layout(early_fragment_tests) in;
+layout(r32ui, binding = 0) uniform uimage2D counts;
+layout(location = 0) out vec4 colour;
+void main() {
+    imageAtomicAdd(counts, ivec2(gl_FragCoord.xy), 1u);
+    colour = vec4(1.0);
+}
+";
+
+#[test]
+fn early_tests_a_fragment_program_forces_are_in_its_pixel_extras() {
+    let mut stage = Nir::from_glsl(&[(Stage::Fragment, EARLY_TESTS)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let key = stage.nir.key().unwrap();
+    let bindings = stage.nir.to_common_form(Stage::Fragment).unwrap();
+    let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
+    let (module, reflection) = wcontainers_nir::direct::rewrite(
+        routed,
+        bindings,
+        &wcontainers_gpu::VariantKey::default(),
+        &key,
+    )
+    .unwrap();
+    wcontainers_nir::spirv::validate(&module.module).unwrap();
+    assert!(matches!(
+        reflection.extras,
+        wcontainers_gpu::StageExtras::Pixel {
+            early_tests: true,
+            side_effects: true,
+            discards: false,
+            per_sample: false,
+        }
+    ));
+}
+
 const CENTROID_ELSEWHERE: &str = "#version 450
 layout(location = 0) centroid in vec2 moved;
 layout(location = 1) centroid in vec2 only_centroid;

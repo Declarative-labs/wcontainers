@@ -223,6 +223,7 @@ pub struct Blend {
 
 pub struct DepthStencil<B: Backend> {
     pub block: B::DepthStencil,
+    pub depth: bool,
     pub stencil: bool,
     /// Whether back faces have a stencil state of their own; without one they take the front
     /// face's reference too, as Gallium's `pipe_stencil_ref` says.
@@ -599,6 +600,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
     };
     object(DepthStencil::<B> {
         block,
+        depth,
         stencil,
         two_sided: back_on,
         faces,

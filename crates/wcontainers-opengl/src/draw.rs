@@ -64,6 +64,9 @@ pub(crate) struct Built<B: Backend> {
     tessellator: Option<Tessellator>,
     /// The slow paths the program takes whenever it runs, counted at each use.
     slow_paths: Vec<SlowPath>,
+    /// A fragment program forcing early depth and stencil tests: whether that differs from tests
+    /// after it (it writes storage, may discard, or writes depth or the sample mask).
+    early_tests: Option<bool>,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -782,7 +785,8 @@ fn convert<B: Backend>(
     let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
     fit_stages(&mut routed.module, variant)?;
     crate::packed::unpack_inputs(&mut routed.module, &variant.packed)?;
-    let (module, bindings, helpers, helper_size, slow_paths) = if rewrites == VariantKey::default()
+    let (module, bindings, helpers, helper_size, slow_paths, early_tests) = if rewrites
+        == VariantKey::default()
         && routed.helpers.is_empty()
         && routed.typed.buffers.is_empty()
         && routed.rewrites == wcontainers_nir::direct::Rewrites::default()
@@ -808,17 +812,28 @@ fn convert<B: Backend>(
             Vec::new(),
             0,
             Vec::new(),
+            None,
         )
     } else {
         let (module, reflection) =
             wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
                 .map_err(|e| e.to_string())?;
+        let early_tests = match reflection.extras {
+            StageExtras::Pixel {
+                early_tests: true,
+                side_effects,
+                discards,
+                ..
+            } => Some(side_effects || discards || writes_depth_or_mask(&module.module)),
+            _ => None,
+        };
         (
             module,
             elements(reflection.bindings),
             reflection.helpers,
             reflection.helper_size,
             reflection.slow_paths,
+            early_tests,
         )
     };
     let converted = variant.streamed.then(|| Converted {
@@ -869,6 +884,7 @@ fn convert<B: Backend>(
         converted,
         tessellator: None,
         slow_paths,
+        early_tests,
     })
 }
 
@@ -938,6 +954,7 @@ fn convert_geometry<B: Backend>(
         slow_paths: converted.reflection.slow_paths.clone(),
         converted: Some(converted),
         tessellator: None,
+        early_tests: None,
     })
 }
 
@@ -984,6 +1001,7 @@ fn convert_control<B: Backend>(
         slow_paths: converted.reflection.slow_paths.clone(),
         converted: Some(converted),
         tessellator: None,
+        early_tests: None,
     })
 }
 
@@ -1045,6 +1063,30 @@ fn convert_evaluation<B: Backend>(
         slow_paths: converted.reflection.slow_paths.clone(),
         converted: Some(converted),
         tessellator: Some(tessellator),
+        early_tests: None,
+    })
+}
+
+/// Whether a fragment program writes its depth or sample mask.
+fn writes_depth_or_mask(module: &naga::Module) -> bool {
+    let written = |b: &Option<naga::Binding>| {
+        matches!(
+            b,
+            Some(naga::Binding::BuiltIn(
+                naga::BuiltIn::FragDepth | naga::BuiltIn::SampleMask
+            ))
+        )
+    };
+    module.entry_points.iter().any(|ep| {
+        ep.function.result.as_ref().is_some_and(|r| {
+            written(&r.binding)
+                || match module.types[r.ty].inner {
+                    naga::TypeInner::Struct { ref members, .. } => {
+                        members.iter().any(|m| written(&m.binding))
+                    }
+                    _ => false,
+                }
+        })
     })
 }
 
@@ -2296,6 +2338,16 @@ fn draw<B: Backend>(
     let programs = &mut context.programs;
     // The fragment program first: the last stage's outputs are interpolated as its inputs.
     let built_fragment = programs.built_for(backend, fragment_shader, &fragment)?;
+    // Forced early tests are the same as tests after the program where no test is made or the
+    // program's results do not depend on when they run.
+    let tested = !context.framebuffer.state.zsbuf.texture.is_null()
+        && (depth_stencil.depth || depth_stencil.stencil);
+    if built_fragment.early_tests == Some(true) && tested {
+        return refused(format_args!(
+            "early depth and stencil tests a fragment program forces before its storage writes, \
+             discards or depth (EarlyTestsInShader, not built)"
+        ));
+    }
     let inputs = built_fragment.inputs.clone();
     // The stage helper's primitives are listed turned where the draw takes flat values it reads
     // from the other vertex.

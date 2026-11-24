@@ -5169,6 +5169,65 @@ fn helper_size(helpers: &[HelperSlot]) -> u32 {
 /// Why [`rewrite`] failed where the shaders crate gave no module.
 const NO_MODULE: &str = "the shaders crate's rewrite gave no module";
 
+/// A fragment program's pixel extras, which the shaders crate's rewrite fills in with the early
+/// tests the program forces: whether it writes storage, may discard, or runs per sample.
+fn pixel_extras(module: &Module) -> StageExtras {
+    let writable = |g: &GlobalVariable| match g.space {
+        AddressSpace::Storage { access } => access.contains(StorageAccess::STORE),
+        AddressSpace::Handle => matches!(
+            module.types[g.ty].inner,
+            TypeInner::Image {
+                class: ImageClass::Storage { access, .. },
+                ..
+            } if access.contains(StorageAccess::STORE)
+        ),
+        _ => false,
+    };
+    fn kills(block: &Block) -> bool {
+        block.iter().any(|s| match s {
+            Statement::Kill => true,
+            Statement::Block(b) => kills(b),
+            Statement::If { accept, reject, .. } => kills(accept) || kills(reject),
+            Statement::Loop {
+                body, continuing, ..
+            } => kills(body) || kills(continuing),
+            Statement::Switch { cases, .. } => cases.iter().any(|c| kills(&c.body)),
+            _ => false,
+        })
+    }
+    let per_sample = module.entry_points.iter().any(|ep| {
+        let bindings = ep.function.arguments.iter().flat_map(|a| match a.binding {
+            Some(ref b) => vec![b.clone()],
+            None => match module.types[a.ty].inner {
+                TypeInner::Struct { ref members, .. } => {
+                    members.iter().filter_map(|m| m.binding.clone()).collect()
+                }
+                _ => Vec::new(),
+            },
+        });
+        bindings.into_iter().any(|b| {
+            matches!(
+                b,
+                Binding::BuiltIn(BuiltIn::SampleIndex)
+                    | Binding::Location {
+                        sampling: Some(Sampling::Sample),
+                        ..
+                    }
+            )
+        })
+    });
+    StageExtras::Pixel {
+        early_tests: false,
+        side_effects: module.global_variables.iter().any(|(_, g)| writable(g)),
+        discards: module
+            .entry_points
+            .iter()
+            .any(|ep| kills(&ep.function.body))
+            || module.functions.iter().any(|(_, f)| kills(&f.body)),
+        per_sample,
+    }
+}
+
 /// The shaders crate's rewrites of plan 15.4 on route B's module: arrays of textures, storage
 /// textures and samplers split into a binding an element, gathers at offsets known only at run
 /// time moved into their coordinates, and each storage texture whose slot `variant` names given
@@ -5221,7 +5280,11 @@ pub fn rewrite(
         helpers: routed.helpers,
         helper_size,
         sampled_pairs: Vec::new(),
-        extras: StageExtras::None,
+        extras: if stage == SourceStage::Pixel {
+            pixel_extras(&routed.module)
+        } else {
+            StageExtras::None
+        },
         slow_paths: routed.slow_paths,
     };
     let mut module = routed.module;
