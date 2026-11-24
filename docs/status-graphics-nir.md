@@ -5,6 +5,67 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 5 run 5 (2026-11-24). G9's first part is ready for its independent check as the round's
+orders define it (this run's work done and measured, every failure in the gap list). The bar is
+NOT wholly met, for the two reasons of runs 3 and 4, which wait on the owner (For the owner): the
+programs part (Godot needs OpenGL 3.3, bgfx 4.3; the driver reports 3.1 on the RTX 3080) and the
+measure over the GLES lists with KHR-GL33 (which cannot start at 3.1). On the passed-value limit
+the driver takes the orders' first choice: it reports the version the limits allow (3.1 core, by
+`screen::glsl_version`, since round 5 run 2); this track's side of 32 values (the fragment program
+reading values past the host's from the stage helper's records) is not built, as it needs the
+shaders track's pass-through reading those records from storage first (Requests).
+Built this run:
+- Programs of equal content share their conversions and pipelines (d9ad74aa). A shader state's
+  key is now its content's (`Nir::key`, BLAKE3 of its serialised NIR), not its address, for every
+  map of `draw::Programs` (conversions, programs, compute programs, the stage helpers, the
+  squares); the squares' own programs are keyed by their content too. st/mesa names each program's
+  NIR by the API program's number, so the name and label are dropped when the driver takes it
+  (`Nir::drop_name`, which also lets the shaders crate's conversion cache hit across programs).
+  The screen counts the live states of each content; when a state is deleted and none of its
+  content is live, the deleting context keeps what was made of it among the last
+  `KEPT_DELETED` (64) such contents and drops the longest deleted beyond them, unless a state of
+  its content is live again. Test `deleted_shaders_are_kept_to_a_bound_the_longest_deleted_going_first_unless_live`.
+  KHR-GLES31 and -GLES32 `tessellation_shader.vertex.vertex_ordering` pass in 12.6 s and 13.0 s
+  (run 3: a flake and a timeout at deqp-runner's 60 s; alone with a 400 s limit 61.8 s).
+- Built and tested on the x86-64 machine (96 processors, load 21 to 110 at the start): fmt clean,
+  clippy with warnings denied clean with and without Mesa, the nir crate's route 26 pass,
+  wcontainers-opengl 8 pass. Unsafe code: wcontainers-nir 117 (+1, the `drop_name` call across
+  the C boundary), wcontainers-opengl 369 (-1, two blocks of `delete_shader_state` made one); the
+  root list carries both (a9afa292). No dependency or licence was added.
+- The run took the shaders crate as committed at 8ed43df0 (`SHADERS_AT_HEAD=1`, the overlay now
+  with its build script, C++ and tests as well as its sources), as that crate held another track's
+  uncommitted move of its converters into a wasmtime module.
+
+THE TABLE, round 5 run 5's whole run at d9ad74aa's driver (desktop, RTX 3080, one GPU job in the
+hazard group, 8 glcts at once, job 74 from 03:51 to 04:12 desktop time; scratch
+`results/g9c5/full/<list>/results.csv`, log `logs/g9c5/full.log`), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,031, Warn 6, Skip 128: 17,037 of 17,037, 100%.
+- dEQP-GLES3: 44,768; Pass 44,260, Warn 5, Fail 3, Crash 30, Skip 470: 44,265 of 44,298, 99.93%.
+- dEQP-GLES31: 37,802; Pass 36,573, Fail 18, Crash 96, Flake 3, Skip 1,112: 36,573 of 36,690,
+  99.68%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,265, Crash 6, Skip 227: 6,265 of 6,271, 99.90%.
+- KHR-GLES31: 4,101; Pass 3,709, Fail 14, Crash 45, Flake 1, Skip 332: 3,709 of 3,769, 98.41%.
+- KHR-GLES32: 1,405; Pass 1,102, Fail 8, Crash 44, Skip 251: 1,102 of 1,154, 95.49%.
+- KHR-GL33 and KHR-GL46: no context ("Failed to create WGL context"; 3.1 is reported).
+- The measure over the GLES lists: 109,389 of 109,657 run, 99.76%. 268 failing cases, every one in
+  the gap list (`scripts/g9c1-gaps.py results/g9c5/full`: none left over). Over the GLES lists and
+  KHR-GL33 with KHR-GL33's 9,364 cases of run 31 counted as failed: 109,389 of 119,021, 91.91%,
+  below the 92.9% floor.
+- Against round 5 run 3's whole run (`scripts/g9r25-table.py g9c5/full g9c3/full`): pass now the
+  two `vertex_ordering` cases (this run's change); every other move is in the storage coherence
+  family (`compute.basic.image_barrier_single`, `ssbo_atomic_overwrite` and 2 `qualifiers`
+  `volatile_r32f` pass, `2d_array.qualifiers.coherent_r32f` fails, `3d.qualifiers.coherent_r32ui`
+  and `inter_invocation.image_read_write` flake).
+
+Next, in order:
+1. The owner's answer on the version (For the owner); until then the programs part and KHR-GL33
+   cannot pass, whatever is built here.
+2. Forced early fragment tests inside the program (5 cases; gap list).
+3. The storage coherence family, proven by a test before any claim.
+4. Cull distances (436 NotSupported), `uniform_blocks_array_indexing` traced to the driver's
+   binding of the blocks, and the other untraced items, as run 4's list below says.
+
 G9 round 5 run 4 (2026-11-24). Built nothing; no driver change, so round 5 run 3's table and gap
 list below still hold at the pushed tip. G9'S FIRST PART IS STILL NOT COMPLETE, for the same two
 reasons as run 3: the programs part of the bar (Godot needs OpenGL 3.3, bgfx 4.3) and the measure
@@ -489,7 +550,10 @@ Next, in order:
 8. The owner's answer on KHR-GL33 (For the owner); waiting on other tracks as the gap list says.
 9. G9's second part (OpenGL 4.0, so that KHR-GL46 starts), after the first part's check passes.
 
-## Gap list (G9's first part, at round 5 run 2's whole run; round 5 run 3's changes marked)
+## Gap list (G9's first part, at round 5 run 2's whole run; round 5 runs 3 and 5's changes marked)
+
+At round 5 run 5's whole run (`results/g9c5/full`): 268 failing cases, every one assigned to an
+item below by `scripts/g9c1-gaps.py` (none left over); the vertex ordering item has none.
 
 Every failing case of round 5 run 2's whole run (276 Fail, Crash, Timeout and Flake over the seven
 lists that start, the table at the top) by group, with its cause and owner; the KHR-GL33 items are
@@ -539,8 +603,9 @@ Refused by this track (each refusal named; this track's work):
 - KHR-GLES31 and -GLES32 `tessellation_shader.vertex.vertex_ordering` 2 Timeout: the test makes a
   new evaluation program for each of 6,156 iterations, and each new shader state converts and
   makes the stage helper's pipelines anew (20,521 pipelines, every one a miss); alone with a 400 s
-  limit KHR-GLES31's passes in 61.8 s, past deqp-runner's 60 s. Programs of equal content sharing
-  their conversions and pipelines would remove most of it. Not built.
+  limit KHR-GLES31's passes in 61.8 s, past deqp-runner's 60 s. FIXED in round 5 run 5 (d9ad74aa:
+  programs of equal content share their conversions and pipelines): both pass in its whole run, in
+  12.6 s and 13.0 s.
 - KHR-GLES31 and -GLES32 `tessellation_shader_tessellation.gl_InvocationID_PatchVerticesIn
   _PrimitiveID` 2: "patches from indices in memory or of single bytes (not built)" (draw.rs).
 - dEQP-GLES3 `vertex_array_objects.all_attributes` 1: "a fetched input without its stream". FIXED
@@ -604,8 +669,8 @@ wrong: the plan names none of them; the RTX 3080's OpenGL passes all):
   program. WGSL has storage barriers only in compute work ("Uses operations forbidden at this
   stage"; Direct3D has `DeviceMemoryBarrier` in every stage). Left refused; for the owner.
 
-The storage coherence family, 18 in round 5 run 2 (Fail 12, Flake 6; run 31: 20; which cases fail
-moves from run to run, `texture_cube_map_array.image_op_compute_sh` flaking among them):
+The storage coherence family, 18 in round 5 run 2 (Fail 12, Flake 6; run 31: 20; round 5 run 5:
+18, Fail 14, Flake 4; which cases fail moves from run to run, `texture_cube_map_array.image_op_compute_sh` flaking among them):
 dEQP-GLES31 `synchronization.in_invocation` 3 and `.inter_invocation` 10, `image_load_store.3d
 .qualifiers` 2 and `2d_array.qualifiers` 1 (flakes), `compute.basic.image_barrier_single` 1
 (flake), KHR-GLES31 `shader_image_load_store.advanced-copyImage-cs` and `advanced-allMips-cs`,
@@ -788,6 +853,13 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   allows, or which of the two the owner wants.
 
 ## How to run
+
+- G9 round 5 run 5: `scripts/g9c5-run.sh` and `scripts/g9c5-lint.sh` are round 5 run 3's under
+  their names. The shaders overlay for `SHADERS_AT_HEAD=1` is now made with `git archive HEAD
+  crates/wcontainers-shaders/Cargo.toml crates/wcontainers-shaders/build.rs
+  crates/wcontainers-shaders/cpp crates/wcontainers-shaders/src crates/wcontainers-shaders/tests`
+  (scratch `overlay/shaders-head.tar`, scp'd to `C:/wc/graphics-nir/overlay/shaders-head.tar`), so
+  that another track's uncommitted build script and C++ do not mix with the committed sources.
 
 - The programs' comparison (G9 round 5 run 3): scratch `scripts/g9c3-programs.sh <log>
   [<programs>]` builds Mesa with the driver and runs `crates/wcontainers-opengl/cts/programs-windows.ps1`
