@@ -8,6 +8,80 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, seventh run: the sixth run's results read, a new suite check, three breaks
+
+Started about 04:40 UTC on 2026-11-24 at 2086b90e. Every build and test ran on the ARM64 machine;
+the Mac only edited and committed. Scratch kernel/kc7 (c1.sh to c3.sh, breaks.sh, runners.sh,
+python.sh, logs beside them).
+
+- The sixth run's whole suite and LTP comparison ended; their results are in its section below.
+  The LTP verdicts all match 376fba71's: no worse than before the merges.
+- The one failure off the ARM list, python's `system_test_modules_match_reference`, passed when
+  run alone at the tip (kc7/python.log, 05:08 to 06:23 UTC, load 6 to 27, 4500 s). Its failure in
+  the whole job was a read of the backend's connection in a copy made at a save, while the
+  machine's load reached 1341 from other jobs; the cause is not shown (the job kept no more of
+  the message). Not on the ARM list; watch it in the next whole suite.
+- The sixth run's uncommitted suite check is committed (87c739d4): `taken_tasks_are_resumed`,
+  threads taken and given back are all taken in and can be taken again, each once. Kernel
+  conformance 17 pass, kernel unit tests 24 pass (kc7/c1.log, 04:47 UTC, load 31 rising).
+- Three breaks made on the machine's copy only (kc7/breaks.log, runners.log), each noticed:
+  a process handle taking threads of another process fails
+  `process::threads_of_another_process_are_not_taken`; resumed tasks all handed back fails
+  `taken_tasks_are_resumed`; an interface call that never ends a running turn hung the runner
+  test until a 600 s timeout, so the test now has a 30 s deadline and fails by name ("the
+  interface's call did not end the running turn within 30s", 97483709). The kernel cannot move
+  to another thread (its objects hold `Rc`), so the deadline ends the test binary.
+- The whole workspace's `cargo check --all-targets` at 7ef9b914 (kc7/c3.log, 06:24 UTC, load 4
+  to 12, other agents' uncommitted edits taken back) fails only in other tracks' tests:
+  precise-instruction-set-measured's tests.rs (an `Executor` without the new items),
+  wcontainers-translator-test's layer1 (`guest::x86_64::native`) and hardware-virtualization's
+  tests/guest_memory.rs:222 (type annotations). Clippy over this track's packages, all targets,
+  warnings denied: status 0 (c1.log).
+- No interface file differs from main: `git diff main HEAD` over every crates/<name>/*.rs shows
+  only crates/abi/host.rs (this track's abi crate, 60cb4fe1) and other agents' `[lints]` lines
+  in Cargo.toml files.
+
+Not done: the workspace check passes once the three crates above are conformed by their owners;
+then KC's pass bar is met. The open items of the fifth run (time slice, the runtime's
+interrupter) stay with the owner.
+
+## KC, sixth run: the workspace check, the whole suite and the LTP verdicts at the tip
+
+Started about 03:40 UTC on 2026-11-24 at 3ccfcc3a. Every build and test ran on the ARM64 machine;
+the Mac only edited and committed. Scratch kernel/kc6 (c1.sh to c3.sh, whole.sh, logs beside them).
+
+- The ninth KF run's whole job (kernel/20261124-024108-1615225, at f8f546ce, before the guest
+  memory on memory spaces and the runners) was stopped at 03:45 in the Python tests: its code was
+  no longer the tip's. Up to there its failures were all on the ARM list (inet's three, layer 1's
+  three among them).
+- The whole workspace's `cargo check --keep-going --all-targets`: at the committed tip 4797115f
+  (other agents' uncommitted edits taken back, kc6/c2.log) it fails in the wasmtime executor (its
+  committed guest_memory.rs imports `VolatileBytes` privately; the executors job has the fix
+  uncommitted, and everything over that crate goes unchecked), precise-instruction-set-measured's
+  tests (an `Executor` without the new items) and wcontainers-translator-test's layer1
+  (`guest::x86_64::native`). On the working tree as it was (kc6/c3.log, 03:45 UTC, load 16) it
+  fails only in precise-instruction-set-measured's tests, translator-test's layer1 and
+  hardware-virtualization's tests/guest_memory.rs (type annotations). None is this track's;
+  clippy over this track's packages, all targets, warnings denied: status 0 in both.
+- The ARM64 machine's disk filled (581 of 581 GB) as the first whole job built; this track's
+  /work/target/kernel/debug (107 GB) and kernel-mem/debug (26 GB) were freed and the whole job now
+  builds with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`. The other big folders there are other
+  jobs' (nwvm 76 GB, runtime 40 GB, conform-unicorn 29 GB, vb-callers 24 GB, conform-hv 22 GB).
+- The whole suite at e705a28e (kc6/whole.sh, job kernel/20261124-034859-3840947, suite start 03:50
+  UTC, load 21, 8 test threads; other agents' uncommitted edits taken back, the wasmtime
+  executor's kept so it builds): clippy with warnings denied status 0, fmt no diff; 442 passed,
+  36 failed, 8 ignored (136 result lines; suite end 04:47 UTC, the machine's load reaching 1341
+  from other jobs about 04:49). 35 of the failures are exactly the ARM list (kf7/fails7.txt);
+  the 36th is python's `system_test_modules_match_reference` (passed in the ninth KF run's job at
+  f8f546ce): after 2277 s a copy made at a save panicked at the stand-in's backend.rs:460
+  ("reading from the backend"); the job kept no more of the message. The seventh run reran it
+  alone (see there).
+- The whole LTP comparison in the same job (04:48 to 06:17 UTC, load 8 to 30, LTP_JOBS 8,
+  LTP_LIMIT 900; log ../orchestrator/cloud/logs/kernel/20261124-034859-3840947.log, verdicts
+  /work/kernel-kc6/whole.tsv on the machine): 4169 of 4226 match the reference and 57 differ (16
+  a part not built, 32 a wrong answer, 9 slower than the limit), the K6c bar's count, and all
+  4226 match 376fba71's verdicts. So the verdicts are no worse than before the merges.
+
 ## KC, fifth run: the kernel's runners run through `execute`
 
 Started about 03:20 UTC on 2026-11-24 at 95201039. Every build and test ran on the ARM64 machine
