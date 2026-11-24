@@ -187,7 +187,7 @@ fn bit_copy<B: Backend>(
     let (Some((from_texture, from_desc)), Some((to_texture, to_desc)), Some(format)) = (
         from.texture(),
         to.texture(),
-        crate::format::format(src.format).map(held_as),
+        crate::format::format(src.format),
     ) else {
         return false;
     };
@@ -241,18 +241,6 @@ fn bit_copy<B: Backend>(
         },
     );
     true
-}
-
-/// The format a bit copy of texels seen in `format` copies: four 32-bit channels for three, as
-/// st/mesa holds a texture of three 32-bit channels in four where the host has no format of three
-/// (the fourth never read), and `format` itself otherwise. A texture of three takes no bit copy.
-fn held_as(format: Format) -> Format {
-    match format {
-        Format::Rgb32Uint => Format::Rgba32Uint,
-        Format::Rgb32Sint => Format::Rgba32Sint,
-        Format::Rgb32Float => Format::Rgba32Float,
-        other => other,
-    }
 }
 
 /// `pipe_context::blit`.
