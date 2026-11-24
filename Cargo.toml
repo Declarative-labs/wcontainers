@@ -29,27 +29,33 @@ naga = { path = "third_party/naga" }
 wgpu = { path = "third_party/wgpu" }
 
 # No crate of ours writes unsafe code. Every crate inherits these lints with `[lints]` `workspace = true`, which forbids it
-# outright. The four executors cannot do their job without some (they run generated code, map guest memory and call a
+# outright. The executors cannot do their job without some (they run generated code, map guest memory and call a
 # hypervisor): they have their own `[lints.rust]` table that denies it instead, so that each use must carry its own
-# `#[expect(unsafe_code, reason = "..")]` on the smallest item that needs it, and every use is a marked point to review.
-# TODO: not yet done (uses counted on 2026-11-22); each inherits these lints once it is free of it, or, for an executor,
-# denies it once every use left is marked:
-#   crates/wcontainers-directx (1091)
-#   crates/wcontainers-direct3d-12 (495)
-#   crates/wcontainers-graphics-test (337, counted on 2026-11-24)
-#   crates/wcontainers-opengl (369, counted on 2026-11-24)
-#   crates/wcontainers-graphics-test-forward (188, counted on 2026-11-24)
-#   crates/wcontainers-gpu-webgl (163, counted on 2026-11-24)
-#   crates/wcontainers-nir (117, counted on 2026-11-24)
-#   crates/wcontainers-shaders (75, counted on 2026-11-24: 4 in the linked converters of its WebAssembly build, 71 in its Windows tests calling real Direct3D)
-#   crates/executor/implementation/hardware-virtualization (58, an executor, counted on 2026-11-24)
-#   crates/executor/implementation/hardware-virtualization-inside (57, an executor)
-#   crates/executor/implementation/unicorn (12, an executor, counted on 2026-11-24)
+# `#[expect(unsafe_code, reason = "..")]` on the smallest item that needs it, and every use is a marked point to review;
+# a reason that starts "UNSOUND:" or "UNEXPLAINED:" marks a use nobody has shown sound.
+# Every count below is of the lines of the crate's folder's `.rs` files that hold the word `unsafe` outside comments and
+# attributes (counted on 2026-11-24 with
+# `git grep -nw unsafe HEAD -- '<folder>/*.rs' | grep -vE ':[0-9]+:\s*(//|#\[|#!\[|unsafe_code,|reason = )' | wc -l`).
+# Executors that deny it, every use marked:
+#   crates/executor/implementation/hardware-virtualization (58)
+#   crates/executor/implementation/hardware-virtualization-inside (51; also 6 marked `no_mangle` attributes and 2 marked
+#   `global_asm!`, which the count leaves out)
+#   crates/executor/implementation/unicorn (14: 2 are text in strings, 1 is in its separate test backend, which denies it too)
+#   crates/executor/implementation/host-process (19)
+#   crates/executor/implementation/wasmtime (29)
+# TODO: not yet done; each inherits these lints once it is free of it:
+#   crates/wcontainers-directx (1076)
+#   crates/wcontainers-direct3d-12 (483)
+#   crates/wcontainers-opengl (368)
+#   crates/wcontainers-graphics-test (337)
+#   crates/wcontainers-graphics-test-forward (184)
+#   crates/wcontainers-gpu-webgl (162)
+#   crates/wcontainers-nir (117)
+#   crates/wcontainers-translator-test (101)
+#   crates/wcontainers-shaders (75: 4 in the linked converters of its WebAssembly build, 71 in its Windows tests calling real Direct3D)
 #   crates/wcontainers-gpu-webgpu (30)
-#   crates/executor/implementation/host-process (18, an executor, each marked; 16 build on ARM64, 13 on x86-64, counted on 2026-11-24)
-#   crates/wcontainers-translator-test (16)
 #   crates/wcontainers-direct3d-11 (10)
-#   crates/kernel/implementation/linux (5, all in executing.rs, counted on 2026-11-24)
+#   crates/kernel/implementation/linux (5, all in executing.rs)
 #   crates/internet-protocol/implementation/linux-socket-options (2)
 #   crates/route-resolver/conformance (2)
 #   crates/tcp-sockets/implementation/host (1)
