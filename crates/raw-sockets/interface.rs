@@ -11,6 +11,10 @@ use wcontainers_kernel::UserId;
 use wcontainers_readiness::Readiness;
 use wcontainers_volatile_bytes::VolatileBytes;
 
+#[allow(
+    reviewable::explicit_shared_error::HostError,
+    reason = "each method is one call on the host's socket and fails only the ways that call does"
+)]
 /// Sockets for [raw](https://man7.org/linux/man-pages/man7/raw.7.html) IP packets.
 pub trait RawSockets:
     for<'a> Configurable<Self::Socket, RawSocketSetting<'a>> + Readiness<Self::Socket>
@@ -35,8 +39,8 @@ pub trait RawSockets:
         into: &impl VolatileBytes,
     ) -> Result<Received, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
-    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError>;
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> ByteCount;
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> BufferSizes;
     fn close(&self, socket: Self::Socket);
 }
 

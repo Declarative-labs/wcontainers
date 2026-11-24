@@ -15,6 +15,10 @@ use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::Readiness;
 use wcontainers_volatile_bytes::VolatileBytes;
 
+#[allow(
+    reviewable::explicit_shared_error::HostError,
+    reason = "each method is one call on the host's socket and fails only the ways that call does"
+)]
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.
 pub trait UdpSockets:
     for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>>
