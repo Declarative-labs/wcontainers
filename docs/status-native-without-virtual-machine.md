@@ -819,16 +819,65 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     7 and busybox included; clippy with warnings denied clean on every target. One round only, not three; x86-64 not
     run (machine not set up).
   - No new unsafe code.
+- W1 round 5, run 1 (2026-11-24, 04:40 UTC on):
+  - Conforming: nothing new since round 4 (no interface commit touched the executor, memory space or volatile bytes
+    after 79441339); form I does not exist yet.
+  - Three rounds with /dev/kvm denied from committed code (2086b90e, a `git archive` tree in scratch w1/r5run1/tree,
+    build folder nwvmc), every binary, each run first proving the device cannot be opened (nokvm3-arm.out,
+    nokvm3-x86.out): Graviton4 318 passed, 3 failed, the 3 being `agrees_with_precise_instruction_set` at 0x1000 once
+    a round, kernel and busybox included (load 3 to 250 from another track's job); Xeon 156 passed, none failed (load
+    2 to 15). This is the "every binary 3 times on both machines" item of round 4.
+  - Where busybox `sh`'s turns went (remote-only counters, turns-bb.sh, turns1-arm.out; Graviton4, load 14 to 33): 533
+    turns a program, of which 390 were a thread stopping at an empty slot for a piece to be loaded and 100 a jump's
+    first miss making its last target; 26 system calls and 21 faults. Each new memory loads every piece it runs with a
+    round trip of its own (about 10 us each with the load), which the model does not count.
+  - Tried and measured slower, not kept: copying the parent's code area, slots and records to a fork child at the fork
+    (copy_file_range of about 900 KB and the records' clone, 0.8 ms a fork; ab1-arm.out, three alternating rounds:
+    9.64, 9.58, 9.11 s copying against 9.14, 8.61, 8.42 s not).
+  - Built: pieces loaded ahead (native.rs `load`). Each memory records, for its first piece and each piece it then had
+    to load, how far from it the next piece it had to load was, and which last targets it made for that piece's jumps
+    (call offset in the piece, target relative to the piece). When a later memory loads the same first piece (the same
+    kept translation, so the same code), each load is followed by the pieces and last targets recorded after it, as
+    long as each piece's page is executable for the guest and its code is that of a kept translation (no translating
+    ahead); at the first that is not, it stops, and the next stop goes on from there. A memory's last piece records
+    that nothing followed when the memory is dropped. Counted: `pieces_loaded_ahead`, `last_targets_made_ahead`.
+    Keyed by the first piece so a fork child and an exec of the same busybox do not load each other's runs (keyed by
+    piece alone, busybox `sh` loaded 1,035 pieces a program for 416 needed; turns4-arm.out). Relative offsets make it
+    hold across the kernel's random bases within one mapping; a jump across two mappings at independent bases stops
+    the chain there.
+  - Tests (tests/run.rs +2): a program of eight pages, each its own piece, run at a base, again there and at another
+    base (every later page and the code after its getpid loaded at the first stop, 8 pieces), with one page's code
+    changed (its own add runs; 6 loaded ahead: the two pages before it, then the four after the page after it), and
+    with a later page left readable only (the guest's execute fault there, nothing loaded past it); a call through a
+    register whose target is read from data, run three times in fresh memories, the third with another target: the
+    last targets made ahead in the second and third (at least 2 each), each sum right (the third's wrong guess goes
+    where it jumps). With the permission check skipped ahead, with nothing loaded ahead, and with no last target
+    made ahead (remote copy only, mutate-ahead.sh, mutate-ahead3-arm.out), each fails.
+  - Speed after it (release, CPU 41, /dev/kvm denied, speed1-arm.out; Graviton4, load 12 to 18): busybox `sh` starting
+    1,000 programs 4.90 s then 4.75 s (9.30 s before), model 1.12 s, 4.36 times the model (9.25 before); turns 59 a
+    program (533 before; targets1 run). getppid round trip against W0's futex slot in the same run: 2,947 / 2,388,
+    2,924 / 2,406, 2,965 / 2,412 ns median of batch means, 1.234, 1.215, 1.229 times (bar under 1.25: met in all three
+    rounds this time; unchanged code on that path, so this is the machine's quieter load); per call median 2,890 to
+    2,908 ns, none over 1 ms in 999,999 calls. getppid in the kernel's loop 3,352 ns. bench against plain: fib 1.334,
+    sieve 1.019, hash 1.002, sort 1.361, interpret 1.334, matrix 3.770, walk 1.002, search 1.163, geometric mean
+    1.347 (WebAssembly 25.4).
+  - Verdicts after it, shared tree, every binary once with /dev/kvm denied (ahead-all1-arm.out, after the first change;
+    all-speed1-arm.out after the second, 05:50 UTC, load 14 to 32): all pass but the known precise-set test (108
+    passed, 1 failed); clippy with warnings denied clean on every target of the crate (`--no-deps`: the kernel
+    interface's two `type_complexity` findings stop a clippy run that lints dependencies, the owner's file). Xeon,
+    every binary once with /dev/kvm denied after the second change (all1-x86.out, load 27 to 35): 52 passed, none
+    failed; clippy clean.
+  - No new unsafe code.
 
 ## W1 complete, with its gap list (for the independent check)
 
 W1 is reported complete at round 3 run 5 so that its independent check runs; these items of plan 13's bar are not
 met, each with what is known:
 - Speed, not met: the getppid round trip is 1.23 to 1.31 times W0's futex slot (bar under 1.25; 1.23 to 1.27 in round
-  4 run 2). busybox `sh` starting 1,000 programs: translations now move across execs (243,918 to 1,052, round 4
-  run 2) and the first run fell from 13.96 to 9.30 s, but with translation gone from the model it is 9.25 times the
-  model (bar 1.25); per program 1.45 ms of memory calls, 1.9 ms loading and placing pieces again in each process's
-  own code area, 6.6 ms in turns (round 4 run 2). bench's matrix runs 3.8 to 4.0 times plain under P (other
+  4 run 2; 1.215 to 1.234 in round 5 run 1, the same code on a quieter machine). busybox `sh` starting 1,000
+  programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
+  1): 4.36 times the model (bar 1.25; 9.25 before); per program about 1.45 ms of memory calls (about 0.6 ms of it the
+  model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
   workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
   page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
   machine (run 3; one of 1.65 ms at load 30 in round 4 run 2).
@@ -867,13 +916,15 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## Next
 
-- W1's independent check runs on the report above. FIRST for whoever comes next: once the wasmtime and Unicorn
-  executors' conforming edits are committed, run every binary 3 times with /dev/kvm denied on both machines (scratch
-  w1/r4run2/nokvm.sh, sent inline with `set -- 3`); the Xeon needs its setup again (x86-run said so in round 4 run 2).
-- busybox `sh`'s bar: one code area shared by an executor's memories (a fork child and every exec of the same
-  program place and link their pieces again today, 1.9 ms per program), keep moved translations instead of cloning
-  them at every load, a cheaper key than hashing the rest of the page, then a profile of the turns (6.6 ms per
-  program; scratch w1/r4run2/timing-bb.sh times the memory calls and loads in a remote copy).
+- W1's independent check runs on the report above. Every binary passed 3 times with /dev/kvm denied on both machines
+  from committed code in round 5 run 1 (but the known precise-set test).
+- busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
+  the key's hash, comparing the code, cloning and moving a moved translation, placing, the slot) and the memory calls
+  (new, fork and drop beyond the model's process creation, about 0.9 ms a program), then the turns that are left (59 a
+  program, of which 26 system calls and 21 faults). Sharing code areas between memories is decision 16's question
+  (the owner's). A fork child copying its parent's code was measured slower (round 5 run 1). Scratch
+  w1/r5run1/turns-bb.sh counts turns, landings, loads and last targets in a remote copy (its native.rs patches follow
+  the code as of 9dc2f309; one failing assertion leaves the native counters at zero).
 - Then the gap list's items, the speed bars first: busybox `sh` needs translations kept across execs at new bases
   (moved translations, above); the round trip needs the embedder's per-exit work cut (the translated page's
   copies, `stop::resolve` and `rejoin`, placement's two clock reads per turn); bench's matrix needs the withheld
@@ -910,6 +961,12 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## How to run
 
+- Since round 5 run 1: scratch w1/r5run1. nokvm.sh is round 4's writing into /work/target/nwvmc, run on `tree` (a
+  `git archive` of a commit made a git repository, so `arm-run`/`x86-run` take it) for verdicts from committed code;
+  mutate-ahead.sh runs tests/run.rs, then breaks loading ahead three ways in the remote copy, each of which must fail;
+  ab-ahead.sh (and ab-copy.sh for the fork copy, no longer in the code) alternate busybox `sh` with and without a change
+  (`set -- <rounds>`). The speed figures are still w1/r4run2/speed.sh; nokvm.sh ends with `exit`, so send speed.sh as
+  its own job.
 - Since round 4 run 2: scratch w1/r4run2. nokvm.sh (run 4's) runs every binary with /dev/kvm denied; speed.sh is
   run 3's speed3.sh without the VM part, speed-bb.sh busybox `sh` alone; forged.sh runs tests/forged.rs (its
   `--nocapture` prints what each forged exit did); moves2.sh runs the moving test at 100,000 cases for three seeds,
