@@ -544,10 +544,12 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
   kernel's 32 and 33 below it are glibc's own (32 is SIGCANCEL, installed at the first `pthread_cancel`, and
   blocked by I's runners above). That choice is I's; P's stubs hold no C library and the signal is only ever sent to
   them, so P's stop signal is `SIGUSR1` (10), fixed, a standard signal for the reason above.
-- P: a guest store can reach anything in its stub that is mapped writable (its register pages, its signal stacks),
-  and a load anything mapped readable (its control pages too). Guest code makes no host call (it has no `svc`; the
-  only host calls are the stub's own routines, reached through the floor's entries), so what the guest can do to
-  its stub is write those pages. The stub is built so that this gives the guest nothing it does not have:
+- P: a guest store can reach anything in its stub that is mapped writable (its register pages, its signal stacks,
+  and the zygote's stack, [2^45 + 64 KiB, 2^45 + 128 KiB), which stub thread 0 inherits), and a load anything mapped
+  readable (its control pages, the zygote's code and the floor's entries, which read back as the stub's machine
+  code). Guest code makes no host call (it has no `svc`; the only host calls are the stub's own routines, reached
+  through the floor's entries), so what the guest can do to its stub is write those pages. The stub is built so
+  that this gives the guest nothing it does not have:
   - Everything the stub obeys is in its thread's **control page**, which the embedder writes through its mapping
     and the stub maps read-only (`PROT_READ`, shared): the `Resume`, the answer word, the queued mapping commands
     and placement requests (4.2, 4.3). Its filter refuses `mprotect`, `mmap` and `munmap` outside the guest area
@@ -564,7 +566,18 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
     only its own guest process, as a resume through the guest pc's slot (3.3) never jumps to a host address.
   - Its code is one position-independent assembly unit of its own section (no Rust, no libc, no data of the
     embedder), keeping its own state in registers while it waits (the host kernel preserves registers; another
-    guest thread cannot change them), and using no stack in guest-writable memory.
+    guest thread cannot change them). Its code holds no secret: a guest that reads it learns only this plan.
+  - The routines that pass a structure to the host kernel keep it on the thread's stack, which for stub thread 0 is
+    the zygote's stack and is guest-writable: the shared-block receive's `recvmsg` header, iovec and control buffer,
+    and the cpu set of `sched_setaffinity` (4.3). Each routine writes the structure and makes its `svc` with no
+    guest instruction between them on that thread, and the stub never runs guest code while one of its routines
+    runs (W1 and W2 run one guest thread at a time, 3.9), so today no guest store lands between the two. With
+    parallel threads a sibling could rewrite the structure between the routine's stores and its `svc`, or the
+    received fd number before it is mapped: the filter bounds what follows (`recvmsg` only on its socket,
+    `sched_setaffinity` only on the calling thread, `mmap` only by the rules below, so a forged fd maps only a
+    file the stub already holds at an address it may map anyway), so the guest gains nothing it could not do with
+    its own memory, but the structures move off guest-writable memory or are checked again after the call when
+    parallel threads are built (3.9).
   - Its handlers find their thread's pages from the signal stack's address (the host kernel's, unforgeable), copy
     what they need from the frame once, and never return through the frame (3.6).
   - Position resolution, translation and every decision are in the embedder's process; the stub only reports.
@@ -1256,8 +1269,9 @@ system's answer today); listed for the owner in section 12 instead.
 
 ## 9. Named differences from the WebAssembly output and Linux
 
-- P: a guest load or store to our area in its stub (stores to its register pages and signal stacks; loads from
-  those, its control pages, and the code area and slot table where the host has no execute-only) succeeds where
+- P: a guest load or store to our area in its stub (stores to its register pages, its signal stacks and the
+  zygote's stack; loads from those, its control pages, the zygote's code and floor entries, and the code area and
+  slot table where the host has no execute-only) succeeds where
   Linux and the other outputs fault. Only a guest that uses an address it never mapped can see it; it changes
   nothing outside its own guest process (3.7). This extends the VM form's accepted
   "our reachable pages" difference (native.md decision 4) to these pages. Counted: no (a successful access cannot
