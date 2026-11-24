@@ -5143,8 +5143,14 @@ dependencies = [
 name = "wcontainers-executor-simulation"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
+ "wcontainers-abi",
+ "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
+ "wcontainers-executor-conformance",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-apple-m5",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
 ]
