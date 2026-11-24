@@ -187,6 +187,9 @@ pub struct Counters {
     pub code_pages_left_writable: u64,
     /// Reads and writes of borrowed guest bytes the host refused, which moved no bytes ("guest bytes refused").
     pub guest_bytes_refused: u64,
+    /// Dropped memories whose stub was not seen to end, so the zygote is not asked to wait for it ("stub left
+    /// unreaped").
+    pub stubs_left_unreaped: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -830,8 +833,8 @@ impl HostProcessExecutor {
     fn end_stub(&mut self, id: MemoryId) {
         let stub = &self.memory(id).stub;
         let killed = self.host.kill(stub);
-        let ended = killed.is_ok()
-            && matches!(stub.wait_hung_up(crate::stub::STOP_IGNORED), Ok(true));
+        let ended =
+            killed.is_ok() && matches!(stub.wait_hung_up(crate::stub::STOP_IGNORED), Ok(true));
         if !ended {
             eprintln!(
                 "wcontainers warning: a stub was not seen to end ({killed:?}), its memory gets no turn"
@@ -1230,23 +1233,41 @@ impl Cpu for HostProcessExecutor {
         let memory = self.memory_mut(id);
         memory.retired = true;
         memory.shared = RangeMap::new();
+        let unstopped = memory.unstopped;
         let (last, others) = memory
             .indices
             .split_last()
             .expect("a stub always has a thread");
-        for &index in others {
-            let _ = memory.stub.end_thread(index);
+        if !unstopped {
+            for &index in others {
+                let _ = memory.stub.end_thread(index);
+            }
         }
         let last = *last;
         memory.indices.clear();
         memory.spare = None;
         let process = memory.stub.process();
         self.note_stub_end(process);
+        // The zygote's reap waits for the stub's end and answers nothing else meanwhile, so it is asked only for a stub
+        // seen to end: one not seen to is left to the zygote's own end.
         let stub = &self.memory(id).stub;
-        if stub.end(last).is_err() {
+        let seen_to_end = if unstopped {
             let _ = self.host.kill(stub);
+            matches!(stub.hung_up(), Ok(true))
+        } else {
+            stub.end(last).is_ok()
+                || self.host.kill(stub).is_ok()
+                    && matches!(stub.wait_hung_up(crate::stub::STOP_IGNORED), Ok(true))
+        };
+        if seen_to_end {
+            let _ = self.host.reap(stub);
+        } else {
+            self.counters.stubs_left_unreaped += 1;
+            eprintln!(
+                "wcontainers warning: a dropped memory's stub was not seen to end, left unreaped, {} so far",
+                self.counters.stubs_left_unreaped
+            );
         }
-        let _ = self.host.reap(stub);
         if self.memory(id).pages.is_empty() {
             self.free(id);
         } else {

@@ -726,6 +726,36 @@ fn a_failed_kill_after_a_refused_command_never_leaves_a_narrowed_page_writable()
     assert_eq!(word(&mut cpu, memory, page(4)), 1);
 }
 
+/// A dropped memory whose stub is not seen to end (here its socket is held open by a copy, so it never hangs up) is
+/// left to the zygote's end: the zygote, which answers nothing while it waits for a stub, is never asked to, and the
+/// next memory's stub starts.
+#[test]
+fn a_dropped_memory_s_stub_not_seen_to_end_is_not_waited_for() {
+    use rustix::process::{PidfdFlags, PidfdGetfdFlags};
+    use wcontainers_executor_host_process::stub::SOCKET_FD;
+    let mut cpu = executor();
+    let (memory, thread) = process(&mut cpu, 1);
+    assert_eq!(store(&mut cpu, thread, page(0), 1), Touched::Stored);
+    let stub = cpu.stub_process(memory);
+    let pidfd = rustix::process::pidfd_open(stub, PidfdFlags::empty()).expect("the stub's pidfd");
+    let held = rustix::process::pidfd_getfd(&pidfd, SOCKET_FD as i32, PidfdGetfdFlags::empty())
+        .expect("a copy of the stub's socket");
+    let before = cpu.counters().stubs_left_unreaped;
+    cpu.thread_drop(thread);
+    cpu.memory_drop(memory);
+    assert_eq!(cpu.counters().stubs_left_unreaped, before + 1);
+    let state = std::fs::read_to_string(format!("/proc/{}/stat", stub.as_raw_nonzero()))
+        .expect("the stub is not reaped");
+    let state = state
+        .rsplit_once(") ")
+        .and_then(|(_, rest)| rest.chars().next());
+    assert_eq!(state, Some('Z'), "the stub was killed and left unreaped");
+    drop(held);
+    let next = process(&mut cpu, 1);
+    assert_eq!(store(&mut cpu, next.1, page(0), 2), Touched::Stored);
+    end(&mut cpu, next);
+}
+
 /// The cost of a fork's copies to its child, one store per page over `WCHP_PAGES` written pages, in order and in a
 /// seeded order touching every `WCHP_STRIDE`th page (`WCHP_SEED`), and the host mappings each side holds after.
 #[test]
