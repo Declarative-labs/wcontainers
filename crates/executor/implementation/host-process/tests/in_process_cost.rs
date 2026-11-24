@@ -12,7 +12,7 @@ use rustix::mm::ProtFlags;
 use wcontainers_abi::RegisterBlock;
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::thread_state::{COUNT, Register, SCRATCH};
-use wcontainers_arm64::way::{PROCESS_ENTRIES, PROCESS_ENTRY_BYTES};
+use wcontainers_arm64::way::{Kept, PROCESS_ENTRIES, PROCESS_ENTRY_BYTES};
 use wcontainers_arm64::{Arm64, Way};
 use wcontainers_executor_host_process::code::CodeArea;
 use wcontainers_executor_host_process::layout::CODE_AREA;
@@ -67,6 +67,7 @@ const WAYS: [(&str, Way); 2] = [
         Way::InProcess {
             slot: 0,
             displaced: false,
+            kept: Kept::USUAL,
         },
     ),
 ];

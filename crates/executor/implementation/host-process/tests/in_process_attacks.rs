@@ -31,7 +31,7 @@ use wcontainers_abi::RegisterBlock;
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::thread_state::{RegisterPage, SCRATCH, TAG_LOW, untag_address};
 use wcontainers_arm64::way::{
-    IN_PROCESS_ENTRIES, PROCESS_ENTRIES, PROCESS_ENTRY_BYTES, WINDOW_BITS,
+    IN_PROCESS_ENTRIES, Kept, PROCESS_ENTRIES, PROCESS_ENTRY_BYTES, WINDOW_BITS,
 };
 use wcontainers_arm64::{Arm64, Way};
 use wcontainers_executor_arm64_stop::in_process::{self, Resolution};
@@ -58,6 +58,7 @@ const DEFAULT_SEED: u64 = 0x6a75_6d70_7321;
 const WAY: Way = Way::InProcess {
     slot: 1,
     displaced: false,
+    kept: Kept::USUAL,
 };
 /// Where the jump lies in the guest's addresses.
 const GUEST: u64 = 0x40_0000;
@@ -748,6 +749,7 @@ fn canaries() -> Vec<u64> {
     let next = Way::InProcess {
         slot: 2,
         displaced: false,
+        kept: Kept::USUAL,
     }
     .window_base();
     let mut pages = Vec::new();

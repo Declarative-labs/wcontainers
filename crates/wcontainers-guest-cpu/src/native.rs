@@ -2,7 +2,7 @@
 //! carried over to host code of the same architecture. It never says what an instruction computes; the
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
@@ -125,6 +125,12 @@ pub trait Native: Guest {
     fn stop_check(_: &Self::Way, _: &mut HostCode) -> bool {
         false
     }
+    /// The way one piece of these instructions is written for; the default is `way` itself.
+    fn piece_way(way: &Self::Way, _: &[Self::Instruction]) -> Self::Way {
+        *way
+    }
+    /// Writes what a piece does first when it is entered from outside it; the default writes nothing.
+    fn enter(_: &Self::Way, _: &mut HostCode) {}
 }
 
 /// Host code with its position map, written one guest instruction after another.
@@ -150,6 +156,14 @@ pub struct HostCode {
     /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
     /// count, or none for a branch only the code's own linking may point elsewhere.
     settling: BTreeMap<u32, Option<u32>>,
+    /// Of those exits, the ones whose settling ends in code that only leaving the piece runs: the bytes before it.
+    within: BTreeMap<u32, u32>,
+    /// Branches only linking within the code may point elsewhere, by start.
+    local: BTreeSet<u32>,
+    /// Guest values held elsewhere throughout the piece once it is entered, unless released.
+    kept: Vec<Relocated>,
+    /// Kept values the current instruction has released.
+    released: Vec<u8>,
     /// The current instruction's first host byte.
     begun: u32,
     /// Whether this is a stepping piece: one instruction whose every way on goes into the inside with
@@ -180,13 +194,14 @@ impl HostCode {
     /// earlier in the run may be this one's.
     pub fn start(&mut self, address: u64, counted: bool, stopping: Stopping) {
         let lead = self.now.as_ref().map_or(0, |s| s.lead);
+        self.released.clear();
         self.now = Some(Span {
             start: 0,
             guest: address,
             side: Side::Before,
             lead,
             resume: Resume::At(address),
-            relocated: Vec::new(),
+            relocated: self.kept.clone(),
             fixups: Vec::new(),
             stopping,
         });
@@ -208,6 +223,7 @@ impl HostCode {
 
     /// Goes back to a state taken with [`Self::snapshot`].
     pub fn restore(&mut self, (span, owed): (Span, bool)) {
+        self.released.clear();
         self.now = Some(span);
         self.owed = owed;
     }
@@ -299,6 +315,9 @@ impl HostCode {
     /// The exit as a loader may link it, once linking within the code has left it an exit: none when only
     /// linking within the code may.
     pub fn for_loader(&self, exit: DirectExit) -> Option<DirectExit> {
+        if self.local.contains(&exit.start) {
+            return None;
+        }
         match self.settling.get(&exit.start) {
             None => Some(exit),
             Some(None) => None,
@@ -307,6 +326,49 @@ impl HostCode {
                 ..exit
             }),
         }
+    }
+
+    /// The exit as linking within the code links it where the part it goes to is entered with the guest's count:
+    /// past its settling but before code only leaving the piece runs; none when only an exit taken with the count
+    /// ahead may be linked.
+    pub fn for_within(&self, exit: DirectExit) -> Option<DirectExit> {
+        match self.settling.get(&exit.start) {
+            None => Some(exit),
+            Some(None) => None,
+            Some(&Some(length)) => Some(DirectExit {
+                start: exit.start + self.within.get(&exit.start).copied().unwrap_or(length),
+                ..exit
+            }),
+        }
+    }
+
+    /// Notes that the exit started at `start` runs `length` more bytes, here, before its loader's word, which only
+    /// leaving the piece needs.
+    pub fn leaving(&mut self, start: usize, length: usize) {
+        let start = u32::try_from(start).expect("host code fits in u32 offsets");
+        let length = u32::try_from(length).expect("host code fits in u32 offsets");
+        let settled = self.settling.get(&start).copied().flatten().unwrap_or(0);
+        self.settling.insert(start, Some(settled + length));
+        self.within.insert(start, settled);
+    }
+
+    /// Notes that only linking within the code may point the branch at `at` elsewhere.
+    pub fn local(&mut self, at: usize) {
+        self.local
+            .insert(u32::try_from(at).expect("host code fits in u32 offsets"));
+    }
+
+    /// From here on, and in every instruction after, a guest register's value is held elsewhere.
+    pub fn keep(&mut self, guest: u8, held: Held) {
+        self.kept.retain(|r| r.guest != guest);
+        self.kept.push(Relocated { guest, held });
+        self.relocate(guest, held);
+    }
+
+    /// For the rest of the current instruction, a kept guest register's value is in its own place again.
+    pub fn release(&mut self, guest: u8) {
+        self.released.push(guest);
+        self.state().relocated.retain(|r| r.guest != guest);
     }
 
     /// How far the count is ahead of the guest's here.
@@ -387,9 +449,14 @@ impl HostCode {
         self.relocate(guest, held);
     }
 
-    /// From here on a guest register's value is in its own place again.
+    /// From here on a guest register's value is in its own place again, or where the piece keeps it.
     pub fn home(&mut self, guest: u8) {
-        self.state().relocated.retain(|r| r.guest != guest);
+        let kept = (!self.released.contains(&guest))
+            .then(|| self.kept.iter().find(|r| r.guest == guest).copied())
+            .flatten();
+        let now = self.state();
+        now.relocated.retain(|r| r.guest != guest);
+        now.relocated.extend(kept);
     }
 
     /// From here on a stop also makes this fix-up.

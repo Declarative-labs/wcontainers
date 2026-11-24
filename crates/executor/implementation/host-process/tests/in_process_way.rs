@@ -11,7 +11,7 @@
 //! be the reference's: the state before the instruction at a fault, an alignment call, the mark or a stack pointer
 //! leaving the window, the state after it at a faulting stack probe; a fault at the reference's own address.
 //! Pieces of two to eight such instructions are translated as one piece too, against the reference run one
-//! instruction at a time; and every form is run in displaced code (rule e), from a stack pointer outside the
+//! instruction at a time (a piece naming x15 or x24 keeps u and the base in two it does not name, counted); and every form is run in displaced code (rule e), from a stack pointer outside the
 //! window. A collision (one register named twice where Arm leaves the result open) runs in the reference with the
 //! registers the meaning does not write renamed to free ones.
 //!
@@ -31,7 +31,7 @@ use wcontainers_arm64::thread_state::{
     COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
 use wcontainers_arm64::way::{
-    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, MARK, PROCESS_ENTRY_BYTES,
+    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, Kept, MARK, PROCESS_ENTRY_BYTES,
     WINDOW_BITS, Way,
 };
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode, forms};
@@ -71,10 +71,12 @@ const OTHER_SLOT: u16 = 2;
 const WAY: Way = Way::InProcess {
     slot: SLOT,
     displaced: false,
+    kept: Kept::USUAL,
 };
 const DISPLACED: Way = Way::InProcess {
     slot: SLOT,
     displaced: true,
+    kept: Kept::USUAL,
 };
 /// The general registers, x0 to x30.
 const GENERAL: usize = 31;
@@ -448,6 +450,7 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
     let other = Way::InProcess {
         slot: OTHER_SLOT,
         displaced: false,
+        kept: Kept::USUAL,
     }
     .window_base();
     let look_ahead = match words.len() {
@@ -499,7 +502,7 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
         .mem_map(REGISTER_PAGE, PAGE_SIZE, Prot(Prot::READ.0 | Prot::WRITE.0))
         .expect("the register page");
     let guest = guest_registers(case);
-    for &r in way.withheld() {
+    for &r in way.withheld().iter() {
         let at = REGISTER_PAGE + withheld_word(way, r);
         unicorn
             .mem_write(at, &guest[usize::from(r)].to_le_bytes())
@@ -1031,6 +1034,14 @@ struct Tally {
     at_base: u64,
     stack_unaligned: u64,
     collisions: u64,
+    /// Pieces that keep u or the base elsewhere, naming their usual registers.
+    kept_elsewhere: u64,
+}
+
+/// Whether the piece of `words` keeps u or the base in other registers than between pieces.
+fn kept_elsewhere(way: Way, words: &[u32]) -> bool {
+    let instructions: Vec<I> = words.iter().map(|&w| decode(w)).collect();
+    Arm64::piece_way(&way, &instructions).moves_kept()
 }
 
 /// A word of `form`: a quarter name the stack pointer as their base or source, an eighth as their destination too
@@ -1078,6 +1089,7 @@ fn displaced_code_agrees_with_the_reference_and_stays_in_its_window() {
         let other = Way::InProcess {
             slot: OTHER_SLOT,
             displaced: false,
+            kept: Kept::USUAL,
         }
         .window_base();
         let sp = match rng.u32(0..6) {
@@ -1126,6 +1138,7 @@ fn every_form(way: Way, stack: impl Fn(&mut fastrand::Rng) -> Option<u64>) {
             let reference = reference(&case, CODE);
             let (translated, resolution) = translated(&case, &[word], way);
             tally.cases += 1;
+            tally.kept_elsewhere += u64::from(kept_elsewhere(way, &[word]));
             let why = disagreement(&case, &reference, &translated, &mut tally).or_else(|| {
                 resolution_disagreement(&case, CODE, &reference, &translated, resolution.as_ref())
             });
@@ -1224,6 +1237,7 @@ fn in_process_pieces_of_several_instructions_agree_with_the_reference() {
         let (translated, resolution) = translated(&case, &words, WAY);
         let stop = resolution.as_ref().and_then(|r| stopped_at(r, length));
         tally.cases += 1;
+        tally.kept_elsewhere += u64::from(kept_elsewhere(WAY, &words));
         tally.resolved += u64::from(resolution.is_some());
         let mut k = 0;
         let why = loop {

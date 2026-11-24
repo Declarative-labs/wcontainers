@@ -18,7 +18,7 @@ use rustix::mm::ProtFlags;
 use wcontainers_abi::RegisterBlock;
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::thread_state::{Register, SCRATCH};
-use wcontainers_arm64::way::{PROCESS_ENTRIES, PROCESS_ENTRY_BYTES};
+use wcontainers_arm64::way::{Kept, PROCESS_ENTRIES, PROCESS_ENTRY_BYTES};
 use wcontainers_arm64::{Arm64, Instruction, SystemRegister, Way, decode, forms};
 use wcontainers_executor_host_process::code::CodeArea;
 use wcontainers_executor_host_process::layout::CODE_AREA;
@@ -506,6 +506,7 @@ fn a_refused_access_reads_nothing_outside_the_window_under_speculation() {
         Way::InProcess {
             slot: 0,
             displaced: false,
+            kept: Kept::USUAL,
         },
     ];
     let shapes = shapes();

@@ -277,6 +277,14 @@ impl Native for Arm64 {
         carry::write_place(code, place);
     }
 
+    fn piece_way(way: &Way, instructions: &[I]) -> Way {
+        carry::piece_way(*way, instructions)
+    }
+
+    fn enter(way: &Way, code: &mut HostCode) {
+        carry::enter(*way, code);
+    }
+
     fn stopping(i: &I, _address: u64) -> Stopping {
         let register = |r: Reg| match r {
             Reg::X(n) => Base::Register(n),

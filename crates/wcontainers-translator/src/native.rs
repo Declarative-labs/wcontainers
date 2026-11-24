@@ -123,6 +123,9 @@ pub fn translate_native_request<G: Native>(
     if held.is_empty() {
         return None;
     }
+    let instructions: Vec<G::Instruction> = held.iter().map(|h| h.instruction).collect();
+    let piece_way = G::piece_way(way, &instructions);
+    let way = &piece_way;
     let targets: BTreeSet<usize> = held.iter().filter_map(|h| h.target).collect();
     // Where each straight-line part starts: the first instruction, a branch's target, and wherever the code
     // before does not go straight on to it.
@@ -272,6 +275,9 @@ pub fn translate_native_request<G: Native>(
     for (k, h) in held.iter().enumerate() {
         let here = guest(h.at);
         out.start(here, events[k], G::stopping(&h.instruction, here));
+        if k == 0 {
+            G::enter(way, &mut out);
+        }
         if part_starts[k] {
             let p = part_of(k);
             entries.insert(here, (out.offset(), leads[p]));
@@ -345,7 +351,7 @@ pub fn translate_native_request<G: Native>(
         // A part entered with the guest's count is linked to past the exit's settling, as a loader links.
         let linked = within.and_then(|(to, lead)| {
             let from = if lead == 0 {
-                out.for_loader(exit)?
+                out.for_within(exit)?
             } else {
                 exit
             };

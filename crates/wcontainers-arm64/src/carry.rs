@@ -25,8 +25,8 @@ pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
 use crate::way::{
-    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, MARK_OFFSET, OUTSIDE, PROCESS_ENTRIES,
-    PROCESS_ENTRY_BYTES, PROCESS_REACH_BITS, PROCESS_SLOTS, WINDOW_BITS, Way,
+    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, Kept, MARK_OFFSET, OUTSIDE,
+    PROCESS_ENTRIES, PROCESS_ENTRY_BYTES, PROCESS_REACH_BITS, PROCESS_SLOTS, WINDOW_BITS, Way,
 };
 use crate::{Arm64, FPCR_BITS, decode};
 use crate::{forms, habits};
@@ -134,8 +134,109 @@ fn withheld_slot(way: Way, register: Register) -> u64 {
     let index = way.withheld().iter().position(|&w| w == register);
     match index.expect("a withheld register") {
         k if k < WITHHELD.len() => page_word(offset_of!(RegisterPage, withheld), k),
-        k => page_word(IN_PROCESS_WITHHELD_AT, k - WITHHELD.len()),
+        k => kept_slot(k - WITHHELD.len(), register),
     }
+}
+
+/// The word after the page keeping the guest value of `register`, kept in process in place of u (`k` 0) or the
+/// base (`k` 1): the first two words for [`CHECK`] and [`BASE`], the next two for the registers a piece keeps
+/// instead.
+fn kept_slot(k: usize, register: Register) -> u64 {
+    let usual = [CHECK, BASE][k];
+    page_word(
+        IN_PROCESS_WITHHELD_AT,
+        if register == usual { k } else { k + 2 },
+    )
+}
+
+/// The way of the piece of `instructions` (in process, [`Way::for_piece`]).
+pub(crate) fn piece_way(way: Way, instructions: &[I]) -> Way {
+    let named = instructions.iter().fold(Registers::NONE, |n, i| {
+        let (uses, defs) = touched(i);
+        n.union(uses).union(defs)
+    });
+    let bits = (0..ZERO)
+        .filter(|&r| named.has_bit(bit(r)))
+        .fold(0u32, |b, r| b | 1 << r);
+    way.for_piece(bits)
+}
+
+/// The usual registers and the ones `way` keeps u and the base in instead, each pair once where they differ.
+fn moved_kept(way: Way) -> [Option<(Register, Register)>; 2] {
+    let Kept { check, base } = Kept::USUAL;
+    [
+        (way.check() != check).then_some((check, way.check())),
+        (way.base() != base).then_some((base, way.base())),
+    ]
+}
+
+/// The code a piece that keeps u or the base elsewhere starts with, entered from outside it: the guest values of
+/// the registers it keeps them in to the words after the page, the base moved, and the guest values of [`CHECK`]
+/// and [`BASE`] loaded, as kept from here on.
+pub(crate) fn enter(way: Way, code: &mut HostCode) {
+    let moved = moved_kept(way);
+    for (k, &(_, to)) in moved
+        .iter()
+        .enumerate()
+        .filter_map(|(k, m)| Some((k, m.as_ref()?)))
+    {
+        code.push(&store_page(to, kept_slot(k, to)).to_le_bytes());
+    }
+    if let [_, Some((usual, to))] = moved {
+        code.push(&encode::move_register(to, usual).to_le_bytes());
+    }
+    for (k, &(_, to)) in moved
+        .iter()
+        .enumerate()
+        .filter_map(|(k, m)| Some((k, m.as_ref()?)))
+    {
+        code.keep(to, held_page(kept_slot(k, to)));
+    }
+    for (k, &(usual, _)) in moved
+        .iter()
+        .enumerate()
+        .filter_map(|(k, m)| Some((k, m.as_ref()?)))
+    {
+        code.push(&load_page(usual, kept_slot(k, usual)).to_le_bytes());
+    }
+    for &(usual, _) in moved.iter().flatten() {
+        code.keep(usual, Held::Register(usual));
+    }
+}
+
+/// The code that gives u and the base back the registers they are kept in between pieces, as leaving a piece
+/// that keeps them elsewhere makes it: the guest values of [`CHECK`] and [`BASE`] stored (`stores`), then, once
+/// they are released, the base moved back and the registers the piece kept them in loaded (`rest`).
+fn leave_words(way: Way) -> (Vec<u32>, Vec<u32>) {
+    let moved = moved_kept(way);
+    let at = |k: usize, r: Register| kept_slot(k, r);
+    let stores = (moved.iter().enumerate())
+        .filter_map(|(k, m)| m.map(|(usual, _)| store_page(usual, at(k, usual))))
+        .collect();
+    let mut rest = Vec::new();
+    if let [_, Some((usual, to))] = moved {
+        rest.push(encode::move_register(usual, to));
+    }
+    rest.extend(
+        (moved.iter().enumerate()).filter_map(|(k, m)| m.map(|(_, to)| load_page(to, at(k, to)))),
+    );
+    (stores, rest)
+}
+
+/// Releases the kept guest values of [`CHECK`] and [`BASE`] for the rest of the instruction, once stored.
+fn release_kept(way: Way, code: &mut HostCode) {
+    for &(usual, _) in moved_kept(way).iter().flatten() {
+        code.release(usual);
+    }
+}
+
+/// [`leave_words`] written, the way between pieces from then on.
+fn leave(out: &mut Out) {
+    let (stores, rest) = leave_words(out.way);
+    out.put_all(&stores);
+    release_kept(out.way, out.code);
+    out.put_all(&rest);
+    out.way = out.way.usual();
 }
 
 fn saved_slot(index: usize) -> u64 {
@@ -536,7 +637,7 @@ pub(crate) fn carry(
         }
     }
     // Each other withheld register named moves alone (a `casp`'s base among them).
-    for &w in withheld {
+    for &w in withheld.iter() {
         if named(w) && !groups.iter().any(|g| g.contains(&w)) {
             groups.push(vec![w]);
         }
@@ -842,16 +943,17 @@ fn access(
 }
 
 /// `add rd, base, wA, uxtw`: guest address `a` cut to the window, as its host address (in process).
-fn window_address(rd: Register, a: Register) -> u32 {
-    encode::add_extended(false, rd, BASE, a, false, u32::BITS, 0).expect("registers fit")
+fn window_address(way: Way, rd: Register, a: Register) -> u32 {
+    encode::add_extended(false, rd, way.base(), a, false, u32::BITS, 0).expect("registers fit")
 }
 
 /// The mark read out of line where a guest address is outside its window (in process, [`MARK`](crate::way::MARK)), then a word
 /// never reached.
-fn outside_words() -> Vec<u32> {
+fn outside_words(way: Way) -> Vec<u32> {
     vec![
-        encode::eor_immediate(CHECK, BASE, OUTSIDE).expect("one bit is a logical immediate"),
-        encode::load_store(form::LDRB, ZERO, CHECK, MARK_OFFSET, 1).expect("fits"),
+        encode::eor_immediate(way.check(), way.base(), OUTSIDE)
+            .expect("one bit is a logical immediate"),
+        encode::load_store(form::LDRB, ZERO, way.check(), MARK_OFFSET, 1).expect("fits"),
         encode::exception(form::UDF, 0),
     ]
 }
@@ -859,24 +961,32 @@ fn outside_words() -> Vec<u32> {
 /// The window check of guest address `a` (in process, section 3.2): any bit of it from the window's top up to its
 /// top byte, which Linux's Top Byte Ignore leaves out, sends it to the mark. No flags are touched.
 fn window_check(out: &mut Out, a: Register) {
-    out.put(encode::ubfx(CHECK, a, WINDOW_BITS, TAG_LOW - WINDOW_BITS));
-    out.tail(encode::compare_branch(true, CHECK, 0).expect("fits"), |t| {
-        t.words = outside_words()
-    });
+    let way = out.way;
+    out.put(encode::ubfx(
+        way.check(),
+        a,
+        WINDOW_BITS,
+        TAG_LOW - WINDOW_BITS,
+    ));
+    out.tail(
+        encode::compare_branch(true, way.check(), 0).expect("fits"),
+        |t| t.words = outside_words(way),
+    );
 }
 
 /// The check of a new stack pointer's guest value in u (rule d of section 3.2): every bit above the window,
 /// the top byte's too, sends it to the mark, where the floor takes it outside its window.
 fn stack_check(out: &mut Out) {
+    let way = out.way;
     out.put(encode::ubfx(
         SCRATCH,
-        CHECK,
+        way.check(),
         WINDOW_BITS,
         u64::BITS - WINDOW_BITS,
     ));
     out.tail(
         encode::compare_branch(true, SCRATCH, 0).expect("fits"),
-        |t| t.words = outside_words(),
+        |t| t.words = outside_words(way),
     );
 }
 
@@ -885,7 +995,8 @@ fn guest_stack(way: Way, rd: Register) -> u32 {
     if displaced(way) {
         encode::add_immediate(rd, ZERO, 0).expect("zero fits")
     } else {
-        encode::add_extended(true, rd, ZERO, BASE, false, u64::BITS, 0).expect("registers fit")
+        encode::add_extended(true, rd, ZERO, way.base(), false, u64::BITS, 0)
+            .expect("registers fit")
     }
 }
 
@@ -1062,12 +1173,13 @@ fn access_in_window(
     };
     if let Some(align) = align.filter(|&a| a > 1) {
         out.put(
-            encode::and_immediate(CHECK, a, u64::from(align) - 1)
+            encode::and_immediate(out.way.check(), a, u64::from(align) - 1)
                 .expect("a power of two less one is a logical immediate"),
         );
-        out.tail(encode::compare_branch(true, CHECK, 0).expect("fits"), |t| {
-            t.call = Some(InsideCall::Misaligned)
-        });
+        out.tail(
+            encode::compare_branch(true, out.way.check(), 0).expect("fits"),
+            |t| t.call = Some(InsideCall::Misaligned),
+        );
     }
     window_check(out, a);
     let tested_before =
@@ -1076,28 +1188,29 @@ fn access_in_window(
     let cut = cuttable
         .filter(|_| !page_test)
         .and_then(|word| match m.address {
-            Address::Indexed { .. } => {
-                Some(encode::register_offset_uxtw(word, BASE, a).expect("a register-offset access"))
-            }
-            _ => encode::register_offset_at_base(word, BASE, a).ok(),
+            Address::Indexed { .. } => Some(
+                encode::register_offset_uxtw(word, out.way.base(), a)
+                    .expect("a register-offset access"),
+            ),
+            _ => encode::register_offset_at_base(word, out.way.base(), a).ok(),
         });
     if cut.is_none() {
-        out.put(window_address(SCRATCH, a));
+        out.put(window_address(out.way, SCRATCH, a));
     }
     if page_test {
         let at = Address::Offset {
             base: Reg::X(SCRATCH),
             offset,
         };
-        page_crossing(out, m, one_element, &at, CHECK);
+        page_crossing(out, m, one_element, &at, out.way.check());
     }
     let written_back = match (m.address, post) {
         (_, Some(n)) => Some(
-            encode::add_extended(false, CHECK, number(base), n, false, u64::BITS, 0)
+            encode::add_extended(false, out.way.check(), number(base), n, false, u64::BITS, 0)
                 .expect("registers fit"),
         ),
         (Address::PreIndex { offset, .. } | Address::PostIndex { offset, .. }, None) => {
-            Some(encode::add_immediate(CHECK, number(base), offset).expect("a step fits"))
+            Some(encode::add_immediate(out.way.check(), number(base), offset).expect("a step fits"))
         }
         _ => None,
     };
@@ -1114,9 +1227,9 @@ fn access_in_window(
     if written_back.is_some() {
         out.code.fixup(Fixup::Move {
             register: number(base),
-            from: CHECK,
+            from: out.way.check(),
         });
-        out.put(write_back(base, CHECK));
+        out.put(write_back(base, out.way.check()));
         out.code.fixed();
     }
 }
@@ -1126,14 +1239,23 @@ fn access_in_window(
 fn stack_post_register(out: &mut Out, m: &MemoryAccess, n: Register, word: u32) {
     stack_alignment(out);
     if m.bytes > 1 {
-        page_crossing(out, m, false, &m.address, CHECK);
+        page_crossing(out, m, false, &m.address, out.way.check());
     }
-    out.put(guest_stack(out.way, CHECK));
+    out.put(guest_stack(out.way, out.way.check()));
     out.put(
-        encode::add_extended(false, CHECK, CHECK, n, false, u64::BITS, 0).expect("registers fit"),
+        encode::add_extended(
+            false,
+            out.way.check(),
+            out.way.check(),
+            n,
+            false,
+            u64::BITS,
+            0,
+        )
+        .expect("registers fit"),
     );
     stack_check(out);
-    out.put(window_address(CHECK, CHECK));
+    out.put(window_address(out.way, out.way.check(), out.way.check()));
     out.put(encode::add_immediate(SCRATCH, ZERO, 0).expect("zero fits"));
     let next = out.next();
     out.commit(
@@ -1142,9 +1264,9 @@ fn stack_post_register(out: &mut Out, m: &MemoryAccess, n: Register, word: u32) 
     );
     out.code.fixup(Fixup::Move {
         register: ZERO,
-        from: CHECK,
+        from: out.way.check(),
     });
-    out.put(encode::add_immediate(ZERO, CHECK, 0).expect("zero fits"));
+    out.put(encode::add_immediate(ZERO, out.way.check(), 0).expect("zero fits"));
     out.code.fixed();
 }
 
@@ -1206,10 +1328,19 @@ fn stack_pointer_in_process(out: &mut Out, i: &I, word: u32) -> bool {
         return true;
     }
     let w = reads(out, word);
-    out.put(encode::replace(w, field::RD, CHECK.into()).expect("a register fits"));
+    out.put(encode::replace(w, field::RD, out.way.check().into()).expect("a register fits"));
     stack_check(out);
     out.commit(
-        encode::add_extended(false, ZERO, BASE, CHECK, false, u32::BITS, 0).expect("registers fit"),
+        encode::add_extended(
+            false,
+            ZERO,
+            out.way.base(),
+            out.way.check(),
+            false,
+            u32::BITS,
+            0,
+        )
+        .expect("registers fit"),
         next,
     );
     true
@@ -1219,7 +1350,7 @@ fn stack_pointer_in_process(out: &mut Out, i: &I, word: u32) -> bool {
 fn by_address_in_process(out: &mut Out, rn: Reg, word: u32) {
     let a = number(rn);
     window_check(out, a);
-    out.put(window_address(SCRATCH, a));
+    out.put(window_address(out.way, SCRATCH, a));
     let next = out.next();
     out.commit(
         encode::replace(word, field::RT, SCRATCH.into()).expect("a register fits"),
@@ -1424,7 +1555,7 @@ fn rebase(out: &mut Out, i: &I) {
     let in_process = matches!(out.way, Way::InProcess { .. });
     // In process a literal outside the window faults as the guest's load would; this is known here.
     if in_process && target >> WINDOW_BITS != 0 {
-        out.put_all(&outside_words());
+        out.put_all(&outside_words(out.way));
         return;
     }
     for (part, word) in address_words(SCRATCH, target, Holds::Address)
@@ -1435,7 +1566,7 @@ fn rebase(out: &mut Out, i: &I) {
         out.put(word);
     }
     if in_process {
-        out.put(window_address(SCRATCH, SCRATCH));
+        out.put(window_address(out.way, SCRATCH, SCRATCH));
     }
     // Whether the access crosses a page is known here, from the guest address.
     let last = u64::from(bytes) - 1;
@@ -1465,15 +1596,36 @@ pub(crate) fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Re
     };
     let moves = address_words(SCRATCH, target, slot);
     let lead = code.lead_after_commit();
+    let start = code.offset();
+    // The exit's first word, which a loader or linking within the code links, is still to be written.
+    let mut first = true;
+    let word = |code: &mut HostCode, first: &mut bool, w: u32| {
+        if std::mem::take(first) {
+            code.exit(&w.to_le_bytes(), target, commit);
+        } else {
+            code.push(&w.to_le_bytes());
+        }
+    };
     if lead > 0 {
         let settle = encode::add_immediate(COUNT, COUNT, -i64::from(lead)).expect("a lead fits");
         code.settling_exit(&settle.to_le_bytes(), target, commit);
-        note_place(code, SCRATCH, target, slot, 0);
-        code.push(&moves[0].to_le_bytes());
-    } else {
-        note_place(code, SCRATCH, target, slot, 0);
-        code.exit(&moves[0].to_le_bytes(), target, commit);
+        first = false;
     }
+    // Leaving a piece that keeps u or the base elsewhere gives them back their usual registers first.
+    let settled = code.offset();
+    let (stores, rest) = leave_words(way);
+    for w in stores {
+        word(code, &mut first, w);
+    }
+    release_kept(way, code);
+    for w in rest {
+        code.push(&w.to_le_bytes());
+    }
+    if code.offset() > settled {
+        code.leaving(start, code.offset() - settled);
+    }
+    note_place(code, SCRATCH, target, slot, 0);
+    word(code, &mut first, moves[0]);
     for (part, w) in moves.iter().enumerate().skip(1) {
         note_place(code, SCRATCH, target, slot, part);
         code.push(&w.to_le_bytes());
@@ -1604,6 +1756,10 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             if target >> out.way.reach_bits() == 0 {
                 let back = encode::retarget(word, -(INSTRUCTION as i64)).expect("a branch");
                 out.code.branch_exit(taken, target, unlinked ^ back, None);
+                // Another piece is entered through the exit, which gives u and the base back their registers.
+                if out.way.moves_kept() {
+                    out.code.local(taken);
+                }
             }
             // The taken side's exit goes out of line; the run goes on at the next instruction.
             let state = out.code.snapshot();
@@ -1627,6 +1783,10 @@ pub const LINK: Register = 30;
 
 /// A jump through a register to the entry slot of its target (section 3.2).
 fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
+    // Its last target's branch and its slot are entered as from outside a piece.
+    if out.way.moves_kept() {
+        leave(out);
+    }
     let n = number(rn);
     let way = out.way;
     let withheld = way.withheld().contains(&n);
@@ -1670,7 +1830,7 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         Way::InProcess {
             displaced: false, ..
         } => {
-            out.put(window_address(SCRATCH, source));
+            out.put(window_address(out.way, SCRATCH, source));
             (SCRATCH, PROCESS_REACH_BITS, PROCESS_SLOTS)
         }
         _ => (source, reach, way.slot_table()),
@@ -1798,8 +1958,9 @@ pub(crate) fn known_jump(
     let Some((n, e, table)) = known_targets(way, before, i) else {
         return false;
     };
-    // The table's branches are exits, which leave with the count the guest's.
-    if code.lead_after_commit() != 0 {
+    // The table's branches are exits, which leave with the count the guest's and u and the base in their usual
+    // registers.
+    if code.lead_after_commit() != 0 || way.moves_kept() {
         return false;
     }
     let word = INSTRUCTION as i64;
@@ -1980,22 +2141,24 @@ fn exclusive(out: &mut Out, i: &I) {
             if in_process {
                 if rn != Reg::Sp && total > 1 {
                     out.put(
-                        encode::and_immediate(CHECK, number(rn), u64::from(total) - 1)
+                        encode::and_immediate(out.way.check(), number(rn), u64::from(total) - 1)
                             .expect("a power of two less one"),
                     );
-                    out.tail(encode::compare_branch(true, CHECK, 0).expect("fits"), |t| {
-                        t.call = Some(InsideCall::Misaligned)
-                    });
+                    out.tail(
+                        encode::compare_branch(true, out.way.check(), 0).expect("fits"),
+                        |t| t.call = Some(InsideCall::Misaligned),
+                    );
                 }
                 out.put_all(&untag);
                 window_check(out, SCRATCH);
-                out.put(window_address(CHECK, SCRATCH));
-                let load = encode::replace(load, field::RN, CHECK.into()).expect("a register fits");
+                out.put(window_address(out.way, out.way.check(), SCRATCH));
+                let load = encode::replace(load, field::RN, out.way.check().into())
+                    .expect("a register fits");
                 out.commit(load, next);
             } else {
                 access(out, &m, false, Some(total), &untag, load);
             }
-            let host = if in_process { CHECK } else { SCRATCH };
+            let host = if in_process { out.way.check() } else { SCRATCH };
             let remember = |address| Fixup::Remember {
                 bytes,
                 pair,
@@ -2060,17 +2223,17 @@ fn exclusive(out: &mut Out, i: &I) {
                     stack_alignment(out);
                     out.put(guest_stack(out.way, SCRATCH));
                     window_check(out, SCRATCH);
-                    out.put(window_address(CHECK, SCRATCH));
-                    (number(rn), CHECK)
+                    out.put(window_address(out.way, out.way.check(), SCRATCH));
+                    (number(rn), out.way.check())
                 }
                 (true, Reg::Sp) => {
-                    out.put(guest_stack(out.way, CHECK));
-                    (CHECK, number(rn))
+                    out.put(guest_stack(out.way, out.way.check()));
+                    (out.way.check(), number(rn))
                 }
                 (true, _) => {
                     window_check(out, number(rn));
-                    out.put(window_address(CHECK, number(rn)));
-                    (number(rn), CHECK)
+                    out.put(window_address(out.way, out.way.check(), number(rn)));
+                    (number(rn), out.way.check())
                 }
             };
             // Remembered for this size and address?

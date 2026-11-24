@@ -2,8 +2,8 @@
 //! it (docs/native.md section 4, docs/native-without-virtual-machine.md section 3.3): the span holding the host
 //! instruction, the relocations put back, the fix-ups made, the count less its lead, and the calls into the
 //! inside answered. In process (section 3.2 item 1) the guest's stack pointer is the host's less the window's base and
-//! the guest values of the way's two more withheld registers are the words just after the register page:
-//! [`in_process`] takes them.
+//! the guest values of the way's two more withheld registers, and of the two a piece keeps in their place, are the
+//! words just after the register page: [`in_process`] takes them.
 
 #![no_std]
 
@@ -18,7 +18,7 @@ use wcontainers_arm64::thread_state::{
     COUNT, Exclusive, FPCR_BITS, FPSR_BITS, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW,
     WITHHELD, untag_address,
 };
-use wcontainers_arm64::way::{BASE, IN_PROCESS_WITHHELD_AT};
+use wcontainers_arm64::way::{AFTER_PAGE_WORDS, BASE, IN_PROCESS_WITHHELD_AT};
 use wcontainers_guest_cpu::position::{
     Base, Fixup, Held, InsideCall, Operand, Relocated, Resume, Side, Span, Stopping, span_at,
 };
@@ -29,16 +29,11 @@ pub const GENERAL: usize = RegisterBlock::ZERO.x.len();
 /// The general register a system call's number is in (Linux's ARM64 calling convention).
 pub const SYSCALL_NUMBER: usize = 8;
 
-/// The in-process way's withheld registers past the other ways' three, whose guest values are just after the page.
-pub const AFTER_PAGE: usize = Way::InProcess {
-    slot: 0,
-    displaced: false,
-}
-.withheld()
-.len()
-    - WITHHELD.len();
+/// The words after the register page in process: the guest values of the in-process way's withheld registers past
+/// the other ways' three, in the way's order, then of the two a piece keeps in their place.
+pub const AFTER_PAGE: usize = AFTER_PAGE_WORDS;
 
-/// The guest values of the in-process way's withheld registers past the other ways' three, in the way's order.
+/// The words after the register page in process.
 pub type AfterPage = [u64; AFTER_PAGE];
 
 /// What the ways whose withheld registers are all in the page keep after it: nothing.
@@ -201,21 +196,61 @@ pub struct Piece<'a> {
 /// are all in the page.
 pub fn set_register(register: u8, value: u64, hardware: &mut Interrupted, page: &mut RegisterPage) {
     let mut after = NOTHING_AFTER;
-    set_in(Way::Machine, register, value, hardware, page, &mut after);
+    set_in(
+        Way::Machine,
+        &[],
+        register,
+        value,
+        hardware,
+        page,
+        &mut after,
+    );
 }
 
 fn set_in(
     way: Way,
+    relocated: &[Relocated],
     register: u8,
     value: u64,
     hardware: &mut Interrupted,
     page: &mut RegisterPage,
     after: &mut AfterPage,
 ) {
+    if let Some(r) = relocated.iter().find(|r| r.guest == register) {
+        match r.held {
+            Held::Register(h) => hardware.x[usize::from(h)] = value,
+            Held::Page(offset) => *held_page_mut(offset, page, after) = value,
+            Held::Rebased(_) => unreachable!("arm64 translated code rebases no register"),
+        }
+        return;
+    }
     match way.withheld().iter().position(|&w| w == register) {
         Some(k) => *withheld_mut(k, page, after) = value,
         None => hardware.x[usize::from(register)] = value,
     }
+}
+
+/// The word a guest value is held in at a byte offset of the register page or past it.
+fn held_page_mut<'a>(
+    offset: u16,
+    page: &'a mut RegisterPage,
+    after: &'a mut AfterPage,
+) -> &'a mut u64 {
+    if let Some(past) = usize::from(offset).checked_sub(IN_PROCESS_WITHHELD_AT) {
+        return &mut after[past / size_of::<u64>()];
+    }
+    let RegisterPage {
+        withheld,
+        saved,
+        link,
+        ..
+    } = page;
+    withheld
+        .iter_mut()
+        .chain(saved)
+        .chain(core::iter::once(link))
+        .nth(usize::from(offset) / size_of::<u64>())
+        .expect("a held guest value is a word before the exclusive monitor")
 }
 
 /// The guest value of the way's `k`th withheld register.
@@ -711,7 +746,7 @@ pub mod in_process {
     use wcontainers_arm64::Way;
     use wcontainers_arm64::thread_state::{RegisterPage, TAG_LOW, untag_address};
     use wcontainers_arm64::way::{MARK, WINDOW_BITS};
-    use wcontainers_guest_cpu::position::{Operand, Side, Stopping, span_at};
+    use wcontainers_guest_cpu::position::{Operand, Side, Span, Stopping, span_at};
 
     /// The most bytes a stack probe reads below the stack pointer (rule c's `ldur wzr, [sp, #-4]`).
     const PROBE_BELOW: u64 = size_of::<u32>() as u64;
@@ -823,15 +858,17 @@ pub mod in_process {
         rejoin_in(way, state, page, float, register_page)
     }
 
-    /// [`super::set_register`] for an in-process way, with `after` the words after the register page.
+    /// [`super::set_register`] for an in-process way, at a stop in `span`, with `after` the words after the register
+    /// page: a piece may keep a guest value elsewhere.
     pub fn set_register(
         way: Way,
+        span: &Span,
         register: u8,
         value: u64,
         hardware: &mut Interrupted,
         page: &mut RegisterPage,
         after: &mut AfterPage,
     ) {
-        set_in(way, register, value, hardware, page, after);
+        set_in(way, &span.relocated, register, value, hardware, page, after);
     }
 }
