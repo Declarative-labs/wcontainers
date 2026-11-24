@@ -106,6 +106,8 @@ pub struct Program<'a> {
     /// The container's ceiling and the memory size it is told, the same for every executor compared; where none, the
     /// executor's own ceiling is both.
     pub limit: Option<u64>,
+    /// When set, every turn ends after this many counted events, in place of the seeded schedule's limit.
+    pub turn_events: Option<u64>,
 }
 
 /// How a container's run ended: its first process's wait status, its output, its root's files and the policy's turns.
@@ -128,7 +130,9 @@ pub fn run_container<E: Execution<Failure = core::convert::Infallible>>(
         output: Mutex::default(),
         random: Mutex::new(fastrand::Rng::with_seed(seed)),
     };
-    let policy = Arc::new(TestPolicy::new(recording, seed, wall_start));
+    let mut policy = TestPolicy::new(recording, seed, wall_start);
+    policy.turn_events = program.turn_events;
+    let policy = Arc::new(policy);
     let memory_bytes = program.limit.unwrap_or(cpu.address_space().end);
     let start = Start {
         path: program.path,

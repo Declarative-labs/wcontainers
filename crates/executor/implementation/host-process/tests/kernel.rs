@@ -56,10 +56,11 @@ struct Outcome {
 }
 
 /// Runs the static program `image` at the root of a container, with `arguments`, on `cpu`, with `limit` as the
-/// container's ceiling and memory size.
+/// container's ceiling and memory size, every turn ending after `turn_events` counted events where that is given.
 fn run<E: Execution<Failure = core::convert::Infallible>>(
     cpu: &mut E,
     limit: u64,
+    turn_events: Option<u64>,
     seed: u64,
     name: &str,
     image: &[u8],
@@ -89,6 +90,7 @@ fn run<E: Execution<Failure = core::convert::Infallible>>(
         hostname: b"wcontainers",
         groups: &[],
         limit: Some(limit),
+        turn_events,
     };
     let ran = run_container(cpu, kernel, seed, REALTIME_NANOSECONDS, &program);
     assert!(
@@ -145,8 +147,24 @@ fn both(
     let limit = web_assembly().address_space().end;
     let mut first = None;
     for seed in seeds() {
-        let ours = run(&mut host_process(), limit, seed, name, &image, arguments);
-        let theirs = run(&mut web_assembly(), limit, seed, name, &image, arguments);
+        let ours = run(
+            &mut host_process(),
+            limit,
+            None,
+            seed,
+            name,
+            &image,
+            arguments,
+        );
+        let theirs = run(
+            &mut web_assembly(),
+            limit,
+            None,
+            seed,
+            name,
+            &image,
+            arguments,
+        );
         let whole = |outcome: &Outcome| {
             (
                 outcome.status,
@@ -254,4 +272,47 @@ fn addresses_memory_size_and_mappings_are_the_web_assembly_output_s() {
     assert_eq!(outcome.status, 0, "{stdout}");
     assert!(stdout.contains("[stack]"), "{stdout}");
     print!("{stdout}");
+}
+
+/// Runs the program under form P with a stop after every counted event: its wait status, output and root files are
+/// those of the run without (the outcome given), which took fewer turns.
+fn every_event(directory: &str, name: &str, arguments: &[&str], without: &Outcome) {
+    let image = compile(directory, name, true);
+    let limit = web_assembly().address_space().end;
+    for seed in seeds() {
+        let every = run(
+            &mut host_process(),
+            limit,
+            Some(1),
+            seed,
+            name,
+            &image,
+            arguments,
+        );
+        assert_eq!(
+            (every.status, &every.output, &every.files),
+            (without.status, &without.output, &without.files),
+            "{name} seed {seed}: a stop at every counted event changed the run"
+        );
+        assert!(
+            every.turns > without.turns,
+            "{name} seed {seed}: {} turns with a stop at every counted event, {} without",
+            every.turns,
+            without.turns
+        );
+        println!(
+            "{name} seed {seed}: a stop at every counted event, {} turns, changed nothing",
+            every.turns
+        );
+    }
+}
+
+#[test]
+fn a_stop_at_every_counted_event_changes_nothing() {
+    let jump_tables = both(VM_GUEST, "jumptables", true, &[], Agree::Whole);
+    every_event(VM_GUEST, "jumptables", &[], &jump_tables);
+    let layout = both(OWN_GUEST, "layout", true, &[], Agree::Alone);
+    every_event(OWN_GUEST, "layout", &[], &layout);
+    let forks = both(VM_GUEST, "forks", true, &[], Agree::Whole);
+    every_event(VM_GUEST, "forks", &[], &forks);
 }

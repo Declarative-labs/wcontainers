@@ -81,6 +81,7 @@ fn ours(
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
         limit: None,
+        turn_events: None,
     };
     let ran = run_container(&mut host_process(), kernel, seed, wall_start, &program);
     (

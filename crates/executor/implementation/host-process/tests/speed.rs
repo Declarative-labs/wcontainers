@@ -469,6 +469,7 @@ fn in_kernel<E: Execution<Failure = core::convert::Infallible>>(
         hostname: b"wcontainers",
         groups: &[],
         limit: None,
+        turn_events: None,
     };
     let ran = run_container(cpu, kernel, 1, REALTIME_NANOSECONDS, &program);
     assert!(
@@ -575,6 +576,7 @@ fn busybox_sh_starting_programs() {
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
         limit: None,
+        turn_events: None,
     };
     let mut cpu = HostProcessExecutor::new(host());
     let mut runs = Vec::new();
