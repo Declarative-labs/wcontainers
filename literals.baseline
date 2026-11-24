@@ -12327,7 +12327,6 @@ code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storag
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storage_3d"
 code	crates/wcontainers-shaders/src/cache.rs	str	<LoadError as core::fmt::Display>::fmt	"not a cache file"
 code	crates/wcontainers-shaders/src/cache.rs	str	Cache::insert_raw	"a cache payload under 4 GiB"
-code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of another class"
 code	crates/wcontainers-shaders/src/dxil.rs	str	draw_bases	"shader"
@@ -12336,7 +12335,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftou"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"x"
 code	crates/wcontainers-shaders/src/dxil.rs	str	helper_invocations	"coverage"
 code	crates/wcontainers-shaders/src/dxil.rs	str	lower	"no entry point"
-code	crates/wcontainers-shaders/src/dxil.rs	str	reason	"dxil-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"no entry point"
 code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"the sample mask stays an array"
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	components	3
@@ -23087,7 +23085,6 @@ role	crates/wcontainers-graphics-test/src/bin/gt-run.rs	int	main	2
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	1
 role	crates/wcontainers-graphics-test/src/d3d12/scenes.rs	int	queues	2
 role	crates/wcontainers-shaders/src/dxbc.rs	int	to_ir	0
-role	crates/wcontainers-shaders/src/dxil.rs	int	to_spirv	0
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	0
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	1
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	2
