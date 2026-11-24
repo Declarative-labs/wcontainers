@@ -1,6 +1,7 @@
 //! The conformance suite on the host implementation, each test in a network namespace of its own thread.
 #![cfg(target_os = "linux")]
 
+use core::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
@@ -290,12 +291,12 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
         )
         .unwrap();
     let mut into = vec![u8::MIN; usize::from(u16::MAX)];
-    match sockets.receive(&socket, &mut into) {
+    match sockets.receive(&socket, &RefCell::new(&mut into[..])) {
         Ok(UdpReceived::TransmitReport(report)) => assert_eq!(report.key, key),
         other => panic!("the report first, not {other:?}"),
     }
     assert!(matches!(
-        sockets.receive(&socket, &mut into),
+        sockets.receive(&socket, &RefCell::new(&mut into[..])),
         Ok(UdpReceived::Packet(_))
     ));
 }

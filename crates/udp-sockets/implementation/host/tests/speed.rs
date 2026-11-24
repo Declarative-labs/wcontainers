@@ -1,6 +1,7 @@
 //! What one send and one receive of a small datagram over loopback take: run with `--ignored --nocapture`.
 #![cfg(target_os = "linux")]
 
+use core::cell::RefCell;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -109,7 +110,7 @@ fn a_send_and_a_receive_take() {
         let start = Instant::now();
         let mut received = 0;
         while received < BATCH {
-            match sockets.receive(&receiver, &mut into) {
+            match sockets.receive(&receiver, &RefCell::new(&mut into[..])) {
                 Ok(_) => received += 1,
                 Err(HostError::WouldBlock) => {}
                 Err(error) => panic!("receive: {error:?}"),

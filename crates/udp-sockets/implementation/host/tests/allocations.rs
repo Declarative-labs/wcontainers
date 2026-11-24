@@ -3,6 +3,7 @@
 
 mod support;
 
+use core::cell::RefCell;
 use std::alloc::System;
 use std::sync::Arc;
 
@@ -49,13 +50,13 @@ fn a_warm_wait_and_a_receive_that_would_block_allocate_nothing() {
     );
 
     assert_eq!(
-        sockets.receive(&socket, &mut into),
+        sockets.receive(&socket, &RefCell::new(&mut into[..])),
         Err(HostError::WouldBlock)
     );
     let before = allocations();
     for _ in 0..DATAGRAMS {
         assert_eq!(
-            sockets.receive(&socket, &mut into),
+            sockets.receive(&socket, &RefCell::new(&mut into[..])),
             Err(HostError::WouldBlock)
         );
     }

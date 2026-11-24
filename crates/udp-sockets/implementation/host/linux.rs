@@ -11,6 +11,7 @@ use linux_raw_sys::net as uapi;
 use rustix::net::SocketType;
 use socket2::SockAddr;
 use wcontainers_abi::{CounterReading, HostError};
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BindAddress, BindingSetting, BufferSizes, ByteCount, IpHeaderFields, IpSendFields,
@@ -25,6 +26,7 @@ use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpChecksum, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived,
     UdpReceivedPacket, UdpSocketSetting, UdpSockets, ZeroChecksumReceipt,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use shared::datagram::addresses::{for_family, local_address, unmapped};
 use shared::datagram::exchange::{ErrorQueue, send_message};
@@ -354,6 +356,30 @@ impl HostUdpSocket {
     }
 }
 
+/// One receive on a socket, made when the bytes received into read it, keeping the packet or report it gave.
+struct Receiving<'a> {
+    sockets: &'a HostUdpSockets,
+    socket: &'a HostUdpSocket,
+    state: &'a mut SocketState,
+    received: Option<UdpReceived>,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        let received = self.sockets.receive_now(self.socket, self.state, into)?;
+        self.received = Some(received);
+        let given = match received {
+            UdpReceived::Packet(packet) => packet.fields.length,
+            UdpReceived::TransmitReport(report) => {
+                report.packet_length.map_or(usize::MIN, |length| length.0)
+            }
+        };
+        Ok(given.min(into.len()))
+    }
+}
+
 fn connect(fd: BorrowedFd<'_>, peer: SocketAddr) -> Result<(), HostError> {
     sock(&fd)
         .connect(&SockAddr::from(peer))
@@ -528,11 +554,24 @@ impl UdpSockets for HostUdpSockets {
         sent
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError> {
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError> {
         let mut state = socket.state.borrow_mut();
-        let received = self.receive_now(socket, &mut state, into);
+        let mut receiving = Receiving {
+            sockets: self,
+            socket,
+            state: &mut state,
+            received: None,
+        };
+        let read = into.write_from(&mut receiving);
+        let received = receiving.received;
         socket.note_kept_entries(&mut state);
-        received
+        read?;
+        // Bytes that never read their source were given nothing.
+        received.ok_or(HostError::Errno(libc::EFAULT))
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {

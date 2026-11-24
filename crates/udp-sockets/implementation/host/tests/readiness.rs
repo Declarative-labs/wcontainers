@@ -3,6 +3,7 @@
 
 mod support;
 
+use core::cell::RefCell;
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -84,7 +85,7 @@ fn a_socket_nobody_waits_on_costs_the_watcher_nothing() {
     let before = watcher_wakes();
     for _ in 0..DATAGRAMS {
         sender.send(PAYLOAD).expect("send");
-        while sockets.receive(&socket, &mut into) == Err(HostError::WouldBlock) {
+        while sockets.receive(&socket, &RefCell::new(&mut into[..])) == Err(HostError::WouldBlock) {
             std::thread::yield_now();
         }
     }
@@ -103,7 +104,7 @@ fn a_socket_nobody_waits_on_costs_the_watcher_nothing() {
     let before = watcher_wakes();
     for _ in 0..DATAGRAMS {
         sender.send(PAYLOAD).expect("send");
-        while sockets.receive(&socket, &mut into) == Err(HostError::WouldBlock) {
+        while sockets.receive(&socket, &RefCell::new(&mut into[..])) == Err(HostError::WouldBlock) {
             std::thread::yield_now();
         }
     }

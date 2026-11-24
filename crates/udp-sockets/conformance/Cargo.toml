@@ -9,6 +9,9 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-udp-sockets = { path = ".." }
+wcontainers-byte-sink = { path = "../../byte-sink" }
+wcontainers-byte-source = { path = "../../byte-source" }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true

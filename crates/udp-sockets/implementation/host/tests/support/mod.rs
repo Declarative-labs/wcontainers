@@ -1,5 +1,6 @@
 //! A host socket with a plain sender on loopback, and waits on it that count their wakes.
 
+use core::cell::RefCell;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::pin::{Pin, pin};
@@ -88,5 +89,5 @@ pub fn wait_and_take(
         Poll::Ready(Ok(events)) => assert!(events.ready_for.contains(ReadyFor::READABLE)),
         other => panic!("the wait did not finish: {other:?}"),
     }
-    assert!(sockets.receive(socket, into).is_ok());
+    assert!(sockets.receive(socket, &RefCell::new(&mut *into)).is_ok());
 }
