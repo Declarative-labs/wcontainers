@@ -2425,11 +2425,13 @@ Direct3D 11:
   `SV_InstanceID` with non-zero bases (`DrawBaseInHelpers`, `DrawBaseFromArguments`), alpha-antialiased
   lines (`AntialiasedLinesAsQuads`). Multisampling: the counts the adapter allows, reported per format
   (4.12). Typed UAV loads of more formats follow `FormatCaps` storage read.
-- **WebGL 2: feature level 10_0**, when the device has 8 color targets, 8192-texel 2D and cube
-  textures, 2048 3D extent and 512 array layers, and EXT_color_buffer_float (GLES 3.0 guarantees only
-  2048, 2048, 256 and 256, and no float targets;
-  this Mac's Chrome gives 16384, 16384, 2048 and 2048); otherwise 9_3 (4096 2D and cube, 256 3D, 4
-  targets), otherwise 9_1. BC1 to BC5, 16 input slots and 14 constant buffers as above. `resinfo` and
+- **WebGL 2: feature level 9_3** (4096 2D and cube, 256 3D, 4 targets), otherwise 9_1. 10_0 reads
+  128 shader resource views a stage, and a WebGL 2 stage reads `MAX_TEXTURE_IMAGE_UNITS` textures (16
+  on ANGLE, the specification's least) with no other way to read texels, so 10_0 waits on views
+  past the units being read from textures they are copied into (not built). With that, 10_0 when
+  the device has 8 color targets, 8192-texel 2D and cube textures, 2048 3D extent and 512 array
+  layers, and EXT_color_buffer_float (GLES 3.0 guarantees only 2048, 2048, 256 and 256, and no float
+  targets; this Mac's Chrome gives 16384, 16384, 2048 and 2048), as follows. BC1 to BC5, 16 input slots and 14 constant buffers as above. `resinfo` and
   `sampleinfo` (shader model 4.0) by `TextureInfoInHelpers` (4.12). Compute is optional at 10_x and reported absent
   (`ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x` FALSE). Copies between multisampled
   textures: `MultisampleCopyResolved` (a listed loss, 4.12). Multisampling is optional for
@@ -2484,7 +2486,7 @@ the infrastructure crate and both back ends, and is where `B` is chosen):
   the stencil rule of 4.11) on a context that would not enforce them, and it reads ANGLE's `GL_`
   extension names for the WebGL ones it would read in Chrome (`GL_EXT_clip_control` for
   `EXT_clip_control`, and so on, one table in the back end). It reports the same `Caps` the browser
-  would on that GPU, so the Direct3D 11 front reports 10_0 as it does in Chrome. This is how G3 and G4
+  would on that GPU, so the Direct3D 11 front reports the level it does in Chrome. This is how G3 and G4
   run their Direct3D 11 tests on WebGL 2 against real Direct3D on the same GPU; what WebGL adds over
   GLES 3.0 (its validation) is then covered by the same back end's tests in Chrome (G3).
 - **Container modules.** The same crate built for `wasm32-unknown-unknown` once per back end:
