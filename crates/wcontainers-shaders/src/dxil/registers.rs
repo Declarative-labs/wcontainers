@@ -82,6 +82,9 @@ fn element_of(module: &Module, ty: Handle<Type>) -> Result<(Handle<Type>, u32), 
     }
 }
 
+/// Why a stage value is refused whose components pass its register's last.
+const PAST_REGISTER: &str = "a stage value past its register's last component";
+
 /// Refuses a value whose components from `component` pass its register's last.
 fn within_register(
     module: &Module,
@@ -90,9 +93,7 @@ fn within_register(
 ) -> Result<(), ConvertError> {
     match component + shape(module, element).1 <= COMPONENTS {
         true => Ok(()),
-        false => Err(ConvertError::Malformed(
-            "a stage value past its register's last component".into(),
-        )),
+        false => Err(ConvertError::Malformed(PAST_REGISTER.into())),
     }
 }
 
@@ -550,5 +551,33 @@ fn zero(s: Scalar) -> Literal {
         ScalarKind::Float => Literal::F32(0.0),
         ScalarKind::Sint => Literal::I32(0),
         _ => Literal::U32(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WIDTH: u32 = VectorSize::Bi as u32;
+
+    /// A pixel program reading a value of [`WIDTH`] components from `component` of register 0.
+    fn reading_from(component: u32) -> Module {
+        let text = alloc::format!(
+            "@fragment fn {}(@location({component}) v: vec{WIDTH}f) -> @location(0) vec4f \
+             {{ return vec4f(v, v); }}",
+            crate::ENTRY_POINT
+        );
+        naga::front::wgsl::parse_str(&text).unwrap()
+    }
+
+    /// A value ending at its register's last component is laid out; one passing it is refused, where
+    /// its swizzle indexed past the register's components (gap A41, a fuzz case of seed 1).
+    #[test]
+    fn a_value_past_its_registers_last_component_is_refused() {
+        assert!(lay_out(&mut reading_from(COMPONENTS - WIDTH)).is_ok());
+        assert_eq!(
+            lay_out(&mut reading_from(COMPONENTS - WIDTH + 1)).map(|_| ()),
+            Err(ConvertError::Malformed(PAST_REGISTER.into()))
+        );
     }
 }

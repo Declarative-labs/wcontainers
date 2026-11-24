@@ -121,6 +121,9 @@ pub(crate) enum Failure {
     Ended(String),
 }
 
+/// The `samples` of a call whose entry does not read it.
+pub(crate) const NO_SAMPLES: u32 = 0;
+
 /// The buffers `entry` gives for `data` (with `samples`, which only `DXIL_TO_SPIRV` reads), in the
 /// order of `entry.outputs`.
 pub(crate) fn call<const BUFFERS: usize>(

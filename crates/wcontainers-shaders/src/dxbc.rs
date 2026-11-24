@@ -6,7 +6,7 @@ use crate::ir::{Ir, code};
 
 /// DXBC to dxbc-spirv's legalised IR.
 pub fn to_ir(dxbc: &[u8]) -> Result<Ir, ConvertError> {
-    let [ir, declared] = converters::call(&DXBC_TO_IR, dxbc, 0).map_err(
+    let [ir, declared] = converters::call(&DXBC_TO_IR, dxbc, converters::NO_SAMPLES).map_err(
         |(Failure::Refused(reason) | Failure::Ended(reason))| ConvertError::Rejected(reason),
     )?;
     let declared = converters::words(&declared);

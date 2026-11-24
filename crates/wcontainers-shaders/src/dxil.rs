@@ -72,7 +72,7 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
 
 /// The words `entry` gives for `dxil`.
 fn resource_list(dxil: &[u8], entry: &Entry<1>) -> Result<Vec<u32>, ConvertError> {
-    let [words] = converters::call(entry, dxil, 0).map_err(rejected)?;
+    let [words] = converters::call(entry, dxil, converters::NO_SAMPLES).map_err(rejected)?;
     Ok(converters::words(&words))
 }
 
