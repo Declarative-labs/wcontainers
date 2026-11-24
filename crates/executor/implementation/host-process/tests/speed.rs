@@ -615,13 +615,11 @@ fn busybox_sh_starting_programs() {
     let round_trip = Duration::from_nanos(u64::from(samples[samples.len() / 2]));
     let (first, first_entries) = runs[0];
     let (second, second_entries) = runs[1];
-    let translation = first.saturating_sub(second);
-    let model = reference
-        + creation * 2 * programs as u32
-        + round_trip * second_entries as u32
-        + translation;
+    // The model holds no translation: the second run, which translates nothing anew, is the one compared with it.
+    let model = reference + creation * 2 * programs as u32 + round_trip * second_entries as u32;
     println!(
-        "busybox sh starting {programs} programs: form P {first:?} then {second:?} ({first_entries} and {second_entries} kernel entries), reference {reference:?}; process creation and end {creation:?}, round trip {round_trip:?}, translation {translation:?}; model {model:?}; first run against the model {:.3}; load {}",
+        "busybox sh starting {programs} programs: form P {first:?} then {second:?} ({first_entries} and {second_entries} kernel entries), reference {reference:?}; process creation and end {creation:?}, round trip {round_trip:?}; model {model:?}; second run against the model {:.3}, first run (translating) {:.3}; load {}",
+        second.as_secs_f64() / model.as_secs_f64(),
         first.as_secs_f64() / model.as_secs_f64(),
         load().trim()
     );
