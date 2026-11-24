@@ -100,15 +100,20 @@ probes).
   word in the area's fixed part, `pushf` answered by the inside), and native layer 1 runs every case also on a
   stepping piece, behind a replay check that goes on, and behind one that stops; the meaning-differs known kind is
   narrowed to the named forms. Finding by finding below.
+  Round 3 run 6 (after the thirteenth check): the record only: `Call_m1616` and `sgdt`/`sidt` as the meaning's
+  differences (gap item 7), the runner's address-space ceiling for the string count test (item 6), the earlier
+  check's fuzz noise. Finding by finding below.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
 
 ## XN1 gap list (round 3, 2026-11-23: every item left, with its cause and owner; corrected by run 2 of round 3)
 
-The bar as it stands: native layers 1, 2 and 3 pass against the CPU on the rented Xeon, way P, counted and
-uncounted, the count after each system call equal to the WebAssembly output's (figures under "Round 3 run 2
-results"); speed meets the bar uncounted (geometric mean 1.145 against the host in run 5, 1.110 in the ninth check's
+The bar as it stands: native layers 2 and 3 pass against the CPU on the rented Xeon, way P, counted and
+uncounted, the count after each system call equal to the WebAssembly output's (figures under "Round 3 run 5
+results"); native layer 1 passes every form but one with only the named known kinds (the thirteenth check: 2008
+forms, 1,500 cases a form, seed 777, after run 5's stepping and replay changes), and that one, `Call_m1616`, fails
+at some seeds as the WebAssembly output's layer 1 does, for the meaning (item 7); speed meets the bar uncounted (geometric mean 1.145 against the host in run 5, 1.110 in the ninth check's
 own measurement). Section 7's shapes that run without an executor are tests now (round 3 run 2, below); the rest
 are listed here with why. Every call into the inside in the machine and P has an answer built by this track
 (round 3 run 3) but two: a Kernel-routed form a question for `answer`; a direct `jmp`, `call`, `jcc`, `loop` or
@@ -200,9 +205,6 @@ run:
      (native-without-virtual-machine 3.4).
    - Counted speed (exact replay): interpret 1.66, the count's adds.
    - The note of an MXCSR read while not kept for `xsave` (the meaning warns; `answer` is not told tracking).
-   - `enter` with rsp off the canonical range under 5-level paging (70 known failures in run 10's test): the
-     reference's page fault where the meaning gives general protection, the x86 track's meaning to answer; and the
-     x86 track's known meaning differences (`sldt`, `smsw`, `str`, `wrfsbase`, `wrgsbase`, under "Coordination").
 5. Way I (XN2, as written): the eighth check's way I findings (a string with the guest's 0x67 to the inside in
    both checked forms, the exact form's 0x67 segment operand and `67 d7`, `maskmovq` re-encoded in the window), and
    now the ninth check's crossing of offset 2^32 under 0x67 in the exact form (plan 4). Fixed in the plan; their
@@ -216,9 +218,56 @@ run:
    address space (the tenth check's arithmetic): each run reserves 0x104000000 bytes, an mmap without a high hint
    gets at most 2^47, which holds about 31,500 such reservations, about 10,500 programs at three runs each, where
    the failures start; so the runner's reservations outlive their runs (what keeps them is not found: the state
-   memory is a wasmtime SharedMemory held in the store's data). Seen only by the native test, since no other test
-   runs that many programs in one process. Owner: the shared runner's owner (crates/wcontainers-translator-test
-   runner.rs), with this track; 10,000 at a seed is the recorded bar meanwhile, nothing above it is tested.
+   memory is a wasmtime SharedMemory held in the store's data). Seen by the two native tests that compare their
+   count with the WebAssembly output's over many runs in one process: native layer 2 past about 10,000 programs,
+   and the repeated string count test (layer2.rs `repeated_strings_count_as_the_webassembly_output_natively_x86_64`)
+   at 12,000 cases (the thirteenth check: seed 1414, 48 at once, the same panic at runner.rs 461; 9,000 cases at the
+   same seed pass). Owner: the shared runner's owner (crates/wcontainers-translator-test runner.rs), with this
+   track; the recorded ceilings meanwhile are 10,000 programs for layer 2 and 9,000 cases for the string count test,
+   nothing above them is tested.
+7. The meaning's differences from the CPU. Owner: the x86 track (its meaning, which the inside's answers are; the
+   native output follows it, so fixing the meaning fixes both outputs). Recorded under "Coordination".
+   - `Call_m1616`, a 16-bit far call through memory: native layer 1 fails it at some seeds, as the WebAssembly
+     output's layer 1 does. Cause: the meaning gives general protection for a far call to selector 0x33 with a
+     16-bit operand where the CPU lands (or faults on memory). Measured: natively at seed 31122026 (run 5) and at
+     seed 13013, 2,000 cases (the thirteenth check: `66 67 ff 1c 65 68 2a 00 44`, the CPU lands with the selector
+     0x33 pushed, ours gives general protection); WebAssembly layer 1 at seed 31122026 (run 5) and at seed 13013,
+     2,000 cases (round 3 run 6: "1 failing: [\"Call_m1616\"]", shrunk to `64 66 ff 1c 24`, the CPU's memory fault
+     against the meaning's general protection; scratch xn1r15/).
+   - `sldt`, `smsw`, `str`, `wrfsbase`, `wrgsbase`: native layer 1 counts their differing cases by name as known
+     (test crate native.rs `meaning_differs_named`).
+   - `sgdt` and `sidt` (the thirteenth check's fuzz, seed 140014: 53 and 50 of 1.5 million cases): with more than
+     one segment prefix the host kernel's UMIP emulation gives general protection where the meaning writes the
+     table, and at an address that is not canonical the CPU faults on the address where the meaning gives general
+     protection. Native layer 1's generator makes neither state, so it does not see them.
+   - `enter` with rsp off the canonical range under 5-level paging (70 known failures in run 10's test): the
+     reference's page fault where the meaning gives general protection.
+
+## Round 3 run 6: the thirteenth check's findings, finding by finding
+
+No code changed in this run: all four findings are of the record.
+- [blocking] the gap list's opening said native layer 1 passes, and no item named `Call_m1616`, which fails at
+  seeds 31122026 and 13013. The opening now says layer 1 passes every form but `Call_m1616`, with the check's
+  1,500-a-form run at seed 777 as the figure after run 5's changes (run 5's own was 300 a form); new item 7 holds
+  `Call_m1616` with its cause and owner (the x86 track's meaning), confirmed in the WebAssembly output's layer 1
+  at seed 13013 in this run, and the other meaning differences, moved there from item 4.
+- [minor] `sgdt` and `sidt` differ from the CPU in states native layer 1 never makes: recorded in item 7 and under
+  "Coordination" beside `sldt`, `smsw` and `str`. Not added to `meaning_differs_named`, since no layer 1 case
+  reaches them.
+- [minor] item 6 now names the repeated string count test beside native layer 2 as hitting the runner's address
+  space, with its ceiling (9,000 cases).
+- [minor] harness noise, recorded so the next run does not chase it: an earlier, killed check's fuzz (scratch
+  check-xn1e) reported `f3 67 43 81 93 2b 2c 9a b9 fa 5c 90 f8` (adc), `3e 67 4e 1a 8b b4 1a 3e 6b` (sbb) and a
+  `lar` as Copy-route differences. Their addresses (0x600BDA8D, 0x6072F730, 0x600BC1A5) lie in the reference
+  runner's own memory (`layout::x86_64::RUNNER`, 0x6000_0000 to 0xb000_0000); aimed at the data area the same
+  encodings match the CPU (the check: Copy with 0x67 withheld same in 20,281 cases, Copy with 0x67 in 89,151).
+
+## Round 3 run 6 results (rented x86 machine, Xeon 8488C, 2026-11-24 05:39 UTC, load 3.5 to 5.1; scratch xn1r15/)
+
+- `WC_LAYER1_FORMS=Call_m1616 WC_LAYER1_CASES=2000 WC_LAYER1_SEED=13013 WC_LAYER1_JOBS=8 cargo test -q -p
+  wcontainers-translator-test --test layer1 every_form_matches_the_cpu_x86_64` (the WebAssembly output): "1
+  failing: [\"Call_m1616\"]", 0 known; the shrunk case `64 66 ff 1c 24` (call far dword ptr fs:[rsp]), reference
+  MemoryFault(226625761479920), translated GeneralProtection.
 
 ## Round 3 run 5: the twelfth check's findings, finding by finding
 
@@ -534,7 +583,9 @@ All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round f
 - Each gap-list item: the X9 programs have no runner (item 1); `HostMatches` with `undefined_results` false (an
   AMD host) routes every form of `native::undefined_result` Kernel, for which `native::question` gives no question
   (item 2); ARM64's `stop_check` answers false and a stop request for ARM64 panics (item 3); a repeated string
-  under the count in native layer 1 returns the CPU's own outcome (native.rs `on_reference`; item 1).
+  under the count in native layer 1 returns the CPU's own outcome (native.rs `on_reference`; item 1); the runner's
+  reservations run out above the recorded ceilings (item 6); `Call_m1616` fails in both outputs' layer 1 at seed
+  13013, 2,000 cases (item 7).
 - The stepping pieces and the replay check (round 3 run 5): tests/native_output.rs
   `a_stepping_piece_leaves_only_through_the_inside`, `the_replay_check_comes_first_and_writes_no_flag`, and every
   piece shape of `pieces_decode_and_match_their_maps` made also with a stop point and as a stepping piece; native
@@ -1604,7 +1655,16 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   offset 0x47ff and selector 0x33: the CPU lands at 0x47ff with rsp 0x44002ec8 and the bytes `07 00 33 00` pushed,
   the meaning gives general protection. WebAssembly layer 1 fails it (`WC_LAYER1_FORMS=Call_m1616
   WC_LAYER1_CASES=3000 WC_LAYER1_SEED=31122026`), and so does native layer 1 now, whose answer is the meaning's;
-  it is the meaning's to answer, not a known kind of this track's.
+  it is the meaning's to answer, not a known kind of this track's. Also at seed 13013 (2,000 cases) in both
+  layers (gap item 7).
+- x86 track (round 3 run 6, from the thirteenth check): `sgdt` and `sidt`, which the host kernel emulates under
+  UMIP, differ from the reference in 53 and 50 of 1.5 million fuzz cases (seed 140014). With more than one segment
+  prefix the reference gives general protection where the meaning writes the table (`26 64 65 4a 0f 01 02`, sgdt
+  gs:[rdx], GS base 0x44000100, rdx 0x12b1: ours writes 10 bytes at data offset 5041); at an address that is not
+  canonical the reference faults on the address where the meaning gives general protection (`65 4e 0f 01 44 6d
+  f9`, GS base 0x100000040, rbp 0x44001081, r13 0x83dd1664ac612946); and `64 f2 65 0f 01 0e` (sidt gs:[rsi]): the
+  reference gives general protection, ours a memory fault at 0x44003ba5. They belong beside `sldt`, `smsw` and
+  `str`.
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
   shared code changes (plan section 9) go in small commits that keep ARM64's suites passing. The x86 crate's core
   gains `Condition`, the x87 unit, the transcendental answers and their dependencies (plan 9), so the kernel,
