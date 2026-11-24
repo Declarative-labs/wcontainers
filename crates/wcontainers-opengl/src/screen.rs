@@ -51,6 +51,7 @@ impl<B: Backend> Screen<B> {
         let mut backend = whole(&self.backend);
         if let DeviceStatus::Lost(reason) = backend.status() {
             drop(backend);
+            crate::state::DEVICE_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
             crate::state::refuse(format_args!("the device was lost: {reason:?}"));
         }
         let retired = std::mem::take(&mut *whole(&self.retired));

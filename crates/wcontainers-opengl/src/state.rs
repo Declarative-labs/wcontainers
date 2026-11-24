@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_uint, c_void};
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
@@ -43,6 +43,9 @@ static GUILTY: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Guest calls refused or failed in the life of the process.
 pub static FAILED_CALLS: AtomicU64 = AtomicU64::new(0);
 
+/// The back end's device was lost: every context reports a reset from then on.
+pub static DEVICE_LOST: AtomicBool = AtomicBool::new(false);
+
 fn guilty() -> MutexGuard<'static, Vec<usize>> {
     // The list is whole between its own calls, which take no other lock.
     GUILTY.lock().unwrap_or_else(PoisonError::into_inner)
@@ -74,10 +77,13 @@ pub fn guest_call<T>(pipe: *mut pipe_context, dropped: T, call: impl FnOnce() ->
 }
 
 /// `pipe_context::get_device_reset_status`: a context one of whose calls was refused was reset by
-/// its own fault (st/mesa then loses a context made to be told).
+/// its own fault, and every other one by an unknown cause once the device is lost (st/mesa then
+/// loses a context made to be told).
 pub extern "C" fn get_device_reset_status(pipe: *mut pipe_context) -> pipe_reset_status {
     if guilty().contains(&pipe.addr()) {
         PIPE_GUILTY_CONTEXT_RESET
+    } else if DEVICE_LOST.load(Ordering::Relaxed) {
+        PIPE_UNKNOWN_CONTEXT_RESET
     } else {
         PIPE_NO_RESET
     }
@@ -88,7 +94,7 @@ pub fn forget_reset(pipe: *mut pipe_context) {
     guilty().retain(|&p| p != pipe.addr());
 }
 
-/// A refusal returned to the draw or call that ends the process with it.
+/// A refusal as an error, for the draw or call that refuses with it ([`refuse`]).
 pub fn refused<T>(why: std::fmt::Arguments<'_>) -> Result<T, String> {
     Err(why.to_string())
 }
