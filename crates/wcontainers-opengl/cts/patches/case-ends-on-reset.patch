@@ -1,6 +1,7 @@
 For testing only: every WGL context of glcts asks after each iteration whether the implementation
 reset it, and a reset context ends its case, so that a call the driver refused fails the case that
-made it. The suite's desktop package already asks after each case; its ES packages do not.
+made it. The suite's desktop package already asks after each case; its ES packages do not. A
+context older than OpenGL ES 3.2 or 4.5 takes the query by name (KHR_robustness, ARB_robustness).
 
 diff --git a/framework/platform/win32/tcuWGLContextFactory.cpp b/framework/platform/win32/tcuWGLContextFactory.cpp
 --- a/framework/platform/win32/tcuWGLContextFactory.cpp
@@ -29,7 +30,23 @@ diff --git a/framework/platform/win32/tcuWGLContextFactory.cpp b/framework/platf
  
      try
      {
-@@ -174,6 +180,11 @@
+@@ -143,6 +149,15 @@
+             WGLFunctionLoader funcLoader(*m_context);
+             glu::initFunctions(&m_functions, &funcLoader, config.type.getAPI());
+         }
++        // The reset query is core only from OpenGL ES 3.2 and 4.5: for older contexts it is taken
++        // from the implementation by name, as KHR_robustness and ARB_robustness name it.
++        for (const char *name : {"glGetGraphicsResetStatus", "glGetGraphicsResetStatusKHR",
++                                 "glGetGraphicsResetStatusARB"})
++        {
++            if (!m_functions.getGraphicsResetStatus)
++                m_functions.getGraphicsResetStatus =
++                    (glw::glGetGraphicsResetStatusFunc)m_context->getGLFunction(name);
++        }
+ 
+         if (config.windowVisibility != glu::RenderConfig::VISIBILITY_VISIBLE &&
+             config.windowVisibility != glu::RenderConfig::VISIBILITY_HIDDEN)
+@@ -174,6 +189,11 @@
  
  void WGLContext::postIterate(void)
  {
