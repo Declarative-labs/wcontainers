@@ -27,8 +27,10 @@ IS NOT COMPLETE (the statement of run 27 is withdrawn below). Each finding, and 
   names neither).
 - NotSupported: listed group by group with what each asks, after the gap list. Found reported
   absent for want of work, not by the plan: polygon offset clamp (now reported where the back end
-  clamps, 5037db9e; its 3 KHR-GLES31 cases pass), anisotropic filtering (now reported, 93e52730,
-  not yet run on the GPU), cull distances (436 cases: the interface's `CullDistanceAsGeometry` and
+  clamps, 5037db9e; its 3 KHR-GLES31 cases pass), anisotropic filtering (now reported, 93e52730;
+  a group run at bd07eef8, job 75, 02:03 to 02:06 desktop time, scratch `logs/g9c2/aniso.log`: KHR-GLES3
+  `texture_filter_anisotropic.queries` passes, and every `texture.filtering` and
+  `shaders.invariance` case of dEQP-GLES2, -GLES3 and -GLES31 passes, 1,597 of 1,597 run), cull distances (436 cases: the interface's `CullDistanceAsGeometry` and
   the shaders crate's `stage::cull_programs` exist; Next item 3), and smaller groups the listing
   names.
 - The passed-value limit: the core profile now reports OpenGL 3.1 wherever the passed values are
