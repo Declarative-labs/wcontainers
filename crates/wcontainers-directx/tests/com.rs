@@ -961,7 +961,8 @@ fn constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu() {
     let mut after_first = 0;
     for i in 0..draws {
         let m = dev.map(&r, 0, map::WRITE_DISCARD, 0).unwrap();
-        unsafe { std::ptr::write_bytes(m.data, i, 16) };
+        m.data[..16].iter().for_each(|c| c.set(i));
+        drop(m);
         dev.unmap(&r, 0);
         dev.draw(3, 0);
         if i == 0 {
