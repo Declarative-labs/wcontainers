@@ -11,6 +11,7 @@ path = "conformance.rs"
 wcontainers-abi.workspace = true
 wcontainers-byte-sink = { path = "../../byte-sink" }
 wcontainers-byte-source = { path = "../../byte-source" }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 wcontainers-executor = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
 wcontainers-precise-instruction-set = { path = "../../precise-instruction-set" }

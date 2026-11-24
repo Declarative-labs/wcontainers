@@ -6,6 +6,12 @@
 use std::collections::VecDeque;
 use std::fmt::{Debug, Write};
 use std::ops::Range;
+use std::pin::pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread::{self, Thread};
+use std::time::Duration;
 
 use wcontainers_abi::{
     Access, LOWEST_ADDRESS, PAGE_MASK, PAGE_SIZE, Permissions, SYSTEM_CALL_ARGUMENT_COUNT,
@@ -15,10 +21,10 @@ use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
 };
 use wcontainers_executor::{
-    Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
     TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
@@ -26,6 +32,7 @@ use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
 use wcontainers_processor_architecture_conformance::leave_same_memory;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 mod arm64;
 
@@ -96,8 +103,12 @@ const REQUEST: SystemCallRequest = SystemCallRequest {
 const RETURNED: u64 = u64::MAX;
 /// The value the store guests store and the load guests find.
 const STORED: u64 = u32::MAX as u64;
-/// How many times the counting guest counts down: enough to give an executor time to raise an interrupt.
-const COUNT: u64 = u16::MAX as u64;
+/// How many times the counting guest counts down: millions, so that interrupts from another thread come while it runs.
+const COUNT: u64 = u32::MAX as u64 >> u8::BITS;
+/// How many times the guest an interrupt ends counts down: seconds of work, so that it ends by the interrupt.
+const LONG_COUNT: u64 = u32::MAX as u64;
+/// How long the interrupting thread waits between interrupts.
+const INTERRUPT_PERIOD: Duration = Duration::from_millis(1);
 /// The seeds of the patterns a test writes, each pattern other than the others at every byte.
 const FIRST_PATTERN: u8 = u8::MIN;
 const SECOND_PATTERN: u8 = FIRST_PATTERN + 1;
@@ -172,7 +183,7 @@ where
     let guest = Chip::Architecture::build_system_call(CODE, REQUEST, RETURNED);
     place(&memory, &guest);
     let mut handler = Recorder::new(Some(RETURNED), None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.system_calls,
         [REQUEST],
@@ -196,7 +207,7 @@ where
     let guest = Chip::Architecture::build_system_call(CODE, REQUEST, RETURNED);
     place(&memory, &guest);
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.system_calls,
         [REQUEST],
@@ -219,7 +230,7 @@ where
     let guest = Chip::Architecture::build_store(CODE, DATA, STORED);
     place(&memory, &guest);
     let mut handler = Recorder::new(None, Some((&memory, DATA_PERMISSIONS)));
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.memory_faults,
         [(DATA, Access::Write)],
@@ -243,7 +254,7 @@ where
     let guest = Chip::Architecture::build_store(CODE, DATA, STORED);
     place(&memory, &guest);
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.memory_faults,
         [(DATA, Access::Write)],
@@ -271,14 +282,12 @@ where
     let guest = Chip::Architecture::build_undefined_instruction(CODE);
     place(&memory, &guest);
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     handler.assert_no_trap();
     assert_eq!(stopped, guest.finished, "the state execute returned");
 }
 
-/// Checks that a guest whose interrupts are all answered continue ends as it would without them.
-///
-/// Nothing in the interface raises an interrupt yet, so an executor that raises none passes.
+/// Checks that a guest interrupted from another thread, every interrupt answered continue, ends as it would without.
 pub fn interrupts_answered_continue_change_nothing<Chip: Executor>(mut executor: Chip)
 where
     Chip::Architecture: GuestArchitecture,
@@ -288,13 +297,82 @@ where
     let guest = Chip::Architecture::build_count_down(CODE, COUNT);
     place(&memory, &guest);
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute_interrupted(&mut executor, guest.start.clone(), &memory, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
         stopped, guest.finished,
         "the state execute returned after {} interrupts",
         handler.interrupts
     );
+}
+
+/// Checks that an interrupt from another thread, answered terminate, ends a guest that would run on long after it.
+pub fn interrupt_answered_terminate_ends_execute<Chip: Executor>(mut executor: Chip)
+where
+    Chip::Architecture: GuestArchitecture,
+    ProcessorStateOf<Chip>: Debug,
+{
+    let memory = create_memory(&executor);
+    let guest = Chip::Architecture::build_count_down(CODE, LONG_COUNT);
+    place(&memory, &guest);
+    let mut handler =
+        Recorder::new(None, None::<(&Chip::GuestMemory, _)>).terminating_at_interrupts();
+    let stopped = execute_interrupted(&mut executor, guest.start.clone(), &memory, &mut handler);
+    handler.assert_no_trap();
+    assert_eq!(
+        handler.interrupts, 1,
+        "the interrupts the handler was given"
+    );
+    assert_ne!(
+        stopped, guest.finished,
+        "execute ran to the end after an interrupt answered terminate"
+    );
+}
+
+/// Checks that an interrupt raised before the execution is first polled is answered at its start, before the guest runs.
+pub fn interrupt_before_the_first_poll_is_answered_at_the_start<Chip: Executor>(mut executor: Chip)
+where
+    Chip::Architecture: GuestArchitecture,
+    ProcessorStateOf<Chip>: Debug,
+{
+    let memory = create_memory(&executor);
+    let guest = Chip::Architecture::build_count_down(CODE, COUNT);
+    place(&memory, &guest);
+    let mut handler =
+        Recorder::new(None, None::<(&Chip::GuestMemory, _)>).terminating_at_interrupts();
+    let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut handler);
+    interrupter.interrupt();
+    let stopped = block_on(execution);
+    handler.assert_no_trap();
+    assert_eq!(
+        handler.interrupts, 1,
+        "the interrupts the handler was given"
+    );
+    assert_eq!(stopped, guest.start, "the state execute returned");
+}
+
+/// Checks that an interrupt raised after its execution ended reaches neither it nor the next execution.
+pub fn interrupt_after_the_end_does_nothing<Chip: Executor>(mut executor: Chip)
+where
+    Chip::Architecture: GuestArchitecture,
+    ProcessorStateOf<Chip>: Debug,
+{
+    let memory = create_memory(&executor);
+    let guest = Chip::Architecture::build_count_down(CODE, COUNT);
+    place(&memory, &guest);
+    let mut first = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut first);
+    let stopped = block_on(execution);
+    interrupter.interrupt();
+    assert_eq!(stopped, guest.finished, "the state the first execution returned");
+    let mut next = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut next);
+    assert_eq!(
+        (first.interrupts, next.interrupts),
+        (usize::MIN, usize::MIN),
+        "the interrupts the handlers were given"
+    );
+    assert_eq!(stopped, guest.finished, "the state the next execution returned");
 }
 
 /// Checks that a new space reads as zeros and that guest code placed in it without permissions faults on its fetch.
@@ -312,7 +390,7 @@ where
     let guest = Chip::Architecture::build_store(CODE, DATA, STORED);
     write_bytes(&memory, CODE, &guest.code);
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(guest.start.clone(), &memory, &mut handler);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.memory_faults,
         [(CODE, Access::Execute)],
@@ -390,7 +468,7 @@ where
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let loaded = executor.execute(load.start.clone(), &readable, &mut handler);
+    let loaded = execute(&mut executor, load.start.clone(), &readable, &mut handler);
     handler.assert_no_trap();
     assert_eq!(loaded, load.finished, "the state the load returned");
 
@@ -404,7 +482,7 @@ where
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(store.start.clone(), &read_only, &mut handler);
+    let stopped = execute(&mut executor, store.start.clone(), &read_only, &mut handler);
     assert_eq!(
         handler.memory_faults,
         [(DATA, Access::Write)],
@@ -439,7 +517,7 @@ where
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(store.start.clone(), &not_executable, &mut handler);
+    let stopped = execute(&mut executor, store.start.clone(), &not_executable, &mut handler);
     assert_eq!(
         handler.memory_faults,
         [(CODE, Access::Execute)],
@@ -490,7 +568,7 @@ where
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(store.start.clone(), &second, &mut handler);
+    let stopped = execute(&mut executor, store.start.clone(), &second, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
         stopped, store.finished,
@@ -577,7 +655,7 @@ where
         "the store guest's code depends on where it is"
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = executor.execute(moved.start.clone(), &copy, &mut handler);
+    let stopped = execute(&mut executor, moved.start.clone(), &copy, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
         stopped, moved.finished,
@@ -672,7 +750,7 @@ pub fn read_and_write_copy_as_many_as_the_shorter_holds<Chip: Executor>(executor
     );
 }
 
-/// Checks that bytes across pages read to a slice, a vector and a queue, a borrow at a time, arrive whole.
+/// Checks that bytes across pages, read to a vector, a queue and a slice, arrive whole in one read each.
 pub fn read_to_fills_the_standard_sinks<Chip: Executor>(executor: Chip) {
     let memory = create_memory(&executor);
     let written = pattern(FIRST_PATTERN, length(&LONG));
@@ -689,7 +767,7 @@ pub fn read_to_fills_the_standard_sinks<Chip: Executor>(executor: Chip) {
     assert_eq!(room, written, "the bytes read to a slice");
 }
 
-/// Checks that bytes written from a slice and a queue across pages, a borrow at a time, arrive whole.
+/// Checks that bytes written across pages from a slice and a queue arrive whole in one write each.
 pub fn write_from_drains_the_standard_sources<Chip: Executor>(executor: Chip) {
     let memory = create_memory(&executor);
     let from_slice = pattern(FIRST_PATTERN, length(&LONG));
@@ -763,6 +841,8 @@ struct Recorder<'space, Space> {
     system_calls: Vec<SystemCallRequest>,
     memory_faults: Vec<(u64, Access)>,
     interrupts: usize,
+    /// Whether an interrupt terminates the guest; otherwise it continues.
+    terminate_at_interrupts: bool,
 }
 
 impl<'space, Space: MemorySpace> Recorder<'space, Space> {
@@ -773,7 +853,13 @@ impl<'space, Space: MemorySpace> Recorder<'space, Space> {
             system_calls: Vec::new(),
             memory_faults: Vec::new(),
             interrupts: usize::MIN,
+            terminate_at_interrupts: false,
         }
+    }
+
+    fn terminating_at_interrupts(mut self) -> Self {
+        self.terminate_at_interrupts = true;
+        self
     }
 
     fn assert_no_trap(&self) {
@@ -817,7 +903,77 @@ impl<Space: MemorySpace> TrapHandler for Recorder<'_, Space> {
 
     fn handle_interrupt(&mut self) -> InterruptResponse {
         self.interrupts += 1;
-        InterruptResponse::Continue
+        if self.terminate_at_interrupts {
+            InterruptResponse::Terminate
+        } else {
+            InterruptResponse::Continue
+        }
+    }
+}
+
+/// Runs an execution to its end on this thread and returns the processor state it completed with.
+fn execute<Chip: Executor>(
+    executor: &mut Chip,
+    processor: ProcessorStateOf<Chip>,
+    memory: &Chip::GuestMemory,
+    handler: &mut impl TrapHandler,
+) -> ProcessorStateOf<Chip> {
+    let (execution, _interrupter) = executor.execute(processor, memory, handler);
+    block_on(execution)
+}
+
+/// Runs an execution to its end while another thread interrupts it, and returns the processor state it completed with.
+fn execute_interrupted<Chip: Executor>(
+    executor: &mut Chip,
+    processor: ProcessorStateOf<Chip>,
+    memory: &Chip::GuestMemory,
+    handler: &mut impl TrapHandler,
+) -> ProcessorStateOf<Chip> {
+    let (execution, interrupter) = executor.execute(processor, memory, handler);
+    let ended = AtomicBool::new(false);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            loop {
+                thread::sleep(INTERRUPT_PERIOD);
+                if ended.load(Ordering::Acquire) {
+                    break;
+                }
+                interrupter.interrupt();
+            }
+        });
+        let _ending = SetOnDrop(&ended);
+        block_on(execution)
+    })
+}
+
+/// Sets the flag when dropped, so that a panic too ends the thread that waits on it.
+struct SetOnDrop<'flag>(&'flag AtomicBool);
+
+impl Drop for SetOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Wakes the thread that waits on a future.
+struct ThreadWaker(Thread);
+
+impl Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Polls the future on this thread, parked between polls, and returns its output.
+fn block_on<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        thread::park();
     }
 }
 
@@ -852,42 +1008,28 @@ fn assert_stops_at_first_instruction<Architecture>(
     );
 }
 
-/// Reads the suite's long addresses into the sink, each borrow starting after the bytes the last one read.
+/// Reads the suite's long addresses into the sink in one call, which must move all of them.
 fn read_all_to<Space: MemorySpace, Sink: ByteSink>(space: &Space, sink: &mut Sink)
 where
     Sink::Error: Debug,
 {
-    let mut start = LONG.start;
-    while start < LONG.end {
-        let bytes = space
-            .borrow(start..LONG.end)
-            .expect("the suite's addresses lie inside the space");
-        let count = bytes.read_to(sink).expect("the sink took the bytes");
-        assert!(
-            count > usize::MIN,
-            "a read to a sink from {start:#x} gave no bytes"
-        );
-        start += u64::try_from(count).expect("a count of bytes fits in an address");
-    }
+    let bytes = space
+        .borrow(LONG)
+        .expect("the suite's addresses lie inside the space");
+    let count = bytes.read_to(sink).expect("the sink took the bytes");
+    assert_eq!(count, length(&LONG), "the bytes one read to a sink gave");
 }
 
-/// Writes the source into the suite's long addresses, each borrow starting after the bytes the last one wrote.
+/// Writes the source into the suite's long addresses in one call, which must move all of them.
 fn write_all_from<Space: MemorySpace, Source: ByteSource>(space: &Space, source: &mut Source)
 where
     Source::Error: Debug,
 {
-    let mut start = LONG.start;
-    while start < LONG.end {
-        let bytes = space
-            .borrow(start..LONG.end)
-            .expect("the suite's addresses lie inside the space");
-        let count = bytes.write_from(source).expect("the source gave the bytes");
-        assert!(
-            count > usize::MIN,
-            "a write from a source to {start:#x} took no bytes"
-        );
-        start += u64::try_from(count).expect("a count of bytes fits in an address");
-    }
+    let bytes = space
+        .borrow(LONG)
+        .expect("the suite's addresses lie inside the space");
+    let count = bytes.write_from(source).expect("the source gave the bytes");
+    assert_eq!(count, length(&LONG), "the bytes one write from a source took");
 }
 
 fn write_bytes<Space: MemorySpace>(space: &Space, start: u64, bytes: &[u8]) {
@@ -980,6 +1122,21 @@ macro_rules! tests {
         #[test]
         fn interrupts_answered_continue_change_nothing() {
             $crate::interrupts_answered_continue_change_nothing($executor);
+        }
+
+        #[test]
+        fn interrupt_answered_terminate_ends_execute() {
+            $crate::interrupt_answered_terminate_ends_execute($executor);
+        }
+
+        #[test]
+        fn interrupt_before_the_first_poll_is_answered_at_the_start() {
+            $crate::interrupt_before_the_first_poll_is_answered_at_the_start($executor);
+        }
+
+        #[test]
+        fn interrupt_after_the_end_does_nothing() {
+            $crate::interrupt_after_the_end_does_nothing($executor);
         }
 
         #[test]
