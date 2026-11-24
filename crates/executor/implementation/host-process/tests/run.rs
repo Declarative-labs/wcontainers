@@ -1104,3 +1104,96 @@ fn a_new_thread_reads_zeros_and_a_thread_resumed_reads_its_own_registers() {
     cpu.registers(first, &mut after);
     assert_eq!(after.tpidr_el0, own.tpidr_el0, "the thread pointer kept");
 }
+
+/// `dc cvau, x3`, `dsb ish`, `ic ivau, x3`, `dsb ish` and `isb` (Arm ARM, DC CVAU, DSB, IC IVAU and ISB): what a program
+/// that wrote code at x3 runs before running it, as the `CTR_EL0` we present asks.
+const ANNOUNCE_X3: [u32; 5] = [
+    0xd50b_7b23,
+    0xd503_3b9f,
+    0xd50b_7523,
+    0xd503_3b9f,
+    0xd503_3fdf,
+];
+
+/// A memory whose code page is writable and executable, with the program at its start, and a thread there.
+fn writable_code(cpu: &mut HostProcessExecutor, words: &[u32]) -> (MemoryId, ThreadId) {
+    let (memory, thread) = guest(cpu, words);
+    let all = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;
+    cpu.set_permissions(memory, CODE, PAGE, all)
+        .expect("writable and executable");
+    (memory, thread)
+}
+
+/// Stores of x1 into the word at x3 and the next, then the announcement of it.
+fn store_and_announce(value: u64) -> Vec<u32> {
+    let mut words = encode::move_constant(1, value);
+    words.push(encode::load_store(form::STR, 1, 3, 0, WORD).expect("a store"));
+    words.extend(ANNOUNCE_X3);
+    words
+}
+
+/// A store into the writable and executable page the storing code is on completes, as on Linux, rather than fault
+/// for ever: the page is left writable once written.
+#[test]
+fn a_store_into_the_page_its_own_code_is_on_completes() {
+    let mut cpu = executor();
+    let last = CODE + PAGE - WORD;
+    let mut words = vec![encode::adr(3, (last - CODE) as i64).expect("an adr")];
+    words.push(encode::load_store(form::STR, 3, 3, 0, WORD).expect("a store"));
+    words.extend(syscall(EXIT));
+    let (memory, thread) = writable_code(&mut cpu, &words);
+    let before = cpu.counters();
+    let seen = run_to_exit(&mut cpu, thread);
+    assert!(
+        matches!(seen.exits[..], [(Exit::Syscall(call), _, _)] if call.number.0 == u64::from(EXIT)),
+        "{:?}",
+        seen.exits
+    );
+    assert_eq!(read_word(&mut cpu, memory, last), last, "the stored word");
+    assert_eq!(
+        cpu.counters().code_pages_left_writable,
+        before.code_pages_left_writable + 1
+    );
+}
+
+/// A function on the page of its caller, rewritten and announced twice by the caller between calls, runs its latest
+/// code at each call: the page left writable after the first store still loses its code at each announcement.
+#[test]
+fn a_function_rewritten_on_its_caller_s_page_runs_its_latest_code() {
+    let ret = encode::branch_register(form::RET, LINK);
+    let adding = |step| u64::from(encode::add_immediate(5, 5, step).expect("an add"));
+    let mut words = vec![encode::movz(5, 0, 0), 0];
+    let mut calls = Vec::new();
+    calls.push(words.len());
+    words.push(0);
+    for step in [5, 9] {
+        words.extend(store_and_announce(u64::from(ret) << 32 | adding(step)));
+        calls.push(words.len());
+        words.push(0);
+    }
+    words.extend(syscall(EXIT));
+    // The function's two words are one aligned doubleword, stored at once.
+    if words.len() % 2 == 1 {
+        words.push(encode::exception(form::BRK, 0));
+    }
+    let function = words.len();
+    words.extend([adding(1) as u32, ret]);
+    words[1] = encode::adr(3, (function as i64 - 1) * INSTRUCTION).expect("an adr");
+    for call in calls {
+        words[call] =
+            encode::branch(true, (function as i64 - call as i64) * INSTRUCTION).expect("a call");
+    }
+    let mut cpu = executor();
+    let (_, thread) = writable_code(&mut cpu, &words);
+    let seen = run_to_exit(&mut cpu, thread);
+    assert!(
+        matches!(seen.exits[..], [(Exit::Syscall(call), _, _)] if call.number.0 == u64::from(EXIT)),
+        "{:?}",
+        seen.exits
+    );
+    assert_eq!(
+        seen.exits[0].1.x[5],
+        1 + 5 + 9,
+        "each call ran the latest add"
+    );
+}

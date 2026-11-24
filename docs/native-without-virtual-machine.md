@@ -342,7 +342,12 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
 - Code a program writes: every guest page that holds translated code is write-protected in the guest's view of
   every memory that maps it (shared blocks included); the first write faults to the floor, which drops the
   translations of that page in every process holding them (their other threads stopped first, 4.2), gives the page
-  its guest permission back, and resumes (3.3). `Cpu::code_changed` is honoured as in the VM form.
+  its guest permission back, and resumes (3.3). As built (W1 round 4 run 5): from then on that page stays writable
+  in that memory (counted `code_pages_left_writable`) until its permissions or contents change through the kernel,
+  because protecting it again at its next piece would fault a store into the page its own code is on for ever (the
+  store's piece is loaded from that page); its later changes reach translated code by announcement (`ic ivau`, which
+  the `CTR_EL0` we present asks for), exactly as in the VM form and the WebAssembly output, so an unannounced change
+  there may run the old code, as the architecture allows. `Cpu::code_changed` is honoured as in the VM form.
 
 ### 3.5 Memory: frames, copy-on-write, written marks
 

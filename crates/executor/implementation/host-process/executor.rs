@@ -70,6 +70,10 @@ struct Memory {
     /// Pages translated code was made from: never writable in the view, so the first write drops it (plan 3.4).
     #[cfg(target_arch = "aarch64")]
     code_pages: rangemap::RangeSet<u64>,
+    /// Pages the guest wrote while they held translated code: left writable, so a store into the page its own code is
+    /// on completes, and a change there reaches translated code by announcement, as in the VM form.
+    #[cfg(target_arch = "aarch64")]
+    written_code_pages: rangemap::RangeSet<u64>,
 }
 
 impl Memory {
@@ -176,6 +180,8 @@ pub struct Counters {
     /// Memories that stopped sharing translated code with the memory they were forked from or to, to change their
     /// executable pages.
     pub codes_unshared: u64,
+    /// Pages translated code was made from that the guest wrote, left writable from then on.
+    pub code_pages_left_writable: u64,
 }
 
 /// How a guest fault the executor was told of is settled.
@@ -1025,6 +1031,8 @@ impl Cpu for HostProcessExecutor {
             retired: false,
             #[cfg(target_arch = "aarch64")]
             code_pages: rangemap::RangeSet::new(),
+            #[cfg(target_arch = "aarch64")]
+            written_code_pages: rangemap::RangeSet::new(),
         };
         let id = MemoryId(place(&mut self.memories, memory) as u32);
         self.memory_mut(id).push(

@@ -209,3 +209,66 @@ fn an_interrupt_at_any_early_moment_reaches_the_handler() {
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |value| value.parse().expect(name))
 }
+
+/// A guest that stores x0 into the writable and executable page its code is on, then spins, is ended by an interrupt in
+/// its spin with the word stored, as on Linux.
+#[test]
+fn a_store_into_the_page_its_own_code_is_on_completes_before_an_interrupt_ends_the_spin() {
+    const STORED: u64 = 0x1234_5678;
+    let at = CODE + PAGE / 2;
+    let mut executor = executor();
+    let memory = executor.create_guest_memory().expect("a memory");
+    let store =
+        encode::load_store(encode::form::STR, 0, 3, 0, size_of::<u64>() as u64).expect("a store");
+    let spin = encode::branch(false, 0).expect("a branch to itself");
+    let code: Vec<u8> = [store, spin].iter().flat_map(|w| w.to_le_bytes()).collect();
+    assert_eq!(
+        memory
+            .borrow(CODE..CODE + code.len() as u64)
+            .expect("code")
+            .write(&code),
+        code.len()
+    );
+    let all = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;
+    memory
+        .set_permissions(CODE..CODE + PAGE, all)
+        .expect("code permissions");
+    let mut start = Processor {
+        program_counter: CODE,
+        ..ZERO_PROCESSOR
+    };
+    start.general_purpose_registers[0] = STORED;
+    start.general_purpose_registers[3] = at;
+    let (told, heard) = mpsc::channel();
+    let mut handler = Interrupts {
+        terminate_at: 1,
+        seen: 0,
+        told,
+    };
+    let (execution, interrupter) = executor.execute(start, &memory, &mut handler);
+    let interrupting = std::thread::spawn(move || {
+        std::thread::sleep(PAUSE);
+        interrupter.interrupt();
+        while heard.recv_timeout(REACHED_WITHIN).is_err() {
+            interrupter.interrupt();
+        }
+    });
+    let stopped = run(execution);
+    interrupting.join().expect("the interrupting thread");
+    let mut word = [0; size_of::<u64>()];
+    let length = word.len();
+    assert_eq!(
+        memory
+            .borrow(at..at + length as u64)
+            .expect("the word")
+            .read(&mut word),
+        length
+    );
+    assert_eq!(stopped.exception, None, "an interrupt is no exception");
+    assert_eq!(
+        stopped.program_counter,
+        CODE + 4,
+        "ended in the spin, the store done"
+    );
+    assert_eq!(u64::from_le_bytes(word), STORED);
+}

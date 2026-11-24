@@ -1102,18 +1102,21 @@ impl HostProcessExecutor {
     }
 
     /// Makes the guest page `page` one translated code was made from, in every memory using the code: its view loses
-    /// write at the next turn.
+    /// write at the next turn, unless the guest wrote it while it held code before.
     fn protect_code_page(&mut self, memory: MemoryId, page: u64) {
+        let settled = |stub: &super::Memory| {
+            stub.code_pages.contains(&page) || stub.written_code_pages.contains(&page)
+        };
         if self
             .codes
             .users(memory)
             .iter()
-            .all(|&user| self.memory(user).code_pages.contains(&page))
+            .all(|&user| settled(self.memory(user)))
         {
             return;
         }
         for memory in self.codes.users(memory).to_vec() {
-            if self.memory(memory).code_pages.contains(&page) {
+            if settled(self.memory(memory)) {
                 continue;
             }
             let pages = page..page + PAGE_SIZE;
@@ -1128,14 +1131,16 @@ impl HostProcessExecutor {
         }
     }
 
-    /// The guest writes a page translated code was made from: its pieces are dropped and the page is an ordinary one
-    /// again, which the fault's settling then gives what the kernel allows.
+    /// The guest writes a page translated code was made from: its pieces are dropped and the page is left writable,
+    /// which the fault's settling then gives what the kernel allows. Protecting it again at its next piece would fault
+    /// a store into the page its own code is on for ever.
     pub(super) fn code_page_written(&mut self, memory: MemoryId, page: u64) {
         self.unshare_code(memory);
         self.forget_code(memory, page..page + PAGE_SIZE);
-        self.memory_mut(memory)
-            .code_pages
-            .remove(page..page + PAGE_SIZE);
+        let stub = self.memory_mut(memory);
+        stub.code_pages.remove(page..page + PAGE_SIZE);
+        stub.written_code_pages.insert(page..page + PAGE_SIZE);
+        self.counters.code_pages_left_writable += 1;
     }
 
     /// Drops the pieces made from `range`, which the kernel is about to change or stop letting run; the range's pages
@@ -1149,14 +1154,17 @@ impl HostProcessExecutor {
         {
             self.unshare_code(memory);
         }
-        if !self.memory(memory).code_pages.overlaps(&range) {
+        let stub = self.memory(memory);
+        if !stub.code_pages.overlaps(&range) && !stub.written_code_pages.overlaps(&range) {
             return;
         }
         let pages = range.start & !(PAGE_SIZE - 1)..range.end.next_multiple_of(PAGE_SIZE);
         if self.forget_code(memory, pages.clone()).1 {
             self.slow(CODE_CHANGED_AFTER_IT_RAN, 1, range.start);
         }
-        self.memory_mut(memory).code_pages.remove(pages);
+        let stub = self.memory_mut(memory);
+        stub.code_pages.remove(pages.clone());
+        stub.written_code_pages.remove(pages);
     }
 
     /// Drops the pieces of a range the kernel changed, counting "code changed after it ran" where one's code changed.
