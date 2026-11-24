@@ -2,6 +2,7 @@
 //! a memory's code area with their entry slots filled and their exits linked, and a thread run to its next exit, every
 //! stop resolved to the guest's state through the stop crate.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -20,9 +21,9 @@ use wcontainers_executor_arm64_stop::{
     self as stop, FloatStatus, GENERAL, GuestState, Interrupted, Piece, Resolved, SYSCALL_NUMBER,
     Stop, Taken,
 };
-use wcontainers_guest_cpu::position::NativeReason;
+use wcontainers_guest_cpu::position::{AddressPlace, NativeReason};
 use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN;
-use wcontainers_guest_cpu::{HostCode, Translation};
+use wcontainers_guest_cpu::{HostCode, Native, Translation};
 use wcontainers_translator::{LookAhead, translate_native_for};
 
 use super::{FaultOwner, HostProcessExecutor, Then};
@@ -108,14 +109,53 @@ struct Site {
 /// One loaded piece.
 struct Loaded {
     base: u64,
-    /// Its code as translated, before any linking.
-    code: Arc<Translation>,
+    /// Its translation as kept, made `by` bytes of guest address below where it is loaded.
+    translation: Arc<Translation>,
+    by: u64,
+    /// Its bytes as loaded, before any linking, where they differ from the kept translation's.
+    moved_bytes: Option<Vec<u8>>,
+    /// The kept translation moved here whole, made when a stop or a check first needs it.
+    moved: OnceCell<Arc<Translation>>,
     /// The guest code it was made from, as far as it covers.
     source: Vec<u8>,
     /// Its exits: their targets and host addresses.
     exits: Vec<(u64, u64)>,
     /// Where its translation is kept.
     kept: KeptAt,
+}
+
+impl Loaded {
+    /// Its code as translated for where it is loaded, before any linking.
+    fn code(&self) -> &Arc<Translation> {
+        if self.by == 0 {
+            return &self.translation;
+        }
+        self.moved.get_or_init(|| {
+            let mut moved = Translation::clone(&self.translation);
+            moved.moved::<Arm64>(self.by);
+            Arc::new(moved)
+        })
+    }
+
+    /// Its host bytes, before any linking.
+    fn bytes(&self) -> &[u8] {
+        self.moved_bytes
+            .as_deref()
+            .unwrap_or(&self.translation.bytes)
+    }
+}
+
+/// The host bytes of `translation` moved `by` bytes of guest address, as [`Translation::moved`] writes them.
+fn moved_bytes(translation: &Translation, by: u64) -> Vec<u8> {
+    let mut bytes = translation.bytes.clone();
+    for place in &translation.places {
+        let moved = AddressPlace {
+            address: place.address.wrapping_add(by),
+            ..*place
+        };
+        Arm64::write_place(&mut bytes, &moved);
+    }
+    bytes
 }
 
 /// One memory's translated code: its code area, its slot pages and its pieces.
@@ -147,10 +187,11 @@ impl Code {
             .next_back()
             .and_then(|(&base, guest)| {
                 let loaded = &self.pieces[guest];
-                (pc - base < loaded.code.bytes.len() as u64).then_some(Piece {
+                let length = loaded.bytes().len();
+                (pc - base < length as u64).then(|| Piece {
                     base,
-                    length: loaded.code.bytes.len(),
-                    spans: &loaded.code.spans,
+                    length,
+                    spans: &loaded.code().spans,
                 })
             });
         found.or_else(|| {
@@ -296,6 +337,9 @@ struct Kept {
     page: u64,
 }
 
+/// A kept translation and how many bytes of guest address it moves where it is loaded; none where the code has none.
+type Found = Option<(Arc<Translation>, u64)>;
+
 /// Where a kept translation is: its key and its place among the key's.
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct KeptAt {
@@ -406,33 +450,31 @@ impl HostProcessExecutor {
         }
     }
 
-    /// The guest translation of the code at `pc`, or none where the code has none, kept, kept and moved from another
-    /// page, or, where `make` is set, made; and where it is kept.
-    fn translate(
-        &mut self,
-        pc: u64,
-        code: &[u8],
-        make: bool,
-    ) -> Option<(Option<Arc<Translation>>, KeptAt)> {
+    /// The guest translation of the code at `pc`, or none where the code has none, kept, kept at another page it moves
+    /// from, or, where `make` is set, made; with how far it moves (zero where it was made for this page), and where it
+    /// is kept.
+    fn translate(&mut self, pc: u64, code: &[u8], make: bool) -> Option<(Found, KeptAt)> {
         let page = pc & !(PAGE_SIZE - 1);
         let key = Key::new(pc - page, code);
         if let Some(kept) = self.translations.kept.get(&key) {
-            let same_code = || {
-                kept.iter()
-                    .enumerate()
-                    .filter(|(_, kept)| kept.code == code)
-            };
-            if let Some((index, same)) = same_code().find(|(_, kept)| kept.page == page) {
-                return Some((same.translation.clone(), KeptAt { key, index }));
+            let mut movable = None;
+            for (index, kept) in kept.iter().enumerate() {
+                if kept.code != code {
+                    continue;
+                }
+                if kept.page == page {
+                    let same = kept.translation.clone().map(|translation| (translation, 0));
+                    return Some((same, KeptAt { key, index }));
+                }
+                if movable.is_none()
+                    && let Some(translation) = &kept.translation
+                    && moves(translation, kept.page, page)
+                {
+                    movable = Some((Arc::clone(translation), page.wrapping_sub(kept.page), index));
+                }
             }
-            let movable = same_code().find_map(|(index, kept)| {
-                let translation = kept.translation.as_ref()?;
-                moves(translation, kept.page, page).then_some((translation, kept.page, index))
-            });
-            if let Some((translation, from, index)) = movable {
-                let mut moved = Translation::clone(translation);
-                moved.moved::<Arm64>(page.wrapping_sub(from));
-                return Some((Some(Arc::new(moved)), KeptAt { key, index }));
+            if let Some((translation, by, index)) = movable {
+                return Some((Some((translation, by)), KeptAt { key, index }));
             }
         }
         if !make {
@@ -453,7 +495,7 @@ impl HostProcessExecutor {
             page,
         });
         let index = kept.len() - 1;
-        Some((made, KeptAt { key, index }))
+        Some((made.map(|made| (made, 0)), KeptAt { key, index }))
     }
 
     /// Makes sure a piece starting at guest `pc` is loaded in `memory`, or gives the exit that running from there is.
@@ -558,19 +600,21 @@ impl HostProcessExecutor {
         let Some((piece, at)) = self.translate(pc, &source, make) else {
             return Ok(None);
         };
-        let Some(piece) = piece else {
+        let Some((piece, by)) = piece else {
             return if make {
                 Err(Exit::IllegalInstruction)
             } else {
                 Ok(None)
             };
         };
-        let base = match self.place(memory, &piece.bytes) {
+        let moved = (by != 0).then(|| moved_bytes(&piece, by));
+        let bytes = moved.as_deref().unwrap_or(&piece.bytes);
+        let base = match self.place(memory, bytes) {
             Some(base) => base,
             None if !make => return Ok(None),
             None => {
                 self.empty_code_area(memory);
-                self.place(memory, &piece.bytes)
+                self.place(memory, bytes)
                     .expect("one piece fits an empty code area")
             }
         };
@@ -584,13 +628,13 @@ impl HostProcessExecutor {
         let covered = piece
             .spans
             .iter()
-            .map(|span| span.guest + INSTRUCTION - pc)
+            .map(|span| span.guest.wrapping_add(by) + INSTRUCTION - pc)
             .max()
             .unwrap_or(0);
         source.truncate(covered as usize);
         let site = |start: u32, retarget: Option<u32>| {
             let from = start as usize;
-            let word = &piece.bytes[from..from + size_of::<u32>()];
+            let word = &bytes[from..from + size_of::<u32>()];
             Site {
                 at: base + u64::from(start),
                 word: u32::from_le_bytes(word.try_into().expect("a word")),
@@ -600,12 +644,17 @@ impl HostProcessExecutor {
         let mut sites: Vec<(u64, Site)> = piece
             .exits
             .iter()
-            .map(|exit| (exit.target, site(exit.start, exit.retarget)))
+            .map(|exit| {
+                (
+                    exit.target.wrapping_add(by),
+                    site(exit.start, exit.retarget),
+                )
+            })
             .collect();
         // Each branch of a known jump's table is an exit to its target; one no piece can be at stays on the slot.
         for table in &piece.tables {
             for k in 0..table.entries {
-                let target = table.target(k);
+                let target = table.target(k).wrapping_add(by);
                 if target >> WAY.reach_bits() == 0 && target.is_multiple_of(INSTRUCTION) {
                     let start = table.start + k * size_of::<u32>() as u32;
                     sites.push((target, site(start, Some(table.retarget))));
@@ -618,7 +667,10 @@ impl HostProcessExecutor {
             pc,
             Loaded {
                 base,
-                code: Arc::clone(&piece),
+                translation: Arc::clone(&piece),
+                by,
+                moved_bytes: moved,
+                moved: OnceCell::new(),
                 source,
                 exits: sites
                     .iter()
@@ -771,7 +823,7 @@ impl HostProcessExecutor {
     fn call_in_line(&self, memory: MemoryId, call: u64) -> Option<u64> {
         let code = self.codes[memory.0 as usize].as_ref()?;
         let (&base, guest) = code.hosts.range(..=call).next_back()?;
-        let bytes = &code.pieces[guest].code.bytes;
+        let bytes = code.pieces[guest].bytes();
         let back_at = call + 2 * INSTRUCTION;
         let from = usize::try_from(back_at - base).ok()?;
         let word = u32::from_le_bytes(bytes.get(from..from + size_of::<u32>())?.try_into().ok()?);
@@ -786,8 +838,7 @@ impl HostProcessExecutor {
         let (&base, guest) = code.hosts.range(..=pc).next_back()?;
         let from = usize::try_from(pc - base).ok()?;
         let bytes = code.pieces[guest]
-            .code
-            .bytes
+            .bytes()
             .get(from..from + size_of::<u32>())?;
         Some(u32::from_le_bytes(bytes.try_into().ok()?))
     }
@@ -1059,7 +1110,7 @@ impl HostProcessExecutor {
                     .as_ref()
                     .and_then(|code| code.pieces.get(&at.start))
                     .is_some_and(|loaded| {
-                        loaded.base == at.base && Arc::ptr_eq(&loaded.code, &at.code)
+                        loaded.base == at.base && Arc::ptr_eq(loaded.code(), &at.code)
                     })
         });
         let exit = self.run_pieces(
@@ -1357,8 +1408,7 @@ impl HostProcessExecutor {
         let code = self.codes[memory.0 as usize].as_ref()?;
         let (&base, &start) = code.hosts.range(..=pc).next_back()?;
         let loaded = &code.pieces[&start];
-        (pc - base < loaded.code.bytes.len() as u64)
-            .then(|| (start, base, Arc::clone(&loaded.code)))
+        (pc - base < loaded.bytes().len() as u64).then(|| (start, base, Arc::clone(loaded.code())))
     }
 
     /// A stub reported what no code we loaded does: its process is ended.
@@ -1445,7 +1495,7 @@ mod tests {
     use wcontainers_guest_cpu::{HostCode, Translation};
     use wcontainers_translator::{LookAhead, translate_native_for};
 
-    use super::{INSTRUCTION, WAY, moves};
+    use super::{INSTRUCTION, WAY, moved_bytes, moves};
 
     /// The moving test's knobs: how many cases, and the seed.
     fn knob(name: &str, default: u64) -> u64 {
@@ -1516,8 +1566,13 @@ mod tests {
             }
             moved_count += 1;
             places += made.places.len();
+            let loaded_bytes = moved_bytes(&made, to.wrapping_sub(from));
             let mut moved = made;
             moved.moved::<Arm64>(to.wrapping_sub(from));
+            assert_eq!(
+                loaded_bytes, moved.bytes,
+                "case {case} of seed {seed}: the bytes a load writes, {from:#x} to {to:#x}"
+            );
             let there = translated(&bytes, to + offset, look_ahead);
             assert_eq!(
                 Some(moved),
