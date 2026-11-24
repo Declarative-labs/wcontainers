@@ -78,6 +78,9 @@ pub enum Side {
 pub enum Held {
     Register(u8),
     Page(u16),
+    /// The host register, by number, less the base of the guest's memory window (x86-64's in-process way, rdi
+    /// while a string runs).
+    Rebased(u8),
 }
 
 /// A guest register whose value is held elsewhere.

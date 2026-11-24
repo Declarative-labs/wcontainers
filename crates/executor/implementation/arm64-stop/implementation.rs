@@ -192,6 +192,7 @@ fn held(h: Held, hardware: &Interrupted, page: &RegisterPage) -> u64 {
     match h {
         Held::Register(r) => hardware.x[usize::from(r)],
         Held::Page(offset) => page.word(offset),
+        Held::Rebased(_) => unreachable!("arm64 translated code rebases no register"),
     }
 }
 
