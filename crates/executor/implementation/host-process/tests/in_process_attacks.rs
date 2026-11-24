@@ -14,13 +14,13 @@
 //! An access: twelve shapes (immediate, unscaled, register offsets plain, shifted and extended both ways, byte, pair,
 //! store, pre- and post-index), translated for the same way, each case its own drawn word, at addresses chosen to
 //! defeat the window: inside a mapping, just past or before one, across the window's top, a base wrapped past 2^64
-//! by its index, an alias above the window, tagged, with bit 55 set, the host address of a window byte. Linux's
-//! outcome is the model: an access completes when every byte is in a mapped page that allows it, its address
-//! untagged as Linux does. Every page mapped outside the window where a wrong cut, no cut or a wrong base would land
-//! (the guest's own addresses, the next slot's window) is a canary; the never mapped bytes beside the window stay
-//! unmapped, as the way requires, and the window may change only
-//! where a store completed. A completed access must move the bytes Linux moves; a fault must resolve, through the
-//! stop crate, to the guest's fault at a byte of the access with the state before it.
+//! by its index, an alias above the window, one bit above it, tagged, with bit 55 set, the host address of a window
+//! byte. Linux's outcome is the model: an access completes when every byte is in a mapped page that allows it, its
+//! address untagged as Linux does. Every page mapped outside the window where a wrong cut, no cut or a wrong base
+//! would land (the guest's own addresses, the next slot's window) is a canary; the never mapped bytes beside the
+//! window and its top band stay unmapped, as the way requires; the window may change only where a store completed.
+//! A completed access must move the bytes Linux moves; a fault must resolve, through the stop crate, to the guest's
+//! fault at a byte of the access with the state before it.
 //!
 //! Knobs `WCHP_CASES` targets per piece and accesses per shape, `WCHP_SEED`.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -694,7 +694,7 @@ fn address(rng: &mut fastrand::Rng, bytes: u64) -> (&'static str, u64, bool) {
     let end = start + pages * PAGE;
     let inside = start + rng.u64(..pages * PAGE - bytes);
     let tag = u64::from(rng.u8(1..)) << TAG_LOW;
-    match rng.u8(0..10) {
+    match rng.u8(0..11) {
         0 => ("inside", inside, false),
         1 => ("just past a mapping", end - rng.u64(..bytes), false),
         2 => ("just before a mapping", start - rng.u64(1..=bytes), false),
@@ -712,6 +712,11 @@ fn address(rng: &mut fastrand::Rng, bytes: u64) -> (&'static str, u64, bool) {
         6 => ("tagged", tag | inside, rng.bool()),
         7 => ("bit 55 set", (1 << (TAG_LOW - 1)) | inside, false),
         8 => ("its host address", WAY.window_base() + inside, false),
+        9 => (
+            "one bit past the window",
+            (1 << rng.u32(WINDOW_BITS..TAG_LOW)) | inside,
+            false,
+        ),
         _ => ("anywhere", rng.u64(..), true),
     }
 }
