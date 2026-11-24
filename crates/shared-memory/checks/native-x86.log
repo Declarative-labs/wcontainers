@@ -1,0 +1,74 @@
+# the tree of commit 673309d7a (crates/shared-memory files hashed together: 040f49f0); script: checks/native.sh
+Connection timed out during banner exchange
+Connection to 54.153.79.58 port 22 timed out
+arm-run: job rprim/20261124-122217-1647902 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 3.59 6.20 17.00, jobs 12
+arm-run: in /work/src/rprim, build directory /work/target/rprim
+arm-run: command: bash /work/rprim-scripts/native.sh
+===== x86_64 native suites load 3.59 6.20 17.00
+     Running unittests interface.rs (/work/target/rprim/debug/deps/wcontainers_shared_memory-0d2f380e476ba67a)
+     Running attack/attacks.rs (/work/target/rprim/debug/deps/attacks-8e5b8130c6818470)
+     Running foreign_implementation/heap/conformance.rs (/work/target/rprim/debug/deps/heap-38fbf7ff5d456c5b)
+     Running foreign_implementation/host/conformance.rs (/work/target/rprim/debug/deps/host-67b76e3c019a156d)
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running attack/refused.rs (/work/target/rprim/debug/deps/refused-d856d42edf78c021)
+     Running unittests conformance.rs (/work/target/rprim/debug/deps/wcontainers_shared_memory_conformance-eece527b58db44fc)
+-- host test names
+37
+-- clippy
+-- the inside's target, no host feature
+status 0
+===== compile refusals
+-- outlives
+error[E0505]: cannot move out of `words` because it is borrowed
+-- part_of_part
+error[E0599]: no method named `part` found for struct `Part<'words>` in the current scope
+-- field
+error[E0616]: field `map` of struct `HostMapping` is private
+-- replace
+error[E0507]: cannot move out of an `Arc`
+-- seal_named
+error[E0603]: module `seal` is private
+-- seal_missing
+error[E0277]: the trait bound `Mine: wcontainers_shared_memory::seal::Sealed` is not satisfied
+-- heap
+error[E0433]: cannot find `HeapMapping` in `wcontainers_shared_memory`
+===== wrong change length-rounded-to-a-page: >         self.map.len().next_multiple_of(4096)
+anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1658353) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:13:5:
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1658370) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:13:5:
+test result: FAILED. 35 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+===== wrong change grow-seal-accepted: >         if !fcntl_get_seals(file).is_ok_and(|seals| seals.intersects(SealFlags::SHRINK | SealFlags::GROW)) {
+................error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+  process didn't exit successfully: `/work/target/rprim-mutn/debug/deps/host-67b76e3c019a156d --quiet` (signal: 7, SIGBUS: access to undefined memory)
+===== wrong change any-seal-accepted: >         if !fcntl_get_seals(file).is_ok_and(|seals| seals.contains(SealFlags::SHRINK) || true) {
+................error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+  process didn't exit successfully: `/work/target/rprim-mutn/debug/deps/host-67b76e3c019a156d --quiet` (signal: 7, SIGBUS: access to undefined memory)
+===== wrong change length-unchecked: >         if false && offset
+file::refuses_offsets_past_the_end_of_the_file --- FAILED
+thread 'file::refuses_offsets_past_the_end_of_the_file' (1661064) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:238:9:
+test result: FAILED. 36 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+===== wrong change offset-off-by-one: >     if at.checked_add(length as u64)? > count as u64 * WORD as u64 + 1 {
+anonymous::refuses_offsets_outside --- FAILED
+file::refuses_offsets_outside --- FAILED
+thread 'anonymous::refuses_offsets_outside' (1662418) panicked at crates/shared-memory/conformance/conformance.rs:111:9:
+thread 'file::refuses_offsets_outside' (1662441) panicked at crates/shared-memory/conformance/conformance.rs:111:9:
+test result: FAILED. 35 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p wcontainers-shared-memory --test host`
+===== wrong change part-past-parent: >     if start > end || end > count as u64 * WORD as u64 + 1 {
+anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+anonymous::parts_stay_inside --- FAILED
+file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file --- FAILED
+file::counts_only_the_bytes_asked_when_they_are_not_whole_pages --- FAILED
+file::parts_stay_inside --- FAILED
+file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals --- FAILED
+thread 'anonymous::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1663147) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:26:5:
+thread 'anonymous::parts_stay_inside' (1663150) panicked at crates/shared-memory/conformance/conformance.rs:135:9:
+thread 'file::keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file' (1663165) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:26:5:
+thread 'file::counts_only_the_bytes_asked_when_they_are_not_whole_pages' (1663164) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:26:5:
+thread 'file::parts_stay_inside' (1663170) panicked at crates/shared-memory/conformance/conformance.rs:135:9:
+thread 'file::maps_a_file_sealed_against_shrinking_and_refuses_every_other_set_of_seals' (1663168) panicked at crates/shared-memory/foreign_implementation/host/conformance.rs:26:5:
+done load 6.59 6.70 16.66
+arm-run: exit 0 after 46 s, load 6.59 6.70 16.66

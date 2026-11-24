@@ -1,0 +1,19 @@
+# the tree of commit 673309d7a (crates/shared-memory files hashed together: 040f49f0); script: checks/native.sh
+arm-run: job rprim/20261124-122157-4062067 (re-attach: arm-run --attach rprim 20261124-122157-4062067; stop: arm-run --stop rprim 20261124-122157-4062067)
+arm-run: job rprim/20261124-122157-4062067 on aarch64 Linux 7.0.0-1018-aws, 96 cores, load 6.12 9.43 11.77, jobs 12
+arm-run: in /work/src/rprim, build directory /work/target/rprim
+arm-run: command: MUTANTS=0 REFUSALS=0 bash /work/rprim-scripts/native.sh
+===== aarch64 native suites load 6.83 9.52 11.79
+     Running unittests interface.rs (/work/target/rprim/debug/deps/wcontainers_shared_memory-6b3da3d467ec2a0e)
+     Running attack/attacks.rs (/work/target/rprim/debug/deps/attacks-51b8fad076244f6e)
+     Running foreign_implementation/heap/conformance.rs (/work/target/rprim/debug/deps/heap-7f4552111e1fc01a)
+     Running foreign_implementation/host/conformance.rs (/work/target/rprim/debug/deps/host-dc3237a733fc397e)
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running attack/refused.rs (/work/target/rprim/debug/deps/refused-5c9eda7b55aa3f6a)
+     Running unittests conformance.rs (/work/target/rprim/debug/deps/wcontainers_shared_memory_conformance-dc84171be13127fb)
+-- host test names
+37
+-- clippy
+-- the inside's target, no host feature
+status 0
+arm-run: exit 0 after 16 s, load 9.07 9.92 11.89

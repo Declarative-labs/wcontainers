@@ -1,0 +1,40 @@
+# the tree of commit 673309d7a (crates/shared-memory files hashed together: 040f49f0); script: checks/verus.sh
+arm-run: job rprimv/20261124-123337-1771509 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 18.92 24.29 20.80, jobs 12
+arm-run: in /work/src/rprimv, build directory /work/target/rprimv
+arm-run: command: bash /work/rprim-scripts/verus.sh
+=====   Version: 0.2026.11.22.1ce6a59 load 18.92 24.29 20.80
+verification results:: 3 verified, 0 errors
+wall .785384190 s
+===== the agreement test
+test agree_at_the_edges ... ok
+test agree_on_random_inputs ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+wall 8 s
+===== wrong change to the copy: offset-off-by-one
+error: postcondition not satisfied
+error: postcondition not satisfied
+verification results:: 2 verified, 1 errors
+error: aborting due to 2 previous errors
+===== wrong change to the copy: part-past-parent
+error: postcondition not satisfied
+verification results:: 2 verified, 1 errors
+error: aborting due to 1 previous error
+===== wrong change to the copy: head-one-too-many
+error: postcondition not satisfied
+verification results:: 2 verified, 1 errors
+error: aborting due to 1 previous error
+===== wrong change to the copy: overflow
+error: possible arithmetic underflow/overflow
+verification results:: 2 verified, 1 errors
+error: aborting due to 1 previous error
+===== wrong change to the code, agreement test: head-one-too-many-in-the-code (1 line changed)
+thread 'agree_on_random_inputs' (1775305) panicked at agreement.rs:41:5:
+thread 'agree_at_the_edges' (1775304) panicked at agreement.rs:41:5:
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+===== wrong change to the code, agreement test: bound-off-by-one-in-the-code (1 line changed)
+thread 'agree_at_the_edges' (1775408) panicked at agreement.rs:45:5:
+thread 'agree_on_random_inputs' (1775409) panicked at agreement.rs:45:5:
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+done
+arm-run: exit 0 after 12 s, load 18.24 23.97 20.73

@@ -1,0 +1,39 @@
+# the tree of commit 673309d7a (crates/shared-memory files hashed together: 040f49f0); script: checks/kani.sh
+arm-run: job rprimk/20261124-122257-1659129 on x86_64 Linux 7.0.0-1018-aws, 96 cores, load 6.91 6.76 16.73, jobs 12
+arm-run: in /work/src/rprimk, build directory /work/target/rprimk
+arm-run: command: bash /work/rprim-scripts/kani.sh
+kani CBMC 6.11.0, load 6.59 6.70 16.66
+one_word::counts_the_words_mapped:  ** 0 of 671 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 9.90
+one_word::loads_stores_and_swaps_only_words_inside:  ** 0 of 1017 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 9.90
+one_word::reads_exactly_the_bytes_asked:  ** 0 of 1055 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 13 s, load 9.04
+one_word::writes_exactly_the_bytes_given:  ** 0 of 1247 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 17 s, load 8.50
+one_word::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 1399 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 32 s, load 9.53
+one_word::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1665 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 165 s, load 11.86
+one_word::waits_and_wakes_on_the_low_half_of_words_inside:  ** 0 of 1001 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 5 s, load 11.55
+two_words::counts_the_words_mapped:  ** 0 of 671 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 9.90
+two_words::loads_stores_and_swaps_only_words_inside:  ** 0 of 1017 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 9.59
+two_words::reads_exactly_the_bytes_asked:  ** 0 of 1055 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 14 s, load 9.04
+two_words::writes_exactly_the_bytes_given:  ** 0 of 1247 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 19 s, load 8.38
+two_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 1399 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 40 s, load 10.66
+two_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1665 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 175 s, load 9.88
+two_words::waits_and_wakes_on_the_low_half_of_words_inside:  ** 0 of 1001 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 6 s, load 17.18
+three_words::counts_the_words_mapped:  ** 0 of 671 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 9.90
+three_words::loads_stores_and_swaps_only_words_inside:  ** 0 of 1017 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 5 s, load 9.59
+three_words::reads_exactly_the_bytes_asked:  ** 0 of 1055 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 14 s, load 9.04
+three_words::writes_exactly_the_bytes_given:  ** 0 of 1247 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 23 s, load 9.39
+three_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 1399 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 45 s, load 10.81
+three_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1665 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 195 s, load 48.44
+three_words::waits_and_wakes_on_the_low_half_of_words_inside:  ** 0 of 1001 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 8 s, load 54.47
+four_words::counts_the_words_mapped:  ** 0 of 671 failed (6 unreachable) VERIFICATION:- SUCCESSFUL  wall 10 s, load 9.90
+four_words::loads_stores_and_swaps_only_words_inside:  ** 0 of 1017 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 5 s, load 9.59
+four_words::reads_exactly_the_bytes_asked:  ** 0 of 1055 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 16 s, load 8.95
+four_words::writes_exactly_the_bytes_given:  ** 0 of 1247 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 27 s, load 9.28
+four_words::parts_lie_inside_and_reach_only_their_bytes:  ** 0 of 1399 failed (8 unreachable) ** 1 of 1 cover properties satisfied VERIFICATION:- SUCCESSFUL  wall 50 s, load 10.29
+four_words::parts_read_to_a_sink_and_write_from_a_source:  ** 0 of 1665 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 214 s, load 45.94
+four_words::waits_and_wakes_on_the_low_half_of_words_inside:  ** 0 of 1001 failed (7 unreachable) VERIFICATION:- SUCCESSFUL  wall 4 s, load 42.42
+all 28: 28 successful, 0 failed, covers unsatisfied in 0, wall 326 s
+===== wrong change: the futex on the high half
+1
+four_words::waits_and_wakes_on_the_low_half_of_words_inside:  ** 1 of 1001 failed (7 unreachable) VERIFICATION:- FAILED  wall 4 s, load 39.18
+done
+arm-run: exit 0 after 333 s, load 39.18 20.27 18.81
