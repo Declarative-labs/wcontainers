@@ -96,6 +96,56 @@ What neither removes: the per-piece cost of whatever is still loaded (3.6 us aga
 kernel's whole-file read (the kernel track's). Runs 2 to 4 build 2, then the fork-child half of 1, each measured
 before and after, alternating, on a quiet machine.
 
+## Round 4 run 5 (2026-11-24): the sixth check's findings settled; W1 reported complete again
+
+Graviton4 with /dev/kvm denied in every run unless said; scratch w1/r4e-run5 (check.sh is round 6's with a time
+limit per binary, `LIMIT`; outputs *-arm.out, *-x86.out). Each finding of W1's sixth independent check (scratch
+w1-check6), settled or not:
+- [blocking] A store into the writable and executable page its own code is on never completed (the write fault
+  dropped the page's pieces, the resume loaded the store's piece from that page and protected it again, for ever):
+  settled, ceb084932. A code page the guest writes is left writable in that memory from then on (counted
+  `code_pages_left_writable`), until the kernel changes its permissions or contents; later changes there reach
+  translated code by announcement (`ic ivau`, which the `CTR_EL0` we present asks for), as in the VM form and the
+  WebAssembly output (plan 3.4 says so now). Tests: tests/run.rs `a_store_into_the_page_its_own_code_is_on_completes`
+  and `a_function_rewritten_on_its_caller_s_page_runs_its_latest_code` (rewritten and announced twice on its
+  caller's page: 1 + 5 + 9), tests/interrupt.rs
+  `a_store_into_the_page_its_own_code_is_on_completes_before_an_interrupt_ends_the_spin` (the check's case through
+  the Executor trait). With the mark removed in the remote copy the first two time out (124) and the third fails
+  (mutate-written.sh, mutate-arm.out). The kernel suite's `code` test keeps Linux's answer.
+- [minor] The frame-return route (gVisor's) was chosen per frame from a word a guest sibling can write, so a native
+  Linux host could be forged into it: settled, 325d1dbb7. Each zygote finds at its start whether the host's signal
+  frames hold an FP/SIMD record (a stub whose filter refuses `rt_sigreturn` is stopped in a spinning turn: it
+  publishes the stop where they do, and is killed by the filter where they do not); the stubs' filters allow
+  `rt_sigreturn` only where they do not. No assembly and no unsafe changed. Test: tests/step.rs
+  `a_handler_forged_into_the_return_through_its_frame_is_killed` (traces the stop's handler, sets x15 at its first
+  choice of the route, the stub is killed by SIGSYS); with the filter's old rule it fails (exits 12 instead:
+  mutate-frames.sh). Under gVisor (runsc 20261109.0, systrap, gvisor-arm.out) the probe finds frames without the
+  record, the floor's exits take the route as before (4 warnings), and the floor's two known gVisor failures are
+  unchanged (the execute-only read and the flood's coverage); stop passes; step fails there (no ptrace like Linux's;
+  never claimed there). Plan 3.6, 6 and item 14 corrected ("Linux hosts never take this route" was not backed).
+- [minor] The speed ratio was computed against a model with a noisy translation term: settled, 3dcd74e45 (the model
+  holds none; the second run is compared). Corrected figures are in the gap list. The account at the top was taken
+  at load 14 to 33 of 96 cores: the rented ARM machine is shared by every track and was never quiet during these
+  rounds (its quietest this run: 7 to 9); CPU 41 was not used by others (2.6% of its samples), but the load is not
+  what round 4 asked. Open as stated, not re-measured.
+- [minor] The stop flood sent almost no stops: settled, 5bc9ad7dd. The thread is told to end only once 10,000 stops
+  were sent and some landed; seeds 1, 7919, 3, 11, 12: 11,871 to 31,280 stops, 10,000 before the end (flood2-arm.out).
+- [minor] The status claimed 1 unsafe use in the tests: settled here (Unsafe code): none; the library's 18 marked
+  uses (19 lines) are unchanged by round 4.
+- [minor] Run 4's shortest-walk rule was measured on one workload: settled, 20246ed8e, by undoing run 4's walk change.
+  Measured: `sh` starting 1,000 programs alternating `true` and `ls -l /bin` (knob `WCHP_STARTED`, 823fede36),
+  before (run 4's change reversed) and after alternated, 5 rounds at load 11 to 22 (ab-mixed-arm.out): second runs
+  7.18, 7.09, 7.24, 6.75, 6.72 s against 11.15, 11.85, 10.64, 10.73, 10.61 s: run 4's change cost 3.6 ms a program
+  there (an `ls` follows a `true`'s shorter walk and stops for the rest), against the 0.29 ms it saved for `true`
+  alone. After undoing it, `true` alone is 3.16 to 3.31 times the model (speed2-arm.out, load 8 to 11). A walk that
+  is one program's needs the program a memory runs, which the executor interface does not pass (gap list).
+- [minor] The gap list's unmet bar items: each stays on the list, with its owner; the blocking finding is settled.
+- Verdicts at the run's end (commit 325d1dbb7 plus the status), /dev/kvm denied: Graviton4 (whole-arm.out, 14:39
+  to 14:45 UTC, load 8.6 to 12.7): the library's 6 and all 24 test binaries pass, 158 tests, but the known
+  precise-set test (20 of 21, the owner's); the Xeon (whole-x86.out, load 0.8 to 12.7): the library's 5, embedder 2,
+  files 4, host 1, memory 12, placement 2, slice 3, step 6, stop 3, stub 6, threads 4, touch 3, zygote 8 pass, the
+  ARM64-only binaries build none. Clippy with warnings denied clean on both.
+
 ## Round 4 run 4 (2026-11-24): one program's walk, and W1 reported complete
 
 Graviton4, CPU 41, /dev/kvm denied in every run. Scratch w1/r4d-run4 (check.sh, ab-diag.sh, mutate-walk.sh, walk.patch,
@@ -1425,7 +1475,9 @@ What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
 W1 is reported complete so that its independent check runs and W2 (form I) can start, as the orchestrator's round 4
 asked. What is met is under "Met" below. Each item of plan 13's bar that is not met, with its cause, its measured size
 and its owner:
-- busybox `sh` starting 1,000 programs: about 2.9 times (2.5 to 3.0 in round 4 run 4, after its walk change) the model (bar 1.25). Cause: every new host process is given
+- busybox `sh` starting 1,000 programs: 3.16 to 3.31 times the model (round 4 run 5, after undoing run 4's walk change,
+  Graviton4 load 8 to 11; the second run against a model with no translation term; before run 5 the figures divided by
+  a model holding a noisy one, so run 4's "2.5 to 3.0" was 2.90 to 3.19 by this measure) (bar 1.25). Cause: every new host process is given
   its translated code in its own code area (about 300 pieces into each exec'd busybox at a new random base, about 2 us
   each), two stubs a program (about 0.39 ms each against the model's 0.30), the kernel's read of the whole program file
   at each exec (0.37 ms a program, 9.9% of the CPU), the turns' host work (each turn 10 to 60 us of the stub's mmap,
@@ -1479,8 +1531,10 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
   primitive); when they land, each use here becomes a call of one.
-- W1 is reported complete (round 4 run 4) with the gap list above; its independent check runs next, then W2 (form
-  I), which the owner's rule says is built too.
+- W1 is reported complete (round 4 runs 4 and 5) with the gap list above; the sixth check's findings are settled
+  (round 4 run 5); its next independent check runs next, then W2 (form I), which the owner's rule says is built too.
+- The load-ahead walk is the one before round 4 run 4 (a mix of programs measured it 3.6 ms a program faster). A walk
+  that is one program's needs the executor told which program a memory runs (interface: the owner's).
 - busybox `sh`'s bar: the account at the top of this file is the basis. What is left that this track can do without
   a ruling: the per-piece cost (about 2 us a piece, about 300 pieces an exec, against a floor under 1 us). What needs
   others: the exec half of change 1 (the owner's decision 16, and a file's base kept across execs or translated code
@@ -1508,6 +1562,11 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 ## How to run
 
+- Since round 4 run 5: scratch w1/r4e-run5. check.sh is round 6's with a time limit per binary (`LIMIT`, seconds);
+  speed-bb.sh runs busybox `sh` `ROUNDS` times; ab-started.sh alternates it with `PATCH` reversed and as sent, each
+  pass running `STARTED` (ab-mixed.cmd is the mixed `true`/`ls` run, self-contained); mutate-written.sh and
+  mutate-frames.sh break the two fixes in the remote copy (each new test must fail); gvisor.sh runs floor, stop and
+  step under a fresh runsc 20261109.0 (the old extraction in /work/target/nwvm/gvisor lost its sidecar).
 - Since round 4 run 4: scratch w1/r4d-run4. check.sh is round 6's (`set -- <binary>[:<filter>] ...`); ab-diag.sh
   (`PATCH=<base64 of a diff of this crate>; DIAG=<base64 of r4c-run3/diag.py>; set -- <rounds>`) alternates busybox
   `sh` with the diff reversed and as sent, then prints loads a stop asked for and pieces loaded ahead; mutate-walk.sh
@@ -1946,7 +2005,9 @@ memory); `read_to` and `write_from` keep their buffer.
 ## Unsafe code
 
 The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. Since W1 round 8 run 1:
-18 in the library (16 build on ARM64, 13 on x86-64), 1 in its tests; round 8 run 1 removed 10 (the owner's rule of
+18 marked uses in the library (19 lines by the root Cargo.toml's count; 16 build on ARM64, 13 on x86-64), none in its
+tests (commit fded27c0b moved the tests' read of `__rseq_size` into the library); the same at round 4's start and after
+round 4 run 5. Round 8 run 1 removed 10 (the owner's rule of
 2026-11-24: no new unsafe, and any a safe library function does the same goes): the window cache's five (its
 reservation, its window maps and its two copies; the embedder now reads and writes the stubs' memfds with rustix's
 safe `pread` and `pwrite`), the code area's map, unmap and slice (memmap2's safe `MmapRaw`, words written by
@@ -1965,7 +2026,6 @@ safe `pread` and `pwrite`), the code area's map, unmap and slice (memmap2's safe
   probe's assembly (set p0 and FFR, `svc`, store them).
 - pages.rs: the two views of the thread pages' mapping as 32-bit and 64-bit atomics (the stub writes the same pages
   from its own process).
-- tests/zygote.rs: glibc's `__rseq_size`, to show the test has a registration to drop.
 - The stub's routine that receives a shared block's memfd and maps it is in the same assembly (no new use); it
   reads the control message the host kernel wrote on its own stack, checks its length, level and type, and maps
   only what the filter allows.
