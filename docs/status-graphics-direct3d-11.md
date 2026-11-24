@@ -6,7 +6,8 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23).
+(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23) and
+3 (2026-11-24).
 
 ## Where things stand
 
@@ -14,14 +15,67 @@ G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ru
 2026-11-22) was reported complete at run 5; run 6 fixed what the sixth check found, run 7 ran
 the whole bar at that code, and run 8 built what the seventh check found missing (below). The
 device reports the highest level whose every format requirement of Microsoft's tables (their
-video columns aside, Departures) it meets (4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on
-Direct3D 12) is 11_0 with every requirement met and tested, the WebGL 2 build (ANGLE on the
-RTX 3080) is 10_0 since G4h run 5, and the WebGPU build without texture-formats-tier1 (a
-browser's) is 10_0 since G4h run 9. Still differing from real Direct3D: the Gap list's absent
-features. Of the orchestrator's two rulings of 2026-11-23, the bar item is closed (round 6 run
-1); atg-simplecomputepc is a real difference: the state that moves the RTX 3080 to the
-reference's answer is found and made a test, a known failure until the shaders crate's division
-gives what WARP and the RTX 3080 settle on (round 6 run 2, below; asked of the shaders track).
+video columns aside, Departures) and whose per-stage slots it serves (round 6 run 3): the RTX
+3080 device (WebGPU build, wgpu on Direct3D 12) is 11_0 with every requirement met and tested,
+the WebGL 2 build (ANGLE on the RTX 3080) is 9_3 since round 6 run 3 (16 texture units a stage
+where 10_0 reads 128 shader resource views; 10_0 from G4h run 5 until then, which was untrue),
+and the WebGPU build without texture-formats-tier1 is 10_0 since G4h run 9; a browser's WebGPU
+at Chrome's 48 sampled textures a stage is 9_3 (Gap list). Still differing from real Direct3D:
+the Gap list's absent features. Of the orchestrator's two rulings of 2026-11-23, the bar item is
+closed (round 6 run 1). atg-simplecomputepc is bisected but not fixed: no Direct3D state ours
+mishandles decides it. The RTX 3080's driver changes its own division for the program after some
+frames, and the isolated test holds ours to WARP alone. Ours divides as the RTX 3080 does outside the
+program, bit for bit; matching WARP would change the converter's division everywhere. Which of the
+two real answers to follow is asked of the orchestrator (For the orchestrator); until then it
+fails (round 6 run 3, below).
+
+G4h round 6 run 3 (2026-11-24, from about 00:30 Pacific), the seventh round's check:
+- Per-stage slots counted in the level check (device.rs `level_slots`, `slots_served`): from
+  10_0 a stage's 128 shader resource views and 16 samplers, at 11_0 also 8 unordered access views
+  as storage textures and as storage buffers; below 10_0 shader model 2's 16 samplers, each with
+  its texture. The check's probe (25 views up to t127, s0 and s15 at 10_0) lost the WebGL 2
+  device; that build is now 9_3 and warns, for each level above, which slots it lacks. Measured
+  with the check's probe at dfbdf3ab's code (r7/probe/out): through WebGL 2 the default device is
+  9_3 and devices of 10_0 and up are refused with `DXGI_ERROR_UNSUPPORTED`; through WebGPU the
+  probe's `slots` gives real Direct3D's bits (`7473134300000000000000000000803f`). WebGL 2
+  has no route to more than `MAX_TEXTURE_IMAGE_UNITS` textures a stage (16 here and the
+  specification's least; no storage buffers or bindless textures to read more through), so the
+  level is the truthful answer, not a gap ours can build past. A browser's WebGPU: Chrome gave 48
+  sampled textures a stage on the plan's measurement (WebGPU's default 16), so 9_3 too unless an
+  adapter offers 128; a software sampler over storage buffers would be the only other route (not
+  built: filtering, addressing, mips and comparisons in the shader).
+- Shaders needing more textures (constant buffers read through textures among them) or samplers
+  than the back end's stage has are refused at creation with `E_INVALIDARG`, counted and warned
+  (`BindingsBeyondLimit`, plan 4.12), where the WebGL 2 device was lost before. With the level
+  check only a 9_3 shader on WebGL 2 reading 16 textures and more than 12 constant buffers can
+  reach it; no case of that is built.
+- Tests: front.rs level cases (127 and 16 textures give 9_3, 7 storage textures 10_1, 15
+  samplers no device); own_cases `slots` and programs.rs
+  `a_stages_last_view_and_sampler_read_at_10_0_as_direct3d_reads_them` (WebGPU build, against
+  real Direct3D) and `no_device_of_10_0_where_a_stage_reads_fewer_than_128_views` (WebGL 2
+  build). The WebGL 2 build's seven 10_0 cases are ignored there with that reason (Known
+  failures). The recorder's sampled textures are 128 (wgpu's on Direct3D 12 are more; 48 was
+  Chrome's).
+- The frames test is renamed for what it checks:
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`. WARP gives its answer
+  with or without the program's draws, so the draws decide nothing in it. The earlier summary
+  ("the state that moves the RTX 3080 is found and made a test") overstated it and is withdrawn.
+- The division measured further for the ruling (scratch r7/probe `divk`, r7/probe/out, through
+  the queue at 01:25 Pacific): quotients k * b / b, k 1 to 64, b in 3, 7, 10, 300, 301 and 999,
+  first dispatch. The divisor came three ways: from a constant buffer (`div` by `cb0[0].x`), as
+  an immediate (`div` by `l(300.0)`, fxc unoptimised), and as fxc's own `mul` by the reciprocal.
+  The RTX 3080 divides by a constant buffer value 1 ULP short on 48 of 64 for b = 300
+  (1200 / 300 = 0x407fffff) and 39 of 64 for b = 7. By the same divisor as an immediate it gives
+  0 of 64 short for 300 and the same 39 for 7, which is what a multiply by the correctly rounded
+  reciprocal gives (fxc's `mul` form gives the same on every device). WARP rounds every `div`
+  correctly. Ours equals the RTX 3080 in all 18 forms. So the RTX 3080 gives 4 for 1200 / 300
+  when the driver knows the divisor as a constant. Inside the program the divisor is the
+  constant buffer's `g_MaxThreadIter.z` (300). That fits its driver re-compiling the program with
+  the constant buffer's values folded in after some frames. This is inferred: the driver's
+  re-compilation cannot be seen from outside, but no other measured form gives 4 on the RTX 3080.
+- The check's minor finding on packed blends with `SRC_ALPHA_SAT` and `BLEND_FACTOR` is kept as
+  is, judged under the graphics bar (Gap list, packed targets): one code off where the two
+  references are themselves one code apart.
 
 G4h round 6 run 2 (2026-11-23, from about 14:20 Pacific), the sixth round's check:
 - atg-simplecomputepc bisected (Gap list, with every number): the program's calls traced, groups
@@ -35,7 +89,7 @@ G4h round 6 run 2 (2026-11-23, from about 14:20 Pacific), the sixth round's chec
   passing) was wrong and is withdrawn: the program fails at frames 60 and 120.
 - The state as a test: own_cases `colour_map_frames` (30 frames of the dispatch, the quad of the
   result and 100 quads from another texture) and programs.rs
-  `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it`, which holds
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`, which holds
   ours to WARP (both real implementations' settled answer; the RTX 3080's first frames give
   either). Ours prints the map's last texel where WARP prints its first, at frames 1 and 30: a
   known failure, ignored with that reason. The fix is the division's rounding in the shaders
@@ -436,8 +490,11 @@ Waiting on the joint step after G4 and G5 (orchestrator's ruling, 2026-11-20):
 The reported level is the highest whose every requirement of Microsoft's format tables is met
 (G4h run 4, 4c9d43b2); the RTX 3080 device meets 11_0. What that costs, measured (logs/g4h3-t6-*
 and logs/g4h4-t2-*), each the highest level met, on that back end only:
-- WebGPU in a browser: 10_0 at most (reasoned from the tables and WebGPU's specification, not run
-  in a browser). WebGPU's `GPUTextureDescriptor.sampleCount` takes 1 or 4 only, and 10_1 already
+- WebGPU in a browser: 9_3 at Chrome's limits, 10_0 at most (reasoned from the tables, WebGPU's
+  specification and the plan's measurement of Chrome's limits, not run in a browser). 10_0 reads
+  128 shader resource views a stage; Chrome gave 48 sampled textures a stage
+  (`maxSampledTexturesPerShaderStage`, WebGPU's default 16), so the device is 9_3 unless the
+  adapter offers 128 (round 6 run 3). WebGPU's `GPUTextureDescriptor.sampleCount` takes 1 or 4 only, and 10_1 already
   requires 8-sample `B5G6R5_UNORM` targets (its "8x Multisample RenderTarget" row); 11_0 requires 8
   samples of 47 formats and 4-sample `R32G32B32A32_FLOAT` and `R32G32_FLOAT` targets, which core
   WebGPU never multisamples (texture-formats-tier1 adds no multisampling of 32-bit floats). No
@@ -457,9 +514,14 @@ and logs/g4h4-t2-*), each the highest level met, on that back end only:
   requires 4-sample loads and targets of the 16-bit and 8-bit signed normalised formats, held as
   integer twins and not multisampled (plan 4.12), and 8 samples (above); 11_0 also 4-sample
   `R32G32B32A32_FLOAT` and `R32G32_FLOAT` targets, which core WebGPU never multisamples.
-- The WebGL 2 build: 10_0, every requirement met since G4h run 5 (the five formats it lacked,
-  `A8_UNORM`, `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`, built in
-  the WebGL 2 back end). 10_1 and 11_0 are out of WebGL 2's reach: 10_1 requires 4-sample
+- The WebGL 2 build: 9_3 since round 6 run 3. 10_0 reads 128 shader resource views a stage and
+  WebGL 2 gives `MAX_TEXTURE_IMAGE_UNITS` (16 on ANGLE here, 16 the specification's least) with
+  no other way to read a texture; the seventh round's check showed a valid 10_0 pixel shader
+  reading 25 views (t127 among them) and s15 lose the device. Its format requirements of 10_0 are
+  met since G4h run 5 (the five formats it lacked, `A8_UNORM`, `R8G8_B8G8_UNORM`,
+  `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`, built in the WebGL 2 back end), so
+  the slots are what keeps it from 10_0. Its Wine d3d10core run (96 of 111 at 10_0) no longer
+  applies: d3d10core makes 10_0 devices only. 10_1 and 11_0 are out of WebGL 2's reach: 10_1 requires 4-sample
   targets, which need a partial sample mask WebGL 2 has no route for (OES_sample_variables and
   `SampleMaskInShader`, not built); 11_0 requires compute shaders and storage views, which WebGL 2
   has not.
@@ -612,17 +674,29 @@ the bar's three, three differ from the rig's recorded frames:
     and 22; the second draw without the quad: L throughout (logs/r6d-probe-a.log). Later in the
     same job the two-draw plan gave L in all 40 frames, and so did its forms without presents or
     drawing into a texture (logs/r6d-probe-b.log): the driver's own choice, not a fixed rule.
-  So no Direct3D state ours mishandles decides it: the RTX 3080's driver changes its division's
-  rounding for this program once frames draw twice after the dispatch, and then gives what WARP
-  gives. The isolated case with that state is own_cases `colour_map_frames`; programs.rs
-  `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` compares ours
-  with WARP (deterministic, where the RTX 3080's first frames are not): WARP
+  So no Direct3D state ours mishandles decides it. After some frames that draw twice after the
+  dispatch, the RTX 3080's driver sometimes changes how it divides in this program and then gives
+  WARP's answer. That is its own choice and does not repeat from run to run. Outside the program
+  its division equals ours bit for bit (the seventh round's check: 2,048 quotients, first dispatch
+  and after 200 more; 555 of them 1 ULP from the correctly rounded quotient on both, 1200 / 300
+  among them, where WARP rounds all 2,048 correctly). So the "state" the ruling asked for is the
+  driver's choice, which no Direct3D call names, and a fix toward WARP would make ours differ from
+  the RTX 3080's own division on 27% of the check's plain quotients. Round 6 run 3's `divk` (Where
+  things stand) adds that the RTX 3080 divides by an immediate 300 exactly (a multiply by the
+  correctly rounded reciprocal) and by a constant buffer's 300 1 ULP short, and ours does the same
+  in every form. The likely "state" is the program's constant buffer value, which the driver folds
+  into the program after some frames. That choice is asked of the orchestrator (For the
+  orchestrator). own_cases `colour_map_frames` copies the program's frames;
+  programs.rs `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` compares
+  ours with WARP alone (WARP gives the same with or without the draws, and the RTX 3080 gives
+  ours' bits in this copy, so the draws decide nothing in the test): WARP
   `8180803e00000000000000000000803f` (64/255, 0, 0, 1), ours `0000803f0000803f000000000000803f`
   (1, 1, 0, 1) at frames 1 and 30; the RTX 3080 without presents gave ours' in three runs
-  (logs/r6f-frames.log). A known failure until ours divides as WARP does: the shaders crate's
-  conversion of `div` refined once after the division (a fused multiply-add for the remainder
-  and one for the correction) gives exactly 4 here, at that cost on every division (Asked of other
-  tracks). Not done in this track's crates: the division is the converter's.
+  (logs/r6f-frames.log). A known failure until the ruling. If the ruling is WARP's answer, the
+  shaders crate's conversion of `div` would be refined once after the division (a fused
+  multiply-add for the remainder and one for the correction). That gives exactly 4 here, at that
+  cost on every division (Asked of other tracks). It is not done in this track's crates, because
+  the division is the converter's.
   - Measured with that refinement patched into the converter in a trial commit never committed
     (scratch r6h/div.patch on lower.rs's `F_DIV`, r6h/div.sh; trial 9b484b63, round 6 run 2,
     22:30 to 22:58 through the queue): the frames case passes (ours equals WARP at frames 1 and
@@ -695,6 +769,14 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
   multisample resolve and initial data, where the RTX 3080 writes 0x00 for clears, draws, blends
   and resolves and keeps the bytes it was given (the
   WebGPU back end's `bgra8unorm`, src/packed.rs; Asked).
+- Packed targets blended with `SRC_ALPHA_SAT` and `BLEND_FACTOR` (the seventh round's check,
+  probe20 `packed`: clear (0.4, 0.55, 0.7, 1), factor (0.3, 0.6, 0.9, 0.5), three blends into an
+  8 by 1 target): `B5G6R5_UNORM` the RTX 3080 0x00f0 (green 7, blue 16), WARP 0x0110 (8, 16), ours
+  0x010f (8, 15); `B5G5R5A1_UNORM` the RTX 3080 0x8070, ours 0x808f (green and blue one code each),
+  WARP different per texel. Ours is one code from WARP where the two references are one code from
+  each other, so it passes under the graphics bar; the cause is the 8-bit intermediate's rounding
+  (Departures), kept. Min, max, reverse subtract and the `B5G5R5A1_UNORM` subtract cases equal
+  WARP or lie within one code of a reference.
 - Values just past a half between two codes drawn into a 16-bit normalised texture held as its
   integer twin: 6553.5006 is written 6553 by the RTX 3080 and 6554 by ours; both within the
   specification's tolerance. Filtered samples and mips of twins differ by 1 ULP at most.
@@ -780,13 +862,15 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   build and are marked `#[ignore]` with the reason (Gap list); run them with `--include-ignored`.
 - The six tests with WebGPU features off named in the Gap list's truthful-level item, marked
   `#[ignore]` with that reason.
-- `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (programs.rs):
+- `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` (programs.rs):
   ours' division gives the colour map's last texel where WARP gives its first (Gap list,
-  atg-simplecomputepc); marked `#[ignore]` with that reason.
-- On the WebGL 2 build only: the library tests asking for a device above 10_0 fail by refusing
-  it; the bar's WebGL 2 run takes the 10_0 cases. Of those,
-  `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` (an 11_0 device with a 10_1
-  state) is marked ignored on that build with that reason.
+  atg-simplecomputepc); marked `#[ignore]` with that reason until the orchestrator rules.
+- On the WebGL 2 build only: the library tests asking for a device of 10_0 or above fail by
+  refusing it, as the build is 9_3 (Gap list). The seven 10_0 cases the bar's WebGL 2 run took
+  (nv12, small formats, the four `own_level10` cases and
+  `no_multisampling_without_a_sample_mask_route_at_10_0`) and
+  `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` are marked ignored on that
+  build with that reason; the run now takes `no_device_of_10_0_where_a_stage_reads_fewer_than_128_views`.
 
 ## What comes next
 
@@ -795,10 +879,13 @@ In order:
    stage, as between vertex and pixel programs now (Departures). The tests that ask an 11_0 device
    with WebGPU features off could run their 10_0 parts on the 10_0 device without
    texture-formats-tier1 (shader model 4 forms of their cases).
-1. atg-simplecomputepc: once the shaders crate refines its division (Asked), un-ignore
-   `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it`, run it and
-   the program through the rig.
-   The trial patch (scratch r6h/div.patch) shows what that gives.
+1. atg-simplecomputepc, after the orchestrator's ruling (For the orchestrator): if WARP's
+   correctly rounded division, the shaders crate refines its division (Asked), then un-ignore
+   `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` and run it and the
+   program through the rig (the trial patch, scratch r6h/div.patch, shows what that gives); if
+   the RTX 3080's own division, the program and the test are counted under "either real answer
+   passes" and the test compares with the RTX 3080's isolated answer instead.
+   The 9_3 tests through the WebGL 2 build (item 9) matter more now that it is 9_3.
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
    Once the shaders crate accepts unread clip distances behind a geometry shader (Asked), run
    d3d10core test_clip_distance through the WebGL 2 build again.
@@ -928,7 +1015,7 @@ job on the desktop. Before a run, look at the queue with `ssh tom@192.168.2.183
 ## Tests
 
 At G4h round 6 run 2: programs.rs gains
-`colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (own_cases
+`colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` (own_cases
 `colour_map_frames`, compared with WARP, a known failure); the program's compute shader is the
 constant `FRACTAL` shared with `colour_map_edge`.
 At G4h run 10: programs.rs gains `sample_masks_without_sample_0_as_direct3d_applies_them`
@@ -1171,6 +1258,31 @@ listed case of section 12 has its test against real Direct3D.
   into each slice from a cleared slice.
 - The library draws through wgpu on Direct3D 12 only.
 
+## For the orchestrator
+
+- atg-simplecomputepc (Gap list) needs a ruling on which real answer the division follows. Ours
+  gives `frac(1200 / 300)` as 0.9999998: its quotient is 1 ULP below 4, within the
+  specification's 2.5 ULP. The RTX 3080's division gives the same bits outside the program and
+  in its first frames (2,048 plain quotients equal bit for bit, the check's probe20). WARP's
+  division is correctly rounded and gives 4, and the RTX 3080 gives 4 too inside the program once
+  its driver has changed its division, from frame 18 on in the check's capture. The rig's
+  reference frames were taken after that. So the two real implementations agree on this program's
+  frames but not on plain division. Round 6 run 3 measured why (Where things stand, `divk`): the
+  RTX 3080 divides exactly by a divisor it knows as a constant and 1 ULP short by one read from a
+  constant buffer. Ours equals it in all 18 forms measured. The program's divisor is a constant
+  buffer value, so the settled answer fits the driver folding that value into the program after
+  some frames: an optimisation of the driver's, which no Direct3D state names.
+  (a) Follow WARP: the shaders crate refines every division (two fused multiply-adds). Every
+  quotient then equals WARP's, and the program comes within 1,705 pixels of the reference where
+  WARP is 1,889 (measured in a trial, Gap list). Ours would differ from the RTX 3080's own
+  division on 27% of the check's plain quotients, but each such result would still be a real
+  answer.
+  (b) Follow the RTX 3080's own division under "either real answer passes": nothing changes, and
+  the program stays 154,515 pixels from the rig's reference frames.
+  The shaders track holds that the division is not its own (its run 113 question); either way the
+  change is in its crate. The test stays a known failure until you rule. This replaces the
+  question that was put to the owner: the owner's notes say the graphics bar is yours to rule.
+
 ## For the owner
 
 - Truthful levels cost the browsers: WebGPU allows 1 or 4 samples only, so a browser's Direct3D 11
@@ -1178,21 +1290,11 @@ listed case of section 12 has its test against real Direct3D.
   formats and 4-sample 32-bit float targets core WebGPU never multisamples. No exact route to 8
   samples exists (plan 4.12: two 4-sample passes run the pixel shader twice, which storage writes
   see). Without texture-formats-tier1 it is 10_0 too since G4h run 9 (resolves of 4-sample
-  `R32_FLOAT` targets by a draw); the WebGL 2 build is 10_0 (10_1 needs 4-sample targets,
-  which need a partial sample mask WebGL 2 has no route for). Programs requiring a higher level
+  `R32_FLOAT` targets by a draw). Counting a stage's 128 shader resource views (round 6 run 3)
+  takes the WebGL 2 build to 9_3 (16 texture units a stage) and a browser's WebGPU at Chrome's 48
+  sampled textures a stage to 9_3, unless an adapter offers 128. Programs requiring a higher level
   then refuse to start there, as on hardware without the level. Natively on the RTX 3080 the
   device is 11_0.
-- atg-simplecomputepc fails (Gap list): ours computes `frac(1200 / 300)` as 0.9999998, within the
-  specification's 2.5-ULP division, where WARP and the RTX 3080 (once the program's frames have
-  drawn twice after its dispatch, by frame 18) give 0; the RTX 3080's driver gives ours' answer in
-  the first frames. Matching it costs every converted program two fused multiply-adds per division
-  (the shaders crate's choice, asked). The shaders track holds that it is not its own (its run 113
-  question to you): its copies of the division give real Direct3D 11's first-frame bits on the RTX
-  3080, which is true, and is the answer the RTX 3080 leaves by frame 18. The two tracks disagree on
-  whose it is; please rule. Measured in a trial (Gap list): with the division refined once in the
-  converter, the isolated case gives WARP's bits and the program comes within 1,705 pixels of the
-  reference (WARP: 1,889), so that change alone makes it pass. If you would rather accept the specification's allowance here, say so
-  and the test's reason changes; until then it is a known failure.
 - Video is read as no part of a feature level (Departures): the tables' video columns are not
   required of ours, which serves no video device. If you read them as required, 10_0 and above
   need a video processor (`ID3D11VideoDevice`, `VideoProcessorBlt`) built first.
@@ -1539,13 +1641,13 @@ Earlier runs' measurements are in this file's git history.
   cull distances than its vertex program writes (none, in Wine's d3d10core test_clip_distance:
   vertex outputs `SV_ClipDistance` mask 1, geometry inputs none); since 03b897de it refuses with
   `GeometryDistancesRead`, which removes the WebGL 2 build's device there (Gap list).
-- Shaders track: the conversion of DXBC `div` (and DXIL `fdiv`) giving what WARP and the RTX 3080
-  settle on: the quotient refined once after the reciprocal (`q = a * r; e = fma(-b, q, a);
+- Shaders track, only if the orchestrator rules for WARP's answer (For the orchestrator): the
+  conversion of DXBC `div` (and DXIL `fdiv`) giving WARP's correctly rounded quotient: the quotient refined once after the reciprocal (`q = a * r; e = fma(-b, q, a);
   q = fma(e, r, q)`), which gives 4 for 1200 / 300 where the plain division gives 3.9999998
   (atg-simplecomputepc, Gap list; measured in a trial: the case passes and the program comes
   within WARP's distance of the reference, scratch r6h/div.patch, which keeps no non-finite
   quotient and is a measurement only). Test: programs.rs
-  `colour_inside_the_set_over_atg_simplecomputepcs_frames_as_direct3d_settles_on_it` (ignored
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` (ignored
   until then; run it with `--ignored`).
 - Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now
   (this track runs its scratch copy, How to run).
