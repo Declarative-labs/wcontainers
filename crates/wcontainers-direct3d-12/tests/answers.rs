@@ -5,8 +5,10 @@
 //! need a program, from programs fxc compiled (tests/answers/compile.cmd): loads, sampling,
 //! comparison, gathering, multisampled loads, typed buffer views, typed storage stores, loads and
 //! atomics, vertex and index input, and drawing into targets (blended where answered) and depth
-//! targets; loads of a texel of varied components, of the formats of whole-byte components alike,
-//! checked against Direct3D's conversions; and resource binding tier 1's counts bound at once. Needs a GPU: run it through `tools/graphics-rig/gpu-job`. `WEBGPU_API` picks wgpu's
+//! targets; loads, samples, comparisons and gathers of texels of varied components, of the formats
+//! of whole-byte components alike, checked against Direct3D's conversions; and resource binding
+//! tier 1's counts bound at once. Needs a GPU: run it through `tools/graphics-rig/gpu-job`.
+//! `WEBGPU_API` picks wgpu's
 //! API (dx12, vulkan, metal).
 
 use std::sync::Arc;
@@ -961,7 +963,9 @@ fn first_texel(
 }
 
 /// Uses every ability answered for DXGI format `format` that needs a program; how many uses were
-/// made. Each program reads zeros, so what it read is checked to be zero; stores and draws are
+/// made. Each program reads zeros, so what it read is checked to be zero, and loads, samples,
+/// comparisons and gathers of the formats `varied_texel` decodes also read varied texels, checked
+/// against Direct3D's conversions; stores and draws are
 /// checked to have written the first texel, atomics to have returned and left what Direct3D's
 /// operations give.
 fn program_uses_of(format: u32) -> usize {
@@ -1054,29 +1058,78 @@ fn program_uses_of(format: u32) -> usize {
         device.destroy_resource(t);
     }
 
-    // A load of a texel of varied components, of the formats `varied_texel` decodes.
-    if has(support1::SHADER_LOAD)
-        && format == view
+    // Reads of a texture whose every texel has varied components, of the formats `varied_texel`
+    // decodes: a load gives the texel; a linear sample and a gather of equal texels give its
+    // components and its red ones, a comparison with 0.5 whether 0.5 is at most its red.
+    if format == view
         && let Some((bytes, expected, tolerance)) = varied_texel(format)
     {
-        let what = format!("format {format}: a load of a varied texel");
+        let what = format!("format {format}: reads of varied texels");
+        let desc = texture(format, DIMENSION_TEXTURE2D, 1, 1, 1, 0);
+        let (f, _) = desc.footprints(0, 1, 0).unwrap();
+        let pitch = f[0].footprint.row_pitch as usize;
         let mut fill = vec![0; zero_bytes as usize];
-        fill[..bytes.len()].copy_from_slice(&bytes);
+        for row in 0..f[0].rows as usize {
+            for x in 0..f[0].footprint.width as usize {
+                let at = row * pitch + x * bytes.len();
+                fill[at..at + bytes.len()].copy_from_slice(&bytes);
+            }
+        }
         let varied = uploaded(&mut device, &fill);
         let (t, copy, _) = zeroed(&mut device, format, 0, varied, &what);
-        let views = [srv(t, SRV_DIMENSION_TEXTURE2D), Descriptor::Empty];
-        let words = programs.dispatch(&mut device, programs::LOAD[k], views, vec![copy], &what);
-        let near = words
-            .iter()
-            .zip(expected)
-            .all(|(&w, e)| w.abs_diff(e) <= tolerance);
-        assert!(
-            near,
-            "{what}: read {words:x?}, Direct3D gives {expected:x?}"
-        );
+        let float = |w: u32| f64::from(f32::from_bits(w));
+        // Filtering equal texels may round in the last bits.
+        let near_float =
+            |w: u32, e: u32| (float(w) - float(e)).abs() <= 1e-3 * float(e).abs().max(1.0);
+        let red_passes = match 0.5 <= float(expected[0]) {
+            true => 1.0f32.to_bits(),
+            false => 0,
+        };
+        // The ability, its program, its name and the words it must read (none: any).
+        type VariedRead<'a> = (u32, &'a [u8], &'a str, [Option<u32>; 4]);
+        let reads: [VariedRead; 4] = [
+            (
+                support1::SHADER_LOAD,
+                programs::LOAD[k],
+                "a load",
+                expected.map(Some),
+            ),
+            (
+                support1::SHADER_SAMPLE,
+                programs::SAMPLE,
+                "a sample",
+                expected.map(Some),
+            ),
+            (
+                support1::SHADER_SAMPLE_COMPARISON,
+                programs::COMPARE,
+                "a comparison sample",
+                [Some(red_passes), None, None, None],
+            ),
+            (
+                support1::SHADER_GATHER,
+                programs::GATHER,
+                "a gather",
+                [Some(expected[0]); 4],
+            ),
+        ];
+        for (bit, cs, name, want) in reads {
+            if !has(bit) {
+                continue;
+            }
+            let what = format!("format {format}: {name} of varied texels");
+            let views = [srv(t, SRV_DIMENSION_TEXTURE2D), Descriptor::Empty];
+            let words = programs.dispatch(&mut device, cs, views, vec![copy.clone()], &what);
+            let near = words.iter().zip(want).all(|(&w, e)| match e {
+                None => true,
+                Some(e) if bit == support1::SHADER_LOAD => w.abs_diff(e) <= tolerance,
+                Some(e) => near_float(w, e),
+            });
+            assert!(near, "{what}: read {words:x?}, Direct3D gives {want:x?}");
+            used += 1;
+        }
         device.destroy_resource(t);
         device.destroy_resource(varied);
-        used += 1;
     }
 
     // A load of each sample of a multisampled texture cleared to zeros.
