@@ -5134,6 +5134,8 @@ dependencies = [
  "rustix",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
@@ -5154,6 +5156,7 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
  "wcontainers-translator-test",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
