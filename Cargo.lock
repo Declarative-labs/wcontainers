@@ -6154,6 +6154,8 @@ dependencies = [
  "mitsein",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
@@ -6161,6 +6163,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -6175,6 +6178,7 @@ dependencies = [
  "socket2 0.6.5",
  "stats_alloc",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
@@ -6183,6 +6187,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
