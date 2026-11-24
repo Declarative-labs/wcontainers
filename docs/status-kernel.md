@@ -8,6 +8,51 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, seventeenth run: the second check's findings
+
+Started about 21:55 UTC on 2026-11-24 at a4352ae2. Builds and tests on the rented machines only.
+Scratch kernel/kc17 (b.sh runs a command on a copy with other agents' uncommitted edits taken
+back; t1.sh to t3.sh, whole.sh; logs beside them).
+
+- The told-reset test's failures under load were a defect of the test, not of the kernel: its
+  server said a reset was done as soon as its `close()` returned, but sending a reset is not its
+  arrival. Measured (t3.log, ARM64, 4 test threads, load 44 to 46): in 8 of 10 runs of the
+  outside binary one reset reached this machine's end of the connection 7 to 75 ms after the
+  close returned. Now (e81021d0) both resetting servers wait until this machine no longer lists
+  the client's end among its TCP sockets (/proc/net/tcp through procfs 0.18.0, MIT OR
+  Apache-2.0, a dev-dependency of the stand-in), up to 5 s; the hook of
+  `a_look_hears_a_reset_the_system_has_not_told_yet` fails if the reset did not arrive, and the
+  full-connection server answers "unheard" instead of "reset". The reference's end is in its
+  container's namespace and not listed, so its servers go on at once, as before.
+  `a_full_connection_hears_a_reset` met the same: its server waited a fixed 300 ms, which a
+  slow arrival can pass (its check failure was at load up to 52 with 8 threads). Results: with
+  the change the outside binary passed 15 of 15 (t1.log, 10 with 4 threads, 5 with 8, load 28
+  to 33) and 10 of 10 more (t3.log, 4 threads, load 44 to 46); as committed before, in the
+  same job, 6 of 10 (t2.log, 4 threads, load 19 to 25; the told-reset test failed the other 4).
+- `a_copy_let_go_of_under_a_handle_is_dropped_later` now checks the drop itself (ca86b587): a
+  copy of a child that alone has a System V segment attached is let go of under the child's
+  handle, the child is killed through the handle, and once the lock's next holder has taken it
+  the parent (guest heldattach.c) reads the segment's attachment count, which a live copy's
+  map still adds to: 0. With the check's break `never_drop_let_go` it fails (the count is 1),
+  t3.log. A pipe's write end could not show it: a copy shares its process's descriptor table,
+  so the child's end closes the copy's too.
+- A new round trip, `an_ended_process_is_neither_copied_nor_taken` (guest endedchild.c: a child
+  ended and not reaped), fails with the check's break `copy_of_ended` (t2.log).
+- The kernel suite calls `Kernel::resume_process` (7252465e): `suspended_process_is_resumed`
+  (context taken in, then its threads, and the thread is on the kernel again) and
+  `copy_beside_its_process_is_handed_back`; the latter fails with the check's break
+  `resume_twice`, and the conformance run is 19 (t2.log).
+- Not tested, with the reason: that a runner leaves the lock to an interface call that waits
+  for it (the check's `runner_ignores_waiting`). Without it a waiting call still gets the
+  lock, a little later, because `turn_started` ends a turn at once while a call waits; what the
+  check changes is only how soon, which no test can force through the interface's calls.
+- Not mine, left alone: uncommitted edits in the stand-in's driver.rs, ltp.rs and standin.rs
+  (20:41 to 20:47 UTC; reworded SAFETY comments, and a `refused_in_a_copy` that hands a copy's
+  refusals back to the process it was copied from). This run's tests ran with them taken back.
+- To look at later: a context copy shares its process's descriptor table (only the memory map
+  and signal actions are copied), so a copy resumed after its process closed a file does not
+  have that file.
+
 ## KC, sixteenth run: the independent check's findings
 
 Started about 16:30 UTC on 2026-11-24 at 83aad908. Builds and tests on the rented machines only.
