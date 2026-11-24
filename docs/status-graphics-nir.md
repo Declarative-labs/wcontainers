@@ -41,6 +41,9 @@ machine; groups checked on the desktop (RTX 3080, one GPU job, 8 glcts at once):
   storage coherence family (gap list).
 - Unsafe code: unchanged (wcontainers-nir 116, wcontainers-opengl 370). No dependency or licence
   was added.
+- The suite of both crates at 01b20b68 (x86-64 machine, load 1 to 36): fmt clean; clippy with
+  warnings denied clean with and without Mesa; with Mesa the nir crate's route 25, glsl_reference
+  10 and 2 ignored, glsl_buffers 2 and narrow 1 pass; wcontainers-opengl has no tests of its own.
 
 Run 31's group runs (scratch `results/g9r31/{a,b}`, logs `logs/g9r31/{a,b}.log`): a, at 0986b2f4's
 driver: dEQP-GLES3 `fbo.color`, `rasterization.fbo` 350 cases, 2 Crash (tex3d), 2 Fail
