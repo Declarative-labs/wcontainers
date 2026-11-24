@@ -5546,6 +5546,7 @@ name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
+ "allocation-counter",
  "domain",
  "etherparse",
  "flate2",
