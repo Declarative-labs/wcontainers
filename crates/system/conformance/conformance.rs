@@ -48,28 +48,32 @@ pub fn call_domain_name_resolver_methods<R: DomainNameResolver>(resolver: R) {
 /// The length of a short message sent on a stream, the size of a `u128`.
 const SHORT_MESSAGE_LENGTH: usize = size_of::<u128>();
 
-/// The largest page of the hosts the suite runs on, Apple silicon's 16 KiB (four of x86's).
+/// The largest page of the hosts the suite runs on, [Apple silicon's 16 KiB](https://developer.apple.com/documentation/apple-silicon/addressing-architectural-differences-in-your-macos-code#Fix-problems-caused-by-the-page-size-change).
 const LARGEST_PAGE_LENGTH: usize = 1 << 14;
 
 /// The lengths sent and received whole: one byte, a short message, and one byte more than a page.
 const STREAM_LENGTHS: &[usize] = &[1, SHORT_MESSAGE_LENGTH, LARGEST_PAGE_LENGTH + 1];
 
-/// Bytes held one by one in cells, which a source or a sink reaches only through a buffer of their own, as bytes
-/// another thread may change are; they count how they were reached.
+/// How bytes were reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Move {
+    /// A call of `read_to` or `write_from`, which moves all the bytes at once.
+    Whole,
+    /// A call of `read` or `write`, which moves bytes piece by piece.
+    Piecewise,
+}
+
+/// Bytes in cells, reached only through a buffer of their own as bytes another thread may change are.
 struct CellBytes {
     cells: Vec<Cell<u8>>,
-    /// Calls of `read_to` and `write_from`, each of which moves all the bytes.
-    whole_moves: Cell<usize>,
-    /// Calls of `read` and `write`, which move bytes piece by piece.
-    piecewise_moves: Cell<usize>,
+    moves: RefCell<Vec<Move>>,
 }
 
 impl CellBytes {
     fn new(bytes: &[u8]) -> Self {
         Self {
             cells: bytes.iter().copied().map(Cell::new).collect(),
-            whole_moves: Cell::new(usize::MIN),
-            piecewise_moves: Cell::new(usize::MIN),
+            moves: RefCell::new(Vec::new()),
         }
     }
 
@@ -78,9 +82,9 @@ impl CellBytes {
         self.cells.iter().map(Cell::get).collect()
     }
 
-    /// Returns the number of whole moves and of piecewise moves made so far.
-    fn moves(&self) -> (usize, usize) {
-        (self.whole_moves.get(), self.piecewise_moves.get())
+    /// Returns the moves made so far, in order.
+    fn moves(&self) -> Vec<Move> {
+        self.moves.borrow().clone()
     }
 }
 
@@ -90,7 +94,7 @@ impl VolatileBytes for CellBytes {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        self.piecewise_moves.set(self.piecewise_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Piecewise);
         into.iter_mut()
             .zip(&self.cells)
             .map(|(byte, cell)| *byte = cell.get())
@@ -98,7 +102,7 @@ impl VolatileBytes for CellBytes {
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
-        self.piecewise_moves.set(self.piecewise_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Piecewise);
         self.cells
             .iter()
             .zip(bytes)
@@ -107,12 +111,12 @@ impl VolatileBytes for CellBytes {
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
-        self.whole_moves.set(self.whole_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Whole);
         sink.write(&self.contents())
     }
 
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        self.whole_moves.set(self.whole_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Whole);
         let mut buffer = vec![u8::MIN; self.cells.len()];
         let count = source.read(&mut buffer)?;
         self.cells
@@ -143,8 +147,7 @@ fn readiness_at_once<T: StreamTransport>(
     }
 }
 
-/// Checks that the receiving endpoint is readable and receives in one call into all of `into`, and returns the
-/// number of bytes received.
+/// Checks a readable endpoint receives in one call into all of `into`, and returns the number of bytes received.
 fn receive_whole<T: StreamTransport>(
     transport: &T,
     receiving: &T::Endpoint,
@@ -167,8 +170,7 @@ fn receive_whole<T: StreamTransport>(
     received
 }
 
-/// Checks that bytes sent from a buffer to `sending` arrive whole and in order at `receiving`, which has them at once,
-/// in one receive into a buffer, also when longer than a page.
+/// Checks that bytes sent from a buffer to `sending` arrive whole and in order at `receiving` in one receive.
 pub fn send_and_receive_through_buffers<T: StreamTransport>(
     transport: T,
     sending: T::Endpoint,
@@ -194,8 +196,7 @@ pub fn send_and_receive_through_buffers<T: StreamTransport>(
     transport.close_stream(&receiving);
 }
 
-/// Checks that bytes which are not a slice are sent to `sending` in one read to a sink and received at `receiving`,
-/// which has them at once, in one write from a source, whole and in order, also when longer than a page.
+/// Checks that bytes not in a slice are sent in one read to a sink and received in one write from a source.
 pub fn send_and_receive_bytes_that_are_not_a_slice<T: StreamTransport>(
     transport: T,
     sending: T::Endpoint,
@@ -212,14 +213,14 @@ pub fn send_and_receive_bytes_that_are_not_a_slice<T: StreamTransport>(
         );
         assert_eq!(
             payload.moves(),
-            (1, usize::MIN),
+            [Move::Whole],
             "a send of {length} bytes was not one read to a sink"
         );
         let into = CellBytes::new(&vec![u8::MIN; length]);
         receive_whole(&transport, &receiving, &into);
         assert_eq!(
             into.moves(),
-            (1, usize::MIN),
+            [Move::Whole],
             "a receive of {length} bytes was not one write from a source"
         );
         assert_eq!(
@@ -290,8 +291,7 @@ macro_rules! tests {
     };
 }
 
-/// Runs each stream suite function above as its own test on the transport and the two endpoints of one stream an
-/// implementation gives, made anew for every test.
+/// Runs each stream suite function as its own test on a transport and its two endpoints of one stream, made anew.
 #[macro_export]
 macro_rules! stream_tests {
     (transport: $transport:expr, sending: $sending:expr, receiving: $receiving:expr) => {

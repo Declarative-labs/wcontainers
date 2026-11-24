@@ -53,7 +53,7 @@ impl StreamTransport for LoopServices {
         }
     }
 
-    /// Closing the receiving end drops what it had yet to receive.
+    /// Drops what the receiving end had yet to receive when it is the one closed.
     fn close_stream(&self, peer: &u32) {
         if *peer == RECEIVING {
             self.queue

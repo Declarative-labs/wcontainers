@@ -9,32 +9,35 @@ use wcontainers_byte_source::ByteSource;
 use wcontainers_random_source::RandomSource;
 use wcontainers_volatile_bytes::VolatileBytes;
 
-/// The length of each random fill, the size of a `u128`.
+/// A fill two fills match by chance once in 2^128, so two equal ones mean the bytes are not random.
 const RANDOM_FILL_LENGTH: usize = size_of::<u128>();
 
-/// A fill long enough to hold every byte value, missing one by chance far less than once in 2^128, and longer than
-/// a page on every host.
+/// A fill longer than a page that holds every byte value, missing one by chance far less than once in 2^128.
 const LONG_FILL_LENGTH: usize = u16::MAX as usize + 1;
 
 /// The lengths filled: none, one, a fill, and a long fill.
 const FILL_LENGTHS: &[usize] = &[usize::MIN, 1, RANDOM_FILL_LENGTH, LONG_FILL_LENGTH];
 
-/// Bytes held one by one in cells, which a source or a sink reaches only through a buffer of their own, as bytes
-/// another thread may change are; they count how they were reached.
+/// How bytes were reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Move {
+    /// A call of `read_to` or `write_from`, which moves all the bytes at once.
+    Whole,
+    /// A call of `read` or `write`, which moves bytes piece by piece.
+    Piecewise,
+}
+
+/// Bytes in cells, reached only through a buffer of their own as bytes another thread may change are.
 struct CellBytes {
     cells: Vec<Cell<u8>>,
-    /// Calls of `read_to` and `write_from`, each of which moves all the bytes.
-    whole_moves: Cell<usize>,
-    /// Calls of `read` and `write`, which move bytes piece by piece.
-    piecewise_moves: Cell<usize>,
+    moves: RefCell<Vec<Move>>,
 }
 
 impl CellBytes {
     fn new(length: usize) -> Self {
         Self {
             cells: (0..length).map(|_| Cell::new(u8::MIN)).collect(),
-            whole_moves: Cell::new(usize::MIN),
-            piecewise_moves: Cell::new(usize::MIN),
+            moves: RefCell::new(Vec::new()),
         }
     }
 
@@ -43,10 +46,14 @@ impl CellBytes {
         self.cells.iter().map(Cell::get).collect()
     }
 
+    /// Returns the moves made so far, in order.
+    fn moves(&self) -> Vec<Move> {
+        self.moves.borrow().clone()
+    }
+
     fn clear(&self) {
         self.cells.iter().for_each(|cell| cell.set(u8::MIN));
-        self.whole_moves.set(usize::MIN);
-        self.piecewise_moves.set(usize::MIN);
+        self.moves.borrow_mut().clear();
     }
 }
 
@@ -56,7 +63,7 @@ impl VolatileBytes for CellBytes {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        self.piecewise_moves.set(self.piecewise_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Piecewise);
         into.iter_mut()
             .zip(&self.cells)
             .map(|(byte, cell)| *byte = cell.get())
@@ -64,7 +71,7 @@ impl VolatileBytes for CellBytes {
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
-        self.piecewise_moves.set(self.piecewise_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Piecewise);
         self.cells
             .iter()
             .zip(bytes)
@@ -73,12 +80,12 @@ impl VolatileBytes for CellBytes {
     }
 
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
-        self.whole_moves.set(self.whole_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Whole);
         sink.write(&self.contents())
     }
 
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        self.whole_moves.set(self.whole_moves.get() + 1);
+        self.moves.borrow_mut().push(Move::Whole);
         let mut buffer = vec![u8::MIN; self.cells.len()];
         let count = source.read(&mut buffer)?;
         self.cells
@@ -124,8 +131,7 @@ pub fn fill_every_byte_given<R: RandomSource>(source: R) {
     }
 }
 
-/// Checks that bytes which are not a slice are filled whole, each fill in one write from a source into all of them,
-/// and that every byte is written in one of a fill's worth of fills.
+/// Checks that bytes not in a slice are filled in one write from a source, every byte in one of a fill's worth of fills.
 pub fn fill_bytes_that_are_not_a_slice<R: RandomSource>(source: R) {
     for &length in FILL_LENGTHS {
         let mut written = vec![false; length];
@@ -136,8 +142,8 @@ pub fn fill_bytes_that_are_not_a_slice<R: RandomSource>(source: R) {
                 .fill_random_bytes(&bytes)
                 .expect("the random source must fill what it is given");
             assert_eq!(
-                (bytes.whole_moves.get(), bytes.piecewise_moves.get()),
-                (1, usize::MIN),
+                bytes.moves(),
+                [Move::Whole],
                 "a fill of {length} bytes was not one write from a source"
             );
             for (written, byte) in written.iter_mut().zip(bytes.contents()) {
