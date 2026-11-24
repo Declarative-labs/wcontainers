@@ -336,6 +336,10 @@ impl Runner {
 
     fn write_frames(&self, frame: u64, bytes: &[u8]) {
         // SAFETY: the frames are the region's, in a row, and the guest is not running.
+        #[expect(
+            unsafe_code,
+            reason = "UNSOUND: a plain copy into frames from a safe fn that checks only the first byte lies in guest memory, not the last; test only, Words replaces it"
+        )]
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.host(frame), bytes.len()) };
     }
 
@@ -353,6 +357,10 @@ impl Runner {
         for (k, b) in bytes.iter().enumerate() {
             let at = self.frame_of(va + k as u64);
             // SAFETY: a byte of a region's frame; the guest is not running.
+            #[expect(
+                unsafe_code,
+                reason = "writes one byte of a region's frame, which host checks lies in guest memory, while the guest is not running; test only, Words replaces it"
+            )]
             unsafe { *self.host(at) = *b };
         }
     }
@@ -371,15 +379,28 @@ impl Runner {
         for (k, b) in bytes.iter_mut().enumerate() {
             let at = self.frame_of(va + k as u64);
             // SAFETY: as above.
-            *b = unsafe { *self.host(at) };
+            #[expect(
+                unsafe_code,
+                reason = "reads one byte of a region's frame, which host checks lies in guest memory, while the guest is not running; test only, Words replaces it"
+            )]
+            let byte = unsafe { *self.host(at) };
+            *b = byte;
         }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "reads the register page from its page-aligned frame, which host checks lies in guest memory, while the guest is not running; test only, Words replaces it"
+    )]
     fn page(&self) -> RegisterPage {
         // SAFETY: the register page's frame holds a `RegisterPage`; the guest is not running.
         unsafe { std::ptr::read(self.host(self.frame_of(REGISTER_PAGE)).cast()) }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "writes the register page to its page-aligned frame, which host checks lies in guest memory, while the guest is not running; test only, Words replaces it"
+    )]
     fn set_page(&self, page: &RegisterPage) {
         // SAFETY: as above.
         unsafe { std::ptr::write(self.host(self.frame_of(REGISTER_PAGE)).cast(), page.clone()) }

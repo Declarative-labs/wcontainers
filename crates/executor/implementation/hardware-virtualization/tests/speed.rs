@@ -232,6 +232,10 @@ mod speed {
             flags: u32,
         }
 
+        #[expect(
+            unsafe_code,
+            reason = "declares libSystem's sys_icache_invalidate with its C signature; test only"
+        )]
         unsafe extern "C" {
             /// Makes code written through the data side visible to instruction fetch (libSystem).
             fn sys_icache_invalidate(start: *mut c_void, length: usize);
@@ -242,8 +246,16 @@ mod speed {
 
         pub fn counts() -> Counts {
             // SAFETY: plain data, filled by the call.
+            #[expect(
+                unsafe_code,
+                reason = "a zeroed plain C struct the call then fills, valid as zeros; test only"
+            )]
             let mut usage: RusageV6 = unsafe { std::mem::zeroed() };
             // SAFETY: the buffer is a `rusage_info_v6`, the flavour asked for.
+            #[expect(
+                unsafe_code,
+                reason = "fills the local struct, whose layout is the V6 flavor's, with this process's usage; test only"
+            )]
             let done = unsafe {
                 libc::proc_pid_rusage(
                     libc::getpid(),
@@ -262,6 +274,10 @@ mod speed {
         /// Makes the code at `at` visible to instruction fetch.
         pub fn make_visible(at: *mut c_void, length: usize) {
             // SAFETY: the caller's range is mapped.
+            #[expect(
+                unsafe_code,
+                reason = "invalidates the instruction cache over a range the caller says is mapped, which this safe fn does not check; its one caller passes the mapping it just made; test only, CodeCache replaces it"
+            )]
             unsafe { sys_icache_invalidate(at, length) };
         }
 
@@ -269,8 +285,16 @@ mod speed {
         ///
         /// # Safety
         /// `context` is the context macOS handed the handler, alive while the result is.
+        #[expect(
+            unsafe_code,
+            reason = "an unsafe fn, as its caller must pass the live context macOS handed a SA_SIGINFO handler; test only"
+        )]
         pub unsafe fn registers<'a>(context: *mut c_void) -> (&'a mut [u64], &'a mut u64) {
             // SAFETY: macOS hands a SA_SIGINFO handler its `ucontext_t`, whose machine context it points to.
+            #[expect(
+                unsafe_code,
+                reason = "reborrows the thread state of the context macOS handed the handler, by the layout declared above; test only"
+            )]
             let state = unsafe { &mut (*(*context.cast::<Context>()).machine).thread };
             (&mut state.x, &mut state.pc)
         }
@@ -293,6 +317,10 @@ mod speed {
         /// The process's cycle and instruction counters, opened at its start, then the threads it makes.
         static COUNTERS: OnceLock<Mutex<[Counter; 2]>> = OnceLock::new();
 
+        #[expect(
+            unsafe_code,
+            reason = "declares the compiler runtime's __clear_cache with its C signature; test only"
+        )]
         unsafe extern "C" {
             /// Makes code written through the data side visible to instruction fetch (the compiler's runtime
             /// library).
@@ -350,6 +378,10 @@ mod speed {
         pub fn make_visible(at: *mut c_void, length: usize) {
             let start = at.cast::<c_char>();
             // SAFETY: the caller's range is mapped.
+            #[expect(
+                unsafe_code,
+                reason = "cleans and invalidates the caches over a range the caller says is mapped, which this safe fn does not check; its one caller passes the mapping it just made; test only, CodeCache replaces it"
+            )]
             unsafe { __clear_cache(start, start.add(length)) };
         }
 
@@ -357,8 +389,16 @@ mod speed {
         ///
         /// # Safety
         /// `context` is the context Linux handed the handler, alive while the result is.
+        #[expect(
+            unsafe_code,
+            reason = "an unsafe fn, as its caller must pass the live context Linux handed a SA_SIGINFO handler; test only"
+        )]
         pub unsafe fn registers<'a>(context: *mut c_void) -> (&'a mut [u64], &'a mut u64) {
             // SAFETY: Linux hands a SA_SIGINFO handler its `ucontext_t`.
+            #[expect(
+                unsafe_code,
+                reason = "reborrows the machine context of the ucontext_t Linux handed the handler; test only"
+            )]
             let state = unsafe { &mut (*context.cast::<libc::ucontext_t>()).uc_mcontext };
             (&mut state.regs, &mut state.pc)
         }
@@ -431,6 +471,10 @@ mod speed {
             let start = address / host_page * host_page;
             let length = (address + header.p_memsz(endian)).next_multiple_of(host_page) - start;
             // SAFETY: a fresh private mapping, asked for where the segment goes.
+            #[expect(
+                unsafe_code,
+                reason = "maps fresh private memory with the segment's address as a hint, never fixed, so it replaces nothing; the assert after checks the address; test only"
+            )]
             let at = unsafe {
                 libc::mmap(
                     start as *mut c_void,
@@ -444,6 +488,10 @@ mod speed {
             assert_eq!(at as u64, start, "the segment's addresses are free");
             let bytes = header.data(endian, image).expect("the segment's bytes");
             // SAFETY: the mapping holds the segment.
+            #[expect(
+                unsafe_code,
+                reason = "copies a segment's bytes to its address, inside the mapping just made and checked; test only"
+            )]
             unsafe {
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len())
             };
@@ -457,6 +505,10 @@ mod speed {
             .filter(|(flag, _)| flags & flag != 0)
             .fold(libc::PROT_NONE, |all, (_, protection)| all | protection);
             // SAFETY: the mapping is this program's.
+            #[expect(
+                unsafe_code,
+                reason = "changes the protection of the mapping this run just made; test only"
+            )]
             let changed = unsafe { libc::mprotect(at, length as usize, protection) };
             assert_eq!(changed, 0, "mprotect");
             if flags & PF_X != 0 {
@@ -466,6 +518,10 @@ mod speed {
         // Linux's default stack limit.
         let stack_length = u64::from(_STK_LIM);
         // SAFETY: a fresh private mapping anywhere.
+        #[expect(
+            unsafe_code,
+            reason = "maps fresh private memory anywhere for the program's stack; test only"
+        )]
         let stack = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -478,15 +534,27 @@ mod speed {
         };
         assert_ne!(stack, libc::MAP_FAILED, "the stack");
         // SAFETY: plain data; the handler takes its context as SA_SIGINFO says.
+        #[expect(
+            unsafe_code,
+            reason = "a zeroed libc sigaction, valid for this plain C struct, before the fields the call reads are set; test only"
+        )]
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = on_breakpoint as *const () as usize;
         action.sa_flags = libc::SA_SIGINFO;
         // SAFETY: installs the handler for this process's breakpoints.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: installs a SIGTRAP handler that takes a Mutex and can panic, which is not async-signal-safe and holds only because the trap is synchronous; test only, moving the comparison onto host-process removes it"
+        )]
         let installed = unsafe { libc::sigaction(libc::SIGTRAP, &action, std::ptr::null_mut()) };
         assert_eq!(installed, 0, "sigaction");
         let top = stack as u64 + stack_length;
         let entry = elf.elf_header().e_entry(endian);
         // SAFETY: the program's code is mapped; it ends the process through its exit call.
+        #[expect(
+            unsafe_code,
+            reason = "jumps into the loaded program on its new stack and never returns; the program ends the process through its exit call; test only"
+        )]
         unsafe {
             std::arch::asm!(
                 "mov sp, {top}",
@@ -495,7 +563,7 @@ mod speed {
                 entry = in(reg) entry,
                 options(noreturn)
             )
-        }
+        };
     }
 
     /// Writes beside `image` the plain run's copy of it, a breakpoint over every `svc` of its code, so that the
@@ -534,11 +602,19 @@ mod speed {
     /// Answers the system call whose `svc` the breakpoint stands for.
     extern "C" fn on_breakpoint(_: c_int, _: *mut libc::siginfo_t, context: *mut c_void) {
         // SAFETY: the context the system handed this SA_SIGINFO handler, alive until it returns.
+        #[expect(
+            unsafe_code,
+            reason = "calls registers with the context this SA_SIGINFO handler was handed, alive until it returns; test only"
+        )]
         let (x, pc) = unsafe { host::registers(context) };
         let [first, buffer, length] = [0, 1, 2].map(|k| x[k]);
         let number = x[SYSCALL_NUMBER] as u32;
         if number == __NR_write {
             // SAFETY: the program's own buffer, mapped in this process.
+            #[expect(
+                unsafe_code,
+                reason = "UNEXPLAINED: a slice over a buffer pointer and length the test program passed in its write call, trusted to be mapped in this process; test only, moving the comparison onto host-process removes it"
+            )]
             let bytes = unsafe { std::slice::from_raw_parts(buffer as *const u8, length as usize) };
             OUTPUT.lock().expect("the output").extend_from_slice(bytes);
             x[0] = length;

@@ -58,6 +58,10 @@ pub fn answer(link: &mut Link, memory: &Memory) {
     assert!(bytes.len() as u64 <= PAGE_SIZE, "the routines fit one frame");
     let host = memory.host_bytes(request.at, bytes.len() as u64);
     // SAFETY: the bytes lie in guest memory, in the frame the inside named for them.
+    #[expect(
+        unsafe_code,
+        reason = "copies the generated routines into the frame the inside named for them, while it waits at the doorbell; host_bytes checked the range; Words replaces it"
+    )]
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), host, bytes.len()) };
     let [
         read_float_control,

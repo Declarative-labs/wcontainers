@@ -142,7 +142,8 @@ harness = false
 name = "registers"
 harness = false
 
-# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
-# TODO: of this crate's 58 uses (counted on 2026-11-24), remove what a vetted library can do, mark each one left, then add `unsafe_code = "deny"` below.
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`; a reason
+# starting "UNSOUND:" or "UNEXPLAINED:" marks a use nobody has shown sound, and names what replaces it.
 [lints.rust]
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

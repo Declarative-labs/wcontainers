@@ -185,6 +185,10 @@ pub fn page_size() -> u64 {
 pub fn load_average() -> String {
     let mut loads = [0f64; LOAD_AVERAGES];
     // SAFETY: fills three values.
+    #[expect(
+        unsafe_code,
+        reason = "fills a live local array of three with the load averages, a libc query with no other effect; test only"
+    )]
     unsafe { libc::getloadavg(loads.as_mut_ptr(), loads.len() as i32) };
     format!("{:.1} {:.1} {:.1}", loads[0], loads[1], loads[2])
 }
