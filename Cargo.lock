@@ -5166,6 +5166,9 @@ version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-executor",
  "wcontainers-executor-conformance",
@@ -5174,6 +5177,7 @@ dependencies = [
  "wcontainers-precise-instruction-set-apple-m5",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
