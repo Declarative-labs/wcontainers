@@ -59,7 +59,12 @@ mod untranslated {
     fn bytes(regions: &[Region], address: u64, length: u64) -> &'static [u8] {
         let region = regions
             .iter()
-            .find(|r| address >= r.address && address + length <= r.address + r.length)
+            .find(|r| {
+                address >= r.address
+                    && address
+                        .checked_add(length)
+                        .is_some_and(|end| end <= r.address + r.length)
+            })
             .expect("the program wrote from its own memory");
         // SAFETY: the region's frames are one run, reached through the linear map.
         unsafe {
@@ -92,6 +97,10 @@ mod untranslated {
             } else {
                 guest_read_only()
             };
+            assert!(
+                segment.file_length <= segment.memory_length,
+                "a segment's file bytes fit its memory"
+            );
             let region = map(&space, first, length, attributes);
             let at = region.frame + (segment.address - first);
             // SAFETY: the region's frames are one fresh run, reached through the linear map.

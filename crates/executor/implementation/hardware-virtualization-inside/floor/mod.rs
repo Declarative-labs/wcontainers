@@ -59,7 +59,7 @@ fn link_page() -> &'static mut Link {
 pub fn ask<M: Message>(message: &M, bytes: &[u8]) -> M::Answer {
     let link = link_page();
     link.ask(message, bytes);
-    doorbell();
+    doorbell(link);
     link.get()
 }
 
@@ -67,7 +67,7 @@ pub fn ask<M: Message>(message: &M, bytes: &[u8]) -> M::Answer {
 pub fn ask_link<M: Message, T>(message: &M, bytes: &[u8], read: impl FnOnce(&Link) -> T) -> T {
     let link = link_page();
     link.ask(message, bytes);
-    doorbell();
+    doorbell(link);
     read(link)
 }
 
@@ -80,7 +80,7 @@ impl crate::link::Ring for Doorbell {
     }
 
     fn ring(&mut self) {
-        doorbell();
+        doorbell(link_page());
     }
 }
 
@@ -98,10 +98,11 @@ pub fn asked() -> (u64, u64) {
     )
 }
 
-/// Rings the doorbell: the virtual CPU leaves to the monitor and comes back answered.
-fn doorbell() {
+/// Rings the doorbell with the request in `link`, the running virtual CPU's link page: the virtual CPU leaves to
+/// the monitor and comes back answered.
+fn doorbell(link: &Link) {
     ASKED.fetch_add(1, Ordering::Relaxed);
-    LAST_REQUEST.store(link_page().head.request, Ordering::Relaxed);
+    LAST_REQUEST.store(link.head.request, Ordering::Relaxed);
     barrier::dsb(SY);
     // The monitor answers in the link page and resumes at the next instruction.
     smccc::hvc32(DOORBELL_FUNCTION, Default::default());
@@ -129,7 +130,7 @@ pub fn send<M: Message>(message: &M, text: fmt::Arguments) {
     let link = link_page();
     link.ask(message, &[]);
     link.head.length = out.length as u64;
-    doorbell();
+    doorbell(link);
 }
 
 /// Prints a line in the host's log.
@@ -387,9 +388,16 @@ pub fn make_code_visible(va: u64, length: u64) {
     barrier::isb(SY);
 }
 
-/// Copies `bytes` to guest-physical `frame` through the linear map.
+/// Copies `bytes` to guest-physical `frame` through the linear map, from `offset`; they must fit the frame.
 pub fn write_frame(frame: u64, offset: u64, bytes: &[u8]) {
-    // SAFETY: the frame is ours.
+    assert!(frame.is_multiple_of(PAGE_SIZE), "a frame starts a page");
+    assert!(
+        offset
+            .checked_add(bytes.len() as u64)
+            .is_some_and(|end| end <= PAGE_SIZE),
+        "the bytes fit the frame"
+    );
+    // SAFETY: the frame is ours, and the bytes lie in it.
     unsafe {
         ptr::copy_nonoverlapping(
             bytes.as_ptr(),

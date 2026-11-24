@@ -372,6 +372,12 @@ fn page_of(address: u64) -> u64 {
     address & !(PAGE_SIZE - 1)
 }
 
+/// Copies frame `from`'s bytes to frame `to`, which is another frame.
+fn copy_frame(to: u64, from: u64) {
+    assert!(to.abs_diff(from) >= PAGE_SIZE, "a frame is copied to another");
+    frame_bytes(to).copy_from_slice(frame_bytes(from));
+}
+
 /// A frame's bytes through the linear map.
 fn frame_bytes(frame: u64) -> &'static mut [u8] {
     // SAFETY: the frame is the CPU side's, and only reached through the linear map.
@@ -425,6 +431,18 @@ impl NativeCpu {
             inside: global,
             asid: IDLE_IDENTIFIER,
         };
+        for start in [
+            placed.read_float_control,
+            placed.write_float_control,
+            placed.save_vectors,
+            placed.load_vectors,
+            placed.invalidate_whole_tlb,
+        ] {
+            assert!(
+                start < PAGE_SIZE && start.is_multiple_of(size_of::<u32>() as u64),
+                "a routine starts at an instruction of its page"
+            );
+        }
         // SAFETY: the monitor wrote each routine at its place, with the C calling convention's signature
         // `Placed` names, and the frame is mapped for this level to run.
         let (
@@ -768,7 +786,7 @@ impl NativeCpu {
                 None => {
                     copied += 1;
                     let frame = self.private_frame(copy, at)?;
-                    frame_bytes(frame).copy_from_slice(frame_bytes(page.frame));
+                    copy_frame(frame, page.frame);
                     frame
                 }
             };
@@ -809,7 +827,7 @@ impl NativeCpu {
                 match held {
                     Some(frame) if !zeroed(at) => {
                         let copy = self.private_frame(memory, at)?;
-                        frame_bytes(copy).copy_from_slice(frame_bytes(frame));
+                        copy_frame(copy, frame);
                         let private = Page {
                             frame: copy,
                             shared: None,

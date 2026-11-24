@@ -470,6 +470,7 @@ impl Table {
 
     /// The top-level entry at `index`.
     pub fn top_entry(&self, index: u64) -> u64 {
+        assert!(index < ENTRIES, "an entry of the table");
         // SAFETY: the top-level table is reached through the linear map.
         unsafe { ptr::read_volatile((linear(self.root) + index * ENTRY_BYTES) as *const u64) }
     }
