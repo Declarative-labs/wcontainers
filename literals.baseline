@@ -12352,8 +12352,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"no entry point"
 code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"the sample mask stays an array"
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	components	3
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	finish	64
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	rewrite	4
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	rewrite	4
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	texel_index	3
@@ -12383,9 +12381,6 @@ code	crates/wcontainers-shaders/src/dxil/images.rs	str	through_image	"a storage 
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	typed_buffer	"a typed buffer without a binding"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	typed_buffer	"a typed buffer's type"
 code	crates/wcontainers-shaders/src/dxil/registers.rs	str	lay_out	"a target not at a register's first component"
-code	crates/wcontainers-shaders/src/dxil/widths.rs	bytestr	widen	b"GLSL.std.450\0"
-code	crates/wcontainers-shaders/src/dxil/widths.rs	int	widen	3
-code	crates/wcontainers-shaders/src/dxil/widths.rs	int	widen	4
 code	crates/wcontainers-shaders/src/dxil/widths.rs	str	double_width	"Int64"
 code	crates/wcontainers-shaders/src/dxil/widths.rs	str	read	"Int64"
 code	crates/wcontainers-shaders/src/dxil/widths.rs	str	unlisted	"{op:?} on 16-bit integers"
@@ -16755,7 +16750,6 @@ code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_mat
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"round"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"rsqrt"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"saturate"
-code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"sign"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"sin"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"sinh"
 code	third_party/naga/src/back/hlsl/writer.rs	str	super::Writer<'a,W>::write_math_expression	"smoothstep"
