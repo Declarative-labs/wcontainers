@@ -82,8 +82,9 @@ struct PrecisionElement {
 pub(crate) const ISGN: Tag = *b"ISGN";
 pub(crate) const OSGN: Tag = *b"OSGN";
 pub(crate) const OSG5: Tag = *b"OSG5";
-pub(crate) const ISG1: Tag = *b"ISG1";
-pub(crate) const OSG1: Tag = *b"OSG1";
+/// The tags of the input and output signature chunks of the form DXIL programs carry.
+pub const ISG1: Tag = *b"ISG1";
+pub const OSG1: Tag = *b"OSG1";
 /// The tag of a DXIL program's chunk.
 const DXIL: Tag = *b"DXIL";
 

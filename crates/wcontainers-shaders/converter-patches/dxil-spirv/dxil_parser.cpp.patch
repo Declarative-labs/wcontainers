@@ -1,0 +1,33 @@
+--- a/dxil_parser.cpp
++++ b/dxil_parser.cpp
+@@ -107,6 +107,10 @@
+ 	if (!stream.skip(sizeof(uint32_t)))
+ 		return false;
+ 
++	// Each element is eight 32-bit words; a count past the chunk is refused before it is allocated.
++	if (element_count > (stream.get_size() - stream.get_offset()) / (8 * sizeof(uint32_t)))
++		return false;
++
+ 	elements.resize(element_count);
+ 	for (uint32_t i = 0; i < element_count; i++)
+ 	{
+@@ -155,6 +159,9 @@
+ 
+ 	constexpr uint32_t RDAT_Version = 0x10;
+ 	if (version != RDAT_Version)
++		return false;
++
++	if (part_count > (stream.get_size() - stream.get_offset()) / sizeof(uint32_t))
+ 		return false;
+ 
+ 	Vector<uint32_t> offsets(part_count);
+@@ -443,6 +450,9 @@
+ 	if (static_cast<DXIL::FourCC>(container_header.header_fourcc) != DXIL::FourCC::Container)
+ 		return false;
+ 	if (container_header.container_size_in_bytes > size)
++		return false;
++
++	if (container_header.part_count > (stream.get_size() - stream.get_offset()) / sizeof(uint32_t))
+ 		return false;
+ 
+ 	Vector<uint32_t> parts(container_header.part_count);

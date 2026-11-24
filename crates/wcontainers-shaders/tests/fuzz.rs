@@ -100,7 +100,9 @@ fn signing_again_gives_the_compilers_checksum() {
 #[test]
 #[ignore = "seeded fuzz, a long run (WCONTAINERS_FUZZ_SEED, WCONTAINERS_FUZZ_CASES); a known failure: \
             malformed DXIL can end the process inside dxil-spirv, in its bitcode reader and, after the \
-            reader accepted the module, in its converter's metadata reads and instruction emission (gap A11)"]
+            reader accepted the module, in its converter's metadata reads (its metadata helpers, and \
+            casts made in place where it declares stage inputs, outputs, patch constants and geometry \
+            streams) and its instruction emission (gap A11)"]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     let number = |name: &str, default: u64| {
         std::env::var(name)
@@ -230,6 +232,42 @@ fn dxil_naming_no_entry_point_is_refused() {
             Err(e) => eprintln!("{name}: {e}"),
         }
     }
+}
+
+/// Every signed DXIL program that converts, with its input or its output signature counting more
+/// elements than its chunk holds: refused, where dxil-spirv's container parser allocated the count it
+/// read (tens of gigabytes) and ended the process or ran for minutes.
+#[test]
+fn a_signature_counting_past_its_chunk_is_refused() {
+    let mut refused = 0;
+    for (name, original) in inputs() {
+        if !name.ends_with(".dxil")
+            || convert(Source::Dxil(&original), &VariantKey::default(), None).is_err()
+        {
+            continue;
+        }
+        for tag in [container::ISG1, container::OSG1] {
+            let Some(count) = container::chunk_list(&original)
+                .unwrap()
+                .map_while(Result::ok)
+                .find(|c| c.tag() == Some(tag))
+                .and_then(|c| c.contents())
+                .map(|contents| contents.as_ptr().addr() - original.as_ptr().addr())
+            else {
+                continue;
+            };
+            let mut b = original.clone();
+            b[count..count + size_of::<u32>()].copy_from_slice(&u32::MAX.to_le_bytes());
+            sign(&mut b);
+            assert!(
+                convert(Source::Dxil(&b), &VariantKey::default(), None).is_err(),
+                "{name}: converted"
+            );
+            refused += 1;
+        }
+    }
+    assert!(refused > 0);
+    eprintln!("{refused} signatures refused");
 }
 
 /// dxbc-spirv's enums, as build.rs writes them from its headers (`dxbc_op`, `dxbc_uav`).
