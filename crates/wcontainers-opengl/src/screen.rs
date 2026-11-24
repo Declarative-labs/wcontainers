@@ -11,6 +11,7 @@ use wcontainers_gpu::{
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
 use crate::device::HostWindows;
+use crate::draw::ShaderId;
 use crate::format;
 use crate::gallium::*;
 use crate::present::Window;
@@ -26,6 +27,8 @@ pub struct Screen<B: Backend> {
     /// Objects whose Gallium owner went, given back to the back end when it is next used (Mesa
     /// destroys resources from inside the driver's own calls).
     retired: Mutex<Vec<Object<B>>>,
+    /// The live shader states of each content, which contexts keep what was made of while any is.
+    shaders: Mutex<HashMap<ShaderId, usize>>,
     caps: Caps,
     name: CString,
     pub windows: Mutex<HashMap<usize, Window<B>>>,
@@ -60,6 +63,38 @@ impl<B: Backend> Screen<B> {
 
     pub fn caps(&self) -> &Caps {
         &self.caps
+    }
+
+    /// Notes a shader state made of content `id`.
+    pub fn shader_made(&self, id: ShaderId) {
+        *self
+            .shaders
+            .lock()
+            .expect("the shaders lock")
+            .entry(id)
+            .or_default() += 1;
+    }
+
+    /// Notes a shader state of content `id` deleted; whether one of equal content is still live.
+    pub fn shader_deleted(&self, id: &ShaderId) -> bool {
+        let mut shaders = self.shaders.lock().expect("the shaders lock");
+        let Some(live) = shaders.get_mut(id) else {
+            return false;
+        };
+        *live -= 1;
+        if *live == 0 {
+            shaders.remove(id);
+            return false;
+        }
+        true
+    }
+
+    /// Whether a shader state of content `id` is live.
+    pub fn shader_live(&self, id: &ShaderId) -> bool {
+        self.shaders
+            .lock()
+            .expect("the shaders lock")
+            .contains_key(id)
     }
 }
 
@@ -482,6 +517,7 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
         base: pipe_screen::default(),
         backend: Mutex::new(backend),
         retired: Mutex::new(Vec::new()),
+        shaders: Mutex::new(HashMap::new()),
         caps,
         name: gpu,
         windows: Mutex::new(HashMap::new()),

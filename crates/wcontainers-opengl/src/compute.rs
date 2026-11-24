@@ -3,7 +3,7 @@
 use wcontainers_gpu::{Backend, DispatchCall, DispatchGroups, Object, Program, SlowPath, StageSet};
 
 use crate::context::{Context, end_if_lost};
-use crate::draw::{self, ShaderId, Variant};
+use crate::draw::{self, Variant};
 use crate::gallium::*;
 use crate::resource::Resource;
 use crate::state::{Stage, refuse, refused};
@@ -42,7 +42,7 @@ fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Resu
     let programs = &mut context.programs;
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
     let shader = unsafe { &*shader };
-    let key = (std::ptr::from_ref(shader) as ShaderId, variant.clone());
+    let key = (shader.id, variant.clone());
     let missing = !programs.compute.contains_key(&key);
     let built = programs.built_for(backend, shader, &variant)?;
     if missing {

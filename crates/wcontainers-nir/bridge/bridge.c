@@ -2027,6 +2027,13 @@ one_row(const struct glsl_type *type)
 }
 
 void
+wc_nir_drop_name(nir_shader *nir)
+{
+   nir->info.name = NULL;
+   nir->info.label = NULL;
+}
+
+void
 wc_nir_textures_1d_as_2d(nir_shader *nir)
 {
    bool retyped = false;

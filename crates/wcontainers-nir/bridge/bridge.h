@@ -209,6 +209,10 @@ void wc_nir_split_resource_arrays(struct nir_shader *nir);
  * levels nor layers. */
 void wc_nir_textures_1d_as_2d(struct nir_shader *nir);
 
+/* The program's name and label dropped (st/mesa names each by the API program's number), so that
+ * programs of equal content serialise alike. */
+void wc_nir_drop_name(struct nir_shader *nir);
+
 /* Every uniform block access st/mesa hands over (load_ubo, the default uniforms as block 0) as
  * derefs of one array of words a block, sized by the block variables' explicit types; the default
  * uniforms' own variables, which nothing reads after it, removed. Storage block j is bound at

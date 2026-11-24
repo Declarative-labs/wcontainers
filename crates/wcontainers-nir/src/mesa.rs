@@ -208,6 +208,7 @@ unsafe extern "C" {
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
     fn wc_nir_textures_1d_as_2d(nir: *mut NirShader);
+    fn wc_nir_drop_name(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
     fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
@@ -433,6 +434,13 @@ impl Nir {
     pub fn textures_1d_as_2d(&mut self) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_textures_1d_as_2d(self.0) }
+    }
+
+    /// The program's name and label dropped (st/mesa names each by the API program's number), so
+    /// that programs of equal content have one [`key`](Nir::key).
+    pub fn drop_name(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_drop_name(self.0) }
     }
 
     /// Every uniform block access st/mesa hands over (`load_ubo`, the default uniforms as block

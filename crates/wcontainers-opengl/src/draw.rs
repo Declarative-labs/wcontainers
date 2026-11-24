@@ -1,8 +1,8 @@
 //! Draws: each stage's program converted by the NIR route for the state it is drawn with, its
 //! resources bound by the route's reflection, and the draw handed to the pass tracker's pass.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
@@ -18,7 +18,7 @@ use wcontainers_gpu::{
     cut_scissors, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
-use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle, Wrap};
+use wcontainers_nir::mesa::{NearestSampler, Nir, PositionTransform, TextureSwizzle, Wrap};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
     DomainSets, FinalDraw, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
@@ -69,8 +69,15 @@ pub(crate) struct Built<B: Backend> {
     early_tests: Option<bool>,
 }
 
-/// A shader state as a map key: the address Mesa holds it at.
-pub(crate) type ShaderId = usize;
+/// A shader state as a map key: its content's key (`Nir::key`), so that states of equal content
+/// share what was made of them, also after one is deleted and another made.
+pub(crate) type ShaderId = [u8; wcontainers_shaders::cache::KEY_BYTES];
+
+/// Deleted shader states whose conversions and pipelines a context keeps for one of equal content
+/// made again: a program rebuilt in turn from a few shaders (as KHR's `vertex_ordering` does,
+/// thousands of times) converts each once, and one making ever new shaders holds a bounded
+/// number of the host's objects.
+const KEPT_DELETED: usize = 64;
 
 /// A tessellated draw's stage helper by its vertex, control, evaluation and geometry programs and
 /// variants (no geometry program: zero), and whether it has a stream stage.
@@ -184,7 +191,7 @@ impl<B: Backend> Programs<B> {
         shader: &Shader,
         variant: &Variant,
     ) -> Result<&Built<B>, String> {
-        let key = (std::ptr::from_ref(shader) as ShaderId, variant.clone());
+        let key = (shader.id, variant.clone());
         let built = match self.built.entry(key) {
             Entry::Occupied(built) => built.into_mut(),
             Entry::Vacant(slot) => slot.insert(convert(backend, shader, variant)?),
@@ -212,6 +219,22 @@ pub struct Programs<B: Backend> {
     /// location their size and `gl_PointCoord` pass at; `None` for one whose every point is a
     /// pixel.
     squares: HashMap<(ShaderId, u32), Option<Box<Squares>>>,
+    deleted: Deleted,
+}
+
+/// Deleted shader states whose objects a context keeps, the longest deleted first.
+#[derive(Default)]
+struct Deleted(VecDeque<ShaderId>);
+
+impl Deleted {
+    /// Notes content `id` deleted, no state of it left live; gives the contents past
+    /// [`KEPT_DELETED`] whose objects go, those that no live state has.
+    fn note(&mut self, id: ShaderId, live: impl Fn(&ShaderId) -> bool) -> Vec<ShaderId> {
+        self.0.retain(|d| *d != id);
+        self.0.push_back(id);
+        let past = self.0.len().saturating_sub(KEPT_DELETED);
+        self.0.drain(..past).filter(|d| !live(d)).collect()
+    }
 }
 
 /// A vertex or evaluation program's points drawn as squares (`PointsAsQuads`): the geometry
@@ -282,22 +305,31 @@ impl<B: Backend> Default for Programs<B> {
             staged: HashMap::new(),
             tessellated: HashMap::new(),
             squares: HashMap::new(),
+            deleted: Deleted::default(),
         }
     }
 }
 
 impl<B: Backend> Programs<B> {
-    /// Drops everything made from one shader state, which Mesa is deleting.
-    pub fn forget(&mut self, screen: &Screen<B>, shader: *const Shader) {
-        let id = shader as ShaderId;
+    /// A shader state Mesa deleted, none of equal content left live: what was made of it is kept
+    /// for one made again, and what was made of the longest deleted beyond [`KEPT_DELETED`] whose
+    /// content no live state has is dropped.
+    pub fn deleted(&mut self, screen: &Screen<B>, id: ShaderId) {
+        for gone in self.deleted.note(id, |d| screen.shader_live(d)) {
+            self.forget(screen, gone);
+        }
+    }
+
+    /// Drops everything made from shader states of one content.
+    fn forget(&mut self, screen: &Screen<B>, id: ShaderId) {
         let squares: Vec<_> = self.squares.keys().filter(|k| k.0 == id).copied().collect();
         for key in squares {
             if let Some(made) = self.squares.remove(&key).flatten() {
                 if let Some(geometry) = &made.geometry {
-                    self.forget(screen, geometry);
+                    self.forget(screen, geometry.id);
                 }
                 if let Some(before) = &made.before {
-                    self.forget(screen, before);
+                    self.forget(screen, before.id);
                 }
             }
         }
@@ -2466,7 +2498,9 @@ fn draw<B: Backend>(
         (vs, vertex.clone(), Stage::Vertex)
     };
     // SAFETY: as above.
-    programs.built_for(backend, unsafe { &*first }, &first_variant)?;
+    let first_shader = unsafe { &*first };
+    let first_id = first_shader.id;
+    programs.built_for(backend, first_shader, &first_variant)?;
     if !first_variant.swizzles.is_empty() || !fragment.swizzles.is_empty() {
         backend.slow_paths().hit(SlowPath::SwizzleInShader);
     }
@@ -2630,8 +2664,8 @@ fn draw<B: Backend>(
     let bound = &context.bound;
     let programs = &mut context.programs;
     let built = [
-        &programs.built[&(first as ShaderId, first_variant.clone())],
-        &programs.built[&(fs as ShaderId, fragment.clone())],
+        &programs.built[&(first_id, first_variant.clone())],
+        &programs.built[&(fragment_shader.id, fragment.clone())],
     ];
     // Flat values from the vertex OpenGL names where the host takes the other: indices rewritten
     // (the stage helper turned what it made already).
@@ -2644,7 +2678,7 @@ fn draw<B: Backend>(
         host: raster.host_provoking,
     });
     let fragment_second_source = fragment.second_source.is_some();
-    let program_key = (first as ShaderId, first_variant, fs as ShaderId, fragment);
+    let program_key = (first_id, first_variant, fragment_shader.id, fragment);
     if let Entry::Vacant(slot) = programs.programs.entry(program_key.clone()) {
         slot.insert(
             backend
@@ -3191,10 +3225,7 @@ fn squares_for<B: Backend>(
     }
     // After every generic location either program uses.
     let at = vs.nir.generic_end().max(fs.nir.generic_end());
-    let made = match programs
-        .squares
-        .entry((std::ptr::from_ref(vs) as ShaderId, at))
-    {
+    let made = match programs.squares.entry((vs.id, at)) {
         Entry::Occupied(made) => made.into_mut(),
         Entry::Vacant(slot) => {
             let mut copy = vs.nir.try_clone().ok_or("out of memory")?;
@@ -3213,24 +3244,32 @@ fn squares_for<B: Backend>(
                 ));
             };
             nir.uniform_blocks_as_words();
-            let shader = |stage, nir| Shader {
-                stage,
-                nir,
-                streamed: Ok(None),
-                reads_sample_positions: false,
-                writes_sample_mask: false,
-                fetches_target: false,
-                formatless_images: vs.formatless_images,
-                integer_sampled: vs.integer_sampled,
-                named_layer: None,
+            let shader = |stage, nir: Nir| -> Result<Shader, String> {
+                Ok(Shader {
+                    stage,
+                    id: nir.key().map_err(|e| e.to_string())?,
+                    nir,
+                    streamed: Ok(None),
+                    reads_sample_positions: false,
+                    writes_sample_mask: false,
+                    fetches_target: false,
+                    formatless_images: vs.formatless_images,
+                    integer_sampled: vs.integer_sampled,
+                    named_layer: None,
+                })
+            };
+            let before = if sized {
+                Some(shader(vs.stage, copy)?)
+            } else {
+                None
             };
             slot.insert(Some(Box::new(Squares {
-                before: sized.then(|| shader(vs.stage, copy)),
+                before,
                 sized,
                 geometry: Some(Shader {
                     formatless_images: 0,
                     integer_sampled: 0,
-                    ..shader(Stage::Geometry, nir)
+                    ..shader(Stage::Geometry, nir)?
                 }),
             })))
         }
@@ -3273,10 +3312,7 @@ fn geometry_squares_for<B: Backend>(
     }
     let at = gs.nir.generic_end().max(fs.nir.generic_end());
     let block = crate::screen::uniform_blocks(backend.caps());
-    let made = match programs
-        .squares
-        .entry((std::ptr::from_ref(gs) as ShaderId, at))
-    {
+    let made = match programs.squares.entry((gs.id, at)) {
         Entry::Occupied(made) => made.into_mut(),
         Entry::Vacant(slot) => {
             let mut probe = gs.nir.try_clone().ok_or("out of memory")?;
@@ -3287,11 +3323,10 @@ fn geometry_squares_for<B: Backend>(
                 return Ok(None);
             }
             let largest = crate::screen::largest_point_size(backend.caps());
-            let geometry = gs
-                .nir
-                .geometry_squares(at, largest, block)
-                .map(|nir| Shader {
+            let geometry = match gs.nir.geometry_squares(at, largest, block) {
+                Some(nir) => Some(Shader {
                     stage: Stage::Geometry,
+                    id: nir.key().map_err(|e| e.to_string())?,
                     nir,
                     streamed: Ok(None),
                     reads_sample_positions: false,
@@ -3300,7 +3335,9 @@ fn geometry_squares_for<B: Backend>(
                     formatless_images: gs.formatless_images,
                     integer_sampled: gs.integer_sampled,
                     named_layer: gs.named_layer,
-                });
+                }),
+                None => None,
+            };
             slot.insert(Some(Box::new(Squares {
                 before: None,
                 geometry,
@@ -3428,8 +3465,8 @@ fn run_stages<B: Backend>(
     let (streamed, locations) = streamed_variant(vertex, elements);
     let programs = &mut context.programs;
     programs.built_for(backend, vs, &streamed)?;
-    let vertex_key = (std::ptr::from_ref(vs) as ShaderId, streamed);
-    let geometry_key = geometry.map(|(gs, v)| (std::ptr::from_ref(gs) as ShaderId, v.clone()));
+    let vertex_key = (vs.id, streamed);
+    let geometry_key = geometry.map(|(gs, v)| (gs.id, v.clone()));
     let built_vertex = &programs.built[&vertex_key];
     let built_geometry = match &geometry_key {
         Some(key) => Some(&programs.built[key]),
@@ -3672,7 +3709,7 @@ fn run_tessellated<B: Backend>(
         ..evaluation.clone()
     };
     programs.built_for(backend, tes, &computed)?;
-    let id = |shader: &Shader| std::ptr::from_ref(shader) as ShaderId;
+    let id = |shader: &Shader| shader.id;
     let geometry_key = geometry.map_or_else(Default::default, |(gs, v)| (id(gs), v.clone()));
     let key = (
         [
@@ -4729,7 +4766,31 @@ fn widen(indices: &[u8], restart: bool) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::early_tests_matter;
+    use super::{Deleted, KEPT_DELETED, ShaderId, early_tests_matter};
+
+    /// A content key told apart by `n`.
+    fn content(n: usize) -> ShaderId {
+        let mut id = ShaderId::default();
+        id[..size_of::<usize>()].copy_from_slice(&n.to_le_bytes());
+        id
+    }
+
+    #[test]
+    fn deleted_shaders_are_kept_to_a_bound_the_longest_deleted_going_first_unless_live() {
+        let none_live = |_: &ShaderId| false;
+        let mut deleted = Deleted::default();
+        for n in 0..KEPT_DELETED {
+            assert!(deleted.note(content(n), none_live).is_empty());
+        }
+        // Deleted again (made again in between), the first is now the last deleted.
+        assert!(deleted.note(content(0), none_live).is_empty());
+        let next = KEPT_DELETED;
+        assert_eq!(deleted.note(content(next), none_live), [content(1)]);
+        // A content made again and live keeps its objects when it falls past the bound.
+        let live = content(2);
+        assert!(deleted.note(content(next + 1), |d| *d == live).is_empty());
+        assert_eq!(deleted.note(content(next + 2), none_live), [content(3)]);
+    }
 
     #[test]
     fn forced_early_tests_matter_only_for_a_dependent_program_tested_on_an_attached_target() {

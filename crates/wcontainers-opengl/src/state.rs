@@ -15,10 +15,11 @@ use wcontainers_nir::mesa::{NearestSampler, Nir, Wrap};
 use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
 
 use crate::context::{self, Context};
+use crate::draw::ShaderId;
 use crate::gallium::*;
 use crate::packed::{Packed, packed_format};
 use crate::resource;
-use crate::screen::DRIVER_NAME;
+use crate::screen::{DRIVER_NAME, Screen};
 use crate::stream;
 
 /// Ends the process naming state the driver does not take yet: a crash with the reason in the
@@ -363,6 +364,8 @@ fn pulled_because<B: Backend>(backend: &B, element: &pipe_vertex_element) -> Opt
 /// A program stage as st/mesa handed it over: its NIR, kept to build each variant from.
 pub struct Shader {
     pub stage: Stage,
+    /// Its content's key, which what is made of it is kept by.
+    pub id: ShaderId,
     pub nir: Nir,
     /// What a vertex or geometry program streams while stream output is bound: the stage helper's
     /// declaration, none, or why it cannot.
@@ -998,15 +1001,15 @@ unsafe extern "C" fn delete_vertex_elements_state<B: Backend>(
 
 /// Takes the NIR st/mesa hands over (or Mesa's own converter makes of a TGSI program, which
 /// Gallium's helpers hand over) in the shape every variant starts from.
-fn create_shader(
+fn create_shader<B: Backend>(
     pipe: *mut pipe_context,
     ir: pipe_shader_ir,
     program: *const c_void,
     stage: Stage,
 ) -> *mut c_void {
-    // SAFETY: Mesa passes this driver's context and a program; its NIR is the driver's from now
-    // on.
-    let screen = unsafe { (*pipe).screen };
+    // SAFETY: Mesa passes this driver's context, on this driver's screen, and a program; its NIR
+    // is the driver's from now on.
+    let (screen, driver) = unsafe { ((*pipe).screen, Screen::<B>::of((*pipe).screen)) };
     let raw: *mut c_void = match ir {
         PIPE_SHADER_IR_NIR => program.cast_mut(),
         // SAFETY: a TGSI program's tokens; the converter reads the screen's NIR options.
@@ -1018,6 +1021,7 @@ fn create_shader(
     }
     // SAFETY: as above.
     let mut nir = unsafe { Nir::from_raw(raw) };
+    nir.drop_name();
     nir.uniform_blocks_as_words();
     nir.split_resource_arrays();
     // Every 1D texture is made 2D (`view.rs`).
@@ -1048,8 +1052,13 @@ fn create_shader(
     let formatless_images = nir.formatless_images();
     let integer_sampled = nir.integer_sampled_units();
     let named_layer = nir.named_layer_location();
+    let id = nir
+        .key()
+        .unwrap_or_else(|e| refuse(format_args!("a program whose content has no key: {e}")));
+    driver.shader_made(id);
     object(Shader {
         stage,
+        id,
         nir,
         streamed,
         reads_sample_positions,
@@ -1062,7 +1071,7 @@ fn create_shader(
 }
 
 /// A graphics stage's program: its NIR, or its TGSI tokens.
-fn create_stage(
+fn create_stage<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
     stage: Stage,
@@ -1075,28 +1084,28 @@ fn create_stage(
     } else {
         state.tokens.cast()
     };
-    create_shader(pipe, state.type_, program, stage)
+    create_shader::<B>(pipe, state.type_, program, stage)
 }
 
-unsafe extern "C" fn create_vs_state(
+unsafe extern "C" fn create_vs_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_stage(pipe, state, Stage::Vertex)
+    create_stage::<B>(pipe, state, Stage::Vertex)
 }
 
-unsafe extern "C" fn create_fs_state(
+unsafe extern "C" fn create_fs_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_stage(pipe, state, Stage::Fragment)
+    create_stage::<B>(pipe, state, Stage::Fragment)
 }
 
-unsafe extern "C" fn create_gs_state(
+unsafe extern "C" fn create_gs_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_stage(pipe, state, Stage::Geometry)
+    create_stage::<B>(pipe, state, Stage::Geometry)
 }
 
 unsafe extern "C" fn bind_gs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
@@ -1107,11 +1116,11 @@ unsafe extern "C" fn bind_gs_state<B: Backend>(pipe: *mut pipe_context, state: *
         .shader = state.cast();
 }
 
-unsafe extern "C" fn create_tcs_state(
+unsafe extern "C" fn create_tcs_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_stage(pipe, state, Stage::TessControl)
+    create_stage::<B>(pipe, state, Stage::TessControl)
 }
 
 unsafe extern "C" fn bind_tcs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
@@ -1122,11 +1131,11 @@ unsafe extern "C" fn bind_tcs_state<B: Backend>(pipe: *mut pipe_context, state: 
         .shader = state.cast();
 }
 
-unsafe extern "C" fn create_tes_state(
+unsafe extern "C" fn create_tes_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_stage(pipe, state, Stage::TessEvaluation)
+    create_stage::<B>(pipe, state, Stage::TessEvaluation)
 }
 
 unsafe extern "C" fn bind_tes_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
@@ -1142,13 +1151,13 @@ unsafe extern "C" fn set_patch_vertices<B: Backend>(pipe: *mut pipe_context, ver
     unsafe { Context::<B>::of(pipe) }.bound.patch_vertices = vertices;
 }
 
-unsafe extern "C" fn create_compute_state(
+unsafe extern "C" fn create_compute_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_compute_state,
 ) -> *mut c_void {
     // SAFETY: Mesa passes a compute state.
     let state = unsafe { &*state };
-    create_shader(pipe, state.ir_type, state.prog, Stage::Compute)
+    create_shader::<B>(pipe, state.ir_type, state.prog, Stage::Compute)
 }
 
 unsafe extern "C" fn bind_compute_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
@@ -1177,11 +1186,11 @@ unsafe extern "C" fn bind_fs_state<B: Backend>(pipe: *mut pipe_context, state: *
 
 unsafe extern "C" fn delete_shader_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
     // SAFETY: Mesa passes this driver's context and a shader it made, deleted once.
-    let context = unsafe { Context::<B>::of(pipe) };
+    let (context, shader) = unsafe { (Context::<B>::of(pipe), drop_object::<Shader>(state)) };
     let screen = context.screen();
-    context.programs.forget(screen, state.cast_const().cast());
-    // SAFETY: as above.
-    drop(unsafe { drop_object::<Shader>(state) });
+    if !screen.shader_deleted(&shader.id) {
+        context.programs.deleted(screen, shader.id);
+    }
 }
 
 unsafe extern "C" fn set_blend_color<B: Backend>(
@@ -1437,19 +1446,19 @@ pub fn fill<B: Backend>(c: &mut pipe_context) {
     c.create_vertex_elements_state = Some(create_vertex_elements_state::<B>);
     c.bind_vertex_elements_state = Some(bind_vertex_elements_state::<B>);
     c.delete_vertex_elements_state = Some(delete_vertex_elements_state::<B>);
-    c.create_vs_state = Some(create_vs_state);
+    c.create_vs_state = Some(create_vs_state::<B>);
     c.bind_vs_state = Some(bind_vs_state::<B>);
     c.delete_vs_state = Some(delete_shader_state::<B>);
-    c.create_fs_state = Some(create_fs_state);
+    c.create_fs_state = Some(create_fs_state::<B>);
     c.bind_fs_state = Some(bind_fs_state::<B>);
     c.delete_fs_state = Some(delete_shader_state::<B>);
-    c.create_gs_state = Some(create_gs_state);
+    c.create_gs_state = Some(create_gs_state::<B>);
     c.bind_gs_state = Some(bind_gs_state::<B>);
     c.delete_gs_state = Some(delete_shader_state::<B>);
-    c.create_tcs_state = Some(create_tcs_state);
+    c.create_tcs_state = Some(create_tcs_state::<B>);
     c.bind_tcs_state = Some(bind_tcs_state::<B>);
     c.delete_tcs_state = Some(delete_shader_state::<B>);
-    c.create_tes_state = Some(create_tes_state);
+    c.create_tes_state = Some(create_tes_state::<B>);
     c.bind_tes_state = Some(bind_tes_state::<B>);
     c.delete_tes_state = Some(delete_shader_state::<B>);
     c.set_patch_vertices = Some(set_patch_vertices::<B>);
@@ -1466,7 +1475,7 @@ pub fn fill<B: Backend>(c: &mut pipe_context) {
     c.set_vertex_buffers = Some(set_vertex_buffers::<B>);
     c.set_shader_buffers = Some(set_shader_buffers::<B>);
     c.set_shader_images = Some(set_shader_images::<B>);
-    c.create_compute_state = Some(create_compute_state);
+    c.create_compute_state = Some(create_compute_state::<B>);
     c.bind_compute_state = Some(bind_compute_state::<B>);
     c.delete_compute_state = Some(delete_shader_state::<B>);
 }
