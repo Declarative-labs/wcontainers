@@ -571,7 +571,7 @@ macro_rules! tests {
         #[test]
         #[cfg_attr(
             miri,
-            ignore = "the heap's bytes are a Rust allocation, where threads racing is a data race; native only"
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
         )]
         fn reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes() {
             $crate::reads_only_values_bytes_held_while_another_thread_writes_mixed_sizes($memory);
@@ -580,7 +580,7 @@ macro_rules! tests {
         #[test]
         #[cfg_attr(
             miri,
-            ignore = "the heap's bytes are a Rust allocation, where threads racing is a data race; native only"
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
         )]
         fn keeps_the_bytes_beside_it_that_another_thread_writes() {
             $crate::keeps_the_bytes_beside_it_that_another_thread_writes($memory);
@@ -589,7 +589,7 @@ macro_rules! tests {
         #[test]
         #[cfg_attr(
             miri,
-            ignore = "the heap's bytes are a Rust allocation, where threads racing is a data race; native only"
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
         )]
         fn counts_and_swaps_without_losing_a_value_across_threads() {
             $crate::counts_and_swaps_without_losing_a_value_across_threads($memory);
@@ -599,7 +599,7 @@ macro_rules! tests {
         #[test]
         #[cfg_attr(
             miri,
-            ignore = "the heap's bytes are a Rust allocation, where threads racing is a data race; native only"
+            ignore = "under Miri the memory is a Rust allocation, where threads racing is a data race; native only"
         )]
         fn waits_until_woken() {
             $crate::waits_until_woken($memory);

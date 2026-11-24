@@ -81,8 +81,8 @@ fn words_of_one_size<W: Word + kani::Arbitrary, const SIZE: usize>(
     let expected = expected_word(&memory, at, SIZE);
     let inside = expected.is_ok();
     kani::cover!(
-        inside && at % WORD as u64 != 0,
-        "a word not at the start of an 8-byte word"
+        inside && at as usize + SIZE == bytes(&memory),
+        "the last word of the mapping"
     );
     assert_eq!(memory.load::<W>(at).map(|_| ()), expected);
     assert_eq!(memory.store(at, value), expected);
