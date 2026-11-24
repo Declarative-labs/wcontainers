@@ -23,6 +23,8 @@ wcontainers-processor-architecture-conformance = { path = "../../processor-archi
 wcontainers-processor-architecture-arm64 = { path = "../../processor-architecture/implementation/arm64" }
 wcontainers-arm64 = { path = "../../wcontainers-arm64" }
 aarch64-cpu = "12.0.0"
+# The ghost token argument the page methods take (erased: a caller outside the proof passes `Tracked::assume_new()`).
+vstd.workspace = true
 
 [lints]
 workspace = true

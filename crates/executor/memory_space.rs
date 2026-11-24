@@ -2,6 +2,7 @@ use core::ops::Range;
 
 use thiserror::Error;
 use vstd::prelude::*;
+#[cfg(verus_only)]
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::GhostVar;
 use wcontainers_abi::Permissions;
@@ -293,6 +294,7 @@ pub trait MemorySpace: Sized {
 /// Permissions is a plain value.
 #[verifier::external_type_specification]
 #[verifier::external_body]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
 pub struct ExPermissions(Permissions);
 
 /// Returns what a page allows when it allows nothing.
@@ -314,12 +316,15 @@ pub trait ExVolatileBytes {
 
 /// The errors are plain values.
 #[verifier::external_type_specification]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
 pub struct ExInvalidAddressError(InvalidAddressError);
 
 #[verifier::external_type_specification]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
 pub struct ExMapMemoryError(MapMemoryError);
 
 #[verifier::external_type_specification]
+#[allow(dead_code, reason = "a declaration to Verus, never built")]
 pub struct ExCopyMemoryError(CopyMemoryError);
 
 } // verus!

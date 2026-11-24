@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vstd::prelude::*;
+#[cfg(verus_only)]
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
 #[cfg(verus_only)]
@@ -26,7 +27,8 @@ use wcontainers_volatile_bytes::VolatileBytes;
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 
 // The proof's copies of the architecture's bounds and the ABI's page mask, checked equal here.
-const _: () = assert!(Arm64::ADDRESSABLE.start == u64::MIN && Arm64::ADDRESSABLE.end == ADDRESSABLE_END);
+const _: () =
+    assert!(Arm64::ADDRESSABLE.start == u64::MIN && Arm64::ADDRESSABLE.end == ADDRESSABLE_END);
 const _: () = assert!(OFFSET_MASK == PAGE_MASK);
 
 /// The number of changes made to any space, counted after each change is in place.
@@ -197,6 +199,7 @@ pub(crate) struct Table {
     /// The name of the frame of each page with no entry.
     unmade: Ghost<spec_fn(u64) -> int>,
     /// The other half of the token that holds the space's model.
+    #[allow(dead_code, reason = "ghost state, erased from the built code")]
     model: Tracked<GhostVarAuth<contract::Space>>,
 }
 
@@ -364,7 +367,8 @@ fn check_pages(addresses: &Range<u64>) -> (result: Result<(), InvalidAddressErro
         result is Ok <==> contract::whole_pages(*addresses, addressable()),
 {
     check_inside(addresses)?;
-    let (start, end) = (addresses.start, addresses.end);
+    let ghost start = addresses.start;
+    let ghost end = addresses.end;
     proof {
         assert(start & 4095 == 0 <==> start % 4096 == 0) by (bit_vector);
         assert(end & 4095 == 0 <==> end % 4096 == 0) by (bit_vector);
@@ -828,7 +832,7 @@ impl MemorySpace for SimulatedMemory {
                 decreases end,
             {
                 end = end - contract::PAGE_SIZE;
-                let start = addresses.start + (end - other_start);
+                let ghost start = (addresses.start + (end - other_start)) as u64;
                 let page = match other_table.pages.get(&end) {
                     Some(found) => Some(copy_page(found, Ghost(fresh(before, from, start)))),
                     None => None,
@@ -1062,7 +1066,11 @@ impl SimulatedMemory {
                 permission,
             } => {
                 // The guest's change goes through the holder of the space's token, which the executor stands for.
-                self.assign_permissions(addresses, to_permissions(permission), Tracked::assume_new());
+                self.assign_permissions(
+                    addresses,
+                    to_permissions(permission),
+                    Tracked::assume_new(),
+                );
                 count_change();
                 copy.changes = None;
             }
@@ -1096,7 +1104,10 @@ impl SimulatedMemory {
 
     /// Takes the lock to read the pages: only verified code changes them.
     fn lock_pages(&self) -> MutexGuard<'_, Table> {
-        self.pages.mutex.lock().unwrap_or_else(PoisonError::into_inner)
+        self.pages
+            .mutex
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn find_frame(&self, page: u64) -> Option<Frame> {
@@ -1126,7 +1137,8 @@ impl SimulatedMemory {
     /// Writes the bytes, starting at the address, and returns the count of changes before the write.
     fn write_counted(&self, start: u64, bytes: &[u8]) -> u64 {
         for (page, within, buffer) in split_at_pages(start, bytes.len()) {
-            lock_frame(&self.make_frame(page, Tracked::assume_new()))[within].copy_from_slice(&bytes[buffer]);
+            lock_frame(&self.make_frame(page, Tracked::assume_new()))[within]
+                .copy_from_slice(&bytes[buffer]);
         }
         count_change()
     }
