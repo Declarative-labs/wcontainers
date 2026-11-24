@@ -136,25 +136,25 @@ impl Drop for Call<'_> {
 
 /// A value shared between COM objects that is touched only under the library's lock, dropped
 /// under it too (COM objects are released on any thread).
-pub struct Locked<T>(ManuallyDrop<T>);
+pub struct Locked<T>(Option<T>);
 
 impl<T> Locked<T> {
     pub fn new(value: T) -> Self {
-        Locked(ManuallyDrop::new(value))
+        Locked(Some(value))
     }
 }
 
 impl<T> Deref for Locked<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &self.0
+        self.0.as_ref().expect("a value is held until its drop")
     }
 }
 
 impl<T> Drop for Locked<T> {
     fn drop(&mut self) {
         let _lock = lock();
-        unsafe { ManuallyDrop::drop(&mut self.0) }
+        drop(self.0.take());
     }
 }
 
