@@ -1016,13 +1016,35 @@ window needs the bound in a register, measured at XN2 if asked).
   XN2 run 3 (the status file has the figures): with every stack access cut, the wrapping form costs 1.115 times the
   unchecked form over the benchmark set (fib 1.355); with the stack's accesses as the guest wrote them and rsp
   holding B plus the guest's rsp, 1.032 (fib 1.000). The second form is chosen; a guest rsp written outside the
-  window is cut by the wrapping form and faults at the write in the exact form, both named in section 5 once built.
+  window is cut by the wrapping form and faults at the write in the exact form, both named in section 5.
+- As built (XN2 run 4), the stack form that replaces the implicit accesses' bullet above in I: host rsp is B plus
+  the guest's rsp, kept within [B, B + 2^32 + 2^16 + 8] (a return's pop past the top is the most it moves without a
+  cut; nothing of ours is mapped within 2^35 bytes above the window). `push`, `pop` to a register, `call`'s push,
+  `ret`'s read and its `lea rsp, [rsp + n]` run as the guest wrote them, as does an operand `[rsp + d]` with no
+  index and d no lower than one page below (it reaches the window, the guard page under it, or the unmapped space
+  above, never the probe's page); with an index or a lower d the operand takes the window's form, on GS at esp in
+  32 bits (B's low half is zero) or, exact, the offset formed less B (`mov u, fs:[negated base]; lea t, [t + u]`)
+  and probed. `push m` and `pop m` take that form for their operand only (the stack's side is never cut; the CPU
+  forms `pop m`'s rsp-based operand after rsp moves, which the exact form's offset follows). An instruction naming
+  rsp as a value (a register operand, or the base of a 64-bit `lea`) has it replaced by s, t where the instruction
+  leaves t free, else a guest register kept in a stand-in slot: s is loaded with rsp less B where the instruction
+  reads rsp (a `cmov` counts), and where it writes rsp, after its commit point (the map then holding the guest's rsp
+  in s), the exact form probes s, then both cut it (`mov s32, s32`) and make rsp `lea rsp, [s + u]` with u the base
+  from the fixed part. `leave`: the exact form probes rbp, t loads the frame on GS at ebp, `mov u32, ebp; lea u, [u
+  + 8]`, `mov rbp, t` the commit point (the map holding rsp in u), then rsp from u and the base. `rdfsbase rsp` and
+  `rdgsbase rsp` read the word into t and make rsp from it the same way. The readers of a thread's registers take
+  rsp less B unless the span holds it elsewhere; a thread starts with rsp in [0, 2^32] (a stop or an answer of the
+  inside writes it back as B plus the value cut to 32 bits). No probe of the stack remains; `pushf` and `enter`
+  still go to the inside.
 - The page permissions inside the window are the host's protection of the window's pages, written by the kernel's
   mapping calls, 4 KiB as the guest's.
 
 ## 5. What the guest sees: differences named
 
-- Way I, wrapping: the modulo landing above (section 4).
+- Way I, wrapping: the modulo landing above (section 4), and a guest rsp written outside [0, 2^32) cut to its value
+  modulo 2^32 (a stop between the write and the cut reads the written value).
+- Way I, exact: a guest rsp written at or above 2^32 (or below 0) faults at the probe after the instruction, the
+  instruction done, where the CPU faults only at the next access through it (a read of rsp would give the value).
 - The machine: our area in the upper canonical half, on user-accessible pages (section 6): guest code can read the
   code area, the pool, the mirror's levels and its processor's thread area there, and write that area's register
   part (which holds only the running thread's own words), where Linux faults on every upper-half address. This is
