@@ -5,6 +5,36 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 5 run 4 (2026-11-24). Built nothing; no driver change, so round 5 run 3's table and gap
+list below still hold at the pushed tip. G9'S FIRST PART IS STILL NOT COMPLETE, for the same two
+reasons as run 3: the programs part of the bar (Godot needs OpenGL 3.3, bgfx 4.3) and the measure
+over the GLES lists with KHR-GL33 (below the floor while KHR-GL33 cannot start). Both wait on OpenGL
+3.2's 32 passed values: the owner's ruling, or a build that also needs the shaders track's
+pass-through reading its records from storage. Done this run:
+- The passed-value question narrowed, from the pinned Mesa's source (For the owner): only a geometry or
+  evaluation program can need more than 31 values (a vertex program's outputs need 16), Mesa counts
+  no position against those limits, and Mesa's own Direct3D 12 driver and Zink on Intel report
+  OpenGL 3.2's 32 values where their hosts give fewer. So the build for 3.2 is the storage
+  pass-through (28 to 31, the shaders track's) plus one value read from those records by the
+  fragment program.
+- Read, not proven: `gpu_shader5.uniform_blocks_array_indexing` fails at its first index (0), whose
+  block holds (-1, -1, 0, 1). The result (-1, 1, 0, 1) is block 1's data exactly (the test's four
+  blocks are (-1, -1), (-1, 1), (1, -1), (1, 1)), and is also block 0's with y negated. dEQP-GLES3's
+  `transform_feedback.position` cases capture positions and pass, so a block read one place too far
+  on is the likelier cause. The bridge's chain of loads for a block index known only at run time
+  (`name_uniform_blocks`) names blocks from 0 and looks right. Not yet traced to the driver's
+  binding of the blocks.
+- Weighed and not started this run, each too large to finish with its proof in one run: cull
+  distances through `Stages::culled` (needs the bridge to split st/mesa's merged clip and cull
+  array at `clip_distance_array_size`, `BuiltIn::CullDistance` in the route, a pass-through program
+  for the final draw in place of the vertex program, and the screen's `cull_distance`; a geometry
+  or evaluation program writing them needs a staged built-in the shaders crate does not have).
+  Forced early tests in the program (the Direct3D 11 front's `Early::InProgram` and
+  `PerPrimitive`, with the pass's read-only depth attachment). Shared conversions: KHR
+  `vertex_ordering` deletes each program before it makes the next
+  (`esextcTessellationShaderVertexOrdering.cpp`, `initTestIteration`), so a cache keyed by content
+  must outlive the shader state it was made for.
+
 G9 round 5 run 3 (2026-11-24). G9'S FIRST PART IS STILL NOT COMPLETE: its bar asks that bgfx's
 and Godot's OpenGL renderers match the RTX 3080's OpenGL or llvmpipe, and neither starts on this
 driver, because each asks for a version the driver does not report there (below; For the owner).
@@ -719,8 +749,30 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   floor (table at the top). Counted as failed whole (9,364 cases run before), they are below
   it. Asked: whether G9's measure takes the GLES lists alone on such a host, or whether OpenGL 3.2's
   fragment inputs must be built beyond the host's limit (values past the 31st fetched in the
-  fragment program from storage the vertex stage writes, which needs the vertex program run as
-  compute work and each fragment's barycentric weights: WebGPU has neither in core).
+  fragment program from storage, which needs each fragment's barycentric weights: WebGPU has none
+  in core).
+  Read in round 5 run 4, from the pinned Mesa 26.3.1's source (not run):
+  - Only a geometry or evaluation program can pass more than 31 values. OpenGL 3.2 asks 64
+    components (16 values) of a vertex program's outputs
+    (<https://registry.khronos.org/OpenGL-Refpages/gl4/html/glGet.xhtml#:~:text=GL_MAX_VERTEX_OUTPUT_COMPONENTS>)
+    and 128 only of a geometry program's outputs and a fragment program's inputs. The stage helper
+    already writes a geometry program's records to storage, so the build needed is: its
+    pass-through reading records from storage (the shaders track's open ask, Requests, which takes
+    the screen from 28 to 31), then the 32nd value read by the fragment program from those records
+    with barycentric weights.
+  - Mesa counts neither the position against those limits: `u_screen.c` puts
+    `VARYING_BIT_POS` in every stage's `ignored_output_varyings` by default, and
+    `check_against_input_limit` (`gl_nir_link_varyings.c`) leaves a fragment program's
+    `VARYING_BIT_POS` out. So 128 components means 32 values beside the position.
+  - Mesa's own Direct3D 12 driver (Microsoft's OpenGL on Direct3D 12) reports
+    `max_outputs = D3D12_GS_OUTPUT_REGISTER_COUNT` and fragment `max_inputs =
+    D3D12_PS_INPUT_REGISTER_COUNT` (32 each, `d3d12_screen.cpp`), which st/mesa turns into 128
+    components, and keeps the default above. A geometry program passing 32 values then takes 33
+    registers of Direct3D 12's 32. That driver reports one value more than its host passes. Zink
+    on Intel's Vulkan drivers forces a fragment program's 32 inputs over the smaller count the
+    driver gives ("a value that's compatible with what we need for GL", `zink_screen.c`). Two real
+    Mesa drivers report OpenGL 3.2's minimum where their host falls short, and this one does not.
+    The owner's rule forbids reporting a capability the driver lacks, so the screen stays at 3.1.
 
 - Unsafe code (the 2026-11-22 rule): wcontainers-opengl (370 uses, counted on 2026-11-23 as the
   root list counts them: every `unsafe` word outside comments) and wcontainers-nir (116) stay on
