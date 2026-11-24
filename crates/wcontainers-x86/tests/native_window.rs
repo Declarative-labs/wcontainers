@@ -590,3 +590,56 @@ fn stack_and_withheld_forms_are_made() {
         }
     }
 }
+
+/// The emitted code of three guest sequences in the exact form, up to the piece's first call into the inside, as
+/// gadgets for the speculation probe (docs/x86-native-output.md section 4, Speculation): each reads a byte or bit at
+/// a refused address and loads the probe array's line it picks. Printed as `name form hex` lines, the form `cut`
+/// as emitted or `uncut` with each guest access's address-size prefix and `mov esi, esi` taken out, the control
+/// that must leak. Run by the scratch folder's probe on an x86-64 machine.
+#[test]
+#[ignore = "prints the gadgets for the speculation probe"]
+fn speculation_gadgets() {
+    use iced_x86::Encoder;
+    let gadgets = [
+        // movzx eax, byte [rbx]; shl eax, 12; mov eax, [rax + 100000h]; ud2
+        ("load", "0f b6 03 c1 e0 0c 8b 80 00 00 10 00 0f 0b"),
+        // lodsb; movzx eax, al; shl eax, 12; mov eax, [rax + 100000h]; ud2
+        ("lods", "ac 0f b6 c0 c1 e0 0c 8b 80 00 00 10 00 0f 0b"),
+        // bt [rax], rcx; setc al; movzx eax, al; shl eax, 12; mov eax, [rax + 140000h]; ud2
+        (
+            "bt",
+            "48 0f a3 08 0f 92 c0 0f b6 c0 c1 e0 0c 8b 80 00 00 14 00 0f 0b",
+        ),
+    ];
+    for (name, hex) in gadgets {
+        let piece = piece(&bytes(hex), EXACT, false).expect("a piece");
+        let emitted: Vec<Iced> = host(&piece.bytes)
+            .into_iter()
+            .map(|(_, i)| i)
+            .take_while(|i| !(i.code() == Code::Lea_r64_m && i.memory_base() == Register::RIP))
+            .collect();
+        for form in ["cut", "uncut"] {
+            let mut out = Vec::new();
+            for i in &emitted {
+                let mut i = *i;
+                if form == "uncut" {
+                    let cut_start = i.code() == Code::Mov_r32_rm32
+                        && i.op1_kind() == OpKind::Register
+                        && i.op0_register() == Register::ESI
+                        && i.op1_register() == Register::ESI;
+                    if cut_start {
+                        continue;
+                    }
+                    if i.memory_segment() == Register::GS && i.memory_base().is_gpr32() {
+                        i.set_memory_base(i.memory_base().full_register());
+                    }
+                }
+                let mut encoder = Encoder::new(64);
+                encoder.encode(&i, 0).expect("encodes");
+                out.extend(encoder.take_buffer());
+            }
+            let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
+            println!("{name} {form} {hex}");
+        }
+    }
+}
