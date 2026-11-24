@@ -96,6 +96,34 @@ What neither removes: the per-piece cost of whatever is still loaded (3.6 us aga
 kernel's whole-file read (the kernel track's). Runs 2 to 4 build 2, then the fork-child half of 1, each measured
 before and after, alternating, on a quiet machine.
 
+## Round 4 run 2 (2026-11-24): the account's change 2 built and measured
+
+- Built (commits 7c765bfd0, 2529908da): the code area's memfd is the code area then the whole slot table (2^46 bytes,
+  sparse), and a new memory's code is mapped by two commands at once, `MapCode` and `MapSlots`, each sending the memfd
+  once; `MapSlots` maps the whole table execute-only, so no slot page needs its own command, descriptor or host
+  mapping any more, and "slot pages exhausted" is gone. The filter allows that one mapping exactly (address, length,
+  execute-only, shared and fixed, the received fd, offset the code area's size). The embedder maps only the code area
+  for cache maintenance, and 2 MiB windows of the slot table only on hosts whose `CTR_EL0` asks for maintenance by
+  line (not Graviton4, whose DIC and IDC are set, so that path is not run on our machines). A jump to a page with no
+  slot written reads zeros (`udf`, the empty slot) and allocates that page in the memfd; the stop records it and the
+  next flush punches it back out if nothing was written there (counter `slot_pages_given_back`; a refused punch is the
+  slow path "slot page kept").
+- Tests: tests/stub.rs `the_slot_table_is_mapped_whole_once_from_the_code_area_s_memfd` (one `--xs` mapping over
+  exactly the table, a slot written by position read back through /proc, an empty slot reads zero) and four new
+  refused mappings in the shared-block test (one page of the table, the table readable, from another offset, the code
+  area's bytes over it); tests/run.rs `slot_pages_a_jump_reached_and_nothing_wrote_are_given_back` (16 jumps into
+  data pages, each page given back at the next turn). Graviton4 with /dev/kvm denied: stub 7, run 11, kernel 12,
+  translated 2, floor 6, step 9, busybox 1 passed; conformance 20 of 21, the 21st the known precise-set test at
+  0x1000 (owner's item); clippy with warnings denied clean (11:03 to 11:17 UTC, load 7 to 12). x86-64: the machine
+  is down ("not set up", 11:12 UTC), so no x86 verdict this run; the library type-checks for x86_64-linux-musl on the
+  Mac except an existing musl-only `libc::tgkill` in stub.rs (glibc has it).
+- Measured, busybox `sh` starting 1,000 programs, CPU 41 of Graviton4, /dev/kvm denied, before (the committed tree,
+  built as speed-before) and after alternated, 7 rounds (scratch w1/r4b-run2, ab1-arm.out and ab2-arm.out), the
+  second run of each in ms a program: before 4.25, 4.34, 4.24, 4.99, 4.40, 4.60, 4.97; after 3.71, 3.72, 4.48, 4.36,
+  3.87, 4.44, 4.41. Load 8 to 9 for rounds 1 to 3, 14 to 17 for rounds 4 to 7 (other tracks). Paired by round the
+  change saves 0.53, 0.62, -0.24, 0.63, 0.53, 0.16, 0.56 ms: median 0.53 ms (12%), mean 0.40 ms, as the account
+  expected (0.4 to 0.6). Against the model (1.04 to 1.20 ms in these runs) P is now about 3.4 to 4.0 times it.
+
 ## Findings carried from the fourth check of the plan, each settled or open
 
 - The zygote's inherited restartable-sequences registration: settled, plan dec511ab (4.1, 6); code f655e9b0 (the

@@ -101,9 +101,12 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   process; P's zygote removes I's reservation in its child like everything else of the embedder (4.1). A second
   in-process host in the same process is refused ("in-process host exists"), as is a first one whose reservation
   the host refuses.
-- As built (W1 round 3 run 2): a slot page's bytes are the next free page of the code area's memfd past the code
-  area (128 MiB of them), never reused, mapped by a `MapSlots` command execute-only; all in use ends the process,
-  counted "slot pages exhausted".
+- As built (W1 round 4 run 2): the slot table is the code area's memfd past the code area's bytes, at the offset of
+  its address less 2^46, mapped whole execute-only once by a `MapSlots` command when the memory's code is made (one
+  host mapping, one descriptor sent). A page no slot was written in reads as zeros, which is `udf`, the empty slot;
+  a page a jump reached and nothing wrote is punched back out of the memfd before the next turn (counted "slot pages
+  given back"; a refused punch is the slow path "slot page kept"), so the memory concern below is met that way.
+  Measured: 0.4 to 0.55 ms less a program for busybox `sh` (status file, round 4 run 2).
 - **The slot table** (ARM64; the VM form's entry mirror): a 16-byte slot for every host address H of the guest
   area at `SLOTS | (H << 2)`, `SLOTS` = 2^46, so the table spans [2^46, 2^47). It is one memfd per guest memory
   (P) or one per embedder process (I: the slots of different containers are different host addresses), written by
