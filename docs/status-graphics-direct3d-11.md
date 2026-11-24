@@ -6,8 +6,8 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23) and
-3 (2026-11-24).
+(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23), 3
+and 4 (2026-11-24).
 
 ## Where things stand
 
@@ -27,7 +27,27 @@ mishandles decides it. The RTX 3080's driver changes its own division for the pr
 frames, and the isolated test holds ours to WARP alone. Ours divides as the RTX 3080 does outside the
 program, bit for bit; matching WARP would change the converter's division everywhere. Which of the
 two real answers to follow is asked of the orchestrator (For the orchestrator); until then it
-fails (round 6 run 3, below).
+fails (round 6 run 3, below). Round 6 run 4 found no ruling yet and reports the milestone
+complete with that item named as waiting on it and on the shaders crate, as the brief's ruling on
+G8's bar allows for an item blocked only by others.
+
+G4h round 6 run 4 (2026-11-24, from about 02:20 Pacific):
+- The creation refusal of a stage reading more textures than the back end has
+  (`BindingsBeyondLimit`) has a test: front.rs
+  `a_shader_reading_more_textures_than_the_back_end_has_is_refused_at_creation` (the 14
+  constant buffer shader on the recorder with one texture a stage: `E_INVALIDARG`, counted once,
+  warned once, the device not lost).
+- A vertex element's size is its DXGI format's texel size from the interface's `Format::block`
+  (`format::vertex_size`), not a table of its own; the formats after `V408` and the unserved
+  format's message are named. Ten baseline lines cut.
+- own_cases' iteration count: run 3's mark was wrong (the example is test code, where a mark
+  fails); it is removed, and the `restated` finding it was meant to answer is left (Literals).
+- Tests at trial 40094011 (this run's tree; scratch r8/run.sh, logs/r8b-*, desktop through the
+  rig and its queue, 02:32 to 02:45 Pacific, other tracks sharing it): lint of both builds clean;
+  the front's unit 7, cache 1 and front.rs 61 pass; library com 15 pass (1 ignored), programs 69
+  pass (9 ignored, the known failures), lifetimes seeds 1 to 9 of 300 steps; the WebGL 2 build's
+  run 1 passes (8 ignored). The ignored tests were not run with `--ignored`: their causes are
+  unchanged since run 3.
 
 G4h round 6 run 3 (2026-11-24, from about 00:30 Pacific), the seventh round's check:
 - Per-stage slots counted in the level check (device.rs `level_slots`, `slots_served`): from
@@ -1288,6 +1308,13 @@ listed case of section 12 has its test against real Direct3D.
   The shaders track holds that the division is not its own (its run 113 question); either way the
   change is in its crate. The test stays a known failure until you rule. This replaces the
   question that was put to the owner: the owner's notes say the graphics bar is yours to rule.
+  Under your rule as written, (a) passes both ways (the program within WARP's distance, plain
+  division WARP's answer) and (b) leaves the program failing; (a) costs two fused multiply-adds
+  per division in every shader.
+- The literal check's `restated` finding on own_cases.rs's 300.0 (Literals): the example's
+  iteration count equals by chance a row count inside a function of the route suite. A mark is
+  refused in test code and a named constant still restates it; an accepted line is yours to
+  decide.
 
 ## For the owner
 
@@ -1661,6 +1688,18 @@ Earlier runs' measurements are in this file's git history.
   programs reporting every `--dll` library they loaded.
 
 ## Literals
+
+- G4h round 6 run 4 (2026-11-24): format.rs's `vertex_size` table (six lines), the two numbers
+  and the message of `unserved` and `vertex_alignment`'s 4 (`size_of::<u32>()`) are gone: ten
+  baseline lines cut, 570 left. The check on the desktop (logs/r8a-literals.log, r8b-literals.log)
+  finds in this track's files: three multi-line strings of context.rs and device.rs reported as
+  new and as stale at once, only because the desktop's checkout ends lines with `\r\n` (not
+  findings); and own_cases' 300.0 (atg-simplecomputepc's iteration count) as `restated`, equal by
+  chance to `ROWS`, a constant inside a function of wcontainers-gpu-test's route suite. They are
+  two facts; naming the count in the example still restates it (a test's constant counts), so
+  it is left for the orchestrator (For the orchestrator). Also listed, in another track's file:
+  host-process's `NANOSECONDS` redefines the front's query.rs constant; that is that file's to
+  import from a shared place, not this front's.
 
 - G4h round 6 run 3 (2026-11-24): the check at e4ffcf04 on the desktop (logs/r7f-literals.log)
   finds nothing in this run's new lines (a stage's slots are a named struct, not an array of
