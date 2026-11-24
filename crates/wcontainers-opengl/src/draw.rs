@@ -62,6 +62,8 @@ pub(crate) struct Built<B: Backend> {
     converted: Option<Converted>,
     /// An evaluation program's tessellator, which its control program is converted with.
     tessellator: Option<Tessellator>,
+    /// The slow paths the program takes whenever it runs, counted at each use.
+    slow_paths: Vec<SlowPath>,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -180,10 +182,14 @@ impl<B: Backend> Programs<B> {
         variant: &Variant,
     ) -> Result<&Built<B>, String> {
         let key = (std::ptr::from_ref(shader) as ShaderId, variant.clone());
-        Ok(match self.built.entry(key) {
+        let built = match self.built.entry(key) {
             Entry::Occupied(built) => built.into_mut(),
             Entry::Vacant(slot) => slot.insert(convert(backend, shader, variant)?),
-        })
+        };
+        for &path in &built.slow_paths {
+            backend.slow_paths().hit(path);
+        }
+        Ok(built)
     }
 }
 
@@ -776,10 +782,11 @@ fn convert<B: Backend>(
     let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
     fit_stages(&mut routed.module, variant)?;
     crate::packed::unpack_inputs(&mut routed.module, &variant.packed)?;
-    let (module, bindings, helpers, helper_size) = if rewrites == VariantKey::default()
+    let (module, bindings, helpers, helper_size, slow_paths) = if rewrites == VariantKey::default()
         && routed.helpers.is_empty()
         && routed.typed.buffers.is_empty()
         && routed.rewrites == wcontainers_nir::direct::Rewrites::default()
+        && routed.slow_paths.is_empty()
         && !binds_arrays(&routed.module)
     {
         let module = wcontainers_nir::direct::plain(routed).map_err(|e| e.to_string())?;
@@ -800,6 +807,7 @@ fn convert<B: Backend>(
             bindings,
             Vec::new(),
             0,
+            Vec::new(),
         )
     } else {
         let (module, reflection) =
@@ -810,6 +818,7 @@ fn convert<B: Backend>(
             elements(reflection.bindings),
             reflection.helpers,
             reflection.helper_size,
+            reflection.slow_paths,
         )
     };
     let converted = variant.streamed.then(|| Converted {
@@ -859,6 +868,7 @@ fn convert<B: Backend>(
         },
         converted,
         tessellator: None,
+        slow_paths,
     })
 }
 
@@ -925,6 +935,7 @@ fn convert_geometry<B: Backend>(
         layered: layered_textures(&compute.module),
         sampled_kinds: sampled_kinds(&compute.module),
         input_kinds: Vec::new(),
+        slow_paths: converted.reflection.slow_paths.clone(),
         converted: Some(converted),
         tessellator: None,
     })
@@ -970,6 +981,7 @@ fn convert_control<B: Backend>(
         layered: layered_textures(&compute.module),
         sampled_kinds: sampled_kinds(&compute.module),
         input_kinds: Vec::new(),
+        slow_paths: converted.reflection.slow_paths.clone(),
         converted: Some(converted),
         tessellator: None,
     })
@@ -1030,6 +1042,7 @@ fn convert_evaluation<B: Backend>(
         layered: layered_textures(&drawn.module),
         sampled_kinds: sampled_kinds(&drawn.module),
         input_kinds: Vec::new(),
+        slow_paths: converted.reflection.slow_paths.clone(),
         converted: Some(converted),
         tessellator: Some(tessellator),
     })

@@ -17,8 +17,8 @@ use std::ffi::{CStr, c_char};
 use wcontainers_gpu::Format as GpuFormat;
 use wcontainers_gpu::{
     CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
-    ShaderStage as GpuStage, SlotKind, SourceStage, StageExtras, TEXEL_BUFFER_TEXTURE_WIDTH,
-    TexelBufferRoute, VariantKey, helper_binding,
+    ShaderStage as GpuStage, SlotKind, SlowPath, SourceStage, StageExtras,
+    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, VariantKey, helper_binding,
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
@@ -707,6 +707,9 @@ struct Builder<'a> {
     /// atomics take the operation's signedness from the word's type.
     signed_atomic_fields: Vec<(u32, u32)>,
     signed_atomic_vars: Vec<u32>,
+    /// Signed words that are a block variable's own fields (variable, field): the variable gets a
+    /// type of its own, as blocks of one layout share their flat type.
+    signed_block_fields: Vec<(u32, u32)>,
     /// Images atomics act on. Where there are any, every image of a texture is read and written
     /// through a buffer of its texels (`VariantKey::texels_through_buffer`'s layout): the common
     /// form has no image atomic giving its old value, and images bound to one texture then share
@@ -726,6 +729,8 @@ struct Builder<'a> {
     helper_block: Option<Handle<GlobalVariable>>,
     /// Images of buffers, read and written through `wcontainers_shaders::typed`.
     typed: TypedBuffers,
+    /// The slow paths the program takes whenever it runs.
+    slow_paths: Vec<SlowPath>,
 }
 
 /// Which of the stage helper's programs a staged program is.
@@ -813,6 +818,8 @@ pub struct Routed {
     /// The helper constants the module reads, in its block at [`HELPER_SET`].
     pub helpers: Vec<HelperSlot>,
     pub typed: TypedBuffers,
+    /// The slow paths the program takes whenever it runs, which its reflection names.
+    pub slow_paths: Vec<SlowPath>,
 }
 
 /// A program's images of buffers, each a storage buffer of words whose stand-in functions
@@ -839,7 +846,13 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
         tessellator: _,
         helpers,
         typed,
+        slow_paths,
     } = routed;
+    if !slow_paths.is_empty() {
+        return Err(unsupported(format_args!(
+            "a program taking a slow path, which only its reflection names"
+        )));
+    }
     if !helpers.is_empty() || !typed.buffers.is_empty() {
         return Err(unsupported(format_args!(
             "a texel buffer, whose length the driver gives"
@@ -938,6 +951,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         atomic_vars: Vec::new(),
         signed_atomic_fields: Vec::new(),
         signed_atomic_vars: Vec::new(),
+        signed_block_fields: Vec::new(),
         atomic_images: Vec::new(),
         signed_derefs: std::collections::HashSet::new(),
         kept_samples: None,
@@ -946,6 +960,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         helpers: Vec::new(),
         helper_block: None,
         typed: TypedBuffers::default(),
+        slow_paths: Vec::new(),
     };
     match f.stage {
         FlatStage::Geometry => b.staged = Some(b.staged_functions(f.geometry.streams)),
@@ -988,6 +1003,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
     let rewrites = std::mem::take(&mut b.rewrites);
     let helpers = std::mem::take(&mut b.helpers);
     let typed = std::mem::take(&mut b.typed);
+    let slow_paths = std::mem::take(&mut b.slow_paths);
     let (module, staged) = b.finish(f)?;
     let tessellator = (f.stage == FlatStage::TessEvaluation)
         .then(|| tessellator(&f.tessellation))
@@ -999,6 +1015,7 @@ pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertErr
         tessellator,
         helpers,
         typed,
+        slow_paths,
     })
 }
 
@@ -1279,43 +1296,7 @@ impl Builder<'_> {
                     }
                 }
             }
-            TypeKind::Struct => {
-                let mut members = Vec::new();
-                let mut end = 0;
-                for i in 0..t.length {
-                    let field = self.fields[(t.element + i) as usize];
-                    if self.is_resource(field.ty) {
-                        return Err(unsupported(format_args!(
-                            "a structure holding textures, samplers or images"
-                        )));
-                    }
-                    let ty = if self.atomic_fields.contains(&(index, i)) {
-                        let signed = self.signed_atomic_fields.contains(&(index, i));
-                        self.atomic_ty(field.ty, signed)?
-                    } else {
-                        self.ty(field.ty)?
-                    };
-                    let layout = self.layout(ty)?;
-                    let offset = u32::try_from(field.offset)
-                        .unwrap_or_else(|_| layout.alignment.round_up(end));
-                    end = offset + layout.size;
-                    members.push(naga::StructMember {
-                        name: None,
-                        ty,
-                        binding: None,
-                        offset,
-                    });
-                }
-                let alignment = members
-                    .iter()
-                    .map(|m| self.layouter[m.ty].alignment)
-                    .max()
-                    .unwrap_or(naga::proc::Alignment::ONE);
-                TypeInner::Struct {
-                    members,
-                    span: alignment.round_up(end),
-                }
-            }
+            TypeKind::Struct => self.struct_inner(index, None)?,
             TypeKind::Sampler => TypeInner::Sampler {
                 comparison: t.shadow != 0,
             },
@@ -1350,6 +1331,48 @@ impl Builder<'_> {
         let h = self.add_type(inner);
         self.naga_types[index as usize] = Some(h);
         Ok(h)
+    }
+
+    /// A flat struct type's naga form; with `block`, that block variable's, whose own signed words
+    /// are signed.
+    fn struct_inner(&mut self, index: u32, block: Option<u32>) -> Result<TypeInner, ConvertError> {
+        let t = self.types[index as usize];
+        let mut members = Vec::new();
+        let mut end = 0;
+        for i in 0..t.length {
+            let field = self.fields[(t.element + i) as usize];
+            if self.is_resource(field.ty) {
+                return Err(unsupported(format_args!(
+                    "a structure holding textures, samplers or images"
+                )));
+            }
+            let ty = if self.atomic_fields.contains(&(index, i)) {
+                let signed = self.signed_atomic_fields.contains(&(index, i))
+                    || block.is_some_and(|v| self.signed_block_fields.contains(&(v, i)));
+                self.atomic_ty(field.ty, signed)?
+            } else {
+                self.ty(field.ty)?
+            };
+            let layout = self.layout(ty)?;
+            let offset =
+                u32::try_from(field.offset).unwrap_or_else(|_| layout.alignment.round_up(end));
+            end = offset + layout.size;
+            members.push(naga::StructMember {
+                name: None,
+                ty,
+                binding: None,
+                offset,
+            });
+        }
+        let alignment = members
+            .iter()
+            .map(|m| self.layouter[m.ty].alignment)
+            .max()
+            .unwrap_or(naga::proc::Alignment::ONE);
+        Ok(TypeInner::Struct {
+            members,
+            span: alignment.round_up(end),
+        })
     }
 
     /// An array's stride: the type's explicit one, or its element's size rounded to its alignment.
@@ -1420,7 +1443,13 @@ impl Builder<'_> {
                         if let Some(parent) = derefs.get(&d.src[0].def) {
                             self.atomic_fields.push((parent.ty, d.value[0]));
                             if signed {
-                                self.signed_atomic_fields.push((parent.ty, d.value[0]));
+                                // Blocks of one layout share a type whatever their words'
+                                // signedness: a block variable's own field is keyed by it.
+                                if matches!(deref_kind(parent.op), Deref::Var) {
+                                    self.signed_block_fields.push((parent.value[0], d.value[0]));
+                                } else {
+                                    self.signed_atomic_fields.push((parent.ty, d.value[0]));
+                                }
                             }
                         }
                         break;
@@ -1456,7 +1485,10 @@ impl Builder<'_> {
                 }
             }
         }
-        if self.signed_atomic_vars.is_empty() && self.signed_atomic_fields.is_empty() {
+        if self.signed_atomic_vars.is_empty()
+            && self.signed_atomic_fields.is_empty()
+            && self.signed_block_fields.is_empty()
+        {
             return;
         }
         for d in derefs.values() {
@@ -1468,8 +1500,13 @@ impl Builder<'_> {
                         continue;
                     }
                     Deref::Struct => derefs.get(&step.src[0].def).is_some_and(|parent| {
-                        self.signed_atomic_fields
-                            .contains(&(parent.ty, step.value[0]))
+                        if matches!(deref_kind(parent.op), Deref::Var) {
+                            self.signed_block_fields
+                                .contains(&(parent.value[0], step.value[0]))
+                        } else {
+                            self.signed_atomic_fields
+                                .contains(&(parent.ty, step.value[0]))
+                        }
                     }),
                     Deref::Var => self.signed_atomic_vars.contains(&step.value[0]),
                     Deref::Cast => false,
@@ -2011,7 +2048,13 @@ impl Builder<'_> {
                             .contains(&u32::try_from(index).expect("few"));
                         (space, self.atomic_ty(var.ty, signed)?)
                     } else {
-                        let block = self.ty(var.ty)?;
+                        let own = u32::try_from(index).expect("few");
+                        let block = if self.signed_block_fields.iter().any(|&(v, _)| v == own) {
+                            let inner = self.struct_inner(var.ty, Some(own))?;
+                            self.add_type(inner)
+                        } else {
+                            self.ty(var.ty)?
+                        };
                         let t = self.types[var.ty as usize];
                         if t.kind == TypeKind::Array
                             && matches!(space, AddressSpace::Uniform | AddressSpace::Storage { .. })
@@ -3937,29 +3980,28 @@ impl Builder<'_> {
         let op = atomic_op(i.value[VectorSize::MAX - 1]);
         let (pointer, ty) = self.pointer(i.src[0].def)?;
         let kind = self.pointer_kind(i.src[0].def, ty);
-        let needs = |want: ScalarKind| {
-            if kind == want {
-                Ok(())
-            } else {
-                Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")))
-            }
-        };
         let fun = match op {
             Atomic::Add => F::Add,
             Atomic::And => F::And,
             Atomic::Or => F::InclusiveOr,
             Atomic::Xor => F::ExclusiveOr,
             Atomic::Imin | Atomic::Umin | Atomic::Imax | Atomic::Umax => {
-                needs(if matches!(op, Atomic::Imin | Atomic::Imax) {
+                let want = if matches!(op, Atomic::Imin | Atomic::Imax) {
                     ScalarKind::Sint
                 } else {
                     ScalarKind::Uint
-                })?;
-                if matches!(op, Atomic::Imin | Atomic::Umin) {
-                    F::Min
-                } else {
-                    F::Max
+                };
+                let min = matches!(op, Atomic::Imin | Atomic::Umin);
+                if kind != want {
+                    if !matches!(kind, ScalarKind::Sint | ScalarKind::Uint) {
+                        return Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")));
+                    }
+                    let (value, _) = self.whole(i.src[ATOMIC_COMPARE].def, kind)?;
+                    let e = self.exchange_loop(pointer, kind, value, want, min);
+                    self.set(i, Value::Expr(e, kind));
+                    return Ok(());
                 }
+                if min { F::Min } else { F::Max }
             }
             Atomic::Exchange => F::Exchange { compare: None },
             Atomic::CompareExchange => F::Exchange {
@@ -4004,6 +4046,124 @@ impl Builder<'_> {
         };
         self.set(i, Value::Expr(e, kind));
         Ok(())
+    }
+
+    /// An atomic minimum (or maximum) of `value` compared as `want` into the word of `kind` at
+    /// `pointer`, the other signedness than the word's (`SlowPath::AtomicExchangeLoop`: naga's
+    /// atomics take theirs from the word's type): a compare-exchange loop, each try comparing with
+    /// the value the last one gave. Gives the old value.
+    fn exchange_loop(
+        &mut self,
+        pointer: Handle<Expression>,
+        kind: ScalarKind,
+        value: Handle<Expression>,
+        want: ScalarKind,
+        min: bool,
+    ) -> Handle<Expression> {
+        if !self.slow_paths.contains(&SlowPath::AtomicExchangeLoop) {
+            self.slow_paths.push(SlowPath::AtomicExchangeLoop);
+        }
+        let scalar = Scalar { kind, width: WIDTH };
+        let ty = self.add_type(TypeInner::Scalar(scalar));
+        let old = self.function.local_variables.append(
+            LocalVariable {
+                name: None,
+                ty,
+                init: None,
+            },
+            Span::UNDEFINED,
+        );
+        let local = self.add(Expression::LocalVariable(old));
+        let first = self.add(Expression::Load { pointer });
+        self.statement(Statement::Store {
+            pointer: local,
+            value: first,
+        });
+        let operand = self.add(Expression::As {
+            expr: value,
+            kind: want,
+            convert: None,
+        });
+        self.flush();
+        self.blocks.push(Block::new());
+        let current = self.add(Expression::Load { pointer: local });
+        let compared = self.add(Expression::As {
+            expr: current,
+            kind: want,
+            convert: None,
+        });
+        let chosen = self.add(Expression::Math {
+            fun: if min {
+                MathFunction::Min
+            } else {
+                MathFunction::Max
+            },
+            arg: compared,
+            arg1: Some(operand),
+            arg2: None,
+            arg3: None,
+        });
+        let new = self.add(Expression::As {
+            expr: chosen,
+            kind,
+            convert: None,
+        });
+        let result_ty = self.module.generate_predeclared_type(
+            naga::PredeclaredType::AtomicCompareExchangeWeakResult(scalar),
+        );
+        let result = self.add_unemitted(Expression::AtomicResult {
+            ty: result_ty,
+            comparison: true,
+        });
+        self.statement(Statement::Atomic {
+            pointer,
+            fun: naga::AtomicFunction::Exchange {
+                compare: Some(current),
+            },
+            value: new,
+            result: Some(result),
+        });
+        let seen = self.add(Expression::AccessIndex {
+            base: result,
+            index: 0,
+        });
+        self.statement(Statement::Store {
+            pointer: local,
+            value: seen,
+        });
+        let mut leave = self.add(Expression::AccessIndex {
+            base: result,
+            index: 1,
+        });
+        // A helper invocation's exchange does nothing: it leaves (it covers no sample).
+        if self.stage == ShaderStage::Fragment {
+            let mask = self.builtin(BuiltIn::SampleMask, TypeInner::Scalar(Scalar::U32));
+            let none = self.scalar_constant(ScalarKind::Uint, 0);
+            let helper = self.add(Expression::Binary {
+                op: BinaryOperator::Equal,
+                left: mask,
+                right: none,
+            });
+            leave = self.add(Expression::Binary {
+                op: BinaryOperator::LogicalOr,
+                left: leave,
+                right: helper,
+            });
+        }
+        let mut accept = Block::new();
+        accept.push(Statement::Break, Span::UNDEFINED);
+        self.statement(Statement::If {
+            condition: leave,
+            accept,
+            reject: Block::new(),
+        });
+        let body = self.blocks.pop().expect("the loop's block");
+        self.statement(Statement::Loop {
+            body,
+            continuing: Block::new(),
+            break_if: None,
+        });
+        self.add(Expression::Load { pointer: local })
     }
 
     fn tex_src(&mut self, i: &FlatInstr, at: TexSrc) -> Option<u32> {
@@ -4884,6 +5044,7 @@ pub fn geometry(
         tessellator: _,
         helpers: _,
         typed: _,
+        slow_paths,
     } = routed;
     let Some(StagedProgram::Geometry(program)) = staged else {
         return Err(unsupported(format_args!("no geometry program")));
@@ -4903,7 +5064,7 @@ pub fn geometry(
         helper_size: 0,
         sampled_pairs: Vec::new(),
         extras: StageExtras::None,
-        slow_paths: Vec::new(),
+        slow_paths,
     };
     wcontainers_shaders::staged::geometry(module, &program, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))
@@ -4919,7 +5080,7 @@ pub fn hull(
     variant: &VariantKey,
     route_key: &[u8; cache::KEY_BYTES],
 ) -> Result<wcontainers_shaders::Converted, ConvertError> {
-    let (module, staged, bindings) = staged_parts(routed, bindings, variant)?;
+    let (module, staged, reflection) = staged_parts(routed, SourceStage::Hull, bindings, variant)?;
     let Some(StagedProgram::Control(control)) = staged else {
         return Err(unsupported(format_args!("no control program")));
     };
@@ -4933,7 +5094,6 @@ pub fn hull(
         output_points: control.output_points,
         values: control.values,
     };
-    let reflection = staged_reflection(SourceStage::Hull, bindings);
     wcontainers_shaders::staged::hull(module, &program, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))
 }
@@ -4947,22 +5107,24 @@ pub fn domain(
     variant: &VariantKey,
     route_key: &[u8; cache::KEY_BYTES],
 ) -> Result<wcontainers_shaders::Converted, ConvertError> {
-    let (module, staged, bindings) = staged_parts(routed, bindings, variant)?;
+    let (module, staged, reflection) =
+        staged_parts(routed, SourceStage::Domain, bindings, variant)?;
     let Some(StagedProgram::Evaluation(program)) = staged else {
         return Err(unsupported(format_args!("no evaluation program")));
     };
-    let reflection = staged_reflection(SourceStage::Domain, bindings);
     wcontainers_shaders::staged::domain(module, &program, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))
 }
 
-/// A staged program's module and declarations, where every storage slot without a format is
-/// one `variant` names and the program reads no helper constants of route B's own.
+/// A staged program's module, declarations and the reflection the shaders crate's staged forms
+/// start from (its bindings and slow paths), where every storage slot without a format is one
+/// `variant` names and the program reads no helper constants of route B's own.
 fn staged_parts(
     routed: Routed,
+    stage: SourceStage,
     bindings: Vec<ReflectedBinding>,
     variant: &VariantKey,
-) -> Result<(Module, Option<StagedProgram>, Vec<ReflectedBinding>), ConvertError> {
+) -> Result<(Module, Option<StagedProgram>, Reflection), ConvertError> {
     let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
     if !routed.rewrites.formatless.iter().all(named) {
         return Err(unsupported(format_args!(
@@ -4974,12 +5136,7 @@ fn staged_parts(
             "a texel buffer in a tessellation program"
         )));
     }
-    Ok((routed.module, routed.staged, bindings))
-}
-
-/// The reflection the shaders crate's staged forms start from: the program's bindings.
-fn staged_reflection(stage: SourceStage, bindings: Vec<ReflectedBinding>) -> Reflection {
-    Reflection {
+    let reflection = Reflection {
         stage,
         inputs: Vec::new(),
         outputs: Vec::new(),
@@ -4988,8 +5145,9 @@ fn staged_reflection(stage: SourceStage, bindings: Vec<ReflectedBinding>) -> Ref
         helper_size: 0,
         sampled_pairs: Vec::new(),
         extras: StageExtras::None,
-        slow_paths: Vec::new(),
-    }
+        slow_paths: routed.slow_paths,
+    };
+    Ok((routed.module, routed.staged, reflection))
 }
 
 /// The bytes of route B's helper block holding `helpers`, each two words
@@ -5064,7 +5222,7 @@ pub fn rewrite(
         helper_size,
         sampled_pairs: Vec::new(),
         extras: StageExtras::None,
-        slow_paths: Vec::new(),
+        slow_paths: routed.slow_paths,
     };
     let mut module = routed.module;
     if !routed.typed.buffers.is_empty() {

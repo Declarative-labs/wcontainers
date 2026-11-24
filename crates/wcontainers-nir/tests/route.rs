@@ -416,6 +416,68 @@ fn images_of_buffers_are_storage_words_with_their_views_in_helper_constants() {
     assert_eq!(storage, images);
 }
 
+const SIGNED_AND_UNSIGNED_ATOMICS: [&str; 2] = [
+    "#version 310 es
+layout(local_size_x = 4) in;
+layout(std430, binding = 0) buffer Unsigned { uint words[4]; };
+layout(std430, binding = 1) buffer Signed { int data[4]; } signed_words;
+uniform uint given[2];
+void main() {
+    uint at = gl_GlobalInvocationID.x;
+    atomicMin(words[at], given[0]);
+    atomicMax(words[at], given[1]);
+    atomicMin(signed_words.data[at], 1);
+    atomicMax(signed_words.data[at], 2);
+}
+",
+    "#version 310 es
+layout(local_size_x = 4) in;
+layout(std430, binding = 0) buffer Output { uint words[4]; int signed_words[4]; };
+shared uint shared_words[4];
+shared int shared_signed[4];
+uniform uint given[2];
+void main() {
+    uint at = gl_LocalInvocationIndex;
+    atomicExchange(shared_words[at], given[0]);
+    atomicMin(shared_words[at], given[1]);
+    atomicExchange(shared_signed[at], 3);
+    atomicMin(shared_signed[at], 1);
+    atomicMax(shared_signed[at], 2);
+    words[at] = shared_words[at];
+    signed_words[at] = shared_signed[at];
+}
+",
+];
+
+/// Blocks of one layout keep their own words' kinds; workgroup memory, one array of words, takes
+/// the other signedness's minimum and maximum by a compare-exchange loop.
+#[test]
+fn signed_and_unsigned_atomics_beside_each_other_keep_their_own_kinds() {
+    for (source, looped) in SIGNED_AND_UNSIGNED_ATOMICS.into_iter().zip([false, true]) {
+        let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
+            .unwrap()
+            .pop()
+            .unwrap();
+        let key = stage.nir.key().unwrap();
+        let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
+        let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
+        let (module, reflection) = wcontainers_nir::direct::rewrite(
+            routed,
+            bindings,
+            &wcontainers_gpu::VariantKey::default(),
+            &key,
+        )
+        .unwrap();
+        wcontainers_nir::spirv::validate(&module.module).unwrap();
+        assert_eq!(
+            reflection
+                .slow_paths
+                .contains(&wcontainers_gpu::SlowPath::AtomicExchangeLoop),
+            looped
+        );
+    }
+}
+
 const IMAGE_ATOMICS: &str = "#version 450
 layout(local_size_x = 4) in;
 layout(r32ui, binding = 0) uniform uimage2D counts;
