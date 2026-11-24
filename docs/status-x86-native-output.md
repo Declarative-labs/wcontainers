@@ -63,6 +63,11 @@ Results (rented x86 machine, Xeon 8488C):
   which the exact form sends to the inside, are judged that way). Rerun of the wrapping form at both seeds, 200
   cases (load 26 to 40): 0 forms differ; known cases 46,807 and 47,040, the named landing in 1,528 and 1,525 forms'
   worth, the 5-level reference in 96, Intel's transcendentals in 2.
+- No regression in P: layer 1 natively for the changed forms (`Call_rm64`, `Call_rel32_64`, `Jmp_rm64`, `Push_r64`,
+  `Push_r16`, `Pop_r64`, `Pop_rm64`, `Pop_rm16`, `Pushq_imm8`; 300 cases, seed 5150): 0 failing; the shapes, the
+  inside's answers and the second call (7 tests) pass on the x86 machine; every test of wcontainers-x86,
+  wcontainers-guest-cpu and wcontainers-executor-arm64-stop passes on the ARM64 machine, and clippy with warnings
+  denied is clean for those and the test crate.
 - The window cases rerun with `fxsave64` across 2^32 with and without 0x67 added: wrapping 57 as the CPU and 7 the
   named landing, exact 64 as the CPU.
 - The speculation probe made from the emitted code (scratch xn2r2/specemit.c fed by the test
