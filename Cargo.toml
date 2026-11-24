@@ -46,7 +46,7 @@ wgpu = { path = "third_party/wgpu" }
 # TODO: not yet done; each inherits these lints once it is free of it:
 #   crates/wcontainers-directx (1069)
 #   crates/wcontainers-direct3d-12 (483)
-#   crates/wcontainers-opengl (365)
+#   crates/wcontainers-opengl (361)
 #   crates/wcontainers-graphics-test (337)
 #   crates/wcontainers-graphics-test-forward (184)
 #   crates/wcontainers-gpu-webgl (162)
