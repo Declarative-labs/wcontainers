@@ -1020,6 +1020,10 @@ replaces it when item 1 exists.
   +11.0 to +15.2% on Granite Rapids, both with the stack exempt) but sends an access outside the window to the
   process's own memory at that address modulo 2^32, where Linux faults: a behaviour difference no counter can see.
   Both are safe against speculation by the same cut. It is the owner's to allow (section 12).
+  As built (W2 run 5, host-process tests/in_process_cost.rs): the translated exact form, run natively in a P stub
+  with its window at 0 against the process way's translation of the same loop, costs per access shape on fixed
+  loops of one access in about seven guest instructions (Graviton4): register offset +16.6%, immediate offset and
+  at base +14.6%, byte +10.4%, pair +13.7%, a load and a store +24.2%, through sp in the window and no access +0.0%.
 
 ### 5.3 The system call and its return
 

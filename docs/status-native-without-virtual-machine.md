@@ -3,7 +3,34 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
-## W2 run 4 (2026-11-24): the cut at the base, pieces of several instructions, displaced code
+## W2 run 5 (2026-11-24): collisions checked, and the in-process way's code run on hardware for the first time
+
+Scratch w2/run5 (check.sh with `SEEDS`, `CASES`, `PIECES`; cost.sh with `ITERATIONS`, `ROUNDS`; mutate.sh,
+mutate2.sh; outputs *-arm.out). Graviton4. Nothing of this run adds unsafe code; form I's executor still waits on
+the primitives (Needs a primitive, "Form I").
+- Built, b58da810c: the in-process test now runs collisions (one register named twice where Arm leaves the result
+  open: a load's or store's written back base as its data, a pair's data register twice), which it left out
+  before. The reference runs the instruction with the registers the meaning does not write renamed to free ones
+  (a store's renamed data holds the base's value from before the access), then gives them back; a quarter of the
+  drawn words now name one register twice. Seeds 1 to 6 at 16 cases a form and 4,000 pieces pass (check-arm.out,
+  check2-arm.out; per seed 122 to 164 collisions in each single-instruction test, 304 to 352 in the pieces).
+  Making a store whose data is its written back base store the new value, in the remote copy, fails 4 forms and
+  the pieces (mutate2-arm.out). A load pair into one register left to the host's choice is not caught: the
+  emulator makes the meaning's choice itself (mutate-arm.out), so only real hardware could tell them apart.
+- Built, 4c35bb7c6: tests/in_process_cost.rs, the in-process way's translated code run natively. Slot 0's window
+  is at 0 and its slot table is the process way's, so one stub runs both ways' translations of the same guest loop
+  with no change to the stub or the floor (x24, the base, is 0 in the register block; nothing in the loops calls
+  the floor or leaves the window). Each loop holds one access shape; each pair of runs must end with the same
+  registers, array and stack. Graviton4, 17:36 UTC, load 9.5 to 16 on 96 cores, 50,000,000 iterations a run,
+  21 alternating pairs a shape (cost2-arm.out), the in-process way against the process way, median of the pairs'
+  ratios: no access +0.0%; register offset +16.6% (6 guest instructions an iteration, 23 and 30 host words);
+  at base +14.6% and immediate offset +14.6% (7; an 8-byte access not proven aligned keeps its page test, so the
+  at-base cut does not apply); byte +10.4% (7); pair +13.7% (8); a load and a store +24.2% (8); through the stack
+  pointer in the window +0.0% (7). Every pair's spread within 0.6 points but one (immediate offset, +14.2 to
+  +17.5). This is the check's cost per access shape on fixed loops of one access in about seven instructions; the
+  cost per workload needs the executor.
+- Next without unsafe: the bounds-check-bypass test as translated code in a stub, the same way (the gadget
+  translated for both ways, the process way's uncut access as the control), timed by host words around it.
 
 Scratch w2/run4 (check.sh and check2.sh with `SEEDS`, `CASES`, `PIECES`; pieces.sh; check-vm.sh; mutate-base.sh,
 mutate-pieces.sh, mutate-displaced.sh; outputs *-arm.out; `tree` is a git repository of HEAD plus this run's files,
@@ -1709,7 +1736,9 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 - W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2), and its stops
   resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
   access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
-  checked, and displaced code (rule e) is built and checked (W2 run 4). The in-process executor itself waits for
+  checked, and displaced code (rule e) is built and checked (W2 run 4); collisions are checked, and the way's code
+  runs natively in a stub at window base 0, its cost per access shape measured (W2 run 5). The in-process executor
+  itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
   when sp is back in the window, never link displaced pieces) and every measured item of W2's bar.
@@ -1747,6 +1776,10 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since W2 run 5: scratch w2/run5. check.sh runs clippy and the in-process test (`SEEDS`, `CASES`, `PIECES`);
+  cost.sh runs `in_process_cost` (`ITERATIONS`, `ROUNDS`), ignored by default; send each inline, as
+  `arm-run . --name nwvm -- "SEEDS='1 2'; $(cat check.sh)"`.
 
 - Since round 4 run 5: scratch w1/r4e-run5. check.sh is round 6's with a time limit per binary (`LIMIT`, seconds);
   speed-bb.sh runs busybox `sh` `ROUNDS` times; ab-started.sh alternates it with `PATCH` reversed and as sent, each
