@@ -929,6 +929,8 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     `run_turn`, `stop::resolve`, `translated_page` under 1% each), clock reads in the vDSO 3.2% (two of the three
     a round trip are placement's turn timing, one the test's), memcpy 2.2%, the stub's own code about 3%. So at most
     about a sixth of a round trip (about 500 ns) is ours to cut; the rest is the host's switch.
+  - Final verdict after the last code commit (9593baba), shared tree, every binary once with /dev/kvm denied
+    (final-arm.out, load 8 to 12): 111 passed, 1 failed (the known precise-set test). No new unsafe code this run.
 
 ## W1 complete, with its gap list (for the independent check)
 
