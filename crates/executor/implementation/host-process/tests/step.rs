@@ -1050,10 +1050,87 @@ fn a_second_stop_in_the_handler_of_an_enter_and_a_call_lands_after_its_unblock()
     landed_in(&windows, &["turn", "call", "publish", "wait"]);
 }
 
+/// Steps an enter to the moment its code's first instruction is about to run, and reads every register from outside
+/// (the vectors through the floating-point set; the thread pointer has no set in the test's tool): what the thread
+/// was given, the two the floor names (scratch and register page), and nothing of the stub's own. The flags are
+/// compared as the four the guest sees.
+#[cfg(target_arch = "aarch64")]
+fn registers_at_entry(scenario: &mut Enter, stub: &mut Stub) {
+    scenario.reset(stub);
+    let traced = Traced::attach(stub, 0);
+    let before = stub.stops_landed(0);
+    let turn = scenario.begin(stub);
+    let call = enter::CALL as u64;
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        assert!(
+            steps < MOST_STEPS,
+            "the code was not entered within {MOST_STEPS} steps"
+        );
+        match traced.step(TURN_LIMIT) {
+            Stepped::At(at) if at == call => break,
+            Stepped::At(_) => {}
+            other => panic!("the thread was {other:?} before it entered its code"),
+        }
+    }
+    let general = ptrace::getregs(traced.thread).expect("registers");
+    let vectors =
+        ptrace::getregset::<ptrace::regset::NT_PRFPREG>(traced.thread).expect("vector registers");
+    traced.detach(None);
+    let expected = enter::at(&scenario.loaded, call, call);
+    let held = wcontainers_abi::RegisterBlock {
+        x: general.regs,
+        sp: general.sp,
+        pc: general.pc,
+        pstate: general.pstate & wcontainers_abi::pstate::NZCV,
+        v: vectors.vregs.map(|v| [v as u64, (v >> u64::BITS) as u64]),
+        fpsr: vectors.fpsr,
+        fpcr: vectors.fpcr,
+        tpidr_el0: expected.tpidr_el0,
+    };
+    assert_eq!(
+        held, expected,
+        "the registers about to run (left) and the thread's own (right), after {steps} steps"
+    );
+    scenario.check(stub, turn, 0, before);
+}
+
+/// The scenario's block, then none, then other random values, each entered in its own turn on the same host thread.
+#[cfg(target_arch = "aarch64")]
+fn registers_at_entries(scenario: &mut Enter, stub: &mut Stub) -> BTreeMap<&'static str, usize> {
+    let other = entered_block_from(knob("WCHP_SEED", 1) as u64 ^ u64::MAX);
+    for loaded in [scenario.loaded, wcontainers_abi::RegisterBlock::ZERO, other] {
+        scenario.loaded = loaded;
+        registers_at_entry(scenario, stub);
+    }
+    BTreeMap::new()
+}
+
+/// A thread given random values, then one with none, then other values: at the moment its code is entered each
+/// holds only its own values, or zero.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn at_the_moment_a_thread_enters_its_code_it_holds_its_own_registers_or_zero() {
+    run(
+        &mut Enter {
+            code: None,
+            loaded: entered_block(),
+        },
+        registers_at_entries,
+    );
+}
+
 /// The seeded block an enter loads: every register a random value.
 #[cfg(target_arch = "aarch64")]
 fn entered_block() -> wcontainers_abi::RegisterBlock {
-    let mut rng = fastrand::Rng::with_seed(knob("WCHP_SEED", 1) as u64);
+    entered_block_from(knob("WCHP_SEED", 1) as u64)
+}
+
+/// The block an enter loads, every register a random value from `seed`.
+#[cfg(target_arch = "aarch64")]
+fn entered_block_from(seed: u64) -> wcontainers_abi::RegisterBlock {
+    let mut rng = fastrand::Rng::with_seed(seed);
     let mut loaded = wcontainers_abi::RegisterBlock::ZERO;
     loaded.x.iter_mut().for_each(|x| *x = rng.u64(..));
     loaded.sp = rng.u64(..);

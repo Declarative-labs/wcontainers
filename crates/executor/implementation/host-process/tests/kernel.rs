@@ -1,7 +1,9 @@
 //! The kernel test crate's programs and the virtual-machine executor's run in the same kernel, loop and seeded policy
 //! under form P and under the WebAssembly output, both containers given the WebAssembly output's ceiling as their
 //! ceiling and memory size: both give the same wait status, output and root files, and a program with one thread whose
-//! turns end only at its system calls the same turns. `layout` prints its addresses, memory size and mappings.
+//! turns end only at its system calls the same turns. `layout` prints its addresses, memory size and mappings. Where
+//! the WebAssembly output is known to print otherwise, form P's status and output are the program's run on this host.
+//! Turns limited to one counted event change nothing under form P.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 #[expect(dead_code, reason = "the freestanding build is the speed test's")]
@@ -130,22 +132,46 @@ enum Agree<'a> {
     Whole,
     /// As whole, and in turns: a program with one thread whose turns end only at its system calls.
     Alone,
-    /// In wait status alone, where the WebAssembly output is known to print otherwise for the reason given.
+    /// In wait status alone, where the WebAssembly output is known to print otherwise for the reason given; form P's
+    /// status and output are then the program's run on this host.
     Known(&'a str),
 }
 
-/// Runs the program under both forms for every seed; they must agree as `agree` says. The form P outcome of the first
-/// seed.
+/// The program `image` run on this host as the reference, as the container runs it: its wait status and output.
+fn on_this_host(name: &str, image: &[u8], arguments: &[&str]) -> (i32, Output) {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("kernel-reference");
+    std::fs::create_dir_all(&directory).expect("the reference's folder");
+    let path = directory.join(name);
+    std::fs::write(&path, image).expect("the reference's program");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(S_IRWXU))
+        .expect("the reference's program runs");
+    let ran = std::process::Command::new(&path)
+        .arg0(format!("/{name}"))
+        .args(arguments)
+        .env_clear()
+        .env("PATH", "/")
+        .output()
+        .expect("the reference runs");
+    let output = Output {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+    };
+    (ran.status.into_raw(), output)
+}
+
+/// Runs the program under both forms for every seed; they must agree as `agree` says. Form P's outcome for each seed.
 fn both(
     directory: &str,
     name: &str,
     with_libc: bool,
     arguments: &[&str],
     agree: Agree<'_>,
-) -> Outcome {
+) -> Vec<(u64, Outcome)> {
     let image = compile(directory, name, with_libc);
     let limit = web_assembly().address_space().end;
-    let mut first = None;
+    let mut outcomes = Vec::new();
     for seed in seeds() {
         let ours = run(
             &mut host_process(),
@@ -172,6 +198,14 @@ fn both(
                 outcome.files.clone(),
             )
         };
+        if let Agree::Known(_) = agree {
+            let (status, output) = on_this_host(name, &image, arguments);
+            assert_eq!(
+                (ours.status, &ours.output),
+                (status, &output),
+                "{name} seed {seed}: form P (left) and the program on this host (right) differ"
+            );
+        }
         match agree {
             Agree::Known(known) if ours.output != theirs.output => {
                 assert_eq!(ours.status, theirs.status, "{name} seed {seed}: statuses");
@@ -195,21 +229,26 @@ fn both(
             "{name} seed {seed}: {} turns under form P, {} under the WebAssembly output",
             ours.turns, theirs.turns
         );
-        first.get_or_insert(ours);
+        outcomes.push((seed, ours));
     }
-    first.expect("at least one seed")
+    outcomes
+}
+
+/// Form P's outcome for the first seed.
+fn first(outcomes: Vec<(u64, Outcome)>) -> Outcome {
+    outcomes.into_iter().next().expect("at least one seed").1
 }
 
 #[test]
 fn hello_gives_the_web_assembly_output_s_status_and_output() {
-    let outcome = both(KERNEL_TEST_GUEST, "hello", false, &[], Agree::Alone);
+    let outcome = first(both(KERNEL_TEST_GUEST, "hello", false, &[], Agree::Alone));
     assert_eq!(outcome.output.stdout, b"hello, world\n", "{outcome:?}");
     assert_eq!(outcome.output.stderr, b"hello, error\n", "{outcome:?}");
 }
 
 #[test]
 fn getppid_calls_give_the_web_assembly_output_s_status_and_output() {
-    let outcome = both(VM_GUEST, "getppid", true, &["10000"], Agree::Alone);
+    let outcome = first(both(VM_GUEST, "getppid", true, &["10000"], Agree::Alone));
     assert_eq!(outcome.status, 0, "{outcome:?}");
 }
 
@@ -222,7 +261,7 @@ const FORKS_PRINTS: [&str; 2] = [
 
 #[test]
 fn forks_execs_and_signals_give_the_web_assembly_output_s_status_and_output() {
-    let outcome = both(VM_GUEST, "forks", true, &[], Agree::Whole);
+    let outcome = first(both(VM_GUEST, "forks", true, &[], Agree::Whole));
     let stdout = String::from_utf8_lossy(&outcome.output.stdout);
     assert_eq!(outcome.status, FORKS_EXIT << u8::BITS, "{stdout}");
     for line in FORKS_PRINTS {
@@ -267,52 +306,53 @@ fn jumps_through_tables_give_the_web_assembly_output_s_status_and_output() {
 
 #[test]
 fn addresses_memory_size_and_mappings_are_the_web_assembly_output_s() {
-    let outcome = both(OWN_GUEST, "layout", true, &[], Agree::Alone);
+    let outcome = first(both(OWN_GUEST, "layout", true, &[], Agree::Alone));
     let stdout = String::from_utf8_lossy(&outcome.output.stdout);
     assert_eq!(outcome.status, 0, "{stdout}");
     assert!(stdout.contains("[stack]"), "{stdout}");
     print!("{stdout}");
 }
 
-/// Runs the program under form P with a stop after every counted event: its wait status, output and root files are
-/// those of the run without (the outcome given), which took fewer turns.
-fn every_event(directory: &str, name: &str, arguments: &[&str], without: &Outcome) {
+/// Runs the program under form P with every turn limited to one counted event, for each seed its run without
+/// (`without`): the same wait status, output and root files, in more turns. Form P ends such a turn at the first exit
+/// at or after the limit or when the slice's stop lands, not at the counted event itself.
+fn one_event_turns(directory: &str, name: &str, arguments: &[&str], without: &[(u64, Outcome)]) {
     let image = compile(directory, name, true);
     let limit = web_assembly().address_space().end;
-    for seed in seeds() {
-        let every = run(
+    for (seed, without) in without {
+        let limited = run(
             &mut host_process(),
             limit,
             Some(1),
-            seed,
+            *seed,
             name,
             &image,
             arguments,
         );
         assert_eq!(
-            (every.status, &every.output, &every.files),
+            (limited.status, &limited.output, &limited.files),
             (without.status, &without.output, &without.files),
-            "{name} seed {seed}: a stop at every counted event changed the run"
+            "{name} seed {seed}: turns limited to one counted event changed the run"
         );
         assert!(
-            every.turns > without.turns,
-            "{name} seed {seed}: {} turns with a stop at every counted event, {} without",
-            every.turns,
+            limited.turns > without.turns,
+            "{name} seed {seed}: {} turns limited to one counted event, {} without",
+            limited.turns,
             without.turns
         );
         println!(
-            "{name} seed {seed}: a stop at every counted event, {} turns, changed nothing",
-            every.turns
+            "{name} seed {seed}: turns limited to one counted event, {} of them, changed nothing",
+            limited.turns
         );
     }
 }
 
 #[test]
-fn a_stop_at_every_counted_event_changes_nothing() {
+fn turns_limited_to_one_counted_event_change_nothing() {
     let jump_tables = both(VM_GUEST, "jumptables", true, &[], Agree::Whole);
-    every_event(VM_GUEST, "jumptables", &[], &jump_tables);
+    one_event_turns(VM_GUEST, "jumptables", &[], &jump_tables);
     let layout = both(OWN_GUEST, "layout", true, &[], Agree::Alone);
-    every_event(OWN_GUEST, "layout", &[], &layout);
+    one_event_turns(OWN_GUEST, "layout", &[], &layout);
     let forks = both(VM_GUEST, "forks", true, &[], Agree::Whole);
-    every_event(VM_GUEST, "forks", &[], &forks);
+    one_event_turns(VM_GUEST, "forks", &[], &forks);
 }
