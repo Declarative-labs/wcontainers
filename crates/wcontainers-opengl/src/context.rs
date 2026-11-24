@@ -13,32 +13,12 @@ use wcontainers_gpu::{
 use crate::draw::Programs;
 use crate::gallium::*;
 use crate::resource::{self, Resource};
-use crate::screen::{DRIVER_NAME, Screen};
+use crate::screen::Screen;
 use crate::state::{self, Stage, Stages};
 use crate::{blit, draw, present, query, stream, view};
 
-/// Ends the process naming a Gallium entry point the driver does not have yet, so that a case
-/// reaching it is a crash with the name in its log, never a call that does nothing.
-macro_rules! unbuilt {
-    ($context:expr, $($entry:ident),+ $(,)?) => {$(
-        $context.$entry = {
-            extern "C" fn stub() -> ! {
-                eprintln!(
-                    "{}: not built: pipe_context::{}",
-                    DRIVER_NAME.to_string_lossy(),
-                    stringify!($entry)
-                );
-                std::process::abort()
-            }
-            // SAFETY: the stub reads no argument and never returns, so the caller's arguments,
-            // passed as the C convention passes them, are never read.
-            Some(unsafe { std::mem::transmute::<extern "C" fn() -> !, _>(stub) })
-        };
-    )+};
-}
-
-/// Ends the process once the back end has lost its device: every later call of the context
-/// would fail, so a case would read nothing back, and the loss belongs to the case that made it.
+/// Refuses the call once the back end has lost its device: the loss belongs to the work that
+/// made it, and every later call of the context would fail.
 pub fn end_if_lost<B: Backend>(backend: &mut B) {
     if let DeviceStatus::Lost(reason) = backend.status() {
         state::refuse(format_args!("the device was lost: {reason:?}"));
@@ -156,51 +136,50 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
     private: *mut c_void,
     _: c_uint,
 ) -> *mut pipe_context {
-    // SAFETY: Mesa passes this driver's screen.
-    let ours = unsafe { Screen::<B>::of(screen) };
-    let mut context = Box::new(Context {
-        base: pipe_context::default(),
-        screen: ours,
-        tracker: PassTracker::default(),
-        framebuffer: Framebuffer {
-            state: pipe_framebuffer_state::default(),
-            views: Vec::new(),
-            samples: 1,
-            twins: Vec::new(),
-        },
-        stages: Stages::default(),
-        programs: Programs::default(),
-        bound: state::Bound::default(),
-        present: None,
-        blitter: std::ptr::null_mut(),
-        blit_bytes: Vec::new(),
-        queries: query::Sets::default(),
-        running: None,
-        unread: Vec::new(),
-        counting: Vec::new(),
-        condition: None,
-        streams: stream::Bound::default(),
-    });
-    let base = &mut context.base;
-    base.screen = screen;
-    base.priv_ = private;
-    fill::<B>(base);
-    let context = Box::into_raw(context);
-    // st/mesa's upload buffers, mapped through this context.
-    // SAFETY: the context is complete; the uploaders keep a pointer to it.
-    unsafe {
-        let base = &raw mut (*context).base;
-        (*base).stream_uploader = u_upload_create_default(base);
-        (*base).const_uploader = (*base).stream_uploader;
-        base
-    }
+    crate::state::guest_call(std::ptr::null_mut(), std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's screen.
+        let ours = unsafe { Screen::<B>::of(screen) };
+        let mut context = Box::new(Context {
+            base: pipe_context::default(),
+            screen: ours,
+            tracker: PassTracker::default(),
+            framebuffer: Framebuffer {
+                state: pipe_framebuffer_state::default(),
+                views: Vec::new(),
+                samples: 1,
+                twins: Vec::new(),
+            },
+            stages: Stages::default(),
+            programs: Programs::default(),
+            bound: state::Bound::default(),
+            present: None,
+            blitter: std::ptr::null_mut(),
+            blit_bytes: Vec::new(),
+            queries: query::Sets::default(),
+            running: None,
+            unread: Vec::new(),
+            counting: Vec::new(),
+            condition: None,
+            streams: stream::Bound::default(),
+        });
+        let base = &mut context.base;
+        base.screen = screen;
+        base.priv_ = private;
+        fill::<B>(base);
+        let context = Box::into_raw(context);
+        // st/mesa's upload buffers, mapped through this context.
+        // SAFETY: the context is complete; the uploaders keep a pointer to it.
+        unsafe {
+            let base = &raw mut (*context).base;
+            (*base).stream_uploader = u_upload_create_default(base);
+            (*base).const_uploader = (*base).stream_uploader;
+            base
+        }
+    })
 }
 
-/// Every entry point of the context.
-#[allow(
-    clippy::missing_transmute_annotations,
-    reason = "each stub takes the type of the field it fills, which the macro does not name"
-)]
+/// Every entry point of the context. `get_query_result_resource` is left empty: st/mesa calls it
+/// only for `ARB_query_buffer_object`, which the screen does not report.
 fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.destroy = Some(destroy::<B>);
     c.draw_vbo = Some(draw::draw_vbo::<B>);
@@ -241,39 +220,42 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.transfer_flush_region = Some(u_transfer_helper_transfer_flush_region);
     c.buffer_subdata = Some(resource::buffer_subdata::<B>);
     c.texture_subdata = Some(resource::texture_subdata::<B>);
+    c.get_device_reset_status = Some(state::get_device_reset_status);
     state::fill::<B>(c);
-    unbuilt!(c, get_query_result_resource);
 }
 
 unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
-    // SAFETY: Mesa destroys a context it made once, after its last use.
-    let mut context = unsafe { Box::from_raw(pipe.cast::<Context<B>>()) };
-    if !context.blitter.is_null() {
-        // SAFETY: made on this context, destroyed once.
-        unsafe { util_blitter_destroy(context.blitter) };
-    }
-    // SAFETY: the uploader was made with this context.
-    unsafe { u_upload_destroy(context.base.stream_uploader) };
-    context.bound.release();
-    context.stages.release();
-    let views = std::mem::take(&mut context.framebuffer.views);
-    let screen = context.screen();
-    for view in views {
-        screen.retire(Object::TextureView(view));
-    }
-    for twin in std::mem::take(&mut context.framebuffer.twins) {
-        twin.release(|object| screen.retire(object));
-    }
-    for surface in surfaces(&mut context.framebuffer.state) {
-        // SAFETY: the framebuffer holds a reference on each texture.
-        unsafe { resource::release(surface.texture) };
-    }
-    context.programs.release(screen);
-    context.queries.release(screen);
-    context.streams.release(screen);
-    if let Some(copy) = context.present.take() {
-        copy.release(screen);
-    }
+    crate::state::guest_call(pipe, (), move || {
+        state::forget_reset(pipe);
+        // SAFETY: Mesa destroys a context it made once, after its last use.
+        let mut context = unsafe { Box::from_raw(pipe.cast::<Context<B>>()) };
+        if !context.blitter.is_null() {
+            // SAFETY: made on this context, destroyed once.
+            unsafe { util_blitter_destroy(context.blitter) };
+        }
+        // SAFETY: the uploader was made with this context.
+        unsafe { u_upload_destroy(context.base.stream_uploader) };
+        context.bound.release();
+        context.stages.release();
+        let views = std::mem::take(&mut context.framebuffer.views);
+        let screen = context.screen();
+        for view in views {
+            screen.retire(Object::TextureView(view));
+        }
+        for twin in std::mem::take(&mut context.framebuffer.twins) {
+            twin.release(|object| screen.retire(object));
+        }
+        for surface in surfaces(&mut context.framebuffer.state) {
+            // SAFETY: the framebuffer holds a reference on each texture.
+            unsafe { resource::release(surface.texture) };
+        }
+        context.programs.release(screen);
+        context.queries.release(screen);
+        context.streams.release(screen);
+        if let Some(copy) = context.present.take() {
+            copy.release(screen);
+        }
+    })
 }
 
 /// The framebuffer's surfaces: its colour buffers, then its depth and stencil buffer.
@@ -295,26 +277,28 @@ unsafe extern "C" fn flush<B: Backend>(
     fence: *mut *mut pipe_fence_handle,
     _: c_uint,
 ) {
-    // SAFETY: Mesa passes this driver's context.
-    let context = unsafe { Context::<B>::of(pipe) };
-    let mut backend = context.screen().backend();
-    if let Err(error) = context.tracker.close(&mut backend) {
-        state::refuse(format_args!("closing a pass: {error:?}"));
-    }
-    query::start_reads(context, &mut backend);
-    let done = backend.submit();
-    end_if_lost(&mut *backend);
-    if !fence.is_null() {
-        let made = Box::into_raw(Box::new(Fence::<B> {
-            count: AtomicI32::new(1),
-            fence: done,
-        }));
-        // SAFETY: Mesa gives a place for one fence reference, empty or holding an old one.
-        unsafe { fence_reference::<B>(context.screen.cast_mut().cast(), fence, made.cast()) };
-        // The place took its own reference; the one made with the fence goes.
-        // SAFETY: made above, with one reference besides the place's.
-        unsafe { (*made).count.fetch_sub(1, Ordering::AcqRel) };
-    }
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context.
+        let context = unsafe { Context::<B>::of(pipe) };
+        let mut backend = context.screen().backend();
+        if let Err(error) = context.tracker.close(&mut backend) {
+            state::refuse(format_args!("closing a pass: {error:?}"));
+        }
+        query::start_reads(context, &mut backend);
+        let done = backend.submit();
+        end_if_lost(&mut *backend);
+        if !fence.is_null() {
+            let made = Box::into_raw(Box::new(Fence::<B> {
+                count: AtomicI32::new(1),
+                fence: done,
+            }));
+            // SAFETY: Mesa gives a place for one fence reference, empty or holding an old one.
+            unsafe { fence_reference::<B>(context.screen.cast_mut().cast(), fence, made.cast()) };
+            // The place took its own reference; the one made with the fence goes.
+            // SAFETY: made above, with one reference besides the place's.
+            unsafe { (*made).count.fetch_sub(1, Ordering::AcqRel) };
+        }
+    })
 }
 
 /// `pipe_screen::fence_reference`.
@@ -323,17 +307,19 @@ pub unsafe extern "C" fn fence_reference<B: Backend>(
     place: *mut *mut pipe_fence_handle,
     fence: *mut pipe_fence_handle,
 ) {
-    // SAFETY: Mesa passes a place and a fence of this driver, or null.
-    unsafe {
-        let new = fence.cast::<Fence<B>>();
-        if !new.is_null() {
-            (*new).count.fetch_add(1, Ordering::Relaxed);
+    crate::state::guest_call(std::ptr::null_mut(), (), move || {
+        // SAFETY: Mesa passes a place and a fence of this driver, or null.
+        unsafe {
+            let new = fence.cast::<Fence<B>>();
+            if !new.is_null() {
+                (*new).count.fetch_add(1, Ordering::Relaxed);
+            }
+            let old = std::mem::replace(&mut *place, fence).cast::<Fence<B>>();
+            if !old.is_null() && (*old).count.fetch_sub(1, Ordering::AcqRel) == 1 {
+                drop(Box::from_raw(old));
+            }
         }
-        let old = std::mem::replace(&mut *place, fence).cast::<Fence<B>>();
-        if !old.is_null() && (*old).count.fetch_sub(1, Ordering::AcqRel) == 1 {
-            drop(Box::from_raw(old));
-        }
-    }
+    })
 }
 
 /// `pipe_screen::fence_finish`: done, or waited on with any time-out but none.
@@ -343,17 +329,19 @@ pub unsafe extern "C" fn fence_finish<B: Backend>(
     fence: *mut pipe_fence_handle,
     timeout: u64,
 ) -> bool {
-    // SAFETY: Mesa passes this driver's screen and one of its fences.
-    let (screen, fence) = unsafe { (Screen::<B>::of(screen), &*fence.cast::<Fence<B>>()) };
-    let mut backend = screen.backend();
-    if backend.fence_done(&fence.fence) {
-        return true;
-    }
-    if timeout == 0 {
-        return false;
-    }
-    backend.wait_fence(&fence.fence);
-    true
+    crate::state::guest_call(std::ptr::null_mut(), true, move || {
+        // SAFETY: Mesa passes this driver's screen and one of its fences.
+        let (screen, fence) = unsafe { (Screen::<B>::of(screen), &*fence.cast::<Fence<B>>()) };
+        let mut backend = screen.backend();
+        if backend.fence_done(&fence.fence) {
+            return true;
+        }
+        if timeout == 0 {
+            return false;
+        }
+        backend.wait_fence(&fence.fence);
+        true
+    })
 }
 
 /// The f32 bits of a depth value.
@@ -376,67 +364,66 @@ unsafe extern "C" fn clear<B: Backend>(
     depth: f64,
     stencil: c_uint,
 ) {
-    // SAFETY: Mesa passes this driver's context and a colour.
-    let (context, color) = unsafe { (Context::<B>::of(pipe), (*color).ui) };
-    if !query::condition_holds(context) {
-        return;
-    }
-    if !scissor.is_null() {
-        eprintln!(
-            "{}: refused: a scissored clear (the screen reports none)",
-            DRIVER_NAME.to_string_lossy()
-        );
-        std::process::abort();
-    }
-    let mut backend = context.screen().backend();
-    let tracker = &mut context.tracker;
-    let state = &context.framebuffer.state;
-    let colors = usize::from(state.nr_cbufs);
-    let depth = (buffers & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth));
-    let stencil = (buffers & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil));
-    // A layered framebuffer is cleared on every layer, a layer at a time.
-    let layers = layers(state);
-    let set = tracker.targets().cloned();
-    let mut made = Vec::new();
-    let mut done = Ok(());
-    for layer in 0..layers {
-        if layer > 0 {
-            let mut twins = Vec::new();
-            let (targets, views, _) = layer_targets(&mut *backend, state, layer, &mut twins);
-            if !twins.is_empty() {
-                crate::state::refuse(format_args!(
-                    "a clear of a layered target drawn through a twin (not built)"
-                ));
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a colour.
+        let (context, color) = unsafe { (Context::<B>::of(pipe), (*color).ui) };
+        if !query::condition_holds(context) {
+            return;
+        }
+        if !scissor.is_null() {
+            state::refuse(format_args!("a scissored clear (the screen reports none)"));
+        }
+        let mut backend = context.screen().backend();
+        let tracker = &mut context.tracker;
+        let state = &context.framebuffer.state;
+        let colors = usize::from(state.nr_cbufs);
+        let depth = (buffers & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth));
+        let stencil = (buffers & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil));
+        // A layered framebuffer is cleared on every layer, a layer at a time.
+        let layers = layers(state);
+        let set = tracker.targets().cloned();
+        let mut made = Vec::new();
+        let mut done = Ok(());
+        for layer in 0..layers {
+            if layer > 0 {
+                let mut twins = Vec::new();
+                let (targets, views, _) = layer_targets(&mut *backend, state, layer, &mut twins);
+                if !twins.is_empty() {
+                    crate::state::refuse(format_args!(
+                        "a clear of a layered target drawn through a twin (not built)"
+                    ));
+                }
+                made.extend(views);
+                done = done.and_then(|()| tracker.set_targets(&mut backend, targets));
             }
-            made.extend(views);
-            done = done.and_then(|()| tracker.set_targets(&mut backend, targets));
-        }
-        for target in 0..colors {
-            if buffers & (PIPE_CLEAR_COLOR0 << target) != 0 {
-                done = done.and_then(|()| tracker.clear_color(&mut backend, target, color));
+            for target in 0..colors {
+                if buffers & (PIPE_CLEAR_COLOR0 << target) != 0 {
+                    done = done.and_then(|()| tracker.clear_color(&mut backend, target, color));
+                }
+            }
+            if depth.is_some() || stencil.is_some() {
+                done =
+                    done.and_then(|()| tracker.clear_depth_stencil(&mut backend, depth, stencil));
             }
         }
-        if depth.is_some() || stencil.is_some() {
-            done = done.and_then(|()| tracker.clear_depth_stencil(&mut backend, depth, stencil));
+        if layers > 1 {
+            if let Some(set) = set {
+                done = done.and_then(|()| tracker.set_targets(&mut backend, set));
+            }
+            for view in made {
+                backend.destroy(Object::TextureView(view));
+            }
         }
-    }
-    if layers > 1 {
-        if let Some(set) = set {
-            done = done.and_then(|()| tracker.set_targets(&mut backend, set));
+        if let Err(error) = done {
+            state::refuse(format_args!("a clear: {error:?}"));
         }
-        for view in made {
-            backend.destroy(Object::TextureView(view));
+        if let Err(error) = context
+            .framebuffer
+            .copy_back_twins(&mut context.tracker, &mut backend)
+        {
+            state::refuse(format_args!("a clear: {error}"));
         }
-    }
-    if let Err(error) = done {
-        state::refuse(format_args!("a clear: {error:?}"));
-    }
-    if let Err(error) = context
-        .framebuffer
-        .copy_back_twins(&mut context.tracker, &mut backend)
-    {
-        state::refuse(format_args!("a clear: {error}"));
-    }
+    })
 }
 
 /// Clears a rectangle of one surface, outside any pass.
@@ -490,20 +477,22 @@ unsafe extern "C" fn clear_render_target<B: Backend>(
     height: c_uint,
     conditional: bool,
 ) {
-    // SAFETY: Mesa passes this driver's context, a surface and a colour.
-    let (context, surface, color) = unsafe { (Context::<B>::of(pipe), &*surface, (*color).ui) };
-    if conditional && !query::condition_holds(context) {
-        return;
-    }
-    clear_surface(
-        context,
-        surface,
-        ClearValue::Color(color),
-        x,
-        y,
-        width,
-        height,
-    );
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context, a surface and a colour.
+        let (context, surface, color) = unsafe { (Context::<B>::of(pipe), &*surface, (*color).ui) };
+        if conditional && !query::condition_holds(context) {
+            return;
+        }
+        clear_surface(
+            context,
+            surface,
+            ClearValue::Color(color),
+            x,
+            y,
+            width,
+            height,
+        );
+    })
 }
 
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
@@ -519,16 +508,18 @@ unsafe extern "C" fn clear_depth_stencil<B: Backend>(
     height: c_uint,
     conditional: bool,
 ) {
-    // SAFETY: Mesa passes this driver's context and a surface.
-    let (context, surface) = unsafe { (Context::<B>::of(pipe), &*surface) };
-    if conditional && !query::condition_holds(context) {
-        return;
-    }
-    let value = ClearValue::DepthStencil {
-        depth: (flags & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth)),
-        stencil: (flags & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil)),
-    };
-    clear_surface(context, surface, value, x, y, width, height);
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a surface.
+        let (context, surface) = unsafe { (Context::<B>::of(pipe), &*surface) };
+        if conditional && !query::condition_holds(context) {
+            return;
+        }
+        let value = ClearValue::DepthStencil {
+            depth: (flags & PIPE_CLEAR_DEPTH != 0).then(|| depth_bits(depth)),
+            stencil: (flags & PIPE_CLEAR_STENCIL != 0).then(|| stencil_bits(stencil)),
+        };
+        clear_surface(context, surface, value, x, y, width, height);
+    })
 }
 
 /// A view to draw into of layer `layer` of one surface's texture, with the format it is seen in.
@@ -717,54 +708,58 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_framebuffer_state,
 ) {
-    // SAFETY: Mesa passes this driver's context and a framebuffer.
-    let (context, mut state) = unsafe { (Context::<B>::of(pipe), *state) };
-    for surface in surfaces(&mut state) {
-        let texture = std::mem::replace(&mut surface.texture, std::ptr::null_mut());
-        // SAFETY: the surfaces' textures are live; the copy takes its own references.
-        unsafe { resource::reference(&mut surface.texture, texture) };
-    }
-    let old = std::mem::replace(&mut context.framebuffer.state, state);
-    let screen = context.screen();
-    let mut guard = screen.backend();
-    let backend = &mut *guard;
-    // The old twins were copied back after their work.
-    for twin in std::mem::take(&mut context.framebuffer.twins) {
-        twin.release(|object| backend.destroy(object));
-    }
-    let mut twins = Vec::new();
-    let (targets, views, samples) = layer_targets(backend, &state, 0, &mut twins);
-    context.framebuffer.samples = samples;
-    context.framebuffer.twins = twins;
-    if let Err(error) = context
-        .framebuffer
-        .copy_into_twins(&mut context.tracker, backend)
-    {
-        state::refuse(format_args!("framebuffer: {error}"));
-    }
-    if let Err(error) = context.tracker.set_targets(backend, targets) {
-        state::refuse(format_args!("framebuffer: {error:?}"));
-    }
-    drop(guard);
-    for view in std::mem::replace(&mut context.framebuffer.views, views) {
-        screen.retire(Object::TextureView(view));
-    }
-    let mut old = old;
-    for surface in surfaces(&mut old) {
-        // SAFETY: the old copy held a reference on each texture.
-        unsafe { resource::release(surface.texture) };
-    }
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a framebuffer.
+        let (context, mut state) = unsafe { (Context::<B>::of(pipe), *state) };
+        for surface in surfaces(&mut state) {
+            let texture = std::mem::replace(&mut surface.texture, std::ptr::null_mut());
+            // SAFETY: the surfaces' textures are live; the copy takes its own references.
+            unsafe { resource::reference(&mut surface.texture, texture) };
+        }
+        let old = std::mem::replace(&mut context.framebuffer.state, state);
+        let screen = context.screen();
+        let mut guard = screen.backend();
+        let backend = &mut *guard;
+        // The old twins were copied back after their work.
+        for twin in std::mem::take(&mut context.framebuffer.twins) {
+            twin.release(|object| backend.destroy(object));
+        }
+        let mut twins = Vec::new();
+        let (targets, views, samples) = layer_targets(backend, &state, 0, &mut twins);
+        context.framebuffer.samples = samples;
+        context.framebuffer.twins = twins;
+        if let Err(error) = context
+            .framebuffer
+            .copy_into_twins(&mut context.tracker, backend)
+        {
+            state::refuse(format_args!("framebuffer: {error}"));
+        }
+        if let Err(error) = context.tracker.set_targets(backend, targets) {
+            state::refuse(format_args!("framebuffer: {error:?}"));
+        }
+        drop(guard);
+        for view in std::mem::replace(&mut context.framebuffer.views, views) {
+            screen.retire(Object::TextureView(view));
+        }
+        let mut old = old;
+        for surface in surfaces(&mut old) {
+            // SAFETY: the old copy held a reference on each texture.
+            unsafe { resource::release(surface.texture) };
+        }
+    })
 }
 
 /// Later draws see what earlier ones wrote, to targets or storage: the open pass ends (the host
 /// orders passes and dispatches after the ones before).
 unsafe extern "C" fn texture_barrier<B: Backend>(pipe: *mut pipe_context, _: c_uint) {
-    // SAFETY: Mesa passes this driver's context.
-    let context = unsafe { Context::<B>::of(pipe) };
-    let mut backend = context.screen().backend();
-    if let Err(error) = context.tracker.close(&mut backend) {
-        state::refuse(format_args!("closing a pass: {error:?}"));
-    }
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context.
+        let context = unsafe { Context::<B>::of(pipe) };
+        let mut backend = context.screen().backend();
+        if let Err(error) = context.tracker.close(&mut backend) {
+            state::refuse(format_args!("closing a pass: {error:?}"));
+        }
+    })
 }
 
 /// A resource about to be shown or shared needs nothing more: every write is already ordered.

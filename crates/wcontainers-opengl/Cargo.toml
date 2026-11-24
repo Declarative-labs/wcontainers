@@ -27,10 +27,11 @@ wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 
 [build-dependencies]
 bindgen = "0.71.1"
+build-rs = "0.3.6"
 cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# TODO: remove this crate's 326 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 365 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

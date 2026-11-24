@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_uint};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
     Backend, Caps, Features, Format, FormatUse, Object, SlotKind, SlowPath,
@@ -47,8 +47,8 @@ impl<B: Backend> Screen<B> {
 
     /// The back end, for one call of the driver's.
     pub fn backend(&self) -> MutexGuard<'_, B> {
-        let mut backend = self.backend.lock().expect("the device lock");
-        let retired = std::mem::take(&mut *self.retired.lock().expect("the retired lock"));
+        let mut backend = whole(&self.backend);
+        let retired = std::mem::take(&mut *whole(&self.retired));
         for object in retired {
             backend.destroy(object);
         }
@@ -58,7 +58,7 @@ impl<B: Backend> Screen<B> {
 
     /// Gives an object back to the back end.
     pub fn retire(&self, object: Object<B>) {
-        self.retired.lock().expect("the retired lock").push(object);
+        whole(&self.retired).push(object);
     }
 
     pub fn caps(&self) -> &Caps {
@@ -67,17 +67,12 @@ impl<B: Backend> Screen<B> {
 
     /// Notes a shader state made of content `id`.
     pub fn shader_made(&self, id: ShaderId) {
-        *self
-            .shaders
-            .lock()
-            .expect("the shaders lock")
-            .entry(id)
-            .or_default() += 1;
+        *whole(&self.shaders).entry(id).or_default() += 1;
     }
 
     /// Notes a shader state of content `id` deleted; whether one of equal content is still live.
     pub fn shader_deleted(&self, id: &ShaderId) -> bool {
-        let mut shaders = self.shaders.lock().expect("the shaders lock");
+        let mut shaders = whole(&self.shaders);
         let Some(live) = shaders.get_mut(id) else {
             return false;
         };
@@ -91,11 +86,14 @@ impl<B: Backend> Screen<B> {
 
     /// Whether a shader state of content `id` is live.
     pub fn shader_live(&self, id: &ShaderId) -> bool {
-        self.shaders
-            .lock()
-            .expect("the shaders lock")
-            .contains_key(id)
+        whole(&self.shaders).contains_key(id)
     }
+}
+
+/// One of the screen's locks. A guest call refused while holding it (`state::guest_call`) leaves
+/// it poisoned; what it guards is whole between the back end's calls, where refusals are made.
+pub fn whole<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Warns once of each slow path the first time it is taken, on the process's error output.
@@ -120,20 +118,22 @@ fn slow_path_counts<B: Backend>(backend: &mut B) -> Vec<(&'static str, u64)> {
 }
 
 unsafe extern "C" fn destroy<B: Backend>(screen: *mut pipe_screen) {
-    // SAFETY: Mesa destroys the screen it was given once.
-    let screen = unsafe { Box::from_raw(screen.cast::<Screen<B>>()) };
-    {
-        let mut backend = screen.backend();
-        for (reason, count) in slow_path_counts(&mut *backend) {
-            eprintln!(
-                "{}: slow path taken {count} times: {reason}",
-                DRIVER_NAME.to_string_lossy()
-            );
+    crate::state::guest_call(std::ptr::null_mut(), (), move || {
+        // SAFETY: Mesa destroys the screen it was given once.
+        let screen = unsafe { Box::from_raw(screen.cast::<Screen<B>>()) };
+        {
+            let mut backend = screen.backend();
+            for (reason, count) in slow_path_counts(&mut *backend) {
+                eprintln!(
+                    "{}: slow path taken {count} times: {reason}",
+                    DRIVER_NAME.to_string_lossy()
+                );
+            }
         }
-    }
-    // SAFETY: the helper was made with the screen and outlives every context of it.
-    unsafe { u_transfer_helper_destroy(screen.base.transfer_helper) };
-    drop(screen);
+        // SAFETY: the helper was made with the screen and outlives every context of it.
+        unsafe { u_transfer_helper_destroy(screen.base.transfer_helper) };
+        drop(screen);
+    })
 }
 
 unsafe extern "C" fn name(_: *mut pipe_screen) -> *const c_char {
@@ -153,16 +153,18 @@ unsafe extern "C" fn is_format_supported<B: Backend>(
     storage_samples: c_uint,
     bindings: c_uint,
 ) -> bool {
-    // SAFETY: Mesa passes this driver's screen.
-    let screen = unsafe { Screen::<B>::of(screen) };
-    format::supported(
-        &screen.caps.formats,
-        format,
-        target,
-        samples,
-        storage_samples,
-        bindings,
-    )
+    crate::state::guest_call(std::ptr::null_mut(), false, move || {
+        // SAFETY: Mesa passes this driver's screen.
+        let screen = unsafe { Screen::<B>::of(screen) };
+        format::supported(
+            &screen.caps.formats,
+            format,
+            target,
+            samples,
+            storage_samples,
+            bindings,
+        )
+    })
 }
 
 /// Levels of a full chain on a side of `size` texels.
@@ -215,7 +217,7 @@ pub(crate) fn glsl_version(limits: &wcontainers_gpu::Limits) -> c_uint {
 
 /// A geometry program's limits, the least `OES_geometry_shader` allows:
 /// the stage helper sizes its records by the program's own declarations.
-const GEOMETRY_OUTPUT_VERTICES: c_uint = 256;
+const GEOMETRY_EMITTED_VERTICES: c_uint = 256;
 const GEOMETRY_OUTPUT_COMPONENTS: c_uint = 1024;
 const GEOMETRY_INVOCATIONS: c_uint = 32;
 
@@ -334,7 +336,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     ) = stream_output(ours);
     // Geometry programs, run by the stage helper as compute work.
     if ours.has(Features::COMPUTE) {
-        caps.max_geometry_output_vertices = GEOMETRY_OUTPUT_VERTICES;
+        caps.max_geometry_output_vertices = GEOMETRY_EMITTED_VERTICES;
         caps.max_geometry_total_output_components = GEOMETRY_OUTPUT_COMPONENTS;
         caps.max_gs_invocations = GEOMETRY_INVOCATIONS;
         caps.max_shader_patch_varyings = PATCH_VARYINGS;
@@ -382,6 +384,9 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // Every back end bounds a program's buffer accesses: one past a binding's end reads zero or
     // a value inside it and writes nothing outside it.
     caps.robust_buffer_access_behavior = true;
+    // A context one of whose calls was refused reports itself reset by its own fault
+    // (`state::guest_call`).
+    caps.device_reset_status_query = true;
     caps.fragment_shader_texture_lod = true;
     // The base instance is always zero (no `start_instance`), so the instance index is OpenGL's.
     caps.vs_instanceid = true;
@@ -570,10 +575,12 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
 /// driver).
 #[unsafe(no_mangle)]
 pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
-    match crate::device::webgpu() {
-        Some((backend, name)) => screen(backend, name),
-        None => std::ptr::null_mut(),
-    }
+    crate::state::guest_call(std::ptr::null_mut(), std::ptr::null_mut(), move || {
+        match crate::device::webgpu() {
+            Some((backend, name)) => screen(backend, name),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 #[cfg(test)]

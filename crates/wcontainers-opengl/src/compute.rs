@@ -14,11 +14,13 @@ pub unsafe extern "C" fn launch_grid<B: Backend>(
     pipe: *mut pipe_context,
     info: *const pipe_grid_info,
 ) {
-    // SAFETY: Mesa passes this driver's context and the grid.
-    let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
-    if let Err(reason) = dispatch(context, info) {
-        refuse(&reason);
-    }
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and the grid.
+        let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
+        if let Err(reason) = dispatch(context, info) {
+            refuse(&reason);
+        }
+    })
 }
 
 fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Result<(), String> {

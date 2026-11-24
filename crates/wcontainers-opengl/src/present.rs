@@ -147,7 +147,7 @@ fn show<B: HostWindows>(
         .ok_or("a frame of a format the device lacks")?;
     let shown = window_format(backend, format).ok_or("no format the window shows")?;
     let (width, height) = ((desc.width >> level).max(1), (desc.height >> level).max(1));
-    let mut windows = screen.windows.lock().map_err(|_| "the windows' lock")?;
+    let mut windows = crate::screen::whole(&screen.windows);
     let key = device_context as usize;
     if !windows.contains_key(&key) {
         let id = windows.len() as u32;
@@ -270,19 +270,21 @@ pub unsafe extern "C" fn flush_frontbuffer<B: HostWindows>(
     _: c_uint,
     _: *mut pipe_box,
 ) {
-    if pipe.is_null() {
-        eprintln!(
-            "{}: a frame shown without a context is not shown",
-            DRIVER_NAME.to_string_lossy()
-        );
-        return;
-    }
-    // SAFETY: the WGL target passes this driver's context and a texture of it.
-    let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
-    if let Err(why) = show(context, resource, level, layer, device_context) {
-        eprintln!(
-            "{}: a frame not shown: {why}",
-            DRIVER_NAME.to_string_lossy()
-        );
-    }
+    crate::state::guest_call(std::ptr::null_mut(), (), move || {
+        if pipe.is_null() {
+            eprintln!(
+                "{}: a frame shown without a context is not shown",
+                DRIVER_NAME.to_string_lossy()
+            );
+            return;
+        }
+        // SAFETY: the WGL target passes this driver's context and a texture of it.
+        let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
+        if let Err(why) = show(context, resource, level, layer, device_context) {
+            eprintln!(
+                "{}: a frame not shown: {why}",
+                DRIVER_NAME.to_string_lossy()
+            );
+        }
+    })
 }

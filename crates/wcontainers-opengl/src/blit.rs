@@ -245,56 +245,58 @@ fn bit_copy<B: Backend>(
 
 /// `pipe_context::blit`.
 pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const pipe_blit_info) {
-    // SAFETY: Mesa passes this driver's context and a blit.
-    let context = unsafe { Context::<B>::of(pipe) };
-    if context.blitter.is_null() {
-        // SAFETY: the context is complete; the blitter keeps a pointer to it.
-        context.blitter = unsafe { util_blitter_create(pipe) };
-    }
-    // SAFETY: as above.
-    if unsafe { (*info).render_condition_enable } && !crate::query::condition_holds(context) {
-        return;
-    }
-    // SAFETY: as above; the blit names two resources of this driver.
-    let (info, from, to) = unsafe {
-        (
-            &*info,
-            Resource::<B>::of((*info).src.resource),
-            Resource::<B>::of((*info).dst.resource),
-        )
-    };
-    if !from.layers().is_empty() || !to.layers().is_empty() {
-        by_layers(pipe, info, from, to);
-        return;
-    }
-    if whole_resolve(context, info, from, to) || bit_copy(context, info, from, to) {
-        return;
-    }
-    let blitter = context.blitter;
-    let mut info = *info;
-    if info.mask & PIPE_MASK_S != 0 {
-        stencil_by_bits(context, &info);
-        info.mask &= !PIPE_MASK_S;
-        if info.mask == 0 {
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a blit.
+        let context = unsafe { Context::<B>::of(pipe) };
+        if context.blitter.is_null() {
+            // SAFETY: the context is complete; the blitter keeps a pointer to it.
+            context.blitter = unsafe { util_blitter_create(pipe) };
+        }
+        // SAFETY: as above.
+        if unsafe { (*info).render_condition_enable } && !crate::query::condition_holds(context) {
             return;
         }
-    }
-    // SAFETY: the blitter was made on this context.
-    if !unsafe { util_blitter_is_blit_supported(blitter, &info) } {
-        refuse(format_args!(
-            "a blit Gallium's blitter does not make (Gallium's formats {} to {}, of textures in {} \
-             and {}, mask {:#x})",
-            info.src.format,
-            info.dst.format,
-            from.base.format(),
-            to.base.format(),
-            info.mask
-        ));
-    }
-    // SAFETY: as above; the blitter is used by this context's thread only.
-    save(context, unsafe { &mut *blitter });
-    // SAFETY: as above; every state the blitter changes is saved.
-    unsafe { util_blitter_blit(blitter, &info, std::ptr::null_mut()) };
+        // SAFETY: as above; the blit names two resources of this driver.
+        let (info, from, to) = unsafe {
+            (
+                &*info,
+                Resource::<B>::of((*info).src.resource),
+                Resource::<B>::of((*info).dst.resource),
+            )
+        };
+        if !from.layers().is_empty() || !to.layers().is_empty() {
+            by_layers(pipe, info, from, to);
+            return;
+        }
+        if whole_resolve(context, info, from, to) || bit_copy(context, info, from, to) {
+            return;
+        }
+        let blitter = context.blitter;
+        let mut info = *info;
+        if info.mask & PIPE_MASK_S != 0 {
+            stencil_by_bits(context, &info);
+            info.mask &= !PIPE_MASK_S;
+            if info.mask == 0 {
+                return;
+            }
+        }
+        // SAFETY: the blitter was made on this context.
+        if !unsafe { util_blitter_is_blit_supported(blitter, &info) } {
+            refuse(format_args!(
+                "a blit Gallium's blitter does not make (Gallium's formats {} to {}, of textures in {} \
+                 and {}, mask {:#x})",
+                info.src.format,
+                info.dst.format,
+                from.base.format(),
+                to.base.format(),
+                info.mask
+            ));
+        }
+        // SAFETY: as above; the blitter is used by this context's thread only.
+        save(context, unsafe { &mut *blitter });
+        // SAFETY: as above; every state the blitter changes is saved.
+        unsafe { util_blitter_blit(blitter, &info, std::ptr::null_mut()) };
+    })
 }
 
 /// A blit from or into a texture held a layer a resource, as a blit a layer between the layers'

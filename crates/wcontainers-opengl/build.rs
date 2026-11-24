@@ -87,8 +87,7 @@ fn main() {
         .generate_comments(false)
         .generate()
         .expect("bindgen reads Mesa's Gallium headers");
-    let file =
-        PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets the output folder")).join(BINDINGS);
+    let file = build_rs::input::out_dir().join(BINDINGS);
     bindings
         .write_to_file(&file)
         .expect("the bindings are written");

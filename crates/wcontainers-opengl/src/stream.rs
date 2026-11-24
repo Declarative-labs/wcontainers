@@ -246,32 +246,34 @@ pub unsafe extern "C" fn create_stream_output_target<B: Backend>(
     offset: c_uint,
     size: c_uint,
 ) -> *mut pipe_stream_output_target {
-    // SAFETY: Mesa passes this driver's context.
-    let context = unsafe { Context::<B>::of(pipe) };
-    let screen = context.screen();
-    let mut backend = screen.backend();
-    let align = u64::from(backend.caps().limits.min_storage_offset_alignment);
-    let lead = u64::from(offset) % align;
-    let filled = backend
-        .create_buffer(&BufferDesc {
-            size: STORAGE_WORD,
-            usage: COUNTER_USAGE,
-            intent: MapIntent::Rarely,
-        })
-        .unwrap_or_else(|e| refuse(format!("a stream output target: {e:?}")));
-    backend.write_buffer(&filled, 0, &(lead as u32).to_le_bytes(), WriteMode::Ordered);
-    let mut target = Box::new(Target::<B> {
-        base: pipe_stream_output_target::default(),
-        filled,
-        lead,
-    });
-    target.base.reference.count = 1;
-    target.base.context = pipe;
-    target.base.buffer_offset = offset;
-    target.base.buffer_size = size;
-    // SAFETY: the buffer is a live resource Mesa hands over; the target takes a reference.
-    unsafe { resource::reference(&mut target.base.buffer, buffer) };
-    Box::into_raw(target).cast()
+    crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's context.
+        let context = unsafe { Context::<B>::of(pipe) };
+        let screen = context.screen();
+        let mut backend = screen.backend();
+        let align = u64::from(backend.caps().limits.min_storage_offset_alignment);
+        let lead = u64::from(offset) % align;
+        let filled = backend
+            .create_buffer(&BufferDesc {
+                size: STORAGE_WORD,
+                usage: COUNTER_USAGE,
+                intent: MapIntent::Rarely,
+            })
+            .unwrap_or_else(|e| refuse(format!("a stream output target: {e:?}")));
+        backend.write_buffer(&filled, 0, &(lead as u32).to_le_bytes(), WriteMode::Ordered);
+        let mut target = Box::new(Target::<B> {
+            base: pipe_stream_output_target::default(),
+            filled,
+            lead,
+        });
+        target.base.reference.count = 1;
+        target.base.context = pipe;
+        target.base.buffer_offset = offset;
+        target.base.buffer_size = size;
+        // SAFETY: the buffer is a live resource Mesa hands over; the target takes a reference.
+        unsafe { resource::reference(&mut target.base.buffer, buffer) };
+        Box::into_raw(target).cast()
+    })
 }
 
 /// `pipe_context::stream_output_target_destroy`, when its last reference goes.
@@ -279,16 +281,18 @@ pub unsafe extern "C" fn stream_output_target_destroy<B: Backend>(
     pipe: *mut pipe_context,
     target: *mut pipe_stream_output_target,
 ) {
-    // SAFETY: Mesa passes this driver's context and a target it made, destroyed once.
-    let (context, target) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Box::from_raw(target.cast::<Target<B>>()),
-        )
-    };
-    context.screen().retire(Object::Buffer(target.filled));
-    // SAFETY: the target held a reference on its buffer.
-    unsafe { resource::release(target.base.buffer) };
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a target it made, destroyed once.
+        let (context, target) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Box::from_raw(target.cast::<Target<B>>()),
+            )
+        };
+        context.screen().retire(Object::Buffer(target.filled));
+        // SAFETY: the target held a reference on its buffer.
+        unsafe { resource::release(target.base.buffer) };
+    })
 }
 
 /// Drops one reference on a target (null for none), destroying it with the last.
@@ -324,49 +328,51 @@ pub unsafe extern "C" fn set_stream_output_targets<B: Backend>(
     offsets: *const c_uint,
     _: mesa_prim,
 ) {
-    // SAFETY: Mesa passes this driver's context and `count` targets and offsets.
-    let (context, new, offsets) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            std::slice::from_raw_parts(targets, count as usize),
-            std::slice::from_raw_parts(offsets, count as usize),
-        )
-    };
-    let screen = context.screen();
-    let mut backend = screen.backend();
-    let backend = &mut *backend;
-    if let Err(error) = context.tracker.close(backend) {
-        refuse(format!("stream output targets: {error:?}"));
-    }
-    let streams = &mut context.streams;
-    if streams.filled.is_none() && !new.iter().all(|t| t.is_null()) {
-        streams.filled = Some(block(backend).unwrap_or_else(|e| refuse(e)));
-    }
-    for (slot, old) in streams.targets.iter_mut().enumerate() {
-        let word = slot as u64 * STORAGE_WORD;
-        if let (Some(filled), false) = (&streams.filled, old.is_null()) {
-            // SAFETY: a bound target holds a reference on itself.
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and `count` targets and offsets.
+        let (context, new, offsets) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                std::slice::from_raw_parts(targets, count as usize),
+                std::slice::from_raw_parts(offsets, count as usize),
+            )
+        };
+        let screen = context.screen();
+        let mut backend = screen.backend();
+        let backend = &mut *backend;
+        if let Err(error) = context.tracker.close(backend) {
+            refuse(format!("stream output targets: {error:?}"));
+        }
+        let streams = &mut context.streams;
+        if streams.filled.is_none() && !new.iter().all(|t| t.is_null()) {
+            streams.filled = Some(block(backend).unwrap_or_else(|e| refuse(e)));
+        }
+        for (slot, old) in streams.targets.iter_mut().enumerate() {
+            let word = slot as u64 * STORAGE_WORD;
+            if let (Some(filled), false) = (&streams.filled, old.is_null()) {
+                // SAFETY: a bound target holds a reference on itself.
+                let target = unsafe { &*old.cast::<Target<B>>() };
+                backend.copy_buffer(filled, word, &target.filled, 0, STORAGE_WORD);
+            }
+            // SAFETY: a bound target holds a reference.
+            unsafe { unreference::<B>(*old, screen) };
+            *old = new.get(slot).copied().unwrap_or(std::ptr::null_mut());
+            if old.is_null() {
+                continue;
+            }
+            // SAFETY: Mesa hands over live targets of this driver; the slot takes a reference.
             let target = unsafe { &*old.cast::<Target<B>>() };
-            backend.copy_buffer(filled, word, &target.filled, 0, STORAGE_WORD);
-        }
-        // SAFETY: a bound target holds a reference.
-        unsafe { unreference::<B>(*old, screen) };
-        *old = new.get(slot).copied().unwrap_or(std::ptr::null_mut());
-        if old.is_null() {
-            continue;
-        }
-        // SAFETY: Mesa hands over live targets of this driver; the slot takes a reference.
-        let target = unsafe { &*old.cast::<Target<B>>() };
-        // SAFETY: as above.
-        unsafe { AtomicI32::from_ptr(&raw mut (**old).reference.count) }
-            .fetch_add(1, Ordering::Relaxed);
-        let filled = streams.filled.as_ref().expect("made above");
-        match offsets[slot] {
-            APPEND => backend.copy_buffer(&target.filled, 0, filled, word, STORAGE_WORD),
-            start => {
-                let bytes = (target.lead + u64::from(start)) as u32;
-                backend.write_buffer(filled, word, &bytes.to_le_bytes(), WriteMode::Ordered);
+            // SAFETY: as above.
+            unsafe { AtomicI32::from_ptr(&raw mut (**old).reference.count) }
+                .fetch_add(1, Ordering::Relaxed);
+            let filled = streams.filled.as_ref().expect("made above");
+            match offsets[slot] {
+                APPEND => backend.copy_buffer(&target.filled, 0, filled, word, STORAGE_WORD),
+                start => {
+                    let bytes = (target.lead + u64::from(start)) as u32;
+                    backend.write_buffer(filled, word, &bytes.to_le_bytes(), WriteMode::Ordered);
+                }
             }
         }
-    }
+    })
 }

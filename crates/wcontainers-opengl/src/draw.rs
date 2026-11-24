@@ -2094,23 +2094,25 @@ pub unsafe extern "C" fn draw_vbo<B: Backend>(
     draws: *const pipe_draw_start_count_bias,
     count: c_uint,
 ) {
-    // SAFETY: Mesa passes this driver's context and the draw.
-    let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
-    if !query::condition_holds(context) {
-        return;
-    }
-    let result = if indirect.is_null() {
-        // SAFETY: a direct draw comes with `count` ranges.
-        draw(context, info, unsafe {
-            std::slice::from_raw_parts(draws, count as usize)
-        })
-    } else {
-        // SAFETY: an indirect draw's arguments.
-        draw_indirect(context, info, unsafe { &*indirect })
-    };
-    if let Err(reason) = result {
-        refuse(&reason);
-    }
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and the draw.
+        let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
+        if !query::condition_holds(context) {
+            return;
+        }
+        let result = if indirect.is_null() {
+            // SAFETY: a direct draw comes with `count` ranges.
+            draw(context, info, unsafe {
+                std::slice::from_raw_parts(draws, count as usize)
+            })
+        } else {
+            // SAFETY: an indirect draw's arguments.
+            draw_indirect(context, info, unsafe { &*indirect })
+        };
+        if let Err(reason) = result {
+            refuse(&reason);
+        }
+    })
 }
 
 /// One indirect draw's arguments as OpenGL lays them out in a buffer (`DrawArraysIndirectCommand`
@@ -2229,7 +2231,7 @@ fn draw<B: Backend>(
         [Stage::TessControl, Stage::TessEvaluation].map(|s| context.stages.get(s).shader);
     let tessellated = !tes.is_null();
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    let evaluation_shader = unsafe { tes.as_ref() };
+    let (evaluation_shader, mut geometry_shader) = unsafe { (tes.as_ref(), gs.as_ref()) };
     if let Some(evaluation) = evaluation_shader.filter(|_| gs.is_null()) {
         match &evaluation.pass_through {
             Ok(Some(pass_through)) => {
@@ -2239,6 +2241,7 @@ fn draw<B: Backend>(
                     .slow_paths()
                     .hit(SlowPath::VertexStorageAsCompute);
                 gs = &**pass_through;
+                geometry_shader = Some(&**pass_through);
             }
             Ok(None) => {}
             Err(why) => return refused(format_args!("{why}")),
@@ -2269,8 +2272,6 @@ fn draw<B: Backend>(
         return Ok(());
     }
     // A geometry program emitting no vertex makes nothing to draw, stream or count.
-    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-    let geometry_shader = unsafe { gs.as_ref() };
     if geometry_shader.is_some_and(|g| g.nir.geometry_vertices_out() == 0) {
         return Ok(());
     }
@@ -3060,7 +3061,7 @@ impl LayeredHelpers {
         }
         let mut blocks = vec![(Stage::Vertex, block)];
         blocks.extend(self.fragment.clone().map(|b| (Stage::Fragment, b)));
-        helper_set(backend, &blocks, StageSet::VERTEX)?.ok_or_else(|| "a run's helper set".into())
+        Ok(helper_set(backend, &blocks, StageSet::VERTEX)?.ok_or("a run's helper set")?)
     }
 }
 
@@ -3076,7 +3077,7 @@ fn passthrough_helper_size<B: Backend>(built: &Built<B>) -> Result<u32, String> 
         .ok_or("a geometry program without its pass-through")?
         .module;
     let binding = helper_binding(ShaderStage::Vertex);
-    module
+    Ok(module
         .global_variables
         .iter()
         .find(|(_, g)| {
@@ -3085,7 +3086,7 @@ fn passthrough_helper_size<B: Backend>(built: &Built<B>) -> Result<u32, String> 
                 .is_some_and(|b| b.group == HELPER_SET && b.binding == binding)
         })
         .map(|(_, g)| module.types[g.ty].inner.size(module.to_ctx()))
-        .ok_or_else(|| "a pass-through without its run's helper constants".into())
+        .ok_or("a pass-through without its run's helper constants")?)
 }
 
 /// The draw of what the stage helper made, as `pass` binds it otherwise: its vertices from the

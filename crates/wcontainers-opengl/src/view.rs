@@ -234,9 +234,14 @@ unsafe fn release(view: *mut pipe_sampler_view) {
 }
 
 /// `pipe_context::sampler_view_release`: the frontend gives its reference back.
-pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut pipe_sampler_view) {
-    // SAFETY: Mesa passes a view it holds a reference on.
-    unsafe { release(view) };
+pub unsafe extern "C" fn sampler_view_release(
+    pipe: *mut pipe_context,
+    view: *mut pipe_sampler_view,
+) {
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes a view it holds a reference on.
+        unsafe { release(view) };
+    })
 }
 
 /// A texture of an image's own format and shape that the image is bound through, where the
@@ -1198,101 +1203,103 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     texture: *mut pipe_resource,
     template: *const pipe_sampler_view,
 ) -> *mut pipe_sampler_view {
-    // SAFETY: Mesa passes this driver's context, a resource of it and a template.
-    let (context, resource, template) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Resource::<B>::of(texture),
-            *template,
-        )
-    };
-    let mut base = template;
-    base.reference = pipe_reference { count: 1 };
-    base.texture = std::ptr::null_mut();
-    base.context = pipe;
-    // SAFETY: as above; the view takes its own reference.
-    unsafe { resource::reference(&mut base.texture, texture) };
-    let mut backend = context.screen().backend();
-    let mut layers = None;
-    let (view, texels, twin) = if !resource.layers().is_empty() {
-        match layer_views::<B>(&mut backend, resource, &base) {
-            Ok(mut views) if !views.is_empty() => {
-                let first = views.remove(0);
-                layers = Some(views);
-                (Ok(first), None, None)
-            }
-            Ok(_) => (Err("a view of no layers"), None, None),
-            // Programs are converted for one layer, and binding it says why there is none.
-            Err(why) => {
-                layers = Some(Vec::new());
-                (Err(why), None, None)
-            }
-        }
-    } else if resource.buffer().is_some() {
-        match texel_buffer::<B>(&mut backend, &base) {
-            Ok((texels, view)) => (Ok(view), Some(texels), None),
-            Err(why) => (Err(why), None, None),
-        }
-    } else {
-        match view_twin::<B>(&mut backend, resource, &base) {
-            Ok(twin) => (
-                texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), false),
-                None,
-                twin,
-            ),
-            Err(why) => (Err(why), None, None),
-        }
-    };
-    let mut swizzles = [0; naga::VectorSize::MAX];
-    // SAFETY: a live view, and a place for one swizzle a component.
-    unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
-    let opaque = crate::format::opaque_in_alpha(base.format());
-    let swizzle = swizzles.map(|s| match swizzle(s as pipe_swizzle) {
-        Swizzle::W if opaque => Swizzle::One,
-        s => s,
-    });
-    let stencil = crate::format::stencil_view(base.format());
-    let format = stencil.or_else(|| crate::format::format(base.format()));
-    // A stencil view's texels are unsigned integers, as a stencil texture's are.
-    let integer = stencil.is_some()
-        || format.is_some_and(|f| {
-            matches!(
-                f.kind(),
-                FormatKind::Uint | FormatKind::Sint | FormatKind::Stencil
+    crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's context, a resource of it and a template.
+        let (context, resource, template) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Resource::<B>::of(texture),
+                *template,
             )
-        });
-    let components = format.map_or(0, Format::components);
-    let sampled = match format.map(Format::kind) {
-        Some(FormatKind::Sint) => naga::ScalarKind::Sint,
-        _ if integer => naga::ScalarKind::Uint,
-        _ => naga::ScalarKind::Float,
-    };
-    // SAFETY: a live view.
-    let target = unsafe { wc_sampler_view_target(&base) };
-    let cube = matches!(target, PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY);
-    let samples = u32::from(resource.base.nr_samples).max(1);
-    let faces = (integer && cube)
-        .then(|| texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), true));
-    Box::into_raw(Box::new(View::<B> {
-        base,
-        view,
-        swizzle,
-        integer,
-        components,
-        faces,
-        texels,
-        twin,
-        sampled,
-        // A multisampled array's views are of its layers' 2D textures.
-        dimension: if layers.is_some() {
-            ViewDimension::D2
+        };
+        let mut base = template;
+        base.reference = pipe_reference { count: 1 };
+        base.texture = std::ptr::null_mut();
+        base.context = pipe;
+        // SAFETY: as above; the view takes its own reference.
+        unsafe { resource::reference(&mut base.texture, texture) };
+        let mut backend = context.screen().backend();
+        let mut layers = None;
+        let (view, texels, twin) = if !resource.layers().is_empty() {
+            match layer_views::<B>(&mut backend, resource, &base) {
+                Ok(mut views) if !views.is_empty() => {
+                    let first = views.remove(0);
+                    layers = Some(views);
+                    (Ok(first), None, None)
+                }
+                Ok(_) => (Err("a view of no layers"), None, None),
+                // Programs are converted for one layer, and binding it says why there is none.
+                Err(why) => {
+                    layers = Some(Vec::new());
+                    (Err(why), None, None)
+                }
+            }
+        } else if resource.buffer().is_some() {
+            match texel_buffer::<B>(&mut backend, &base) {
+                Ok((texels, view)) => (Ok(view), Some(texels), None),
+                Err(why) => (Err(why), None, None),
+            }
         } else {
-            view_dimension(target, false)
-        },
-        samples,
-        layers,
-    }))
-    .cast()
+            match view_twin::<B>(&mut backend, resource, &base) {
+                Ok(twin) => (
+                    texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), false),
+                    None,
+                    twin,
+                ),
+                Err(why) => (Err(why), None, None),
+            }
+        };
+        let mut swizzles = [0; naga::VectorSize::MAX];
+        // SAFETY: a live view, and a place for one swizzle a component.
+        unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
+        let opaque = crate::format::opaque_in_alpha(base.format());
+        let swizzle = swizzles.map(|s| match swizzle(s as pipe_swizzle) {
+            Swizzle::W if opaque => Swizzle::One,
+            s => s,
+        });
+        let stencil = crate::format::stencil_view(base.format());
+        let format = stencil.or_else(|| crate::format::format(base.format()));
+        // A stencil view's texels are unsigned integers, as a stencil texture's are.
+        let integer = stencil.is_some()
+            || format.is_some_and(|f| {
+                matches!(
+                    f.kind(),
+                    FormatKind::Uint | FormatKind::Sint | FormatKind::Stencil
+                )
+            });
+        let components = format.map_or(0, Format::components);
+        let sampled = match format.map(Format::kind) {
+            Some(FormatKind::Sint) => naga::ScalarKind::Sint,
+            _ if integer => naga::ScalarKind::Uint,
+            _ => naga::ScalarKind::Float,
+        };
+        // SAFETY: a live view.
+        let target = unsafe { wc_sampler_view_target(&base) };
+        let cube = matches!(target, PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY);
+        let samples = u32::from(resource.base.nr_samples).max(1);
+        let faces = (integer && cube)
+            .then(|| texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), true));
+        Box::into_raw(Box::new(View::<B> {
+            base,
+            view,
+            swizzle,
+            integer,
+            components,
+            faces,
+            texels,
+            twin,
+            sampled,
+            // A multisampled array's views are of its layers' 2D textures.
+            dimension: if layers.is_some() {
+                ViewDimension::D2
+            } else {
+                view_dimension(target, false)
+            },
+            samples,
+            layers,
+        }))
+        .cast()
+    })
 }
 
 /// `pipe_context::sampler_view_destroy`.
@@ -1300,29 +1307,31 @@ pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
     pipe: *mut pipe_context,
     view: *mut pipe_sampler_view,
 ) {
-    // SAFETY: Mesa passes this driver's context and a view whose last reference went.
-    let (context, view) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Box::from_raw(view.cast::<View<B>>()),
-        )
-    };
-    for made in [Some(view.view), view.faces]
-        .into_iter()
-        .flatten()
-        .flatten()
-        .chain(view.layers.into_iter().flatten())
-    {
-        context.screen().retire(Object::TextureView(made));
-    }
-    for texture in [view.texels.map(|t| t.texture), view.twin.map(|t| t.texture)]
-        .into_iter()
-        .flatten()
-    {
-        context.screen().retire(Object::Texture(texture));
-    }
-    // SAFETY: the view held one reference on its texture.
-    unsafe { resource::release(view.base.texture) };
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a view whose last reference went.
+        let (context, view) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Box::from_raw(view.cast::<View<B>>()),
+            )
+        };
+        for made in [Some(view.view), view.faces]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .chain(view.layers.into_iter().flatten())
+        {
+            context.screen().retire(Object::TextureView(made));
+        }
+        for texture in [view.texels.map(|t| t.texture), view.twin.map(|t| t.texture)]
+            .into_iter()
+            .flatten()
+        {
+            context.screen().retire(Object::Texture(texture));
+        }
+        // SAFETY: the view held one reference on its texture.
+        unsafe { resource::release(view.base.texture) };
+    })
 }
 
 /// One level's region of a texture at a box's corner.
@@ -1360,76 +1369,78 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
     src_level: c_uint,
     area: *const pipe_box,
 ) {
-    let (dst_resource, src_resource) = (dst, src);
-    // SAFETY: Mesa passes this driver's context, two of its resources and a box of the source.
-    let (context, dst, src, area) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Resource::<B>::of(dst),
-            Resource::<B>::of(src),
-            *area,
-        )
-    };
-    // A texture held a layer a resource is copied a layer at a time between the layers' own.
-    if !src.layers().is_empty() || !dst.layers().is_empty() {
-        for i in 0..area.depth {
-            let (from, from_z) = layer_of(src_resource, src, area.z + i);
-            let (to, to_z) = layer_of(dst_resource, dst, dst_z as i16 + i);
-            let one = pipe_box {
-                z: from_z,
-                depth: 1,
-                ..area
-            };
-            // SAFETY: the context Mesa passed and two live resources of this driver.
-            unsafe {
-                resource_copy_region::<B>(
-                    pipe,
+    crate::state::guest_call(pipe, (), move || {
+        let (dst_resource, src_resource) = (dst, src);
+        // SAFETY: Mesa passes this driver's context, two of its resources and a box of the source.
+        let (context, dst, src, area) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Resource::<B>::of(dst),
+                Resource::<B>::of(src),
+                *area,
+            )
+        };
+        // A texture held a layer a resource is copied a layer at a time between the layers' own.
+        if !src.layers().is_empty() || !dst.layers().is_empty() {
+            for i in 0..area.depth {
+                let (from, from_z) = layer_of(src_resource, src, area.z + i);
+                let (to, to_z) = layer_of(dst_resource, dst, dst_z as i16 + i);
+                let one = pipe_box {
+                    z: from_z,
+                    depth: 1,
+                    ..area
+                };
+                // SAFETY: the context Mesa passed and two live resources of this driver.
+                unsafe {
+                    resource_copy_region::<B>(
+                        pipe,
+                        to,
+                        dst_level,
+                        dst_x,
+                        dst_y,
+                        to_z as c_uint,
+                        from,
+                        src_level,
+                        &one,
+                    )
+                };
+            }
+            return;
+        }
+        let mut backend = context.screen().backend();
+        if let Err(error) = context.tracker.close(&mut backend) {
+            crate::state::refuse(format_args!("closing a pass: {error:?}"));
+        }
+        match (src.buffer(), dst.buffer(), src.texture(), dst.texture()) {
+            (Some(from), Some(to), _, _) => {
+                backend.copy_buffer(from, area.x as u64, to, u64::from(dst_x), area.width as u64)
+            }
+            (_, _, Some((from, from_desc)), Some((to, to_desc))) => backend.copy_texture(
+                &corner::<B>(
+                    from,
+                    from_desc.dimension == TextureDimension::D3,
+                    src_level,
+                    area.x as u32,
+                    area.y as u32,
+                    area.z as u32,
+                ),
+                &corner::<B>(
                     to,
+                    to_desc.dimension == TextureDimension::D3,
                     dst_level,
                     dst_x,
                     dst_y,
-                    to_z as c_uint,
-                    from,
-                    src_level,
-                    &one,
-                )
-            };
-        }
-        return;
-    }
-    let mut backend = context.screen().backend();
-    if let Err(error) = context.tracker.close(&mut backend) {
-        crate::state::refuse(format_args!("closing a pass: {error:?}"));
-    }
-    match (src.buffer(), dst.buffer(), src.texture(), dst.texture()) {
-        (Some(from), Some(to), _, _) => {
-            backend.copy_buffer(from, area.x as u64, to, u64::from(dst_x), area.width as u64)
-        }
-        (_, _, Some((from, from_desc)), Some((to, to_desc))) => backend.copy_texture(
-            &corner::<B>(
-                from,
-                from_desc.dimension == TextureDimension::D3,
-                src_level,
-                area.x as u32,
-                area.y as u32,
-                area.z as u32,
+                    dst_z,
+                ),
+                Extent {
+                    width: area.width as u32,
+                    height: area.height as u32,
+                    depth_or_layers: area.depth as u32,
+                },
             ),
-            &corner::<B>(
-                to,
-                to_desc.dimension == TextureDimension::D3,
-                dst_level,
-                dst_x,
-                dst_y,
-                dst_z,
-            ),
-            Extent {
-                width: area.width as u32,
-                height: area.height as u32,
-                depth_or_layers: area.depth as u32,
-            },
-        ),
-        _ => crate::state::refuse(format_args!("a copy between a buffer and a texture")),
-    }
+            _ => crate::state::refuse(format_args!("a copy between a buffer and a texture")),
+        }
+    })
 }
 
 /// The resource holding layer `z` of `resource`, whose own is `ours`, and the layer's place in it.
@@ -1455,23 +1466,26 @@ pub unsafe extern "C" fn generate_mipmap<B: Backend>(
     first_layer: c_uint,
     last_layer: c_uint,
 ) -> bool {
-    // SAFETY: Mesa passes this driver's context and a texture of it.
-    let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
-    let (Some((texture, desc)), Some(values)) = (resource.texture(), crate::format::format(format))
-    else {
-        return false;
-    };
-    let mut backend = context.screen().backend();
-    if context.tracker.close(&mut backend).is_err() {
-        return false;
-    }
-    backend
-        .generate_mips(
-            texture,
-            desc,
-            values,
-            base + 1..last + 1,
-            first_layer..last_layer + 1,
-        )
-        .is_ok()
+    crate::state::guest_call(pipe, false, move || {
+        // SAFETY: Mesa passes this driver's context and a texture of it.
+        let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
+        let (Some((texture, desc)), Some(values)) =
+            (resource.texture(), crate::format::format(format))
+        else {
+            return false;
+        };
+        let mut backend = context.screen().backend();
+        if context.tracker.close(&mut backend).is_err() {
+            return false;
+        }
+        backend
+            .generate_mips(
+                texture,
+                desc,
+                values,
+                base + 1..last + 1,
+                first_layer..last_layer + 1,
+            )
+            .is_ok()
+    })
 }

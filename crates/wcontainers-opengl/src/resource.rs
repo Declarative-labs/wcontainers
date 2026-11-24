@@ -132,9 +132,11 @@ pub unsafe fn release(resource: *mut pipe_resource) {
 }
 
 /// `pipe_context::resource_release`: the frontend gives its reference back.
-pub unsafe extern "C" fn resource_release(_: *mut pipe_context, resource: *mut pipe_resource) {
-    // SAFETY: Mesa passes a resource it holds a reference on.
-    unsafe { release(resource) };
+pub unsafe extern "C" fn resource_release(pipe: *mut pipe_context, resource: *mut pipe_resource) {
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes a resource it holds a reference on.
+        unsafe { release(resource) };
+    })
 }
 
 /// Every use a Gallium buffer may be put to: OpenGL binds any buffer any way.
@@ -192,60 +194,62 @@ pub unsafe extern "C" fn resource_create<B: Backend>(
     screen: *mut pipe_screen,
     template: *const pipe_resource,
 ) -> *mut pipe_resource {
-    // SAFETY: Mesa passes this driver's screen and a template.
-    let (ours, template) = unsafe { (Screen::<B>::of(screen), &*template) };
-    let storage: Storage<B> = if template.target() == PIPE_BUFFER {
-        let usage = template.usage();
-        let intent = if usage == PIPE_USAGE_STREAM || usage == PIPE_USAGE_DYNAMIC {
-            MapIntent::Often
+    crate::state::guest_call(std::ptr::null_mut(), std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's screen and a template.
+        let (ours, template) = unsafe { (Screen::<B>::of(screen), &*template) };
+        let storage: Storage<B> = if template.target() == PIPE_BUFFER {
+            let usage = template.usage();
+            let intent = if usage == PIPE_USAGE_STREAM || usage == PIPE_USAGE_DYNAMIC {
+                MapIntent::Often
+            } else {
+                MapIntent::Rarely
+            };
+            let desc = BufferDesc {
+                size: u64::from(template.width0.max(1)).next_multiple_of(STORAGE_WORD),
+                usage: BUFFER_USAGE,
+                intent,
+            };
+            match ours.backend().create_buffer(&desc) {
+                Ok(buffer) => Storage::Buffer(buffer),
+                Err(error) => {
+                    eprintln!("{}: no buffer: {error:?}", screen_name());
+                    return std::ptr::null_mut();
+                }
+            }
+        } else if template.target() == PIPE_TEXTURE_2D_ARRAY && template.nr_samples > 1 {
+            let mut layer = *template;
+            layer.set_target(PIPE_TEXTURE_2D);
+            layer.array_size = 1;
+            let mut layers = Vec::with_capacity(usize::from(template.array_size));
+            for _ in 0..template.array_size {
+                // SAFETY: Mesa's screen and a template of one of its layers.
+                let made = unsafe { resource_create::<B>(screen, &layer) };
+                if made.is_null() {
+                    // SAFETY: each made layer holds its first reference.
+                    layers.into_iter().for_each(|l| unsafe { release(l) });
+                    return std::ptr::null_mut();
+                }
+                layers.push(made);
+            }
+            Storage::Layers(layers)
         } else {
-            MapIntent::Rarely
-        };
-        let desc = BufferDesc {
-            size: u64::from(template.width0.max(1)).next_multiple_of(STORAGE_WORD),
-            usage: BUFFER_USAGE,
-            intent,
-        };
-        match ours.backend().create_buffer(&desc) {
-            Ok(buffer) => Storage::Buffer(buffer),
-            Err(error) => {
-                eprintln!("{}: no buffer: {error:?}", screen_name());
+            let Some(desc) = texture_desc(ours, template) else {
                 return std::ptr::null_mut();
+            };
+            match ours.backend().create_texture(&desc) {
+                Ok(texture) => Storage::Texture { texture, desc },
+                Err(error) => {
+                    eprintln!("{}: no texture: {error:?}", screen_name());
+                    return std::ptr::null_mut();
+                }
             }
-        }
-    } else if template.target() == PIPE_TEXTURE_2D_ARRAY && template.nr_samples > 1 {
-        let mut layer = *template;
-        layer.set_target(PIPE_TEXTURE_2D);
-        layer.array_size = 1;
-        let mut layers = Vec::with_capacity(usize::from(template.array_size));
-        for _ in 0..template.array_size {
-            // SAFETY: Mesa's screen and a template of one of its layers.
-            let made = unsafe { resource_create::<B>(screen, &layer) };
-            if made.is_null() {
-                // SAFETY: each made layer holds its first reference.
-                layers.into_iter().for_each(|l| unsafe { release(l) });
-                return std::ptr::null_mut();
-            }
-            layers.push(made);
-        }
-        Storage::Layers(layers)
-    } else {
-        let Some(desc) = texture_desc(ours, template) else {
-            return std::ptr::null_mut();
         };
-        match ours.backend().create_texture(&desc) {
-            Ok(texture) => Storage::Texture { texture, desc },
-            Err(error) => {
-                eprintln!("{}: no texture: {error:?}", screen_name());
-                return std::ptr::null_mut();
-            }
-        }
-    };
-    let mut base = *template;
-    base.__bindgen_anon_1.reference = pipe_reference { count: 1 };
-    base.screen = screen;
-    base.next = std::ptr::null_mut();
-    Box::into_raw(Box::new(Resource { base, storage })).cast()
+        let mut base = *template;
+        base.__bindgen_anon_1.reference = pipe_reference { count: 1 };
+        base.screen = screen;
+        base.next = std::ptr::null_mut();
+        Box::into_raw(Box::new(Resource { base, storage })).cast()
+    })
 }
 
 fn screen_name() -> std::borrow::Cow<'static, str> {
@@ -257,22 +261,24 @@ pub unsafe extern "C" fn resource_destroy<B: Backend>(
     screen: *mut pipe_screen,
     resource: *mut pipe_resource,
 ) {
-    // SAFETY: Mesa passes this driver's screen and a resource it made, destroyed once.
-    let (screen, resource) = unsafe {
-        (
-            Screen::<B>::of(screen),
-            Box::from_raw(resource.cast::<Resource<B>>()),
-        )
-    };
-    screen.retire(match resource.storage {
-        Storage::Buffer(buffer) => Object::Buffer(buffer),
-        Storage::Texture { texture, .. } => Object::Texture(texture),
-        Storage::Layers(layers) => {
-            // SAFETY: the resource held one reference on each layer.
-            layers.into_iter().for_each(|l| unsafe { release(l) });
-            return;
-        }
-    });
+    crate::state::guest_call(std::ptr::null_mut(), (), move || {
+        // SAFETY: Mesa passes this driver's screen and a resource it made, destroyed once.
+        let (screen, resource) = unsafe {
+            (
+                Screen::<B>::of(screen),
+                Box::from_raw(resource.cast::<Resource<B>>()),
+            )
+        };
+        screen.retire(match resource.storage {
+            Storage::Buffer(buffer) => Object::Buffer(buffer),
+            Storage::Texture { texture, .. } => Object::Texture(texture),
+            Storage::Layers(layers) => {
+                // SAFETY: the resource held one reference on each layer.
+                layers.into_iter().for_each(|l| unsafe { release(l) });
+                return;
+            }
+        });
+    })
 }
 
 /// Whether Gallium's map flags `usage` hold `flag` (whose C enum is signed on some hosts).
@@ -351,46 +357,48 @@ pub unsafe extern "C" fn buffer_map<B: Backend>(
     area: *const pipe_box,
     out: *mut *mut pipe_transfer,
 ) -> *mut c_void {
-    // SAFETY: Mesa passes this driver's context, a buffer of it and the range.
-    let (context, area) = unsafe { (Context::<B>::of(pipe), *area) };
-    let (Ok(offset), Ok(size)) = (u64::try_from(area.x), usize::try_from(area.width)) else {
-        return std::ptr::null_mut();
-    };
-    // SAFETY: as above.
-    let mut transfer = unsafe { transfer(resource, level, usage, area, size) };
-    if has(usage, PIPE_MAP_READ) {
-        // SAFETY: as above.
-        let ours = unsafe { Resource::<B>::of(resource) };
-        let Some(buffer) = ours.buffer() else {
+    crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's context, a buffer of it and the range.
+        let (context, area) = unsafe { (Context::<B>::of(pipe), *area) };
+        let (Ok(offset), Ok(size)) = (u64::try_from(area.x), usize::try_from(area.width)) else {
             return std::ptr::null_mut();
         };
-        let mut backend = context.screen().backend();
-        outside_pass(context, &mut backend);
-        // Read backs move whole words: the words around the range, then the range from them.
-        let start = offset - offset % STORAGE_WORD;
-        let end = (offset + size as u64).next_multiple_of(STORAGE_WORD);
-        let mut words = vec![0u8; (end - start) as usize];
-        let read = backend.read_back_now(
-            &ReadSource::Buffer {
-                buffer,
-                offset: start,
-                size: end - start,
-            },
-            &mut words,
-        );
-        if read.is_err() {
-            crate::context::end_if_lost(&mut *backend);
-            return std::ptr::null_mut();
+        // SAFETY: as above.
+        let mut transfer = unsafe { transfer(resource, level, usage, area, size) };
+        if has(usage, PIPE_MAP_READ) {
+            // SAFETY: as above.
+            let ours = unsafe { Resource::<B>::of(resource) };
+            let Some(buffer) = ours.buffer() else {
+                return std::ptr::null_mut();
+            };
+            let mut backend = context.screen().backend();
+            outside_pass(context, &mut backend);
+            // Read backs move whole words: the words around the range, then the range from them.
+            let start = offset - offset % STORAGE_WORD;
+            let end = (offset + size as u64).next_multiple_of(STORAGE_WORD);
+            let mut words = vec![0u8; (end - start) as usize];
+            let read = backend.read_back_now(
+                &ReadSource::Buffer {
+                    buffer,
+                    offset: start,
+                    size: end - start,
+                },
+                &mut words,
+            );
+            if read.is_err() {
+                crate::context::end_if_lost(&mut *backend);
+                return std::ptr::null_mut();
+            }
+            let from = (offset - start) as usize;
+            transfer.bytes().copy_from_slice(&words[from..from + size]);
         }
-        let from = (offset - start) as usize;
-        transfer.bytes().copy_from_slice(&words[from..from + size]);
-    }
-    let transfer = Box::into_raw(transfer);
-    // SAFETY: Mesa gives a place for the transfer; the bytes live until the unmap.
-    unsafe {
-        *out = transfer.cast();
-        (*transfer).words.as_mut_ptr().cast()
-    }
+        let transfer = Box::into_raw(transfer);
+        // SAFETY: Mesa gives a place for the transfer; the bytes live until the unmap.
+        unsafe {
+            *out = transfer.cast();
+            (*transfer).words.as_mut_ptr().cast()
+        }
+    })
 }
 
 /// Writes `range` (bytes from the map's start) of a buffer map.
@@ -422,50 +430,52 @@ pub unsafe extern "C" fn transfer_flush_region<B: Backend>(
     transfer: *mut pipe_transfer,
     area: *const pipe_box,
 ) {
-    // SAFETY: Mesa passes this driver's context, one of its maps and a part of it.
-    let (context, transfer, area) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            &mut *transfer.cast::<Transfer>(),
-            *area,
-        )
-    };
-    // SAFETY: as above.
-    let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
-    if resource.texture().is_none() {
-        let start = area.x as usize;
-        write_mapped_buffer(context, transfer, start..start + area.width as usize);
-        return;
-    };
-    // The part of the map flushed, written now (the transfer helper copies a multisampled
-    // texture's single-sampled map into it before unmapping that).
-    let format = resource.base.format();
-    let mapped = transfer.base.box_;
-    let (width, height, bytes) = block(format);
-    let (rows, stride) = box_layout(format, &mapped);
-    let start = area.z as usize * rows as usize * stride as usize
-        + (area.y as u32 / height) as usize * stride as usize
-        + (area.x as u32 / width * bytes) as usize;
-    let part = pipe_box {
-        x: mapped.x + area.x,
-        y: mapped.y + area.y,
-        z: mapped.z + area.z,
-        ..area
-    };
-    let (level, mode) = (transfer.base.level(), transfer.mode);
-    write_texels(
-        context,
-        resource,
-        level,
-        &part,
-        &transfer.bytes()[start..],
-        stride,
-        rows,
-        mode,
-    );
-    if mode == WriteMode::Discard {
-        transfer.mode = WriteMode::NoOverwrite;
-    }
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context, one of its maps and a part of it.
+        let (context, transfer, area) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                &mut *transfer.cast::<Transfer>(),
+                *area,
+            )
+        };
+        // SAFETY: as above.
+        let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
+        if resource.texture().is_none() {
+            let start = area.x as usize;
+            write_mapped_buffer(context, transfer, start..start + area.width as usize);
+            return;
+        };
+        // The part of the map flushed, written now (the transfer helper copies a multisampled
+        // texture's single-sampled map into it before unmapping that).
+        let format = resource.base.format();
+        let mapped = transfer.base.box_;
+        let (width, height, bytes) = block(format);
+        let (rows, stride) = box_layout(format, &mapped);
+        let start = area.z as usize * rows as usize * stride as usize
+            + (area.y as u32 / height) as usize * stride as usize
+            + (area.x as u32 / width * bytes) as usize;
+        let part = pipe_box {
+            x: mapped.x + area.x,
+            y: mapped.y + area.y,
+            z: mapped.z + area.z,
+            ..area
+        };
+        let (level, mode) = (transfer.base.level(), transfer.mode);
+        write_texels(
+            context,
+            resource,
+            level,
+            &part,
+            &transfer.bytes()[start..],
+            stride,
+            rows,
+            mode,
+        );
+        if mode == WriteMode::Discard {
+            transfer.mode = WriteMode::NoOverwrite;
+        }
+    })
 }
 
 /// `pipe_context::buffer_unmap`: writes what was mapped for writing, unless the caller flushed
@@ -474,20 +484,22 @@ pub unsafe extern "C" fn buffer_unmap<B: Backend>(
     pipe: *mut pipe_context,
     transfer: *mut pipe_transfer,
 ) {
-    // SAFETY: Mesa passes this driver's context and one of its maps, unmapped once.
-    let (context, mut transfer) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Box::from_raw(transfer.cast::<Transfer>()),
-        )
-    };
-    let usage = transfer.base.usage() as c_uint;
-    if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
-        let bytes = transfer.bytes;
-        write_mapped_buffer(context, &mut transfer, 0..bytes);
-    }
-    // SAFETY: the transfer's reference is dropped once.
-    unsafe { release(transfer.base.resource) };
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and one of its maps, unmapped once.
+        let (context, mut transfer) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Box::from_raw(transfer.cast::<Transfer>()),
+            )
+        };
+        let usage = transfer.base.usage() as c_uint;
+        if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
+            let bytes = transfer.bytes;
+            write_mapped_buffer(context, &mut transfer, 0..bytes);
+        }
+        // SAFETY: the transfer's reference is dropped once.
+        unsafe { release(transfer.base.resource) };
+    })
 }
 
 /// `pipe_context::buffer_subdata`: written from the caller's bytes, with no copy before.
@@ -499,21 +511,23 @@ pub unsafe extern "C" fn buffer_subdata<B: Backend>(
     size: c_uint,
     data: *const c_void,
 ) {
-    // SAFETY: Mesa passes this driver's context, a buffer of it and `size` bytes.
-    let (context, resource, data) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Resource::<B>::of(resource),
-            std::slice::from_raw_parts(data.cast::<u8>(), size as usize),
-        )
-    };
-    let Some(buffer) = resource.buffer() else {
-        return;
-    };
-    context
-        .screen()
-        .backend()
-        .write_buffer(buffer, u64::from(offset), data, write_mode(usage));
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context, a buffer of it and `size` bytes.
+        let (context, resource, data) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Resource::<B>::of(resource),
+                std::slice::from_raw_parts(data.cast::<u8>(), size as usize),
+            )
+        };
+        let Some(buffer) = resource.buffer() else {
+            return;
+        };
+        context
+            .screen()
+            .backend()
+            .write_buffer(buffer, u64::from(offset), data, write_mode(usage));
+    })
 }
 
 /// The bytes of one block of a format (of one element, for a vertex format).
@@ -634,52 +648,54 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
     area: *const pipe_box,
     out: *mut *mut pipe_transfer,
 ) -> *mut c_void {
-    // SAFETY: Mesa passes this driver's context, a texture of it and a box of one level.
-    let (context, ours, area) =
-        unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource), *area) };
-    let Some((texture, desc)) = ours.texture() else {
-        return std::ptr::null_mut();
-    };
-    let (rows, stride) = box_layout(ours.base.format(), &area);
-    let layer_stride = rows as usize * stride as usize;
-    let size = layer_stride * area.depth as usize;
-    // SAFETY: as above.
-    let mut transfer = unsafe { transfer(resource, level, usage, area, size) };
-    transfer.base.stride = stride;
-    transfer.base.layer_stride = layer_stride;
-    if has(usage, PIPE_MAP_READ) {
-        let mut backend = context.screen().backend();
-        outside_pass(context, &mut backend);
-        let read = |backend: &mut B, stencil: bool, out: &mut [u8]| {
-            let (region, extent) = region_of::<B>(texture, desc, level, &area, stencil);
-            backend.read_back_now(&ReadSource::Texture { region, extent }, out)
-        };
-        let done = if depth_stencil_layout(desc.format).is_some() {
-            let texels = size / depth_stencil_layout(desc.format).unwrap_or(size);
-            let mut depth = vec![0u8; texels * size_of::<u32>()];
-            let mut stencil = vec![0u8; texels];
-            let both = read(&mut backend, false, &mut depth)
-                .and_then(|()| read(&mut backend, true, &mut stencil));
-            join_depth_stencil(desc.format, &depth, &stencil, transfer.bytes());
-            both
-        } else {
-            read(
-                &mut backend,
-                desc.format.kind() == FormatKind::Stencil,
-                transfer.bytes(),
-            )
-        };
-        if done.is_err() {
-            crate::context::end_if_lost(&mut *backend);
+    crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's context, a texture of it and a box of one level.
+        let (context, ours, area) =
+            unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource), *area) };
+        let Some((texture, desc)) = ours.texture() else {
             return std::ptr::null_mut();
+        };
+        let (rows, stride) = box_layout(ours.base.format(), &area);
+        let layer_stride = rows as usize * stride as usize;
+        let size = layer_stride * area.depth as usize;
+        // SAFETY: as above.
+        let mut transfer = unsafe { transfer(resource, level, usage, area, size) };
+        transfer.base.stride = stride;
+        transfer.base.layer_stride = layer_stride;
+        if has(usage, PIPE_MAP_READ) {
+            let mut backend = context.screen().backend();
+            outside_pass(context, &mut backend);
+            let read = |backend: &mut B, stencil: bool, out: &mut [u8]| {
+                let (region, extent) = region_of::<B>(texture, desc, level, &area, stencil);
+                backend.read_back_now(&ReadSource::Texture { region, extent }, out)
+            };
+            let done = if depth_stencil_layout(desc.format).is_some() {
+                let texels = size / depth_stencil_layout(desc.format).unwrap_or(size);
+                let mut depth = vec![0u8; texels * size_of::<u32>()];
+                let mut stencil = vec![0u8; texels];
+                let both = read(&mut backend, false, &mut depth)
+                    .and_then(|()| read(&mut backend, true, &mut stencil));
+                join_depth_stencil(desc.format, &depth, &stencil, transfer.bytes());
+                both
+            } else {
+                read(
+                    &mut backend,
+                    desc.format.kind() == FormatKind::Stencil,
+                    transfer.bytes(),
+                )
+            };
+            if done.is_err() {
+                crate::context::end_if_lost(&mut *backend);
+                return std::ptr::null_mut();
+            }
         }
-    }
-    let transfer = Box::into_raw(transfer);
-    // SAFETY: Mesa gives a place for the transfer; the bytes live until the unmap.
-    unsafe {
-        *out = transfer.cast();
-        (*transfer).words.as_mut_ptr().cast()
-    }
+        let transfer = Box::into_raw(transfer);
+        // SAFETY: Mesa gives a place for the transfer; the bytes live until the unmap.
+        unsafe {
+            *out = transfer.cast();
+            (*transfer).words.as_mut_ptr().cast()
+        }
+    })
 }
 
 /// Writes texels laid out as Gallium lays them into one box of a level.
@@ -804,34 +820,37 @@ pub unsafe extern "C" fn texture_unmap<B: Backend>(
     pipe: *mut pipe_context,
     transfer: *mut pipe_transfer,
 ) {
-    // SAFETY: Mesa passes this driver's context and one of its maps, unmapped once.
-    let (context, mut transfer) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Box::from_raw(transfer.cast::<Transfer>()),
-        )
-    };
-    let usage = transfer.base.usage() as c_uint;
-    if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
-        // SAFETY: the transfer holds a reference on its resource.
-        let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
-        if resource.texture().is_some() {
-            let (rows, stride) = box_layout(resource.base.format(), &transfer.base.box_);
-            let (level, area, mode) = (transfer.base.level(), transfer.base.box_, transfer.mode);
-            write_texels(
-                context,
-                resource,
-                level,
-                &area,
-                transfer.bytes(),
-                stride,
-                rows,
-                mode,
-            );
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and one of its maps, unmapped once.
+        let (context, mut transfer) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Box::from_raw(transfer.cast::<Transfer>()),
+            )
+        };
+        let usage = transfer.base.usage() as c_uint;
+        if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
+            // SAFETY: the transfer holds a reference on its resource.
+            let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
+            if resource.texture().is_some() {
+                let (rows, stride) = box_layout(resource.base.format(), &transfer.base.box_);
+                let (level, area, mode) =
+                    (transfer.base.level(), transfer.base.box_, transfer.mode);
+                write_texels(
+                    context,
+                    resource,
+                    level,
+                    &area,
+                    transfer.bytes(),
+                    stride,
+                    rows,
+                    mode,
+                );
+            }
         }
-    }
-    // SAFETY: the transfer's reference is dropped once.
-    unsafe { release(transfer.base.resource) };
+        // SAFETY: the transfer's reference is dropped once.
+        unsafe { release(transfer.base.resource) };
+    })
 }
 
 /// `pipe_context::texture_subdata`: written from the caller's bytes.
@@ -846,46 +865,48 @@ pub unsafe extern "C" fn texture_subdata<B: Backend>(
     stride: c_uint,
     layer_stride: usize,
 ) {
-    // SAFETY: Mesa passes this driver's context, a texture of it and a box of one level.
-    let (context, ours, area) =
-        unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource), *area) };
-    if ours.base.nr_samples > 1 {
-        // SAFETY: as above; Mesa's default writes through the context's maps, whose transfer
-        // helper maps a multisampled texture.
-        unsafe {
-            u_default_texture_subdata(
-                pipe,
-                resource,
-                level,
-                usage,
-                &area,
-                data,
-                stride,
-                layer_stride,
-            )
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context, a texture of it and a box of one level.
+        let (context, ours, area) =
+            unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource), *area) };
+        if ours.base.nr_samples > 1 {
+            // SAFETY: as above; Mesa's default writes through the context's maps, whose transfer
+            // helper maps a multisampled texture.
+            unsafe {
+                u_default_texture_subdata(
+                    pipe,
+                    resource,
+                    level,
+                    usage,
+                    &area,
+                    data,
+                    stride,
+                    layer_stride,
+                )
+            };
+            return;
+        }
+        let (rows, row) = box_layout(ours.base.format(), &area);
+        let stride = if stride == 0 { row } else { stride };
+        let rows_per_layer = if layer_stride == 0 {
+            rows
+        } else {
+            (layer_stride / stride as usize) as u32
         };
-        return;
-    }
-    let (rows, row) = box_layout(ours.base.format(), &area);
-    let stride = if stride == 0 { row } else { stride };
-    let rows_per_layer = if layer_stride == 0 {
-        rows
-    } else {
-        (layer_stride / stride as usize) as u32
-    };
-    let layers = area.depth as usize;
-    let size = (rows_per_layer as usize * (layers - 1) + rows as usize - 1) * stride as usize
-        + row as usize;
-    // SAFETY: Mesa's bytes cover the box at these pitches.
-    let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
-    write_texels(
-        context,
-        ours,
-        level,
-        &area,
-        data,
-        stride,
-        rows_per_layer,
-        write_mode(usage),
-    );
+        let layers = area.depth as usize;
+        let size = (rows_per_layer as usize * (layers - 1) + rows as usize - 1) * stride as usize
+            + row as usize;
+        // SAFETY: Mesa's bytes cover the box at these pitches.
+        let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
+        write_texels(
+            context,
+            ours,
+            level,
+            &area,
+            data,
+            stride,
+            rows_per_layer,
+            write_mode(usage),
+        );
+    })
 }
