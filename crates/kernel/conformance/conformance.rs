@@ -58,6 +58,28 @@ pub fn tasks_of_several_processes_are_taken_at_once<K: Kernel>(kernel: K) {
     assert!(kernel.suspend_tasks(&processes).next().is_none());
 }
 
+/// Checks that threads taken off the kernel and given back are all taken in, and are then on the
+/// kernel again to be taken once more.
+pub fn taken_tasks_are_resumed<K: Kernel>(kernel: K) {
+    let processes = processes_of(&kernel);
+    let taken: Vec<K::SuspendedTask> = kernel
+        .suspend_tasks(&processes)
+        .map(|(_, task)| task)
+        .collect();
+    assert_eq!(taken.len(), processes.len(), "each process's thread");
+    assert_eq!(
+        kernel.resume_tasks(taken).count(),
+        0,
+        "the kernel took in every thread it gave out"
+    );
+    let mut again: Vec<TaskId> = kernel
+        .suspend_tasks(&processes)
+        .map(|(task, _)| task)
+        .collect();
+    again.sort_unstable();
+    assert_eq!(again, processes, "the resumed threads, each once");
+}
+
 /// Returns the ids below [`PROBED`] the kernel has a process of, in order.
 fn processes_of<K: Kernel>(kernel: &K) -> Vec<TaskId> {
     (1..PROBED)
@@ -358,6 +380,10 @@ macro_rules! tests {
         #[test]
         fn tasks_of_several_processes_are_taken_at_once() {
             $crate::tasks_of_several_processes_are_taken_at_once($value);
+        }
+        #[test]
+        fn taken_tasks_are_resumed() {
+            $crate::taken_tasks_are_resumed($value);
         }
         $crate::tests!(@Process $process ($value) $(($process_value))?);
     };
