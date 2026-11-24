@@ -223,9 +223,10 @@ fn main() {
     let mut sources = blake3::Hasher::new();
     hash_files(&mut sources, &cpp);
     let sources = sources.finalize().to_hex().to_string();
+    let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let (route, base) = base(&build_dir);
     let mut hasher = blake3::Hasher::new();
     hasher.update(sources.as_bytes());
-    let route = route();
     hasher.update(format!("{route:?}").as_bytes());
     hasher.update(
         std::env::var("WASI_SDK_PATH")
@@ -234,9 +235,8 @@ fn main() {
     );
     let objects_hash = hasher.finalize().to_hex().to_string();
 
-    let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let linked = route != Route::Module;
-    let built = base(&build_dir, route).map(|base| {
+    let built = base.map(|base| {
         let mut libraries = Vec::new();
         let mut build = base.clone();
         build
@@ -580,27 +580,21 @@ enum Route {
     Module,
 }
 
-/// The variables cargo gives a build script for its target's system and for the module route's
-/// feature, and the system of the crate's own WebAssembly build.
-const TARGET_SYSTEM: &str = "CARGO_CFG_TARGET_OS";
+/// The variable cargo sets for the module route's feature.
 const MODULE_FEATURE: &str = "CARGO_FEATURE_CONTAINED_CONVERTERS";
-const WEBASSEMBLY_SYSTEM: &str = "wasi";
 
-fn route() -> Route {
-    if std::env::var(TARGET_SYSTEM).as_deref() == Ok(WEBASSEMBLY_SYSTEM) {
+/// The converters' route, and their C++ setup, their assertions as `cpp/assert` defines them.
+/// Natively linked: the host's compiler and C++ library. Otherwise wasi-sdk's clang, libc and
+/// libc++, C++ exceptions off (a failure inside a converter ends its module instance). No setup for
+/// the module route without the SDK, where the committed module is used.
+fn base(build_dir: &Path) -> (Route, Option<cc::Build>) {
+    let route = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
         Route::Wasi
     } else if std::env::var_os(MODULE_FEATURE).is_some() {
         Route::Module
     } else {
         Route::Native
-    }
-}
-
-/// The converters' C++ setup, their assertions as `cpp/assert` defines them. Natively linked: the
-/// host's compiler and C++ library. Otherwise wasi-sdk's clang, libc and libc++, C++ exceptions off
-/// (a failure inside a converter ends its module instance). Nothing for the module route without
-/// the SDK, where the committed module is used.
-fn base(build_dir: &Path, route: Route) -> Option<cc::Build> {
+    };
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -608,11 +602,11 @@ fn base(build_dir: &Path, route: Route) -> Option<cc::Build> {
         .include(BOUNDARY)
         .warnings(false);
     if route == Route::Native {
-        return Some(build);
+        return (route, Some(build));
     }
     let sdk = match std::env::var("WASI_SDK_PATH") {
         Ok(sdk) => sdk,
-        Err(_) if route == Route::Module => return None,
+        Err(_) if route == Route::Module => return (route, None),
         Err(_) => {
             panic!("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly")
         }
@@ -639,5 +633,5 @@ fn base(build_dir: &Path, route: Route) -> Option<cc::Build> {
             .debug(false)
             .flag([PREFIX_MAP[0], &build_dir.to_string_lossy(), PREFIX_MAP[1]].concat());
     }
-    Some(build)
+    (route, Some(build))
 }
