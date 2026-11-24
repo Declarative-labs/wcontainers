@@ -291,8 +291,15 @@ fn convert(text: &str) -> String {
 /// its views of a flexible array or a union field. Nothing calls them, and the kernel's crate
 /// forbids unsafe code. The bitfields stay readable through `__BindgenBitfieldUnit`'s safe `get`
 /// and `set`.
+///
+/// Only bindgen's own helpers are dropped: a method of `__BindgenBitfieldUnit`,
+/// `__IncompleteArrayField` or `__BindgenUnionField`, or one that reads or writes a structure's
+/// `_bitfield_` storage. Any other method that holds `unsafe` stops the generator, so that a method
+/// a new linux-raw-sys brings never disappears without a word.
 fn drop_unsafe_methods(text: &str) -> String {
     let word = Regex::new(r"\bunsafe\b").expect("regex");
+    let helper = Regex::new(r"\b(__BindgenBitfieldUnit|__IncompleteArrayField|__BindgenUnionField)\b")
+        .expect("regex");
     let mut out = String::with_capacity(text.len());
     // The `impl` block being read: its opening lines, its members kept, and the member being read.
     let mut header = String::new();
@@ -354,6 +361,11 @@ fn drop_unsafe_methods(text: &str) -> String {
         if depth == 1 && !line.starts_with("#[") {
             if !word.is_match(&member) {
                 kept.push_str(&member);
+            } else {
+                assert!(
+                    helper.is_match(&header) || member.contains("_bitfield_"),
+                    "a method that holds unsafe and is not one of bindgen's helpers:\n{header}{member}"
+                );
             }
             member.clear();
         }

@@ -720,40 +720,70 @@ const PTRACE_EVENT_SHIFT: u32 = u8::BITS;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::string::{String, ToString};
+    use alloc::vec::Vec;
 
-    /// Keeps the first `i32` a value hashes, which for an enum with derived `Hash` is its
-    /// discriminant (the derive hashes `discriminant_value`, an `i32` for a `repr(i32)` enum).
-    #[derive(Default)]
-    struct Discriminant(Option<i32>);
-
-    impl core::hash::Hasher for Discriminant {
-        fn write(&mut self, _: &[u8]) {}
-        fn write_i32(&mut self, value: i32) {
-            self.0.get_or_insert(value);
+    /// The discriminants the interface writes for the variants of its enum `name`, read from its
+    /// source: every variant of the code enums carries one (`NAME = 3,`, `NAME(..) = 3,` or
+    /// `NAME { .. } = 3,`).
+    fn discriminants(name: &str) -> Vec<(String, i32)> {
+        let source = include_str!("../../signal_information.rs");
+        let opening = format!("pub enum {name} {{");
+        let start = source.find(&opening).expect("the interface names the enum") + opening.len();
+        // The enum's body without comments or attributes, and without the fields of its variants.
+        let mut flat = String::new();
+        let mut depth = 0usize;
+        'lines: for line in source[start..].lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            for character in line.chars() {
+                match character {
+                    '(' | '{' => depth += 1,
+                    ')' | '}' if depth == 0 => break 'lines,
+                    ')' | '}' => depth -= 1,
+                    _ if depth == 0 => flat.push(character),
+                    _ => {}
+                }
+            }
         }
-        fn finish(&self) -> u64 {
-            0
-        }
-    }
-
-    fn discriminant(code: &impl core::hash::Hash) -> i32 {
-        let mut hasher = Discriminant::default();
-        code.hash(&mut hasher);
-        hasher.0.expect("an enum's derived hash starts with its discriminant")
+        flat.split(',')
+            .map(str::trim)
+            .filter(|variant| !variant.is_empty())
+            .map(|variant| {
+                let (variant, value) = variant
+                    .split_once('=')
+                    .unwrap_or_else(|| panic!("{name}::{variant} has no discriminant"));
+                (variant.trim().to_string(), value.trim().parse().expect("a number"))
+            })
+            .collect()
     }
 
     /// The numbers the kernel gives the codes whose enums carry fields, from the generated
-    /// bindings, are the interface's discriminants for them.
+    /// bindings, are the discriminants the interface writes for them.
     #[test]
     fn numbers_are_the_interfaces() {
-        fn check<T: Code + core::hash::Hash + core::fmt::Debug>(codes: &[T]) -> usize {
+        fn check<T: Code + core::fmt::Debug>(name: &str, codes: &[T]) -> usize {
+            let written = discriminants(name);
+            assert_eq!(written.len(), codes.len(), "every variant of {name}");
             for code in codes {
-                assert_eq!(code.number(), discriminant(code), "{code:?}");
+                let debug = format!("{code:?}");
+                let variant = debug
+                    .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+                    .next()
+                    .expect("a variant name");
+                let (_, value) = written
+                    .iter()
+                    .find(|(written, _)| written == variant)
+                    .unwrap_or_else(|| panic!("{name}::{variant} is in the interface"));
+                assert_eq!(code.number(), *value, "{name}::{debug}");
             }
             codes.len()
         }
         let lsb = AddressLeastSignificantBit::new(0).expect("bit 0");
-        let checked = check(&[
+        let checked = check("SegmentationFaultCode", &[
             SegmentationFaultCode::SEGV_MAPERR,
             SegmentationFaultCode::SEGV_ACCERR,
             SegmentationFaultCode::SEGV_BNDERR(AddressBounds { lower: 0, upper: 0 }),
@@ -764,13 +794,13 @@ mod tests {
             SegmentationFaultCode::SEGV_MTEAERR,
             SegmentationFaultCode::SEGV_MTESERR,
             SegmentationFaultCode::SEGV_CPERR,
-        ]) + check(&[
+        ]) + check("BusErrorCode", &[
             BusErrorCode::BUS_ADRALN,
             BusErrorCode::BUS_ADRERR,
             BusErrorCode::BUS_OBJERR,
             BusErrorCode::BUS_MCEERR_AR(lsb),
             BusErrorCode::BUS_MCEERR_AO(lsb),
-        ]) + check(&[
+        ]) + check("TrapCode", &[
             TrapCode::TRAP_BRKPT,
             TrapCode::TRAP_TRACE,
             TrapCode::TRAP_BRANCH,
@@ -781,15 +811,15 @@ mod tests {
                 event_type: PerfEventType(0),
                 delivery: PerfEventDelivery::Synchronous,
             },
-        ]) + check(&[
+        ]) + check("ChildTerminationCode", &[
             ChildTerminationCode::CLD_EXITED(ExitStatus(0)),
             ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
             ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
-        ]) + check(&[
+        ]) + check("ChildStateCode", &[
             ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
             ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
             ChildStateCode::CLD_CONTINUED,
-        ]) + check(&[
+        ]) + check("BadSystemCallCode", &[
             BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
             BadSystemCallCode::SYS_USER_DISPATCH,
         ]);
