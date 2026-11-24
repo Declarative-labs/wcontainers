@@ -628,8 +628,8 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
       `brk`, undefined instructions and alignment faults end it with their exception; a stub that ended is an SError
       (For the owner). The guest's counter reads the host's monotonic clock (no clock is given).
     - The interrupter sets a request and sends the stop to the run's thread; the run takes a request before each
-      entry and at each stop, so an interrupt sent between turns (which lands in the stub's wait) is taken at the
-      next entry or exit, not lost. tests/interrupt.rs (2): a guest counting for ever, interrupted from another
+      entry and at each stop. (As built here an interrupt sent between the run's internal turns was lost, found by
+      W1's independent check; fixed in round 6, below.) tests/interrupt.rs (2): a guest counting for ever, interrupted from another
       thread 1 and 5 times 50 ms apart, answered continue then terminate: each interrupt reaches the handler, the
       guest ends in its loop with its count, no exception.
     - `map_from` makes the other space's private pages a block both map (copied once, then shared); `unmap_from`
@@ -949,13 +949,47 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     and 1 round before the change (verdict1-x86.out) 53 passed. Clippy with warnings denied clean on every target on
     both. No new unsafe code.
 
-## W1 complete, with its gap list (for the independent check)
+- W1 round 6 (2026-11-24, 07:00 UTC on), scratch w1/r6run1, Graviton4 at load 1.2 to 3.3, every run with /dev/kvm
+  denied. The independent check's findings, each fixed or recorded:
+  - An interrupt sent while the run was between its internal turns (a piece being translated or loaded, the thread
+    not yet in its turn) landed in the stub's wait and was lost; the guest then ran for ever. Fixed: each turn of an
+    execution waits with the run's request (`StopWhen`, stub.rs): once it is set the stop is sent as soon as the
+    thread has taken the turn, and while the turn is not yet taken the wait looks again every millisecond. A stop
+    that lands before the code runs (`TurnEnd::Stopped`) now leaves the thread where it was to enter, as an
+    interrupt there does; before, the run went back to the state of its last exit. New test
+    `an_interrupt_at_any_early_moment_reaches_the_handler` (tests/interrupt.rs, knobs `WCHP_SEED`,
+    `WCHP_INTERRUPT_CASES`): one to three interrupts after seeded pauses of 0 to 300 us, spun, the guest's add
+    seeded so its code is translated anew, every eighth case a new executor; each must reach the handler within 2 s.
+    Run: 3 seeds of 1,000 cases, none lost (interrupts4-arm.out); with the fix undone in the remote copy
+    (undo-fix.patch), seed 1 at 60 cases lost an interrupt in 18 cases (interrupts5-arm.out). Pauses of 0 to 3 ms
+    slept, as first written, lost none even with the fix undone (interrupts1, 2): the window is tens of us.
+  - `a_stop_at_every_counted_event_changes_nothing` stopped at no counted event: P ends a turn limited to one
+    counted event at the next exit or where the slice's stop lands. Renamed
+    `turns_limited_to_one_counted_event_change_nothing` and described as what it is; plan 13 and the gap list
+    say `count_at_every_stop` is not built and what it needs. Its seeds are now compared each with its own run
+    (it compared every seed with the first seed's, so the case knob failed on `layout`).
+  - `blocks` and `code`, where the WebAssembly output is known to print otherwise, now compare form P's status and
+    output with the program run on the host itself (tests/kernel.rs `on_this_host`): equal (check1-arm.out).
+  - Register isolation's second part: `at_the_moment_a_thread_enters_its_code_it_holds_its_own_registers_or_zero`
+    (tests/step.rs) steps an enter to its code's first instruction and reads x0 to x30, sp, pc, NZCV, v0 to v31, FPSR
+    and FPCR from outside (ptrace), for random values, then none, then other values on one host thread: each holds
+    exactly its own block with the floor's two named registers (check1-arm.out). TPIDR_EL0 has no register set in
+    nix and is checked by read-back only.
+  - Verdicts from this round's tree, every binary once with /dev/kvm denied, each run first proving the device
+    cannot be opened (all1-arm.out, all1-x86.out): Graviton4 113 passed, 1 failed (the known precise-set test), load
+    13 to 25; Xeon 53 passed, load 96 to 117 (other tracks' jobs). Clippy with warnings denied clean on every target
+    on both. No new unsafe code.
+  - Recorded, not changed: the plan's bar change of 944f8917 (Departures), the 150 ms allowed for a killed stub's end
+    (Departures), `Execution::restored` not built (gap list, For the owner), the precise-set test (as before).
 
-W1 is reported complete at round 3 run 5 so that its independent check runs, and again at round 5 run 3 with the
-verdicts of that run; these items of plan 13's bar are not met, each with what is known:
+## W1 not complete: the gap list
+
+W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
+found it not met, and it is not reported complete now. These items of plan 13's bar are not met, each with what is
+known:
 - Speed: the getppid round trip met its bar in rounds 5 run 1 and run 3 on a quiet Graviton4 (1.213 to 1.241 times W0's
   futex slot in ten runs at load 2 to 9; bar under 1.25) but not at higher load before (1.23 to 1.31 in rounds 3 and 4,
-  load 9 to 30); about five sixths of a round trip is the host's task switch (round 5 run 2's profile). Not met: busybox `sh` starting 1,000
+  load 9 to 30), and the independent check measured 1.238, 1.276 and 1.249 at load 9: at the margin, not met; about five sixths of a round trip is the host's task switch (round 5 run 2's profile). Not met: busybox `sh` starting 1,000
   programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
   1): 4.36 times the model (bar 1.25; 9.25 before); per program about 1.45 ms of memory calls (about 0.6 ms of it the
   model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
@@ -968,12 +1002,20 @@ verdicts of that run; these items of plan 13's bar are not met, each with what i
 - K2 is in the kernel (KF): with the WebAssembly output's ceiling and memory size given to both, addresses, memory
   size, mappings, root files and the turns of one-thread programs equal the WebAssembly output's (round 5 run 2,
   tests/kernel.rs); hello, getppid, forks, mappings, jumptables and layout equal whole, blocks and code differ only
-  where the WebAssembly side has its recorded faults; busybox's 56 `text` and `files` commands give the reference's
-  output (run 3). A stop at every counted event changes nothing (round 5 run 2). Not built: `differential` as
-  exits, registers and memory at every look-ahead (P translates at one look-ahead; per instruction, the executor
-  suite's precise-set test compares P with the WebAssembly translator's meaning), and the count at every stop
-  compared with the WebAssembly output's, which ends limited turns at its own stop checks and so counts another
-  quantity (as the VM form's kernel test records).
+  where the WebAssembly side has its recorded faults and equal the program run on the host (round 6); busybox's 56
+  `text` and `files` commands give the reference's output (run 3). Turns limited to one counted event change
+  nothing (round 6's name). NOT BUILT, so the bar is not met: `differential` (exits, registers and memory at every
+  look-ahead; P translates at one look-ahead; per instruction, the executor suite's precise-set test compares P
+  with the WebAssembly translator's meaning), and `count_at_every_stop`: P never stops at a counted event (it ends
+  a limited turn at the next exit or where the slice's stop lands), so its count at a stop is compared with
+  nothing. Next: end a count-limited turn exactly, with pieces of one instruction for such a turn (as the VM form's
+  N3 does by single steps; a slow path, named and counted) or as the owner's decision 10 says, then compare the
+  count and position at every stop with the VM executor's on Graviton4 (same native output and count definition;
+  the WebAssembly output counts another quantity).
+- `Execution::restored` (the runtime's save of a process) is `unimplemented!` under P: a save panics. Not built;
+  For the owner.
+- x86-64: the executor, kernel and busybox suites build no tests on the Xeon (0 tests in conformance, kernel, run,
+  interrupt, copy, forged, floor, translated and busybox), because they need the x86 native output's way (W3).
 - Adversarial cases not built: the fork while a sibling is in a system call and another writes (needs several guest
   threads running at once, which today's kernel loop never does); one P and two I containers in one embedder is
   W2's. Built in round 4 run 2: forged exits as translated guest code after two forks (tests/forged.rs) and the
@@ -990,7 +1032,8 @@ verdicts of that run; these items of plan 13's bar are not met, each with what i
 - x86-64: everything that needs translated code is W3's (the x86 native output's way); on the Xeon the 156 tests of
   the stub, zygote, stops, threads, memory, placement and embedder pass with /dev/kvm denied.
 
-Met, each with its run: the zygote's migration and no restartable sequences left (run 1); the stop landing at every
+Met, each with its run (register isolation now with its from-outside part, round 6; the interleaving is seeded
+random, not every order): the zygote's migration and no restartable sequences left (run 1); the stop landing at every
 instruction of the stub's windows and handler (runs 8, 9); the control and register pages' escapes and the filter's
 kills (runs 2, 3, 7); a stub killed from outside and the embedder killed (run 4); threads made and ended under
 random stops (run 3); 10,000 maps of one block holding no fd (run 4); 64 memories of 2^43 bytes through the window
@@ -1000,8 +1043,9 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## Next
 
-- W1's independent check runs on the report above. Every binary passed with /dev/kvm denied from committed code
-  (9de60558) in round 5 run 3, 3 rounds on Graviton4 and 2 on the Xeon (but the known precise-set test).
+- W1 is not complete (gap list). In order: `count_at_every_stop` (a count-limited turn ended exactly, then compared
+  with the VM executor), busybox `sh`'s bar, the round trip's margin, the adversarial fork with a writing sibling,
+  `differential`, `Execution::restored`; x86-64 and form I are W3's and W2's.
 - busybox `sh`'s bar (4.36 times the model): the loads (440 a program, about 3.6 us each: reading the rest of the page,
   the key's hash, comparing the code, cloning and moving a moved translation, placing, the slot) and the memory calls
   (new, fork and drop beyond the model's process creation, about 0.9 ms a program), then the turns that are left (59 a
@@ -1030,6 +1074,10 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## How to run
 
+- Since round 6: scratch w1/r6run1. check.sh (`set -- <binary>[:<filter>] ...`) runs clippy, then those test
+  binaries with /dev/kvm denied and their results shown; interrupts.sh runs the early-interrupt test for 3 seeds at
+  `CASES`, then applies `PATCH` (base64 of undo-fix.patch, the fix reversed) in the remote copy and runs it again;
+  nokvm.sh is round 5 run 2's writing into /work/target/nwvm; x86.sh is clippy alone.
 - Since round 5 run 3: scratch w1/r5run3. before.sh keeps a release build of tests/speed.rs as
   /work/target/nwvm/speed-before; ab-rt.sh (`set -- <rounds>`) runs clippy, builds this tree's, and alternates the
   getppid round trip of both with W0's futex slot on CPU 41 with /dev/kvm denied. nokvm.sh is round 5 run 2's.
@@ -1224,6 +1272,9 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
+- `Execution::restored` (runtime single-kernel: a new executor holding the same memories, for a copy of a process
+  made at a save) is `unimplemented!` under P: a save panics. P's memories are stub processes held by one executor;
+  a restored executor would share the stubs and code areas through the host. Not built in W1.
 - Interface changes, as code in plan section 8:
   - `Executor::runner_handle` with `Executor::run_thread`. Today `KernelRunner::run` is `unimplemented!` for want
     of it, for every executor. The alternative is a handle type in `Runner::run`.
@@ -1291,6 +1342,20 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   unavailable from then on. The alternative was to fail every later P container of the process. Plan 4.1.
 
 ## Departures from the plan
+
+- W1 round 5 run 2 (commit 944f8917) changed plan 13's W1 bar without recording it here: the two tests the fourth
+  check listed as waiting on K2 (`differential`, `count_at_every_stop`) were written up as "not built" with a
+  replacement that did not stop at counted events. Round 6 restores them as unmet items of the bar (plan 13, gap
+  list) and changes one thing in it, recorded here: `count_at_every_stop` compares with the VM executor's count,
+  not the WebAssembly output's, since only the VM executor counts the same quantity (the native output's count
+  definition); the WebAssembly output ends a limited turn at its own stop checks.
+- Plan 13's bar says a stub killed from outside ends its process as SIGKILL within 100 ms of its death; the tests
+  (tests/stub.rs, tests/embedder.rs) allow 150 ms, because the runner looks whether the stub ended every 100 ms
+  (`LOOK_FOR_END`, the same interval as the stop's resend) and then needs to be scheduled. Meeting 100 ms exactly
+  needs a shorter look interval (one more wake per long turn); not changed.
+- Plan 3.8's floor assertion at the moment a thread is about to run is built as a test that reads the registers from
+  outside at that moment (tests/step.rs, round 6), with no test build of the floor; the interleaving of the
+  read-back tests is seeded random (4,000 rounds over 8 threads), not every order of a bounded search.
 
 - W1 round 3 run 5: `HostProcessBytes::read_to` and `write_from` copy through a buffer as long as the bytes (one
   allocation per call), since a borrowed range of a stub's memory can span windows and shared blocks; lending the
