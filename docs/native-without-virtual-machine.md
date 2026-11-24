@@ -257,8 +257,13 @@ u after it, with a fix-up between, so the copied word's own writeback lands on t
 data register needs no other rule. A literal outside the window is known when translated. Exclusives keep and
 compare guest addresses and access through u. The direct exits' slot table is the slot's (`2^46 | k << 35`), so
 a translation belongs to one slot. Floor entries at 2^45 + 2^32 (`way::IN_PROCESS_ENTRIES`). Rule (c)'s limit is
-`LOWEST_ADDRESS` less a page (60 KiB). Not built: the displaced mode (e) and the floor's reading of the mark, the
-stop crate's resolution for the way (sp rebased, the two words after the page), and the wrapping form.
+`LOWEST_ADDRESS` less a page (60 KiB). Stops resolve through the stop crate's `in_process` module (W2 run 3): the
+guest sp is the host's less the base, the guest x15 and x24 the two words after the page, a fault's address rebased
+the same way; a read of the mark is the access's own fault at its first byte (`Outside`, whose read or write the floor
+takes from the instruction, as the mark is a read) where the access's address before or after its immediate is
+outside the window, else a stack pointer leaving it (`Displaced`, the state before the instruction); a fault or an
+alignment fault of a rule (c) probe is `Probed`, the state after the instruction. Not built: the displaced mode (e)
+and the floor itself, the register-offset fusion, and the wrapping form.
 The slot table's base and reach, the entries' address and size are `wcontainers_arm64::way`'s constants, which the
 host-process layout asserts; stops resolve through `wcontainers-executor-arm64-stop` with the way as a parameter.
 Withheld registers: the VM form's three (count x18, scratch x23, register page x28) in P; two more in I (`base`
