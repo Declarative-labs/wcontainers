@@ -21,7 +21,9 @@ pub trait Executor {
     type Interrupter: ExecutionInterrupter + 'static;
 
     type CreateGuestMemoryError;
-    fn create_guest_memory(&self) -> Result<Self::GuestMemory, Self::CreateGuestMemoryError>;
+    fn create_guest_memory(
+        &self,
+    ) -> Result<(Self::GuestMemory, PageTableOf<Self>), Self::CreateGuestMemoryError>;
 
     /// Returns the execution from the given processor state on the given memory, and its interrupter.
     ///
@@ -64,6 +66,8 @@ pub trait Executor {
 
 pub type ProcessorStateOf<E> =
     <<E as Executor>::Architecture as ProcessorArchitecture>::ProcessorState;
+
+pub type PageTableOf<E> = <<E as Executor>::GuestMemory as MemorySpace>::PageTable;
 
 /// The handler of a guest's traps: the points where the guest stops and control passes to the system.
 ///

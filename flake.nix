@@ -24,6 +24,38 @@
 
       perSystem =
         { system, pkgs, ... }:
+        let
+          # The verifier Verus, run on the Rust toolchain of its release (its rust-toolchain.toml) instead of through rustup.
+          verusRelease = "0.2026.11.22.1ce6a59";
+          verusArchive =
+            {
+              aarch64-darwin = {
+                platform = "arm64-macos";
+                hash = "sha256-g2uMxH7RmlltTSkzeJ3DWyR6jNmTBTvMvm/Enxh5hLQ=";
+              };
+              aarch64-linux = {
+                platform = "arm64-linux";
+                hash = "sha256-//P7zs/N52q3KgidcdvGXo7rW71VXNufbL/4B2lOGTs=";
+              };
+              x86_64-linux = {
+                platform = "x86-linux";
+                hash = "sha256-y3E6cSjVg2Yw34KjQWZ1lEPgIHDErPEthzgPerGRzwg=";
+              };
+            }
+            .${system};
+          verusFiles = pkgs.fetchzip {
+            url = "https://github.com/verus-lang/verus/releases/download/release%2F${verusRelease}/verus-${verusRelease}-${verusArchive.platform}.zip";
+            inherit (verusArchive) hash;
+          };
+          verus = pkgs.runCommand "verus-${verusRelease}" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+            for program in verus cargo-verus; do
+              makeWrapper ${verusFiles}/$program $out/bin/$program --set VERUS_USE_RUSTUP 0 \
+                --prefix ${
+                  if pkgs.stdenv.hostPlatform.isDarwin then "DYLD_FALLBACK_LIBRARY_PATH" else "LD_LIBRARY_PATH"
+                } : ${pkgs.rust-bin.stable."1.100.0".minimal}/lib
+            done
+          '';
+        in
         {
           _module.args.pkgs = import inputs.nixpkgs {
             inherit system;
@@ -48,6 +80,8 @@
                 # random C programs and shrinking the ones that fail
                 pkgs.csmith
                 pkgs.creduce
+                # proving code correct
+                verus
               ];
               # driving the installed Chrome from Node, for the browser runner
               WC_PLAYWRIGHT_CORE = "${pkgs.playwright-driver}";
