@@ -29,7 +29,8 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use crate::LocalSystem;
 
 /// Why the host's sockets of a kind are open whenever one of their sockets is asked about.
-const OPENED_WITH_ITS_SOCKET: &str = "a socket is only given out once the host's sockets of its kind opened";
+const OPENED_WITH_ITS_SOCKET: &str =
+    "a socket is only given out once the host's sockets of its kind opened";
 
 /// The kernel a local system on the executor `E` serves; its processes carry no state of the system's.
 pub type LocalKernel<E> = KernelWithExecutor<E, (), LocalSystem<E>>;

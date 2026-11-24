@@ -602,12 +602,20 @@ macro_rules! host_on_state {
         impl<E> StreamTransport for $host {
             type Endpoint = u32;
 
-            fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
+            fn send_stream(
+                &self,
+                peer: &u32,
+                payload: &impl VolatileBytes,
+            ) -> Result<usize, HostError> {
                 let $this = self;
                 crate::host_call::send_from(payload, |bytes| $state.send_stream(*peer, bytes))
             }
 
-            fn receive_stream(&self, peer: &u32, into: &impl VolatileBytes) -> Result<usize, HostError> {
+            fn receive_stream(
+                &self,
+                peer: &u32,
+                into: &impl VolatileBytes,
+            ) -> Result<usize, HostError> {
                 let $this = self;
                 crate::host_call::receive_into(into, |bytes| $state.receive_stream(*peer, bytes))
             }
