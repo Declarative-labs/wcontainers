@@ -2,6 +2,7 @@
 //! calling the host's services.
 
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use spin::Mutex;
 use wcontainers_abi::{Host, HostError, Warning};
@@ -9,6 +10,7 @@ use wcontainers_clock::Clock;
 use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
+use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{Link, Ring};
@@ -100,16 +102,18 @@ impl<R: Ring + Send> Clock for LinkHost<R> {
     }
 }
 
+/// The number of bytes a system call's buffer holds.
+fn length(bytes: &impl VolatileBytes) -> usize {
+    usize::try_from(bytes.len()).expect("a buffer fits in memory")
+}
+
 impl<R: Ring + Send> RandomSource for LinkHost<R> {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
+        let mut bytes = alloc::vec![u8::MIN; length(into)];
         let mut ring = self.ring.lock();
-        ring.ask(
-            &Random {
-                length: into.len() as u64,
-            },
-            &[],
-        );
-        ring.take(into);
+        ring.ask(&Random { length: into.len() }, &[]);
+        ring.take(&mut bytes);
+        into.write(&bytes);
         Ok(())
     }
 }
@@ -131,19 +135,21 @@ impl<R: Ring + Send> Host for LinkHost<R> {
 impl<R: Ring + Send> StreamTransport for LinkHost<R> {
     type Endpoint = u32;
 
-    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+    fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
+        let mut bytes = alloc::vec![u8::MIN; length(payload)];
+        payload.read(&mut bytes);
         self.ring
             .lock()
             .ask(
                 &Output {
                     stream: (*peer).into(),
                 },
-                bytes,
+                &bytes,
             )
             .outcome()
     }
 
-    fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+    fn receive_stream(&self, _peer: &u32, _into: &impl VolatileBytes) -> Result<usize, HostError> {
         Err(HostError::NotSupported)
     }
 
@@ -199,7 +205,7 @@ pub fn answer<H: Host + Clock + RandomSource + StreamTransport<Endpoint = u32>>(
             let Random { length } = link.get();
             answer.resize(length as usize, 0);
             // The link has no error for it: a monitor without randomness cannot run a kernel.
-            host.fill_random_bytes(&mut answer)
+            host.fill_random_bytes(&RefCell::new(&mut answer[..]))
                 .expect("the monitor's random source works");
         }
         Request::Warn => {
@@ -213,7 +219,9 @@ pub fn answer<H: Host + Clock + RandomSource + StreamTransport<Endpoint = u32>>(
         }
         Request::Output => {
             let Output { stream } = link.get();
-            link.put(&Sent::of(host.send_stream(&(stream as u32), bytes)));
+            let mut payload = bytes.to_vec();
+            let payload = RefCell::new(&mut payload[..]);
+            link.put(&Sent::of(host.send_stream(&(stream as u32), &payload)));
         }
         Request::CloseStream => {
             let CloseStream { stream } = link.get();
@@ -231,6 +239,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::cell::RefCell;
 
     use std::sync::Mutex;
 
@@ -239,6 +248,7 @@ mod tests {
     use wcontainers_kernel::errno::Errno;
     use wcontainers_random_source::RandomSource;
     use wcontainers_system::StreamTransport;
+    use wcontainers_volatile_bytes::VolatileBytes;
     use zerocopy::FromZeros;
 
     use super::{LinkHost, Request};
@@ -287,9 +297,9 @@ mod tests {
     }
 
     impl RandomSource for Recording {
-        fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+        fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
             self.record(RANDOM, &[]);
-            into.copy_from_slice(&self.given[..into.len()]);
+            into.write(&self.given[..super::length(into)]);
             Ok(())
         }
     }
@@ -306,13 +316,23 @@ mod tests {
     impl StreamTransport for Recording {
         type Endpoint = u32;
 
-        fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+        fn send_stream(
+            &self,
+            peer: &u32,
+            payload: &impl VolatileBytes,
+        ) -> Result<usize, HostError> {
+            let mut bytes = vec![u8::MIN; super::length(payload)];
+            payload.read(&mut bytes);
             let mut all = peer.to_le_bytes().to_vec();
-            all.extend_from_slice(bytes);
+            all.extend_from_slice(&bytes);
             self.record(OUTPUT, &all);
             self.sends.unwrap_or(Ok(bytes.len()))
         }
-        fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+        fn receive_stream(
+            &self,
+            _peer: &u32,
+            _into: &impl VolatileBytes,
+        ) -> Result<usize, HostError> {
             Err(HostError::NotSupported)
         }
         fn close_stream(&self, peer: &u32) {
@@ -395,9 +415,10 @@ mod tests {
         assert_eq!(host.monotonic_nanoseconds(), MONOTONIC_NANOSECONDS);
         assert_eq!(host.realtime_nanoseconds(), REALTIME_NANOSECONDS);
         for length in LENGTHS {
-            let bytes = long(length);
+            let mut bytes = long(length);
             let rung = host.ring.lock().rung;
-            assert_eq!(host.send_stream(&ERROR_END, &bytes), Ok(length));
+            let payload = RefCell::new(&mut bytes[..]);
+            assert_eq!(host.send_stream(&ERROR_END, &payload), Ok(length));
             assert_eq!(
                 host.ring.lock().rung - rung,
                 length.div_ceil(LINK_BYTES).max(1),
@@ -410,7 +431,7 @@ mod tests {
             let given: Vec<u8> = long(length).into_iter().rev().collect();
             host.ring.lock().host.given = given.clone();
             let mut into = vec![0; length];
-            assert_eq!(host.fill_random_bytes(&mut into), Ok(()));
+            assert_eq!(host.fill_random_bytes(&RefCell::new(&mut into[..])), Ok(()));
             assert_eq!(into, given, "random of {length}");
         }
         host.warn(Warning {
@@ -433,7 +454,7 @@ mod tests {
     #[test]
     fn a_send_ends_as_the_monitors_host_says() {
         let host = host();
-        let bytes = long(3 * LINK_BYTES + 5);
+        let mut bytes = long(3 * LINK_BYTES + 5);
         for sends in [
             Ok(LINK_BYTES + 1),
             Ok(0),
@@ -443,7 +464,8 @@ mod tests {
             Err(HostError::Errno(Errno::EPIPE as i32)),
         ] {
             host.ring.lock().host.sends = Some(sends);
-            assert_eq!(host.send_stream(&ERROR_END, &bytes), sends, "{sends:?}");
+            let payload = RefCell::new(&mut bytes[..]);
+            assert_eq!(host.send_stream(&ERROR_END, &payload), sends, "{sends:?}");
         }
     }
 }
