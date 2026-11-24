@@ -89,22 +89,37 @@ pub fn lock() -> ReentrantMutexGuard<'static, ()> {
 pub fn creating<T: windows::core::Type<T>>(
     out: OutRef<T>,
     make: impl FnOnce(OutRef<T>) -> Result<()>,
-) -> Result<()> {
-    // SAFETY: `OutRef` is a transparent pointer.
-    let raw: *mut *mut c_void = unsafe { std::mem::transmute_copy(&out) };
-    let r = make(out);
-    if r.is_err() && !raw.is_null() {
-        unsafe { *raw = std::ptr::null_mut() };
+) -> Result<()>
+where
+    T::Default: Default,
+{
+    if out.is_null() {
+        return make(out);
     }
+    let mut made = T::Default::default();
+    let r = make(OutRef::from(&mut made));
+    out.write(if r.is_ok() {
+        made
+    } else {
+        T::Default::default()
+    })?;
     r
 }
 
-/// Gives back one hold of the library's lock whose guard was forgotten.
-///
-/// # Safety
-/// The calling thread holds the lock through a forgotten guard.
-pub unsafe fn unlock() {
-    unsafe { LOCK.force_unlock() }
+thread_local! {
+    /// The holds of the library's lock that `ID3D11Multithread::Enter` took on this thread.
+    static ENTERED: RefCell<Vec<ReentrantMutexGuard<'static, ()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Takes a hold of the library's lock kept until this thread's next [`leave`].
+pub fn enter() {
+    let hold = lock();
+    ENTERED.with_borrow_mut(|e| e.push(hold));
+}
+
+/// Gives back this thread's latest hold taken by [`enter`]; false when it has none.
+pub fn leave() -> bool {
+    ENTERED.with_borrow_mut(Vec::pop).is_some()
 }
 
 /// Held through each method of the device and the context: the library's lock and, on leaving, the

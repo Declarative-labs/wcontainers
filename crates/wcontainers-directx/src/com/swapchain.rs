@@ -129,7 +129,11 @@ impl Factory_Impl {
             return Err(DXGI_ERROR_INVALID_CALL.into());
         };
         *p = std::ptr::null_mut();
-        let ours = unsafe { self.adapter.GetDesc1()? }.AdapterLuid;
+        let ours = self
+            .adapter
+            .cast_object_ref::<Adapter>()?
+            .get_desc1()?
+            .AdapterLuid;
         if (ours.LowPart, ours.HighPart) != (luid.LowPart, luid.HighPart) {
             return Err(DXGI_ERROR_NOT_FOUND.into());
         }

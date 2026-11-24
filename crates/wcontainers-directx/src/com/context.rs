@@ -1545,17 +1545,16 @@ impl Context {
 
     /// `ID3D11Multithread::Enter`: the library's lock, held until `Leave`.
     pub(super) fn enter(&self) {
-        std::mem::forget(lock());
+        super::enter();
         let entered = &self.kept.entered;
         entered.set(entered.get() + 1);
     }
 
+    /// Gives back a hold this thread took by `Enter`; a thread that took none gives back nothing.
     pub(super) fn leave(&self) {
         let entered = &self.kept.entered;
-        if entered.get() > 0 {
+        if entered.get() > 0 && super::leave() {
             entered.set(entered.get() - 1);
-            // SAFETY: this thread holds the lock taken by its `Enter`, and the call's own above it.
-            unsafe { unlock() };
         }
     }
 

@@ -116,13 +116,34 @@ where
     give(out, o)
 }
 
-/// A description's fields as words, for comparing descriptions without their padding.
-fn words<T: Copy>(d: &T) -> Vec<u32> {
-    assert!(size_of::<T>().is_multiple_of(size_of::<u32>()));
-    let p = (d as *const T).cast::<u32>();
-    (0..size_of::<T>() / size_of::<u32>())
-        .map(|i| unsafe { p.add(i).read_unaligned() })
-        .collect()
+fn rasterizer_key(d: &D3D11_RASTERIZER_DESC) -> Vec<u32> {
+    vec![
+        d.FillMode.0 as u32,
+        d.CullMode.0 as u32,
+        d.FrontCounterClockwise.0 as u32,
+        d.DepthBias as u32,
+        d.DepthBiasClamp.to_bits(),
+        d.SlopeScaledDepthBias.to_bits(),
+        d.DepthClipEnable.0 as u32,
+        d.ScissorEnable.0 as u32,
+        d.MultisampleEnable.0 as u32,
+        d.AntialiasedLineEnable.0 as u32,
+    ]
+}
+
+fn sampler_key(d: &D3D11_SAMPLER_DESC) -> Vec<u32> {
+    let mut k = vec![
+        d.Filter.0 as u32,
+        d.AddressU.0 as u32,
+        d.AddressV.0 as u32,
+        d.AddressW.0 as u32,
+        d.MipLODBias.to_bits(),
+        d.MaxAnisotropy,
+        d.ComparisonFunc.0 as u32,
+    ];
+    k.extend(d.BorderColor.map(f32::to_bits));
+    k.extend([d.MinLOD.to_bits(), d.MaxLOD.to_bits()]);
+    k
 }
 
 fn blend_key(d: &D3D11_BLEND_DESC) -> Vec<u32> {
@@ -155,7 +176,12 @@ fn depth_stencil_key(d: &D3D11_DEPTH_STENCIL_DESC) -> Vec<u32> {
         u32::from(d.StencilWriteMask),
     ];
     for f in [&d.FrontFace, &d.BackFace] {
-        k.extend(words(f));
+        k.extend([
+            f.StencilFailOp.0 as u32,
+            f.StencilDepthFailOp.0 as u32,
+            f.StencilPassOp.0 as u32,
+            f.StencilFunc.0 as u32,
+        ]);
     }
     k
 }
@@ -209,7 +235,7 @@ pub fn create_device(
             device.CheckFormatSupport = check_format_support::<TABLE_10>;
         });
     }
-    let context = unsafe { device.GetImmediateContext() }?;
+    let context = device.cast_object_ref::<Device>()?.immediate().into();
     Ok((device.into(), context, level))
 }
 
@@ -1229,7 +1255,7 @@ impl Device_Impl {
         RasterizerState_Impl: ComObjectInterface<I>,
         I: Interface + windows::core::Type<I, Default = Option<I>> + From<RasterizerState>,
     {
-        shared_state::<RasterizerState, _>(&self.states.raster, words(d), out, || {
+        shared_state::<RasterizerState, _>(&self.states.raster, rasterizer_key(d), out, || {
             let state = self
                 .front
                 .borrow_mut()
@@ -1245,7 +1271,7 @@ impl Device_Impl {
         out: OutRef<ID3D11SamplerState>,
     ) -> Result<()> {
         let d = &convert::sampler_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        shared_state::<SamplerState, _>(&self.states.sampler, words(d), out, || {
+        shared_state::<SamplerState, _>(&self.states.sampler, sampler_key(d), out, || {
             let state = self
                 .front
                 .borrow_mut()
