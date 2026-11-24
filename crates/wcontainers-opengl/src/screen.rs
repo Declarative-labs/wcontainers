@@ -5,7 +5,8 @@ use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard};
 
 use wcontainers_gpu::{
-    Backend, Caps, Features, Format, FormatUse, Object, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
+    Backend, Caps, Features, Format, FormatUse, Object, SlotKind, SlowPath,
+    TEXEL_BUFFER_TEXTURE_WIDTH,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
@@ -48,6 +49,7 @@ impl<B: Backend> Screen<B> {
         for object in retired {
             backend.destroy(object);
         }
+        warn_slow_paths(&mut *backend);
         backend
     }
 
@@ -61,9 +63,39 @@ impl<B: Backend> Screen<B> {
     }
 }
 
+/// Warns once of each slow path the first time it is taken, on the process's error output.
+fn warn_slow_paths<B: Backend>(backend: &mut B) {
+    for path in backend.slow_paths().take_warnings() {
+        eprintln!(
+            "{}: slow path: {}",
+            DRIVER_NAME.to_string_lossy(),
+            path.reason()
+        );
+    }
+}
+
+/// Every slow path the screen's device took, with how many times, for the end of its life.
+fn slow_path_counts<B: Backend>(backend: &mut B) -> Vec<(&'static str, u64)> {
+    let paths = backend.slow_paths();
+    SlowPath::ALL
+        .iter()
+        .map(|&path| (path.reason(), paths.count(path)))
+        .filter(|&(_, count)| count > 0)
+        .collect()
+}
+
 unsafe extern "C" fn destroy<B: Backend>(screen: *mut pipe_screen) {
     // SAFETY: Mesa destroys the screen it was given once.
     let screen = unsafe { Box::from_raw(screen.cast::<Screen<B>>()) };
+    {
+        let mut backend = screen.backend();
+        for (reason, count) in slow_path_counts(&mut *backend) {
+            eprintln!(
+                "{}: slow path taken {count} times: {reason}",
+                DRIVER_NAME.to_string_lossy()
+            );
+        }
+    }
     // SAFETY: the helper was made with the screen and outlives every context of it.
     unsafe { u_transfer_helper_destroy(screen.base.transfer_helper) };
     drop(screen);
@@ -606,5 +638,28 @@ mod tests {
         let last = passed_values(&ours.limits);
         assert!(point_coordinate_passes(&ours.limits, last - 1));
         assert!(!point_coordinate_passes(&ours.limits, last + 1));
+    }
+
+    #[test]
+    fn each_slow_path_taken_is_warned_once_and_counted_every_time() {
+        const FANS: u64 = 2;
+        let mut backend = Recorder::with_caps(|_| {});
+        assert!(slow_path_counts(&mut backend).is_empty());
+        for _ in 0..FANS {
+            backend.slow_paths().hit(SlowPath::FanConverted);
+        }
+        backend.slow_paths().hit(SlowPath::PointsAsQuads);
+        assert_eq!(
+            backend.slow_paths().take_warnings(),
+            [SlowPath::FanConverted, SlowPath::PointsAsQuads]
+        );
+        assert!(backend.slow_paths().take_warnings().is_empty());
+        assert_eq!(
+            slow_path_counts(&mut backend),
+            [
+                (SlowPath::FanConverted.reason(), FANS),
+                (SlowPath::PointsAsQuads.reason(), 1)
+            ]
+        );
     }
 }
