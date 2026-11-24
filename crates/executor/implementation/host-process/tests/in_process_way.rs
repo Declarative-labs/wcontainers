@@ -12,9 +12,10 @@
 //! leaving the window, the state after it at a faulting stack probe; a fault at the reference's own address.
 //! Pieces of two to eight such instructions are translated as one piece too, against the reference run one
 //! instruction at a time; and every form is run in displaced code (rule e), from a stack pointer outside the
-//! window.
+//! window. A collision (one register named twice where Arm leaves the result open) runs in the reference with the
+//! registers the meaning does not write renamed to free ones.
 //!
-//! A quarter of the drawn words name the stack pointer, and a quarter have an immediate offset of zero (an access at
+//! A quarter of the drawn words name the stack pointer, a quarter name one register twice, and a quarter have an immediate offset of zero (an access at
 //! its base, which the way cuts by its own addressing), which random words rarely do. Knobs:
 //! `WCHP_IN_PROCESS_CASES` cases per form, `WCHP_IN_PROCESS_PIECES` pieces of several instructions, `WCHP_SEED`.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -25,6 +26,7 @@ use std::rc::Rc;
 
 use unicorn_engine::{Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, Unicorn};
 use wcontainers_abi::{LOWEST_ADDRESS, PAGE_SIZE};
+use wcontainers_arm64::encode::{self, field};
 use wcontainers_arm64::thread_state::{
     COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
@@ -56,6 +58,8 @@ const TRIES: u64 = 64;
 /// The register fields that name the stack pointer as 31 in most forms that can: Rn, and Rd (Rt in an access).
 const RN_FIELD: u32 = 0x1f << 5;
 const RD_FIELD: u32 = 0x1f;
+/// A pair's second data register field, Rt2.
+const RT2_FIELD: u32 = 0x1f << 10;
 
 /// Arm's names of the fields that hold an access's immediate offset from its base.
 const OFFSET_FIELDS: [&str; 3] = ["imm12", "imm9", "imm7"];
@@ -242,14 +246,99 @@ fn guest_registers(case: &Case) -> [u64; GENERAL] {
     })
 }
 
-/// The guest instruction run at the guest's own addresses, at `pc`.
+/// What the reference runs for a collision, whose result Arm leaves open and the meaning chooses (crates
+/// wcontainers-arm64, native.rs and carry.rs): the word with each register the meaning does not write from the
+/// access renamed to a free one, which is restored after it.
+struct Renamed {
+    word: u32,
+    /// Free general registers given a value before the word: a store's base, which the meaning stores as it was.
+    set: Vec<(usize, u64)>,
+    /// Free general registers given back their value after the word.
+    restore: Vec<usize>,
+    /// A free vector register given back its value after the word.
+    vector: Option<usize>,
+}
+
+/// The reference's word for `case`: its own, unless it is a collision. The meaning loads a pair's first word into
+/// a register named twice and drops the second, writes a load's written back base last, and stores a written back
+/// base's value from before the access.
+fn renamed(case: &Case) -> Renamed {
+    let i = decode(case.word);
+    let mut out = Renamed {
+        word: case.word,
+        set: Vec::new(),
+        restore: Vec::new(),
+        vector: None,
+    };
+    if !matches!(Arm64::route(&WAY, &i, &()), Route::Collision) {
+        return out;
+    }
+    let base = match i.memory_access().map(|m| m.address) {
+        Some(Address::PreIndex { base, .. } | Address::PostIndex { base, .. }) => Some(base),
+        _ => None,
+    };
+    let is_base = |r: Reg| matches!((base, r), (Some(Reg::X(b)), Reg::X(n)) if b == n);
+    let base_value = match base {
+        Some(Reg::X(b)) => case.x[usize::from(b)],
+        _ => case.sp,
+    };
+    let named: Vec<Reg> = [other_registers(&i), base.into_iter().collect()].concat();
+    let mut free = (0..GENERAL).filter(|&n| !named.contains(&Reg::X(n as u8)));
+    let mut rename = |word: u32, field, value: Option<u64>| {
+        let n = free
+            .next()
+            .expect("a register the instruction does not name");
+        out.restore.push(n);
+        if let Some(value) = value {
+            out.set.push((n, value));
+        }
+        encode::replace(word, field, n as u32).expect("a register fits")
+    };
+    let mut word = case.word;
+    match i {
+        I::Load { rt, .. } if is_base(rt) => word = rename(word, field::RT, None),
+        I::Store { rt, .. } if is_base(rt) => word = rename(word, field::RT, Some(base_value)),
+        I::LoadPair { rt, rt2, .. } => {
+            if is_base(rt) || (rt == rt2 && rt == Reg::Zero) {
+                word = rename(word, field::RT, None);
+            }
+            if rt == rt2 || is_base(rt2) {
+                word = rename(word, field::RT2, None);
+            }
+        }
+        I::StorePair { rt, rt2, .. } => {
+            let stored = rename(word, field::RT, Some(base_value));
+            let n = *out.restore.last().expect("the register just renamed");
+            if is_base(rt) {
+                word = stored;
+            }
+            if is_base(rt2) {
+                word = encode::replace(word, field::RT2, n as u32).expect("a register fits");
+            }
+        }
+        I::LoadVectorPair { rt, .. } => {
+            let n = (usize::from(rt) + 1) % VECTORS;
+            out.vector = Some(n);
+            word = encode::replace(word, field::RT2, n as u32).expect("a register fits");
+        }
+        _ => unreachable!("only these collide: {i:?}"),
+    }
+    out.word = word;
+    out
+}
+
+/// The guest instruction run at the guest's own addresses, at `pc`; a collision as [`renamed`] gives it.
 fn reference(case: &Case, pc: u64) -> Outcome {
+    let renamed = renamed(case);
     let mut unicorn = emulator();
     map_regions(&mut unicorn, case, 0);
     unicorn
-        .mem_write(pc, &case.word.to_le_bytes())
+        .mem_write(pc, &renamed.word.to_le_bytes())
         .expect("the instruction");
     for (n, &value) in case.x.iter().enumerate() {
+        unicorn.reg_write(x_register(n), value).expect("a register");
+    }
+    for &(n, value) in &renamed.set {
         unicorn.reg_write(x_register(n), value).expect("a register");
     }
     unicorn.reg_write(RegisterARM64::SP, case.sp).expect("sp");
@@ -279,11 +368,29 @@ fn reference(case: &Case, pc: u64) -> Outcome {
     if ran.is_err() {
         return Outcome::Exception(u32::MAX);
     }
+    // The guest's own word in its code page, unless the access itself wrote there.
+    let mut there = [0; size_of::<u32>()];
+    unicorn.mem_read(pc, &mut there).expect("the instruction");
+    if renamed.word != case.word && there == renamed.word.to_le_bytes() {
+        unicorn
+            .mem_write(pc, &case.word.to_le_bytes())
+            .expect("the instruction");
+    }
+    let mut q = read_vectors(&unicorn);
+    if let Some(n) = renamed.vector {
+        q[n] = case.q[n];
+    }
     Outcome::Done(Box::new(State {
-        x: std::array::from_fn(|n| unicorn.reg_read(x_register(n)).expect("a register")),
+        x: std::array::from_fn(|n| {
+            if renamed.restore.contains(&n) {
+                case.x[n]
+            } else {
+                unicorn.reg_read(x_register(n)).expect("a register")
+            }
+        }),
         sp: unicorn.reg_read(RegisterARM64::SP).expect("sp"),
         nzcv: unicorn.reg_read(RegisterARM64::NZCV).expect("flags"),
-        q: read_vectors(&unicorn),
+        q,
         memory: read_regions(&unicorn, 0),
     }))
 }
@@ -554,9 +661,7 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
 fn wanted(i: &I) -> bool {
     let route = Arm64::route(&WAY, i, &());
     match route {
-        // A collision's result is the meaning's choice, which the emulator need not make.
-        Route::Collision => false,
-        Route::Copy | Route::Split | Route::Aligned | Route::Exclusive => {
+        Route::Copy | Route::Split | Route::Aligned | Route::Exclusive | Route::Collision => {
             i.memory_access().is_some()
                 || matches!(i, I::ZeroBlock { .. } | I::CleanCache { .. })
                 || stack_value(i)
@@ -925,17 +1030,22 @@ struct Tally {
     resolved: u64,
     at_base: u64,
     stack_unaligned: u64,
+    collisions: u64,
 }
 
 /// A word of `form`: a quarter name the stack pointer as their base or source, an eighth as their destination too
-/// (rule c's moves), and a quarter have an immediate offset of zero, which random words have rarely.
+/// (rule c's moves); a quarter name one register twice, the base as the data or the data as both of a pair's
+/// (collisions); and a quarter have an immediate offset of zero, which random words have rarely.
 fn drawn(form: &forms::Form, rng: &mut fastrand::Rng) -> u32 {
+    let raw = rng.u32(..);
     let named = match rng.u32(0..8) {
-        0 => RN_FIELD | RD_FIELD,
-        1 => RN_FIELD,
-        _ => 0,
+        0 => raw | RN_FIELD | RD_FIELD,
+        1 => raw | RN_FIELD,
+        2 => raw & !RD_FIELD | (raw & RN_FIELD) >> RN_FIELD.trailing_zeros(),
+        3 => raw & !RT2_FIELD | (raw & RD_FIELD) << RT2_FIELD.trailing_zeros(),
+        _ => raw,
     };
-    let word = form.word(rng.u32(..) | named);
+    let word = form.word(named);
     if rng.u32(0..4) == 0 {
         at_base(form, word)
     } else {
@@ -1012,6 +1122,7 @@ fn every_form(way: Way, stack: impl Fn(&mut fastrand::Rng) -> Option<u64>) {
             if let Some(sp) = stack(&mut rng) {
                 case.sp = sp;
             }
+            tally.collisions += u64::from(renamed(&case).word != word);
             let reference = reference(&case, CODE);
             let (translated, resolution) = translated(&case, &[word], way);
             tally.cases += 1;
@@ -1096,6 +1207,9 @@ fn in_process_pieces_of_several_instructions_agree_with_the_reference() {
                 }
             })
             .collect();
+        tally.collisions += (words.iter())
+            .filter(|&&w| matches!(Arm64::route(&WAY, &decode(w), &()), Route::Collision))
+            .count() as u64;
         let mut case = case_for(words[0], &mut rng);
         case.tag = None;
         // Every instruction of the piece is in the guest's code page from the start, as the translated side has it.
