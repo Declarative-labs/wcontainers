@@ -1007,7 +1007,12 @@ window needs the bound in a register, measured at XN2 if asked).
   on A then `bt r, gs:[t]` read the secret's bit 7 and 5 times; the cut forms read it 0 times in every case (`gs:[t32]` after
   either check, `bt r, gs:[t32]`, the probe then `mov esi, esi` and `lods`), reading the window's own byte at B +
   0x1000 instead (99,999 and 99,996 times after the probe). The check's figures for the uncut live-flags probe were
-  2,000 of 2,000 and 99,943 and 99,994 of 100,000. What the cut does not cover is named in the P/I plan's
+  2,000 of 2,000 and 99,943 and 99,994 of 100,000. Made from the emitted code with the stack form as built (XN2 run 5,
+xn2r5/specemit.out; 100,000 rounds each with the same seeds): the cut load, `lods`, bit test, `scas` from rdi, `xlat`
+and `pop` read the secret 0 times, their uncut controls 99,990 to 99,999 times; a cut store brought the refused line
+into the cache no more often than the timing's false hits (a few in a million), the uncut store in 97 to 99 percent
+of rounds; `maskmovdqu`, a non-temporal store, showed nothing even uncut, so only the window sweep shows its cut.
+What the cut does not cover is named in the P/I plan's
   security section (branch target injection, shared caches between guests on one core).
 - The stack's cost is not measured: the earlier figures exempted the stack, and this form rewrites every implicit
   stack access. XN2 measures it, and the alternative the P/I plan uses on ARM64 (rsp holding B plus the guest's rsp,

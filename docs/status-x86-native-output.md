@@ -15,12 +15,59 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   its cause and owner. Fifteen independent checks of XN1; XN2 run 1 answered the fifteenth's five minor findings
   in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
   "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
-- XN2 (way I, the checked forms): built and measured (runs 1 to 4), see "XN2 run 4" and the runs before it. Run 4
-  built the stack form the measurement chose (rsp held as B + the guest's rsp); both forms then met their speed bars
-  in the two runs at moderate load (wrapping 1.065 and 1.091 times the unchecked form, bar 1.10; exact 1.280 and
-  1.323, bar 1.35) and missed them in two runs disturbed by other jobs (load to 76 and 160): a quiet confirming run
-  is wanted. What is left of XN2 needs an x86 executor (gap item 1): the link, register-group and hostile-guest tests in
-  I and the X9 programs.
+- XN2 (way I, the checked forms): built and measured (runs 1 to 5), see "XN2 run 5" and the runs before it. Run 4
+  built the stack form the measurement chose (rsp held as B + the guest's rsp). Run 5 confirmed the speed bars on a
+  quiet machine (load 1.4 to 4.3: wrapping 1.087 times the unchecked form, bar 1.10; exact 1.315, bar 1.35), ran
+  every way I access shape of plan 7 that needs no executor against the CPU (892 cases a form, 0 failing), and the
+  speculation probe with every gadget of plan 7 but `ret` (0 secret reads in the cut forms). What is left of XN2
+  needs an x86 executor (gap item 1), which no track has built (the native-without-virtual-machine track's form I,
+  its W2, does not exist yet): the link, register-group and hostile-guest tests in I, the ymm upper halves across a
+  call into the inside, and the X9 programs.
+
+## XN2 run 5 (2026-11-24)
+
+No code of the output changed. Tests (commit d9621c277):
+- `the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64` gains every way I shape of plan 7 that runs without
+  an executor: `maskmovq`, `maskmovdqu` and `vmaskmovdqu` with rdi in the data, 2^40 past it, 2^32, 2^32 + 2^35, 2^40
+  and -1; `cmpsb` (rsi or rdi), `scasb` and `xlat` at those four starts; the guest's 0x67 strings `stos`, `movs`,
+  `cmps`, `scas`, `lods`, `rep stosb`, `rep movsb`, `repe cmpsb`, `repne scasb` and `rep stosq` with esi and edi in
+  the data, the upper halves set and rcx 2^32 + 16; `fs:` and `gs:` operands under 0x67 with a base at 2^32, at 2^32 +
+  the data, and inside with a 32-bit offset wrapping back into the data, and the plan's `65 67 8b 00` (GS base
+  0x300000000, rax 0x100000010); `bt`, `bts`, `btr` and `btc` (the last three also locked) at 16, 32 and 64 bits with
+  offsets 0, -1, w, -w - 1, 2^31 - 1, -2^31, 2^35, 2^60 and -2^63 taken at the operand size, from the data's first
+  byte, its middle, its last writable bytes and the last bytes of its read-only page; `enter 16, 31` with rsp near
+  the data's bottom, at 0x40 and at 2^32; `call [rbx]` and `pushf` with rsp at 2^32, 0 and in the data. The single
+  instruction cases have their flags live after them; the exact form takes the flag-free probe whether they are or
+  not (run 1), so there is no separate dead-flags case.
+- `speculation_gadgets` (native_window.rs) adds a string from rdi (`scasb` against cl, the equality picking a line),
+  `xlat`, `pop` after `mov rsp, rbx`, a plain store and `maskmovdqu`, and prints the fixed part's offsets of B and
+  -B; its uncut control now drops every cut of a register to its low half (`mov esi, esi`, `mov edi, edi`, the
+  stack's `mov r11d, r11d`) other than the probe's own. The probe (scratch xn2r5/specemit.c) puts FS on a thread
+  area holding B and -B, sets rdi too, and for a store gadget times the refused address's line, flushed before, and
+  a line of the same page that nothing touches. `ret` is not made: its read is the same `[rsp]` access as `pop`'s,
+  and its value feeds the lookup, not a register a probe array can be indexed by.
+
+Results (rented x86 machine, Xeon 8488C):
+- The window cases (load 3 and 8.5): wrapping 775 as the CPU and 117 the named landing; exact 892 as the CPU (145
+  refused by the probe, 3 StackRefused, 17 answered by the inside: the 0x67 strings, `pushf`, `enter`); 0 failing.
+- Speculation (processor 5, 12:01 to 12:04 UTC, load 0.9 rising to 46; scratch xn2r5/specemit.out), 100,000 rounds
+  each with seeds 0x1234567 and 0xbeef01: every read gadget's cut form read the secret 0 times (load, lods, bt, scas,
+  xlat, pop), reading the window's byte instead 99,995 to 100,000 times; every uncut control read it 99,990 to
+  99,999 times. The cut store brought the refused address's line into the cache 2 times in each seed and the
+  in-window line 97,386 and 99,992 times; the uncut store the refused line 97,338 and 99,992 times. A million rounds
+  of the cut store at seeds 0x1234567, 0xbeef01 and 0x51 (xn2r5/specstore.out, load 28 to 15): the refused line 2,
+  1 and 5 times, the untouched line 2, 0 and 0: the timing's own false hits, a few in a million, against nearly
+  every round when the address is formed. `maskmovdqu` (a non-temporal store) brought no line into the cache in
+  either form, the control included, so this probe cannot see it: its cut is shown by the window sweep alone.
+- Speed, the benchmark set at full, `taskset -c 0-9`, best of 7 (11:54 to 12:00 UTC, the machine's 1-minute load
+  1.4 to 4.3 throughout, sampled every 25 s; scratch xn2r5/bench1.out, bench1-load.txt): against P (the unchecked
+  form) wrapping geometric mean 1.087 (counted 1.023), exact 1.315 (counted 1.275), both under their bars (1.10 and
+  1.35). Per program wrapping and exact: fib 1.165 and 1.164, sieve 0.991 and 1.171, hash 1.001 and 1.004, sort 1.059
+  and 1.246, interpret 1.394 and 1.774, matrix 1.028 and 2.605, walk 1.019 and 0.982, search 1.091 and 1.154. P
+  against the host's plain run 1.137 (counted 1.211). So the figures the brief carried (+2 to +4 percent wrapping,
+  +11 to +21 percent exact, on other code with the stack exempt) are on real translated programs +9 and +32 percent.
+- Clippy with warnings denied, `--no-deps`, wcontainers-x86 and the test crate, all targets: clean (x86 machine);
+  the x86 crate's native_window tests pass (ARM64 machine, load 4).
 
 ## XN2 run 4 (2026-11-24)
 
@@ -593,9 +640,9 @@ layer1 every_form_matches_the_cpu_in_process_x86_64 -- --nocapture'` (both forms
 `exact`; summary lines "layer 1 in process, the ... form"); `cargo test -q -p wcontainers-translator-test --test
 layer1 the_window_cases -- --nocapture` (seconds; summary "the window's cases"). The speculation probe:
 `cargo test -q -p wcontainers-x86 --test native_window speculation_gadgets -- --ignored --nocapture | grep -E
-'^(load|lods|bt) ' > gadgets.txt` (any machine), then on the x86 machine scratch xn2r2/specemit.c built with `cc
--O2 -mno-red-zone -fno-stack-protector -mfsgsbase` and run as `taskset -c 5 ./specemit 100000 <seed> <
-gadgets.txt` (copies in /work/probes/xn2 there).
+'^(area|load|lods|bt|scas|xlat|pop|store|maskmov) ' > gadgets.txt` (any machine; the `area` line first), then on the
+x86 machine scratch xn2r5/specemit.c built with `cc -O2 -mno-red-zone -fno-stack-protector -mfsgsbase` and run as
+`taskset -c 5 ./specemit 100000 <seed> < gadgets.txt` (copies in /work/probes/xn2r5 there).
 
 ## How to run XN1's tests
 
@@ -1009,6 +1056,12 @@ Licences read from cargo tree on the rented machine.
 
 ## Security
 
+- XN2 run 5: no `unsafe` and no import added (test cases and a gadget printer only; the C probe is scratch). The
+  isolation was tried against the CPU through every way I access shape of plan 7 that runs without an executor (892
+  cases a form, none reaching outside the window), and the speculation probe now covers a string from rdi, `xlat`,
+  `pop` and a plain store beside run 2's three: 0 secret reads in the cut forms, the uncut controls reading it in
+  nearly every round. Not covered by it: `maskmovdqu` (no control leak to see) and `ret` (not made). Hostile-guest
+  suite in I: not yet (needs an executor, gap item 1).
 - XN2 run 4: no `unsafe` added (grep of carry.rs, carry/window.rs, native_window.rs and the test crate's native.rs and
   native_programs.rs finds none); no import added. The isolation now rests also on rsp: every host write of it is a
   push or pop, a return's bounded move, or the cut `lea rsp, [s + base]`, which the window sweep checks on every
