@@ -320,23 +320,42 @@ fn stage_values_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
 /// ([ps_2_0's registers](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-registers-ps-2-0#:~:text=Sampler%20Register)),
 /// and from 10_0 Direct3D's slots of each stage; and the unordered access views of the pixel and
 /// compute stages at 11_0, each a storage texture or a storage buffer.
-fn level_slots(level: u32) -> [u32; 3] {
+fn level_slots(level: u32) -> StageSlots {
     let samplers = crate::context::SAMPLER_SLOTS as u32;
     if level < level::L10_0 {
-        return [samplers, samplers, 0];
+        return StageSlots {
+            views: samplers,
+            samplers,
+            storage: 0,
+        };
     }
     let storage = if level < level::L11_0 {
         0
     } else {
         crate::UAV_SLOTS as u32
     };
-    [crate::context::RESOURCE_SLOTS as u32, samplers, storage]
+    StageSlots {
+        views: crate::context::RESOURCE_SLOTS as u32,
+        samplers,
+        storage,
+    }
+}
+
+/// The shader resource views, samplers and unordered access views a stage reads.
+struct StageSlots {
+    views: u32,
+    samplers: u32,
+    storage: u32,
 }
 
 /// Whether `limits` give each stage feature level `level`'s shader resource views, samplers and
 /// unordered access views ([`level_slots`]).
 fn slots_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
-    let [views, samplers, storage] = level_slots(level);
+    let StageSlots {
+        views,
+        samplers,
+        storage,
+    } = level_slots(level);
     limits.textures_per_stage >= views
         && limits.samplers_per_stage >= samplers
         && limits.storage_textures_per_stage >= storage
@@ -386,7 +405,11 @@ impl<B: Backend> Device<B> {
                 );
             }
             if !slots_served(limits, l) {
-                let [views, samplers, storage] = level_slots(l);
+                let StageSlots {
+                    views,
+                    samplers,
+                    storage,
+                } = level_slots(l);
                 eprintln!(
                     "{WARNING_PREFIX}: feature level {l:#x} not reported: a stage of the back end \
                      reads fewer than its {views} shader resource views, {samplers} samplers or \
