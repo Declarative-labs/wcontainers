@@ -325,7 +325,14 @@ fn csmith_programs_match_linux_natively_x86_64() {
             for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full] {
                 for counting in [false, true] {
                     let ours = with_reference(&X86_64::REFERENCE, |reference| {
-                        compare(reference, &blob, look_ahead, counting, &theirs, &counted)
+                        compare(
+                            reference,
+                            &blob,
+                            (wcontainers_x86::native::Way::Process, look_ahead),
+                            counting,
+                            &theirs,
+                            &counted,
+                        )
                     })
                     .map_err(|e| format!("{}: {e}", blob.name))?;
                     count(&runs, ours.runs.into());

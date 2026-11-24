@@ -79,7 +79,7 @@ const WINDOW_BASE: u64 = 1 << 41;
 const WINDOW_BYTES: u64 = 1 << u32::BITS;
 
 /// The window's base in `way`: guest address a is at host B + a in process, at a in the other ways.
-fn window(way: Way) -> u64 {
+pub(super) fn window(way: Way) -> u64 {
     match way {
         Way::InProcess(_) => WINDOW_BASE,
         Way::Machine | Way::Process => 0,

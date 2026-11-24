@@ -191,15 +191,39 @@ fn full_matches_none_and_the_cpu_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn natively_matches_the_cpu_x86_64() {
+    natively_in(&[wcontainers_x86::native::Way::Process], "natively");
+}
+
+/// The same in the in-process way's two checked forms (docs/x86-native-output.md sections 4 and 8): the program
+/// and its stack in the window, the reference's own stack unmapped. `WC_LAYER2_CHECK` takes one form (`wrapping`
+/// or `exact`), both otherwise.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn natively_matches_the_cpu_in_process_x86_64() {
+    use wcontainers_x86::native::{Check, Way};
+    let only = std::env::var("WC_LAYER2_CHECK").ok();
+    let ways: Vec<Way> = [("wrapping", Check::Wrapping), ("exact", Check::Exact)]
+        .into_iter()
+        .filter(|(name, _)| only.as_deref().is_none_or(|only| only == *name))
+        .map(|(_, check)| Way::InProcess(check))
+        .collect();
+    natively_in(&ways, "natively in process");
+}
+
+/// Layer 2's programs in each of `ways`, the summary line starting "layer 2 " and `what`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
     use wcontainers_translator_test::guest::x86_64::native_programs::compare;
+    use wcontainers_translator_test::layout::SIGNALLED;
     use wcontainers_translator_test::progress::run_counting;
     use wcontainers_translator_test::reference::with_reference;
+    use wcontainers_x86::native::{Check, Way};
     type G = wcontainers_x86::X86_64;
     let cases = knob("WC_LAYER2_CASES", 64);
     let seed = knob("WC_LAYER2_SEED", 1);
     let from = knob("WC_LAYER2_FROM", 0);
     let jobs = knob("WC_LAYER2_JOBS", 1).max(1);
-    let [ran, faulted, runs, pieces] = std::array::from_fn(|_| AtomicU64::new(0));
+    let [ran, faulted, runs, pieces, landed] = std::array::from_fn(|_| AtomicU64::new(0));
     let failures = Mutex::new(Vec::new());
     let count = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
     at_once(jobs, cases, |i| {
@@ -214,14 +238,40 @@ fn natively_matches_the_cpu_x86_64() {
                 }
                 let counted = run_counting::<G>(&blob, (LookAhead::None, Optimise::Speed));
                 assert_eq!(counted.ran, cpu, "the WebAssembly output against the CPU");
-                for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full] {
-                    for counting in [false, true] {
-                        let ours = with_reference(&G::REFERENCE, |reference| {
-                            compare(reference, &blob, look_ahead, counting, &cpu, &counted)
-                        })
-                        .map_err(TestCaseError::fail)?;
-                        count(&runs, ours.runs.into());
-                        count(&pieces, ours.pieces as u64);
+                for &way in ways {
+                    for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full]
+                    {
+                        for counting in [false, true] {
+                            let compared = |way| {
+                                with_reference(&G::REFERENCE, |reference| {
+                                    compare(
+                                        reference,
+                                        &blob,
+                                        (way, look_ahead),
+                                        counting,
+                                        &cpu,
+                                        &counted,
+                                    )
+                                })
+                            };
+                            let ours = match compared(way) {
+                                Ok(ours) => ours,
+                                // The wrapping form's named difference: an address at or above 2^32 lands
+                                // modulo 2^32 in the window where the CPU faults, which the exact form refuses
+                                // as the CPU does.
+                                Err(_)
+                                    if way == Way::InProcess(Check::Wrapping)
+                                        && cpu.status == SIGNALLED + libc::SIGSEGV
+                                        && compared(Way::InProcess(Check::Exact)).is_ok() =>
+                                {
+                                    count(&landed, 1);
+                                    continue;
+                                }
+                                Err(e) => return Err(TestCaseError::fail(e)),
+                            };
+                            count(&runs, ours.runs.into());
+                            count(&pieces, ours.pieces as u64);
+                        }
                     }
                 }
                 Ok(())
@@ -229,15 +279,16 @@ fn natively_matches_the_cpu_x86_64() {
         );
         count(&ran, 1);
         if let Err(error) = result {
-            eprintln!("layer 2 natively, seed {seed}, case {case}: {error}");
+            eprintln!("layer 2 {what}, seed {seed}, case {case}: {error}");
             failures.lock().unwrap().push(case);
         }
     });
     let mut failures = failures.into_inner().unwrap();
     failures.sort();
-    let [ran, faulted, runs, pieces] = [ran, faulted, runs, pieces].map(|c| c.into_inner());
+    let [ran, faulted, runs, pieces, landed] =
+        [ran, faulted, runs, pieces, landed].map(|c| c.into_inner());
     eprintln!(
-        "layer 2 natively: {ran} cases run from case {from}, seed {seed}, {jobs} at once, each at 3 look-aheads with and without the count; {faulted} faulted; {runs} blob runs, {pieces} pieces; {} failing: {failures:?}",
+        "layer 2 {what} ({ways:?}): {ran} cases run from case {from}, seed {seed}, {jobs} at once, each at 3 look-aheads with and without the count; {faulted} faulted; {runs} blob runs, {pieces} pieces; {landed} runs the wrapping form's named landing; {} failing: {failures:?}",
         failures.len()
     );
     assert!(failures.is_empty());
@@ -287,7 +338,14 @@ fn natively_as_the_cpu(blob: &wcontainers_translator_test::programs::Blob) -> Re
     for look_ahead in [LookAhead::None, LookAhead::Bounded(3), LookAhead::Full] {
         for counting in [false, true] {
             with_reference(&G::REFERENCE, |reference| {
-                compare(reference, blob, look_ahead, counting, &cpu, &counted)
+                compare(
+                    reference,
+                    blob,
+                    (wcontainers_x86::native::Way::Process, look_ahead),
+                    counting,
+                    &cpu,
+                    &counted,
+                )
             })
             .map_err(|e| format!("{}: {e}", blob.name))?;
         }

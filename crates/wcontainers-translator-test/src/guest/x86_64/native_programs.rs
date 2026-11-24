@@ -4,12 +4,14 @@
 //! points the inside's entries at its own routines: a system call it makes for the guest, recording the count
 //! there on standard error, and a miss (an exit or a lookup to a piece not made yet) it records before ending.
 //! A run that ends on a miss is made again with that piece. A fault of the guest's ends the blob by the same
-//! signal, as on the reference.
+//! signal, as on the reference. In the in-process way the program and its stack are in the window at B plus their
+//! addresses, with the probe's page below it, the reference's own stack unmapped before the program starts, and a
+//! guest pointer the blob passes to the host made B plus it.
 
 use super::native::{
     ALTERNATE_STACK, ALTERNATE_STACK_BYTES, FRAME_GENERAL, GENERAL_REGISTERS, LOAD, LOWER_REGIONS,
     PAGE, PROLOGUE, REGION_BYTES, SECOND_LEVEL, STOP_SIGNALS, assembled, copy, general_register,
-    map, number, protect, restorer, system_call,
+    map, number, protect, restorer, system_call, window,
 };
 use super::*;
 use crate::programs::{Blob, Ran, STACK_TOP};
@@ -17,8 +19,8 @@ use crate::progress::{Counted, Position};
 use crate::reference::{BlobRequest, Reference};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
-    AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r10, r11, r12, r13, r14, rax, rbx, rcx,
-    rdi, rdx, rsi, rsp,
+    AsmMemoryOperand, AsmRegister64, CodeAssembler, CodeLabel, ecx, qword_ptr, r10, r11, r12, r13,
+    r14, rax, rbx, rcx, rdi, rdx, rsi, rsp,
 };
 use linux_raw_sys::general::{SA_ONSTACK, SA_RESTORER, SA_SIGINFO, kernel_sigaction, sigaltstack};
 use std::collections::BTreeMap;
@@ -27,7 +29,8 @@ use wcontainers_guest_cpu::position::{Resume, Side};
 use wcontainers_guest_cpu::{Guest, HostCode, InsideCall};
 use wcontainers_translator::{LookAhead, translate_native_for};
 use wcontainers_x86::area::{
-    ENTRIES, FIRST_LEVEL, FIXED, FixedPart, NO_STOP, RegisterArea, WITHHELD_VALUES,
+    ENTRIES, FIRST_LEVEL, FIXED, FixedPart, GUEST_FS_BASE, GUEST_GS_BASE, NO_STOP, PROBE_PAGE,
+    RegisterArea, WINDOW, WINDOW_NEGATED, WITHHELD_VALUES,
 };
 use wcontainers_x86::carry::{COUNT, T, U, WITHHELD, retarget};
 use wcontainers_x86::native::{Target, Way};
@@ -67,6 +70,9 @@ struct Scratch {
     /// The guest's rcx while its call site is found.
     dispatch: u64,
     record: [u64; RECORD_WORDS],
+    /// The guest's rsp while `pushfq` is answered on the stack below.
+    rsp: u64,
+    stack: [u64; 2],
 }
 const SCRATCH: usize = size_of::<RegisterArea>().next_multiple_of(WORD as usize);
 const _: () = assert!(SCRATCH + size_of::<Scratch>() <= FIXED);
@@ -97,10 +103,12 @@ enum Said {
     StringAfter,
     /// Before it and after it: rsi and rdi.
     StringPointers,
+    /// In process, a system call whose pointers the blob does not rebase: its number, twice.
+    OtherSystemCall,
 }
 
 impl Said {
-    const ALL: [Said; 8] = [
+    const ALL: [Said; 9] = [
         Said::SystemCall,
         Said::ExitMiss,
         Said::LookupMiss,
@@ -109,6 +117,7 @@ impl Said {
         Said::StringBefore,
         Said::StringAfter,
         Said::StringPointers,
+        Said::OtherSystemCall,
     ];
 }
 
@@ -129,6 +138,7 @@ struct Pieces<'a> {
     blob: &'a Blob,
     look_ahead: LookAhead,
     counted: bool,
+    way: Way,
     target: Target,
     made: BTreeMap<u64, Option<HostCode>>,
 }
@@ -172,7 +182,7 @@ impl Pieces<'_> {
             at,
             self.look_ahead,
             self.counted,
-            &Way::Process,
+            &self.way,
             &self.target,
         )
     }
@@ -195,6 +205,8 @@ enum Answer {
         bytes: Vec<u8>,
         repeated: wcontainers_x86::strings::Repeated,
     },
+    /// `pushfq`, which the in-process way leaves to the inside.
+    Flags,
 }
 
 /// The pieces laid out from `PIECES`, linked, with what the blob's routines need of them.
@@ -263,7 +275,7 @@ fn calls(
     for host in decoder.iter() {
         let through_area = host.mnemonic() == Mnemonic::Jmp
             && host.op0_kind() == OpKind::Memory
-            && host.memory_segment() == Register::GS
+            && host.memory_segment() == pieces.way.area_segment()
             && host.memory_base() == Register::None
             && entries.contains(&host.memory_displacement64());
         if !through_area {
@@ -284,6 +296,8 @@ fn calls(
                 let m = i.iced.mnemonic();
                 let answer = if m == Mnemonic::Syscall {
                     Answer::SystemCall
+                } else if m == Mnemonic::Pushfq && matches!(pieces.way, Way::InProcess(_)) {
+                    Answer::Flags
                 } else if i.iced.is_string_instruction()
                     && (i.iced.has_rep_prefix() || i.iced.has_repne_prefix())
                 {
@@ -336,13 +350,14 @@ fn calls(
 pub fn compare(
     reference: &mut Reference,
     blob: &Blob,
-    look_ahead: LookAhead,
+    (way, look_ahead): (Way, LookAhead),
     counting: bool,
     cpu: &Ran,
     counted: &Counted,
 ) -> Result<NativeRun, String> {
-    let what = format!("natively at {look_ahead:?}, counted {counting}");
-    let ours = run(reference, blob, look_ahead, counting).map_err(|e| format!("{what}: {e}"))?;
+    let what = format!("natively {way:?} at {look_ahead:?}, counted {counting}");
+    let ours =
+        run(reference, blob, (way, look_ahead), counting).map_err(|e| format!("{what}: {e}"))?;
     if ours.ran != *cpu {
         return Err(format!(
             "{what}: output {:?} status {}, the CPU's {:?} status {}",
@@ -383,14 +398,14 @@ pub fn compare(
     Ok(ours)
 }
 
-/// Runs `blob`'s program natively at `look_ahead`, with the count when `counted`.
+/// Runs `blob`'s program natively in `way` at `look_ahead`, with the count when `counted`.
 pub fn run(
     reference: &mut Reference,
     blob: &Blob,
-    look_ahead: LookAhead,
+    (way, look_ahead): (Way, LookAhead),
     counted: bool,
 ) -> Result<NativeRun, String> {
-    run_timed(reference, blob, look_ahead, counted, 0).map(|(run, _)| run)
+    run_timed(reference, blob, (way, look_ahead), counted, 0).map(|(run, _)| run)
 }
 
 /// [`run`], then the blob with every piece it reached run `timed` times more, and the best of their times in
@@ -398,14 +413,19 @@ pub fn run(
 pub fn run_timed(
     reference: &mut Reference,
     blob: &Blob,
-    look_ahead: LookAhead,
+    (way, look_ahead): (Way, LookAhead),
     counted: bool,
     timed: u32,
 ) -> Result<(NativeRun, f64), String> {
+    assert!(
+        way != Way::Machine,
+        "the machine way runs under its executor"
+    );
     let mut pieces = Pieces {
         blob,
         look_ahead,
         counted,
+        way,
         target: Target {
             host: super::native::REFERENCE_HOST,
             offer: wcontainers_x86::Offer::default(),
@@ -415,7 +435,8 @@ pub fn run_timed(
     pieces.reach(blob.load);
     for runs in 1..=MOST_RUNS {
         let laid = lay_out(&pieces)?;
-        let bytes = harness(blob, &laid).map_err(|e| format!("the blob does not assemble: {e}"))?;
+        let bytes =
+            harness(blob, &laid, way).map_err(|e| format!("the blob does not assemble: {e}"))?;
         let request = |runs: u32| BlobRequest {
             bytes: &bytes,
             load: LOAD,
@@ -460,6 +481,11 @@ pub fn run_timed(
                 return Err(format!(
                     "a call {:?} returning to {t:#x}",
                     InsideCall::from_code(kind as u16)
+                ));
+            }
+            Some(&(Said::OtherSystemCall, number, _)) => {
+                return Err(format!(
+                    "system call {number} in process, whose pointers this blob does not rebase"
                 ));
             }
             Some(&(Said::OwnFault, pc, address)) => {
@@ -599,13 +625,13 @@ fn places(blob: &Blob, laid: &Laid, routines: usize) -> Places {
 }
 
 /// The whole blob.
-fn harness(blob: &Blob, laid: &Laid) -> Result<Vec<u8>, IcedError> {
+fn harness(blob: &Blob, laid: &Laid, way: Way) -> Result<Vec<u8>, IcedError> {
     // The routines' size is known once they are assembled somewhere; their code does not depend on where.
-    let size = routines(laid, PIECES + laid.bytes.len() as u64, 0)?
+    let size = routines(laid, PIECES + laid.bytes.len() as u64, 0, way)?
         .bytes
         .len();
     let at = places(blob, laid, size);
-    let routines = routines(laid, at.routines, at.area)?;
+    let routines = routines(laid, at.routines, at.area, way)?;
     assert_eq!(
         routines.bytes.len(),
         size,
@@ -616,7 +642,7 @@ fn harness(blob: &Blob, laid: &Laid) -> Result<Vec<u8>, IcedError> {
         let to = (to - LOAD) as usize;
         bytes[to..to + part.len()].copy_from_slice(part);
     };
-    let prologue = prologue(blob, laid, &at)?;
+    let prologue = prologue(blob, laid, &at, way)?;
     assert!(prologue.len() as u64 <= PROLOGUE_ROOM, "the prologue fits");
     put(PROLOGUE, &prologue);
     let handler = handler(laid, &routines.copies, at.area)?;
@@ -659,8 +685,8 @@ fn harness(blob: &Blob, laid: &Laid) -> Result<Vec<u8>, IcedError> {
     let fixed = FixedPart {
         entries: routines.entries,
         stop: NO_STOP,
-        window: 0,
-        window_negated: 0,
+        window: window(way),
+        window_negated: window(way).wrapping_neg(),
     };
     put(at.area + FIXED as u64, fixed.as_bytes());
     Ok(bytes)
@@ -693,7 +719,8 @@ fn record_and_end(
 struct Routines {
     bytes: Vec<u8>,
     entries: [u64; InsideCall::ALL.len()],
-    /// Where the guest's repeated string instructions run, whose faults are the guest's.
+    /// Where the guest's repeated string instructions and its answered `pushfq`'s store run, whose faults are the
+    /// guest's.
     copies: Vec<u64>,
 }
 
@@ -704,15 +731,25 @@ enum Word {
     Constant(i32),
 }
 
+/// The thread area's word at `offset`, on the segment that holds the area in `way`.
+fn area_word(way: Way, offset: u64) -> AsmMemoryOperand {
+    let word = qword_ptr(offset);
+    if way.area_segment() == Register::FS {
+        word.fs()
+    } else {
+        word.gs()
+    }
+}
+
 /// Writes a record of `said` and two words to standard error, every register and flag left as it was.
 fn keep_record(
     a: &mut CodeAssembler,
-    area: u64,
+    (area, way): (u64, Way),
     said: Said,
     first: Word,
     second: Word,
 ) -> Result<(), IcedError> {
-    let word = |field: usize| qword_ptr(scratch(field)).gs();
+    let word = |field: usize| area_word(way, scratch(field));
     let kept = [
         (core::mem::offset_of!(Scratch, rax), rax),
         (core::mem::offset_of!(Scratch, rdi), rdi),
@@ -748,10 +785,12 @@ fn keep_record(
     Ok(())
 }
 
-/// The routines the area's entries point at, assembled at `at` for the area at `area`.
-fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
+/// The routines the area's entries point at, assembled at `at` for the area at `area`, in `way`.
+fn routines(laid: &Laid, at: u64, area: u64, way: Way) -> Result<Routines, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
-    let gs_word = |offset: u64| qword_ptr(offset).gs();
+    let in_process = matches!(way, Way::InProcess(_));
+    let gs_word = |offset: u64| area_word(way, offset);
+    let record = (area, way);
     let withheld = |number: u8| {
         let k = WITHHELD.iter().position(|&w| w == number)?;
         Some((WITHHELD_VALUES + k * WORD as usize) as u64)
@@ -782,57 +821,119 @@ fn routines(laid: &Laid, at: u64, area: u64) -> Result<Routines, IcedError> {
     let code = rcx_code(&mut a, InsideCall::Answer)?;
     record_and_end(&mut a, area, Said::OtherCall, code, t)?;
     let scratch_word = |field: usize| gs_word(scratch(field));
+    let mut other_system_call = a.create_label();
     for (k, (site, label)) in laid.sites.iter().zip(&mut site_labels).enumerate() {
         a.set_label(label)?;
         let k = Word::Constant(i32::try_from(k).expect("a site's number"));
         match &site.answer {
             Answer::SystemCall => {
-                keep_record(&mut a, area, Said::SystemCall, k, Word::Register(count))?;
+                keep_record(&mut a, record, Said::SystemCall, k, Word::Register(count))?;
                 // The guest's own call, its r10 from the area where withheld; then its r11 is the flags, its
                 // rcx the next pc.
                 a.mov(scratch_word(core::mem::offset_of!(Scratch, count)), count)?;
                 if let Some(slot) = withheld(wcontainers_x86::R10) {
                     a.mov(r10, gs_word(slot))?;
                 }
-                a.syscall()?;
-                if let Some(slot) = withheld(wcontainers_x86::R11) {
-                    a.mov(gs_word(slot), r11)?;
+                let keep_flags = |a: &mut CodeAssembler| match withheld(wcontainers_x86::R11) {
+                    Some(slot) => a.mov(gs_word(slot), r11),
+                    None => Ok(()),
+                };
+                if in_process {
+                    // `write`'s buffer is a guest address, B less in the window; `exit_group` passes none. Told
+                    // apart without a flag: rcx, which the call overwrites, is zero for the one asked of it.
+                    let mut write = a.create_label();
+                    let mut exit = a.create_label();
+                    let mut done = a.create_label();
+                    a.lea(rcx, qword_ptr(rax - libc::SYS_write as i32))?;
+                    a.jrcxz(write)?;
+                    a.lea(rcx, qword_ptr(rax - libc::SYS_exit_group as i32))?;
+                    a.jrcxz(exit)?;
+                    a.jmp(other_system_call)?;
+                    a.set_label(&mut write)?;
+                    a.mov(t, gs_word(WINDOW as u64))?;
+                    a.lea(rsi, qword_ptr(rsi + t))?;
+                    a.syscall()?;
+                    keep_flags(&mut a)?;
+                    a.mov(t, gs_word(WINDOW_NEGATED as u64))?;
+                    a.lea(rsi, qword_ptr(rsi + t))?;
+                    a.jmp(done)?;
+                    a.set_label(&mut exit)?;
+                    a.syscall()?;
+                    a.set_label(&mut done)?;
+                } else {
+                    a.syscall()?;
+                    keep_flags(&mut a)?;
                 }
                 a.mov(count, scratch_word(core::mem::offset_of!(Scratch, count)))?;
                 a.mov(rcx, site.next)?;
             }
             Answer::String { bytes, .. } => {
-                keep_record(&mut a, area, Said::StringBefore, k, Word::Register(rcx))?;
+                keep_record(&mut a, record, Said::StringBefore, k, Word::Register(rcx))?;
                 keep_record(
                     &mut a,
-                    area,
+                    record,
                     Said::StringPointers,
                     Word::Register(rsi),
                     Word::Register(rdi),
                 )?;
+                // In process the string runs on the window: both pointers B more around it, by `lea`, which
+                // writes no flag.
+                let rebase = |a: &mut CodeAssembler, by: usize| {
+                    if in_process {
+                        a.mov(t, gs_word(by as u64))?;
+                        a.lea(rsi, qword_ptr(rsi + t))?;
+                        a.lea(rdi, qword_ptr(rdi + t))?;
+                    }
+                    Ok::<_, IcedError>(())
+                };
+                rebase(&mut a, WINDOW)?;
                 let mut copy = a.create_label();
                 a.set_label(&mut copy)?;
                 a.db(bytes)?;
                 copies.push(copy);
+                rebase(&mut a, WINDOW_NEGATED)?;
                 keep_record(
                     &mut a,
-                    area,
+                    record,
                     Said::StringAfter,
                     Word::Register(rcx),
                     Word::Constant(0),
                 )?;
                 keep_record(
                     &mut a,
-                    area,
+                    record,
                     Said::StringPointers,
                     Word::Register(rsi),
                     Word::Register(rdi),
                 )?;
             }
+            Answer::Flags => {
+                // The flags as the guest has them, by `pushfq` on a stack of the blob's own, then stored at the
+                // guest's rsp - 8 in the window.
+                let rsp_kept = scratch_word(core::mem::offset_of!(Scratch, rsp));
+                let stack_top = area
+                    + scratch(core::mem::offset_of!(Scratch, stack))
+                    + size_of::<[u64; 2]>() as u64;
+                a.mov(rsp_kept, rsp)?;
+                a.mov(rsp, stack_top)?;
+                a.pushfq()?;
+                a.pop(t)?;
+                a.mov(rsp, rsp_kept)?;
+                a.mov(dispatch, rcx)?;
+                a.lea(ecx, qword_ptr(rsp - WORD as i32))?;
+                let mut store = a.create_label();
+                a.set_label(&mut store)?;
+                a.mov(qword_ptr(rcx).gs(), t)?;
+                copies.push(store);
+                a.lea(rsp, qword_ptr(rsp - WORD as i32))?;
+                a.mov(rcx, dispatch)?;
+            }
         }
         a.mov(t, site.t)?;
         a.jmp(t)?;
     }
+    a.set_label(&mut other_system_call)?;
+    record_and_end(&mut a, area, Said::OtherSystemCall, rax, rax)?;
     let exit = InsideCall::Exit.code() as usize;
     a.set_label(&mut entry_labels[exit])?;
     record_and_end(&mut a, area, Said::ExitMiss, t, t)?;
@@ -924,8 +1025,9 @@ fn handler(laid: &Laid, copies: &[u64], area: u64) -> Result<Vec<u8>, IcedError>
 
 /// The code that sets the blob up and enters the program's first piece with the state the reference starts a
 /// blob with: its registers and flags as they are here, which it keeps aside first.
-fn prologue(blob: &Blob, laid: &Laid, at: &Places) -> Result<Vec<u8>, IcedError> {
+fn prologue(blob: &Blob, laid: &Laid, at: &Places, way: Way) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(wcontainers_x86::MODE_BITS)?;
+    let base = window(way);
     let mut saved: Vec<CodeLabel> = (0..GENERAL_REGISTERS).map(|_| a.create_label()).collect();
     let mut flags = a.create_label();
     let mut below = a.create_label();
@@ -956,10 +1058,17 @@ fn prologue(blob: &Blob, laid: &Laid, at: &Places) -> Result<Vec<u8>, IcedError>
         libc::SYS_prctl,
         &[libc::PR_SET_DUMPABLE as u64, u64::from(false)],
     )?;
-    // The program at its own address.
+    // The program at its own address, in the window in process, with its stack as the reference made it and the
+    // probe's page of zeros below; nothing else is mapped within 2^35 bytes under that.
     let image_bytes = (blob.bytes.len() as u64).next_multiple_of(PAGE);
-    map(&mut a, blob.load, image_bytes, read_write)?;
-    copy(&mut a, blob.load, at.image, blob.bytes.len() as u64)?;
+    map(&mut a, base + blob.load, image_bytes, read_write)?;
+    copy(&mut a, base + blob.load, at.image, blob.bytes.len() as u64)?;
+    let stack = STACK_TOP - blob.stack_bytes;
+    if base != 0 {
+        map(&mut a, base + stack, blob.stack_bytes, read_write)?;
+        copy(&mut a, base + stack, stack, blob.stack_bytes)?;
+        map(&mut a, base - PROBE_PAGE, PAGE, libc::PROT_READ)?;
+    }
     // The first level: every lower region's word the second level less that region's table offset.
     let first = at.area + FIRST_LEVEL as u64;
     let first_bytes = LOWER_REGIONS * WORD;
@@ -1018,13 +1127,30 @@ fn prologue(blob: &Blob, laid: &Laid, at: &Places) -> Result<Vec<u8>, IcedError>
             ],
         )?;
     }
-    // The thread area on GS, the withheld registers' guest values in it.
-    a.mov(rax, at.area)?;
-    a.wrgsbase(rax)?;
+    // The thread area on GS, the withheld registers' guest values in it. In process it is on FS and the window
+    // on GS, the guest's bases kept in the area.
+    if base == 0 {
+        a.mov(rax, at.area)?;
+        a.wrgsbase(rax)?;
+    } else {
+        for (read, word) in [(true, GUEST_FS_BASE), (false, GUEST_GS_BASE)] {
+            if read {
+                a.rdfsbase(rax)?;
+            } else {
+                a.rdgsbase(rax)?;
+            }
+            a.mov(rbx, at.area + word as u64)?;
+            a.mov(qword_ptr(rbx), rax)?;
+        }
+        a.mov(rax, at.area)?;
+        a.wrfsbase(rax)?;
+        a.mov(rax, base)?;
+        a.wrgsbase(rax)?;
+    }
     for (k, &w) in WITHHELD.iter().enumerate() {
         a.mov(rax, qword_ptr(saved[usize::from(w)]))?;
         a.mov(
-            qword_ptr(WITHHELD_VALUES as u64 + k as u64 * WORD).gs(),
+            area_word(way, WITHHELD_VALUES as u64 + k as u64 * WORD),
             rax,
         )?;
     }
@@ -1034,6 +1160,10 @@ fn prologue(blob: &Blob, laid: &Laid, at: &Places) -> Result<Vec<u8>, IcedError>
     a.push(qword_ptr(flags))?;
     a.popfq()?;
     a.mov(qword_ptr(rsp - WORD as i32), u)?;
+    if base != 0 {
+        // The reference's stack goes, so that only the window holds the guest's memory; the call keeps the flags.
+        system_call(&mut a, libc::SYS_munmap, &[stack, blob.stack_bytes])?;
+    }
     for (n, &label) in saved.iter().enumerate() {
         if n == RSP || WITHHELD.contains(&(n as u8)) {
             continue;
