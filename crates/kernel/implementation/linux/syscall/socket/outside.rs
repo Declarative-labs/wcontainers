@@ -809,6 +809,27 @@ pub(super) fn ready<S: crate::System>(
     super::write_space(kernel, cx, &socket);
 }
 
+/// Hears what the system knows now of `socket`'s connection to the outside, by polling its kept
+/// wait once, so that a call looking at the socket is not behind the host: a reset the host had
+/// before bytes the program already read on another connection is known, as on Linux.
+pub(super) fn hear_now<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
+    let Some(id) = socket
+        .borrow()
+        .inet
+        .as_deref()
+        .and_then(|inet| inet.outside)
+    else {
+        return;
+    };
+    if let Some(answer) = kernel.waiting.poll_now(WaitFor::Ready(id)) {
+        kernel.waiting_answered(cx, WaitFor::Ready(id), answer);
+    }
+}
+
 /// Pulls what the system has for a connection into its socket's queue, up to its receive buffer,
 /// and waits for more once it has none: bytes or datagrams, the end of a stream, or a reset.
 pub(super) fn pull_and_wait<S: crate::System>(

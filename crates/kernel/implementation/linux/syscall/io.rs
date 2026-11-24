@@ -3542,6 +3542,14 @@ fn select_typed<S: crate::System>(
         };
     }
     let asked = |set: &[u8], fd: u64| set[(fd / 8) as usize] & (1 << (fd % 8)) != 0;
+    for fd in 0..count {
+        if wanted.iter().any(|set| asked(set, fd)) {
+            let found = kernel.files(tid).file(fd as i32);
+            if let Ok(file) = found {
+                super::socket::hear_outside(kernel, cx, &file);
+            }
+        }
+    }
     let files = kernel.files(tid);
     let mut watching = false;
     for fd in 0..count {
@@ -3614,8 +3622,10 @@ fn ppoll_typed<S: crate::System>(
         let revents = if fd < 0 {
             0
         } else {
-            match kernel.files(tid).file(fd) {
+            let found = kernel.files(tid).file(fd);
+            match found {
                 Ok(file) => {
+                    super::socket::hear_outside(kernel, cx, &file);
                     poll_mask(kernel, tid, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
                 }
                 Err(_) => POLLNVAL as u16,

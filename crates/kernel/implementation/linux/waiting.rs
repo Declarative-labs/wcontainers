@@ -224,6 +224,17 @@ impl Waiting {
         None
     }
 
+    /// The answer of the kept call `about`, if polling it now, woken or not, finds one.
+    pub fn poll_now(&mut self, about: WaitFor) -> Option<Answer> {
+        let index = self.live.iter().position(|(kept, _)| *kept == about)?;
+        let Poll::Ready(answer) = self.live[index].1.poll() else {
+            return None;
+        };
+        let (_, cell) = self.live.swap_remove(index);
+        self.recycle(cell);
+        Some(answer)
+    }
+
     /// Drops the calls `which` names, unanswered: each is cancelled as its system's future says.
     pub fn drop_where(&mut self, mut which: impl FnMut(&WaitFor) -> bool) {
         let mut index = 0;
@@ -355,6 +366,37 @@ pub(crate) mod tests {
             assert!(waiting.live.is_empty());
             assert_eq!(waiting.free.len(), 1);
         }
+    }
+
+    #[test]
+    fn a_call_polled_now_answers_before_its_waker_fires_and_only_itself() {
+        let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
+        let waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let other: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
+        let other_waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let mut waiting = Waiting::default();
+        assert!(
+            waiting
+                .start(about(1), waiting_call!(Gate { ready, waker }))
+                .is_none()
+        );
+        let gate = Gate {
+            ready: other,
+            waker: other_waker,
+        };
+        assert!(waiting.start(about(2), waiting_call!(gate)).is_none());
+        assert!(waiting.poll_now(about(1)).is_none());
+        assert!(waiting.poll_now(about(3)).is_none());
+        ready.set(true);
+        other.set(true);
+        assert!(!waiting.woken());
+        assert!(matches!(
+            waiting.poll_now(about(1)),
+            Some(Answer::Backend(Err(wcontainers_abi::HostError::Closed), _))
+        ));
+        assert!(waiting.poll_now(about(1)).is_none());
+        assert_eq!(waiting.live.len(), 1);
+        assert_eq!(waiting.live[0].0, about(2));
     }
 
     #[test]

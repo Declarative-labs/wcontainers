@@ -492,6 +492,18 @@ pub(crate) fn of(file: &FileRef) -> Option<SocketRef> {
     }
 }
 
+/// Hears what the system knows now of the connection to the outside behind `file`, if it is a
+/// socket with one, before a call looks at its state.
+pub(super) fn hear_outside<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    file: &FileRef,
+) {
+    if let Some(socket) = of(file) {
+        outside::hear_now(kernel, cx, &socket);
+    }
+}
+
 /// The socket a descriptor names: EBADF without one, ENOTSOCK if it is no socket.
 fn socket_of(kernel: &Kernel, tid: Tid, fd: u64) -> Result<(FileRef, SocketRef), Errno> {
     let file = super::io::file(kernel, tid, fd)?;
@@ -3965,6 +3977,9 @@ pub(super) fn getsockopt<S: crate::System>(
         return Err(Errno::EOPNOTSUPP);
     }
     use crate::linux::net::*;
+    if name == SO_ERROR {
+        outside::hear_now(kernel, cx, &socket);
+    }
     if name == SO_PEERPIDFD {
         return peer_pidfd(kernel, cx, tid, &socket, value, length, room);
     }
