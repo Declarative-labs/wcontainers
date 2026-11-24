@@ -281,7 +281,15 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
     }
     // SAFETY: the blitter was made on this context.
     if !unsafe { util_blitter_is_blit_supported(blitter, &info) } {
-        refuse(format_args!("a blit Gallium's blitter does not make"));
+        refuse(format_args!(
+            "a blit Gallium's blitter does not make (Gallium's formats {} to {}, of textures in {} \
+             and {}, mask {:#x})",
+            info.src.format,
+            info.dst.format,
+            from.base.format(),
+            to.base.format(),
+            info.mask
+        ));
     }
     // SAFETY: as above; the blitter is used by this context's thread only.
     save(context, unsafe { &mut *blitter });
