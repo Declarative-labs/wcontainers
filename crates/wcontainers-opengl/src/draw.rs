@@ -2261,8 +2261,6 @@ fn draw<B: Backend>(
     } else {
         vertex_shader
     };
-    // Whether the geometry stage is that pass-through, which passes on the API's own primitives.
-    let mut through_pass_through = false;
     if let Some(made) = last
         .filter(|_| gs.is_null())
         .and_then(|s| s.pass_through.as_ref())
@@ -2286,7 +2284,6 @@ fn draw<B: Backend>(
             .hit(SlowPath::VertexStorageAsCompute);
         gs = &**pass_through;
         geometry_shader = Some(&**pass_through);
-        through_pass_through = true;
     }
     if tessellated {
         // OpenGL draws nothing through tessellation but patches (the API refuses others).
@@ -2667,12 +2664,9 @@ fn draw<B: Backend>(
             )?,
             Some(_) => {
                 let square = square_block(&context.bound.viewport, raster);
-                // A rewritten geometry program would stream and count squares, not its points;
-                // behind the pass-through the API's points are the geometry stage's, counted as
-                // drawn (`draw_squares`), while streaming would run the vertex program twice.
+                // A rewritten geometry program would stream and count squares, not its points.
                 if geometry_shader.is_some()
-                    && (context.streams.active()
-                        || (!context.counting.is_empty() && !through_pass_through))
+                    && (context.streams.active() || !context.counting.is_empty())
                 {
                     return refused(format_args!(
                         "points drawn as squares after tessellation or a geometry program while \
