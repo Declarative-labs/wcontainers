@@ -11,7 +11,8 @@
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
-    Kernel, MemoryError, Process, ReplayDeterminism, TaskId, ThreadOrdering, WatchesFor,
+    ExecutionConfig, ExecutorOf, Kernel, MemoryError, Process, ReplayDeterminism, TaskId,
+    ThreadOrdering, WatchesFor,
 };
 
 /// An id no kernel hands out: past the largest a task can have.
@@ -78,6 +79,59 @@ pub fn taken_tasks_are_resumed<K: Kernel>(kernel: K) {
         .collect();
     again.sort_unstable();
     assert_eq!(again, processes, "the resumed threads, each once");
+}
+
+/// Checks that a process taken off the kernel comes back whole: its context is taken in, then its
+/// threads, and it is on the kernel again with its thread to take.
+pub fn suspended_process_is_resumed<K: Kernel>(kernel: K) {
+    for process in processes_of(&kernel) {
+        let (context, tasks) = kernel
+            .suspend_process(process)
+            .expect("the process is on the kernel");
+        let tasks: Vec<K::SuspendedTask> = tasks.map(|(_, task)| task).collect();
+        assert!(
+            kernel.copy_process_context(process).is_none(),
+            "a suspended process is off the kernel"
+        );
+        assert!(
+            kernel.resume_process(context, serial::<K>()).is_none(),
+            "the kernel took the context in"
+        );
+        assert_eq!(kernel.resume_tasks(tasks).count(), 0, "and its threads");
+        let taken: Vec<TaskId> = kernel
+            .suspend_tasks(&[process])
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(taken, [process], "the resumed process's thread");
+    }
+}
+
+/// Checks that a copy of a process's context, resumed while the process it was copied from is on
+/// the kernel, is handed back, and the process stays as it was.
+pub fn copy_beside_its_process_is_handed_back<K: Kernel>(kernel: K) {
+    for process in processes_of(&kernel) {
+        let copy = kernel
+            .copy_process_context(process)
+            .expect("the process is on the kernel");
+        assert!(
+            kernel.resume_process(copy, serial::<K>()).is_some(),
+            "a second context of a process on the kernel is handed back"
+        );
+        let taken: Vec<TaskId> = kernel
+            .suspend_tasks(&[process])
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(taken, [process], "the process's one thread");
+    }
+}
+
+/// The way of running a process every kernel supports.
+fn serial<K: Kernel>() -> ExecutionConfig<ExecutorOf<K>> {
+    ExecutionConfig {
+        thread_ordering: ThreadOrdering::Serial,
+        replay_determinism: ReplayDeterminism::Exact,
+        translator: Default::default(),
+    }
 }
 
 /// Returns the ids below [`PROBED`] the kernel has a process of, in order.
@@ -384,6 +438,14 @@ macro_rules! tests {
         #[test]
         fn taken_tasks_are_resumed() {
             $crate::taken_tasks_are_resumed($value);
+        }
+        #[test]
+        fn suspended_process_is_resumed() {
+            $crate::suspended_process_is_resumed($value);
+        }
+        #[test]
+        fn copy_beside_its_process_is_handed_back() {
+            $crate::copy_beside_its_process_is_handed_back($value);
         }
         $crate::tests!(@Process $process ($value) $(($process_value))?);
     };
