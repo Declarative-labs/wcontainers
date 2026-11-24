@@ -7,12 +7,12 @@ use std::path::PathBuf;
 #[path = "../wcontainers-nir/mesa/meson_build.rs"]
 mod meson_build;
 use meson_build::{
-    CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, mesa_defines,
-    mesa_flags, source_folder,
+    ASSIGN, CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, RUSTC_ENV,
+    mesa_defines, mesa_flags, source_folder,
 };
 
 /// The Gallium headers the driver is written against, and the bindings made of them in `OUT_DIR`
-/// (`src/gallium.rs` includes them).
+/// (`src/gallium.rs` includes them, by the path this gives it in `WCONTAINERS_GALLIUM_BINDINGS`).
 const GALLIUM_HEADER: &str = "bridge/gallium.h";
 /// The bit fields bindgen cannot lay out as Visual C++ does, read in C (`bridge/fields.h`).
 const FIELDS: &str = "bridge/fields.c";
@@ -28,7 +28,7 @@ const ALLOWED_FUNCTIONS: &str = "u_init_pipe_screen_caps|u_upload_create_default
      u_default_get_sample_position|u_default_texture_subdata|\
      u_transfer_helper_(create|destroy|transfer_map|transfer_unmap|transfer_flush_region)";
 const ALLOWED_CONSTANTS: &str = "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*|PV_(FIRST|LAST)|PR_DISABLE|U_TRANSLATE_.*|\
-     U_TRANSFER_HELPER_.*";
+     U_TRANSFER_HELPER_.*|MAX_GEOMETRY_(OUTPUT_VERTICES|TOTAL_OUTPUT_COMPONENTS|SHADER_INVOCATIONS)";
 /// The Gallium file whose defines (and, for `FIELDS`, C standard) the bindings take from Mesa's
 /// compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
@@ -91,5 +91,9 @@ fn main() {
     bindings
         .write_to_file(&file)
         .expect("the bindings are written");
+    println!(
+        "{RUSTC_ENV}WCONTAINERS_GALLIUM_BINDINGS{ASSIGN}{}",
+        file.display()
+    );
     println!("{CFG}");
 }

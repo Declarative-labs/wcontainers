@@ -12,4 +12,4 @@
     reason = "bindings made by bindgen, in Mesa's names"
 )]
 
-include!(concat!(env!("OUT_DIR"), "/gallium.rs"));
+include!(env!("WCONTAINERS_GALLIUM_BINDINGS"));

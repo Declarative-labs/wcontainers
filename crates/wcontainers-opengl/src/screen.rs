@@ -220,13 +220,11 @@ pub(crate) fn glsl_version(limits: &wcontainers_gpu::Limits) -> c_uint {
     }
 }
 
-/// A geometry program's limits, the least `OES_geometry_shader` allows:
-/// the stage helper sizes its records by the program's own declarations.
-const GEOMETRY_EMITTED_VERTICES: c_uint = 256;
-/// Its output components: as many as its least emitted vertices with a position each.
-const GEOMETRY_OUTPUT_COMPONENTS: c_uint =
-    GEOMETRY_EMITTED_VERTICES * naga::VectorSize::Quad as c_uint;
-const GEOMETRY_INVOCATIONS: c_uint = 32;
+/// A geometry program's limits, the least `OES_geometry_shader` allows, which are Mesa's own
+/// (`main/config.h`): the stage helper sizes its records by the program's own declarations.
+const GEOMETRY_EMITTED_VERTICES: c_uint = MAX_GEOMETRY_OUTPUT_VERTICES;
+const GEOMETRY_OUTPUT_COMPONENTS: c_uint = MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS;
+const GEOMETRY_INVOCATIONS: c_uint = MAX_GEOMETRY_SHADER_INVOCATIONS;
 
 /// The values a tessellation control program writes once a patch, the least OpenGL 4.0 and
 /// `OES_tessellation_shader` allow (120 components): the stage helper sizes its patch records by

@@ -4,6 +4,7 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "indices/u_indices.h"
+#include "mesa/main/config.h"
 #include "nir/tgsi_to_nir.h"
 #include "util/format/u_format.h"
 #include "util/u_blitter.h"
