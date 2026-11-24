@@ -5000,7 +5000,7 @@ version = "0.1.0"
 name = "wcontainers-executor"
 version = "0.1.0"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.21",
  "wcontainers-abi",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
@@ -5020,10 +5020,16 @@ dependencies = [
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-executor",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-processor-architecture-conformance",
 ]
 
