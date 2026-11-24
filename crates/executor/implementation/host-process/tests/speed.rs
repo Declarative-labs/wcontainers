@@ -10,6 +10,10 @@
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 mod guest_build;
+#[expect(
+    dead_code,
+    reason = "the policy's turns are compared by the kernel test alone"
+)]
 mod kernel_host;
 
 use std::process::Command;
@@ -464,6 +468,7 @@ fn in_kernel<E: Execution<Failure = core::convert::Infallible>>(
         environment: &[b"PATH=/"],
         hostname: b"wcontainers",
         groups: &[],
+        limit: None,
     };
     let ran = run_container(cpu, kernel, 1, REALTIME_NANOSECONDS, &program);
     assert!(
@@ -569,6 +574,7 @@ fn busybox_sh_starting_programs() {
         environment: &environment,
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
+        limit: None,
     };
     let mut cpu = HostProcessExecutor::new(host());
     let mut runs = Vec::new();

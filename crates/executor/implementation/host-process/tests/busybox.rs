@@ -6,6 +6,10 @@
 //! many seeds, it and the ones after it.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
+#[expect(
+    dead_code,
+    reason = "the policy's turns are compared by the kernel test alone"
+)]
 mod kernel_host;
 
 use std::sync::{Arc, OnceLock};
@@ -76,6 +80,7 @@ fn ours(
         environment: &environment,
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
+        limit: None,
     };
     let ran = run_container(&mut host_process(), kernel, seed, wall_start, &program);
     (

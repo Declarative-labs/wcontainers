@@ -103,13 +103,17 @@ pub struct Program<'a> {
     pub environment: &'a [&'a [u8]],
     pub hostname: &'a [u8],
     pub groups: &'a [u32],
+    /// The container's ceiling and the memory size it is told, the same for every executor compared; where none, the
+    /// executor's own ceiling is both.
+    pub limit: Option<u64>,
 }
 
-/// How a container's run ended: its first process's wait status, its output and its root's files.
+/// How a container's run ended: its first process's wait status, its output, its root's files and the policy's turns.
 pub struct Ran {
     pub status: i32,
     pub output: Output,
     pub files: Vec<FileRecord>,
+    pub turns: u64,
 }
 
 /// Runs `program` in `kernel`, which holds the container's files, on `cpu` at the root, until its first process ends.
@@ -125,7 +129,7 @@ pub fn run_container<E: Execution<Failure = core::convert::Infallible>>(
         random: Mutex::new(fastrand::Rng::with_seed(seed)),
     };
     let policy = Arc::new(TestPolicy::new(recording, seed, wall_start));
-    let memory_bytes = cpu.address_space().end;
+    let memory_bytes = program.limit.unwrap_or(cpu.address_space().end);
     let start = Start {
         path: program.path,
         arguments: program.arguments,
@@ -137,7 +141,7 @@ pub fn run_container<E: Execution<Failure = core::convert::Infallible>>(
         standard: policy.standard(None),
         address_space_bytes: ARM64_ADDRESS_SPACE_BYTES,
         memory_bytes,
-        ceiling: None,
+        ceiling: program.limit,
         options: StartOptions::default(),
     };
     kernel.start(cpu, &policy, start);
@@ -150,6 +154,7 @@ pub fn run_container<E: Execution<Failure = core::convert::Infallible>>(
     let files = kernel.root_files(cpu);
     drop(kernel);
     let policy = Arc::into_inner(policy).expect("the kernel keeps no call on the policy");
+    let turns = policy.turns();
     let output = policy
         .into_services()
         .output
@@ -159,5 +164,6 @@ pub fn run_container<E: Execution<Failure = core::convert::Infallible>>(
         status,
         output,
         files,
+        turns,
     }
 }
