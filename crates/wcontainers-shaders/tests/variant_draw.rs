@@ -1195,15 +1195,15 @@ fn variants_draw_as_the_native_feature_does() {
         }
 
         // Depth clamped instead of clipped, with depth reaching past both ends of the clip volume and
-        // a depth range of 0.25 to 0.75: against real Direct3D 11 with DepthClipEnable false, depth
-        // buffers compared as f32 steps. Clipping must change Direct3D's depth, or the case shows
-        // nothing.
-        {
+        // depth ranges of 0.25 to 0.75 and 0.1 to 0.45: against real Direct3D 11 with
+        // DepthClipEnable false, depth buffers compared as f32 steps. Clipping must change
+        // Direct3D's depth, or the case shows nothing.
+        for range in [[0.25f32, 0.75], [0.1, 0.45]] {
             let code = [
                 bytecode(&format!("vs_deep.{route}")),
                 bytecode(&format!("ps_textured.{route}")),
             ];
-            let range = [0.25f32, 0.75];
+            let [near, far] = range;
             let drawn = |clip_off| {
                 direct3d_11(
                     &d3d,
@@ -1222,7 +1222,9 @@ fn variants_draw_as_the_native_feature_does() {
             };
             let (reference, clipped) = (drawn(true), drawn(false));
             let (changed, _) = differ(&clipped, &reference, Format::Depth32Float);
-            eprintln!("depth_clamp {route}: clipping changes {changed} of Direct3D's texels");
+            eprintln!(
+                "depth_clamp {route} at {near} to {far}: clipping changes {changed} of Direct3D's texels"
+            );
             assert!(changed > 0);
             let mut variant = grid_draw(&code, dxil, &grid);
             variant.setup.depth = true;
@@ -1245,7 +1247,9 @@ fn variants_draw_as_the_native_feature_does() {
                 ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
             ] {
                 results.push(compare(
-                    format!("depth_clamp {route} {back_end} against direct3d 11"),
+                    format!(
+                        "depth_clamp {route} {back_end} at {near} to {far} against direct3d 11"
+                    ),
                     &reference,
                     &texels,
                     Format::Depth32Float,
@@ -1278,7 +1282,7 @@ fn variants_draw_as_the_native_feature_does() {
             ] {
                 results.push(compare(
                     format!(
-                        "depth_clamp {route} {back_end} without a pixel shader against direct3d 11"
+                        "depth_clamp {route} {back_end} at {near} to {far} without a pixel shader against direct3d 11"
                     ),
                     &reference,
                     &texels,
