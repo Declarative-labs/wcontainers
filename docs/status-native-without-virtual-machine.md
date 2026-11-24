@@ -3,6 +3,39 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 13 (2026-11-24, round 5 run 5): a guest process's start back from 42 ms to 0.17 ms
+
+Scratch w2/run13 (send.sh and send-x86.sh as run 12's; compare.sh builds zygote_time.rs and the speed test with
+the change and with it reversed, `CHANGE_B64`, then alternates them, `ROUNDS`, `STARTS`, `PROGRAMS`; regress.sh
+runs the new stub test with and without the change; probe.patch and strace.sh found the cause; outputs *-arm.out,
+*-x86.out). No primitive has landed (enforcement-primitive's FOR-THE-OWNER.md unchanged since run 12) and
+`page-table-split` still holds only its interface commit, so form I's executor stays blocked. No line with `unsafe`
+added (host-process's count in the root manifest is unchanged, 13).
+- Found: run 12's 60 ms zygote start on Graviton4 was not the frame probe. Timing its steps and tracing it
+  (probe1-arm.out, strace1-arm.out) put 42 ms in `fork_stub` before the zygote is asked, and 20 ms in the
+  `munmap` of the stub's thread pages: since run 11 (166771b41) `write_records` wrote the iovec and `stack_t` into
+  every one of the 32,768 control pages at every stub's start, a page fault each and 128 MiB of shared memory per
+  guest process. Every guest process paid it on both architectures, so every program start since run 11 did.
+- Fixed, e992384c9: thread 0's records are written at the stub's start and every other thread's when
+  `new_thread` takes its index (records are constant per index, so a reused index is written again unchanged).
+  New test tests/stub.rs `a_stub_s_start_touches_only_the_thread_pages_of_threads_made` (the resident size of every
+  thread-pages mapping in the embedder under an eighth of the control pages): passes with the fix, fails without it
+  (regress1-arm.out: 117 to 134 MB resident).
+- Measured, alternating rounds, 3 rounds of 50 each, before then after (compare1-arm.out, Graviton4, load 25 to 42;
+  compare1-x86.out, Xeon, load 6 to 10): a stub's fork 41.9, 41.9, 41.1 ms then 0.16, 0.17, 0.17 ms on Graviton4,
+  45.5, 43.9, 44.9 ms then 0.17, 0.17, 0.17 ms on the Xeon; fork to its end 62.0 to 60.1 ms then 0.24 to 0.25 ms
+  (Graviton4), 54.7 to 52.7 ms then 0.23 ms (Xeon); a zygote's start on Graviton4 62.5, 62.8, 60.5 ms then 1.57,
+  1.57, 1.56 ms (the rest is the frame probe's 1 ms wait for a stop sent too early), on the Xeon unchanged at
+  about 0.14 ms (no frame probe there). busybox `sh` starting 200 programs (Graviton4, second run): 26.0, 25.6,
+  25.6 s then 0.87, 0.82, 0.79 s, 3.57 to 4.32 times the model. The busybox test's model takes the process
+  creation it measures with our own stub's fork, so it hid this (1.02 to 1.03 times the model before the fix):
+  a regression of our creation raises the model with it.
+- Verified: clippy with warnings denied clean on Graviton4 and the Xeon; on Graviton4 every test binary of the
+  crate run by run 12's test.sh passes (test1-arm.out, load 21 to 26: pages, zygote, stub, files, host, threads,
+  stop, touch, memory, slice, placement, embedder, floor, step, translated, run, kernel, busybox, interrupt, copy,
+  forged, in_process_attacks); on the Xeon pages, zygote, stub, files, host, threads, stop, touch, memory, slice,
+  placement, embedder and step pass (test1-x86.out, load 2 to 9).
+
 ## W2 run 12 (2026-11-24, round 5 run 4): the zygote exec'd from its own image, six unsafe lines fewer
 
 Scratch w2/run12 (send.sh and send-x86.sh as run 11's; test.sh as run 11's; time.sh with zygote_time.rs, `MODE`
@@ -29,7 +62,8 @@ for agents, since it needs no primitive and removes unsafe code (the owner's fir
   195, 195, 196 µs median from a small embedder and 19.7, 19.6, 19.7 ms from one holding 1 GiB; as an exec 127,
   131, 137 µs and 125, 125, 133 µs. Graviton4 (load 18 to 24): 60 to 63 ms either way and with either embedder, all
   but a little of it the start's frame probe (a stub stopped in a spinning turn, `probe_frames`); no difference
-  beyond the noise. That probe's 60 ms per start is worth a look of its own (not done).
+  beyond the noise. (Wrong cause: run 13 found the 60 ms in the probe's stub fork writing every thread index's
+  records, and fixed it.)
 - New host needs (plan 6): /proc mounted (as glibc's `fexecve` without `execveat`), a memfd the host lets run
   (`vm.memfd_noexec` 2 refuses it), `execve` allowed in the embedder; gVisor not tried this run.
 - Found and fixed (tests/run.rs): `a_new_thread_reads_zeros_and_a_thread_resumed_reads_its_own_registers` failed 3
@@ -54,7 +88,7 @@ so host-process's four page-table methods are unchanged.
   owner); the copy test's panic line is its own expected panic.
 - Built, 166771b41, round 5's item 3 (plan 3.7 as corrected in run 10): every record the stub hands the host kernel
   only to read is on its thread's read-only control page: `control::IOVEC` (the receive's one byte on the register
-  page) and `control::STACK_RECORD` (the thread's `stack_t`), written for every index by `ThreadPages::write_records`
+  page) and `control::STACK_RECORD` (the thread's `stack_t`), written (until run 13) for every index by `ThreadPages::write_records`
   before the stub starts, and `control::CPU_SET`, written by `give` for a turn's `Place` (`write_cpu_set`; a CPU past
   the set or a second `Place` in one turn is `INVAL` before anything is written; the stub no longer bounds the CPU).
   The commands end at `CPU_SET` (`MAX_COMMANDS` 121 on 4 KiB pages, was 126). The receive's header, byte and control

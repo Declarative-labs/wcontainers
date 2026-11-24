@@ -668,8 +668,10 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
     What closes it, before parallel threads exist (designed in W2 run 9, built in W2 run 11 on both architectures
     with no line of `unsafe` added): every structure a routine hands the host kernel only to read is on the
     thread's control page, which the embedder writes and the stub maps read-only: the `recvmsg` iovec, which names
-    one byte of the thread's register page, and the `sigaltstack` record of every thread, both written once for
-    every index before the stub starts, and the cpu set of `sched_setaffinity`, which the embedder writes beside
+    one byte of the thread's register page, and the `sigaltstack` record of every thread, both written for an
+    index when the embedder takes it for a thread (thread 0's before the stub starts; writing every index's at the
+    start cost a page fault per control page, about 42 ms and 128 MiB of shared memory per guest process, MEASURED
+    W2 run 13), and the cpu set of `sched_setaffinity`, which the embedder writes beside
     the turn that asks for it (one move to a CPU a turn). The `recvmsg` header
     itself cannot move there: the host kernel writes `msg_controllen` and `msg_flags` back into it, and with the
     header on a read-only page `recvmsg` fails with `EFAULT` after it has taken the datagram and installed the
@@ -826,9 +828,9 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   missing, and a host that lets a memfd be executed (Linux 6.3's `vm.memfd_noexec` at 2 refuses it: the form is
   then unavailable, named by the host's error). Measured (W2 run 12, alternating rounds of 200 starts each): on
   the Xeon (load 2 to 4) a start to the first answer took 195 µs as a fork from a small embedder and 19.7 ms from
-  one holding 1 GiB, and takes 130 µs from either; on Graviton4 (load 18 to 24) both take about 60 ms, all but a
-  little of it the start's probe of the host's signal frames (a stub stopped in a spinning turn), with no
-  difference beyond the noise.
+  one holding 1 GiB, and takes 130 µs from either. On Graviton4 a start takes about 1.6 ms (W2 run 13, load 18 to
+  42), nearly all of it the start's probe of the host's signal frames (a stub stopped in a spinning turn); run 12's
+  60 ms there was a stub's fork writing every thread index's records, since fixed.
 - The zygote's own end (the host's out-of-memory killer, or any fault of its own) takes every stub with it
   (`PR_SET_PDEATHSIG`), so every guest process of every P container of that embedder process ends as killed by
   SIGKILL, as the host's out-of-memory killer would end them, counted "zygote ended", warned. The embedder learns it
