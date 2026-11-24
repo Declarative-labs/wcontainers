@@ -54,16 +54,19 @@ Fewer uses, still on the list (counts are the `unsafe` words left in the crate's
   icmp suite (1) are gone; those four crates inherit the workspace lints. Options a typed call covers go through it
   (socket2, rustix, nix: linux-socket-options options.rs `set_int` and `get_int`, filters through socket2's
   `attach_filter` and nix's `AttachReusePortCbpf`, FIONREAD through rustix's `ioctl_fionread`, the congestion name
-  through socket2). The rest go through the primitive crates/socket-options: a closed list of 85 options the kernel
-  reads and writes no further than the length given, whatever the value holds (`PlainOption`, each with its value
-  length from the uapi type), the three queue counts (`QueuedCount`), and three requests whose counts or addresses
-  the primitive sets itself: `TCP_AO_GET_KEYS` for one key, `MCAST_MSFILTER`'s source filter, and `MPTCP_FULL_INFO`.
-  Its four unsafe calls are in crates/socket-options/implementation/linux, each under its own
-  `#[expect(unsafe_code)]`. Every call first checks that the descriptor is an IPv4 or IPv6 socket of a protocol the
-  kernel's handlers were read for, and the queue counts that the protocol answers them. An option not listed is
-  refused with `ENOPROTOOPT`. The suite's `no_listed_option_writes_past_its_length` reads every listed option against
-  the kernel with adversarial values (2026-11-24 repair, after an independent check found `TCP_AO_GET_KEYS` and
-  `MCAST_MSFILTER` writing past the buffer).
+  through socket2; since the second repair also `SO_INCOMING_CPU`, `IP_TTL`, `IPV6_UNICAST_HOPS` and `TCP_REPAIR`
+  sets). The rest go through the primitive crates/socket-options: a closed list of 81 options that a call site of the
+  workspace names (`PlainOption`, each with its value kind: 4-byte integer, uapi structure, reviewed byte string,
+  reviewed 64-bit number, or only read), the three queue counts (`QueuedCount`), and three requests the primitive
+  builds itself: `TCP_AO_GET_KEYS` for one key, `MCAST_MSFILTER`'s source filter, and `MPTCP_FULL_INFO`.
+  Containment (second repair, 2026-11-24, after a second check found a raw socket passing as TCP and the descriptor
+  check going stale under `dup2`): every call gives the kernel a private region instead of the caller's bytes, the
+  last bytes of a sealed memfd mapped (memmap2's safe `map_raw`) with 4 GiB of unbacked guard after it, so whatever
+  the option or request means to whatever the descriptor is at the call, the kernel's reads and writes through the
+  region stay in it or fail with `EFAULT`; a read gives the kernel zeros. Three unsafe calls, each under its own
+  `#[expect(unsafe_code)]` (setsockopt, getsockopt, ioctl). The descriptor check (family, type and protocol) stays
+  as a courtesy. What the guard cannot cover, an address inside a value, is kept out by the value kinds: a test reads
+  every listed structure's fields from linux-raw-sys and refuses one wide enough for an address unless named.
 - Runtime StopFlag `entered`/`raise` (2): the flag word is in the wasmtime executor's guest memory and the runtime
   holds its address. Needs an API change with the executor (another track's crate), see For the owner.
 - translator-test (not started): wasmtime SharedMemory is `&[UnsafeCell<u8>]` with no safe read or write
