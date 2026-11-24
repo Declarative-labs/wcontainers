@@ -608,8 +608,9 @@ the meaning is compared.
   agree). The meaning models these as the reference does (x86/fpu.rs `write`, x86/meaning.rs `enter`), so copying
   matches on a host that behaves like this one; decision 14's question does arise for them, as for `rep` strings
   and the AVX2 gathers. Route: Copy where the probe at start finds the host's pattern for each equal to the
-  meaning's, else Kernel (the inside writes as the meaning does), counted "partial write form answered by the
-  inside". `enter` with a level is rare; `fstp m80` is common in `long double` code, so a host that differs pays.
+  meaning's, else Kernel (the inside writes as the meaning does), counted per site as the shared slow path "host-model
+  result routed" (`NativeReason::HostModelResultRouted`), as is every form routed Kernel only because the probe
+  found the host different (`native::host_differs`: these, the undefined results, `wrfsbase` in P on a 5-level host). `enter` with a level is rare; `fstp m80` is common in `long double` code, so a host that differs pays.
   Measured on AMD (XN1 run 10, an EPYC 9R14 of a c7a.large, the same three probes): `fstp m80` and `fbstp` write
   nothing behind the fault (0 of 9 each), `enter 0, 3` writes as here (6, 14, 22), every other form none. So an AMD
   host differs from the meaning on two of the three and they take the Kernel route there; `HostMatches` carries one

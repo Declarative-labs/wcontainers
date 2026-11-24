@@ -92,6 +92,9 @@ probes).
   Round 3 run 3 (after the tenth check): the inside's answers for a direct transfer past user space
   (`Question::NearBranch`), a far target through a register or the stack (`answer::near_transfer`) and the Trap
   route (`native::trap`), each checked by native layer 1 against the CPU; finding by finding below.
+  Round 3 run 4 (after the eleventh check): the stepping pieces and the replay check filed as this track's (gap
+  item 3), the repeated string's inside named as not built (item 1), the host-differs routes counted as
+  "host-model result routed"; finding by finding below.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -102,13 +105,14 @@ The bar as it stands: native layers 1, 2 and 3 pass against the CPU on the rente
 uncounted, the count after each system call equal to the WebAssembly output's (figures under "Round 3 run 2
 results"); speed meets the bar uncounted (geometric mean 1.145 against the host in run 5, 1.110 in the ninth check's
 own measurement). Section 7's shapes that run without an executor are tests now (round 3 run 2, below); the rest
-are listed here with why. Every call into the inside in the machine and P now has an answer built by this track
-(round 3 run 3): a Kernel-routed form a question for `answer` (or, a repeated string under the count, the inside's
-run of it on the hardware with `string_passes`); a direct `jmp`, `call`, `jcc`, `loop` or `jrcxz` to a target at
-or above 2^47 `Question::NearBranch`; a first-level fault of a jump, call or return through a register or memory
-`answer::near_transfer` with the kind `native::far_transfer` gives; the Trap route the trap `native::trap` gives.
-Native layer 1 fails a call without one, and checks each against the CPU (and the trap and the Kernel answers also
-against the meaning). The only exceptions are `syscall` (the executor's system call) and item 2's. Not built or not
+are listed here with why. Every call into the inside in the machine and P has an answer built by this track
+(round 3 run 3) but two: a Kernel-routed form a question for `answer`; a direct `jmp`, `call`, `jcc`, `loop` or
+`jrcxz` to a target at or above 2^47 `Question::NearBranch`; a first-level fault of a jump, call or return through
+a register or memory `answer::near_transfer` with the kind `native::far_transfer` gives; the Trap route the trap
+`native::trap` gives. Native layer 1 fails a call without one, and checks each against the CPU (and the trap and
+the Kernel answers also against the meaning). The two without one: `syscall` (the executor's system call), and a
+repeated string under the count, for which only the pass rule `string_passes` is built: the inside's run of the
+string itself exists only in the test harnesses (item 1). Item 2's forms have no question either. Not built or not
 run:
 
 1. Needs an x86 executor that runs a translation. Owner: the native-without-virtual-machine track (its x86 floor,
@@ -127,7 +131,8 @@ run:
      the kernel delivers them, a stop inside `rep movsb`, `rep stosq` and `repe cmpsb`, an instruction straddling
      into a page that cannot run code (the blob maps the guest image readable and writable only, so there is no
      page that the CPU's run and ours both see as not executable), `popf` setting TF before a `ret` and a `jmp r`,
-     and a thread with TF running `rep movsb` and ten one-byte instructions (both on stepping pieces, item 3).
+     and a thread with TF running `rep movsb` and ten one-byte instructions (both also need stepping pieces, item
+     3).
    - The machine way (Way::Machine): its pieces (the floor's interrupt gates for calls, the copied `syscall`) have
      only the static tests (tests/native_output.rs, native_routes.rs); every native run of the test crate is way P.
    - A 4-level CPU as the reference: the rented Xeon has 5-level paging, so the 66 shapes of transfers to 2^47 up
@@ -146,6 +151,14 @@ run:
      the machine's floor must take it from there and put it back on FS before resuming the guest elsewhere.
      Native layer 1's every-offset run checks the map at every host instruction of the window; the handler's
      side is that track's.
+   - The inside's run of a repeated string under the count (the call `carry` emits with
+     `NativeReason::RepeatedStringCounted`): the inside runs the guest's string instruction on the hardware and adds
+     the passes `string_passes` gives. Only `string_passes` is built (strings.rs, core). The run itself exists only
+     in the test harnesses: native_programs.rs (layers 2 and 3, and the rep string count test) runs the instruction
+     in its blob; native layer 1's counted run takes the CPU's own outcome for it (native.rs, `on_reference`), so
+     there only the state at the call is checked (its summary counts these runs as "a repeated string under the
+     count calling the inside correctly (its outcome the CPU's own)"; 33,370 in the tenth check's run). The run
+     needs the executor's thread, its signal frame and the guest's memory, so it is the executor's inside.
 2. Undefined results on AMD hosts. Owner: the instruction behavior design (docs/status-instruction-design.md:
    each chip recorded with its own pinned behaviors, a start-up probe choosing the set). Cause: measured in run 10
    (EPYC 9R14 against the Xeon's sweep): 9,447 of 15,644 flags-sweep cases differ, in rflags alone, on shifts and
@@ -157,11 +170,28 @@ run:
    also covers and, or, xor, test, the bit tests, bsf and bsr, which the EPYC sweep found equal to the Xeon: which
    forms a chip's set holds is that design's to say. (Partial writes differ on AMD too, `fstp m80` and `fbstp`;
    the inside's answer for them is built and tested, run 10.)
-3. Needs ARM64's version first. Owner: the ARM64 native back end (shared trait in gcpu/native.rs).
-   - The replay check: `stop_check` in the trait, `InsideCall::Stop`, `stop: Option<u64>` in
-     `translate_native_for`, `Step` and P's stepping pieces (so every case with TF or AC set, which native layer 1
-     counts as not run, and the rep string test leaves TF out). ARM64 has no replay check yet. Natively a stop is
+3. XN1 work of this track not built (corrected by round 3 run 4: it was filed as waiting on ARM64, which no source
+   supports). Owner: this track. Cause: not built in XN1's runs, which went to layers 1 to 3 and the inside's
+   answers; nothing outside this track blocks either piece's translation side.
+   - P's stepping pieces (plan 3.6, 9): the request's `step`, every instruction its own piece with every exit to the
+     inside, `InsideCall::Step` after each, `pushf` to the inside in them. Only P needs them: docs/native.md (3.4,
+     and its rejection of stepping by retranslation) runs TF in the machine and I by the hardware's single step, so
+     ARM64 will never build a version of them. Today nothing runs a guest with TF set natively: native layer 1's
+     generator keeps only the six flags, DF, NT and ID in rflags (x86_64.rs, `keep`), so no case starts with TF or
+     AC set and none is counted as not run (the tenth check's seed 600613: every one of 5,020,000 cases ended one
+     of six ways, none NotRun); only `popf` and `iret` setting TF or AC reach the inside, whose answer is checked
+     against the meaning and notes it (`Notes::trap_flag_set`). The rep string count test leaves TF out for the same
+     reason. What building them touches outside this track's files: `translate_native_for`'s signature, which
+     host-process's executor calls (another track's file), so the request's new field goes in a small shared commit.
+   - The replay check (plan 3.7, 9; docs/native.md 5.7): `stop_check`, `InsideCall::Stop`, the request's `stop`. The
+     translation side is this track's for x86. A required trait method needs ARM64's `stop_check` (docs/native.md 5.7
+     gives its sequence) in the same shared commit, since a default that does nothing would let an ARM64 replay pass
+     its stop silently; docs/native.md names the request's stop point as T3, the translator track's item, which does
+     not exist for either architecture. The replay's other half (recording, setting the thread's stop word, loading
+     the stop's translation into one process) is the executor's (item 1). Natively a stop that is not a replay is
      the host's signal; the output's only part in it is the count's plain add.
+   The other shared items wait on ARM64's version first. Owner: the ARM64 native back end (shared trait in
+   gcpu/native.rs):
    - The trait's `retarget` in place of `link` (x86's is built, run 4, and the native blobs use it).
    - Homes for a loop of several parts (search 1.40 against the host): the translator's loop copy would take a set
      of parts.
@@ -190,6 +220,48 @@ run:
    memory is a wasmtime SharedMemory held in the store's data). Seen only by the native test, since no other test
    runs that many programs in one process. Owner: the shared runner's owner (crates/wcontainers-translator-test
    runner.rs), with this track; 10,000 at a seed is the recorded bar meanwhile, nothing above it is tested.
+
+## Round 3 run 4: the eleventh check's findings, finding by finding
+
+- [blocking] gap item 3 filed P's stepping pieces and the replay check as waiting on ARM64, which no source supports
+  (docs/native.md runs TF by the hardware's single step and rejects stepping by retranslation). Moved: item 3 now
+  lists both as this track's XN1 work, not built, with what each touches outside this track (the stepping pieces:
+  `translate_native_for`'s signature, which host-process calls; the replay check: ARM64's `stop_check` in the same
+  shared commit, docs/native.md's T3, and the executor's half). Not built in this run. Departure from plan 8, which
+  lists both as XN1's (below).
+- [minor] a repeated string under the count is answered by no code of this track: named in item 1 (the inside's
+  run of it, only `string_passes` built) and in the gap list's opening; layer 1's summary line, its comment and its
+  counter's comment now say the CPU's own run stands in for it.
+- [minor] the three host-differs routes had no named reason or counter: `native::host_differs` (one place: partial
+  writes where `partial_writes` is false, undefined results where `undefined_results` is false, `wrfsbase` in P on a
+  5-level host) feeds both `answered` and the site count: `Native::carry` counts
+  `NativeReason::HostModelResultRouted` for a Kernel route it gives. The shared reason's comment (gcpu
+  position.rs) now covers x86's use beside ARM64's page test; plan 3.5 names the reason in place of its own
+  counter name. The inside's run-time counter of these answers is the executor's, as for every reason. Test:
+  tests/native_output.rs `a_form_routed_for_the_host_is_counted` (enter with a level, `fstp m80`, `fbstp`, `shl`,
+  `imul` count one site on a differing host and none on a matching one, both ways; `wrfsbase` one in P and none in
+  the machine; `cpuid` and `enter` without a level none).
+- [minor] TF and AC: the record now says native layer 1 makes no case with TF or AC set (item 3), not that it
+  counts them as not run.
+
+## Round 3 run 4 results (rented x86 machine, Xeon 8488C, 5-level paging, 2026-11-24; logs scratch xn1r13/)
+
+- 01:34 UTC, load 1.4 before: clippy with warnings denied, `--no-deps`, wcontainers-x86, -guest-cpu and
+  -translator-test, all targets: clean. `cargo test -q -p wcontainers-x86`: every test passes (native_output 21,
+  with the new one).
+- Native layer 1, seed 4096, 60 a form, 32 at once (01:35, load 1.6 to 13): 0 failing, 118 known (the same named
+  kinds); ended: Answered(Answer) 5,021, Answered(Trap) 3,716, Exit 85,170, FarTarget 143, Fault 26,396, Lookup 34;
+  the repeated strings under the count calling the inside correctly, the CPU's own outcome standing in, 814.
+- The literal check: no finding in a line of this track's; three in the x86 crate are the x86 track's (lib.rs's
+  `VIRTUAL_ADDRESS_BITS`, now also defined by crates/processor-architecture/implementation/arm64, and two in
+  tests/facts.rs).
+- The machine's ssh refused connections ("timed out during banner exchange") three times in ten minutes while
+  answering `x86-run --ssh` at load 1.8; a retry got through each time.
+
+## Departures from the plan (round 3 run 4)
+
+- Plan 8 lists the replay check and (through section 9) P's stepping pieces as built in XN1. XN1 closed on the
+  orchestrator's ruling without them; they are gap item 3, this track's.
 
 ## Round 3 run 3: the tenth check's findings, finding by finding
 
@@ -381,7 +453,11 @@ All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round f
   (carry.rs `count`) as the output's only part.
 - Each gap-list item: the X9 programs have no runner (item 1); `HostMatches` with `undefined_results` false (an
   AMD host) routes every form of `native::undefined_result` Kernel, for which `native::question` gives no question
-  (item 2); `translate_native_for` has no stop argument (item 3).
+  (item 2); `translate_native_for` has no stop or step argument and `InsideCall` no `Stop` or `Step` (item 3, this
+  track's, not built); a repeated string under the count in native layer 1 returns the CPU's own outcome
+  (native.rs `on_reference`; item 1).
+- The slow path of a form routed for the host (round 3 run 4): tests/native_output.rs
+  `a_form_routed_for_the_host_is_counted`.
 
 ## What XN1 run 10 changed
 
