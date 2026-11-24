@@ -5,6 +5,63 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections sa
 -kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
 and crates/executor/implementation/unicorn.
 
+## J5c, fourth run (2026-11-24, from 15:45 UTC): the check's findings, and J5's bar at the tip a9ddfa80
+
+The third run's check found that its bar ran only on a tree with an uncommitted patch. Fixed in this run, each
+on the ARM64 machine:
+- The translator's process-wide pool (the blocking finding). It was a regression in built code with a known
+  fix, and nobody had taken it, so this run committed the fix in the translator's crate (dddd3c88, the one
+  function `on_translator_threads` in crates/wcontainers-translator/src/code.rs; the crate had no uncommitted
+  edits). Each process makes its own pool: in a fork copy the parent's pool is left as it is. The process
+  id is `std::process::id()` on Unix and none elsewhere, since the browser's WebAssembly has no process id
+  and std panics there. The new pool's threads have all started (`broadcast`) before it is used. For the
+  translator track: please review it as your own; the details are under "For the translator track".
+  Checked: clippy with warnings denied, all targets, of the translator; `cargo check --target
+  wasm32-unknown-unknown` of it; the wasmtime executor's fork tests 150 runs of 5, no failure (load 8 to 15).
+- The J2 test `an_executor_brought_back_in_a_copy_of_the_process_compiles_there` (wasmtime executor
+  tests/fork.rs, this track's J2 test). With the pool fixed, its first run from a cold build still failed once.
+  gdb showed the copy's new threads waiting in std's `stack_overflow::thread_info::set_current_info` for std's
+  lock of thread records. A thread of the parent was starting at the fork and held that lock: the test forked
+  right after `rayon::join` had made the global pool's threads, and the other fork tests ran beside it. Fixed
+  in ecc2d094: the file's five tests hold one lock each, and the test forks after `rayon::broadcast`, which
+  waits until every thread of the global pool has started. Before the fix, a loop of the test binary hung
+  within its 60 runs (the stacks above). After the fix, 150 runs gave no hang.
+- The progress count (cpulimit's wall clock test, LTP setrlimit06) and LTP mem02 were this track's own driver.
+  On the machine's clock (cpulimit's `assert_same_output_on_wall_clock`, every LTP test) the driver gave the
+  back end counted turns. Their limit was the kernel's slice in nanoseconds, used as a count of stop checks.
+  The stand-in ends such a turn on the clock too (`on_wall_clock`), but the back end did not. Measured with a
+  scratch patch that timed each turn (j5f/diag-cpulimit.log, load 21 to 24): at bounded, one turn of 609,329,900
+  stop checks took 15.5 s on the clock, about 25 ns per check. It passed both CPU limits (1 s soft, 2 s hard)
+  in that one turn, so the kernel sent SIGKILL alone. At full, turns of 12.2 s happened as well, and the test
+  passed only because of where its turns fell. Fixed in ee3f0350 and a9ddfa80: the runtime's slice timer is
+  now a public type, `SliceTimer` (single-kernel timer.rs; `LocalSystem` uses it as before). On the machine's
+  clock the driver gives the back end free turns, ended by that timer at the drawn moment of the slice.
+  After the fix (ARM64, load 9 to 18): cpulimit passed at bounded with seeds 5 and 17, at full and at none.
+  LTP at full passed setrlimit06 and mem02 on a cold run and again on a warm run (mem02 10.6 s and 1.9 s).
+- What the check found that the third run did not record: the inputs that changed after b315b6ad (1607abc4,
+  16e84f8d, 36c9d5cf, 74e2ca54, and this run's commits) are all in a9ddfa80. Outside's
+  `a_full_connection_hears_a_reset` was a kernel defect, fixed in 74e2ca54. busybox `files` is a timing test
+  of the kernel track's (see "Asked of the kernel track"). python at none had no verdict at b315b6ad: it is a
+  piece of its own in this bar.
+- Still open: LTP getrusage04 and clock_gettime04 fail on a run that makes their translations, and pass once
+  those are cached. After the fix: cold, getrusage04 failed in 10.6 s and clock_gettime04 in 13.3 s; warm,
+  they passed in 0.6 s and 1.2 s. Compiling at run time stops the guest for more than 5 ms between two
+  CLOCK_REALTIME readings, and that time is charged as the guest's own. Nothing in this track's crates or the
+  driver can hide wall-clock time from the guest. It closes when translation happens before the code runs
+  (ahead, or beside it), which is the translator's and the wasmtime executor's work, or by a ruling. This
+  is not one of the causes the 2026-11-19 ruling accepted, so it is under "For the owner".
+
+The bar at a9ddfa80 (scratch runtime/j5f: `export.sh` exports a commit, `all.sh` runs `bar.sh` piece by piece,
+and the results are in arm-tree/). Before this, the run on ecc2d094 was stopped once the driver's fix was found.
+Its pieces at ecc2d094, all without any patch:
+- prep: clean.
+- copies (every test binary that saves, at full): no binary hung. counterclock, procsignals, outside, saving and
+  repeats passed. rootbackend had 2 failures, threads 1 and backend 2, all on the stand-in's ARM list.
+- targeted: outside passed 9 runs of 10. `clients_talk_to_a_server_outside_as_linux` failed once (load 23); its
+  message was cut by the piece's filter. At a9ddfa80, 30 more runs of the 8 tests at full passed (load 9 to 13).
+
+Results at a9ddfa80: running (started 16:22 UTC).
+
 ## J5c, third run (2026-11-24, from 04:40 UTC): J5's bar on b315b6ad
 
 The second run's bar (on c07e21cd) was stopped at 04:41 in its bounded piece: since c07e21cd the kernel keeps
@@ -503,6 +560,19 @@ For the owner (the interfaces, read-only to this track):
 
 ## For the translator track
 
+- J5c fourth run (dddd3c88), done in your crate because it blocked every back end run that saves.
+  `on_translator_threads` in code.rs kept one pool per process in a `OnceLock` (69639b37). A fork copy has
+  none of that pool's threads, so the copy's first translation waited for ever. It now keeps the pool together
+  with the id of the process that made it. A copy builds its own pool and leaves the parent's as it is: ending
+  that pool in the copy could wait on a lock held at the fork. There is no process id where Unix is absent (std
+  panics on wasm32). A new pool's threads have all started (`broadcast`) before it is used, so a fork right
+  after its first use cannot copy std's thread-record lock while it is held. Please take it as yours, and
+  change it if you see it differently.
+- J5c fourth run: LTP getrusage04 and clock_gettime04 fail only on a run that makes their translations. In each
+  case the guest is stopped by compiling at run time: more than 5 ms between two clock readings, and the time
+  is charged to it. They pass once those translations are cached. Translating before the code runs, ahead or
+  beside it, would close both.
+
 From the bare numbers sweep (J4a run 3): the back end's "code changed" hook needs the guest's code line
 size (ARM64 64 bytes, `CACHE_TYPE` in wcontainers-arm64), which the guest interface does not give, so the
 back end writes `& !63`; and the memory fault hook's access (0 read, 1 write) has no named constant in the
@@ -528,6 +598,12 @@ detail of "jump through a register not recognised" is the jump's target (transla
   procedure linkage stubs, which load the entry and jump through a register.
 
 ## Asked of the kernel track
+
+busybox `files` (J5c fourth run) is a test whose verdict depends on timing, not unbuilt work. Its one
+difference in the third run's whole run at full was the minute of `ls -la /dev/shm /dev/pts`: ours 05:06, theirs
+05:05. Those directories are made as each container starts, and the reference ran a minute earlier. Alone it
+passed 3 of 3. The fix is in the test (compare without the time column, or with the reference's own start),
+which is the kernel track's.
 
 `Host` by `&self` and `Sync` (J5 run 5): the owner's ruling of 2026-11-19 makes every method of the embedder's
 trait take `&self`. `System` does now; `Host` (wcontainers-abi) still takes `&mut self`, so `LocalSystem` and
