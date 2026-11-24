@@ -5,7 +5,7 @@ use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    Backend, Caps, Features, Format, FormatUse, Object, SlotKind, SlowPath,
+    Backend, Caps, DeviceStatus, Features, Format, FormatUse, Object, SlotKind, SlowPath,
     TEXEL_BUFFER_TEXTURE_WIDTH,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
@@ -45,9 +45,14 @@ impl<B: Backend> Screen<B> {
         unsafe { &*screen.cast::<Screen<B>>() }
     }
 
-    /// The back end, for one call of the driver's.
+    /// The back end, for one call of the driver's. Once its device is lost the call is refused
+    /// here, so that no call of any context records work for a lost device.
     pub fn backend(&self) -> MutexGuard<'_, B> {
         let mut backend = whole(&self.backend);
+        if let DeviceStatus::Lost(reason) = backend.status() {
+            drop(backend);
+            crate::state::refuse(format_args!("the device was lost: {reason:?}"));
+        }
         let retired = std::mem::take(&mut *whole(&self.retired));
         for object in retired {
             backend.destroy(object);
