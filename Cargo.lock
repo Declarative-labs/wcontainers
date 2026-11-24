@@ -5141,6 +5141,7 @@ dependencies = [
  "linux-raw-sys",
  "nix",
  "rangemap",
+ "rustc-hash 2.1.3",
  "rustix",
  "wcontainers-abi",
  "wcontainers-arm64",
