@@ -26,9 +26,10 @@ memmap2 = "0.9.12"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 wcontainers-socket-options-conformance = { path = "../../conformance" }
-# The attacks' setup: descriptors of every kind, the swap of one under a call, and flags no listed option sets.
-rustix = { version = "1.1.6", features = ["event", "fs", "net", "pty", "stdio"] }
-nix = { version = "0.31.3", default-features = false, features = ["net"] }
+# The attacks' setup: descriptors of every kind, the swap of one under a call, the traced thread's id, and flags no
+# listed option sets.
+rustix = { version = "1.1.6", features = ["event", "fs", "net", "process", "pty", "stdio", "thread", "time"] }
+nix = { version = "0.31.3", default-features = false, features = ["fanotify", "net", "signal"] }
 socket2 = { version = "0.6.5", features = ["all"] }
 
 [[test]]
@@ -38,6 +39,10 @@ path = "tests/conformance.rs"
 [[test]]
 name = "attacks"
 path = "tests/attacks.rs"
+
+[[test]]
+name = "containment"
+path = "tests/containment.rs"
 
 [lints.rust]
 # A primitive: it may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
