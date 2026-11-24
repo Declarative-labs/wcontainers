@@ -85,13 +85,19 @@ impl CodeArea {
 
     /// As [`Self::write`], reaching the memfd at the next [`Self::flush`].
     pub(crate) fn stage(&mut self, at: usize, words: &[u32]) {
+        self.stage_code(at, words.as_bytes());
+    }
+
+    /// As [`Self::stage`], for code as the bytes of its words.
+    pub(crate) fn stage_code(&mut self, at: usize, bytes: &[u8]) {
         assert!(
             at >= CODE_AREA
                 && at.is_multiple_of(size_of::<u32>())
-                && at - CODE_AREA + size_of_val(words) <= CODE_AREA_SIZE,
+                && bytes.len().is_multiple_of(size_of::<u32>())
+                && at - CODE_AREA + bytes.len() <= CODE_AREA_SIZE,
             "code outside the code area"
         );
-        self.stage_file(at - CODE_AREA, words);
+        self.stage_file(at - CODE_AREA, bytes);
     }
 
     /// As [`Self::write_slots`], reaching the memfd at the next [`Self::flush`].
@@ -102,21 +108,23 @@ impl CodeArea {
                 && at - SLOT_TABLE + size_of_val(words) <= SLOT_TABLE_SIZE,
             "slots outside the slot table"
         );
-        self.stage_file(CODE_AREA_SIZE + at - SLOT_TABLE, words);
+        self.stage_file(CODE_AREA_SIZE + at - SLOT_TABLE, words.as_bytes());
     }
 
-    fn stage_file(&mut self, offset: usize, words: &[u32]) {
-        let mut word = offset / size_of::<u32>();
-        let mut rest = words;
+    fn stage_file(&mut self, offset: usize, bytes: &[u8]) {
+        let page_bytes = PAGE_SIZE as usize;
+        let mut at = offset;
+        let mut rest = bytes;
         while !rest.is_empty() {
-            let (page, within) = (word / PAGE_WORDS, word % PAGE_WORDS);
-            let (head, tail) = rest.split_at((PAGE_WORDS - within).min(rest.len()));
+            let (page, within) = (at / page_bytes, at % page_bytes);
+            let (head, tail) = rest.split_at((page_bytes - within).min(rest.len()));
             self.pages
                 .entry(page)
-                .or_insert_with(|| Box::new([0; PAGE_WORDS]))[within..within + head.len()]
+                .or_insert_with(|| Box::new([0; PAGE_WORDS]))
+                .as_mut_bytes()[within..within + head.len()]
                 .copy_from_slice(head);
             self.dirty.insert(page);
-            word += head.len();
+            at += head.len();
             rest = tail;
         }
     }
