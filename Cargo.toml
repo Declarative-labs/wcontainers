@@ -14,6 +14,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/stack1ng/wcontainers"
 
 [workspace.dependencies]
+# Verus's library: the model types and specifications the contracts are written in (erased from a plain build).
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 wcontainers-abi = { path = "crates/abi" }
 bitflags = { version = "2", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
@@ -61,6 +63,7 @@ wgpu = { path = "third_party/wgpu" }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)', 'cfg(verus_keep_ghost_body)', 'cfg(verus_verify_core)'] }
 
 # Tests run real programs through the translator and the kernel, so unoptimized builds are too slow to be useful.
 [profile.dev]

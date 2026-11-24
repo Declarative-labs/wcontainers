@@ -26,6 +26,7 @@ wcontainers-processor-architecture = { path = "../../../processor-architecture" 
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The exception classes of ESR_EL1, which decide what a trap is (the version the architecture crate uses).
 aarch64-cpu = "12.0.0"
+vstd.workspace = true
 
 [dev-dependencies]
 wcontainers-executor-conformance = { path = "../../conformance" }
@@ -34,6 +35,9 @@ wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
 wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true
