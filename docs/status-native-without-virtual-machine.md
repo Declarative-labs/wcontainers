@@ -1068,6 +1068,24 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Verdicts from this tree (all1-arm.out, all1-x86.out): Graviton4 (load 26 to 39) 117 passed, 1 failed (the known
     precise-set test); the Xeon (load 45) 54 passed (the translated-code binaries build no tests there). Clippy with
     warnings denied clean on every target on both.
+  - Cost, measured (busybox `sh` starting 1,000 programs, release, CPU 41, /dev/kvm denied; "before" is commit 5c049141
+    with the window cache, built from a scratch tree, alternated with this tree): with every code-area write its own
+    `pwrite` it was 6.29 to 6.66 s against 5.46 to 5.82 s (load 25 to 37; ab-arm.out): the embedder made about 1,680
+    `pwrite`s and 470 `pread`s a program (count-arm.out, strace over 100 programs run twice), most of them 4 and 16 bytes
+    into the code area (links and slots). So code-area writes are now staged (code.rs): pieces, slots and links go
+    into the executor's own copy of each page written, and every page changed reaches the memfd before the memory's
+    next turn (`run_turn`), a run of consecutive pages per `pwritev`, then the cache maintenance over it. After that
+    (ab-bb-arm.out, 4 rounds, load 17 to 20): 5.07 to 5.34 s against the window cache's 4.76 to 4.93 s, about 7%
+    slower, 4.29 to 5.01 times the model against 4.20 to 4.43; 72 `pwritev` and 67 `pwrite` a program left, and the
+    470 `pread`s of guest memory (the kernel's reads, and a fork's copies). The guest's own code is not affected
+    (bench's workloads in the same run, before only: geometric mean 1.348 times plain, WebAssembly 25.4).
+    The kernel's reads of guest memory are the rest of the cost; reading them through a mapping is what needs a
+    primitive.
+  - Verdicts after staging (stage-arm.out, stage-x86.out): Graviton4 (load 22 to 44) files, memory, floor, step,
+    translated, run, kernel, busybox, interrupt, copy, forged and differential pass, conformance 20 of 21 (the known
+    precise-set test); the Xeon (load 14 to 32) the 54 tests of its 13 binaries pass. Clippy clean on both. A later
+    build failed for some minutes on the unicorn executor's edit in progress (driver.rs, not ours), so the last A/B
+    ran the binaries already built.
 
 ## W1 not complete: the gap list
 
@@ -1078,7 +1096,8 @@ known:
   futex slot in ten runs at load 2 to 9; bar under 1.25) but not at higher load before (1.23 to 1.31 in rounds 3 and 4,
   load 9 to 30), and the independent check measured 1.238, 1.276 and 1.249 at load 9: at the margin, not met; about five sixths of a round trip is the host's task switch (round 5 run 2's profile). Not met: busybox `sh` starting 1,000
   programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
-  1): 4.36 times the model (bar 1.25; 9.25 before); per program about 1.45 ms of memory calls (about 0.6 ms of it the
+  1): 4.36 times the model (bar 1.25; 9.25 before), 4.29 to 5.01 since round 8 run 1 read guest memory by position
+  instead of through mapped windows (Departures); per program about 1.45 ms of memory calls (about 0.6 ms of it the
   model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
   workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
   page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
@@ -1155,6 +1174,12 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 8 run 1: scratch w1/r8run1. check.sh is round 6's (`set -- <binary>[:<filter>] ...`); before.sh builds
+  the speed test of the tree sent (send the scratch tree `before`, a git repository of commit 5c049141, under `--name
+  nwvm`) and keeps it as speed-before; ab-files.sh (`set -- <rounds>`) builds this tree's and alternates busybox `sh`
+  and bench's workloads, ab-bb.sh busybox `sh` alone, ab-nobuild.sh the same with the binaries already built;
+  count.sh counts the embedder's `pread`, `pwrite` and `pwritev` by fd under strace during busybox `sh` (100 programs).
 
 - Since round 7 run 2: scratch w1/r7run2. `cargo test -p wcontainers-executor-host-process --test differential` (knobs
   above); diff.sh runs clippy and it with /dev/kvm denied (`EXTRA_ENV='WCHP_DIFFERENTIAL_CASES=16'` before it),

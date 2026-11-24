@@ -748,7 +748,9 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   blocks) by position (`pread`, `pwrite`; rustix's safe calls), so neither the number of stubs nor the size of their
   memories touches the embedder's own address space or host mappings. Only two things are mapped in the embedder,
   each through memmap2's safe `MmapRaw`: the thread pages (4.3), read and written as atomics, and on ARM64 the code
-  area, written by position too and mapped only so the caches can be maintained by address (3.4). As built (W1
+  area, mapped only so the caches can be maintained by address (3.4). Code area writes (pieces, slots, links) go into
+  the executor's own copy of each page written and reach the memfd before the memory's next turn, a run of
+  consecutive pages per `pwritev`, so loading a piece costs no host call of its own. As built (W1
   round 8 run 1): this replaced a cache of 2 MiB windows mapped at first touch (the plan as first checked), whose
   maps and copies were five of the crate's unsafe uses; the owner's rule of 2026-11-24 puts unsafe first. Cost:
   one host call per contiguous piece the kernel's side reads or writes, and a fork's copy-on-write moves a copy unit
