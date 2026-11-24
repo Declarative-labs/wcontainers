@@ -5,6 +5,70 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 6 run 2 (2026-11-24). G9'S FIRST PART IS REPORTED READY FOR ITS CHECK: the round's first
+three items (the two security defects, unsafe, the literal check) are confirmed on the GPU by a
+whole run with no display reset, and the fourth (vertex-stage storage) is built. THE BAR IS STILL
+NOT WHOLLY MET: KHR-GL33 does not start (OpenGL 3.1, 28 passed values), so with it counted as
+failed the measure is under the floor (below). Done this run:
+- The resets of run 1, traced as far as the logs allow and closed. The two batches that ran across
+  the four resets (gles3 `c66` and `c77`, 267 and 234 MB logs, 09:45 to 09:48) went on after a
+  device lost by a validation error ("conflicting usages ... RESOURCE and COLOR_TARGET", the known
+  `pbo_bounds_2d` item; "part of a 16-bit depth level", the WebGPU back end's) and logged 2.3
+  million refusals each; deqp-runner's logs hold stdout and stderr apart, so the one case whose work
+  hung the GPU cannot be named from them. In the rig's history this command ran 107 times since
+  2026-11-20 with no reset before run 1's build, the first where a lost device no longer ended its
+  glcts; e6e5061e makes the driver refuse every call into a lost back end. On that build
+  (b1b8bc3f) dEQP-GLES3 alone (`gpu-job --alone`, job 81, 11:06 to 11:13 desktop time) and then the
+  whole run alone (job 80, 11:15 to 11:39) ran with no reset. This track lifted the quarantine of
+  `run-windows.ps1 -Driver wcontainers` (`resets lift`) before those two jobs, on that evidence; the
+  queue is not held.
+- Vertex-stage storage (`VertexStorageAsCompute`), BUILT. A vertex program using storage buffers,
+  images or atomic counters, drawn with no geometry program or tessellation, now runs as the stage
+  helper's compute work before a pass-through geometry program made for the primitive drawn
+  (points, lines, triangles, and the two adjacency forms passing their own vertices); the bridge
+  makes the five with the evaluation program's one in one call (`wc_nir_storage_pass_through`), the
+  pass-through stores the position whole, and the screen reports vertex storage where the back end
+  runs compute work. The draw counts `SlowPath::VertexStorageAsCompute`. Route test
+  `a_vertex_program_using_storage_gets_a_pass_through_for_every_primitive_it_may_draw` (the five
+  programs routed and validated as the stage helper's compute work). On the GPU every vertex
+  storage NotSupported case now runs: dEQP-GLES31 235 Skip to Pass (Skip 534 to 299), KHR-GLES31 62
+  Skip to Pass and 11 Skip to Fail, Crash or Flake (Skip 98 to 25), KHR-GLES32 1 Skip to Pass. The
+  11: vertex programs calling `memoryBarrier()`, which the route writes as a WGSL barrier that a
+  vertex entry may not hold ("Uses operations forbidden at this stage"), though behind the stage
+  helper the program runs as compute work; and in their batches "device lost: Unexpected error
+  variant" (gap list).
+- The literal check: the shaders track's new `MOST_OUTPUT_VERTICES` (1,024) made this track's
+  `GEOMETRY_OUTPUT_COMPONENTS` a "restated" finding; it is now written as its least emitted
+  vertices with a position each (256 times 4). The `include!` finding of `gallium.rs` stays (run 1).
+  That commit (941ec903) also carries the screen's vertex storage line, committed with it by
+  mistake; its message names only the literal.
+- Unsafe: unchanged, wcontainers-opengl 361 and wcontainers-nir 113 (the root list's command at
+  b1b8bc3f); no line with `unsafe` added.
+- Whole run at b1b8bc3f (desktop, RTX 3080, the job alone on the GPU; scratch `results/r6b/full`,
+  log `logs/r6b/full.log`): dEQP-GLES2 17,037 of 17,037 (100.00%); dEQP-GLES3 44,211 of 44,298
+  (99.80%); dEQP-GLES31 37,395 of 37,503 (99.71%); KHR-GLES2 438 of 438 (100.00%); KHR-GLES3 6,265
+  of 6,271 (99.90%); KHR-GLES31 4,007 of 4,076 (98.31%); KHR-GLES32 1,338 of 1,389 (96.33%);
+  KHR-GL33 and -GL46 no context (OpenGL 3.1). 110,691 of 111,012 GLES cases, 99.71% (round 5 run 6:
+  110,431 of 110,703, 99.75%). With KHR-GL33's 9,364 counted as failed: 110,691 of 120,376, 91.95%,
+  UNDER the 92.9% floor.
+- Against round 5 run 6 (`scripts/g9r25-table.py r6b/full g9c6/full3`): 298 Skip to Pass (above);
+  198 Crash to Fail and 23 Crash to Pass (a refused call now ends its case as a failure, not a
+  crash); 54 dEQP-GLES3 and 6 KHR-GLES3 Pass to Fail; the dEQP-GLES3 ones fall in five batches
+  (`c41`, `c65`, `c66`, `c77`, `c82`, each failing alike on deqp-runner's second try), read case by
+  case in `c41`: after `fbo.color.tex3d.rgb5_a1`'s loss, the
+  WebGPU back end's 2D view of a 3D texture, the next 13 cases fail with GL_OUT_OF_MEMORY or an
+  incomplete framebuffer. The KHR-GLES3 6 are not yet read case by case. The driver now refuses every
+  call into a lost back end, as a reset context does; glcts's ES packages do not end the process
+  there, though the driver reports the context reset. New gap item, this track's.
+- Next, in order: the 60 cases shadowed by an earlier loss (why glcts's stop does not take effect:
+  glcts's check, or st/mesa's reset query, for the ES lists); the device losses themselves, first
+  "Unexpected error variant" in the vertex storage batches; vertex programs with `memoryBarrier()`
+  converted for the stage helper only; then the 32nd passed value and KHR-GL33 (round 6's order).
+- Built and tested on the x86-64 machine (96 processors, load 2 to 14): clippy with warnings
+  denied with Mesa, the nir crate's route test 27 pass, wcontainers-opengl 11 pass (scratch
+  `scripts/g9r6b-quick.sh`, `logs/r6b/route4.log`); the whole lint and literal check
+  `logs/r6b/lint2.log`.
+
 G9 round 6 run 1 (2026-11-24). Settles the independent check of round 5 run 6 in the round's
 order: the two security defects, then unsafe, then the literal check, each built and tested on the
 x86-64 machine. NOT REPORTED COMPLETE: the whole run of the guard build reset the RTX 3080's display
@@ -772,6 +836,22 @@ Next, in order:
 
 ## Gap list (G9's first part, at round 5 run 2's whole run; round 5 runs 3 and 5's changes marked)
 
+Round 6 run 2's whole run (`results/r6b/full`, 321 failing GLES cases) adds three items to those
+below, each this track's:
+- Shadowed by an earlier device loss, 60 (dEQP-GLES3 54: `fbo.blit` 16, `texture.specification` 24,
+  `vertex_arrays.single_attribute` 6, `fbo.color.repeated_clear` 4, `texture.vertex` 3,
+  `fbo.stencil.attach` 1; KHR-GLES3 6: `framebuffer_completeness` 3, `packed_depth_stencil` 2,
+  `texture_lod_basic` 1): they passed in round 5 run 6; the dEQP-GLES3 ones fall in batches with a
+  device loss and follow it (the loss items below; the KHR-GLES3 6 not yet read case by case),
+  after which the driver refuses every call. This track's: make the case of the loss end its glcts.
+- Vertex programs calling `memoryBarrier()`, 11 (KHR-GLES31 `shader_image_size` `-vs` 6,
+  `shader_storage_buffer_object` `advanced-matrix-vsfs`, `advanced-readWrite-case1-vsfs`,
+  `basic-atomic-case3-vsfs` (Flake), `shader_image_load_store` `advanced-sync-imageAccess` and
+  `advanced-allStages-oneImage` (Crash)): the converted vertex entry holds a WGSL barrier, which
+  validation refuses at the vertex stage, though behind the stage helper it runs as compute work.
+- "device lost: Unexpected error variant (driver implementation is at fault)" in those batches: not
+  yet traced to its call.
+
 At round 5 run 6's whole run (`results/g9c6/full3`): 272 failing cases, every one assigned to an
 item below by `scripts/g9c1-gaps.py` (none left over); new item: the evaluation storage
 invocations (4). At round 5 run 5's (`results/g9c5/full`): 268. Each case of run 5's untraced,
@@ -977,8 +1057,9 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   Pass (these and the evaluation ones of the groups below), 4 to Fail (the "evaluation storage
   invocations" item). `program_interface_query` 228 "one or more resource limits exceeded" (152
   `buffer_variable`, 36 `shader_storage_block`, 28 `uniform`, ...: storage and atomic counters in
-  vertex and evaluation programs): vertex ones absent on WebGPU (no storage writes in vertex
-  programs; `VERTEX_STORAGE_WRITE` is absent there), evaluation ones built as above.
+  vertex and evaluation programs): vertex ones BUILT in round 6 run 2 (a vertex program using
+  storage runs as compute work before a pass-through geometry program; every such case runs
+  since), evaluation ones built as above.
   Sample counts 121 (`sample_variables`, `multisample_interpolation`, `min_sample_shading`,
   `texture.multisample`), `framebuffer_fetch` 56, sRGB RG8 15, `multisample.default_framebuffer`
   8, sample mask words 5, multisampled default framebuffer 2, `geometry_shading` 2048 components
@@ -1003,7 +1084,8 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   reported; 98 at round 5 run 6): evaluation-program storage 233 (`constant_expressions` and the
   like): built as in dEQP-GLES31, all 233 pass in round 5 run 6. "Not supported" 78: storage, atomic counters and images in vertex programs 66
   (`shader_storage_buffer_object` `-vs` and `-vsfs` cases, `shader_atomic_counters`,
-  `shader_image_load_store` and `shader_image_size` vertex cases): absent on WebGPU as above;
+  `shader_image_load_store` and `shader_image_size` vertex cases): BUILT in round 6 run 2, as
+  above (KHR-GLES31's Skip 98 to 25: 62 pass, 11 fail on `memoryBarrier()`, gap list);
   `shader_group_vote` 5 (EXT_shader_group_vote): for want of work (the interface's `SUBGROUPS`;
   the route has no vote operations); `polygon_offset_clamp` 3: reported since round 5 run 2
   (`DEPTH_BIAS_CLAMP`); `compute_shader` 3 and
@@ -1090,6 +1172,16 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   (Needs a primitive, below).
 
 ## How to run
+
+- G9 round 6 run 2: scratch `scripts/g9r6b-run.sh <absolute log> [<lists> [<regexes>]]` is round
+  5 run 6's run as a GPU job alone (`gpu-job --alone`); `scripts/g9r6b-lint.sh` is run 1's lint
+  under its name; `scripts/g9r6b-quick.sh <route test filter> <log>` runs the nir route test,
+  clippy with Mesa and the opengl tests, trying the x86-64 machine three times. On the desktop
+  (copied to `C:\wc\graphics-nir`): `lost-times.ps1 -List <list> -At <HH:mm:ss>` lists the batch
+  logs written over a time with their first device error; `batch-cases.ps1 -List <list> -Log
+  <cN.rM.log>` a batch log's failing cases and first device errors, streamed (a batch log can be
+  hundreds of MB). A batch log holds glcts's stdout then its stderr, so a device error cannot be
+  placed among the cases by its line.
 
 - G9 round 6 run 1: scratch `scripts/g9r6-lint.sh` (x86-64 machine) formats, lints with
   warnings denied with and without Mesa (`--locked`), runs the nir crate's unit tests and route
