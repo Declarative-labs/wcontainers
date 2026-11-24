@@ -614,28 +614,72 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     (sieve, hash, walk) at the plain speed and as fast as or faster than the VM form elsewhere, but for matrix; P's
     system call is 6.4 times the VM form's (3,021 against 472 ns).
   - Not done: the executor suite (see "For the owner").
-- Not built yet (W1's bar is not met): conformance to the owner's new `Executor` (merged at e65273d5 during run 3,
-  see Next); the getppid round trip under 1.25 times the slot and busybox `sh` within 1.25 times the model, measured
+- W1 round 3, run 4 (2026-11-24, 01:25 to 02:40 UTC), Graviton4:
+  - The executor interface (execution.rs, still the one module that implements an executor trait): `HostProcess`
+    implements `Executor` as the owner's interface stands at b01ba0d8, ARM64 only. `HostProcessMemory` is the
+    `MemorySpace` (a stub and its memfd; `borrow` gives `HostProcessBytes`, read and written through the window
+    cache), `HostProcessInterrupter` the `ExecutionInterrupter`. The executor's state is shared by the executor and its
+    memories (`Rc<RefCell<..>>`: `HostProcessExecutor` is not `Send`), never held while a trap handler runs.
+    - `execute` returns a future that runs to its end at its first poll (the guest runs in another process, and
+      nothing in the interface wakes a waiting future when it answers) on a host thread of the memory's stub (its
+      spare, made and dropped per execution), answering system calls, faults and interrupts through the handler.
+      Ends: a system call answered terminate stops at the `svc` with its syndrome (the immediate read from memory);
+      a fault answered terminate is the abort at the access, a translation fault where the page has no permission;
+      `brk`, undefined instructions and alignment faults end it with their exception; a stub that ended is an SError
+      (For the owner). The guest's counter reads the host's monotonic clock (no clock is given).
+    - The interrupter sets a request and sends the stop to the run's thread; the run takes a request before each
+      entry and at each stop, so an interrupt sent between turns (which lands in the stub's wait) is taken at the
+      next entry or exit, not lost. tests/interrupt.rs (2): a guest counting for ever, interrupted from another
+      thread 1 and 5 times 50 ms apart, answered continue then terminate: each interrupt reaches the handler, the
+      guest ends in its loop with its count, no exception.
+    - `map_from` makes the other space's private pages a block both map (copied once, then shared); `unmap_from`
+      zeroes the mapped parts; `copy_from` copies private bytes (only the memfd's data extents and borrowed pages),
+      maps the same blocks and copies permissions; a block lives while some memory maps it. Only whole pages are
+      mapped or copied (others refused as invalid addresses). A copy at the same addresses does not yet lend pages
+      as `memory_duplicate`'s fork does (Next).
+    - `execute_single_instruction_in_place`: a second executor whose pieces are a stretch of one instruction
+      (`LookAhead::Bounded(1)`), never linked or given a slot, so the run ends at its first landing; one memory per
+      state, made of the deltas, writable pages compared before and after.
+    - Warnings print when a path's count reaches a power of two (the interface has no channel for them).
+  - Found by the suite: P's fault handling took a `brk` syndrome for "other" (the process way's misalignment check
+    calls by `brk #5`), now a call as in the VM inside; a cache-maintenance fault is a read, as the VM inside takes it.
+  - A thread's vectors now stay in its register page between turns (read only when the kernel reads the registers):
+    every exit copies 128 words fewer.
+  - Executor suite (tests/conformance.rs, the committed suite with its executions polled to the end, see below):
+    17 of 18 pass. `agrees_with_precise_instruction_set` fails at its first state: the input domain's code page is at
+    0x1000 (For the owner). With the domain's code moved to 64 KiB in the remote copy only, 2 of the generated
+    instructions still disagree with the translator's precise set, both process-way translation gaps (section on
+    the translator below): `StrImmediateUnsignedOffset64` 180 of 1,728 states, `StpSignedOffset64` 3,474 of 8,640.
+    Every other instruction agrees on every state.
+  - Verdicts (02:20 UTC, scratch w1/r3run4/run2-arm.out, load 15 to 20): every other test binary passed with
+    /dev/kvm denied (18 binaries, 78 tests), clippy with warnings denied clean on all targets. Not run here: kernel,
+    busybox and speed, which need the WebAssembly executor and the Unicorn crate; at that time the Unicorn crate (and
+    first the WebAssembly one) did not build against b01ba0d8 in the shared tree, and the committed suite does not
+    build against it (it calls `execute` as returning the state). The runs here overlay, in the remote copy only, the
+    committed suite with each `execute` polled to its end, and leave out the tests that need what does not build
+    (scratch w1/r3run4/fixes.sh, drop-unicorn.sh).
+  - getppid round trip after the vectors change (release, CPU 41, /dev/kvm denied, load 9 to 11, speed4-arm.out),
+    3 rounds alternating with W0's futex slot: median of batch means 3,130, 2,976 and 3,001 ns against the slot's
+    2,397, 2,427 and 2,397: 1.31, 1.23 and 1.25 times; per call median 3,024, 2,949, 2,934 ns against 2,325, 2,352,
+    2,319 (1.25 to 1.30). Not clearly under the bar of 1.25; before the change 1.26 to 1.29.
+  - No new unsafe code.
+- Not built yet (W1's bar is not met): the getppid round trip under 1.25 times the slot and busybox `sh` within 1.25 times the model, measured
   after this run's fixes; placement's remaining items; the copy unit on translated code; the VM executor's figures
   beside P's; the x86-64 rounds of this run's code.
 
 ## Next
 
-- FIRST: the owner's executor interface was merged into agents at e65273d5 (2026-11-24 01:02 UTC) while run 3
-  measured: `Executor` now has `type GuestMemory: MemorySpace` (crates/executor/memory_space.rs: `borrow` of
-  volatile bytes, `zero`, `set_permissions`, `map_from`, `unmap_from`, `copy_from`, all through `&self`),
-  `create_guest_memory`, `execute(processor state, &memory, &mut impl TrapHandler) -> processor state` with typed
-  answers (system call: return or terminate; fault: retry or terminate; interrupt: continue or terminate), and still
-  `execute_single_instruction_in_place`. P does not implement `Executor` yet (its library does not depend on the
-  executor crate, so it still builds); conform in execution.rs: a P memory as the `MemorySpace` (a stub and its
-  memfd, the window cache for `borrow`, `copy_from` as today's fork, `map_from` as a shared block; `&self` methods
-  need the memory's records behind a lock), `execute` as `run_pieces` with the handler's answers in place of the
-  runtime's `Answer`. The WebAssembly executor (and so the unicorn crate, which P's kernel, busybox and speed tests
-  use) did not build on agents after the merge (01:20 UTC): this run's final verdicts are of a tree of the commit
-  before the merge (3f7cb472) with this crate's files (scratch w1/r3run3/tree, `CHECKOUT=.../tree both.sh`).
+- FIRST, once the shared tree builds again: run every binary (kernel, busybox and speed included) 3 times with
+  /dev/kvm denied on both machines from the shared tree with no overlay (scratch w1/r3run4/nokvm.sh, which now fails
+  when nothing was built); if the suite still calls `execute` as returning the state, keep using fixes.sh's overlay and
+  say so. The x86 machine has not run this round's code.
+- Then the W1 gap list and the W1-complete report (due by the fifth run): the gaps known now are the speed bars
+  below, the two process-way translation gaps the precise-set test shows, `copy_from` at the same addresses copying
+  eagerly instead of lending, the gVisor kernel test's blocks and jumptables, placement's getppid item and the copy unit.
 - Then the speed bars (scratch w1/r3run3/speed3.sh measures all of them): busybox `sh` needs translations kept
-  across execs at new bases (moved translations, above); the round trip (1.26 to 1.29 times the slot) needs the
-  embedder's per-exit work cut (register block copies, `stop::resolve`, placement's two clock reads per turn); bench's
+  across execs at new bases (moved translations, above); the round trip (1.23 to 1.31 times the slot after run 4's vectors change) needs
+  the embedder's per-exit work cut (the translated page's copies, `stop::resolve` and `rejoin`, placement's two clock
+  reads per turn); bench's
   matrix (4.0 times plain) needs a profile.
 - x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
 - Then: the copy unit on translated stores; placement's getppid item; the gVisor kernel test's blocks and jumptables
@@ -663,6 +707,13 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 3 run 4: tests/conformance.rs runs the executor suite on form P, tests/interrupt.rs the interrupter.
+  Scratch w1/r3run4: nokvm.sh (as before, but it fails when no test binary was built); fixes.sh overlays, in the
+  remote copy only, the committed suite with each `execute` polled to its end and leaves out the tests that need the
+  WebAssembly executor and Unicorn; drop-unicorn.sh leaves out only busybox's; run2.sh (all binaries, KVM denied, then
+  the precise-set test with the domain's code at 64 KiB), run4.sh, speed4.sh (round trip against the futex slot)
+  send them inline through `arm-run`.
 
 - Since round 3 run 3: tests/busybox.rs needs Docker on the machine (its reference), so scratch w1/r3run3/nokvm.sh
   keeps the docker group when it denies /dev/kvm (`setpriv --groups=<docker>`), and both.sh takes `CHECKOUT=<tree>`.
@@ -793,6 +844,14 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 - Still asked of the native (VM) track, not done here: `translation` and the loading of pieces with their slots
   (hardware-virtualization-inside/native.rs) and the monitor's kept translations (hardware-virtualization/
   translate.rs) usable from a crate without the VM's dependencies, so P loads pieces the same way.
+- Round 3 run 4, found by the executor suite's precise-set test (with the input domain's code moved to 64 KiB),
+  not fixed: in the process way a store that may cross a page is probed with a load first, so a store to a page that
+  allows no access faults as a read (the syndrome's WnR clear); Linux reports a write. Example: `str x1, [x0]` with
+  x0 = 0x11ffc and 0x11000 unmapped: expected ESR 0x92000047, P gives 0x92000007 (180 of 1,728 such states; `stp`
+  3,474 of 8,640). The probe would need to fault as a store, or the stop crate to take the access from the guest
+  instruction. Also `stp` with its base near the top of the address space reaches the process way's misalignment
+  check, which still calls by `brk #5`; P now takes that as a call, but the stop crate finds no access operand there
+  and P ends the process ("stub exit not understood"), so those states fail too.
 - For the translator track, not done: the InProcess way (plan 3.2 item 1 and two more withheld registers), W2's.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
@@ -813,6 +872,21 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
     container.
     Built meanwhile as the private stand-in `HostProcessHost` (crates/executor/implementation/host-process/host.rs),
     the one place his ruling changes.
+- The executor interface as of b01ba0d8, found while implementing it for form P (round 3 run 4):
+  - No constructor: `HostProcess::new(Arc<HostProcessHost>)` stands in (as the WebAssembly executor's `new` does);
+    a `StandaloneExecutor` trait would settle it.
+  - `MemorySpace::zero`, `set_permissions` and `unmap_from` can only fail with an invalid address, yet P may need
+    one more host mapping for any of them and the host caps them (`vm.max_map_count`). Example: setting alternate
+    pages read-only then read-write one page at a time past 1,048,576 changes (the limit on both machines). P panics
+    there ("the host refused a change to a guest memory"); an out-of-memory error, as `map_from` and `copy_from`
+    have, would let the kernel answer ENOMEM as Linux does.
+  - `execute` has no ending for "the guest's process is gone" (a stub killed from outside, or one that ignored its
+    stop for 10 s). P returns the state with an SError exception; a third ending, or an error, would say it plainly.
+  - No clock is given to `execute`: a guest's counter read under P is the host's monotonic clock, not the system's.
+  - The execution future: P's runs to its end at its first poll, since its guest runs in another process and the
+    interface gives no way to wake a waiting future from that process's answer.
+  - A memory belongs to the executor that made it (its stubs are that executor's); using it with another panics. The
+    interface does not say whether that is allowed.
 - The executor conformance suite cannot run on form P as it stands (plan 8): its one state generator,
   wcontainers-instruction-input-domain-arm64, places every state's instruction at 0x1000 (`CODE_ADDRESS`) and its
   data pages at 0x2000 to 0x4000, below the host's `vm.mmap_min_addr` (32,768 on Graviton4, 65,536 on the Xeon), so
