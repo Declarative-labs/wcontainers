@@ -8,7 +8,46 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
-## KC, fourteenth run: the reset heard at once; the five unsafe lines need one ruling
+## KC, fifteenth run: the kernel without unsafe
+
+Started about 12:50 UTC on 2026-11-24 at 353ba359. Builds and tests on the rented machines only.
+Scratch kernel/kc15 (b.sh runs a command on a copy with other agents' uncommitted edits taken
+back; whole.sh the suite and LTP; logs beside them).
+
+- The kernel's five unsafe lines are gone (16e84f8d) and the crate inherits the workspace lints
+  (`unsafe_code = "forbid"`); its line is out of the root list (3aa47f9a). Which way, and why:
+  the state is `Send` by its types. The interface asks `Kernel: Sync` and `Runner: Send` and is
+  called from any host thread, and a `no_std` crate has no thread of its own to keep the state
+  on, so a one-thread handle cannot fit. How:
+  - `Rc`/`Weak` are `Arc`/`sync::Weak`, `RefCell` is `AtomicRefCell` (atomic_refcell 0.1.13,
+    MIT OR Apache-2.0, `no_std`; same `borrow`/`borrow_mut`), `Cell` in shared records is
+    crossbeam-utils' `AtomicCell` (already in the lock; MIT OR Apache-2.0; `load`/`store`), and
+    the type-erased handles and embedder data are `dyn Any + Send (+ Sync)`. Short-lived cells
+    (a path walk's, the buffers lent to the host as volatile bytes) stay `core::cell`. `Pipe`
+    has a written `Clone`, since `AtomicCell` has none.
+  - The kernel's `System` asks its handles to be `Send + Sync` and itself `Send`, and each wait
+    it keeps (`wait_until_ready` of the four handle kinds, `send_request`, `receive_notice`,
+    `resolve_domain`) to return a `Send` future, with `#![feature(return_type_notation)]`; a kept
+    call is `SmallBox<dyn Future + Send>`, made by `waiting::waiting_call`, which coerces through
+    smallbox's `coerce` feature instead of the `smallbox!` macro (the macro put unsafe code into
+    the kernel, which `forbid` refuses).
+  - `KernelConfig::new` and `KernelWithExecutor::start` are safe functions; the `Kernel` impl asks
+    `GuestMemory: Send` and `TranslatorConfig: Send + Sync`.
+  - The stand-in (b4a6ca0a): `UnicornSpace` shares host pages by `Arc` with the touched bits in
+    an `AtomicRefCell`; its marked `unsafe impl Send` moved from `StandIn` to the `Memory` that
+    owns a unicorn handle (unicorn's count 14 to 13: the driver's `unsafe` call is gone); the
+    driver's compile check of the test host's waits is gone, as the kernel's bound now checks
+    it; a host generic over its hooks names the stream wait's `Send` (return type notation).
+    The seeded test policy (5be7ad01) and the runtime's local kernel (1607abc4) ask the same
+    bounds of their host and executor. All under "For the owner".
+  - Not measured yet: what the atomic borrows and counts cost a pipe round trip.
+- Checks (ARM64, 13:14 to 13:21 UTC, load 9 to 23): the whole workspace's `cargo check
+  --keep-going --workspace --all-targets` status 0, and on x86-64 status 0 (13:18 UTC, load 7);
+  clippy over the kernel, stand-in, policy and runtime, all targets, warnings denied, status 0;
+  kernel fmt no diff; kernel unit tests 26 pass, the kernel conformance run 17 pass; the
+  stand-in's runners 4, streams 18 and outside 8 pass.
+- The ARM64 machine's disk was full (117 MB left; links failed); this track's old build folder
+  /work/target/kernel (63 GB) was removed.
 
 Started about 11:00 UTC on 2026-11-24 at 9bc830b2. Builds and tests on the ARM64 machine only.
 Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
@@ -1011,24 +1050,21 @@ its renamed part.
 
 ## For the owner
 
-- KC, fourteenth run: the kernel's last five unsafe lines (executing.rs) go only when the
-  kernel's state is `Send` by its types, and that needs one ruling from you. The kernel keeps the
-  system's waiting calls (the futures of `wait_until_ready`, `send_request`, `receive_notice`,
-  `resolve_domain`), and stable Rust cannot require an `async fn`'s future to be `Send` in
-  generic code. Example: `S: Readiness<H>` gives no way to write that `S::wait_until_ready(..)`'s
-  future is `Send`, so `SmallBox<dyn Future + Send>` of it does not compile. Either (a) the
-  kernel crate uses `#![feature(return_type_notation)]` (measured: works on the pinned 1.99.0
-  under the workspace's `RUSTC_BOOTSTRAP=1`; tied to an unstable feature until it stabilizes),
-  or (b) those four methods are written `fn ..(..) -> impl Future<Output = ..> + Send` in the
-  interfaces (every host already has `Send` futures, I expect; not checked for each). Either way
-  the rest is the kernel's: about 1,600 `RefCell` borrows become `AtomicRefCell` borrows (two
-  atomic operations each, though the kernel's one lock already orders them) and `Rc` becomes
-  `Arc`; and the executor's `GuestMemory` must be `Send` (the stand-in's is not). Which one?
-- Guest memory, first run: `KernelWithExecutor`'s `unsafe impl Sync` now also covers the guest
-  memory spaces, which need not be `Send` (the stand-in's holds `Rc` and `RefCell`); they are
-  reached only under the kernel's lock. Sound forms: a `GuestMemory: Send` bound (the stand-in's
-  space would need a new marked `unsafe impl Send`, which I did not add) or the runner design
-  with each process's memory behind its own lock. Which one?
+- KC, fifteenth run (decided by this track, as the orchestrator asked; tell me to undo it): the
+  kernel's last five unsafe lines are gone and the crate inherits the workspace's `forbid`. It
+  rests on two unstable features under the workspace's `RUSTC_BOOTSTRAP=1`: (a)
+  `#![feature(return_type_notation)]` in the kernel, the seeded test policy and the unicorn
+  stand-in, so the kernel can ask a generic system for `Send` futures; example, system.rs:
+  `Self: Readiness<<Self as TcpConnections>::Connection, wait_until_ready(..): Send>`. It goes
+  if the interfaces write `fn wait_until_ready(..) -> impl Future<Output = ..> + Send` (and the
+  same for `send_request`, `receive_notice`, `resolve_domain`). (b) smallbox's `coerce` feature
+  (`coerce_unsized` inside smallbox), so a waiting call is made without the unsafe code its
+  `smallbox!` macro expanded into the kernel (a use the unsafe count did not see). Without it,
+  a waiting call is a `Box`, one allocation per wait. And the executor's `GuestMemory` must be
+  `Send` for the kernel to be `Kernel` (the impl asks it): the stand-in's `UnicornSpace` is
+  now, with its marked `unsafe impl Send` moved from the whole `StandIn` to the `Memory` that
+  holds the unicorn handle (same count, narrower promise); the runtime's local kernel asks the
+  same of its executor.
 - KC, second run: `UnknownErrno` takes 134 to 511, but a FUSE server may answer any error from 1
   to 511, and Linux leaves 41 and 58 unnamed below 134. Such an answer cannot be `WellKnown` (no
   `Errno` names it) nor `Unknown`, so the embedder's response hook sees it as `Ok` of the raw
