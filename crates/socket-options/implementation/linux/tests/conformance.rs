@@ -53,3 +53,8 @@ fn an_authentication_key_read_writes_one_key() {
 fn a_source_filter_carries_every_source() {
     suite::a_source_filter_carries_every_source(LinuxSocketOptions);
 }
+
+#[test]
+fn the_state_that_fills_each_option() {
+    suite::the_state_that_fills_each_option(LinuxSocketOptions);
+}

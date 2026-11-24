@@ -6036,6 +6036,7 @@ name = "wcontainers-socket-options-conformance"
 version = "0.1.0"
 dependencies = [
  "linux-raw-sys",
+ "nix",
  "rustix",
  "wcontainers-socket-options",
 ]
@@ -6046,7 +6047,10 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "linux-raw-sys",
+ "memmap2",
+ "nix",
  "rustix",
+ "socket2 0.6.5",
  "wcontainers-socket-options",
  "wcontainers-socket-options-conformance",
  "zerocopy",

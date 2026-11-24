@@ -1,4 +1,5 @@
-//! Kani proofs that every listed option, with a value of any length, passes the kernel only bytes of its own buffer.
+//! Kani proofs that every call gives the kernel only a region of scratch of the value's own length, and that the
+//! requests the primitive builds name only what they should.
 
 use super::*;
 use wcontainers_socket_options::StorageBytes;
@@ -19,16 +20,13 @@ fn any_length() -> usize {
 }
 
 fn taken(option: PlainOption, length: usize) -> bool {
-    match option.value_length() {
-        ValueLength::Exactly(exact) => exact == length,
-        ValueLength::Any => true,
-    }
+    option.value().exact_length().is_none_or(|exact| exact == length)
 }
 
 #[kani::proof]
 fn longest_is_longer_than_every_exact_length() {
     let option = any_option();
-    if let ValueLength::Exactly(exact) = option.value_length() {
+    if let Some(exact) = option.value().exact_length() {
         assert!(exact < LONGEST);
     }
 }
@@ -39,7 +37,7 @@ fn a_set_reads_only_the_value() {
     let length = any_length();
     let value = vec![u8::MAX; length];
     let result = set(0, option, &value);
-    assert_eq!(result.is_ok(), taken(option, length));
+    assert_eq!(result.is_ok(), taken(option, length) && option.value() != Value::Filled);
 }
 
 #[kani::proof]
@@ -60,21 +58,17 @@ fn a_count_writes_one_int() {
 }
 
 #[kani::proof]
-fn a_full_information_request_names_only_the_arrays() {
+fn a_full_information_layout_keeps_the_arrays_before_the_request() {
     let subflows: usize = kani::any();
     let information: usize = kani::any();
     kani::assume(subflows <= 4 && information <= 4);
-    let mut subflow_array = vec![[u8::MIN; 3]; subflows];
-    let mut information_array = vec![u64::MIN; information];
-    let header =
-        FullInformation::<8>::new(&mut subflow_array[..], &mut information_array[..]).unwrap();
-    let sizes = header.sizes;
-    assert!(sizes[ARRAYS_USER] as usize <= subflows && sizes[ARRAYS_USER] as usize <= information);
-    assert_eq!(sizes[SUBFLOW_INFO_USER] as usize, size_of::<[u8; 3]>());
-    assert_eq!(sizes[TCP_INFO_USER] as usize, size_of::<u64>());
-    let (subflow_info, tcp_info) = (header.subflow_info, header.tcp_info);
-    assert_eq!(subflow_info, subflow_array.as_ptr().addr() as u64);
-    assert_eq!(tcp_info, information_array.as_ptr().addr() as u64);
+    let layout = FullLayout::new::<8, [u8; 3], u64>(subflows, information).unwrap();
+    assert!(layout.count <= subflows && layout.count <= information);
+    assert_eq!(layout.subflow_size, size_of::<[u8; 3]>());
+    assert_eq!(layout.information_size, size_of::<u64>());
+    assert!(layout.subflows + layout.count * layout.subflow_size <= layout.information);
+    assert!(layout.information + layout.count * layout.information_size <= layout.header);
+    assert_eq!(layout.header + size_of::<FullInformation<8>>(), layout.length);
 }
 
 #[kani::proof]

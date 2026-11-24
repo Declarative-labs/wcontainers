@@ -12,6 +12,7 @@ mod foreign;
 
 #[cfg(kani)]
 mod proofs;
+mod scratch;
 
 use std::ffi::c_int;
 use std::mem::offset_of;
@@ -21,11 +22,12 @@ use libc::socklen_t;
 use linux_raw_sys::net as uapi;
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketType, ipproto, sockopt};
+use scratch::{Lent, lend};
 use wcontainers_socket_options::{
     AUTHENTICATION_KEY_QUERY, MPTCP_FULL_INFO, MultipathCounts, PlainOption, QueuedCount,
-    SocketOptions, SourceFilterOptions, ValueLength,
+    SocketOptions, SourceFilterOptions, Value,
 };
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct LinuxSocketOptions;
@@ -57,13 +59,7 @@ impl SocketOptions for LinuxSocketOptions {
             | (InternetSocket::Multipath, QueuedCount::SendQueue | QueuedCount::Unsent) => {}
             _ => return Err(Errno::NOTTY),
         }
-        let request = match count {
-            // SIOCOUTQ is TIOCOUTQ, as sockios.h defines it.
-            QueuedCount::SendQueue => linux_raw_sys::ioctl::TIOCOUTQ,
-            QueuedCount::Unsent => libc::SIOCOUTQNSD as u32,
-            QueuedCount::AtUrgentMark => linux_raw_sys::ioctl::SIOCATMARK,
-        };
-        read_count(socket.as_raw_fd(), request)
+        read_count(socket.as_raw_fd(), request(count))
     }
 
     fn get_authentication_key(
@@ -73,9 +69,12 @@ impl SocketOptions for LinuxSocketOptions {
     ) -> Result<(), Errno> {
         internet_socket(socket)?;
         ask_for_one_key(query);
-        let length = socklen_t::try_from(query.len()).map_err(|_| Errno::INVAL)?;
         let (level, name) = (uapi::SOL_TCP as c_int, uapi::TCP_AO_GET_KEYS as c_int);
-        get_bytes(socket.as_raw_fd(), level, name, query, length).map(drop)
+        lend(query.len(), |lent| {
+            lent.write(usize::MIN, query)?;
+            get_through(socket.as_raw_fd(), level, name, lent)?;
+            lent.read(usize::MIN, query)
+        })
     }
 
     fn set_source_filter(
@@ -84,10 +83,12 @@ impl SocketOptions for LinuxSocketOptions {
         filter: &SourceFilterOptions<'_>,
     ) -> Result<(), Errno> {
         internet_socket(socket)?;
-        let mut request = source_filter_request(filter);
-        let length = socklen_t::try_from(request.len()).map_err(|_| Errno::INVAL)?;
+        let request = source_filter_request(filter);
         let (level, name) = (filter.level.level() as c_int, uapi::MCAST_MSFILTER as c_int);
-        set_bytes(socket.as_raw_fd(), level, name, &mut request, length)
+        lend(request.len(), |lent| {
+            lent.write(usize::MIN, &request)?;
+            set_through(socket.as_raw_fd(), level, name, lent)
+        })
     }
 
     fn get_multipath_full_information<const CONNECTION: usize, Subflow, Information>(
@@ -102,19 +103,33 @@ impl SocketOptions for LinuxSocketOptions {
         Information: FromBytes,
     {
         internet_socket(socket)?;
-        let mut header = FullInformation::<CONNECTION>::new(subflows, information)?;
-        get_full_information(socket.as_raw_fd(), &mut header, subflows, information)?;
-        let FullInformation {
-            sizes,
-            connection: written,
-            ..
-        } = header;
-        *connection = written;
-        Ok(MultipathCounts {
-            tcp_info_size: sizes[TCP_INFO_KERNEL],
-            subflow_info_size: sizes[SUBFLOW_INFO_KERNEL],
-            subflows: sizes[SUBFLOWS],
+        let layout = FullLayout::new::<CONNECTION, Subflow, Information>(subflows.len(), information.len())?;
+        lend(layout.length, |lent| {
+            let header = FullInformation::<CONNECTION>::new(&layout, lent);
+            lent.write(layout.header, header.as_bytes())?;
+            get_through(socket.as_raw_fd(), SOL_MPTCP, MPTCP_FULL_INFO as c_int, &header_of(lent, &layout)?)?;
+            let mut written = FullInformation::<CONNECTION>::new_zeroed();
+            lent.read(layout.header, written.as_mut_bytes())?;
+            fill(lent, layout.subflows, &mut subflows[..layout.count])?;
+            fill(lent, layout.information, &mut information[..layout.count])?;
+            *connection = written.connection;
+            let sizes = written.sizes;
+            Ok(MultipathCounts {
+                tcp_info_size: sizes[TCP_INFO_KERNEL],
+                subflow_info_size: sizes[SUBFLOW_INFO_KERNEL],
+                subflows: sizes[SUBFLOWS],
+            })
         })
+    }
+}
+
+/// The request number of a count.
+fn request(count: QueuedCount) -> u32 {
+    match count {
+        // SIOCOUTQ is TIOCOUTQ, as sockios.h defines it.
+        QueuedCount::SendQueue => linux_raw_sys::ioctl::TIOCOUTQ,
+        QueuedCount::Unsent => libc::SIOCOUTQNSD as u32,
+        QueuedCount::AtUrgentMark => linux_raw_sys::ioctl::SIOCATMARK,
     }
 }
 
@@ -127,22 +142,26 @@ enum InternetSocket {
     Datagram,
 }
 
-/// What the socket is, refusing a descriptor that is not a socket (`ENOTSOCK`) and a socket of another family or
-/// protocol (`ENOPROTOOPT`), on which a level and name, or a request number, may mean anything.
+/// What the socket is, refusing a descriptor that is not a socket (`ENOTSOCK`) and a socket of another family, type or
+/// protocol (`ENOPROTOOPT`). A courtesy, not the containment: the descriptor's number can name something else by the
+/// time of the call.
 fn internet_socket(socket: BorrowedFd<'_>) -> Result<InternetSocket, Errno> {
     let family = sockopt::socket_domain(socket)?;
     if family != AddressFamily::INET && family != AddressFamily::INET6 {
         return Err(Errno::NOPROTOOPT);
     }
+    let kind = sockopt::socket_type(socket)?;
     let protocol = sockopt::socket_protocol(socket)?;
-    if protocol == Some(ipproto::TCP) {
+    if kind == SocketType::RAW {
+        Ok(InternetSocket::Datagram)
+    } else if kind == SocketType::STREAM && protocol == Some(ipproto::TCP) {
         Ok(InternetSocket::Tcp)
-    } else if protocol == Some(ipproto::MPTCP) {
+    } else if kind == SocketType::STREAM && protocol == Some(ipproto::MPTCP) {
         Ok(InternetSocket::Multipath)
-    } else if [ipproto::UDP, ipproto::UDPLITE, ipproto::ICMP, ipproto::ICMPV6]
-        .map(Some)
-        .contains(&protocol)
-        || sockopt::socket_type(socket)? == SocketType::RAW
+    } else if kind == SocketType::DGRAM
+        && [ipproto::UDP, ipproto::UDPLITE, ipproto::ICMP, ipproto::ICMPV6]
+            .map(Some)
+            .contains(&protocol)
     {
         Ok(InternetSocket::Datagram)
     } else {
@@ -174,80 +193,98 @@ fn source_filter_request(filter: &SourceFilterOptions<'_>) -> Vec<u8> {
     request
 }
 
-/// Refuses a value whose length is not the option's, and gives the length as the call takes it.
-fn checked_length(option: PlainOption, given: usize) -> Result<socklen_t, Errno> {
-    match option.value_length() {
-        ValueLength::Exactly(length) if length != given => Err(Errno::INVAL),
-        _ => socklen_t::try_from(given).map_err(|_| Errno::INVAL),
+/// Refuses a value whose length is not the option's.
+fn checked_length(option: PlainOption, given: usize) -> Result<(), Errno> {
+    match option.value().exact_length() {
+        Some(length) if length != given => Err(Errno::INVAL),
+        _ => Ok(()),
     }
 }
 
-/// Gives the kernel a copy of the value, so that a write into it (`IPV6_FLOWLABEL_MGR` writes the label it chose)
-/// never reaches the caller's shared bytes.
+/// Sets the option from a copy of the value in scratch, so that a write into it (`IPV6_FLOWLABEL_MGR` writes the label
+/// it chose) never reaches the caller's shared bytes; an option that is only read is refused.
 fn set(socket: RawFd, option: PlainOption, value: &[u8]) -> Result<(), Errno> {
-    let length = checked_length(option, value.len())?;
+    if option.value() == Value::Filled {
+        return Err(Errno::NOPROTOOPT);
+    }
+    checked_length(option, value.len())?;
     let (level, name) = option.level_and_name();
-    set_bytes(socket, level as c_int, name as c_int, &mut value.to_vec(), length)
+    lend(value.len(), |lent| {
+        lent.write(usize::MIN, value)?;
+        set_through(socket, level as c_int, name as c_int, lent)
+    })
 }
 
+/// Reads the option into zeroed scratch of the buffer's length, and copies what the kernel wrote into the buffer.
 fn get(socket: RawFd, option: PlainOption, into: &mut [u8]) -> Result<usize, Errno> {
-    let length = checked_length(option, into.len())?;
+    checked_length(option, into.len())?;
     let (level, name) = option.level_and_name();
-    get_bytes(socket, level as c_int, name as c_int, into, length)
+    lend(into.len(), |lent| {
+        let written = get_through(socket, level as c_int, name as c_int, lent)?;
+        lent.read(usize::MIN, &mut into[..written])?;
+        Ok(written)
+    })
+}
+
+/// Reads a count into four zeroed bytes of scratch.
+fn read_count(socket: RawFd, request: u32) -> Result<c_int, Errno> {
+    lend(size_of::<c_int>(), |lent| {
+        ioctl_through(socket, request, lent)?;
+        let mut value = [u8::MIN; size_of::<c_int>()];
+        lent.read(usize::MIN, &mut value)?;
+        Ok(c_int::from_ne_bytes(value))
+    })
+}
+
+/// The length a call takes for a region.
+fn length_of(lent: &Lent<'_>) -> Result<socklen_t, Errno> {
+    socklen_t::try_from(lent.len()).map_err(|_| Errno::INVAL)
 }
 
 #[expect(
     unsafe_code,
-    reason = "setsockopt has no safe form for these options: it reads, and may write, at most `length` bytes, the value's own length"
+    reason = "setsockopt has no safe form for these options: the kernel is given only a region of scratch that ends at unbacked guard pages"
 )]
-fn set_bytes(
-    socket: RawFd,
-    level: c_int,
-    name: c_int,
-    value: &mut [u8],
-    length: socklen_t,
-) -> Result<(), Errno> {
-    // SAFETY: the kernel reads, and for some options writes, at most `length` bytes from the start of `value`, which is
-    // that long and borrowed only here; a listed option's value, and a source filter whose count `source_filter_request`
-    // set, hold nothing that makes it go further.
-    let result =
-        unsafe { foreign::setsockopt(socket, level, name, value.as_mut_ptr().cast(), length) };
+fn set_through(socket: RawFd, level: c_int, name: c_int, value: &Lent<'_>) -> Result<(), Errno> {
+    let length = length_of(value)?;
+    // SAFETY: the kernel is given one address, the start of `value`'s region of `length` bytes, which ends where the
+    // scratch file ends; from there the guard is mapped with no page behind it. So whatever the option means to
+    // whatever the descriptor is now, the kernel's reads and writes from that address reach only the scratch file,
+    // which no Rust reference covers, or fail with EFAULT. The bytes it reads hold no address: they are a listed
+    // option's value of its kind, or a request the primitive built.
+    let result = unsafe { foreign::setsockopt(socket, level, name, value.address(0), length) };
     answer(result).map(drop)
 }
 
 #[expect(
     unsafe_code,
-    reason = "getsockopt has no safe form for these options: it writes at most `length` bytes, which `checked_length` made the buffer's own length"
+    reason = "getsockopt has no safe form for these options: the kernel is given only a region of scratch that ends at unbacked guard pages"
 )]
-fn get_bytes(
-    socket: RawFd,
-    level: c_int,
-    name: c_int,
-    into: &mut [u8],
-    length: socklen_t,
-) -> Result<usize, Errno> {
+fn get_through(socket: RawFd, level: c_int, name: c_int, into: &Lent<'_>) -> Result<usize, Errno> {
+    let length = length_of(into)?;
     let mut written = length;
-    // SAFETY: the kernel writes at most `written` bytes from the start of `into`, which is that long, and writes back
-    // in `written`, a local, how many; a listed option's value, and a key query `ask_for_one_key` set to one key, hold
-    // nothing that makes it go further.
-    let result =
-        unsafe { foreign::getsockopt(socket, level, name, into.as_mut_ptr().cast(), &mut written) };
+    // SAFETY: as in `set_through`, the kernel's reads and writes from the region's address reach only the scratch file
+    // or fail with EFAULT. It reads and writes `written`, a local `socklen_t`, as every socket's getsockopt does. The
+    // region holds zeros, a key query, or a request whose two addresses `FullInformation::new` made point into the
+    // same region.
+    let result = unsafe { foreign::getsockopt(socket, level, name, into.address(0), &mut written) };
     answer(result)?;
     Ok(written.min(length) as usize)
 }
 
 #[expect(
     unsafe_code,
-    reason = "ioctl has no safe form for SIOCOUTQ, SIOCOUTQNSD and SIOCATMARK: on a socket whose protocol answers it, each writes one int"
+    reason = "ioctl has no safe form for SIOCOUTQ, SIOCOUTQNSD and SIOCATMARK: the kernel is given only four bytes of scratch that end at unbacked guard pages"
 )]
-fn read_count(socket: RawFd, request: u32) -> Result<c_int, Errno> {
-    let mut value = c_int::MIN;
-    // SAFETY: `count_queued` passes only a request the socket's protocol answers, TCP all three and MPTCP the first two,
-    // and each then writes one int, to `value`, a local; on another descriptor the number may mean any request.
-    let result = unsafe { foreign::ioctl(socket, request as libc::Ioctl, &mut value) };
-    answer(result)?;
-    Ok(value)
+fn ioctl_through(socket: RawFd, request: u32, into: &Lent<'_>) -> Result<(), Errno> {
+    // SAFETY: as in `set_through`: whatever the request number means to whatever the descriptor is now, the kernel's
+    // reads and writes from the address reach only the four zeroed bytes of scratch or fail with EFAULT.
+    let result = unsafe { foreign::ioctl(socket, request as libc::Ioctl, into.address(0)) };
+    answer(result).map(drop)
 }
+
+/// `SOL_MPTCP`.
+const SOL_MPTCP: c_int = uapi::SOL_MPTCP as c_int;
 
 /// The positions in [`FullInformation::sizes`] of `mptcp_full_info`'s first six fields.
 const TCP_INFO_KERNEL: usize = 0;
@@ -270,53 +307,75 @@ struct FullInformation<const CONNECTION: usize> {
     connection: [u8; CONNECTION],
 }
 
-impl<const CONNECTION: usize> FullInformation<CONNECTION> {
-    /// A request whose two addresses are the arrays' starts, with their element sizes and the shorter one's length.
-    fn new<Subflow, Information>(
-        subflows: &mut [Subflow],
-        information: &mut [Information],
+/// Where an `MPTCP_FULL_INFO` read keeps its parts in one region: the subflow array, the information array, and the
+/// request last, so that the kernel's writes past any of them stay in the region or reach the guard.
+struct FullLayout {
+    /// How many elements of each array the request names: the shorter array's length.
+    count: usize,
+    subflow_size: usize,
+    information_size: usize,
+    subflows: usize,
+    information: usize,
+    header: usize,
+    length: usize,
+}
+
+impl FullLayout {
+    fn new<const CONNECTION: usize, Subflow, Information>(
+        subflows: usize,
+        information: usize,
     ) -> Result<Self, Errno> {
-        let size = |element: usize| u32::try_from(element).map_err(|_| Errno::INVAL);
-        let mut sizes = [u32::MIN; SIZES];
-        sizes[TCP_INFO_USER] = size(size_of::<Information>())?;
-        sizes[SUBFLOW_INFO_USER] = size(size_of::<Subflow>())?;
-        sizes[ARRAYS_USER] =
-            u32::try_from(subflows.len().min(information.len())).unwrap_or(u32::MAX);
+        let count = subflows.min(information).min(u32::MAX as usize);
+        let (subflow_size, information_size) = (size_of::<Subflow>(), size_of::<Information>());
+        let bytes = |size: usize| size.checked_mul(count).ok_or(Errno::INVAL);
+        let information_at = bytes(subflow_size)?;
+        let header = information_at.checked_add(bytes(information_size)?).ok_or(Errno::INVAL)?;
+        let length = header.checked_add(size_of::<FullInformation<CONNECTION>>()).ok_or(Errno::INVAL)?;
         Ok(Self {
-            sizes,
-            subflow_info: subflows.as_mut_ptr().expose_provenance() as u64,
-            tcp_info: information.as_mut_ptr().expose_provenance() as u64,
-            connection: [u8::MIN; CONNECTION],
+            count,
+            subflow_size,
+            information_size,
+            subflows: usize::MIN,
+            information: information_at,
+            header,
+            length,
         })
     }
 }
 
-#[expect(
-    unsafe_code,
-    reason = "getsockopt has no safe form for MPTCP_FULL_INFO, whose request holds the addresses of the arrays the kernel fills"
-)]
-fn get_full_information<const CONNECTION: usize, Subflow, Information>(
-    socket: RawFd,
-    header: &mut FullInformation<CONNECTION>,
-    _subflows: &mut [Subflow],
-    _information: &mut [Information],
-) -> Result<(), Errno> {
-    let mut length =
-        socklen_t::try_from(size_of::<FullInformation<CONNECTION>>()).map_err(|_| Errno::INVAL)?;
-    // SAFETY: the kernel writes at most `length` bytes of the header, which is that long, and through the header's two
-    // addresses at most `size_arrays_user` elements of each array, each element at most its own size apart and cut to
-    // it; `FullInformation::new` made the addresses the starts of the two arrays, borrowed here for the call, and the
-    // count the shorter one's length.
-    let result = unsafe {
-        foreign::getsockopt(
-            socket,
-            linux_raw_sys::net::SOL_MPTCP as c_int,
-            MPTCP_FULL_INFO as c_int,
-            header.as_mut_bytes().as_mut_ptr().cast(),
-            &mut length,
-        )
-    };
-    answer(result).map(drop)
+impl<const CONNECTION: usize> FullInformation<CONNECTION> {
+    /// A request whose two addresses are the arrays' places in the region, with their element sizes and count.
+    fn new(layout: &FullLayout, lent: &Lent<'_>) -> Self {
+        let mut sizes = [u32::MIN; SIZES];
+        sizes[TCP_INFO_USER] = layout.information_size as u32;
+        sizes[SUBFLOW_INFO_USER] = layout.subflow_size as u32;
+        sizes[ARRAYS_USER] = layout.count as u32;
+        Self {
+            sizes,
+            subflow_info: lent.address(layout.subflows).expose_provenance() as u64,
+            tcp_info: lent.address(layout.information).expose_provenance() as u64,
+            connection: [u8::MIN; CONNECTION],
+        }
+    }
+}
+
+/// The request's own place in the region: the region from the request on, ending where the region ends.
+fn header_of<'a>(lent: &Lent<'a>, layout: &FullLayout) -> Result<Lent<'a>, Errno> {
+    lent.from(layout.header)
+}
+
+/// Reads each element of the array from the region at `at`, one element apart.
+fn fill<Element: FromBytes>(lent: &Lent<'_>, at: usize, array: &mut [Element]) -> Result<(), Errno> {
+    let size = size_of::<Element>();
+    if size == usize::MIN {
+        return Ok(());
+    }
+    let mut bytes = vec![u8::MIN; size_of_val(array)];
+    lent.read(at, &mut bytes)?;
+    for (element, bytes) in array.iter_mut().zip(bytes.chunks_exact(size)) {
+        *element = Element::read_from_bytes(bytes).map_err(|_| Errno::INVAL)?;
+    }
+    Ok(())
 }
 
 /// The call's result, or the error number it set.
@@ -336,22 +395,23 @@ mod tests {
     const ANY_LENGTHS: [usize; 3] = [0, 1, 64];
 
     fn lengths(option: PlainOption) -> Vec<(usize, bool)> {
-        match option.value_length() {
-            ValueLength::Exactly(length) => vec![
+        match option.value().exact_length() {
+            Some(length) => vec![
                 (length, true),
                 (length + 1, false),
                 (length.saturating_sub(1), length == 0),
             ],
-            ValueLength::Any => ANY_LENGTHS.iter().map(|&length| (length, true)).collect(),
+            None => ANY_LENGTHS.iter().map(|&length| (length, true)).collect(),
         }
     }
 
     #[test]
     fn every_option_passes_only_its_own_bytes() {
         for &option in PlainOption::ALL {
+            let settable = option.value() != Value::Filled;
             for (length, taken) in lengths(option) {
                 let value = vec![u8::MAX; length];
-                assert_eq!(set(0, option, &value).is_ok(), taken, "{option:?} {length}");
+                assert_eq!(set(0, option, &value).is_ok(), taken && settable, "{option:?} {length}");
                 let mut into = vec![u8::MIN; length];
                 match get(0, option, &mut into) {
                     Ok(written) => assert!(taken && written <= length, "{option:?} {length}"),
@@ -363,12 +423,26 @@ mod tests {
 
     #[test]
     fn every_count_writes_one_int() {
-        for request in [
-            linux_raw_sys::ioctl::TIOCOUTQ,
-            libc::SIOCOUTQNSD as u32,
-            linux_raw_sys::ioctl::SIOCATMARK,
-        ] {
-            assert!(read_count(0, request).is_ok());
+        for count in [QueuedCount::SendQueue, QueuedCount::Unsent, QueuedCount::AtUrgentMark] {
+            assert!(read_count(0, request(count)).is_ok());
         }
+    }
+
+    #[test]
+    fn a_full_information_read_stays_in_its_region() {
+        let mut connection = [u8::MIN; 8];
+        let mut subflows = [[u8::MIN; 3]; 2];
+        let mut information = [u64::MIN; 3];
+        let layout = FullLayout::new::<8, [u8; 3], u64>(subflows.len(), information.len()).unwrap();
+        let counts = lend(layout.length, |lent| {
+            let header = FullInformation::<8>::new(&layout, lent);
+            lent.write(layout.header, header.as_bytes())?;
+            get_through(0, SOL_MPTCP, MPTCP_FULL_INFO as c_int, &header_of(lent, &layout)?)?;
+            fill(lent, layout.subflows, &mut subflows[..layout.count])?;
+            fill(lent, layout.information, &mut information[..layout.count])?;
+            let _ = &mut connection;
+            Ok(layout.count)
+        });
+        assert_eq!(counts, Ok(2));
     }
 }

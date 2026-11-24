@@ -15,6 +15,8 @@ wcontainers-socket-options = { path = ".." }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # The sockets the checks set and read options on.
 rustix = { version = "1.1.6", features = ["net", "pty"] }
+# The packet information flags that make the kernel fill the packet options, which no listed option sets.
+nix = { version = "0.31.3", default-features = false, features = ["net"] }
 
 [lints]
 workspace = true

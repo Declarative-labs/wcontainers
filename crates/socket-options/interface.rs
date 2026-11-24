@@ -8,22 +8,46 @@ use linux_raw_sys::net as uapi;
 use rustix::io::Errno;
 use zerocopy::FromBytes;
 
-/// How many bytes an option's value takes.
+/// What an option's value is, and so what the kernel can find in the bytes it is given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ValueLength {
-    /// Exactly the size of the uapi type the option takes.
-    Exactly(usize),
-    /// Any: a byte string, or a structure the kernel cuts to the length it is given.
-    Any,
+pub enum Value {
+    /// A 4-byte integer: too short to hold an address.
+    Int,
+    /// A 64-bit integer the kernel reads as a number, not an address.
+    Number64,
+    /// Exactly one uapi structure, by its name in linux-raw-sys, whose fields the suite's
+    /// `no_listed_structure_holds_an_address` reads.
+    Structure { size: usize, name: &'static str },
+    /// A byte string the kernel parses, of any length, holding no address.
+    Bytes,
+    /// Read only: the kernel fills it and reads nothing from it; a set is refused.
+    Filled,
 }
 
-const INT: ValueLength = ValueLength::Exactly(size_of::<c_int>());
-const U32: ValueLength = ValueLength::Exactly(size_of::<u32>());
-const U64: ValueLength = ValueLength::Exactly(size_of::<u64>());
-const ANY: ValueLength = ValueLength::Any;
+impl Value {
+    /// The one length the value takes, or None for any.
+    pub const fn exact_length(self) -> Option<usize> {
+        match self {
+            Value::Int => Some(size_of::<c_int>()),
+            Value::Number64 => Some(size_of::<u64>()),
+            Value::Structure { size, .. } => Some(size),
+            Value::Bytes | Value::Filled => None,
+        }
+    }
+}
 
-const fn of<T>() -> ValueLength {
-    ValueLength::Exactly(size_of::<T>())
+const INT: Value = Value::Int;
+const NUMBER64: Value = Value::Number64;
+const BYTES: Value = Value::Bytes;
+const FILLED: Value = Value::Filled;
+
+macro_rules! structure {
+    ($name:ident) => {
+        Value::Structure {
+            size: size_of::<uapi::$name>(),
+            name: stringify!($name),
+        }
+    };
 }
 
 /// `MPTCP_INFO`, which neither libc nor linux-raw-sys carries.
@@ -60,11 +84,15 @@ pub const SOL_UDP: u32 = uapi::IPPROTO_UDP as u32;
 pub const SOL_UDPLITE: u32 = uapi::IPPROTO_UDPLITE as u32;
 
 macro_rules! plain_options {
-    ($($variant:ident = ($level:path, $name:path, $length:expr),)*) => {
-        /// A socket option whose value the kernel reads and writes no further than the length given, whatever the value
-        /// holds: no address, and no count, length or offset that sizes what the kernel copies; only these exist.
+    ($($variant:ident = ($level:path, $name:path, $value:expr),)*) => {
+        /// A socket option a call site of the workspace sets or reads by its level and name, and no library wraps.
         ///
-        /// The conformance suite's `no_listed_option_writes_past_its_length` tries every entry against the kernel.
+        /// The list is not what keeps the kernel inside the value: every call gives the kernel private memory that ends
+        /// where unbacked guard pages begin, so an entry the kernel copies further than the length fails with `EFAULT`.
+        /// What the list must still guarantee is that no value holds an address the kernel follows: a read gives the
+        /// kernel zeros, and a set only bytes of its entry's [`Value`] kind; the conformance suite's
+        /// `no_listed_structure_holds_an_address` checks each structure's fields, and `the_state_that_fills_each_option`
+        /// names, in a `match` with no catch-all, the socket on which the kernel fills each entry.
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         pub enum PlainOption {
             $($variant,)*
@@ -81,9 +109,10 @@ macro_rules! plain_options {
                 }
             }
 
-            pub const fn value_length(self) -> ValueLength {
+            /// What the option's value is.
+            pub const fn value(self) -> Value {
                 match self {
-                    $(PlainOption::$variant => $length,)*
+                    $(PlainOption::$variant => $value,)*
                 }
             }
 
@@ -99,9 +128,8 @@ macro_rules! plain_options {
 }
 
 plain_options! {
-    SoMaxPacingRate = (uapi::SOL_SOCKET, uapi::SO_MAX_PACING_RATE, U64),
-    SoIncomingCpu = (uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU, INT),
-    SoTimestamping = (uapi::SOL_SOCKET, uapi::SO_TIMESTAMPING, of::<uapi::so_timestamping>()),
+    SoMaxPacingRate = (uapi::SOL_SOCKET, uapi::SO_MAX_PACING_RATE, NUMBER64),
+    SoTimestamping = (uapi::SOL_SOCKET, uapi::SO_TIMESTAMPING, structure!(so_timestamping)),
     SoDetachReuseportBpf = (uapi::SOL_SOCKET, uapi::SO_DETACH_REUSEPORT_BPF, INT),
     SoBufLock = (uapi::SOL_SOCKET, uapi::SO_BUF_LOCK, INT),
     SoRcvlowat = (uapi::SOL_SOCKET, uapi::SO_RCVLOWAT, INT),
@@ -109,67 +137,64 @@ plain_options! {
     SoCnxAdvice = (uapi::SOL_SOCKET, uapi::SO_CNX_ADVICE, INT),
     SoWifiStatus = (uapi::SOL_SOCKET, uapi::SO_WIFI_STATUS, INT),
     SoPeekOff = (uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, INT),
-    SoMeminfo = (uapi::SOL_SOCKET, uapi::SO_MEMINFO, ANY),
+    SoMeminfo = (uapi::SOL_SOCKET, uapi::SO_MEMINFO, FILLED),
     SoRcvmark = (uapi::SOL_SOCKET, uapi::SO_RCVMARK, INT),
     SoRcvpriority = (uapi::SOL_SOCKET, uapi::SO_RCVPRIORITY, INT),
     SoNoCheck = (uapi::SOL_SOCKET, uapi::SO_NO_CHECK, INT),
-    SoTxtime = (uapi::SOL_SOCKET, uapi::SO_TXTIME, of::<uapi::sock_txtime>()),
-    IpTtl = (uapi::SOL_IP, uapi::IP_TTL, INT),
-    IpOptions = (uapi::SOL_IP, uapi::IP_OPTIONS, ANY),
+    SoTxtime = (uapi::SOL_SOCKET, uapi::SO_TXTIME, structure!(sock_txtime)),
+    IpOptions = (uapi::SOL_IP, uapi::IP_OPTIONS, BYTES),
     IpMinttl = (uapi::SOL_IP, uapi::IP_MINTTL, INT),
-    IpPktoptions = (uapi::SOL_IP, uapi::IP_PKTOPTIONS, ANY),
-    IpLocalPortRange = (uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, U32),
-    IpUnicastIf = (uapi::SOL_IP, uapi::IP_UNICAST_IF, U32),
+    IpPktoptions = (uapi::SOL_IP, uapi::IP_PKTOPTIONS, FILLED),
+    IpLocalPortRange = (uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, INT),
+    IpUnicastIf = (uapi::SOL_IP, uapi::IP_UNICAST_IF, INT),
     IpRouterAlert = (uapi::SOL_IP, uapi::IP_ROUTER_ALERT, INT),
     IpNodefrag = (uapi::SOL_IP, uapi::IP_NODEFRAG, INT),
     IpRecvopts = (uapi::SOL_IP, uapi::IP_RECVOPTS, INT),
     IpRecvfragsize = (uapi::SOL_IP, uapi::IP_RECVFRAGSIZE, INT),
-    IpMcastJoinGroup = (uapi::SOL_IP, uapi::MCAST_JOIN_GROUP, of::<uapi::group_req>()),
-    IpMcastLeaveGroup = (uapi::SOL_IP, uapi::MCAST_LEAVE_GROUP, of::<uapi::group_req>()),
-    Ipv6UnicastHops = (uapi::SOL_IPV6, uapi::IPV6_UNICAST_HOPS, INT),
-    Ipv6Hopopts = (uapi::SOL_IPV6, uapi::IPV6_HOPOPTS, ANY),
-    Ipv6Rthdrdstopts = (uapi::SOL_IPV6, uapi::IPV6_RTHDRDSTOPTS, ANY),
-    Ipv6Rthdr = (uapi::SOL_IPV6, uapi::IPV6_RTHDR, ANY),
-    Ipv6Dstopts = (uapi::SOL_IPV6, uapi::IPV6_DSTOPTS, ANY),
+    IpMcastJoinGroup = (uapi::SOL_IP, uapi::MCAST_JOIN_GROUP, structure!(group_req)),
+    IpMcastLeaveGroup = (uapi::SOL_IP, uapi::MCAST_LEAVE_GROUP, structure!(group_req)),
+    Ipv6Hopopts = (uapi::SOL_IPV6, uapi::IPV6_HOPOPTS, BYTES),
+    Ipv6Rthdrdstopts = (uapi::SOL_IPV6, uapi::IPV6_RTHDRDSTOPTS, BYTES),
+    Ipv6Rthdr = (uapi::SOL_IPV6, uapi::IPV6_RTHDR, BYTES),
+    Ipv6Dstopts = (uapi::SOL_IPV6, uapi::IPV6_DSTOPTS, BYTES),
     Ipv6FlowinfoSend = (uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, INT),
     Ipv6Autoflowlabel = (uapi::SOL_IPV6, uapi::IPV6_AUTOFLOWLABEL, INT),
-    Ipv6AddrPreferences = (uapi::SOL_IPV6, uapi::IPV6_ADDR_PREFERENCES, U32),
-    Ipv6FlowlabelMgr = (uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, of::<uapi::in6_flowlabel_req>()),
+    Ipv6AddrPreferences = (uapi::SOL_IPV6, uapi::IPV6_ADDR_PREFERENCES, INT),
+    Ipv6FlowlabelMgr = (uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, structure!(in6_flowlabel_req)),
     Ipv6Recvhopopts = (uapi::SOL_IPV6, uapi::IPV6_RECVHOPOPTS, INT),
     Ipv6Recvdstopts = (uapi::SOL_IPV6, uapi::IPV6_RECVDSTOPTS, INT),
     Ipv6Recvrthdr = (uapi::SOL_IPV6, uapi::IPV6_RECVRTHDR, INT),
     Ipv6Flowinfo = (uapi::SOL_IPV6, uapi::IPV6_FLOWINFO, INT),
     Ipv6Recvfragsize = (uapi::SOL_IPV6, uapi::IPV6_RECVFRAGSIZE, INT),
     Ipv6Minhopcount = (uapi::SOL_IPV6, uapi::IPV6_MINHOPCOUNT, INT),
-    Ipv62292pktoptions = (uapi::SOL_IPV6, uapi::IPV6_2292PKTOPTIONS, ANY),
-    Ipv6JoinAnycast = (uapi::SOL_IPV6, uapi::IPV6_JOIN_ANYCAST, of::<uapi::ipv6_mreq>()),
-    Ipv6LeaveAnycast = (uapi::SOL_IPV6, uapi::IPV6_LEAVE_ANYCAST, of::<uapi::ipv6_mreq>()),
+    Ipv62292pktoptions = (uapi::SOL_IPV6, uapi::IPV6_2292PKTOPTIONS, FILLED),
+    Ipv6JoinAnycast = (uapi::SOL_IPV6, uapi::IPV6_JOIN_ANYCAST, structure!(ipv6_mreq)),
+    Ipv6LeaveAnycast = (uapi::SOL_IPV6, uapi::IPV6_LEAVE_ANYCAST, structure!(ipv6_mreq)),
     Ipv6Mtu = (uapi::SOL_IPV6, uapi::IPV6_MTU, INT),
-    Ipv6UnicastIf = (uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF, U32),
+    Ipv6UnicastIf = (uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF, INT),
     Ipv6RouterAlert = (uapi::SOL_IPV6, uapi::IPV6_ROUTER_ALERT, INT),
     Ipv6RouterAlertIsolate = (uapi::SOL_IPV6, uapi::IPV6_ROUTER_ALERT_ISOLATE, INT),
     Ipv6Checksum = (uapi::SOL_IPV6, uapi::IPV6_CHECKSUM, INT),
-    Ipv6McastJoinGroup = (uapi::SOL_IPV6, uapi::MCAST_JOIN_GROUP, of::<uapi::group_req>()),
-    Ipv6McastLeaveGroup = (uapi::SOL_IPV6, uapi::MCAST_LEAVE_GROUP, of::<uapi::group_req>()),
-    TcpMd5sigExt = (uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, of::<uapi::tcp_md5sig>()),
-    TcpAoAddKey = (uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, of::<uapi::tcp_ao_add>()),
-    TcpAoDelKey = (uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, of::<uapi::tcp_ao_del>()),
-    TcpAoInfo = (uapi::SOL_TCP, uapi::TCP_AO_INFO, of::<uapi::tcp_ao_info_opt>()),
-    TcpAoRepair = (uapi::SOL_TCP, uapi::TCP_AO_REPAIR, of::<uapi::tcp_ao_repair>()),
+    Ipv6McastJoinGroup = (uapi::SOL_IPV6, uapi::MCAST_JOIN_GROUP, structure!(group_req)),
+    Ipv6McastLeaveGroup = (uapi::SOL_IPV6, uapi::MCAST_LEAVE_GROUP, structure!(group_req)),
+    TcpMd5sigExt = (uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, structure!(tcp_md5sig)),
+    TcpAoAddKey = (uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, structure!(tcp_ao_add)),
+    TcpAoDelKey = (uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, structure!(tcp_ao_del)),
+    TcpAoInfo = (uapi::SOL_TCP, uapi::TCP_AO_INFO, structure!(tcp_ao_info_opt)),
+    TcpAoRepair = (uapi::SOL_TCP, uapi::TCP_AO_REPAIR, structure!(tcp_ao_repair)),
     TcpInq = (uapi::SOL_TCP, uapi::TCP_INQ, INT),
-    TcpQueueSeq = (uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, U32),
-    TcpSavedSyn = (uapi::SOL_TCP, uapi::TCP_SAVED_SYN, ANY),
+    TcpQueueSeq = (uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, INT),
+    TcpSavedSyn = (uapi::SOL_TCP, uapi::TCP_SAVED_SYN, FILLED),
     TcpFastopen = (uapi::SOL_TCP, uapi::TCP_FASTOPEN, INT),
-    TcpFastopenKey = (uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, ANY),
+    TcpFastopenKey = (uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, BYTES),
     TcpFastopenNoCookie = (uapi::SOL_TCP, uapi::TCP_FASTOPEN_NO_COOKIE, INT),
     TcpSaveSyn = (uapi::SOL_TCP, uapi::TCP_SAVE_SYN, INT),
-    TcpRepair = (uapi::SOL_TCP, uapi::TCP_REPAIR, INT),
     TcpRepairQueue = (uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, INT),
-    TcpRepairWindow = (uapi::SOL_TCP, uapi::TCP_REPAIR_WINDOW, of::<uapi::tcp_repair_window>()),
-    TcpRepairOptions = (uapi::SOL_TCP, uapi::TCP_REPAIR_OPTIONS, ANY),
-    TcpTimestamp = (uapi::SOL_TCP, uapi::TCP_TIMESTAMP, U32),
-    TcpInfo = (uapi::SOL_TCP, uapi::TCP_INFO, ANY),
-    TcpCcInfo = (uapi::SOL_TCP, uapi::TCP_CC_INFO, ANY),
+    TcpRepairWindow = (uapi::SOL_TCP, uapi::TCP_REPAIR_WINDOW, structure!(tcp_repair_window)),
+    TcpRepairOptions = (uapi::SOL_TCP, uapi::TCP_REPAIR_OPTIONS, BYTES),
+    TcpTimestamp = (uapi::SOL_TCP, uapi::TCP_TIMESTAMP, INT),
+    TcpInfo = (uapi::SOL_TCP, uapi::TCP_INFO, FILLED),
+    TcpCcInfo = (uapi::SOL_TCP, uapi::TCP_CC_INFO, FILLED),
     TcpQuickack = (uapi::SOL_TCP, uapi::TCP_QUICKACK, INT),
     TcpWindowClamp = (uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP, INT),
     TcpSyncnt = (uapi::SOL_TCP, uapi::TCP_SYNCNT, INT),
@@ -179,7 +204,7 @@ plain_options! {
     TcpRtoMaxMs = (uapi::SOL_TCP, uapi::TCP_RTO_MAX_MS, INT),
     TcpDelackMaxUs = (uapi::SOL_TCP, uapi::TCP_DELACK_MAX_US, INT),
     TcpTxDelay = (uapi::SOL_TCP, uapi::TCP_TX_DELAY, INT),
-    MptcpInfo = (uapi::SOL_MPTCP, MPTCP_INFO, ANY),
+    MptcpInfo = (uapi::SOL_MPTCP, MPTCP_INFO, FILLED),
     UdpNoCheck6Tx = (SOL_UDP, UDP_NO_CHECK6_TX, INT),
     UdpNoCheck6Rx = (SOL_UDP, UDP_NO_CHECK6_RX, INT),
     UdpliteSendCscov = (SOL_UDPLITE, UDPLITE_SEND_CSCOV, INT),
@@ -245,10 +270,15 @@ pub struct SourceFilterOptions<'a> {
     reviewable::explicit_shared_error::Errno,
     reason = "each method is one call into the kernel and fails only with the error number it gives"
 )]
-/// Every method refuses a descriptor that is not an IPv4 or IPv6 socket of TCP, MPTCP, UDP, UDP-Lite, ICMP or a raw
-/// one, the sockets the kernel's handlers of these options were read for.
+/// Every call gives the kernel private memory in place of the caller's bytes: the value's own length, ending where
+/// unbacked guard pages begin, so that whatever the option or request means to whatever the descriptor is when the
+/// call runs, the kernel's reads and writes through that memory stay in it or fail with `EFAULT`. That is the
+/// containment. Before each call a method also refuses a descriptor that is not an IPv4 or IPv6 socket of TCP or MPTCP
+/// (a stream), UDP, UDP-Lite or ICMP (a datagram) or a raw one; that check is a courtesy, not the containment, since
+/// another thread can make the descriptor's number name something else between the check and the call.
 pub trait SocketOptions {
-    /// Sets the option to the value, refused with `EINVAL` when the value's length is not the option's.
+    /// Sets the option to the value, refused with `EINVAL` when the value's length is not the option's, and with
+    /// `ENOPROTOOPT` for an option that is only read.
     fn set_option(
         &self,
         socket: BorrowedFd<'_>,
@@ -256,7 +286,8 @@ pub trait SocketOptions {
         value: &[u8],
     ) -> Result<(), Errno>;
 
-    /// Reads the option into the buffer and returns the length the kernel gave, refused with `EINVAL` when the buffer's length is not the option's.
+    /// Reads the option into the buffer and returns the length the kernel gave, refused with `EINVAL` when the buffer's
+    /// length is not the option's; the kernel is given zeros, never the buffer's bytes.
     fn get_option(
         &self,
         socket: BorrowedFd<'_>,
@@ -281,7 +312,8 @@ pub trait SocketOptions {
     ) -> Result<(), Errno>;
 
     /// Reads `MPTCP_FULL_INFO`: the connection's `mptcp_info` into `connection`, and each subflow's `mptcp_subflow_info`
-    /// and `tcp_info` into the two arrays, as many as the shorter holds, each cut to its element.
+    /// and `tcp_info` into the two arrays, as many as the shorter holds, each cut to its element; the bytes the kernel
+    /// does not write are zero. The two addresses the request holds are the primitive's, into its private memory.
     fn get_multipath_full_information<const CONNECTION: usize, Subflow, Information>(
         &self,
         socket: BorrowedFd<'_>,

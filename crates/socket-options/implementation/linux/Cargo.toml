@@ -13,21 +13,31 @@ path = "implementation.rs"
 
 [dependencies]
 wcontainers-socket-options = { path = "../.." }
-# The kind of socket a descriptor is, checked before every call.
-rustix = { version = "1.1.6", default-features = false, features = ["net", "std"] }
+# The kind of socket a descriptor is, checked before every call; the scratch's memfd, its seals, `pread` and `pwrite`.
+rustix = { version = "1.1.6", default-features = false, features = ["fs", "net", "std"] }
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # setsockopt, getsockopt and ioctl, and SIOCOUTQNSD, which linux-raw-sys does not carry.
 libc = "0.2.191"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "no_std"] }
+# The scratch file's mapping, with unbacked guard pages past its end, through the safe `MmapOptions::map_raw`.
+memmap2 = "0.9.12"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 wcontainers-socket-options-conformance = { path = "../../conformance" }
+# The attacks' setup: descriptors of every kind, the swap of one under a call, and flags no listed option sets.
+rustix = { version = "1.1.6", features = ["event", "fs", "net", "pty", "stdio"] }
+nix = { version = "0.31.3", default-features = false, features = ["net"] }
+socket2 = { version = "0.6.5", features = ["all"] }
 
 [[test]]
 name = "conformance"
 path = "tests/conformance.rs"
+
+[[test]]
+name = "attacks"
+path = "tests/attacks.rs"
 
 [lints.rust]
 # A primitive: it may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.

@@ -105,6 +105,18 @@ pub fn set_int(
     let nix = |result: nix::Result<()>| result.map_err(from_nix);
     let socket2 = sock(&socket);
     match (level, name) {
+        // Linux reads these four as ints; each takes the value's bits, so that -1 still means the default.
+        (uapi::SOL_SOCKET, uapi::SO_INCOMING_CPU) => rustix(rustix_option::set_socket_incoming_cpu(
+            socket,
+            value.cast_unsigned(),
+        )),
+        (uapi::SOL_IP, uapi::IP_TTL) => io(socket2.set_ttl_v4(value.cast_unsigned())),
+        (uapi::SOL_IPV6, uapi::IPV6_UNICAST_HOPS) => {
+            io(socket2.set_unicast_hops_v6(value.cast_unsigned()))
+        }
+        (uapi::SOL_TCP, uapi::TCP_REPAIR) => {
+            nix(setsockopt(&socket, sockopt::TcpRepair, &value.cast_unsigned()))
+        }
         (uapi::SOL_SOCKET, uapi::SO_MARK) => io(socket2.set_mark(unsigned(value)?)),
         (uapi::SOL_SOCKET, uapi::SO_PRIORITY) => io(socket2.set_priority(unsigned(value)?)),
         (uapi::SOL_SOCKET, uapi::SO_BROADCAST) => io(socket2.set_broadcast(on)),

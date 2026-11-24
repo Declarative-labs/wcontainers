@@ -14,7 +14,7 @@ use rustix::net::{
 };
 use wcontainers_socket_options::{
     AUTHENTICATION_KEY_QUERY, MulticastLevel, PlainOption, QueuedCount, SocketOptions,
-    SourceFilterOptions, StorageBytes, ValueLength,
+    SourceFilterOptions, StorageBytes, Value,
 };
 
 /// The length an option of any length is read with: more than any listed option gives on a fresh socket.
@@ -42,10 +42,7 @@ fn socket_for(option: PlainOption) -> Option<OwnedFd> {
 }
 
 fn length_of(option: PlainOption, any: usize) -> usize {
-    match option.value_length() {
-        ValueLength::Exactly(length) => length,
-        ValueLength::Any => any,
-    }
+    option.value().exact_length().unwrap_or(any)
 }
 
 /// Checks that the kernel knows every listed option at its level: a read, or for an option it only sets, a write of
@@ -61,7 +58,7 @@ pub fn every_option_is_known_at_its_level<T: SocketOptions>(subject: T) {
         };
         let mut read = vec![u8::MIN; length_of(option, ANY_READ)];
         let answer = match subject.get_option(socket.as_fd(), option, &mut read) {
-            Err(Errno::NOPROTOOPT) => subject.set_option(
+            Err(Errno::NOPROTOOPT) if option.value() != Value::Filled => subject.set_option(
                 socket.as_fd(),
                 option,
                 &vec![u8::MIN; length_of(option, usize::MIN)],
@@ -406,6 +403,12 @@ const SOURCES: u8 = 6;
 const IP_OPTIONS: [u8; 4] = [uapi::IPOPT_NOOP as u8; 4];
 /// An IPv6 hop-by-hop header holding one PadN option of four bytes.
 const HOP_BY_HOP: [u8; 8] = [0, 0, 1, 4, 0, 0, 0, 0];
+/// An IPv6 routing header of type 2, the one Mobile IPv6 sets, with one segment left: the loopback address.
+const ROUTING_TYPE_2: [u8; 24] = [0, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+/// A fast open key.
+const FAST_OPEN_KEY: [u8; 16] = [7; 16];
+/// A congestion control whose `TCP_CC_INFO` has fields, unlike cubic's.
+const CONGESTION_WITH_INFORMATION: &str = "vegas";
 
 /// The network the group kinds' sources are numbered in.
 const SOURCE_NETWORK_V4: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 0);
@@ -541,14 +544,20 @@ fn guarded<T: SocketOptions>(subject: &T, kind: GuardedKind) -> Option<Guarded> 
             };
             let socket = plain(family, SocketType::STREAM, ipproto::TCP)?;
             add_keys(subject, &socket, loopback).ok()?;
+            let _ = subject.set_option(socket.as_fd(), PlainOption::TcpFastopenKey, &FAST_OPEN_KEY);
             Some(alone(socket))
         }
         GuardedKind::TcpV4Connected => connected(AddressFamily::INET, ipproto::TCP, &|socket| {
             let _ = subject.set_option(socket.as_fd(), PlainOption::IpOptions, &IP_OPTIONS);
+            let _ = nix::sys::socket::setsockopt(socket, nix::sys::socket::sockopt::Ipv4PacketInfo, &true);
+            let _ = rustix::net::sockopt::set_tcp_congestion(socket, CONGESTION_WITH_INFORMATION);
         }),
         GuardedKind::TcpV6Connected => connected(AddressFamily::INET6, ipproto::TCP, &|socket| {
             let _ = subject.set_option(socket.as_fd(), PlainOption::Ipv6Hopopts, &HOP_BY_HOP);
             let _ = subject.set_option(socket.as_fd(), PlainOption::Ipv6Dstopts, &HOP_BY_HOP);
+            let _ = subject.set_option(socket.as_fd(), PlainOption::Ipv6Rthdrdstopts, &HOP_BY_HOP);
+            let _ = subject.set_option(socket.as_fd(), PlainOption::Ipv6Rthdr, &ROUTING_TYPE_2);
+            let _ = nix::sys::socket::setsockopt(socket, nix::sys::socket::sockopt::Ipv6RecvPacketInfo, &true);
         }),
         GuardedKind::MultipathConnected => connected(AddressFamily::INET, ipproto::MPTCP, &|_| {}),
         GuardedKind::UdpV4InGroup => {
@@ -561,6 +570,131 @@ fn guarded<T: SocketOptions>(subject: &T, kind: GuardedKind) -> Option<Guarded> 
         GuardedKind::RawIcmpV4 => plain(AddressFamily::INET, SocketType::RAW, ipproto::ICMP).map(alone),
         GuardedKind::RawIcmpV6 => plain(AddressFamily::INET6, SocketType::RAW, ipproto::ICMPV6).map(alone),
     }
+}
+
+/// What the kernel gives for an option on the kind of socket set up for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fills {
+    /// A read on the kind answers with at least one byte: the state in which the kernel fills the option.
+    On(GuardedKind),
+    /// The option is only set; a read on the kind answers an error, as the kernel has no read of it, or none without
+    /// a request or a repair mode the primitive never gives it.
+    ReadFails(GuardedKind),
+}
+
+/// The state in which the kernel fills each option: a `match` with no catch-all, so that an entry added to the list
+/// does not compile until it names one, and `the_state_that_fills_each_option` checks it.
+pub const fn fills(option: PlainOption) -> Fills {
+    use Fills::{On, ReadFails};
+    use GuardedKind::*;
+    match option {
+        PlainOption::SoMaxPacingRate
+        | PlainOption::SoTimestamping
+        | PlainOption::SoBufLock
+        | PlainOption::SoRcvlowat
+        | PlainOption::SoTxrehash
+        | PlainOption::SoWifiStatus
+        | PlainOption::SoPeekOff
+        | PlainOption::SoMeminfo
+        | PlainOption::SoRcvmark
+        | PlainOption::SoRcvpriority
+        | PlainOption::SoNoCheck
+        | PlainOption::SoTxtime => On(TcpV4Connected),
+        PlainOption::SoDetachReuseportBpf | PlainOption::SoCnxAdvice => ReadFails(TcpV4Connected),
+        PlainOption::IpOptions
+        | PlainOption::IpMinttl
+        | PlainOption::IpPktoptions
+        | PlainOption::IpLocalPortRange
+        | PlainOption::IpUnicastIf
+        | PlainOption::IpNodefrag
+        | PlainOption::IpRecvopts
+        | PlainOption::IpRecvfragsize => On(TcpV4Connected),
+        PlainOption::IpRouterAlert => On(RawIcmpV4),
+        PlainOption::IpMcastJoinGroup | PlainOption::IpMcastLeaveGroup => ReadFails(UdpV4InGroup),
+        PlainOption::Ipv6Hopopts
+        | PlainOption::Ipv6Rthdrdstopts
+        | PlainOption::Ipv6Rthdr
+        | PlainOption::Ipv6Dstopts
+        | PlainOption::Ipv6FlowinfoSend
+        | PlainOption::Ipv6Autoflowlabel
+        | PlainOption::Ipv6AddrPreferences
+        | PlainOption::Ipv6Recvhopopts
+        | PlainOption::Ipv6Recvdstopts
+        | PlainOption::Ipv6Recvrthdr
+        | PlainOption::Ipv6Flowinfo
+        | PlainOption::Ipv6Recvfragsize
+        | PlainOption::Ipv6Minhopcount
+        | PlainOption::Ipv62292pktoptions
+        | PlainOption::Ipv6Mtu
+        | PlainOption::Ipv6UnicastIf => On(TcpV6Connected),
+        PlainOption::Ipv6RouterAlert | PlainOption::Ipv6RouterAlertIsolate | PlainOption::Ipv6Checksum => {
+            On(RawIcmpV6)
+        }
+        PlainOption::Ipv6FlowlabelMgr
+        | PlainOption::Ipv6JoinAnycast
+        | PlainOption::Ipv6LeaveAnycast
+        | PlainOption::Ipv6McastJoinGroup
+        | PlainOption::Ipv6McastLeaveGroup => ReadFails(UdpV6InGroup),
+        PlainOption::TcpMd5sigExt
+        | PlainOption::TcpAoAddKey
+        | PlainOption::TcpAoDelKey
+        | PlainOption::TcpAoRepair
+        | PlainOption::TcpQueueSeq
+        | PlainOption::TcpRepairQueue
+        | PlainOption::TcpRepairWindow
+        | PlainOption::TcpRepairOptions => ReadFails(TcpV4WithKeys),
+        PlainOption::TcpAoInfo | PlainOption::TcpFastopenKey => On(TcpV4WithKeys),
+        PlainOption::TcpInq
+        | PlainOption::TcpSavedSyn
+        | PlainOption::TcpFastopen
+        | PlainOption::TcpFastopenNoCookie
+        | PlainOption::TcpSaveSyn
+        | PlainOption::TcpTimestamp
+        | PlainOption::TcpInfo
+        | PlainOption::TcpCcInfo
+        | PlainOption::TcpQuickack
+        | PlainOption::TcpWindowClamp
+        | PlainOption::TcpSyncnt
+        | PlainOption::TcpDeferAccept
+        | PlainOption::TcpLinger2
+        | PlainOption::TcpRtoMinUs
+        | PlainOption::TcpRtoMaxMs
+        | PlainOption::TcpDelackMaxUs
+        | PlainOption::TcpTxDelay => On(TcpV4Connected),
+        PlainOption::MptcpInfo => On(MultipathConnected),
+        PlainOption::UdpNoCheck6Tx | PlainOption::UdpNoCheck6Rx => On(UdpV6InGroup),
+        PlainOption::UdpliteSendCscov | PlainOption::UdpliteRecvCscov => On(UdpLiteV6),
+    }
+}
+
+/// Checks, against the kernel, the state `fills` names for every option: a read there gives at least one byte, or,
+/// for an option only set, fails.
+pub fn the_state_that_fills_each_option<T: SocketOptions>(subject: T) {
+    let mut wrong = Vec::new();
+    let mut skipped = Vec::new();
+    for &option in PlainOption::ALL {
+        let named = fills(option);
+        let (Fills::On(kind) | Fills::ReadFails(kind)) = named;
+        let Some(on) = guarded(&subject, kind) else {
+            assert!(!GuardedKind::REQUIRED.contains(&kind), "{kind:?} could not be made");
+            skipped.push(option);
+            continue;
+        };
+        let mut read = vec![u8::MIN; length_of(option, ANY_READ)];
+        let answer = subject.get_option(on.socket.as_fd(), option, &mut read);
+        let right = match named {
+            Fills::On(_) => matches!(answer, Ok(length) if length > usize::MIN),
+            Fills::ReadFails(_) => answer.is_err(),
+        };
+        if !right {
+            wrong.push(format!("{option:?} {named:?}: {answer:?}"));
+        }
+    }
+    eprintln!(
+        "{} options, each in its state; not made on this host: {skipped:?}; wrong: {wrong:#?}",
+        PlainOption::ALL.len()
+    );
+    assert!(wrong.is_empty(), "options not filled where `fills` says: {wrong:#?}");
 }
 
 /// Reads the option into the front of a marked buffer with every length up to `LONGEST_TRIED` and every value
@@ -578,10 +712,7 @@ fn guard_option<T: SocketOptions>(
     let mut buffer = vec![MARK; LONGEST_TRIED + GUARDED];
     let (mut reads, mut failed, mut shown) = (u64::MIN, u64::MIN, Vec::new());
     for length in usize::MIN..=LONGEST_TRIED {
-        let exact = match option.value_length() {
-            ValueLength::Exactly(exact) => Some(exact),
-            ValueLength::Any => None,
-        };
+        let exact = option.value().exact_length();
         let mut read = |background: Background, value: &[u8], fields: &[(usize, Field)]| {
             buffer[..length].copy_from_slice(value);
             for &(at, field) in fields {
@@ -698,10 +829,16 @@ pub fn only_internet_sockets_are_reached<T: SocketOptions>(subject: T) {
     ];
     for (name, descriptor, error) in refused {
         let mut value = [u8::MIN; size_of::<i32>()];
-        assert_eq!(subject.get_option(descriptor, PlainOption::IpTtl, &mut value), Err(error), "{name:?}");
-        assert_eq!(subject.set_option(descriptor, PlainOption::IpTtl, &value), Err(error), "{name:?}");
+        assert_eq!(subject.get_option(descriptor, PlainOption::IpMinttl, &mut value), Err(error), "{name:?}");
+        assert_eq!(subject.set_option(descriptor, PlainOption::IpMinttl, &value), Err(error), "{name:?}");
         for count in [QueuedCount::SendQueue, QueuedCount::Unsent, QueuedCount::AtUrgentMark] {
             assert_eq!(subject.count_queued(descriptor, count), Err(error), "{name:?} {count:?}");
+        }
+    }
+    for family in [AddressFamily::INET, AddressFamily::INET6] {
+        let raw = rustix::net::socket(family, SocketType::RAW, Some(ipproto::TCP)).expect("a raw socket of TCP's number");
+        for count in [QueuedCount::SendQueue, QueuedCount::Unsent, QueuedCount::AtUrgentMark] {
+            assert_eq!(subject.count_queued(raw.as_fd(), count), Err(Errno::NOTTY), "raw {family:?} {count:?}");
         }
     }
     let udp = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None).expect("a UDP socket");
