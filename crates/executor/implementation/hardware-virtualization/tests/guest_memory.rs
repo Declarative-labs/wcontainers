@@ -219,7 +219,7 @@ fn a_frame_let_go_of_while_the_guest_stores_never_reaches_a_third_space() {
         thread::sleep(WHILE_RUNNING);
         pages().filter(|&page| read_word(&third, page) == STORED).collect()
     });
-    assert_eq!(reached, [], "the guest stored into a third space's pages");
+    assert!(reached.is_empty(), "the guest stored into a third space's pages {reached:?}");
 }
 
 #[test]
