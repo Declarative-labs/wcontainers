@@ -678,6 +678,18 @@ impl NativeCpu {
         }
     }
 
+    /// Breaks the block holding the page at `page`, if one does, into pages with the block's attributes,
+    /// breaking reservations for the table it needs. Nothing a page allows changes.
+    fn split_for_change(&mut self, table: Table, page: u64) -> Result<(), CpuError> {
+        loop {
+            match with_frames(|frames| table.split_block(frames, page)) {
+                Ok(()) => return Ok(()),
+                Err(full) if !self.reclaim() => return Err(out_of_memory(full)),
+                Err(_) => {}
+            }
+        }
+    }
+
     /// Gives the page at `page`, which has no frame, its frame: the block's when it shows one, else a private
     /// one, mapped with what the page allows.
     fn back(&mut self, memory: MemoryId, page: u64) -> Result<u64, CpuError> {
@@ -1718,12 +1730,20 @@ impl Cpu for NativeCpu {
         let blocks: Vec<u64> = whole_blocks(&range)
             .filter(|&base| table.is_block(base))
             .collect();
-        let was: Vec<(u64, El1Attributes)> = m
+        let changed: Vec<u64> = m
             .pages
             .range(range.clone())
             .filter(|&(&at, _)| blocks.binary_search(&block_of(at)).is_err())
-            .map(|(&at, _)| (at, attributes(m.allows(at))))
+            .filter(|&(&at, _)| attributes(m.allows(at)) != now)
+            .map(|(&at, _)| at)
             .collect();
+        // Every block a changed page lies in is split before the record changes: a split needs a frame, and a
+        // refusal leaves the record and the machine as they were. After it no step below can fail, so the
+        // record and the machine change together while no guest of this CPU side runs.
+        for &at in &changed {
+            self.split_for_change(table, at)?;
+        }
+        let m = self.memory(memory)?;
         let reserved: Vec<u64> = m
             .reserved
             .range(block_of(range.start)..range.end)
@@ -1737,10 +1757,9 @@ impl Cpu for NativeCpu {
         for base in blocks {
             table.protect_block(base, now);
         }
-        for (at, before) in was {
-            if before != now {
-                with_frames(|frames| table.protect(frames, at, now)).map_err(out_of_memory)?;
-            }
+        for at in changed {
+            with_frames(|frames| table.protect(frames, at, now))
+                .expect("its block was split above, so protecting it takes no frame");
         }
         for base in reserved {
             self.promote(memory, base)?;
