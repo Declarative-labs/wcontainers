@@ -225,15 +225,22 @@ fn main() {
     let sources = sources.finalize().to_hex().to_string();
     let mut hasher = blake3::Hasher::new();
     hasher.update(sources.as_bytes());
+    let route = route();
+    hasher.update(format!("{route:?}").as_bytes());
     hasher.update(
         std::env::var("WASI_SDK_PATH")
             .unwrap_or_default()
             .as_bytes(),
     );
     let objects_hash = hasher.finalize().to_hex().to_string();
+    println!("cargo::rustc-check-cfg=cfg({MODULE_CFG})");
+    if route == Route::Module {
+        println!("cargo::rustc-cfg={MODULE_CFG}");
+    }
 
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let built = base(&build_dir).map(|(base, linked)| {
+    let linked = route != Route::Module;
+    let built = base(&build_dir, route).map(|base| {
         let mut libraries = Vec::new();
         let mut build = base.clone();
         build
@@ -271,11 +278,11 @@ fn main() {
         let mut build = base.clone();
         build.file("cpp/assertion.cpp");
         libraries.push(compile(&build, "wcs_assertion", &objects_hash, linked));
-        (base, linked, libraries)
+        (base, libraries)
     });
     match built {
-        Some((_, true, _)) => {}
-        Some((base, false, libraries)) => {
+        Some(_) if linked => {}
+        Some((base, libraries)) => {
             let out = build_dir.join(MODULE);
             let mut link = base.get_compiler().to_command();
             link.args(MODULE_LINK)
@@ -565,30 +572,58 @@ fn list_files(paths: &[(PathBuf, bool)]) -> Vec<PathBuf> {
     files
 }
 
-/// The converters' C++ setup: wasi-sdk's clang, libc and libc++, C++ exceptions off (a failure inside
-/// a converter ends its module instance) and their assertions as `cpp/assert` defines them; with
-/// whether they are linked into the crate (its WebAssembly build) rather than built as their own
-/// module. Nothing natively without the SDK, where the committed module is used.
-fn base(build_dir: &Path) -> Option<(cc::Build, bool)> {
-    let linked = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi");
-    let sdk = match std::env::var("WASI_SDK_PATH") {
-        Ok(sdk) => sdk,
-        Err(_) if !linked => return None,
-        Err(_) => {
-            panic!("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly")
-        }
-    };
+/// Where the converters' C++ goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Route {
+    /// Linked into the native crate, built by the host's C++ compiler with exceptions on (the
+    /// default).
+    Native,
+    /// Linked into the crate's own WebAssembly build.
+    Wasi,
+    /// Run as their own module under wasmtime (natively, with `contained-converters`).
+    Module,
+}
+
+/// The cfg the crate's sources read for the module route.
+const MODULE_CFG: &str = "converters_module";
+
+fn route() -> Route {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
+        Route::Wasi
+    } else if std::env::var_os("CARGO_FEATURE_CONTAINED_CONVERTERS").is_some() {
+        Route::Module
+    } else {
+        Route::Native
+    }
+}
+
+/// The converters' C++ setup, their assertions as `cpp/assert` defines them. Natively linked: the
+/// host's compiler and C++ library. Otherwise wasi-sdk's clang, libc and libc++, C++ exceptions off
+/// (a failure inside a converter ends its module instance). Nothing for the module route without
+/// the SDK, where the committed module is used.
+fn base(build_dir: &Path, route: Route) -> Option<cc::Build> {
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .include("cpp/assert")
         .include(BOUNDARY)
-        .warnings(false)
+        .warnings(false);
+    if route == Route::Native {
+        return Some(build);
+    }
+    let sdk = match std::env::var("WASI_SDK_PATH") {
+        Ok(sdk) => sdk,
+        Err(_) if route == Route::Module => return None,
+        Err(_) => {
+            panic!("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly")
+        }
+    };
+    build
         .flag("-fno-exceptions")
         .compiler(format!("{sdk}/bin/clang++"))
         .flag(format!("--sysroot={sdk}/share/wasi-sysroot"))
         .cpp_link_stdlib(None);
-    if linked {
+    if route == Route::Wasi {
         // Only libc++ is taken from the SDK; libc stays Rust's own, so the two never mix.
         let lib = format!("{sdk}/share/wasi-sysroot/lib/wasm32-wasip1");
         let out = std::env::var("OUT_DIR").unwrap();
@@ -605,5 +640,5 @@ fn base(build_dir: &Path) -> Option<(cc::Build, bool)> {
             .debug(false)
             .flag([PREFIX_MAP[0], &build_dir.to_string_lossy(), PREFIX_MAP[1]].concat());
     }
-    Some((build, linked))
+    Some(build)
 }

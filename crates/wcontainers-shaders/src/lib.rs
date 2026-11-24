@@ -349,8 +349,10 @@ fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
 
 /// Runs a conversion step on bytecode from the guest, so that a panic in it (our bug) fails this call
 /// as `Malformed` instead of ending the host. Where panics abort (WebAssembly) it ends the module
-/// instance, which the host reports as a failed conversion.
+/// instance, which the host reports as a failed conversion. Its calls into the converters are one
+/// conversion (`converters::Conversion`).
 fn contained<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T, ConvertError> {
+    let _conversion = converters::Conversion::begin();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
         let text = panic
             .downcast_ref::<&str>()

@@ -1,7 +1,9 @@
 //! Times `convert` of every DXBC and DXIL container under the given directories: the process's first
-//! conversion (which loads the converters), then each converted shader's best of `rounds` conversions
-//! after one more, with the median, 95th percentile and worst per shader for each kind of bytecode.
-//!   cargo run --release --example conversion_time -- <rounds> <dir>...
+//! conversion (which loads the converters), then each converted shader's first conversion (what a
+//! program pays, conversions being cached) and its best of `rounds` more, with the median, 95th
+//! percentile and worst per shader for each kind of bytecode. Natively the converters are linked in;
+//! with `--features contained-converters` they run as their own module.
+//!   cargo run --release --example conversion_time [--features contained-converters] -- <rounds> <dir>...
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -53,37 +55,40 @@ fn main() {
         "first conversion {:.1} ms (converted: {first:?})",
         start.elapsed().as_secs_f64() * 1e3
     );
-    let mut times: [Vec<(Duration, &PathBuf)>; 2] = Default::default();
+    // Each kind's (first conversion, best of the rounds after) of every converted shader.
+    let mut times: [[Vec<(Duration, &PathBuf)>; 2]; 2] = Default::default();
     let mut refused = [0; 2];
+    let timed = |shader| {
+        let start = Instant::now();
+        let converted = convert(source(shader), &variant, None).is_ok();
+        (start.elapsed(), converted)
+    };
     for (shader, file) in shaders.iter().zip(&files) {
         let kind = usize::from(shader.0);
-        if convert(source(shader), &variant, None).is_err() {
+        let (first, converted) = timed(shader);
+        if !converted {
             refused[kind] += 1;
             continue;
         }
-        let best = (0..rounds)
-            .map(|_| {
-                let start = Instant::now();
-                let _ = convert(source(shader), &variant, None);
-                start.elapsed()
-            })
-            .min()
-            .unwrap_or_default();
-        times[kind].push((best, file));
+        let best = (0..rounds).map(|_| timed(shader).0).min().unwrap_or(first);
+        times[kind][0].push((first, file));
+        times[kind][1].push((best, file));
     }
-    for (kind, mut times) in KINDS.iter().zip(times) {
-        times.sort();
-        let at = |n: usize| times.get(n).map_or(0.0, |t| t.0.as_secs_f64() * 1e6);
-        let total: Duration = times.iter().map(|t| t.0).sum();
-        let count = times.len();
-        println!(
-            "{kind}: {count} converted, {:.1} ms in all; per shader median {:.1} us, {PERCENTILE}th percentile {:.1} us, worst {:.1} us ({:?})",
-            total.as_secs_f64() * 1e3,
-            at(count / 2),
-            at((count * PERCENTILE / 100).min(count.saturating_sub(1))),
-            at(count.saturating_sub(1)),
-            times.last().map(|t| t.1),
-        );
+    for (kind, times) in KINDS.iter().zip(times) {
+        for (which, mut times) in ["first", "best"].into_iter().zip(times) {
+            times.sort();
+            let at = |n: usize| times.get(n).map_or(0.0, |t| t.0.as_secs_f64() * 1e6);
+            let total: Duration = times.iter().map(|t| t.0).sum();
+            let count = times.len();
+            println!(
+                "{kind} {which}: {count} converted, {:.1} ms in all; per shader median {:.1} us, {PERCENTILE}th percentile {:.1} us, worst {:.1} us ({:?})",
+                total.as_secs_f64() * 1e3,
+                at(count / 2),
+                at((count * PERCENTILE / 100).min(count.saturating_sub(1))),
+                at(count.saturating_sub(1)),
+                times.last().map(|t| t.1),
+            );
+        }
     }
     println!("refused: dxbc {}, dxil {}", refused[0], refused[1]);
 }

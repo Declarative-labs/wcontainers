@@ -90,10 +90,11 @@ fn signing_again_gives_the_compilers_checksum() {
 
 #[test]
 #[cfg_attr(
-    target_os = "wasi",
-    ignore = "a known failure in the crate's own WebAssembly build, which links the converters into \
-              its module: malformed DXIL can end that module inside the DXIL converter (gap A11; natively \
-              the converters run in a module of their own)"
+    any(target_os = "wasi", not(feature = "contained-converters")),
+    ignore = "a known failure where the converters are linked in (the default natively, and the crate's \
+              own WebAssembly build): malformed DXIL can end the process or module inside the DXIL \
+              converter (gap A11); natively with `--features contained-converters` the converters run \
+              in a module of their own and it passes"
 )]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     let number = |name: &str, default: u64| {
@@ -374,4 +375,43 @@ fn a_geometry_count_past_direct3d_s_limit_is_refused() {
             "{declaration}: {refused:?}"
         );
     }
+}
+
+/// More threads than wasmtime's pool of converter instances (1,000 by default) converting at once.
+const MANY_THREADS: usize = 1100;
+
+/// Every thread of many converting at once gets the same conversion as one thread alone: where the
+/// converters run as a module, a conversion waits for a free instance of the pool rather than being
+/// refused, and no thread keeps one after its conversion.
+#[test]
+fn many_threads_converting_at_once_each_convert() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxil");
+    let bytes = std::fs::read(path).unwrap();
+    let variant = VariantKey::default();
+    let alone = convert(Source::Dxil(&bytes), &variant, None)
+        .map(|c| wcontainers_shaders::cache::encode(&c));
+    assert!(alone.is_ok(), "{:?}", alone.err());
+    let start = std::sync::Barrier::new(MANY_THREADS);
+    let wrong = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..MANY_THREADS)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    convert(Source::Dxil(&bytes), &variant, None)
+                        .map(|c| wcontainers_shaders::cache::encode(&c))
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(|got| *got != alone)
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        wrong.is_empty(),
+        "{} wrong, first {:?}",
+        wrong.len(),
+        wrong.first().map(|w| w.as_ref().err())
+    );
 }

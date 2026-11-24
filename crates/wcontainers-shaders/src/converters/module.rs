@@ -1,19 +1,21 @@
 //! The converters' WebAssembly module under wasmtime: compiled once per process, instantiated afresh
-//! for every call, so a shader that breaks the converter's memory reaches no other shader and every
-//! call starts from the same state. Its run is bounded in memory and in instructions (wasmtime's
-//! fuel), both deterministic, so the same shader is refused the same way on every machine. Instances
-//! come from wasmtime's pool, whose memories keep their first pages mapped between instances, so a
-//! fresh instance costs no page faults where the converters work.
+//! for every conversion, so a shader that breaks the converter's memory reaches no other shader and
+//! every conversion starts from the same state. Its run is bounded in memory and in instructions
+//! (wasmtime's fuel), both deterministic, so the same shader is refused the same way on every
+//! machine. Instances come from wasmtime's pool, whose memories keep their first pages mapped between
+//! instances, so a fresh instance costs no page faults where the converters work; while the pool has
+//! none free, a conversion waits for one.
 
 use super::{BUFFER_SLOTS, Entry, Failure, SUCCEEDED, exports, no_reason, slot};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::cell::RefCell;
-use std::sync::OnceLock;
+use core::cell::{Cell, RefCell};
+use std::sync::{Condvar, Mutex, OnceLock};
 use wasmtime::{
     Caller, Config, Engine, Export, Instance, InstanceAllocationStrategy, InstancePre, Linker,
-    Memory, Module, PoolingAllocationConfig, ResourceLimiter, Store, Trap, TypedFunc, Val,
+    Memory, Module, PoolConcurrencyLimitError, PoolingAllocationConfig, ResourceLimiter, Store,
+    Trap, TypedFunc, Val,
 };
 
 /// The module, built by `build.rs` from the converters' sources.
@@ -27,9 +29,9 @@ const MEMORY_BOUND: usize = 1 << 28;
 /// its data and the heap a typical conversion reaches.
 const KEPT_RESIDENT: usize = 4 << 20;
 
-/// The most instructions (wasmtime's fuel units) one call may run: twice what the slowest shader of
-/// the corpora needs (5.9e11, a game's DXBC shader that runs for a minute), and 900 times what any
-/// other needs.
+/// The most instructions (wasmtime's fuel units) one conversion may run, over all its calls: twice
+/// what the slowest shader of the corpora needs (5.9e11, a game's DXBC shader that runs for a
+/// minute), and 900 times what any other needs.
 const FUEL_BOUND: u64 = 1 << 40;
 
 /// The most of what the module writes to its standard error that a refusal keeps.
@@ -224,8 +226,9 @@ fn word(data: &[u8], at: usize) -> wasmtime::Result<u32> {
         .ok_or_else(|| wasmtime::Error::msg("a read outside the module's memory"))
 }
 
-/// One shader's instance, kept for the calls that follow on the same shader (a DXIL conversion
-/// makes several), so every shader starts from a fresh instance and pays for one.
+/// One conversion's instance, kept for the calls that follow on the same shader (a DXIL conversion
+/// makes several) until the conversion ends, so every conversion starts from a fresh instance and
+/// pays for one.
 struct Session {
     store: Store<State>,
     instance: Instance,
@@ -236,10 +239,45 @@ struct Session {
     length: i32,
     slots: i32,
     shader: Vec<u8>,
+    /// Declared last, so it tells waiting conversions after the instance went back to the pool.
+    _returned: Returned,
+}
+
+/// How many instances went back to the pool, for conversions waiting on a full pool.
+static RETURNED: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// Counts its instance back into the pool when dropped.
+struct Returned;
+
+impl Drop for Returned {
+    fn drop(&mut self) {
+        returned();
+    }
+}
+
+/// Tells a conversion waiting on a full pool that an instance went back.
+fn returned() {
+    let (count, returned) = &RETURNED;
+    *count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    returned.notify_one();
 }
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    /// How many `Conversion`s are open on this thread.
+    static OPEN: Cell<u32> = const { Cell::new(0) };
+}
+
+pub(super) fn begin() {
+    OPEN.set(OPEN.get() + 1);
+}
+
+/// Ends the outermost conversion's session, giving its instance back to the pool.
+pub(super) fn end() {
+    OPEN.set(OPEN.get() - 1);
+    if OPEN.get() == 0 {
+        SESSION.take();
+    }
 }
 
 pub(super) fn call<const BUFFERS: usize>(
@@ -247,28 +285,15 @@ pub(super) fn call<const BUFFERS: usize>(
     data: &[u8],
     samples: u32,
 ) -> Result<[Vec<u8>; BUFFERS], Failure> {
-    SESSION.with_borrow_mut(|session| {
+    let given = SESSION.with_borrow_mut(|session| {
         if session.as_ref().is_none_or(|s| s.shader != data) {
             *session = None;
-            let loaded = loaded();
-            let mut store = Store::new(&loaded.engine, State::default());
-            store.limiter(|state| state);
-            store
-                .set_fuel(FUEL_BOUND)
-                .expect("fuel is on in the engine");
-            match start(store, &loaded.module, data) {
-                Ok(started) => *session = Some(started),
-                Err((store, e)) => return Err(Failure::Ended(ended(entry, &store, &e))),
-            }
+            *session = Some(started(entry, data)?);
         }
         let started = session.as_mut().expect("a session for this shader");
         let state = started.store.data_mut();
         state.past_memory_bound = false;
         state.error.clear();
-        started
-            .store
-            .set_fuel(FUEL_BOUND)
-            .expect("fuel is on in the engine");
         match run(started, entry, samples) {
             Ok(outputs) => Ok(outputs),
             Err(Run::Refused(reason)) => Err(Failure::Refused(reason)),
@@ -278,7 +303,42 @@ pub(super) fn call<const BUFFERS: usize>(
                 Err(Failure::Ended(reason))
             }
         }
-    })
+    });
+    if OPEN.get() == 0 {
+        SESSION.take();
+    }
+    given
+}
+
+/// A fresh session holding `data`, once the pool has an instance free; or why it ended.
+fn started<const BUFFERS: usize>(entry: &Entry<BUFFERS>, data: &[u8]) -> Result<Session, Failure> {
+    let loaded = loaded();
+    loop {
+        let seen = *RETURNED.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = Store::new(&loaded.engine, State::default());
+        store.limiter(|state| state);
+        store
+            .set_fuel(FUEL_BOUND)
+            .expect("fuel is on in the engine");
+        match start(store, &loaded.module, data) {
+            Err((_, e)) if e.downcast_ref::<PoolConcurrencyLimitError>().is_some() => {
+                let (count, returned) = &RETURNED;
+                let count = count.lock().unwrap_or_else(|e| e.into_inner());
+                drop(
+                    returned
+                        .wait_while(count, |count| *count == seen)
+                        .unwrap_or_else(|e| e.into_inner()),
+                );
+            }
+            Err((store, e)) => {
+                let reason = ended(entry, &store, &e);
+                drop(store);
+                returned();
+                return Err(Failure::Ended(reason));
+            }
+            Ok(started) => return Ok(started),
+        }
+    }
 }
 
 /// A fresh instance holding `data`, or the store and why it ended.
@@ -321,6 +381,7 @@ fn start(
             length,
             slots,
             shader: data.to_vec(),
+            _returned: Returned,
         }),
         Err(e) => Err((store, e)),
     }

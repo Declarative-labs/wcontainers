@@ -19,9 +19,16 @@ rspirv = "0.13"
 md-5 = { version = "0.11", default-features = false }
 zerocopy.workspace = true
 
-# The converters' module, run under wasmtime's safe API natively (src/converters/module.rs).
+# The converters' module, run under wasmtime's safe API natively with `contained-converters`
+# (src/converters/module.rs).
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
-wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "pooling-allocator"] }
+wasmtime = { version = "50.0.1", optional = true, default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "pooling-allocator"] }
+
+[features]
+# Natively, runs the converters as their own WebAssembly module under wasmtime instead of linking
+# their C++ into the process: no shader ends, exhausts or stalls the host, at the cost measured in
+# docs/status-graphics-shaders.md. No effect in the crate's own WebAssembly build.
+contained-converters = ["dep:wasmtime"]
 
 [build-dependencies]
 blake3 = "1"

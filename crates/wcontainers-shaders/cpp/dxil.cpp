@@ -480,7 +480,7 @@ int list(ListReader read, const uint8_t* data, size_t size, uintptr_t* slots) {
   uint32_t* out = nullptr;
   size_t out_words = 0;
   char* error = nullptr;
-  int status = read(data, size, &out, &out_words, &error);
+  int status = wcs::contained("dxil-spirv", &error, [&] { return read(data, size, &out, &out_words, &error); });
   wcs::fill(slots, out, out_words, nullptr, 0, error);
   return status;
 }
@@ -522,7 +522,9 @@ WCS_EXPORT(wcs_dxil_to_spirv) int wcs_dxil_to_spirv(const uint8_t* data, size_t 
   uint32_t* table = nullptr;
   size_t table_words = 0;
   char* error = nullptr;
-  int status = convert(data, size, samples, &out, &out_words, &table, &table_words, &error);
+  int status = wcs::contained("dxil-spirv", &error, [&] {
+    return convert(data, size, samples, &out, &out_words, &table, &table_words, &error);
+  });
   if (status != 0 && out) {
     std::free(out);
     out = nullptr;

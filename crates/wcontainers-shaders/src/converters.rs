@@ -1,18 +1,18 @@
 //! The C++ converters (dxbc-spirv, dxil-spirv, with the boundary in `cpp/`), called with a shader's
-//! bytes and giving back the buffers they wrote. Natively they run as their own WebAssembly module
-//! under wasmtime, so that no shader can end, exhaust or stall the host; the crate's own WebAssembly
-//! build links them in.
+//! bytes and giving back the buffers they wrote. They are linked into the crate, natively and in its
+//! own WebAssembly build; natively with the feature `contained-converters` they run as their own
+//! WebAssembly module under wasmtime instead, so that no shader can end, exhaust or stall the host.
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(converters_module)]
 mod module;
 
-#[cfg(target_os = "wasi")]
+#[cfg(not(converters_module))]
 mod linked;
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(converters_module)]
 use module as route;
 
-#[cfg(target_os = "wasi")]
+#[cfg(not(converters_module))]
 use linked as route;
 
 use crate::ir::slot;
@@ -28,12 +28,12 @@ mod exports {
     pub const DXIL_DECLARED_REGISTERS: &str = "wcs_dxil_declared_registers";
     pub const DXIL_VIEWS: &str = "wcs_dxil_views";
     #[cfg_attr(
-        target_os = "wasi",
+        not(converters_module),
         expect(dead_code, reason = "the linked route frees by symbol")
     )]
     pub const FREE: &str = "wcs_free";
     #[cfg_attr(
-        target_os = "wasi",
+        not(converters_module),
         expect(dead_code, reason = "the linked route lends Rust's bytes")
     )]
     pub const ALLOCATE: &str = "wcs_allocate";
@@ -112,10 +112,10 @@ pub(crate) enum Failure {
     /// The converter's run ended before it returned (a trap, its memory bound or its instruction
     /// bound), as the reason says.
     #[cfg_attr(
-        target_os = "wasi",
+        not(converters_module),
         expect(
             dead_code,
-            reason = "linked converters that end, end the module with them"
+            reason = "linked converters that end, end the process or module with them"
         )
     )]
     Ended(String),
@@ -132,6 +132,23 @@ pub(crate) fn call<const BUFFERS: usize>(
     samples: u32,
 ) -> Result<[Vec<u8>; BUFFERS], Failure> {
     route::call(entry, data, samples)
+}
+
+/// One conversion's run of calls, which may share the converters' state on the same shader until it
+/// is dropped (the module route's instance); calls outside one share nothing.
+pub(crate) struct Conversion(());
+
+impl Conversion {
+    pub(crate) fn begin() -> Conversion {
+        route::begin();
+        Conversion(())
+    }
+}
+
+impl Drop for Conversion {
+    fn drop(&mut self) {
+        route::end();
+    }
 }
 
 /// The words of `bytes`, as the converters' little-endian memory holds them.

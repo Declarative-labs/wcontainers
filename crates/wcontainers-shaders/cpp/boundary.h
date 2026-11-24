@@ -1,19 +1,25 @@
-// What both converter boundaries share: the slots every entry fills, copying a reason out, and
-// keeping dxbc-spirv's errors as the reason. Both are built without C++ exceptions: a converter's
-// failure (an assertion, `cpp/assert`, or a throw) ends its module instance, which the host reports
-// as a refused conversion.
+// What both converter boundaries share: the slots every entry fills, copying a reason out, keeping
+// dxbc-spirv's errors as the reason, and keeping a converter's failure (an exception or an assertion,
+// which `cpp/assert` turns into one) inside the call where C++ exceptions are on (the native linked
+// build). In the converters' WebAssembly builds they are off: a failure ends the module instance,
+// which the host reports as a refused conversion.
 
 #pragma once
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <string>
 
 #include "util/util_log.h"
 
 // Declares a boundary function, exported from the converters' module under its own name.
+#ifdef __wasm__
 #define WCS_EXPORT(name) extern "C" __attribute__((export_name(#name)))
+#else
+#define WCS_EXPORT(name) extern "C"
+#endif
 
 namespace wcs {
 
@@ -114,6 +120,30 @@ inline char* copy(const std::string& s) {
   if (out)
     std::memcpy(out, s.c_str(), s.size() + 1);
   return out;
+}
+
+// Runs `f`, returning its status. Where C++ exceptions are on, an exception leaving the converter
+// becomes status 3 with its text in `error`; without them it ends the module instance.
+template <typename F>
+int contained(const char* who, char** error, F&& f) {
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+  auto fail = [&](const std::string& what) {
+    std::free(*error);
+    *error = copy(std::string(who) + " failed: " + what);
+    return 3;
+  };
+  try {
+    return f();
+  } catch (const std::exception& e) {
+    return fail(e.what());
+  } catch (...) {
+    return fail("an exception of unknown type");
+  }
+#else
+  (void)who;
+  (void)error;
+  return f();
+#endif
 }
 
 }

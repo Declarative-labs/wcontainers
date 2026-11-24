@@ -1,5 +1,7 @@
-//! The converters linked into the crate's own WebAssembly build, where no engine runs inside the
-//! module to hold them: every entry is called through the one signature of `cpp/boundary.h`.
+//! The converters linked into the crate, natively by default and in its own WebAssembly build (where
+//! no engine runs inside the module to hold them): every entry is called through the one signature
+//! of `cpp/boundary.h`. A converter that ends here ends the process (natively, past what C++
+//! exceptions catch) or the module.
 
 use super::{BUFFER_SLOTS, Entry, Failure, SUCCEEDED, exports, no_reason, slot};
 use alloc::string::String;
@@ -46,6 +48,10 @@ fn function<const BUFFERS: usize>(entry: &Entry<BUFFERS>) -> Function {
         name => unreachable!("no linked function {name}"),
     }
 }
+
+/// Linked calls keep no state between them.
+pub(super) fn begin() {}
+pub(super) fn end() {}
 
 pub(super) fn call<const BUFFERS: usize>(
     entry: &Entry<BUFFERS>,

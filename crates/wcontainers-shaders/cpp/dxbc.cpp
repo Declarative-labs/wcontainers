@@ -109,7 +109,9 @@ WCS_EXPORT(wcs_dxbc_to_ir) int wcs_dxbc_to_ir(const uint8_t* data, size_t size, 
   size_t sizes_words = 0;
   char* error = nullptr;
   wcs::ErrorLog log;
-  int status = convert(data, size, &out, &out_size, &sizes, &sizes_words, &error, log);
+  int status = wcs::contained("dxbc-spirv", &error, [&] {
+    return convert(data, size, &out, &out_size, &sizes, &sizes_words, &error, log);
+  });
   wcs::fill(slots, out, out_size, sizes, sizes_words, error);
   return status;
 }
