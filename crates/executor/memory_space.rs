@@ -2,8 +2,7 @@ use core::ops::Range;
 
 use thiserror::Error;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
-use wcontainers_byte_sink::ByteSink;
-use wcontainers_byte_source::ByteSource;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 #[allow(
     reviewable::explicit_shared_error::InvalidAddressError,
@@ -57,36 +56,6 @@ pub trait MemorySpace: Sized {
         other: &Self,
         other_start: u64,
     ) -> Result<(), CopyMemoryError>;
-}
-
-/// Bytes that something else may be changing while they are held.
-pub trait VolatileBytes {
-    fn len(&self) -> u64;
-
-    fn is_empty(&self) -> bool {
-        self.len() == u64::MIN
-    }
-
-    /// Copies bytes from the start into the buffer, as many as the shorter of the two holds, and returns the number of bytes read.
-    fn read(&self, into: &mut [u8]) -> usize;
-
-    /// Copies bytes from the buffer to the start, as many as the shorter of the two holds, and returns the number of bytes written.
-    fn write(&self, bytes: &[u8]) -> usize;
-
-    /// Reads bytes from the start to the sink, once, and returns the number of bytes read.
-    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
-        let mut buffer = [u8::MIN; PAGE_SIZE as usize];
-        let count = self.read(&mut buffer);
-        sink.write(&buffer[..count])
-    }
-
-    /// Writes bytes from the source to the start, once, and returns the number of bytes written.
-    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        let mut buffer = [u8::MIN; PAGE_SIZE as usize];
-        let room = usize::try_from(self.len()).unwrap_or(usize::MAX).min(buffer.len());
-        let count = source.read(&mut buffer[..room])?;
-        Ok(self.write(&buffer[..count]))
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]

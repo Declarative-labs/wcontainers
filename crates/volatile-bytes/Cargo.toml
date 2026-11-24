@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-volatile-bytes"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-byte-sink = { path = "../byte-sink" }
+wcontainers-byte-source = { path = "../byte-source" }
+
+[lints]
+workspace = true

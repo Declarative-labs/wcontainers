@@ -499,6 +499,7 @@ other = 'It does not start with a verb: a noun phrase, or a sentence with its ow
 "Checks that the timestamp clock reads in the unit of its route and advances as time does, between two readings." = { answer = "third_person_verb", confidence = 0.8001233332871225, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Checks that the tuned values follow the settings given: buffers at least as asked, the low water and clamp as asked." = { answer = "third_person_verb", confidence = 0.8259823631156136, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Checks that the unspecified destination routes as loopback's address, where Linux sends a datagram to it." = { answer = "third_person_verb", confidence = 0.8622989883559663, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that the value has a name." = { answer = "third_person_verb", confidence = 0.8743825533677533, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Checks that the wait is woken in time, and if not, whether its facts came anyway, telling a lost wake from a lost fact." = { answer = "third_person_verb", confidence = 0.7862179308317556, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Checks that transmit reports come on the socket with the key of their send, with the packet or without it as asked." = { answer = "third_person_verb", confidence = 0.8638579634948499, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Checks that two fills of random bytes differ." = { answer = "third_person_verb", confidence = 0.8446563464064049, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -23427,6 +23428,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The sharing of an echo identifier with other sockets that [`SO_REUSEADDR`](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=SO_REUSEADDR) allows." = { answer = "noun_phrase", confidence = 0.8661180276774233, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The size of a type, as far as it does not depend on the target." = { answer = "noun_phrase", confidence = 0.9080863106168524, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The sizes of a socket's buffers as Linux [reads them back](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=this%20doubled%20value%20is%20returned): the size asked for, held to the exit node's limits, then doubled." = { answer = "noun_phrase", confidence = 0.8093240254658625, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The skeleton of a trait, for the real traits, data types and constants to replace." = { answer = "noun_phrase", confidence = 0.853674187238306, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The slots of a far transfer's frame from its lowest, each of the operand size." = { answer = "noun_phrase", confidence = 0.6865995600132453, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The slow paths of ARM64's own: none." = { answer = "noun_phrase", confidence = 0.285137373201124, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "The smoke test's programs, each started at its first byte with every register 0 but the pc." = { answer = "noun_phrase", confidence = 0.7333577894678345, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -26882,6 +26884,7 @@ handler = { answer = "no_verb", confidence = 0.801854326898985, model = "perplex
 handshake_offers_multipath = { answer = "later_word", confidence = 0.9246641167118792, model = "perplexity/pplx-decider-v1.2-20261016" }
 hang_up = { answer = "first_word", confidence = 0.9270452529414698, model = "perplexity/pplx-decider-v1.2-20261016" }
 has = { answer = "first_word", confidence = 0.9100401695372434, model = "perplexity/pplx-decider-v1.2-20261016" }
+has_a_name = { answer = "first_word", confidence = 0.9860928630142378, model = "perplexity/pplx-decider-v1.2-20261016" }
 has_address_v6 = { answer = "first_word", confidence = 0.9916797509733938, model = "perplexity/pplx-decider-v1.2-20261016" }
 has_base = { answer = "first_word", confidence = 0.9767506131303167, model = "perplexity/pplx-decider-v1.2-20261016" }
 has_bit = { answer = "first_word", confidence = 0.9810008918532496, model = "perplexity/pplx-decider-v1.2-20261016" }

@@ -4268,9 +4268,8 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "wcontainers-abi",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
  "wcontainers-processor-architecture",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5333,6 +5332,21 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
