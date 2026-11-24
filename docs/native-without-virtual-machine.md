@@ -667,17 +667,23 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
     parallel threads are built (3.9).
     What closes it, before parallel threads exist (designed in W2 run 9; not built, because it rewrites the
     zygote's and the stub's assembly, which is one of the marked unsafe uses the executors' primitives are to
-    replace: status, "Needs a primitive"): every structure a routine hands the host kernel to read moves to the
-    thread's control page, which the embedder writes and the stub maps read-only: the `recvmsg` header and its
-    iovec, whose pointers name the thread's receive area, and the cpu set of `sched_setaffinity`, which the embedder
-    writes beside the request that asks for it. The host kernel reads a read-only page as well as a writable one.
-    What it writes back, the one data byte and the control message with the descriptor, must be on a writable page
-    and goes to the thread's register page; the stub reads of it only the control message's level and type, to see
-    that a descriptor came, and never its number: the received descriptor is 0 (the lowest free one; the stub's own
-    are at fixed higher numbers), the only one the filter lets it map and close. So a sibling's store reaches only
-    bytes whose worst effect is a map of descriptor 0 when none came, which the host refuses (`EBADF`) and the stub
-    reports as any failed map; a header it cannot write directs the host kernel's writes nowhere else. Stub thread
-    0 then keeps nothing on the zygote's stack (its routines hold their state in registers), so a guest store there
+    replace: status, "Needs a primitive"): every structure a routine hands the host kernel only to read moves to the
+    thread's control page, which the embedder writes and the stub maps read-only: the `recvmsg` iovec, which names
+    one byte of the thread's register page, the `sigaltstack` record of a thread made at run time, and the cpu set
+    of `sched_setaffinity`, which the embedder writes beside the request that asks for it. The `recvmsg` header
+    itself cannot move there: the host kernel writes `msg_controllen` and `msg_flags` back into it, and with the
+    header on a read-only page `recvmsg` fails with `EFAULT` after it has taken the datagram and installed the
+    descriptor (MEASURED, W2 run 10, Graviton4, Linux 7.0: header read-only, -1 EFAULT, descriptor installed, byte
+    received; iovec read-only, 1, as with both writable; scratch w2/run10/header_probe.c). So the header, the one
+    data byte and the control message go to the thread's register page, which a sibling can write: a forged
+    header's pointers direct the host kernel's writes only into memory the stub can write, which is all memory the
+    guest can write anyway (its own pages, register pages, signal stacks), so it gains nothing; and the stub reads
+    of what came back only the control message's level and type, to see that a descriptor came, and never its
+    number: the received descriptor is 0 (the lowest free one; the stub's own are at fixed higher numbers), the
+    only one the filter lets it map and close. So a sibling's store reaches only bytes whose worst effect is a map
+    of descriptor 0 when none came, which the host refuses (`EBADF`) and the stub reports as any failed map, or a
+    control message it cannot recognise, which the stub refuses, so the embedder ends that stub as it ends any whose
+    turn was refused: the guest can end only its own process. Stub thread 0 then keeps nothing on the zygote's stack (its routines hold their state in registers), so a guest store there
     changes nothing the stub uses; the zygote's own fork request uses that stack before any guest code exists. The
     zygote's code and the floor's entries stay readable, which gives nothing: they hold no secret. The test that
     comes with it, once parallel threads run: a sibling storing over the whole register page and the zygote's

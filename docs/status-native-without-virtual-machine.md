@@ -3,6 +3,45 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 10 (2026-11-24, round 5 run 2): jumps through a register in the pieces, and plan 3.7 corrected
+
+Scratch w2/run10 (send.sh; jumps.sh with `SEEDS`, `BRANCHY`, `FILTER`; mutate.sh with `SEED`, `BRANCHY`;
+header_probe.c with probe.sh; outputs *-arm.out). Graviton4. Nothing of this run adds a line with `unsafe`
+(host-process's count in the root manifest is unchanged). Form I's executor is still not built: the primitives'
+design (scratch/enforcement-primitive/FOR-THE-OWNER.md, revision 2, with `Floor`, `Reservation`, `Kicker` and
+`CodeCache`) is waiting on the owner's seven decisions and nothing of it is on `agents`. The page-table split
+(branch `page-table-split`) has not reached `agents`. No interface notice since run 9 touches this track's code;
+the conformance run's rename was already done here (conformance_run.rs).
+- Built, f0188e9c1: in_process_way's branchy pieces draw jumps through a register: one in three of their branches
+  is `adr xR` of a target and then `br`, `blr` or `ret` through xR (any of x0 to x30 but the loop's counter, so
+  x15 and x24 by the slow path too), to any instruction of the piece or up to four past it. A jump leaves through
+  the target's slot even to an instruction the piece holds (the translator does not follow its target), as a call
+  does. A return's or call's first miss calls the floor's `LastTarget` entry; the test goes on after it as the
+  floor does (at x30, nothing patched), records the target the compare left in t and fails the piece
+  (`AskedOther`) unless the jump went there. Direct branches never go to a jump's second word, past its adr.
+- Verified (jumps2-arm.out, 21:02 to 21:05 UTC, load 15 to 30): seeds 1 to 6 at 4,000 pieces pass, each with
+  1,298 to 1,446 jumps through a register, 1,137 to 1,207 crowded loops keeping u or the base elsewhere, 1,231 to
+  1,288 left through an exit, 35,600 to 36,800 reference steps. Run 9's whole check.sh ran once by mistake with
+  this test (check1-arm.out, load 15 to 19): the arm64, translator, guest-cpu and stop crates' tests, clippy with
+  warnings denied on the eight crates, in_process_way's four tests and in_process_attacks for seed 1, all pass.
+- Broken in the remote copy (mutate2-arm.out, seed 1 at 2,000 pieces, 634 jumps, load 16 to 29), each fails: a jump
+  from a part keeping u and the base elsewhere that leaves without moving them back, 5 failing; a call through a
+  register other than x30 building its own address as the return, 61; the target not cut to the window before
+  its slot is taken, 234.
+- Found, measured: plan 3.7's design for the zygote's stack (run 9) put the `recvmsg` header on the read-only
+  control page, which cannot work. Graviton4, Linux 7.0 (probe-arm.out): with the header read-only `recvmsg`
+  gives -1 EFAULT after it has taken the datagram and installed the descriptor; with the iovec read-only it
+  gives 1 as with both writable. The host kernel writes `msg_controllen` and `msg_flags` back into the header.
+  Plan 3.7 now keeps the header, the byte and the control message on the register page and moves only what the
+  host reads (the iovec, the cpu set and a run-time thread's `sigaltstack` record) to the control page; a forged
+  header directs the host's writes only into memory the guest can write already.
+- Not built: the zygote-stack fix itself. It adds no line with `unsafe`, but it rewrites the stub's assembly on
+  both architectures (the shared block's receive, the move to one CPU, the `sigaltstack` record), which is reached
+  only through the zygote's marked unsafe uses and is what the primitives' fork and `Floor` designs restructure;
+  the guest gains nothing from the gap while one guest thread runs at a time, as today. For the owner below.
+- Round 5's items 1 and 2 are now built (item 1 by W1 round 4 run 2, item 2 by runs 8 to 10): reported complete
+  for the independent check, with the gap list under "Next".
+
 ## W2 run 9 (2026-11-24, round 5): the kept registers chosen per loop, branches in the pieces, the zygote's stack
 
 Scratch w2/run9 (send.sh runs a local script on the ARM machine; check.sh with `SEEDS`, `CASES`, `PIECES`, `BRANCHY`,
@@ -1957,9 +1996,9 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   mark has its own byte (W2 run 6); the way's code is measured on whole programs under P's stubs, f per workload and
   the crossover from it (W2 run 7); the two more withheld registers are chosen per piece (W2 run 8: interpret 1.63
   to 1.30); per loop of a piece, and direct branches and counted loops drawn into the in-process test's pieces
-  (W2 run 9). Next without unsafe: jumps through registers in those pieces (they leave through the slot table and
-  a last target, which the test's slot hooks would need to follow); the zygote-stack design of plan 3.7 once the
-  stub's assembly has its primitive. The in-process executor itself waits for
+  (W2 run 9); jumps through a register drawn into those pieces too (W2 run 10). Next without unsafe: nothing of
+  the way's code generation is left; the zygote-stack design of plan 3.7 (corrected in W2 run 10: the `recvmsg`
+  header stays writable) once the stub's assembly has its primitive. The in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
   when sp is back in the window, never link displaced pieces), its last-target rule (W2 run 6), the attack by
@@ -2321,6 +2360,10 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
+- The zygote's stack (plan 3.7; W2 run 10): the fix needs no new line with `unsafe` but rewrites the stub's
+  assembly, which only the zygote's marked unsafe uses reach, on ARM64 and x86-64. It is left until the fork and
+  `Floor` primitives land, since the gap gives a guest nothing while one guest thread runs at a time. Say if you
+  want it built before then.
 - Decision 10 under P (round 7 run 1): a turn limited to a count ends exactly only under `HostProcessExecutor::exact`,
   a stand-in constructor for the embedder's choice (the VM inside's `exact_replay` is its twin), which runs every guest
   instruction as a turn. The ordinary executor ends such a turn
@@ -2518,9 +2561,12 @@ operation this crate still does with unsafe code, for the primitives' design
 - glibc's `__rseq_offset` and `__rseq_size`.
 - The SVE probe: set p0 and FFR, make a system call, store both.
 - The stub's routines with their input structures on the read-only control page (plan 3.7, W2 run 9's design for
-  parallel threads): a change to the zygote's and stub's assembly (zygote/aarch64.rs, x86_64.rs), so it waits with
-  the fork primitive above; the layout constants (`frame`, `block_frame` in zygote.rs) and the embedder's writes of
-  the header, iovec and cpu set into the control page are safe code.
+  parallel threads, corrected in run 10: the `recvmsg` header must stay on a writable page, the register page): a
+  change to the zygote's and stub's assembly (zygote/aarch64.rs, x86_64.rs: the shared block's receive, the move to
+  one CPU and the `sigaltstack` record of a thread made at run time, on both architectures), so it waits with the
+  fork primitive above; the layout constants (`frame`, `block_frame` in zygote.rs), the filter's rule that a
+  shared block is mapped and closed only as descriptor 0, and the embedder's writes of the iovec, the
+  `sigaltstack` record and the cpu set into the control page are safe code.
 Not needed by anything built: a view of guest bytes lent to a byte sink or source (For the owner, views of guest
 memory); `read_to` and `write_from` keep their buffer.
 
