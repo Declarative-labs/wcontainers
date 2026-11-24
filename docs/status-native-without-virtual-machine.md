@@ -151,6 +151,10 @@ before and after, alternating, on a quiet machine.
   read (kernel track) and memory calls. The exec half of change 1 needs the owner's ruling (a file's base kept across
   execs) or position-independent translated code.
 
+- The whole suite at the run's end (commit 44399d80f, Graviton4, /dev/kvm denied, 11:36 to 11:40 UTC, load 11 to 23,
+  whole-arm.out): all 22 test binaries pass, 151 tests, but `agrees_with_precise_instruction_set` (the known case at
+  0x1000, owner's item); clippy with warnings denied clean.
+
 What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
 - The per-piece load cost toward its floor (a kept translation found and its moved bytes written in well under 1 us);
   measure before and after as above.
