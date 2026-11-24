@@ -263,6 +263,8 @@ pub struct Sampler<B: Backend> {
     pub border_in_program: Option<SamplerDesc>,
     /// The border colour's bits, f32 or integer as the texture's texels.
     pub border_color: [u32; COLOR_CHANNELS],
+    /// Its level-of-detail bias, which the program adds (`LodBiasInShader`).
+    pub lod_bias: f32,
 }
 
 pub struct Elements<B: Backend> {
@@ -795,9 +797,6 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
 ) -> *mut c_void {
     // SAFETY: Mesa passes this driver's context and a state.
     let (context, state) = unsafe { (Context::<B>::of(pipe), &*state) };
-    if state.lod_bias != 0.0 {
-        refuse(format_args!("a sampler's level-of-detail bias"));
-    }
     let mip = state.min_mip_filter();
     let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE as c_uint {
         // The base level alone, with the level of detail free to pass zero so that the host
@@ -865,6 +864,7 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
             nearest,
             border_in_program,
             border_color: border_bits,
+            lod_bias: state.lod_bias,
         }),
         Err(error) => refuse(format!("a sampler: {error:?}")),
     }

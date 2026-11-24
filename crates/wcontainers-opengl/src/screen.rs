@@ -115,6 +115,11 @@ pub fn deepest_level(ours: &Caps) -> u32 {
     ) - 1
 }
 
+/// The largest level-of-detail bias: a sampler's is added in the program, and a sample's bias is
+/// clamped to it by WGSL (<https://www.w3.org/TR/WGSL/#texturesamplebias>) and Direct3D
+/// (`D3D11_MIP_LOD_BIAS_MAX`).
+const MAX_LOD_BIAS: f32 = 15.99;
+
 /// The GLSL versions st/mesa's GLSL compiler takes for this driver (the core profile's, the
 /// compatibility profile's) and OpenGL ES's: the versions whose programs the NIR route converts
 /// and whose state the context draws with. OpenGL ES's is 3.20's, which turns on
@@ -159,6 +164,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_vertex_buffers = limits.vertex_streams;
     caps.max_vertex_attrib_stride = limits.max_vertex_stride;
     caps.max_point_size = limits.max_point_size;
+    caps.max_texture_lod_bias = MAX_LOD_BIAS;
     caps.max_line_width = limits.max_line_width;
     caps.max_line_width_aa = limits.max_line_width;
     // Without wide lines the back end draws one width, to which OpenGL clamps every width.
@@ -266,6 +272,8 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // is rewritten for OpenGL's).
     caps.fs_coord_origin_upper_left = true;
     caps.fs_coord_pixel_center_half_integer = true;
+    // A fragment program's face is the host's built-in (a system value), not an input.
+    caps.fs_face_is_integer_sysval = true;
     caps.clip_halfz = true;
     // Uniforms packed in words into buffer 0, as the NIR route's options take them.
     caps.packed_uniforms = true;

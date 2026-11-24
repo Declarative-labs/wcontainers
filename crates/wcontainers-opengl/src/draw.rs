@@ -107,6 +107,9 @@ pub(crate) struct Variant {
     nearest: Vec<NearestSampler>,
     /// The units whose border colour the program applies, a bit each (`BorderInShader`).
     border: u16,
+    /// The units whose sampler's level-of-detail bias the program adds, a bit each
+    /// (`LodBiasInShader`).
+    lod_bias: u16,
     /// The blend constant's alpha given as the blend's second source (fragment programs).
     second_source: Option<u32>,
     /// The inputs of packed formats the interface lacks, by location, which the program unpacks
@@ -142,6 +145,7 @@ impl Variant {
             swizzles: swizzles(bound),
             nearest: nearest_samplers(bound),
             border: border_in_program(bound),
+            lod_bias: lod_bias_in_program(bound),
             image_formats: image_formats(bound),
             texture_layers: texture_layers(bound),
             ..Variant::default()
@@ -661,6 +665,7 @@ fn convert<B: Backend>(
     let rewrites = VariantKey {
         pulled: variant.pulled.clone(),
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        lod_bias: slots_of(&bindings, SlotKind::Sampler, variant.lod_bias)?,
         storage_formats: by_slot(&bindings, SlotKind::Storage, &variant.image_formats),
         texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
@@ -780,6 +785,7 @@ fn convert_geometry<B: Backend>(
         flags,
         linked,
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        lod_bias: slots_of(&bindings, SlotKind::Sampler, variant.lod_bias)?,
         output_interpolation: output_interpolation(&variant.interpolation),
         texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
@@ -834,6 +840,7 @@ fn convert_control<B: Backend>(
         .ok_or("a control program without its evaluation program's tessellator")?;
     let rewrites = VariantKey {
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        lod_bias: slots_of(&bindings, SlotKind::Sampler, variant.lod_bias)?,
         texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
     };
@@ -877,6 +884,7 @@ fn convert_evaluation<B: Backend>(
 ) -> Result<Built<B>, String> {
     let rewrites = VariantKey {
         border_in_shader: slots_of(&bindings, SlotKind::Sampler, variant.border)?,
+        lod_bias: slots_of(&bindings, SlotKind::Sampler, variant.lod_bias)?,
         output_interpolation: output_interpolation(&variant.interpolation),
         texture_layers: by_slot(&bindings, SlotKind::Texture, &variant.texture_layers),
         ..VariantKey::default()
@@ -1236,6 +1244,7 @@ fn helper_block<B: Backend>(
                 vec![offset, p.stride, p.divisor, bias]
             }
             HelperValue::BorderColor { sampler: slot } => sampler(slot)?.border_color.to_vec(),
+            HelperValue::LodBias { sampler: slot } => vec![sampler(slot)?.lod_bias.to_bits()],
             HelperValue::SamplerState { sampler: slot } => {
                 let d = sampler(slot)?
                     .border_in_program
@@ -2088,6 +2097,7 @@ fn draw<B: Backend>(
         targets: target_kinds(&context.framebuffer.state),
         nearest: nearest_samplers(context.stages.get(Stage::Fragment)),
         border: border_in_program(context.stages.get(Stage::Fragment)),
+        lod_bias: lod_bias_in_program(context.stages.get(Stage::Fragment)),
         second_source: second_source_alpha(
             backend,
             &blend.desc,
@@ -2130,6 +2140,7 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::Vertex)),
         nearest: nearest_samplers(context.stages.get(Stage::Vertex)),
         border: border_in_program(context.stages.get(Stage::Vertex)),
+        lod_bias: lod_bias_in_program(context.stages.get(Stage::Vertex)),
         interpolation: inputs.clone(),
         pulled: pulled
             .iter()
@@ -2156,6 +2167,7 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::Geometry)),
         nearest: nearest_samplers(context.stages.get(Stage::Geometry)),
         border: border_in_program(context.stages.get(Stage::Geometry)),
+        lod_bias: lod_bias_in_program(context.stages.get(Stage::Geometry)),
         texture_layers: texture_layers(context.stages.get(Stage::Geometry)),
         interpolation: inputs,
         named_layer,
@@ -2173,6 +2185,7 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::TessEvaluation)),
         nearest: nearest_samplers(context.stages.get(Stage::TessEvaluation)),
         border: border_in_program(context.stages.get(Stage::TessEvaluation)),
+        lod_bias: lod_bias_in_program(context.stages.get(Stage::TessEvaluation)),
         texture_layers: texture_layers(context.stages.get(Stage::TessEvaluation)),
         interpolation: if gs.is_null() {
             geometry.interpolation.clone()
@@ -2202,6 +2215,9 @@ fn draw<B: Backend>(
     if first_variant.border != 0 || fragment.border != 0 {
         backend.slow_paths().hit(SlowPath::BorderInShader);
     }
+    if first_variant.lod_bias != 0 || fragment.lod_bias != 0 {
+        backend.slow_paths().hit(SlowPath::LodBiasInShader);
+    }
     if !vertex.packed.is_empty() {
         backend.slow_paths().hit(SlowPath::VertexFormatConverted);
     }
@@ -2214,6 +2230,7 @@ fn draw<B: Backend>(
             swizzles: swizzles(context.stages.get(Stage::TessControl)),
             nearest: nearest_samplers(context.stages.get(Stage::TessControl)),
             border: border_in_program(context.stages.get(Stage::TessControl)),
+            lod_bias: lod_bias_in_program(context.stages.get(Stage::TessControl)),
             texture_layers: texture_layers(context.stages.get(Stage::TessControl)),
             points_in: u32::from(context.bound.patch_vertices),
             ..Variant::default()
@@ -4076,6 +4093,34 @@ fn image_formats<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, Format)>
             Some((unit, crate::format::format(image.format)?))
         })
         .collect()
+}
+
+/// The units of a stage whose sampler's level-of-detail bias the program adds, a bit each: those
+/// with a bias other than zero (the host's samplers have none).
+fn lod_bias_in_program<B: Backend>(stage: &state::StageState<B>) -> u16 {
+    let mut mask = 0;
+    for (unit, (&v, &s)) in stage.views.iter().zip(&stage.samplers).enumerate() {
+        if v.is_null() || s.is_null() {
+            continue;
+        }
+        // SAFETY: as in `nearest_samplers`.
+        let (view, sampler) = unsafe { (View::<B>::of(v), &*s) };
+        if sampler.lod_bias == 0.0 {
+            continue;
+        }
+        if view.integer {
+            refuse(format_args!(
+                "a level-of-detail bias on the sampler of an integer texture (not built)"
+            ));
+        }
+        if unit >= u16::BITS as usize {
+            refuse(format_args!(
+                "a level-of-detail bias at a texture unit past the variant's"
+            ));
+        }
+        mask |= 1 << unit;
+    }
+    mask
 }
 
 /// The swizzles of a stage's bound views that rearrange their results.
