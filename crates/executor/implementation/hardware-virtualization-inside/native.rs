@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use core::hash::Hasher as _;
 use core::ops::Range;
 use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use aarch64_cpu::asm::barrier::{self, ISH, ISHST, SY};
 use aarch64_cpu::registers::{
@@ -53,6 +54,9 @@ const _: () = assert!(
     MIRROR >> mirror::SLOT_MOVED_BITS == Region::Code.base() >> mirror::SLOT_MOVED_BITS,
     "a slot's moves leave the bits a piece's address shares with the slot's"
 );
+
+/// Whether this machine's one CPU side was made.
+static CPU_SIDE_MADE: AtomicBool = AtomicBool::new(false);
 
 /// The bytes one announcement of changed code covers: the instruction cache line of the CTR_EL0 we present.
 const CODE_LINE: u64 = (size_of::<u32>() as u64) << CtrEl0::from_bits_retain(CACHE_TYPE).iminline();
@@ -433,7 +437,14 @@ fn read_pages(frame: impl Fn(u64) -> Option<u64>, mut address: u64, into: &mut [
 
 impl NativeCpu {
     /// The CPU side over the global tables `global`; pieces carry the progress count when `exact_replay`.
+    ///
+    /// One per machine: each numbers its address-space identifiers from the first, so two would tag different
+    /// memories' entries alike, which a TLB shared between virtual CPUs could mix.
     pub fn new(global: Table, exact_replay: bool) -> Result<NativeCpu, Full> {
+        assert!(
+            !CPU_SIDE_MADE.swap(true, Ordering::SeqCst),
+            "one CPU side per machine: address-space identifiers are numbered per CPU side"
+        );
         // The width the monitor set from ID_AA64MMFR0_EL1.ASIDBits (boot.rs); identifiers above it would alias.
         let last_asid = if TCR_EL1.matches_all(TCR_EL1::AS::ASID16Bits) {
             u16::MAX
