@@ -139,6 +139,26 @@ const GEOMETRY_INVOCATIONS: c_uint = 32;
 /// the program's own declarations.
 const PATCH_VARYINGS: c_uint = 30;
 
+/// The vertex inputs a pass-through vertex program of the stage helper takes beside the values a
+/// program passes on: the position, and the point coordinate of points drawn as squares
+/// (`PointsAsQuads`).
+const PASS_THROUGH_INPUTS: c_uint = 2;
+
+/// The values a vertex, geometry or evaluation program may pass on: what the host passes between
+/// stages, and what the stage helper's pass-through vertex program, which draws a geometry or
+/// evaluation program's output and points as squares, takes as vertex inputs beside its own.
+fn passed_values(limits: &wcontainers_gpu::Limits) -> c_uint {
+    limits
+        .inter_stage_slots
+        .min(limits.vertex_attributes.saturating_sub(PASS_THROUGH_INPUTS))
+}
+
+/// Whether points drawn as squares can pass `gl_PointCoord` at location `at`: between stages, and
+/// to the pass-through vertex program beside its position.
+pub(crate) fn point_coordinate_passes(limits: &wcontainers_gpu::Limits, at: u32) -> bool {
+    at < limits.inter_stage_slots && at + PASS_THROUGH_INPUTS <= limits.vertex_attributes
+}
+
 /// Stream output's limits: the stage helper's (every vertex output written to its records, into
 /// its four buffers), on back ends with compute work; none without.
 fn stream_output(ours: &Caps) -> (c_uint, c_uint) {
@@ -194,7 +214,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_texture_anisotropy = f32::from(limits.max_anisotropy);
     caps.constant_buffer_offset_alignment = limits.min_uniform_offset_alignment;
     caps.max_constant_buffer_size = limits.max_uniform_buffer_size;
-    caps.max_varyings = limits.inter_stage_slots;
+    caps.max_varyings = passed_values(limits);
     caps.glsl_feature_level = GLSL_VERSION;
     caps.glsl_feature_level_compatibility = GLSL_COMPATIBILITY_VERSION;
     caps.essl_feature_level = ESSL_VERSION;
@@ -349,10 +369,10 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     caps.max_control_flow_depth = unbounded;
     caps.max_temps = unbounded;
     (caps.max_inputs, caps.max_outputs) = match stage {
-        MESA_SHADER_VERTEX => (limits.vertex_attributes, limits.inter_stage_slots),
-        MESA_SHADER_FRAGMENT => (limits.inter_stage_slots, limits.color_targets),
+        MESA_SHADER_VERTEX => (limits.vertex_attributes, passed_values(limits)),
+        MESA_SHADER_FRAGMENT => (passed_values(limits), limits.color_targets),
         MESA_SHADER_GEOMETRY | MESA_SHADER_TESS_CTRL | MESA_SHADER_TESS_EVAL => {
-            (limits.inter_stage_slots, limits.inter_stage_slots)
+            (passed_values(limits), passed_values(limits))
         }
         _ => (0, 0),
     };

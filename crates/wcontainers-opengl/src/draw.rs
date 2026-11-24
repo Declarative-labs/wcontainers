@@ -791,6 +791,7 @@ fn convert<B: Backend>(
         && routed.typed.buffers.is_empty()
         && routed.rewrites == wcontainers_nir::direct::Rewrites::default()
         && routed.slow_paths.is_empty()
+        && !forces_early_tests(&routed.module)
         && !binds_arrays(&routed.module)
     {
         let module = wcontainers_nir::direct::plain(routed).map_err(|e| e.to_string())?;
@@ -1065,6 +1066,15 @@ fn convert_evaluation<B: Backend>(
         tessellator: Some(tessellator),
         early_tests: None,
     })
+}
+
+/// Whether a fragment program forces early depth and stencil tests, which the shaders crate's
+/// rewrite moves into its pixel extras.
+fn forces_early_tests(module: &naga::Module) -> bool {
+    module
+        .entry_points
+        .iter()
+        .any(|ep| ep.early_depth_test == Some(naga::EarlyDepthTest::Force))
 }
 
 /// Whether a fragment program writes its depth or sample mask.
@@ -3218,7 +3228,7 @@ fn squares_for<B: Backend>(
     if !made.sized && raster.point_size <= ONE_PIXEL {
         return Ok(None);
     }
-    if at >= backend.caps().limits.inter_stage_slots {
+    if !crate::screen::point_coordinate_passes(&backend.caps().limits, at) {
         return refused(format_args!(
             "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
         ));
@@ -3291,7 +3301,7 @@ fn geometry_squares_for<B: Backend>(
     if !made.sized && raster.point_size <= ONE_PIXEL {
         return Ok(None);
     }
-    if at >= backend.caps().limits.inter_stage_slots {
+    if !crate::screen::point_coordinate_passes(&backend.caps().limits, at) {
         return refused(format_args!(
             "points drawn as squares passing gl_PointCoord at location {at}, past the host's"
         ));
