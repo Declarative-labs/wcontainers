@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use creusot_std::logic::FMap;
 use creusot_std::prelude::{
-    Ghost, Int, Resolve, Seq, Snapshot, check, ensures, ghost, invariant, logic, opaque, proof_assert, requires, snapshot,
-    trusted,
+    Ghost, Int, Resolve, Seq, Snapshot, check, ensures, ghost, invariant, logic, opaque,
+    proof_assert, requires, snapshot, trusted,
 };
 use wcontainers_abi::{PAGE_MASK, PAGE_SIZE, Permissions};
 use wcontainers_byte_sink::ByteSink;
@@ -273,7 +273,12 @@ impl MemorySpace for SimulatedMemory {
         // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
         let table = &mut *pages;
         let found = snapshot!(entries(*table));
-        proof_assert!(written_since((*before).table(*self), *found, *before, Seq::empty()));
+        proof_assert!(written_since(
+            (*before).table(*self),
+            *found,
+            *before,
+            Seq::empty()
+        ));
         proof_assert!(table_sound(*found));
         // Changed: a loop over the page starts, for which Creusot needs no iterator contract.
         let mut start = addresses.start;
@@ -358,18 +363,23 @@ impl MemorySpace for SimulatedMemory {
                 frames.push(frame);
                 start += PAGE_SIZE;
             }
-            proof_assert!(written_since((*before).table(*other), *found, *before, Seq::empty()));
+            proof_assert!(written_since(
+                (*before).table(*other),
+                *found,
+                *before,
+                Seq::empty()
+            ));
             proof_assert!(forall<i: Int> 0 <= i && i < frames@.len() ==>
                 page_in((*before).table(*other), other_addresses.start@ + i * PAGE_SIZE@).frame == Some(frames@[i])
                 || page_in((*before).table(*other), other_addresses.start@ + i * PAGE_SIZE@).frame == None
                     && new_to(*before, frames@[i]));
             left = snapshot!(entries(*table));
             proof_assert!(forall<key: Int> other_addresses.start@ <= key && key < other_addresses.end@ && key % PAGE_SIZE@ == 0 ==>
-                match page_in(*left, key).frame {
-                    None => false,
-                    Some(frame) => page_in((*before).table(*other), key).frame == Some(frame)
-                        || page_in((*before).table(*other), key).frame == None && new_to(*before, frame),
-                });
+            match page_in(*left, key).frame {
+                None => false,
+                Some(frame) => page_in((*before).table(*other), key).frame == Some(frame)
+                    || page_in((*before).table(*other), key).frame == None && new_to(*before, frame),
+            });
         }
         let middle = snapshot!(**holder);
         proof_assert!((*middle).table(*other) == *left);
@@ -405,9 +415,9 @@ impl MemorySpace for SimulatedMemory {
             index = snapshot!(*index + 1);
         }
         proof_assert!(forall<key: Int> addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0
-            ==> page_in(entries(*table), key) == Page {
-                frame: Some((*all)[(key - addresses.start@) / PAGE_SIZE@]), mapped: true, permissions: page_in(*found, key).permissions
-            });
+        ==> page_in(entries(*table), key) == Page {
+            frame: Some((*all)[(key - addresses.start@) / PAGE_SIZE@]), mapped: true, permissions: page_in(*found, key).permissions
+        });
         proof_assert!(forall<key: Int> !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0)
             ==> page_in(entries(*table), key) == page_in(*found, key));
 
@@ -422,11 +432,11 @@ impl MemorySpace for SimulatedMemory {
             && !(addresses.start@ <= key - addresses.start@ + other_start@ && key - addresses.start@ + other_start@ < addresses.end@)
             ==> page_in(entries(*table), key - addresses.start@ + other_start@).frame == Some((*all)[(key - addresses.start@) / PAGE_SIZE@]));
         proof_assert!(forall<key: Int> !(addresses.start@ <= key && key < addresses.end@ && key % PAGE_SIZE@ == 0) ==>
-            match page_in(entries(*table), key).frame {
-                None => true,
-                Some(frame) => page_in((*middle).table(*self), key).frame == Some(frame)
-                    || new_to(*middle, frame) && forall<other_key: Int> other_key != key ==> page_in(entries(*table), other_key).frame != Some(frame),
-            });
+        match page_in(entries(*table), key).frame {
+            None => true,
+            Some(frame) => page_in((*middle).table(*self), key).frame == Some(frame)
+                || new_to(*middle, frame) && forall<other_key: Int> other_key != key ==> page_in(entries(*table), other_key).frame != Some(frame),
+        });
         proof_assert!(table_sound(entries(*table)));
         count_change();
         Ok(())
@@ -439,7 +449,11 @@ impl MemorySpace for SimulatedMemory {
             && Self::mappings_ended(**holder, ^*holder, *self, addresses),
         Err(_) => !Self::whole_pages(addresses.start@, addresses.end@) && ^*holder == **holder,
     })]
-    fn unmap_from(&self, addresses: Range<u64>, holder: Ghost<&mut Tables>) -> Result<(), InvalidAddressError> {
+    fn unmap_from(
+        &self,
+        addresses: Range<u64>,
+        holder: Ghost<&mut Tables>,
+    ) -> Result<(), InvalidAddressError> {
         check_pages(&addresses)?;
         let before = snapshot!(**holder);
         proof_assert!(table_sound((*before).table(*self)));
@@ -447,7 +461,12 @@ impl MemorySpace for SimulatedMemory {
         // Changed: one borrow of the table for the whole loop, so that Creusot keeps what the table will hold when unlocked.
         let table = &mut *pages;
         let found = snapshot!(entries(*table));
-        proof_assert!(written_since((*before).table(*self), *found, *before, Seq::empty()));
+        proof_assert!(written_since(
+            (*before).table(*self),
+            *found,
+            *before,
+            Seq::empty()
+        ));
         proof_assert!(table_sound(*found));
         // Changed: each page with an entry is found by a lookup from the last one, for which Creusot needs no
         // iterator contract; the pages visited are the same.
@@ -471,7 +490,11 @@ impl MemorySpace for SimulatedMemory {
                 || page_in((*before).table(*self), key).frame == None
                     && page_in(entries(*table), key).mapped == page_in((*before).table(*self), key).mapped
                     && page_in(entries(*table), key).permissions == page_in((*before).table(*self), key).permissions);
-        proof_assert!(written_alone((*before).table(*self), entries(*table), *before));
+        proof_assert!(written_alone(
+            (*before).table(*self),
+            entries(*table),
+            *before
+        ));
         proof_assert!(table_sound(entries(*table)));
         count_change();
         Ok(())
@@ -533,7 +556,12 @@ impl MemorySpace for SimulatedMemory {
                     Some(page) => {
                         let copy = copy_page(page, before, found, made);
                         made = snapshot!(match copy.frame {
-                            Some(frame) => if copy.mapped { *made } else { (*made).concat(Seq::singleton(frame)) },
+                            Some(frame) =>
+                                if copy.mapped {
+                                    *made
+                                } else {
+                                    (*made).concat(Seq::singleton(frame))
+                                },
                             None => *made,
                         });
                         Some(copy)
@@ -640,7 +668,12 @@ fn lock_frame(frame: &Frame) -> MutexGuard<'_, Box<[u8]>> {
 #[ensures(page.mapped ==> result == *page)]
 #[ensures(!page.mapped ==> !result.mapped && result.permissions == page.permissions
     && match result.frame { None => page.frame == None, Some(frame) => fresh(*before, *found, *made, frame) })]
-fn copy_page(page: &Page, before: Snapshot<Tables>, found: Snapshot<FMap<Int, Page>>, made: Snapshot<Seq<Frame>>) -> Page {
+fn copy_page(
+    page: &Page,
+    before: Snapshot<Tables>,
+    found: Snapshot<FMap<Int, Page>>,
+    made: Snapshot<Seq<Frame>>,
+) -> Page {
     let frame = match &page.frame {
         Some(frame) if page.mapped => Some(Arc::clone(frame)),
         // Changed: the copy of the bytes is made by a function whose contract says it is new.
@@ -841,7 +874,12 @@ fn copied_as(page: Page, copy: Option<Page>, made: Seq<Frame>) -> bool {
 /// Whether a table locked now is the table as the holder last saw it, but for pages with no frame that a write since
 /// gave one: a new frame, shown by no other page.
 #[logic(inline)]
-fn written_since(seen: FMap<Int, Page>, now: FMap<Int, Page>, holder: Tables, alive: Seq<Frame>) -> bool {
+fn written_since(
+    seen: FMap<Int, Page>,
+    now: FMap<Int, Page>,
+    holder: Tables,
+    alive: Seq<Frame>,
+) -> bool {
     pearlite! {
         forall<start: Int> page_in(now, start) == page_in(seen, start)
         || page_in(seen, start).frame == None
@@ -922,7 +960,11 @@ impl SimulatedMemory {
     #[ensures((^*holder).table(*self) == entries(result.last()))]
     #[ensures(forall<other: SimulatedMemory> other != *self ==> (^*holder).table(other) == (**holder).table(other))]
     #[ensures(forall<other: SimulatedMemory> (^*holder).holds(other) == (**holder).holds(other))]
-    fn lock_held<'a>(&'a self, holder: Ghost<&'a mut Tables>, alive: Snapshot<Seq<Frame>>) -> Held<'a> {
+    fn lock_held<'a>(
+        &'a self,
+        holder: Ghost<&'a mut Tables>,
+        alive: Snapshot<Seq<Frame>>,
+    ) -> Held<'a> {
         let _ = (holder, alive);
         Held(self.lock_pages())
     }
@@ -1029,7 +1071,11 @@ fn first_entry(pages: &BTreeMap<u64, Page>, addresses: Range<u64>) -> Option<u64
 /// Trusted: assumes a new frame is none of the frames alive: those of the spaces held, of the table, and made.
 #[trusted]
 #[ensures(fresh(*holder, *table, *made, result))]
-fn new_frame_for(holder: Snapshot<Tables>, table: Snapshot<FMap<Int, Page>>, made: Snapshot<Seq<Frame>>) -> Frame {
+fn new_frame_for(
+    holder: Snapshot<Tables>,
+    table: Snapshot<FMap<Int, Page>>,
+    made: Snapshot<Seq<Frame>>,
+) -> Frame {
     let _ = (holder, table, made);
     new_frame()
 }
@@ -1039,7 +1085,12 @@ fn new_frame_for(holder: Snapshot<Tables>, table: Snapshot<FMap<Int, Page>>, mad
 /// Trusted: as `new_frame_for`.
 #[trusted]
 #[ensures(fresh(*holder, *table, *made, result))]
-fn copy_frame(frame: &Frame, holder: Snapshot<Tables>, table: Snapshot<FMap<Int, Page>>, made: Snapshot<Seq<Frame>>) -> Frame {
+fn copy_frame(
+    frame: &Frame,
+    holder: Snapshot<Tables>,
+    table: Snapshot<FMap<Int, Page>>,
+    made: Snapshot<Seq<Frame>>,
+) -> Frame {
     let _ = (holder, table, made);
     Arc::new(Mutex::new(lock_frame(frame).clone()))
 }

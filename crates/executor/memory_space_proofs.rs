@@ -5,7 +5,9 @@
 
 use core::ops::Range;
 
-use creusot_std::prelude::{Ghost, Int, Snapshot, ensures, ghost, proof_assert, requires, snapshot};
+use creusot_std::prelude::{
+    Ghost, Int, Snapshot, ensures, ghost, proof_assert, requires, snapshot,
+};
 use wcontainers_abi::Permissions;
 
 use crate::memory_space::MemorySpace;
@@ -38,7 +40,10 @@ pub fn map_shares_and_unmap_ends<S: MemorySpace>(
 ) {
     let other_page = snapshot!(*page - addresses.start@ + other_start@);
     let unmapped = addresses.start..addresses.end;
-    if space.map_from(addresses, other, other_start, ghost!(&mut **holder)).is_err() {
+    if space
+        .map_from(addresses, other, other_start, ghost!(&mut **holder))
+        .is_err()
+    {
         return;
     }
     let shared = snapshot!(space.page(**holder, *page).frame);
@@ -62,7 +67,9 @@ pub fn copy_does_not_share<S: MemorySpace>(
     page: Snapshot<Int>,
     holder: Ghost<&mut S::Holder>,
 ) -> bool {
-    space.copy_from(addresses, other, other_start, holder).is_ok()
+    space
+        .copy_from(addresses, other, other_start, holder)
+        .is_ok()
 }
 
 /// Addresses that end past the space are refused by every method, and the holder is left as it was.
@@ -79,7 +86,10 @@ pub fn outside_is_refused<S: MemorySpace>(
     let start = addresses.start;
     let end = addresses.end;
     let borrowed = space.borrow(start..end);
-    proof_assert!(match borrowed { Ok(_) => false, Err(_) => true });
+    proof_assert!(match borrowed {
+        Ok(_) => false,
+        Err(_) => true,
+    });
     let zeroed = space.zero(start..end);
     proof_assert!(start@ < end@ ==> zeroed != Ok(()));
     let set = space.set_permissions(start..end, allowed, ghost!(&mut **holder));

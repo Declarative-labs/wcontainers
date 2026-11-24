@@ -23,6 +23,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::memory::{SimulatedMemory, SpaceCopy};
 use crate::{Simulation, SimulationInterrupter};
+use creusot_std::prelude::Ghost;
 
 const PAGE: u64 = LOWEST_ADDRESS;
 /// The page the interrupt tests' guest stores to, which allows nothing until the guest faults on it.
@@ -39,7 +40,7 @@ fn word_no_listed_instruction_matches_is_undefined() {
     let memory = SimulatedMemory::default();
     let allowed = Permissions::READ | Permissions::EXECUTE;
     assert_eq!(
-        memory.set_permissions(PAGE..PAGE + PAGE_SIZE, allowed),
+        memory.set_permissions(PAGE..PAGE + PAGE_SIZE, allowed, Ghost::conjure()),
         Ok(())
     );
     let start = Processor {
@@ -65,16 +66,24 @@ fn page_methods_refuse_addresses_inside_a_page() {
     let other = SimulatedMemory::default();
     let inside = PAGE + WORD..PAGE + PAGE_SIZE;
     assert_eq!(
-        memory.set_permissions(inside.clone(), Permissions::READ),
+        memory.set_permissions(inside.clone(), Permissions::READ, Ghost::conjure()),
         Err(InvalidAddressError)
     );
     assert_eq!(
-        memory.map_from(inside.clone(), &other, PAGE + WORD),
+        memory.map_from(inside.clone(), &other, PAGE + WORD, Ghost::conjure()),
         Err(MapMemoryError::InvalidAddress(InvalidAddressError))
     );
-    assert_eq!(memory.unmap_from(inside.clone()), Err(InvalidAddressError));
     assert_eq!(
-        memory.copy_from(PAGE..PAGE + PAGE_SIZE, &other, PAGE + WORD),
+        memory.unmap_from(inside.clone(), Ghost::conjure()),
+        Err(InvalidAddressError)
+    );
+    assert_eq!(
+        memory.copy_from(
+            PAGE..PAGE + PAGE_SIZE,
+            &other,
+            PAGE + WORD,
+            Ghost::conjure()
+        ),
         Err(CopyMemoryError::InvalidAddress(InvalidAddressError))
     );
 }
@@ -85,7 +94,10 @@ fn unmap_from_leaves_a_page_no_mapping_shares() {
     let written = u64::MAX.to_le_bytes();
     let bytes = memory.borrow(PAGE..PAGE + WORD).expect("inside the space");
     assert_eq!(bytes.write(&written), written.len());
-    assert_eq!(memory.unmap_from(PAGE..PAGE + PAGE_SIZE), Ok(()));
+    assert_eq!(
+        memory.unmap_from(PAGE..PAGE + PAGE_SIZE, Ghost::conjure()),
+        Ok(())
+    );
     let mut read = [u8::MIN; WORD as usize];
     assert_eq!(bytes.read(&mut read), read.len());
     assert_eq!(read, written);
@@ -99,8 +111,11 @@ fn unmap_from_leaves_a_page_another_space_maps() {
     let whole = PAGE..PAGE + PAGE_SIZE;
     let bytes = owner.borrow(PAGE..PAGE + WORD).expect("inside the space");
     assert_eq!(bytes.write(&written), written.len());
-    assert_eq!(other.map_from(whole.clone(), &owner, PAGE), Ok(()));
-    assert_eq!(owner.unmap_from(whole), Ok(()));
+    assert_eq!(
+        other.map_from(whole.clone(), &owner, PAGE, Ghost::conjure()),
+        Ok(())
+    );
+    assert_eq!(owner.unmap_from(whole, Ghost::conjure()), Ok(()));
     let mut read = [u8::MIN; WORD as usize];
     assert_eq!(bytes.read(&mut read), read.len());
     assert_eq!(read, written);
@@ -114,7 +129,10 @@ fn copy_follows_a_write_through_another_space_that_maps_the_page() {
     let owner = SimulatedMemory::default();
     let other = SimulatedMemory::default();
     let whole = PAGE..PAGE + PAGE_SIZE;
-    assert_eq!(other.map_from(whole, &owner, PAGE), Ok(()));
+    assert_eq!(
+        other.map_from(whole, &owner, PAGE, Ghost::conjure()),
+        Ok(())
+    );
     let mut copy = SpaceCopy::default();
     owner.refresh(&mut copy);
     let written = u64::MAX.to_le_bytes();
@@ -257,7 +275,8 @@ impl TrapHandler for InterruptingAtFault<'_> {
         });
         let allowed = Permissions::READ | Permissions::WRITE;
         assert_eq!(
-            self.memory.set_permissions(DATA..DATA + PAGE_SIZE, allowed),
+            self.memory
+                .set_permissions(DATA..DATA + PAGE_SIZE, allowed, Ghost::conjure()),
             Ok(())
         );
         MemoryFaultResponse::Retry
@@ -288,7 +307,7 @@ fn place_store_guest(memory: &SimulatedMemory) -> Processor {
     assert_eq!(bytes.write(&code), code.len());
     let allowed = Permissions::READ | Permissions::EXECUTE;
     assert_eq!(
-        memory.set_permissions(PAGE..PAGE + PAGE_SIZE, allowed),
+        memory.set_permissions(PAGE..PAGE + PAGE_SIZE, allowed, Ghost::conjure()),
         Ok(())
     );
     let mut start = Processor {

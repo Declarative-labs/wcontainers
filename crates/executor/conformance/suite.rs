@@ -13,6 +13,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 use std::time::Duration;
 
+use creusot_std::prelude::Ghost;
 use wcontainers_abi::{
     Access, LOWEST_ADDRESS, PAGE_MASK, PAGE_SIZE, Permissions, SYSTEM_CALL_ARGUMENT_COUNT,
     SystemCallNumber, SystemCallRequest, WORD,
@@ -24,8 +25,8 @@ use wcontainers_executor::memory_space::{
     CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
 };
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
-    TrapHandler,
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf,
+    SystemCallResponse, TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
@@ -364,7 +365,10 @@ where
     let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut first);
     let stopped = block_on(execution);
     interrupter.interrupt();
-    assert_eq!(stopped, guest.finished, "the state the first execution returned");
+    assert_eq!(
+        stopped, guest.finished,
+        "the state the first execution returned"
+    );
     let mut next = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut next);
     assert_eq!(
@@ -372,7 +376,10 @@ where
         (usize::MIN, usize::MIN),
         "the interrupts the handlers were given"
     );
-    assert_eq!(stopped, guest.finished, "the state the next execution returned");
+    assert_eq!(
+        stopped, guest.finished,
+        "the state the next execution returned"
+    );
 }
 
 /// Checks that a new space reads as zeros and that guest code placed in it without permissions faults on its fetch.
@@ -416,28 +423,28 @@ pub fn addresses_outside_the_space_are_refused<Chip: Executor>(executor: Chip) {
         );
         assert_eq!(memory.zero(addresses.clone()), Err(InvalidAddressError));
         assert_eq!(
-            memory.set_permissions(addresses.clone(), DATA_PERMISSIONS),
+            memory.set_permissions(addresses.clone(), DATA_PERMISSIONS, Ghost::conjure()),
             Err(InvalidAddressError)
         );
         assert_eq!(
-            memory.map_from(addresses.clone(), &other, CODE),
+            memory.map_from(addresses.clone(), &other, CODE, Ghost::conjure()),
             Err(MapMemoryError::InvalidAddress(InvalidAddressError))
         );
         assert_eq!(
-            memory.unmap_from(addresses.clone()),
+            memory.unmap_from(addresses.clone(), Ghost::conjure()),
             Err(InvalidAddressError)
         );
         assert_eq!(
-            memory.copy_from(addresses, &other, CODE),
+            memory.copy_from(addresses, &other, CODE, Ghost::conjure()),
             Err(CopyMemoryError::InvalidAddress(InvalidAddressError))
         );
     }
     assert_eq!(
-        memory.map_from(page(CODE), &other, outside.start),
+        memory.map_from(page(CODE), &other, outside.start, Ghost::conjure()),
         Err(MapMemoryError::InvalidAddress(InvalidAddressError))
     );
     assert_eq!(
-        memory.copy_from(page(CODE), &other, outside.start),
+        memory.copy_from(page(CODE), &other, outside.start, Ghost::conjure()),
         Err(CopyMemoryError::InvalidAddress(InvalidAddressError))
     );
 }
@@ -464,7 +471,7 @@ where
     place(&readable, &load);
     write_bytes(&readable, DATA, &STORED.to_le_bytes());
     assert_eq!(
-        readable.set_permissions(page(DATA), Permissions::READ),
+        readable.set_permissions(page(DATA), Permissions::READ, Ghost::conjure()),
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
@@ -478,7 +485,7 @@ where
     let before = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&read_only, DATA, &before);
     assert_eq!(
-        read_only.set_permissions(page(DATA), Permissions::READ),
+        read_only.set_permissions(page(DATA), Permissions::READ, Ghost::conjure()),
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
@@ -501,7 +508,7 @@ where
     let after = pattern(SECOND_PATTERN, length(&page(DATA)));
     write_bytes(&read_only, DATA, &after);
     assert_eq!(
-        read_only.set_permissions(page(DATA), Permissions::empty()),
+        read_only.set_permissions(page(DATA), Permissions::empty(), Ghost::conjure()),
         Ok(())
     );
     assert_eq!(
@@ -513,11 +520,16 @@ where
     let not_executable = create_memory(&executor);
     place(&not_executable, &store);
     assert_eq!(
-        not_executable.set_permissions(page(CODE), Permissions::READ),
+        not_executable.set_permissions(page(CODE), Permissions::READ, Ghost::conjure()),
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = execute(&mut executor, store.start.clone(), &not_executable, &mut handler);
+    let stopped = execute(
+        &mut executor,
+        store.start.clone(),
+        &not_executable,
+        &mut handler,
+    );
     assert_eq!(
         handler.memory_faults,
         [(CODE, Access::Execute)],
@@ -540,7 +552,10 @@ where
     let second = create_memory(&executor);
     let shared = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&first, DATA, &shared);
-    assert_eq!(second.map_from(page(DATA + SHIFT), &first, DATA), Ok(()));
+    assert_eq!(
+        second.map_from(page(DATA + SHIFT), &first, DATA, Ghost::conjure()),
+        Ok(())
+    );
     assert_eq!(
         read_bytes(&second, page(DATA + SHIFT)),
         shared,
@@ -564,7 +579,7 @@ where
     let store = Chip::Architecture::build_store(CODE, DATA + SHIFT, STORED);
     place(&second, &store);
     assert_eq!(
-        second.set_permissions(page(DATA + SHIFT), DATA_PERMISSIONS),
+        second.set_permissions(page(DATA + SHIFT), DATA_PERMISSIONS, Ghost::conjure()),
         Ok(())
     );
     let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
@@ -587,8 +602,14 @@ pub fn unmap_from_zeroes_this_side_only<Chip: Executor>(executor: Chip) {
     let second = create_memory(&executor);
     let kept = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&first, DATA, &kept);
-    assert_eq!(second.map_from(page(DATA + SHIFT), &first, DATA), Ok(()));
-    assert_eq!(second.unmap_from(page(DATA + SHIFT)), Ok(()));
+    assert_eq!(
+        second.map_from(page(DATA + SHIFT), &first, DATA, Ghost::conjure()),
+        Ok(())
+    );
+    assert_eq!(
+        second.unmap_from(page(DATA + SHIFT), Ghost::conjure()),
+        Ok(())
+    );
     assert_eq!(
         read_bytes(&second, page(DATA + SHIFT)),
         zeros(page(DATA)),
@@ -624,8 +645,14 @@ where
     place(&source, &store);
     let data = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&source, DATA, &data);
-    assert_eq!(source.set_permissions(page(DATA), DATA_PERMISSIONS), Ok(()));
-    assert_eq!(source.map_from(page(MAPPED), &mapped, MAPPED), Ok(()));
+    assert_eq!(
+        source.set_permissions(page(DATA), DATA_PERMISSIONS, Ghost::conjure()),
+        Ok(())
+    );
+    assert_eq!(
+        source.map_from(page(MAPPED), &mapped, MAPPED, Ghost::conjure()),
+        Ok(())
+    );
     write_bytes(
         &mapped,
         MAPPED,
@@ -633,7 +660,7 @@ where
     );
 
     assert_eq!(
-        copy.copy_from(CODE + SHIFT..END + SHIFT, &source, CODE),
+        copy.copy_from(CODE + SHIFT..END + SHIFT, &source, CODE, Ghost::conjure()),
         Ok(())
     );
     assert_eq!(
@@ -891,7 +918,7 @@ impl<Space: MemorySpace> TrapHandler for Recorder<'_, Space> {
             Some((space, allowed)) => {
                 let faulting = page(address & !PAGE_MASK);
                 assert_eq!(
-                    space.set_permissions(faulting, allowed),
+                    space.set_permissions(faulting, allowed, Ghost::conjure()),
                     Ok(()),
                     "the handler's permissions"
                 );
@@ -990,7 +1017,10 @@ fn place<Architecture: GuestArchitecture, Space: MemorySpace>(
     guest: &Guest<Architecture>,
 ) {
     write_bytes(space, CODE, &guest.code);
-    assert_eq!(space.set_permissions(page(CODE), CODE_PERMISSIONS), Ok(()));
+    assert_eq!(
+        space.set_permissions(page(CODE), CODE_PERMISSIONS, Ghost::conjure()),
+        Ok(())
+    );
 }
 
 fn assert_stops_at_first_instruction<Architecture>(
@@ -1029,7 +1059,11 @@ where
         .borrow(LONG)
         .expect("the suite's addresses lie inside the space");
     let count = bytes.write_from(source).expect("the source gave the bytes");
-    assert_eq!(count, length(&LONG), "the bytes one write from a source took");
+    assert_eq!(
+        count,
+        length(&LONG),
+        "the bytes one write from a source took"
+    );
 }
 
 fn write_bytes<Space: MemorySpace>(space: &Space, start: u64, bytes: &[u8]) {

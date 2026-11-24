@@ -13,6 +13,8 @@ wcontainers-byte-sink = { path = "../../byte-sink" }
 wcontainers-byte-source = { path = "../../byte-source" }
 wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 wcontainers-executor = { path = ".." }
+# The ghost holder the memory space methods take, which costs nothing when the program runs.
+creusot-std = "0.15.0"
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
 wcontainers-precise-instruction-set = { path = "../../precise-instruction-set" }
 wcontainers-distinguishing-state-generator = { path = "../../distinguishing-state-generator" }

@@ -1,6 +1,8 @@
 use core::ops::Range;
 
-use creusot_std::prelude::{DeepModel, Ghost, Int, ensures, extern_spec, invariant, logic, requires};
+use creusot_std::prelude::{
+    DeepModel, Ghost, Int, ensures, extern_spec, invariant, logic, requires,
+};
 use thiserror::Error;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -130,7 +132,12 @@ pub trait MemorySpace: Sized {
     /// Whether the mapped pages the addresses cover no longer show their frame, keeping their permissions, and
     /// nothing else changed: there is no way back to the frames they had been given.
     #[logic(open, sealed, inline)]
-    fn mappings_ended(before: Self::Holder, after: Self::Holder, space: Self, addresses: Range<u64>) -> bool {
+    fn mappings_ended(
+        before: Self::Holder,
+        after: Self::Holder,
+        space: Self,
+        addresses: Range<u64>,
+    ) -> bool {
         pearlite! {
             forall<other: Self, page: Int> if other == space && Self::covers(addresses, page) && space.page(before, page).mapped {
                 space.page(after, page) == Page { frame: None, mapped: false, permissions: space.page(before, page).permissions }
@@ -297,7 +304,11 @@ pub trait MemorySpace: Sized {
             && Self::mappings_ended(**holder, ^*holder, *self, addresses),
         Err(_) => !Self::whole_pages(addresses.start@, addresses.end@) && ^*holder == **holder,
     })]
-    fn unmap_from(&self, addresses: Range<u64>, holder: Ghost<&mut Self::Holder>) -> Result<(), InvalidAddressError>;
+    fn unmap_from(
+        &self,
+        addresses: Range<u64>,
+        holder: Ghost<&mut Self::Holder>,
+    ) -> Result<(), InvalidAddressError>;
 
     /// Copies the bytes, permissions and mappings of the other space that start at the given address into the addresses of this space.
     ///
