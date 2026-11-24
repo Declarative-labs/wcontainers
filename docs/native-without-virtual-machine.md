@@ -812,7 +812,13 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
   the `object` crate's definitions: one segment of read-execute code pages loaded at a fixed address in our area,
   whose last word holds the user-space top the start-up probe found, and a stack that is not executable) and runs
   it with the standard library's `Command` through proc(5)'s `/proc/self/fd/N` (`execve` opens it before it closes
-  the memfd), its socket as the standard input, the environment empty. A fresh image holds nothing of the
+  the memfd), its socket as the standard input, the environment empty. The image's code is the zygote's
+  assembly, read once per embedder process from a section of its own in the embedder's executable file
+  (`/proc/self/exe`, parsed with the `object` crate), so no code of ours reads its own text through a pointer: the
+  section is marked for the linker to keep (`SHF_GNU_RETAIN`), and a symbol beside the assembly makes the linker
+  take its object file. An embedder whose section headers were removed, or this crate linked into a shared library
+  another program loads, finds no such section: the form is then unavailable, named "zygote code not found". A
+  fresh image holds nothing of the
   embedder: no other memory, no C library and so no restartable-sequences area (the one an embedder's fork carried
   killed the child once its page was unmapped: measured by the fourth check on both rented machines), no
   robust-futex list, no handler and no exit-clear word. It maps a stack beside its code, blocks every signal (which
@@ -1139,7 +1145,8 @@ read-execute), `munmap`, `mprotect`, `futex` (wait with time-out, wake; shared f
 `tgkill`, `rt_sigaction`, `rt_sigprocmask` (at each `Runner::run` start and end, and once per handled signal that
 does not return), `sigaltstack`, `clone` for threads, `fstatfs` (3.4's fallback only); on x86-64 `membarrier`
 (optional, 3.10).
-- P adds: in the embedder, `memfd_create` and `write` (the zygote's image), the standard library's `Command` for
+- P adds: in the embedder, `openat`, `lseek` and `read` of `/proc/self/exe` (the zygote's code, 4.1),
+  `memfd_create` and `write` (the zygote's image), the standard library's `Command` for
   the zygote (glibc's `posix_spawn`: `clone` with `CLONE_VM | CLONE_VFORK`, `dup2`, `rt_sigprocmask`,
   `rt_sigaction`, `execve` of `/proc/self/fd/N`), `socketpair`, `sendmsg`,
   `ppoll` (a stub's socket, 4.1), for placement (4.3) `sched_getaffinity`, `sched_setaffinity` on its own runner
@@ -1689,8 +1696,10 @@ filter. Pass bar, every item on the rented ARM64 machine:
 - speed, measured with machine and load: the guest's getppid round trip with P's placement, its median under 1.25
   times the bare futex slot on one CPU measured in the same run, alternating, and no round trip over 1 ms in a run of
   1,000,000 on idle CPUs; busybox `sh` starting 1,000 programs, its time at most 1.25 times the model's prediction
-  (the reference's own time plus, per program, two process creations and its kernel entries times the round trip,
-  plus the translation time, each measured in the same run); every slow path with its counter.
+  (the reference's own time plus, per program, two of the host's own process creations, a subshell of the
+  reference's `sh` with its end, and its kernel entries times the round trip, plus the translation time, each
+  measured in the same run; our stub's creation is printed beside it, never put in the model, so a slower stub
+  shows); every slow path with its counter.
 
 **W2: form I on ARM64 Linux, and the crossover.** Needs the translator's `InProcess` form. Builds: slots, the
 check and the stack pointer's rules, in-process entry and eager switch, the signal rules of 3.7, the slice timer

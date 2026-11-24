@@ -3,6 +3,38 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 14 (2026-11-24, round 5 run 6): four unsafe lines fewer, and a busybox model a slow stub cannot raise
+
+Scratch w2/run14 (send.sh, send-x86.sh; test.sh as run 13's with `LIST`; release.sh, the zygote test in the release
+profile with its section shown; compare.sh with first_start.rs, a fresh process's first and second zygote start, and
+compare13.sh with zygote_time.rs, run 13's, each with the change reversed, `CHANGE_B64`; busybox.sh, `PROFILE`,
+`ROUNDS`, `PROGRAMS`; outputs *-arm.out, *-x86.out). No primitive has landed (enforcement-primitive's
+FOR-THE-OWNER.md unchanged since run 12) and `page-table-split` still holds only its interface commit, so form I's
+executor stays blocked. No line with `unsafe` added; four removed (root count 13 to 9, 27591aae5).
+- Built, e7dcc8473: the zygote's code is read once per embedder process from the assembly's own section of
+  `/proc/self/exe` with the `object` crate (plan 4.1), so the two labels and the slice between them are gone. The
+  section is `wcontainers_host_process_zygote`, flags `axR` (`SHF_GNU_RETAIN`, so `--gc-sections` keeps it); a
+  `#[used]` static beside each architecture's assembly puts a symbol in its object file, without which the linker
+  never took that archive member (found: every zygote test failed `ZygoteCodeNotFound` on both machines, the rlib's
+  object holding the section and no symbol). A missing section, or one not executable code, is the new
+  `Unavailable::ZygoteCodeNotFound` (headers stripped, or the crate inside a shared library another program loads).
+  code.rs's two `dsb ish` are aarch64-cpu's safe `barrier::dsb(ISH)` (the crate was already a dependency).
+- Measured (Xeon, load 5 to 8, alternating, before is the change reversed): 200 starts a round, 3 rounds, median
+  start to first answer 132, 125, 127 µs before, 133, 124, 126 µs after; a fresh process's first start (40
+  processes a round, 3 rounds) 229, 230, 222 µs before, 295, 287, 300 µs after: the read costs about 65 µs once per
+  embedder process.
+- Verified: clippy with warnings denied clean on both machines; on Graviton4 every test binary of run 13's list
+  passes (test2-arm.out to kernel, load 24 to 46; the machine's disk filled during busybox, rerun in test3-arm.out,
+  load 9 to 12: busybox, interrupt, copy, forged, in_process_attacks); on the Xeon pages, zygote, stub, files, host,
+  threads, stop, touch, memory, slice, placement, embedder and step pass (test3-x86.out); the zygote test in the
+  release profile passes on both, the section in the binary (release1-x86.out, release2-arm.out).
+- Changed, 6653d7241 (run 13's finding): the busybox speed test's model takes the host's own process creation and
+  end, a subshell of the reference's `sh` (10,000 of `( : )` less the same loop of `:`), not our stub's fork, which it
+  prints beside (Departures). Graviton4, 1,000 programs, second run: dev profile (busybox1-arm.out, load 8) 3.98,
+  3.90, 4.24 s against models of 0.78 to 0.82 s, 4.97 to 5.17 times; release (busybox2-arm.out, load 12 to 14)
+  4.66, 4.28, 3.62 s, 4.64 to 5.57 times. The host's creation 147 to 157 µs (one round 207), our stub's 252 to 260
+  µs (one round 494). By the old model the same dev runs were 3.91 to 4.14 times.
+
 ## W2 run 13 (2026-11-24, round 5 run 5): a guest process's start back from 42 ms to 0.17 ms
 
 Scratch w2/run13 (send.sh and send-x86.sh as run 12's; compare.sh builds zygote_time.rs and the speed test with
@@ -2041,7 +2073,8 @@ asked. What is met is under "Met" below. Each item of plan 13's bar that is not 
 and its owner:
 - busybox `sh` starting 1,000 programs: 3.16 to 3.31 times the model (round 4 run 5, after undoing run 4's walk change,
   Graviton4 load 8 to 11; the second run against a model with no translation term; before run 5 the figures divided by
-  a model holding a noisy one, so run 4's "2.5 to 3.0" was 2.90 to 3.19 by this measure) (bar 1.25). Cause: every new host process is given
+  a model holding a noisy one, so run 4's "2.5 to 3.0" was 2.90 to 3.19 by this measure) (bar 1.25). Since W2 run 14 the model takes the
+  host's own process creation, not our stub's: 4.64 to 5.57 times (release, Graviton4, load 12 to 14). Cause: every new host process is given
   its translated code in its own code area (about 300 pieces into each exec'd busybox at a new random base, about 2 us
   each), two stubs a program (about 0.39 ms each against the model's 0.30), the kernel's read of the whole program file
   at each exec (0.37 ms a program, 9.9% of the CPU), the turns' host work (each turn 10 to 60 us of the stub's mmap,
@@ -2077,8 +2110,9 @@ and its owner:
   track (parallel threads), then this track.
 - gVisor: P runs there with known failures (plan 6); in its kernel test, blocks and jumptables pass the 300 s limit
   (which side was not found). Decision 14 (gVisor on ARM64 returning through signal frames) is the owner's.
-- Unsafe: 18 uses left in host-process, each marked with its reason (Unsafe code); the owner's rule of 2026-11-24 says
-  they go when the primitives land (Needs a primitive). Owner: the primitives' job, then this track.
+- Unsafe: 10 marked uses (9 lines) left in host-process since W2 run 14, each with its reason (Unsafe code); the
+  owner's rule of 2026-11-24 says they go when the primitives land (Needs a primitive). Owner: the primitives' job,
+  then this track.
 - Form I's bounds-check-bypass test as translated guest code, one per access shape: W2's (measured as a host program in
   run 6).
 
@@ -2098,8 +2132,8 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 ## Next
 
-- The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
-  primitive); when they land, each use here becomes a call of one.
+- The owner's rule of 2026-11-24 comes first: add no unsafe; the 10 marked uses (9 lines) left since W2 run 14 wait
+  for the primitives (Needs a primitive); when they land, each use here becomes a call of one.
 - W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2), and its stops
   resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
   access is cut by its own addressing (W2 run 3); an access at its base too, pieces of several instructions are
@@ -2549,6 +2583,13 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## Departures from the plan
 
+- W2 run 14: plan 13's busybox model named "two process creations" without saying whose; the test took our own stub's
+  fork, so a slower stub raised the model with it (run 13: a 42 ms stub fork left the ratio at 1.02). The model now
+  takes the host's own creation and end, a subshell in the reference, and the plan says so; the ratio rises by about
+  a quarter for the same run (4.97 to 5.17 against 3.91 to 4.14).
+- W2 run 14: the zygote's image takes its code from the embedder's own executable file, not from a build step that
+  assembles it (the status's earlier proposal): the assembler is the compiler's own, so the bytes are the ones the
+  build made, and no Rust code reads its own text. It costs about 65 µs once per embedder process.
 - W2 run 4: rule e keeps a displaced thread's stack pointer in the hardware sp, not in its register block. No
   access goes through it in displaced code and every handler runs on its own signal stack, so the guest's own value
   there is harmless, and the instructions that read or write sp as a value stay one instruction each (with the
@@ -2672,12 +2713,10 @@ operation this crate still does with unsafe code, for the primitives' design
   user-space top (the zygote's reservation is gone since W2 run 12).
 - Views of a shared mapping as atomics of one size per offset: the thread pages (`&AtomicU32`, `&AtomicU64` at an
   offset; a `#[repr(C)]` page of atomics would make one size per field certain).
-- Cache maintenance after writing code, by address range of a mapping (`dc cvau`, `dsb ish`, `ic ivau`, `dsb ish`).
+- Cache maintenance after writing code, by address range of a mapping (`dc cvau`, `ic ivau`; the two `dsb ish` are
+  aarch64-cpu's safe `dsb` since W2 run 14).
 - Read a system register: `CTR_EL0`.
 - Send a signal to one thread of another process: `tgkill(pid, tid, signal)`.
-- The zygote's machine code as bytes, to write into its image: the slice between the two labels of its assembly.
-  (Since W2 run 12 the zygote is exec'd from that image, plan 4.1: the fork, the jump and glibc's rseq symbols are
-  gone. A build step that assembles the code into bytes would remove these two lines too.)
 - The SVE probe: set p0 and FFR, make a system call, store both.
 - The stub's routines with their input structures on the read-only control page (plan 3.7, W2 run 9's design for
   parallel threads, corrected in run 10: the `recvmsg` header must stay on a writable page, the register page): a
@@ -2718,8 +2757,11 @@ Unicorn executor in tests).
 
 ## Unsafe code
 
-The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. Since W2 run 12: 12
-marked uses in the library (13 lines by the root Cargo.toml's count; 11 build on ARM64, 8 on x86-64). From W1
+The crate denies `unsafe_code`; each use carries its own `#[expect(unsafe_code, reason)]`. Since W2 run 14: 10
+marked uses in the library (9 lines by the root Cargo.toml's count; 9 build on ARM64, 6 on x86-64): the zygote's
+code is read from its own section of the embedder's executable with the `object` crate (plan 4.1), so its two labels
+and the slice between them are gone, and code.rs's two barriers are aarch64-cpu's safe `dsb`. W2 run 12 to 13: 12
+marked uses (13 lines; 11 build on ARM64, 8 on x86-64). From W1
 round 8 run 1 to W2 run 11: 18 marked uses (19 lines; 16 on ARM64, 13 on x86-64), none in its
 tests (commit fded27c0b moved the tests' read of `__rseq_size` into the library); the same at round 4's start and after
 round 4 run 5. Round 8 run 1 removed 10 (the owner's rule of
@@ -2727,16 +2769,17 @@ round 4 run 5. Round 8 run 1 removed 10 (the owner's rule of
 reservation, its window maps and its two copies; the embedder now reads and writes the stubs' memfds with rustix's
 safe `pread` and `pwrite`), the code area's map, unmap and slice (memmap2's safe `MmapRaw`, words written by
 `pwrite`), the thread pages' map and unmap (`MmapRaw`). Left:
-- code.rs: cache maintenance by address and its barriers (`dc cvau`, `ic ivau`, `dsb ish`; no crate wraps them as
-  safe calls), ARM64 only, one marked function.
+- code.rs: cache maintenance by address (`dc cvau`, `ic ivau`; no crate wraps them as safe calls; the barriers are
+  aarch64-cpu's safe `dsb` since W2 run 14), ARM64 only, one marked function.
 - stub.rs: glibc's `tgkill` for the stop (rustix's `tkill` is unsafe too and reaches any thread of the host; nix has
   none for one thread of another process; rustix's safe `pidfd_send_signal` on a thread's pidfd would do it, but
   `PIDFD_THREAD` needs Linux 6.9 and is not known in gVisor).
 - zygote.rs: the zygote's assembly, one module per architecture (it runs with none of the embedder's memory, so
-  it refers to nothing outside itself); the two labels around the assembly; the slice of its code between them.
-  Since W2 run 12 the zygote is started from its own executable image (plan 4.1), so the embedder's `fork`, the
-  jump into the zygote's code (one per architecture), the reservation's `mmap` and `munmap` and glibc's
-  `__rseq_offset` and `__rseq_size` are gone: six marked uses, six lines.
+  it refers to nothing outside itself). Since W2 run 12 the zygote is started from its own executable image (plan
+  4.1), so the embedder's `fork`, the jump into the zygote's code (one per architecture), the reservation's `mmap`
+  and `munmap` and glibc's `__rseq_offset` and `__rseq_size` are gone: six marked uses, six lines. Since W2 run 14
+  the image's code is read from the assembly's own section of `/proc/self/exe` (kept by `SHF_GNU_RETAIN`, its object
+  file taken by the linker through a `#[used]` static beside it), so the two labels and the slice are gone too.
 - probe.rs: `mrs ctr_el0` (no crate wraps it); the fixed `mmap` and `munmap` of the user-space search; the SVE
   probe's assembly (set p0 and FFR, `svc`, store them).
 - pages.rs: the two views of the thread pages' mapping as 32-bit and 64-bit atomics (the stub writes the same pages
@@ -2760,6 +2803,10 @@ and `FPSIMD_MAGIC` (arch/arm64/include/uapi/asm/sigcontext.h); in tests/floor.rs
 FPSR, FPCR and `TPIDR_EL0` (Arm ARM).
 
 ## Dependencies and licences
+
+Since W2 run 14, host-process, Linux only: object 0.41.0 also with its `read_core` and `std` features (no new crate:
+memchr was already its dependency) to read the zygote's code from the embedder's executable; on ARM64 aarch64-cpu
+12.0.0 (MIT OR Apache-2.0, already a dependency) also for its safe `dsb`.
 
 Since W2 run 12, host-process, Linux only: object 0.41.0 (Apache-2.0 OR MIT, already in the lock file, the kernel's
 and the wasmtime executor's version; no default features, `elf` only) for the ELF header and program headers of the
