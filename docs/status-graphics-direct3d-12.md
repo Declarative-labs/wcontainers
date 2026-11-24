@@ -33,6 +33,19 @@ Run 59 (2026-11-24, milestone G5r, its fifth run), RTX 3080, desktop shared:
   (gap list, values between the stages): an 11_0 combination unmet, owner the shaders track's
   stage helper, asked ("Asked of other tracks").
 - Lint with warnings denied of the infrastructure crate and this front (run59/lint2.log): clean.
+  Literal check (run59/lit1.log, the desktop's copy): no finding of this run's code; only bind.rs's
+  two wrapped messages again, the desktop checkout's `\r\n` (run 58).
+- The whole chain again at 4c07e6c4 (the shaders crate's DXIL register check, e352352c, came in
+  since run 58; scratch bin/rest59.sh, logs run59/; the OpenGL track's job reset the display
+  driver at 09:45 and held the queue, so the chain ran in two parts, `*1` and `*2`/`*3`), every
+  figure held: GPU tests (gpu1.log) pass; test files (full2.log) 189 of 198, the same 9; own
+  program (check2.log) draw 0 of 4096 beyond 1, 35 of 35 cases equal, `antialiased-lines` largest
+  difference 38, features 154 of 872, outputs 22 of 110, answers 2 of 40, none beyond real; shader
+  runner (runner2.log) 219 of 302, the same 83 failing files; the two samples equal (0 beyond 8);
+  Godot's 2D platformer equal, its 3D platformer the same one pixel; bgfx 01-cubes, 26-occlusion,
+  35-dynamic, 38-bloom and 37 every frame of both our runs within the allowance (740 to 1270
+  pixels beyond 8 of 20,480); scenes (scenes2.log) 110 pass, 5 fail, 1 absent; Wine's five dxgi
+  tests 3 of 5.
 
 Run 58 (2026-11-24, milestone G5r, its fourth run): the eighth independent check (scratch
 icheck58) found 11_0's 32 registers to the pixel stage not built behind the stage helper and
