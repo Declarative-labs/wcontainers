@@ -10,7 +10,7 @@ use core::ops::Range;
 /// One processor architecture, as a program running on it sees it.
 pub trait ProcessorArchitecture: Sized {
     /// All stateful components of the processor.
-    type Processor: Clone + Eq;
+    type ProcessorState: Clone + Eq;
     /// What a program may do with a page of memory.
     type PagePermission: Copy + Eq;
     /// An instruction at its most granular division.
@@ -36,7 +36,7 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
     /// On error the processor is left as it was.
     fn simulate_in_place(
         &self,
-        processor: &mut Architecture::Processor,
+        processor: &mut Architecture::ProcessorState,
         memory: &[MemoryDelta<'_, Architecture>],
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Architecture>),
     ) -> Result<(), Self::Error>;
@@ -60,7 +60,7 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
 /// All state that some instruction might mutate during execution.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
-    pub processor: Architecture::Processor,
+    pub processor: Architecture::ProcessorState,
     /// The changes that have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
     pub memory_mutations: Vec<MemoryDelta<'memory, Architecture>>,
 }

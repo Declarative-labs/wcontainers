@@ -1,0 +1,22 @@
+[package]
+name = "wcontainers-byte-source-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[[test]]
+name = "queue"
+path = "../foreign_implementation/queue/conformance.rs"
+
+[[test]]
+name = "slice"
+path = "../foreign_implementation/slice/conformance.rs"
+
+[dependencies]
+wcontainers-byte-source = { path = ".." }
+
+[lints]
+workspace = true

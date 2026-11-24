@@ -1,0 +1,26 @@
+[package]
+name = "wcontainers-byte-sink-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[[test]]
+name = "queue"
+path = "../foreign_implementation/queue/conformance.rs"
+
+[[test]]
+name = "slice"
+path = "../foreign_implementation/slice/conformance.rs"
+
+[[test]]
+name = "vector"
+path = "../foreign_implementation/vector/conformance.rs"
+
+[dependencies]
+wcontainers-byte-sink = { path = ".." }
+
+[lints]
+workspace = true
