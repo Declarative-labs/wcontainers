@@ -12,6 +12,28 @@ track was idle (f9ecca97, extended-range swap chains in the blit models; c387985
 
 ## Where things stand
 
+Run 59 (2026-11-24, milestone G5r, its fifth run), RTX 3080, desktop shared:
+- The use test reads varied texels by every load it makes (8d37aad9): multisampled loads of
+  each answered sample count of a target cleared to the varied texel's components (integer
+  components a float does not hold exactly unchecked), typed buffer loads of a varied element,
+  typed storage loads of a varied texture, each against Direct3D's conversions as the plain loads
+  are. run59/use2.log: 931 uses by resources and 1029 by programs (run 57: 833), none failing.
+  Still zeros only: the packed and block formats (no decode of them in the tree).
+- New test `every_answered_option_is_served` (tests/answers.rs, GPU): `D3D12_OPTIONS`' answers
+  beyond formats and binding counts that name abilities, asked and used: resource heap tier 2's
+  one heap holding a buffer, a texture and a target, each read or drawn and checked;
+  `TypedUAVLoadAdditionalFormats` present exactly where each of its 15 formats is answered with
+  typed storage loads (which the use test uses); logic operations refused by name where answered
+  absent (drawn and checked where answered). Passes (run59/use2.log). Not used by a program of our
+  own: the wave lane counts and shader model 6.0 (need dxc; the shader runner's wave files use
+  them), float64 and 64-bit integers (answered absent, their test files fail as listed).
+- The shader runner's clip-cull-distance-2 check count explained ("Shader runner"): the runner's
+  shader model probe, not a fault.
+- The alpha-antialiased line coverage beside 31 values is met on the RTX 3080's 31 locations
+  (gap list, values between the stages): an 11_0 combination unmet, owner the shaders track's
+  stage helper, asked ("Asked of other tracks").
+- Lint with warnings denied of the infrastructure crate and this front (run59/lint2.log): clean.
+
 Run 58 (2026-11-24, milestone G5r, its fourth run): the eighth independent check (scratch
 icheck58) found 11_0's 32 registers to the pixel stage not built behind the stage helper and
 beside the values the front links: a geometry shader writing the position and 31 values was
@@ -337,8 +359,9 @@ and resolve bits (Departures: no resource they apply to can be made).
   Since run 57 it also samples (linear), compares with 0.5 and gathers a texture of those texels
   in every texel, wherever answered, each checked against the same conversions (filtered floats
   within 1/1000): run57/verify2-answers.log, 931 uses by resources and 833 by programs, none
-  failing. Its multisampled and typed buffer loads, and every read of the packed and block
-  formats, still read zeros only, so they prove a use is accepted and keeps the device whole, not
+  failing. Since run 59 its multisampled, typed buffer and typed storage loads read varied texels
+  too (run59/use2.log: 931 and 1029, none failing). Every read of the packed and block
+  formats still reads zeros only, so it proves a use is accepted and keeps the device whole, not
   that a decode or swizzle is right (the sixth check's own cases filled varied texels and bound
   resource binding tier 1's full counts: every word equal to the RTX 3080's). Of `CheckFeatureSupport`'s
   answers other than formats, resource binding tier 1 is asked and used since run 55 (test
@@ -349,7 +372,10 @@ and resolve bits (Departures: no resource they apply to can be made).
   (wave-ops-float, -int, -uint, wave-reconvergence), each running every check real runs but those
   needing float64, int64 or shader models above 6.0, every one equal to real's; the lane counts
   themselves are compared with real by the own program's `features` only (a program of our own
-  reading them needs dxc, which the desktop lacks). Both this track's own open part ("Next" 2).
+  reading them needs dxc, which the desktop lacks). Since run 59 test
+  `every_answered_option_is_served` asks and uses resource heap tier 2,
+  `TypedUAVLoadAdditionalFormats` and logic operations (refused, answered absent). The lane counts
+  and the packed and block formats' reads stay this track's own open part ("Next" 2).
 - Typed storage stores of unorm formats rounding a value exactly half-way between two codes
   (the sixth check's case, texel = v * 0.5 + (0.25, -0.125, 0.0625, 0.5) stored and read back):
   ours gives one code off the RTX 3080's in a few channels (`R8G8B8A8_UNORM` d9 where it gives d8;
@@ -478,8 +504,17 @@ on some adapters, and WebGL 2 makes no Direct3D 12 device:
   Direct3D pipeline meets it only where the front adds a value Direct3D passes in no register
   beside all 31 of the program's: the coverage of alpha-antialiased lines, a depth clamped in the
   program (back ends without depth clamping) or the primitive's number from the stage helper
-  (back ends without the primitive index); refused by name and counted (owner: this track; no
-  test, case or program meets it). Clip and cull distances take no more locations than their
+  (back ends without the primitive index); refused by name and counted (no test, case or program
+  meets it). On the RTX 3080 the first is met: wgpu-hal 30 gives 31 locations on both paths
+  (Vulkan: the smaller of 128 output and input components over 4, less the position; Direct3D 12:
+  32 registers less the position), so by the code (not run) a pixel shader reading 31 values of
+  alpha-antialiased lines is refused, which Direct3D 12 allows (11_0's 32 registers; antialiased
+  lines at every level); 11_0 is reported with this one combination of its requirements unmet
+  (reported to the owner in run 59). The coverage takes a location of its own
+  (`line_coverage_location`, the shaders crate's stage helper); building it needs a route there
+  that takes no location, such as the pixel program working the coverage out from its position
+  and the line's ends read from the helper's records by the primitive's number (owner: the
+  shaders track's stage helper, asked; this front keys it). Clip and cull distances take no more locations than their
   registers: fxc gives them registers of their own (run 58, case r58-packed-clip: a `float3`
   beside `SV_ClipDistance0` in 31 registers is refused by fxc itself, "output limit (32)
   exceeded").
@@ -637,14 +672,14 @@ run56/classify-runner1.txt), with its owner:
     scratch run57/verify2.log): it now fails no check and runs 3,874 of real's 3,919, the rest
     sections above shader model 6.0, so it joins the first group (58 there, 13 here).
 - clip-cull-distance-2 passes with 685 checks where real runs 676 (the eighth check's minor
-  finding): both fail none and skip one. Not explained yet; what is known (run 58): the two logs
-  differ only in the caps and shader models the runner prints for its Direct3D 12 parts (real:
-  dxc models 6.0 to 6.5, float64, 64-bit integers, the layer and viewport index from any stage;
-  ours: 6.0 and none of those), and the file's probes at shader model 6 carry Windows bug marks
-  (`winbug(sm>=6 ...)`), so which sections each runs differs. A trace of every check outside the
-  rig's launcher (scratch run58/runner.cmd, `VKD3D_TEST_DEBUG=2`) ends after the runner's
-  Direct3D 11 part for both, equal there (146 checks); the trace through the rig's every-check
-  mode is the next step (owner: this track).
+  finding): both fail none and skip one. Explained in run 59 (scratch run59/trace1-real.txt and
+  trace1-ours.txt, every check printed, `VKD3D_TEST_DEBUG=2` on the desktop's session through
+  `gpu-job --desktop`; run 58's trace stopped after the Direct3D 11 part because real DXGI
+  refuses swap chains in the queue's session 0): every check of the file's lines is the same on
+  both, model by model; the only difference is shader_runner_d3d12.c:1452, the check of each
+  `CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL)` the runner makes asking from 6.6 down until
+  one is answered: real (6.5) asks twice, ours (6.0, plan section 9) five times, in each of three
+  Direct3D 12 parts: 6 checks against 15. Not a fault; WARP (6.2) runs 681 for the same reason.
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
@@ -733,6 +768,13 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   operands wider than the workgroup (uav-rwbuffer, uav-rwbyteaddressbuffer,
   uav-rwstructuredbuffer, uav-rwtexture), a centroid `SV_Position` in a program run per sample,
   refused by name (`CentroidPositionPerSample`, eval-attrib).
+- Shaders (G6), run 59: the stage helper's antialiased line route without a location of its own
+  for the coverage values (`line_coverage_location`; `ExtraSlot::LineCoverage`). Example: a
+  vertex shader writing the position and 31 `float4` values, a pixel shader reading all 31,
+  `AntialiasedLineEnable` with multisampling off, a line list: Direct3D 12 allows it, ours
+  refuses it ("more values between the stages than the back end passes") on the RTX 3080's 31
+  locations (by the code; no case of it is run yet). A route: the pixel program works the coverage out from its position and the line's
+  two ends in pixels, read from the helper's records by the primitive's number.
 - Shaders (G6), delivered and taken (their status lines 186 to 192 asked this list to move them):
   `TypedBufferFormatKind` (run 55 there; srv-buffers, tgsm and wave-ops-float now run every check
   but those of absent features), DXIL `InterpolateAt` (run 94), `DxilGeometryShader` and
@@ -770,14 +812,16 @@ and 120 compared with real Direct3D 12's at 8 of 255.
    desktop copy needs the submodule step the script carries.
 2. The front's own open parts, beyond the bar: the four remaining depth clamping refusals,
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
-   capture), a value the front adds beside all 31 of a program's (gap list), the shader
-   runner's clip-cull-distance-2 check count, Godot's 3D
+   capture), a value the front adds beside all 31 of a program's (gap list; the line coverage
+   asked of the shaders track: key it when built, and add an own case of 31 values of
+   alpha-antialiased lines against real), Godot's 3D
    platformer's one pixel (trace which draw writes it, on real and ours; Godot offers no WARP
-   adapter choice the rig uses), the use test's multisampled and typed buffer loads of varied
-   texels, and reads of the packed and block formats, against a decode of their own (no crate in the tree decodes every
-   DXGI format on the CPU), a test asking and using the
-   answers other than formats (wave lane counts need a shader model 6 program: no dxc on the
-   desktop), the other refusals of the gap list.
+   adapter choice the rig uses), the use test's reads of the packed and block formats, against a
+   decode of their own (no crate in the tree decodes every DXGI format on the CPU), the wave lane
+   counts used by a program of our own (needs dxc on the desktop), the other refusals of the gap
+   list. Run 59's scripts: run59/`use59.sh <n>` (sync `tip2`, lint, the use test alone),
+   run59/`trace59.sh <n> <runner file>` (one shader runner file on real and ours, every check
+   printed, through `gpu-job --desktop`).
 3. Feature level 11_1 (Departures names what it lacks) and the 11_1 format table in `required`.
 4. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
    run36/dx12-path.patch; it broke three things, each another track's). It also removes the
