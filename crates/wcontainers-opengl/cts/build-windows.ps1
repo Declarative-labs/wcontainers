@@ -43,6 +43,7 @@ $runner = Join-Path $Tools 'deqp-runner'
 & cargo install --locked --quiet --root $runner --target-dir (Join-Path $Cts 'runner-target') `
     --git (Read-PinField $pinFile 'runner_url') --rev (Read-PinField $pinFile 'runner_commit') deqp-runner
 Run 'cargo install deqp-runner'
-Remove-Item -Recurse -Force (Join-Path $Cts 'runner-target')
+# Made only when the pinned deqp-runner was not yet installed.
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $Cts 'runner-target')
 
 Write-Output "cts build-windows: done, $build"
