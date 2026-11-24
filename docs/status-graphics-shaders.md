@@ -117,6 +117,90 @@ out of the integer twins as BGRA is (targets and storage clears of it stay refus
 Drawn here too: `b8g8r8x8_typed_buffers_read_as_direct3d_reads_them` (tests/compute_draw.rs, run
 96's section).
 
+## G6w run 1: the converters natively as their own WebAssembly module
+
+G6 passed its independent check on 2026-11-24 (round 8, tip e881cbf5b). Milestone G6w: run the
+C++ converters natively as their WebAssembly build under wasmtime's safe API, so that no malformed
+shader ends the host (gap A11) and the C++ boundary's unsafe code goes.
+
+What was built (commits 45b7db149, 18e5b0b48, 6a44e27e0, 941c5427d):
+- `src/converters.rs`: one boundary for both converters. Every C entry now has one signature,
+  `(data, size, samples, slots) -> status`, filling the slots of `cpp/boundary.h`'s `Slot` (two
+  buffers with their counts, the reason and its length); entries are exported by attribute
+  (`WCS_EXPORT`), with `wcs_allocate` and `wcs_free`. The callers (`dxbc.rs`, `dxil.rs`) are
+  unchanged in what they give: no caller of the crate changes.
+- `src/converters/module.rs` (native): the module (`converters.wasm`, 3,538,125 bytes, committed;
+  see "Departures") is compiled once per process on first use and instantiated afresh for each
+  shader from wasmtime's pooling allocator; the calls one DXIL conversion makes on the same shader
+  share that instance (a session), and a different shader or a trap starts a new one. Bounds: 256
+  MiB of memory (the corpora's largest instance is 9.9 MB) and 2^40 fuel units (the corpora's
+  slowest shader, `games/bf4b9f4770dfd7ca.dxbc`, needs 5.9e11; every other at most 1.2e9). A trap,
+  either bound or an exit becomes `ConvertError::Rejected` naming the converter and what happened,
+  with what it wrote to standard error (for an assertion, the assertion and its place). WASI is
+  answered in the host: standard error kept, no other descriptor, empty environment.
+- `src/converters/linked.rs` (the crate's own wasm32 build only): the same entries linked in, 4
+  unsafe lines.
+- The C++ is built without exceptions everywhere now; `contained` and the throwing assertion are
+  gone (an assertion prints and aborts, which traps).
+- tests/fuzz.rs: `mutated_bytecode_converts_or_fails_without_ending_the_process` is no longer
+  ignored natively (ignored in the wasm32 build, with the reason); it lists each case whose run
+  ended (`ended:`) and each case slower than 1 s, and its bound on the Rust code's holdings is the
+  `cap` crate's (1 GiB) instead of its own allocator.
+- `examples/conversion_time.rs`: the timing tool below.
+- Unsafe: 94 lines to 75 (root Cargo.toml and the crate's manifest). Gone: src/dxil.rs 8,
+  src/dxbc.rs 7, tests/fuzz.rs 5 (the allocator), and the three `transmute_copy` lines of
+  boundary-unsafe-primitives' list (tests/geometry_draw.rs, precision_draw.rs, shadow_draw.rs,
+  commit 4d7862abf; Windows clippy clean). Left: src/converters/linked.rs 4 (the wasm32 build's
+  extern block, its function type, the call, and the copy-and-free of a returned buffer: no engine
+  runs inside that module), and 71 in the Windows tests calling real Direct3D (reference code).
+
+Checks:
+- Corpus outputs, byte for byte: the corpus test over all nine corpora (own, own-dxil, rig,
+  rig-dxil, corpus, games, games-dxil, runner, runner-dxil) at the pre-change tree (linked C++,
+  gcc) and at the tip, on the laptop: all 13 tests pass on both; of 8,304 output files 8,295 are
+  equal and the 9 others are `converter-version.txt`, whose hash names the converter's sources
+  (cache.txt rows compared without that key; `outdiff.py`). Run three times as the route changed,
+  the last at the final module.
+- WebAssembly build (laptop, wasi-sdk 25, wasmtime 38.0.4): the fuzz binary's tests pass (444
+  signatures refused), the mutated run ignored there; clippy for wasm32 with warnings denied clean.
+- Native clippy with warnings denied and rustfmt clean (laptop and ARM64); Windows clippy clean.
+- Literal check with history (`g6w-r1/lit4.log`): no line in this crate's files or naga; three
+  baseline lines of the removed boundary deleted (353ba3596). Its remaining lines are other
+  tracks' files, among them `crates/wcontainers-direct3d-12/tests/registers.rs:342` restating this
+  crate's `LINKED_OUTPUTS`.
+
+Timing (`conversion_time`, best of 3 per shader after one more, release; converted shaders only;
+per shader median / 95th percentile / worst):
+- ARM64 machine (load 13 to 18 of 96 cores), linked C++ then module:
+  - corpus DXBC (164): 147 / 279 / 437 us, then 154 / 393 / 632 us.
+  - games DXBC (467): 192 / 2,615 us / 16.3 s, then 315 / 4,971 us / 48.3 s (the worst is
+    bf4b9f4770dfd7ca.dxbc both times).
+  - games DXIL (350): 273 / 4,507 / 36,549 us, then 500 / 7,974 / 52,277 us.
+  - runner DXBC (1,399): 95 / 250 / 800 us, then 119 / 373 / 1,763 us.
+  - runner DXIL (1,327): 96 / 189 / 391 us, then 190 / 333 / 589 us.
+  - First conversion of a process: 0.5 to 0.7 ms, then 316 to 324 ms (the module's compile).
+  - Peak resident memory of the whole run: 11 to 44 MB, then 170 to 177 MB.
+- Laptop (i7-8750H, load 1 to 4), the same order: corpus DXBC 182 / 370 / 510 us then 233 / 524 /
+  787 us; games DXBC 283 / 3,254 us / 25.3 s then 422 / 5,881 us / 60.2 s; games DXIL 423 / 5,838 /
+  42,774 us then 627 / 8,354 / 57,015 us; runner DXBC 134 / 328 / 1,096 us then 180 / 504 / 2,182
+  us; runner DXIL 185 / 309 / 554 us then 279 / 430 / 720 us. First conversion 0.7 to 0.9 ms then
+  648 to 703 ms; peak resident 12 to 44 MB then 143 to 156 MB.
+- Where the time goes (laptop probe, scratch `g6w-r1/probe`): a fresh instance's first call paid
+  for its page faults (about 195 pages of 4 KiB touched; 490 us against 200 us for a second call
+  on one instance); the pool keeping 4 MiB of each memory resident took that to 230 us, and the
+  session made a DXIL conversion pay for one instance instead of up to five. Fuel costs 10% on a
+  typical shader and 40% on bf4b9f4770dfd7ca.dxbc (42.6 s without, about 60 s with, on the laptop).
+- The module is compiled in the process on its first conversion and kept for the process
+  (`OnceLock`); nothing is cached on disk. Converted shaders are cached by plan section 8, so a
+  process whose shaders are all cached never compiles it.
+
+The one cost a user would see: the corpora's slowest shader (one game's DXBC pixel shader) takes 48
+s instead of 16 s on the ARM64 machine (60 s instead of 25 s on the laptop) at its first
+conversion. Everything else is under a millisecond more per shader, once per shader, plus 0.3 to
+0.7 s at a process's first conversion. Under the owner's rule (a safe route is not chosen against
+for speed alone; conversion is cached) the module route is the default and the linked C++ route
+is removed natively; the figure is under "New for the owner".
+
 ## G6 reported complete for its independent check (round 7, runs 116 to 118): the gap list
 
 G6 is reported complete on the crate as it stands, as round 7 of 2026-11-23 asks, with every item
@@ -381,6 +465,12 @@ unharmful while a feature is declared absent; its entry says what it takes. None
 outside this track, so they fit none of round 7's other three owners; whether G6 closes with them
 as later work, or must take some first, is the owner's to say. A11 is the one with a security
 side, and stands first for that reason:
+- A11, closed natively in G6w run 1: the converters run as their own WebAssembly module under
+  wasmtime, so each of the places below now traps inside the module and the shader is refused by
+  name ("dxil-spirv stopped: wasm trap: ...: assertion ... failed at ..."), the three the seventh
+  check named among them; the fuzz test runs by default and passes (figures in G6w run 1's
+  section). In the crate's own WebAssembly build the converters are still linked in, so there the
+  text below still holds. As it stood before:
 - A11: signed but malformed DXIL still ends the process inside dxil-spirv, natively; in the
   browser the module traps instead. Not only in its bitcode reader: most ends come after the reader
   accepted the module, in the converter. Measured in run 119 at G6's sixth check's seed 1618033
@@ -2801,6 +2891,24 @@ Runs at a00ab267:
   `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
 ## New for the owner
+
+- G6w run 1, the converters as WebAssembly: done and the default natively; the linked C++ route
+  and its unsafe boundary are gone natively. One cost a user would see, measured: the corpora's
+  slowest shader (`games/bf4b9f4770dfd7ca.dxbc`, a game's DXBC shader, already 16 s natively on the
+  ARM64 machine) takes 48 s at its first conversion (laptop: 25 s, now 60 s); about a third of the
+  rise is the instruction bound (fuel). Every other shader of the corpora costs under a millisecond
+  more, once (conversions are cached), and a process pays 0.3 to 0.7 s and about 130 MB of memory
+  when it first converts. Kept as the default under your rule; if the slow shader matters, the
+  choices are a time bound (wasmtime's epochs: cheaper, but a refusal then depends on the
+  machine's speed, so it cannot be cached) or a fix to dxbc-spirv's slow pass, which natively
+  takes 16 s already. Also yours: the committed module (3.5 MB, "Departures") instead of every
+  machine building it with wasi-sdk; and the crate's own WebAssembly build, which still links the
+  converters in (no engine runs inside it; the browser would run them through the engine
+  interface's browser implementation).
+- G6w run 1, the WebAssembly engine interface (`crates/webassembly-engine`) has no instruction or
+  time bound and its implementations' configurations are private, so this crate calls wasmtime's
+  own safe API rather than the interface. If you want the interface used here, it needs a bound on
+  a call's fuel or time and on a store's memory.
 
 - Run 118, G6's scope: the gap list's group "The owner's ruling on G6's scope" holds this track's
   own open parts, about twenty, which no front, corpus file or real program waits on. Asked:
@@ -5806,6 +5914,24 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- G6w run 1 (scratch `graphics-shaders/g6w-r1`): `arm-cmd.sh` is the CPU suite (rustfmt, clippy, every
+  test binary with every corpus, the fuzz test at its default 2,000 cases) and then the fuzz test
+  at seeds 141421, 2236067 and 1732050 of 12,000 cases each in parallel, through `arm-run
+  <worktree> --name graphics-shaders --jobs 12 --detach -- "$(cat arm-cmd.sh)"`; it prints each
+  seed's classes, its slow cases and its first ended cases. `compare.sh` (laptop) makes the corpus
+  outputs of the pre-change tree and of the tip and `outdiff.py` compares them file by file (the
+  output folder's own path and cache.txt's content key aside). `time-arm.sh` (`arm-run <tree> --name
+  g6w-new`) and `time.sh` (laptop) run `examples/conversion_time.rs` over the three corpora;
+  `base-arm` is the pre-change tree with that example. The literal check with history: `./arm-sync.sh
+  && arm-run tip-arm --name g6w-lit -- 'bash check-lit.sh.txt'` after `git -C tip fetch <worktree>
+  agents && git -C tip checkout -B agents FETCH_HEAD`.
+- The converters' module is rebuilt by building this crate natively with `WASI_SDK_PATH` naming
+  wasi-sdk 25 (the laptop: `tools/graphics-rig/linux env
+  WASI_SDK_PATH=/home/tom/wcontainers-graphics/tools/wasi-sdk cargo build -p wcontainers-shaders`);
+  where the committed module differs, the build stops and names the two files in its build folder
+  to copy into the crate. Any change to build.rs, `cpp/`, the patches or the submodules changes the
+  recorded hash, so it needs this step.
+
 - The literal check only counts with the repository's history: a fresh repository of a copy cannot
   see growth ("no upstream branch to compare it with"). Run 120's way, from scratch
   `graphics-shaders/g6-r120`: `git clone -q --branch agents <worktree> tip` after pushing, then lay
@@ -6237,6 +6363,15 @@ were already there.
 
 ## Dependencies and licences
 
+- G6w run 1: `wasmtime` 50.0.1 (Apache-2.0 WITH LLVM-exception; already in the lock for the
+  WebAssembly engine crates; features cranelift, runtime, std, parallel-compilation,
+  pooling-allocator), natively only, to run the converters' module through its safe API. Dev
+  dependency `cap` 0.1.2 (MIT OR Apache-2.0, crates.io's record; new in the lock), the fuzz test's
+  bound on what its Rust code holds, in place of its own allocator (5 unsafe lines). The committed
+  module `converters.wasm` ships wasi-sdk 25's libc++ and libc++abi (Apache-2.0 WITH
+  LLVM-exception) and wasi-libc (Apache-2.0 WITH LLVM-exception, MIT, CC0 parts) with the
+  converters (MIT); wasi-sdk itself is a build tool only, needed where the module is rebuilt.
+
 - Run 118: `rspirv` 0.13.0+sdk-1.4.341.0 (Apache-2.0, its Cargo.toml), which reads, edits and
   assembles the DXIL route's SPIR-V (gap A33). It is built on `spirv` 0.4, the version already in
   the tree. Its one other dependency, `rustc-hash` 1.1.0 (Apache-2.0 OR MIT), was already in the
@@ -6289,6 +6424,22 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- G6w run 1: the converters' module is committed (`crates/wcontainers-shaders/converters.wasm`,
+  3.5 MB, with `converters.blake3`, the hash of the sources it was built from), so that a native
+  build of this crate and of the five crates using it needs no WebAssembly SDK, as before it needed
+  only a C++ compiler. build.rs refuses a module whose recorded hash is not that of the sources
+  (the C++, the carried patches, `cpp/` and build.rs itself); with `WASI_SDK_PATH` set it builds the
+  module and refuses one whose bytes differ from the committed module's, naming the two files to
+  copy. Built on the laptop (x86-64) and reproduced byte for byte by a second build there; not yet
+  rebuilt on another machine.
+- G6w run 1: the run is bounded in instructions with wasmtime's fuel (deterministic, so a shader is
+  refused the same way everywhere and a refusal may be cached) rather than in time. Its cost is
+  measured below (A11 and the timing figures).
+- G6w run 1: the crate's own WebAssembly build still links the converters into its module (no
+  engine runs inside it); there a malformed DXIL shader still ends that module (the fuzz test is
+  ignored there, with that reason). The browser's route would run the converters' module through
+  the WebAssembly engine interface's browser implementation; not built.
 
 - Run 100: the converters are no longer built exactly as upstream has them. `build.rs` applies
   each unified diff in `converter-patches/<converter>/<file>.patch` to that source (with the
