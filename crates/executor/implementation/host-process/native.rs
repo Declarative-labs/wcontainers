@@ -174,6 +174,9 @@ pub(super) struct Guest {
     float: FloatStatus,
     page: RegisterPage,
     vectors: [[u64; 2]; 32],
+    /// The vectors are the register page's, newer than `vectors`: they stay there between turns and are read only when
+    /// the registers are.
+    vectors_held: bool,
     tpidr: u64,
     /// Where a stop left it in translated code, kept until its registers are replaced.
     interrupted: Option<Where>,
@@ -193,11 +196,13 @@ impl Guest {
             float: FloatStatus::default(),
             page: RegisterPage::default(),
             vectors: [[0; 2]; 32],
+            vectors_held: false,
             tpidr: 0,
             interrupted: None,
         }
     }
 
+    /// The guest's registers; its vectors are those of [`Self::take_vectors`] when the register page holds them.
     pub(super) fn registers(&self, into: &mut RegisterBlock) {
         into.x = self.state.x;
         into.sp = self.state.sp;
@@ -216,9 +221,21 @@ impl Guest {
         self.state.pc = from.pc;
         self.state.flags = from.pstate;
         self.vectors = from.v;
+        self.vectors_held = false;
         self.float.fpsr = from.fpsr;
         self.float.fpcr = from.fpcr & FPCR_BITS;
         self.tpidr = from.tpidr_el0;
+    }
+
+    /// Whether the register page holds the vectors, which must then be given to [`Self::take_vectors`].
+    pub(super) fn vectors_held(&self) -> bool {
+        self.vectors_held
+    }
+
+    /// Takes the vectors the register page holds.
+    pub(super) fn take_vectors(&mut self, vectors: [[u64; 2]; 32]) {
+        self.vectors = vectors;
+        self.vectors_held = false;
     }
 
     pub(super) fn count(&self) -> u64 {
@@ -311,8 +328,13 @@ impl HostProcessExecutor {
         if let Some(kept) = self.translations.kept.get(&key) {
             return kept.clone();
         }
-        let made = translate_native_for::<Arm64>(&key.1, pc, LookAhead::Full, true, &WAY, &())
-            .map(Arc::new);
+        let look_ahead = if self.single {
+            LookAhead::Bounded(1)
+        } else {
+            LookAhead::Full
+        };
+        let made =
+            translate_native_for::<Arm64>(&key.1, pc, look_ahead, true, &WAY, &()).map(Arc::new);
         self.slow(reason::TRANSLATED, 1, pc);
         self.translations.kept.insert(key, made.clone());
         made
@@ -415,6 +437,10 @@ impl HostProcessExecutor {
         code.hosts.insert(base, pc);
         for &(target, site) in &sites {
             code.exits_to.entry(target).or_default().push(site);
+        }
+        // Every way out of a lone instruction, even back to itself, lands on an empty slot.
+        if self.single {
+            return Ok(());
         }
         if self.fill_slot(memory, pc, base).is_none() {
             self.slow(reason::SLOT_PAGES_EXHAUSTED, 1, pc);
@@ -584,6 +610,7 @@ impl HostProcessExecutor {
         let link = code
             .pieces
             .get(&target)
+            .filter(|_| !self.single)
             .and_then(|piece| self.link_word(&site, piece.base));
         let mut moves = [0; SLOT_MOVES];
         let fields = core::iter::once(&words_of.last_target_first).chain(&words_of.moves[1..]);
@@ -723,19 +750,25 @@ impl HostProcessExecutor {
         const PC_ALIGNMENT: u64 = 0x22;
         const DATA_ABORT: u64 = 0x24;
         const SP_ALIGNMENT: u64 = 0x26;
-        /// A data abort's write-not-read bit and its status code of an alignment fault (ISS.WnR, ISS.DFSC).
+        const BREAKPOINT: u64 = 0x3c;
+        /// A data abort's write-not-read and cache-maintenance bits and its status code of an alignment fault (ISS.WnR,
+        /// ISS.CM, ISS.DFSC); a cache maintenance fault sets WnR but reads.
         const WRITE_NOT_READ: u64 = 1 << 6;
+        const CACHE_MAINTENANCE: u64 = 1 << 8;
         const STATUS: u64 = 0x3f;
         const ALIGNMENT_STATUS: u64 = 0x21;
+        /// A breakpoint's comment (ISS.Comment), which is a call's code where translated code calls by `brk`.
+        const COMMENT: u64 = 0xffff;
         if syndrome != 0 {
             return match syndrome >> CLASS_SHIFT {
                 DATA_ABORT => Taken::Access {
                     alignment: syndrome & STATUS == ALIGNMENT_STATUS,
                     fault: address,
-                    write: syndrome & WRITE_NOT_READ != 0,
+                    write: syndrome & (WRITE_NOT_READ | CACHE_MAINTENANCE) == WRITE_NOT_READ,
                 },
                 SP_ALIGNMENT => Taken::StackAlignment,
                 PC_ALIGNMENT => Taken::JumpAlignment,
+                BREAKPOINT => Taken::Call((syndrome & COMMENT) as u16),
                 INSTRUCTION_ABORT => Taken::Other,
                 _ => Taken::Other,
             };
@@ -852,14 +885,19 @@ impl HostProcessExecutor {
                     tpidr_el0: t.tpidr,
                 };
                 let stub = &self.memory(memory).stub;
-                stub.set_registers(index, &block);
+                if t.vectors_held {
+                    stub.set_registers_but_vectors(index, &block);
+                } else {
+                    stub.set_registers(index, &block);
+                    t.vectors_held = true;
+                }
                 stub.set_translated_page(index, &page);
                 let end = match self.turn_with(thread, Then::Enter(hardware.pc as usize), slice) {
                     Ok(end) => end,
                     Err(_) => break Ended::Killed,
                 };
                 let stub = &self.memory(memory).stub;
-                let block = stub.registers(index);
+                let block = stub.registers_but_vectors(index);
                 let held = stub.translated_page(index);
                 let mut h = Interrupted {
                     x: block.x[..GENERAL]
@@ -886,7 +924,6 @@ impl HostProcessExecutor {
                     }
                     TurnEnd::Interrupted { at } => {
                         h.pc = at;
-                        t.vectors = block.v;
                         t.tpidr = block.tpidr_el0;
                         let state = self.resolve_interrupt(memory, &h, &held, &mut t.float);
                         match state {
@@ -912,7 +949,6 @@ impl HostProcessExecutor {
                     TurnEnd::Stopped { .. } => break Ended::TurnOver,
                     _ => break self.not_understood(memory, h.pc),
                 };
-                t.vectors = block.v;
                 t.tpidr = block.tpidr_el0;
                 let resolved = {
                     let code = self.codes[memory.0 as usize]
@@ -1016,6 +1052,8 @@ impl HostProcessExecutor {
                 Ended::Stopped(stop) => stop,
             };
             match stop {
+                // A lone instruction has run once anything lands: its piece is never linked.
+                Stop::Landed(_) if self.single => return Exit::Stop,
                 Stop::Landed(_) if reached(&t.state) => {
                     self.slow(
                         reason::TURN_LIMIT_PASSED,

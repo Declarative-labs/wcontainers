@@ -43,6 +43,11 @@ wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
 wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 # The kernel's loop, which runs threads through `Execution`.
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }
+# The executor interface, its ARM64 processor state, and the exception classes the state's syndromes are made from.
+wcontainers-executor = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+aarch64-cpu = "12.0.0"
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The floor test's pieces, standing in for translated code, in the native output's own encodings.
@@ -64,6 +69,14 @@ wcontainers-executor-wasmtime = { path = "../wasmtime" }
 wcontainers-translator-test = { path = "../../../wcontainers-translator-test" }
 # The busybox test: the reference image, its commands, and the reference's outcome in Docker on this machine.
 wcontainers-executor-unicorn = { path = "../unicorn" }
+# The executor interface's suite, the translator's precise instruction set and the states it is checked on, and the
+# ARM64 processor state the interrupt test starts from.
+wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-precise-instruction-set-translator = { path = "../../../precise-instruction-set/implementation/translator" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-executor = { path = "../.." }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
 # Finding the host call a traced stub thread is about to make, in the step test.
@@ -122,6 +135,12 @@ name = "busybox"
 
 [[test]]
 name = "speed"
+
+[[test]]
+name = "conformance"
+
+[[test]]
+name = "interrupt"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]

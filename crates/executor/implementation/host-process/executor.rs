@@ -29,6 +29,8 @@ use crate::windows::FileKey;
 #[path = "execution.rs"]
 mod execution;
 #[cfg(target_arch = "aarch64")]
+pub use execution::{HostProcess, HostProcessBytes, HostProcessInterrupter, HostProcessMemory};
+#[cfg(target_arch = "aarch64")]
 #[path = "native.rs"]
 pub mod native;
 
@@ -242,6 +244,9 @@ pub struct HostProcessExecutor {
     runner: Option<Runner>,
     /// Whether the CPU clocks can be read.
     sampling: bool,
+    /// Runs one instruction per entry: pieces of one instruction and nothing more, never linked or given a slot.
+    #[cfg(target_arch = "aarch64")]
+    single: bool,
 }
 
 impl HostProcessExecutor {
@@ -265,6 +270,8 @@ impl HostProcessExecutor {
             unsent: std::collections::BTreeMap::new(),
             runner: None,
             sampling: true,
+            #[cfg(target_arch = "aarch64")]
+            single: false,
         }
     }
 
@@ -1404,12 +1411,21 @@ impl Cpu for HostProcessExecutor {
 
     /// The guest's own, as its last exit resolved them (ARM64), or as its register page holds them.
     fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
+        let Thread { memory, index, .. } = self.thread(thread);
         #[cfg(target_arch = "aarch64")]
-        if let Some(guest) = &self.guests[thread.0 as usize] {
+        if let Some(guest) = &mut self.guests[thread.0 as usize] {
+            if guest.vectors_held() {
+                guest.take_vectors(
+                    self.memories[memory.0 as usize]
+                        .as_ref()
+                        .expect("a memory the kernel holds")
+                        .stub
+                        .vectors(index),
+                );
+            }
             guest.registers(into);
             return;
         }
-        let Thread { memory, index, .. } = self.thread(thread);
         self.memory(memory)
             .stub
             .read_registers(index, into.as_mut_bytes());

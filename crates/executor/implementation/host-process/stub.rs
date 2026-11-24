@@ -39,6 +39,10 @@ const TAKEN_POLL: Duration = Duration::from_millis(1);
 /// hold the stop off.
 pub const STOP_IGNORED: Duration = Duration::from_secs(10);
 
+/// The bytes of a register block that hold the vectors.
+const VECTORS: core::ops::Range<usize> =
+    core::mem::offset_of!(RegisterBlock, v)..core::mem::offset_of!(RegisterBlock, fpsr);
+
 /// One stub, owned by the executor; the zygote that forked it reaps it, and its owner makes the window cache forget
 /// its memory before dropping it.
 pub struct Stub {
@@ -341,6 +345,34 @@ impl Stub {
         self.write_registers(thread, block.as_bytes());
     }
 
+    /// A thread's register block as the stub left it but for the vectors, which read as zeros (untrusted).
+    pub fn registers_but_vectors(&self, thread: usize) -> RegisterBlock {
+        let mut block = RegisterBlock::ZERO;
+        let bytes = block.as_mut_bytes();
+        let (before, after) = bytes.split_at_mut(VECTORS.start);
+        self.read_registers(thread, before);
+        self.read_registers_from(thread, VECTORS.end, &mut after[VECTORS.len()..]);
+        block
+    }
+
+    /// Replaces a thread's register block but for its vectors.
+    pub fn set_registers_but_vectors(&self, thread: usize, block: &RegisterBlock) {
+        let bytes = block.as_bytes();
+        self.write_registers(thread, &bytes[..VECTORS.start]);
+        self.write_registers_from(thread, VECTORS.end, &bytes[VECTORS.end..]);
+    }
+
+    /// A thread's vectors as the stub left them (untrusted).
+    pub fn vectors(&self, thread: usize) -> [[u64; 2]; 32] {
+        let mut block = RegisterBlock::ZERO;
+        self.read_registers_from(
+            thread,
+            VECTORS.start,
+            &mut block.as_mut_bytes()[VECTORS.clone()],
+        );
+        block.v
+    }
+
     /// Gives a thread a turn as [`Self::touch`] does, without waiting for it; the turn's number.
     pub fn begin_touch(
         &self,
@@ -433,11 +465,16 @@ impl Stub {
 
     /// Reads a thread's register block, word by word, as the stub left it (untrusted).
     pub fn read_registers(&self, thread: usize, into: &mut [u8]) {
+        self.read_registers_from(thread, 0, into);
+    }
+
+    /// Reads a thread's register block from byte `at` on, word by word.
+    fn read_registers_from(&self, thread: usize, at: usize, into: &mut [u8]) {
         let (words, _) = into.as_chunks_mut::<{ size_of::<u64>() }>();
         for (index, word) in words.iter_mut().enumerate() {
             let value = self
                 .pages
-                .register64(thread, register::REGISTERS + index * size_of::<u64>())
+                .register64(thread, register::REGISTERS + at + index * size_of::<u64>())
                 .load(Ordering::Relaxed);
             *word = value.to_le_bytes();
         }
@@ -445,11 +482,16 @@ impl Stub {
 
     /// Replaces a thread's register block, word by word.
     pub fn write_registers(&self, thread: usize, from: &[u8]) {
+        self.write_registers_from(thread, 0, from);
+    }
+
+    /// Replaces a thread's register block from byte `at` on, word by word.
+    fn write_registers_from(&self, thread: usize, at: usize, from: &[u8]) {
         let (words, _) = from.as_chunks::<{ size_of::<u64>() }>();
         for (index, word) in words.iter().enumerate() {
             let value = u64::from_le_bytes(*word);
             self.pages
-                .register64(thread, register::REGISTERS + index * size_of::<u64>())
+                .register64(thread, register::REGISTERS + at + index * size_of::<u64>())
                 .store(value, Ordering::Relaxed);
         }
     }
