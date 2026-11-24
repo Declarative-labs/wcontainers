@@ -411,6 +411,8 @@ struct Kept {
     page: u64,
     /// The bytes of code its run covers from its start, wherever it is moved.
     covered: u64,
+    /// The lowest and highest guest address it names, where it is kept.
+    named: Option<(u64, u64)>,
 }
 
 /// A kept translation and how many bytes of guest address it moves where it is loaded; none where the code has none.
@@ -434,10 +436,29 @@ fn covered(translation: &Translation, pc: u64) -> u64 {
 /// The most pieces loaded ahead after one a thread had to stop for, each the next one an earlier memory stopped for.
 const AHEAD: usize = 4096;
 
-/// Whether `translation`, made at page `from`, moved to page `to` is what translating it there gives: both pages are
-/// among those every translation moves between, or, on pages no direct branch from which wraps below zero or leaves
-/// the slots' reach, every guest address it names is in that reach both before and after the move.
-fn moves(translation: &Translation, from: u64, to: u64) -> bool {
+/// The lowest and highest guest address a translation names (its address places, its exits' targets, its tables' bases
+/// and targets); none where it names none.
+fn named(translation: &Translation) -> Option<(u64, u64)> {
+    let tables = translation.tables.iter().flat_map(|table| {
+        core::iter::once(table.base).chain((0..table.entries).map(|k| table.target(k)))
+    });
+    translation
+        .places
+        .iter()
+        .map(|place| place.address)
+        .chain(translation.exits.iter().map(|exit| exit.target))
+        .chain(tables)
+        .fold(None, |named, address| match named {
+            None => Some((address, address)),
+            Some((low, high)) => Some((low.min(address), high.max(address))),
+        })
+}
+
+/// Whether a translation that names the guest addresses `named` gives, made at page `from` and moved to page `to`, what
+/// translating it there gives: both pages are among those every translation moves between, or, on pages no direct
+/// branch from which wraps below zero or leaves the slots' reach, every guest address it names is in that reach both
+/// before and after the move.
+fn moves(named: Option<(u64, u64)>, from: u64, to: u64) -> bool {
     let movable = movable(WAY);
     if movable.contains(&from) && movable.contains(&to) {
         return true;
@@ -449,12 +470,10 @@ fn moves(translation: &Translation, from: u64, to: u64) -> bool {
     let by = to.wrapping_sub(from);
     let reach = 1u64 << WAY.reach_bits();
     let stays = |address: u64| address < reach && address.wrapping_add(by) < reach;
-    translation.places.iter().all(|place| stays(place.address))
-        && translation.exits.iter().all(|exit| stays(exit.target))
-        && translation
-            .tables
-            .iter()
-            .all(|table| stays(table.base) && (0..table.entries).all(|k| stays(table.target(k))))
+    // Every address between the two stays where both do and the move does not wrap between them.
+    named.is_none_or(|(low, high)| {
+        stays(low) && stays(high) && low.wrapping_add(by) <= high.wrapping_add(by)
+    })
 }
 
 /// How a run of translated code came back.
@@ -471,6 +490,19 @@ enum Ended {
     Stopped(Stop),
     /// The process can only be killed.
     Killed,
+}
+
+/// The word that links `site` to the piece at `to`, when it reaches.
+fn link_word(site: &Site, to: u64) -> Option<u32> {
+    let offset = (to.wrapping_sub(site.at) as i64) / INSTRUCTION as i64;
+    let branch = match site.retarget {
+        Some(mask) => Field {
+            clear: site.word & !mask,
+            mask,
+        },
+        None => Field::new(words().branch),
+    };
+    branch.fits(offset).then(|| branch.with(offset as u64))
 }
 
 /// The link words, made once.
@@ -584,7 +616,7 @@ impl HostProcessExecutor {
                 }
                 if movable.is_none()
                     && let Some(translation) = &kept.translation
-                    && moves(translation, kept.page, page)
+                    && moves(kept.named, kept.page, page)
                 {
                     movable = Some((Arc::clone(translation), page.wrapping_sub(kept.page), at));
                 }
@@ -607,6 +639,7 @@ impl HostProcessExecutor {
         let at = KeptAt(self.translations.kept.len());
         self.translations.kept.push(Kept {
             covered: made.as_deref().map_or(0, |made| covered(made, pc)),
+            named: made.as_deref().and_then(named),
             translation: made.clone(),
             code: code.to_vec(),
             page,
@@ -802,7 +835,7 @@ impl HostProcessExecutor {
             return Ok(Some(at));
         }
         self.fill_slot(memory, pc, base);
-        let code = &self.codes.get(memory).expect("made above");
+        let code = self.codes.get_mut(memory).expect("made above");
         let into = code
             .exits_to
             .range((pc, 0)..=(pc, u64::MAX))
@@ -811,12 +844,10 @@ impl HostProcessExecutor {
             .iter()
             .filter(|(target, _)| *target != pc)
             .filter_map(|(target, site)| Some((*site, code.pieces.get(target)?.base)));
-        let links: Vec<(u64, u32)> = into
-            .chain(out)
-            .filter_map(|(site, to)| Some((site.at, self.link_word(&site, to)?)))
-            .collect();
-        for (site, word) in links {
-            self.write_code(memory, site, &[word]);
+        for (site, to) in into.chain(out) {
+            if let Some(word) = link_word(&site, to) {
+                code.area.stage(site.at as usize, &[word]);
+            }
         }
         Ok(Some(at))
     }
@@ -866,19 +897,6 @@ impl HostProcessExecutor {
             code.area.stage_slots(page as usize, &words);
         }
         self.slow(reason::CODE_AREA_EMPTIED, 1, dropped);
-    }
-
-    /// The word that links `site` to the piece at `to`, when it reaches.
-    fn link_word(&self, site: &Site, to: u64) -> Option<u32> {
-        let offset = (to.wrapping_sub(site.at) as i64) / INSTRUCTION as i64;
-        let branch = match site.retarget {
-            Some(mask) => Field {
-                clear: site.word & !mask,
-                mask,
-            },
-            None => Field::new(words().branch),
-        };
-        branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
     /// Fills the entry slot of guest `guest` with a jump to the piece at `base`.
@@ -948,7 +966,7 @@ impl HostProcessExecutor {
             .pieces
             .get(&target)
             .filter(|_| !self.lone)
-            .and_then(|piece| self.link_word(&site, piece.base));
+            .and_then(|piece| link_word(&site, piece.base));
         let mut moves = [0; SLOT_MOVES];
         let fields = core::iter::once(&words_of.last_target_first).chain(&words_of.moves[1..]);
         for (k, (move_word, &field)) in moves.iter_mut().zip(fields).enumerate() {
@@ -1582,7 +1600,7 @@ mod tests {
     use wcontainers_guest_cpu::{HostCode, Translation};
     use wcontainers_translator::{LookAhead, translate_native_for};
 
-    use super::{INSTRUCTION, WAY, covered, moved_bytes, moves};
+    use super::{INSTRUCTION, WAY, covered, moved_bytes, moves, named};
 
     /// The moving test's knobs: how many cases, and the seed.
     fn knob(name: &str, default: u64) -> u64 {
@@ -1619,8 +1637,29 @@ mod tests {
             .map(HostCode::translation)
     }
 
+    /// [`moves`] asked of every address the translation names, one at a time.
+    fn moves_by_each(translation: &Translation, from: u64, to: u64) -> bool {
+        let movable = movable(WAY);
+        if movable.contains(&from) && movable.contains(&to) {
+            return true;
+        }
+        let unwrapped = branch_reach() + PAGE_SIZE..movable.end;
+        if !unwrapped.contains(&from) || !unwrapped.contains(&to) {
+            return false;
+        }
+        let by = to.wrapping_sub(from);
+        let reach = 1u64 << WAY.reach_bits();
+        let stays = |address: u64| address < reach && address.wrapping_add(by) < reach;
+        translation.places.iter().all(|place| stays(place.address))
+            && translation.exits.iter().all(|exit| stays(exit.target))
+            && translation.tables.iter().all(|table| {
+                stays(table.base) && (0..table.entries).all(|k| stays(table.target(k)))
+            })
+    }
+
     /// Wherever `moves` lets a translation move, the moved one is what translating there gives, on pages under the
-    /// movable ones (where a position-independent program lies when the kernel places mappings low) as well as on them.
+    /// movable ones (where a position-independent program lies when the kernel places mappings low) as well as on them;
+    /// and asking it of the lowest and highest address named answers as asking it of each.
     #[test]
     fn a_translation_moves_only_where_moving_gives_what_translating_there_would() {
         let cases = knob("WCHP_MOVED_CASES", 2000);
@@ -1647,7 +1686,13 @@ mod tests {
             let Some(made) = translated(&bytes, from + offset, look_ahead) else {
                 continue;
             };
-            if !moves(&made, from, to) {
+            let by_each = moves_by_each(&made, from, to);
+            assert_eq!(
+                moves(named(&made), from, to),
+                by_each,
+                "case {case} of seed {seed}: moving by the lowest and highest address named, {from:#x} to {to:#x}"
+            );
+            if !by_each {
                 refused += 1;
                 continue;
             }
