@@ -203,14 +203,10 @@ impl UnicornSpace {
         &self,
         registers: &mut RegisterBlock,
         slice_nanoseconds: Option<u64>,
+        deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
     ) -> (Result<Exit, Unsupported>, u64) {
-        self.space.borrow_mut().memory.run_turn(
-            registers,
-            slice_nanoseconds,
-            None,
-            interrupt,
-        )
+        self.space.borrow_mut().memory.run_turn(registers, slice_nanoseconds, deadline, interrupt)
     }
 
     /// Returns what the page at the address allows.

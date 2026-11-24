@@ -17,6 +17,7 @@ use wcontainers_kernel as interface;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{MemoryError, TaskId, WatchesFor, WriteMemoryError};
 
+use crate::guest_machine::GuestMachine;
 use crate::process::Pid;
 use crate::suspend::{ProcessContext, SuspendedTask};
 use crate::system::{Unsupported, pid_of};
@@ -79,25 +80,25 @@ fn supported<E: Executor>(config: &interface::ExecutionConfig<E>) -> Result<(), 
 /// Its state sits behind one lock, so that the kernel interface's calls, which take it shared,
 /// come one at a time. The contexts and tasks it hands out share its records, so each is let go of
 /// under that lock too ([`Held`]).
-pub struct KernelWithExecutor<C, State, S> {
+pub struct KernelWithExecutor<C: Executor, State, S> {
     shared: Arc<Shared<C>>,
     types: PhantomData<fn() -> (State, S)>,
 }
 
 /// What a kernel and the contexts and tasks it handed out share: its state behind one lock, and
 /// what was let go of while another held that lock, for the next holder to drop.
-struct Shared<C> {
+struct Shared<C: Executor> {
     inner: spin::Mutex<Inner<C>>,
     let_go: spin::Mutex<Vec<Box<dyn Any>>>,
 }
 
 /// What [`KernelWithExecutor`]'s lock guards.
-struct Inner<C> {
+struct Inner<C: Executor> {
     kernel: crate::Kernel,
-    executor: C,
+    executor: GuestMachine<C>,
 }
 
-impl<C> Shared<C> {
+impl<C: Executor> Shared<C> {
     /// Takes the lock, then drops what was let go of while another held it.
     fn lock(&self) -> spin::MutexGuard<'_, Inner<C>> {
         let guard = self.inner.lock();
@@ -119,6 +120,8 @@ impl<C> Shared<C> {
 // of a context or task it handed out (`Held`, which is not `Send`), the only values outside the
 // lock that share its records. So what they share through `Rc` and `RefCell` is touched by one
 // host thread at a time, and the rest may move between host threads: the executor, the
+// memory spaces it made (reached only through the kernel's `GuestMachine`, under the lock, so
+// that the references they share are touched by one host thread at a time), the
 // embedder's states and execution configurations, and the system with its handles are `Send`,
 // and the system's waiting calls the kernel keeps were promised to be when it was started
 // (`start`).
@@ -136,13 +139,13 @@ where
 
 /// A context or task a [`KernelWithExecutor`] handed out. It shares the kernel's records, so it is
 /// dropped under the kernel's lock, or, while that lock is held, by the lock's next holder.
-pub struct Held<T: 'static, C> {
+pub struct Held<T: 'static, C: Executor> {
     /// Always there, until the kernel takes it back.
     value: Option<T>,
     shared: Arc<Shared<C>>,
 }
 
-impl<T: 'static, C> Held<T, C> {
+impl<T: 'static, C: Executor> Held<T, C> {
     /// The value, if it was handed out by the kernel `shared` is of; else itself.
     fn take_from(mut self, shared: &Arc<Shared<C>>) -> Result<T, Self> {
         if !Arc::ptr_eq(&self.shared, shared) {
@@ -152,7 +155,7 @@ impl<T: 'static, C> Held<T, C> {
     }
 }
 
-impl<T: 'static, C> core::ops::Deref for Held<T, C> {
+impl<T: 'static, C: Executor> core::ops::Deref for Held<T, C> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -160,7 +163,7 @@ impl<T: 'static, C> core::ops::Deref for Held<T, C> {
     }
 }
 
-impl<T: 'static, C> Drop for Held<T, C> {
+impl<T: 'static, C: Executor> Drop for Held<T, C> {
     fn drop(&mut self) {
         let Some(value) = self.value.take() else {
             return;
@@ -224,13 +227,14 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
     /// kernel keeps such calls, and its interface's calls may come from any host thread.
     pub unsafe fn start(
         mut kernel: crate::Kernel,
-        mut executor: C,
+        executor: C,
         system: &Arc<S>,
         start: crate::Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
         config: interface::ExecutionConfig<C>,
         state: State,
     ) -> Result<Self, Unsupported> {
         supported(&config)?;
+        let mut executor = GuestMachine::new(executor);
         kernel.start(&mut executor, system, start);
         let first = kernel
             .init
@@ -251,8 +255,12 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
         })
     }
 
-    /// Drives the kernel and the executor with `drive`, under the kernel's lock.
-    pub fn with_parts<R>(&mut self, drive: impl FnOnce(&mut crate::Kernel, &mut C) -> R) -> R {
+    /// Drives the kernel and the executor, with the guests' memories and registers, with `drive`,
+    /// under the kernel's lock.
+    pub fn with_parts<R>(
+        &mut self,
+        drive: impl FnOnce(&mut crate::Kernel, &mut GuestMachine<C>) -> R,
+    ) -> R {
         let mut inner = self.shared.lock();
         let Inner { kernel, executor } = &mut *inner;
         drive(kernel, executor)
@@ -434,7 +442,7 @@ where
 }
 
 /// What runs a [`KernelWithExecutor`]'s threads on one host thread.
-pub struct KernelRunner<C, State, S> {
+pub struct KernelRunner<C: Executor, State, S> {
     shared: Arc<Shared<C>>,
     types: PhantomData<fn() -> (State, S)>,
 }
@@ -473,7 +481,7 @@ where
 }
 
 /// One process of a [`KernelWithExecutor`], holding the kernel's lock for as long as it lasts.
-pub struct KernelProcess<'a, C, State, S> {
+pub struct KernelProcess<'a, C: Executor, State, S> {
     inner: spin::MutexGuard<'a, Inner<C>>,
     shared: &'a Arc<Shared<C>>,
     pid: Pid,

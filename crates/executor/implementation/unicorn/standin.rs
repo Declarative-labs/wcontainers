@@ -666,6 +666,7 @@ impl StandIn {
         resume: Resume,
         slice_nanoseconds: Option<u64>,
     ) -> Result<Exit, Unsupported> {
+        let deadline = self.deadline(slice_nanoseconds);
         let state = self
             .threads
             .get_mut(&thread)
@@ -677,16 +678,42 @@ impl StandIn {
             .memories
             .get_mut(&state.memory)
             .expect("thread's memory");
-        let deadline = slice_nanoseconds
-            .filter(|_| self.wall_clock)
-            .map(|nanoseconds| {
-                coarsetime::Instant::now()
-                    + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
-            });
         let (exit, instructions) =
             memory.run_turn(&mut state.registers, slice_nanoseconds, deadline, None);
         self.last_instructions = instructions;
         exit
+    }
+
+    /// Runs a thread of a kernel that keeps its threads' registers and memories itself, as
+    /// [`StandIn::run`] runs one of its own.
+    pub fn run_on(
+        &mut self,
+        registers: &mut RegisterBlock,
+        memory: &UnicornSpace,
+        resume: Resume,
+        slice_nanoseconds: Option<u64>,
+    ) -> Result<Exit, Unsupported> {
+        if let Resume::Return(value) = resume {
+            registers.x[RESULT_REGISTER] = value;
+        }
+        let (exit, instructions) = memory.run_turn(
+            registers,
+            slice_nanoseconds,
+            self.deadline(slice_nanoseconds),
+            None,
+        );
+        self.last_instructions = instructions;
+        exit
+    }
+
+    /// When a turn of a slice ends on the machine's clock, if the stand-in is on it.
+    fn deadline(&self, slice_nanoseconds: Option<u64>) -> Option<coarsetime::Instant> {
+        slice_nanoseconds
+            .filter(|_| self.wall_clock)
+            .map(|nanoseconds| {
+                coarsetime::Instant::now()
+                    + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
+            })
     }
 }
 
@@ -859,7 +886,7 @@ impl wcontainers_executor::Executor for StandIn {
                     }
                 }
                 let (exit, instructions) =
-                    memory.run_turn(&mut registers, None, Some(Arc::clone(&raised)));
+                    memory.run_turn(&mut registers, None, None, Some(Arc::clone(&raised)));
                 self.last_instructions = instructions;
                 let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
                 let permission_at =
@@ -966,7 +993,7 @@ impl wcontainers_executor::Executor for StandIn {
         };
         let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
         let mut registers = to_register_block(processor);
-        let (exit, instructions) = space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None);
+        let (exit, instructions) = space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None, None);
         self.last_instructions = instructions;
         let exit = exit.unwrap_or_else(|unsupported| panic!("{unsupported:?}"));
         // The abi leaves the program counter after a system call; an exception leaves it on the instruction.

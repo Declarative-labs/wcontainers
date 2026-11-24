@@ -1574,7 +1574,7 @@ fn run_started(
     >,
     host: &Arc<TestHost>,
 ) -> Option<i32> {
-    started.with_parts(|kernel, cpu| {
+    started.with_parts(|kernel, machine| {
         loop {
             match kernel.next() {
                 Next::Run {
@@ -1582,14 +1582,15 @@ fn run_started(
                     resume,
                     slice_nanoseconds,
                 } => {
-                    let exit = cpu
-                        .run(thread, resume, slice_nanoseconds)
+                    let (standin, registers, memory) = machine.thread_parts(thread);
+                    let exit = standin
+                        .run_on(registers, memory, resume, slice_nanoseconds)
                         .expect("the stand-in runs the program");
-                    kernel.exit(cpu, host, exit);
+                    kernel.exit(machine, host, exit);
                 }
                 Next::Idle {
                     until_nanoseconds: Some(0),
-                } => kernel.event(cpu, host, Event::Timer),
+                } => kernel.event(machine, host, Event::Timer),
                 Next::Idle {
                     until_nanoseconds: None,
                 } => return None,
