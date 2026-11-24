@@ -773,7 +773,7 @@ Logs and scripts in scratch `graphics-shaders/g6-r116` (the clone `tip` moved th
 - Whole suite, run 116, at f8b65a568 (the crate's last change). CPU, on the ARM64 machine
   (arm2.log, 96 cores, load 11 to 16 at the time): rustfmt and clippy with warnings denied clean,
   every test binary with every corpus but the mutation run passing (the corpus binary 13 tests in
-  202 s), the literal check with no finding in this crate. Drawn, on the RTX 3080 through the GPU
+  202 s), the literal check with no finding in this crate [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]. Drawn, on the RTX 3080 through the GPU
   queue at the check's seed 8111, 20 cases a test (gpu-suite.log, task 71, 20 minutes, the desktop
   shared with other tracks' jobs): every binary passes but `filter_draw` and `geometry_draw`, and
   every failure there is placed on the gap list. `clamped_samples_match_direct3d` 8 failed (8118
@@ -969,7 +969,7 @@ code added; the count stays 94. G6 reported complete again.
 - Whole suite, run 115. CPU, on the ARM64 machine (arm2.log, 96 cores, load 4.3 to 6.2 at the time):
   rustfmt and clippy with warnings denied clean, every test binary with every corpus but the
   mutation run passing (the corpus binary 13 tests in 200 s), the literal check with no finding in
-  this crate (its exit 1 is other crates' findings). Drawn, on the RTX 3080 through the GPU queue
+  this crate (its exit 1 is other crates' findings) [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]. Drawn, on the RTX 3080 through the GPU queue
   (gpu-suite.log, the check's command at seed 6029; 19 minutes, task 78, the desktop shared with
   other tracks' jobs): every binary passes but `filter_draw` (A18 at seed 6037, the check's
   figures) and `geometry_draw` (A10's two tests, and A12 at seed 6034, the check's figures). Each
@@ -1011,7 +1011,7 @@ files only). The check's own logs are in `graphics-shaders/check-g6-r8`.
   the owner's ruling; none added in this run; the count stays 94.
 - Runs: ARM64 machine (load 11 to 14): rustfmt check and clippy with warnings denied clean (the
   drawn tests are Windows-only, so clippy of them ran on the desktop), the changed variants test
-  passes, the literal check clean for this crate. Desktop (RTX 3080, one GPU job, 3 cargo jobs):
+  passes, the literal check clean for this crate [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]. Desktop (RTX 3080, one GPU job, 3 cargo jobs):
   Windows clippy clean; the four geometry tests above. The whole suite at the crate as pushed
   (default seeds, one GPU job of 16 minutes, gpu-suite.log): 28 binaries, 219 passed, 0 failed, 5
   ignored (the three corpora, run on the ARM64 machine, and the fuzz runs). ARM64, every CPU test
@@ -1067,7 +1067,7 @@ Logs and scripts in scratch `graphics-shaders/g6-r113` (clone `tip`, `tip-arm`, 
   change: the records hold); the fuzz at seed 31337, 3,000 cases (arm1 to arm3, with the
   converter's checks: 9 ends, 23 before). Desktop (RTX 3080, one GPU job at a time, 3 cargo jobs):
   Windows clippy clean in each job; the drawn figures above. The literal check names no line of
-  this run (arm9.log; its one line of this crate is `tests/variants.rs:1955`, as in run 112). The
+  this run (arm9.log; its one line of this crate is `tests/variants.rs:1955`, as in run 112) [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]. The
   whole suite at the committed crate (22293b0b's, default seeds, one GPU job of about 13 minutes,
   one test thread; gpu-suite.log): 28 test binaries and the doc tests, 219 passed, 0 failed, 5
   ignored as before. Two jobs failed at their start
@@ -1094,7 +1094,7 @@ only).
 - Runs, ARM64 machine (load 5 to 16): rustfmt and clippy with warnings denied clean; every CPU test
   binary with every corpus but the mutation run: 13 binaries, 149 passed, 0 failed (arm2.log); the
   literal check names no line of this run's code (arm5.log; its one line of this crate is run 111's
-  `tests/variants.rs:1955`, another track's uncommitted constant). The first form of the test wrote
+  `tests/variants.rs:1955`, another track's uncommitted constant) [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]. The first form of the test wrote
   the entry point's name as a literal, which the check named; it now takes `ENTRY_POINT`.
 - The whole suite on the desktop at 4280d337 (the clone at the committed tip; RTX 3080, one GPU job
   of about 13 minutes through the queue, one test thread, 3 cargo jobs; gpu-suite.log): Windows
@@ -1162,7 +1162,7 @@ files only).
   run 52 (its runner now stops at line 51). Nothing of this track's is left there.
 - Runs: ARM64 machine (load 11 to 27): rustfmt and clippy with warnings denied clean, every CPU
   test binary with every corpus passed (arm2.log; the corpus test first failed only for the four
-  new files without records, arm1.log); the literal check names no line of this crate's new code
+  new files without records, arm1.log); the literal check names no line of this crate's new code [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]
   (arm4.log; it names `tests/variants.rs:1955`, a test literal "texture_2d<i32>" that another
   track's uncommitted constant `SIGNED_BITS_TEXTURE` in crates/wcontainers-gpu-webgpu/src/fill.rs
   now restates; not this run's to change). Desktop (RTX 3080, GPU jobs through the queue, 3 cargo
@@ -1225,7 +1225,7 @@ single files only).
 - Runs: ARM64 machine (load 15 to 22): rustfmt and clippy with warnings denied clean, every CPU test
   binary with every corpus (`--include-ignored`) passed, before and after the carried patch (arm2.log,
   arm4.log); the literal check names no line of this crate but the baseline line the change removed
-  (deleted, 5d97e6d2). Desktop (RTX 3080, one GPU job at a time, 3 cargo jobs): Windows clippy clean
+  (deleted, 5d97e6d2) [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e]. Desktop (RTX 3080, one GPU job at a time, 3 cargo jobs): Windows clippy clean
   (gpu1.log). By mistake one `gpu-job --help` was started (it takes the word as a command) and
   stopped while still queued.
 - Not run: WebAssembly (the C++ change is one loop of dxbc-spirv; the native and WebAssembly builds
@@ -1301,7 +1301,7 @@ of single files only).
   `--test geometry`, `--test corpus`, `--test staged` passed after a fix (the first listing program
   used `from`, a WGSL keyword; arm1.log to arm3.log); every CPU test binary with every corpus
   (`--include-ignored`, load 3 to 8): all passed, 146 tests (arm4.log). The literal check exits 1
-  on four findings in other crates' files (opengl, webassembly-engine), none in this crate's.
+  on four findings in other crates' files (opengl, webassembly-engine), none in this crate's [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e].
   Desktop (RTX 3080, one GPU job, 3 cargo jobs): Windows clippy
   clean.
 - Not run: WebAssembly, glslang, Chrome (no new module of a corpus shader beyond the four own files,
@@ -1345,7 +1345,7 @@ on the Mac (rustfmt of single files only).
   arm4.log, arm5.log); every CPU test binary with every corpus (arm3.log, before the records were
   updated: all passed but the three corpus tests the records then fixed). Desktop (RTX 3080, one
   GPU job, 3 cargo jobs): Windows clippy clean (gpu1.log). The literal check prints no line of this
-  crate (arm3.log; its findings name other crates).
+  crate (arm3.log; its findings name other crates) [corrected in G6w run 1: run without the repository's history, which cannot show growth; with it the check would also have printed this crate's growth line `factor_constants 1024`, added by 1afcea75e].
 - Not run: WebAssembly, glslang, Chrome (no corpus file gained a written module), the rest of the
   GPU suite (no module of an existing shader changed but the refused ones).
 
@@ -5798,6 +5798,11 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 - SPIR-V reader (run 112, `front/spv/image.rs`), a sample whose sampler operand is a global naga
   does not track for sampling (no sampler or sampled image) is refused as
   `Error::InvalidImageExpression` where it unwrapped `None` and panicked. For upstream as it stands.
+- HLSL writer (run 119, commit 4bb5b473c), `MathFunction::Sign` of a float written in its argument's
+  float type (`float2(sign(x))`), where HLSL's `sign` gives an integer whatever its argument; an
+  integer `sign` as before. `back::CLOSE` (a closing parenthesis) is now shared by the GLSL and HLSL
+  writers beside `back::OPEN`. Upstream's comment on the FXC overloads stays above
+  `Function::MissingIntReturnType` (moved back in G6w run 1). For upstream as it stands.
 
 ## How to run
 
