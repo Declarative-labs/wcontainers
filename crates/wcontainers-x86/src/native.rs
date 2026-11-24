@@ -676,6 +676,8 @@ fn answered(way: Way, i: &Instruction, host: &HostMatches) -> bool {
         || m == Syscall && way != Way::Machine
         || m == Wrfsbase && in_process
         || in_process && is_string(i) && i.address32
+        // Their stack accesses are not the window's forms: `enter`'s frame copies, `pushf`'s flags.
+        || in_process && matches!(m, Enter | Pushf | Pushfq)
         || way == Way::InProcess(Check::Exact) && gather
         || host_differs(way, i, host)
 }

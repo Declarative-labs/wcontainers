@@ -1,5 +1,5 @@
 //! The carrying code of the native output: host instructions written around a guest instruction, from iced's
-//! encoder (docs/x86-native-output.md sections 3 and 4), for the machine and a host process.
+//! encoder (docs/x86-native-output.md sections 3 and 4), for each way of running.
 
 use iced_x86::{
     Code, ConditionCode, DecoderOptions, Encoder, Instruction as Iced, InstructionInfoFactory,
@@ -8,10 +8,12 @@ use iced_x86::{
 use wcontainers_guest_cpu::position::{AddressPlace, DirectExit, Fixup, Held, Holds, Resume};
 use wcontainers_guest_cpu::{HostCode, InsideCall, NativeReason, PATCH_BYTES, Patch, Route};
 
+mod window;
+
 use crate::USER_END;
 use crate::area::{
-    ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_GS_BASE, HOME_VALUES, STAND_IN_VALUES,
-    STOP_WORD, WITHHELD_VALUES, X87_CONTROL, X87_IP,
+    ENTRIES, FIRST_CALL_VECTOR, FIRST_LEVEL, GUEST_FS_BASE, GUEST_GS_BASE, HOME_VALUES,
+    STAND_IN_VALUES, STOP_WORD, WITHHELD_VALUES, X87_CONTROL, X87_IP,
 };
 use crate::decode::Instruction;
 use crate::native::Way;
@@ -74,7 +76,7 @@ fn bytes_of(i: &Iced, at: u64) -> Vec<u8> {
     let mut encoder = Encoder::new(crate::MODE_BITS);
     encoder
         .encode(i, at)
-        .expect("the carrying code's instructions encode");
+        .unwrap_or_else(|e| panic!("the carrying code's instructions encode: {e} in {i:?} {i}"));
     encoder.take_buffer()
 }
 
@@ -494,10 +496,20 @@ enum Written<'a> {
 /// Writes a host instruction that may reach guest memory, with `resume` its commit point: the one place each way's
 /// form of a guest access is made (section 4). With no memory check it is the instruction itself.
 fn access(way: Way, code: &mut HostCode, written: Written, resume: Option<Resume>) {
-    assert!(
-        matches!(way, Way::Machine | Way::Process),
-        "the checked forms of an access are written at XN2"
-    );
+    if let Way::InProcess(check) = way {
+        let decoded;
+        let i = match written {
+            Written::Bytes(bytes) => {
+                // Decoded as the translator decodes the guest.
+                decoded = crate::decode::decode(bytes).expect("a guest instruction").0;
+                &decoded.iced
+            }
+            Written::Instruction(i) => i,
+        };
+        if window::reaches_memory(i) {
+            return window::access(check, code, i, resume);
+        }
+    }
     let at = code.offset() as u64;
     let bytes = match written {
         Written::Bytes(bytes) => bytes.to_vec(),
@@ -749,10 +761,6 @@ fn carry_plain(
     homes: &Homes,
     code: &mut HostCode,
 ) {
-    assert!(
-        matches!(way, Way::Machine | Way::Process),
-        "the in-process forms are written at XN2"
-    );
     let next = address.wrapping_add(bytes.len() as u64);
     let repeated =
         crate::meaning::is_string(i) && (i.iced.has_rep_prefix() || i.iced.has_repne_prefix());
@@ -928,6 +936,9 @@ fn x87_pointer(way: Way, code: &mut HostCode, address: u64) {
 /// An operand or base instruction of the thread area's segment, `bytes` at guest `address`.
 fn area(way: Way, code: &mut HostCode, i: &Instruction, bytes: &[u8], address: u64) {
     let ins = &i.iced;
+    if matches!(way, Way::InProcess(_)) {
+        return area_in_process(way, code, i, address);
+    }
     if ins.mnemonic() == Mnemonic::Rdgsbase {
         // `rdgsbase r32` zero-extends, as a 32-bit load does.
         let destination = ins.op_register(0);
@@ -951,6 +962,47 @@ fn area(way: Way, code: &mut HostCode, i: &Instruction, bytes: &[u8], address: u
         access(way, code, Written::Bytes(&on_fs(bytes)), Some(next));
         leave_guest_segment(code);
     }
+}
+
+/// The in-process way's `rdfsbase`, `rdgsbase` and `fs:` and `gs:` operands: the bases are words of the register
+/// area, and an operand's access adds its segment's word in the window's form (section 4).
+fn area_in_process(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
+    let ins = &i.iced;
+    let next = Resume::At(address.wrapping_add(ins.len() as u64));
+    let word = match ins.mnemonic() {
+        Mnemonic::Rdgsbase => GUEST_GS_BASE,
+        Mnemonic::Rdfsbase => GUEST_FS_BASE,
+        _ => {
+            let reach = if ins.is_ip_rel_memory_operand() {
+                Reach::Rebase
+            } else {
+                Reach::Plain
+            };
+            return rewritten(way, code, i, ins, address, reach);
+        }
+    };
+    let destination = general(ins.op_register(0)).expect("a general register");
+    // The 32-bit form zero-extends, as a 32-bit load does.
+    let read = |into: u8| {
+        if destination.width == W64 {
+            load_area(way, full(into), word)
+        } else {
+            Iced::with2(
+                Code::Mov_r32_rm32,
+                sized(into, crate::operand::W32),
+                on_area(way, word, 0),
+            )
+            .expect("a load from the area")
+        }
+    };
+    let written = if WITHHELD.contains(&destination.number) {
+        put(code, &read(U_NUMBER));
+        store_area(way, withheld_slot(destination.number), U)
+    } else {
+        read(destination.number)
+    };
+    let at = code.offset() as u64;
+    code.commit(&bytes_of(&written, at), next);
 }
 
 /// Writes a call into the inside: an interrupt gate of the floor's in the machine, a jump through the area's
@@ -1128,7 +1180,11 @@ fn transfer(
         }
         Jmp | Call => {
             into_t(way, code, i, address);
-            first_level(way, code);
+            // In process the push's probe takes u, so the lookup's first level comes after the commit point.
+            let in_process = matches!(way, Way::InProcess(_));
+            if !in_process {
+                first_level(way, code);
+            }
             if ins.mnemonic() == Call {
                 let own = STAND_IN_VALUES;
                 put(code, &store_area(way, own, full(RAX)));
@@ -1141,6 +1197,9 @@ fn transfer(
                 code.home(RAX);
             } else {
                 code.after(Resume::Through(Held::Register(T_NUMBER)));
+            }
+            if in_process {
+                first_level(way, code);
             }
             onward(way, code);
         }
@@ -1244,9 +1303,10 @@ fn guest_operand(i: &Iced, address32: bool) -> MemoryOperand {
 /// Writes the load into t of the operand of `i`, a jump or call through a register or memory.
 fn into_t(way: Way, code: &mut HostCode, i: &Instruction, address: u64) {
     let (operand, swaps) = stand_in(&i.iced);
+    let in_process = matches!(way, Way::InProcess(_));
     let reach = if operand.op0_kind() == OpKind::Register {
         Reach::Plain
-    } else if i.iced.memory_segment() == way.area_segment() {
+    } else if !in_process && i.iced.memory_segment() == way.area_segment() {
         Reach::GuestSegment
     } else if i.iced.is_ip_rel_memory_operand() {
         Reach::Rebase

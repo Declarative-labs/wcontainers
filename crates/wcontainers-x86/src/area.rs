@@ -26,6 +26,10 @@ pub struct RegisterArea {
     pub x87_control: u64,
     /// The guest's values of the registers that hold withheld ones throughout a loop, in the order they are taken.
     pub homes: [u64; WITHHELD],
+    /// The guest's FS base in the in-process way, where the hardware's FS holds this area.
+    pub fs_base: u64,
+    /// A guest address t holds while a carrying sequence borrows t (the in-process way's 16-bit bit test).
+    pub kept_t: u64,
 }
 
 /// The words of the thread area's second page, which only the way writes: read-only to guest code.
@@ -44,6 +48,13 @@ pub const WITHHELD: usize = 3;
 
 /// The guest's GS base, as an offset from the thread area's segment base.
 pub const GUEST_GS_BASE: usize = core::mem::offset_of!(RegisterArea, gs_base);
+/// The guest's FS base in the in-process way, as an offset from the thread area's segment base.
+pub const GUEST_FS_BASE: usize = core::mem::offset_of!(RegisterArea, fs_base);
+/// Where t is kept while borrowed, as an offset from the thread area's segment base.
+pub const KEPT_T: usize = core::mem::offset_of!(RegisterArea, kept_t);
+/// The in-process way's page of zeros, this far below the window's base B: the exact form's probe reads it for an
+/// address below 2^32 and, for one above, a place up to 2^35 bytes lower, where nothing is mapped (section 4).
+pub const PROBE_PAGE: u64 = 2 * PAGE_SIZE;
 /// The guest value of withheld register k is at `WITHHELD_VALUES + 8 * k`.
 pub const WITHHELD_VALUES: usize = core::mem::offset_of!(RegisterArea, withheld);
 /// The guest value of the k-th stand-in is at `STAND_IN_VALUES + 8 * k`.
