@@ -25,7 +25,7 @@ pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
 use crate::way::{
-    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, OUTSIDE, PROCESS_ENTRIES,
+    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, MARK_OFFSET, OUTSIDE, PROCESS_ENTRIES,
     PROCESS_ENTRY_BYTES, PROCESS_REACH_BITS, PROCESS_SLOTS, WINDOW_BITS, Way,
 };
 use crate::{Arm64, FPCR_BITS, decode};
@@ -846,12 +846,12 @@ fn window_address(rd: Register, a: Register) -> u32 {
     encode::add_extended(false, rd, BASE, a, false, u32::BITS, 0).expect("registers fit")
 }
 
-/// The mark read out of line where a guest address is outside its window (in process, [`OUTSIDE`]), then a word
+/// The mark read out of line where a guest address is outside its window (in process, [`MARK`](crate::way::MARK)), then a word
 /// never reached.
 fn outside_words() -> Vec<u32> {
     vec![
         encode::eor_immediate(CHECK, BASE, OUTSIDE).expect("one bit is a logical immediate"),
-        encode::load_store(form::LDRB, ZERO, CHECK, 0, 1).expect("fits"),
+        encode::load_store(form::LDRB, ZERO, CHECK, MARK_OFFSET, 1).expect("fits"),
         encode::exception(form::UDF, 0),
     ]
 }

@@ -702,7 +702,7 @@ fn rejoin_in(
 /// Resolution in the in-process way (docs/native-without-virtual-machine.md section 3.2 item 1): a thread's
 /// guest values of [`wcontainers_arm64::way::CHECK`] and [`BASE`] are the words after its register page, its
 /// guest stack pointer the host's less the window's base (the host's itself in displaced code), and a read of the
-/// way's mark ([`OUTSIDE`]) is an access outside the window or a stack pointer leaving it.
+/// way's mark ([`MARK`]) is an access outside the window or a stack pointer leaving it.
 pub mod in_process {
     use super::{
         AfterPage, FloatStatus, GuestState, Interrupted, Piece, Resolved, Taken, access_first,
@@ -710,7 +710,7 @@ pub mod in_process {
     };
     use wcontainers_arm64::Way;
     use wcontainers_arm64::thread_state::{RegisterPage, TAG_LOW, untag_address};
-    use wcontainers_arm64::way::{OUTSIDE, WINDOW_BITS};
+    use wcontainers_arm64::way::{MARK, WINDOW_BITS};
     use wcontainers_guest_cpu::position::{Operand, Side, Stopping, span_at};
 
     /// The most bytes a stack probe reads below the stack pointer (rule c's `ldur wzr, [sp, #-4]`).
@@ -758,7 +758,7 @@ pub mod in_process {
         let offset = h.pc.wrapping_sub(piece.base);
         if offset < piece.length as u64 {
             let span = span_at(piece.spans, piece.length, offset as u32)?;
-            let mark = way.window_base() | OUTSIDE;
+            let mark = way.window_base() + MARK;
             let probe = !displaced && span.side != Side::Before && span.stopping == Stopping::Plain;
             match taken {
                 Taken::Access { fault, .. } if fault == mark && span.side == Side::Before => {

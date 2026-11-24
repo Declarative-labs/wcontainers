@@ -31,7 +31,7 @@ use wcontainers_arm64::thread_state::{
     COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
 use wcontainers_arm64::way::{
-    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, OUTSIDE, PROCESS_ENTRY_BYTES,
+    BASE, CHECK, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, MARK, PROCESS_ENTRY_BYTES,
     WINDOW_BITS, Way,
 };
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode, forms};
@@ -549,7 +549,7 @@ fn translated(case: &Case, words: &[u32], way: Way) -> (Outcome, Option<Resoluti
             0,
             move |unicorn, kind, address, _, _| {
                 let guest = address.wrapping_sub(base);
-                let outcome = if address == base + OUTSIDE {
+                let outcome = if address == base + MARK {
                     Outcome::Mark
                 } else if guest < 1 << WINDOW_BITS
                     || guest.wrapping_neg() <= 1 << WINDOW_BITS

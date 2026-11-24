@@ -43,10 +43,16 @@ pub const IN_PROCESS_ENTRIES: u64 = (1 << 45) + (1 << 32) + PROCESS_ENTRY_BYTES;
 /// The in-process way's displaced code's slot table: that of slot 0's window, which is no guest's, so it is never
 /// mapped, and every exit of displaced code reaches the floor as a fault there.
 pub const DISPLACED_SLOTS: u64 = PROCESS_SLOTS;
-/// The in-process way's mark, at this many bytes past a window's base: translated code reads a byte there when an
-/// access's address or a new stack pointer is outside the window, so that the floor finds the instruction's own
-/// fault or takes the stack pointer outside its window.
+/// Where a window's never mapped bytes start, this many bytes past its base.
 pub const OUTSIDE: u64 = 1 << WINDOW_BITS;
+/// The in-process way's mark, past the window's base: translated code reads this byte when an access's address or a
+/// new stack pointer is outside the window, so that the floor finds the instruction's own fault or takes the stack
+/// pointer outside its window. It lies further into the never mapped bytes than an access that crosses the window's
+/// top reaches (Arm's largest is 64 bytes), so that such an access's own fault is never taken for the mark.
+pub const MARK: u64 = OUTSIDE + MARK_OFFSET;
+/// The mark past [`OUTSIDE`]: the largest offset of a byte load's unsigned immediate (Arm ARM, LDRB (immediate),
+/// imm12).
+pub const MARK_OFFSET: u64 = (1 << 12) - 1;
 
 /// The in-process way's second scratch register u, which its window check writes.
 pub const CHECK: Register = 15;
