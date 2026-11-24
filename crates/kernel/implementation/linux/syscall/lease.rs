@@ -2,9 +2,9 @@
 //! open that conflicts with one waits while the holder is told with an I/O signal, until the
 //! holder lets go or comes down to a read lease, or `lease-break-time` passes.
 
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use crate::file::{FileRef, OpenFile};
@@ -18,7 +18,7 @@ pub(crate) const BREAK_SECONDS: u64 = 45;
 
 /// One lease (`struct file_lease`), held by an open file.
 pub(crate) struct Lease {
-    file: Weak<RefCell<OpenFile>>,
+    file: Weak<AtomicRefCell<OpenFile>>,
     /// The descriptor its I/O signal names (`fa_fd`).
     fd: i32,
     /// F_RDLCK or F_WRLCK.
@@ -30,7 +30,7 @@ pub(crate) struct Lease {
 
 impl Lease {
     fn held_by(&self, file: &FileRef) -> bool {
-        core::ptr::eq(self.file.as_ptr(), Rc::as_ptr(file))
+        core::ptr::eq(self.file.as_ptr(), Arc::as_ptr(file))
     }
 
     /// What F_GETLEASE shows (`target_leasetype`).
@@ -92,7 +92,7 @@ pub(crate) fn open_for_writing(kernel: &Kernel, node: &Node) -> bool {
     kernel.threads.values().any(|thread| {
         thread.files.borrow().iter().any(|(_, descriptor)| {
             let file = descriptor.file.borrow();
-            Rc::ptr_eq(&file.node, node) && !file.is_path() && file.writable() && !file.pseudo
+            Arc::ptr_eq(&file.node, node) && !file.is_path() && file.writable() && !file.pseudo
         })
     })
 }
@@ -103,19 +103,19 @@ pub(crate) fn running(kernel: &Kernel, node: &Node) -> bool {
     kernel
         .processes
         .values()
-        .any(|process| process.ended.is_none() && Rc::ptr_eq(&process.executable.0, node))
+        .any(|process| process.ended.is_none() && Arc::ptr_eq(&process.executable.0, node))
 }
 
 /// The open files of `node` for reading only and for writing (`i_readcount`, `i_writecount`),
 /// an opener waiting to write counting as one.
 fn open_counts(kernel: &Kernel, node: &Node) -> (usize, usize) {
-    let mut seen: Vec<*const RefCell<OpenFile>> = Vec::new();
+    let mut seen: Vec<*const AtomicRefCell<OpenFile>> = Vec::new();
     let (mut readers, mut writers) = (0, 0);
     for thread in kernel.threads.values() {
         for (_, descriptor) in thread.files.borrow().iter() {
-            let pointer = Rc::as_ptr(&descriptor.file);
+            let pointer = Arc::as_ptr(&descriptor.file);
             let file = descriptor.file.borrow();
-            if !Rc::ptr_eq(&file.node, node) || file.is_path() || seen.contains(&pointer) {
+            if !Arc::ptr_eq(&file.node, node) || file.is_path() || seen.contains(&pointer) {
                 continue;
             }
             seen.push(pointer);
@@ -217,7 +217,7 @@ pub(super) fn set<S: crate::System>(
             }
         }
         None => inode.leases.push(Lease {
-            file: Rc::downgrade(file),
+            file: Arc::downgrade(file),
             fd,
             kind,
             pending: None,

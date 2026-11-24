@@ -127,7 +127,7 @@ pub(super) fn named(node: &Node) {
     let mut pipe = Pipe::named();
     pipe.backend = match core::mem::replace(&mut inode.content, Content::Special) {
         Content::Pipe(old) => old.backend,
-        Content::Backend(remote) => Some(alloc::rc::Rc::new(remote)),
+        Content::Backend(remote) => Some(alloc::sync::Arc::new(remote)),
         _ => None,
     };
     inode.content = Content::Pipe(pipe);
@@ -247,7 +247,7 @@ pub(crate) fn released<S: crate::System>(
 ) {
     for file in files.into_iter().rev() {
         let node = file.borrow().node.clone();
-        let last = alloc::rc::Rc::strong_count(&file) == 1;
+        let last = alloc::sync::Arc::strong_count(&file) == 1;
         drop(file);
         let lost_a_side = match &node.borrow().content {
             Content::Pipe(pipe) => last && (pipe.readers() == 0) != (pipe.writers() == 0),

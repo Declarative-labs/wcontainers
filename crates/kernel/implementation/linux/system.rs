@@ -50,12 +50,28 @@ pub trait System:
     + wcontainers_system::TaskIdAllocator
     + wcontainers_system::FuseServer
     + wcontainers_system::DomainNameResolver
-    + wcontainers_tcp_sockets::TcpConnections<Connection: 'static>
-    + wcontainers_tcp_sockets::TcpListeners<Listener: 'static>
-    + wcontainers_udp_sockets::UdpSockets<Socket: 'static>
-    + wcontainers_system::StreamTransport<Endpoint: 'static>
+    + wcontainers_tcp_sockets::TcpConnections<Connection: Send + Sync + 'static>
+    + wcontainers_tcp_sockets::TcpListeners<Listener: Send + Sync + 'static>
+    + wcontainers_udp_sockets::UdpSockets<Socket: Send + Sync + 'static>
+    + wcontainers_system::StreamTransport<Endpoint: Send + Sync + 'static>
     + Sync
+    + Send
     + 'static
+where
+    Self: wcontainers_readiness::Readiness<
+            <Self as wcontainers_tcp_sockets::TcpConnections>::Connection,
+            wait_until_ready(..): Send,
+        > + wcontainers_readiness::Readiness<
+            <Self as wcontainers_tcp_sockets::TcpListeners>::Listener,
+            wait_until_ready(..): Send,
+        > + wcontainers_readiness::Readiness<
+            <Self as wcontainers_udp_sockets::UdpSockets>::Socket,
+            wait_until_ready(..): Send,
+        > + wcontainers_readiness::Readiness<
+            <Self as wcontainers_system::StreamTransport>::Endpoint,
+            wait_until_ready(..): Send,
+        > + wcontainers_system::FuseServer<send_request(..): Send, receive_notice(..): Send>
+        + wcontainers_system::DomainNameResolver<resolve_domain(..): Send>,
 {
     /// A system call a thread made, before anything of it happens: `Continue` runs the request
     /// returned, `Break` answers it without running it.
@@ -420,7 +436,7 @@ impl Kernel {
         pid: Pid,
         hook: impl FnOnce(&S, Process<'_>),
     ) {
-        if self.map_notes.sharing_changed.get() {
+        if self.map_notes.sharing_changed.load() {
             self.announce_sharing(cx);
         }
         self.announce_kernel_writes(cx);
@@ -453,7 +469,7 @@ impl Kernel {
             pid,
         };
         hook(cx.host, process);
-        if self.map_notes.sharing_changed.get() {
+        if self.map_notes.sharing_changed.load() {
             self.announce_sharing(cx);
         }
     }

@@ -2,7 +2,7 @@
 //! with Docker's profile.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use wcontainers_abi::{RegisterBlock, SystemCallRequest};
@@ -142,7 +142,7 @@ fn set_filter<S: crate::System>(
         .iter()
         .map(|chunk| sock_filter::read_from_bytes(chunk).expect("eight bytes"))
         .collect();
-    let filter = Rc::new(Filter::new(program)?);
+    let filter = Arc::new(Filter::new(program)?);
     let thread = &kernel.threads[&tid];
     let held: usize = thread
         .filters
@@ -172,7 +172,7 @@ fn set_filter<S: crate::System>(
                 && theirs
                     .iter()
                     .zip(&filters)
-                    .all(|(their, our)| Rc::ptr_eq(their, our));
+                    .all(|(their, our)| Arc::ptr_eq(their, our));
             if !shared {
                 if flags & SECCOMP_FILTER_FLAG_TSYNC_ESRCH != 0 {
                     return Err(Errno::ESRCH);

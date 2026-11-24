@@ -7,6 +7,10 @@
 //! [`Host`].
 
 #![no_std]
+// The kernel keeps the system's waiting calls and is used from any host thread, so it asks each
+// `async fn` of the system it waits on to return a `Send` future, which only return type notation
+// can say of a generic system.
+#![feature(return_type_notation)]
 
 extern crate alloc;
 
@@ -48,7 +52,7 @@ pub mod wait;
 mod waiting;
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Next};
@@ -181,17 +185,18 @@ pub(crate) struct Files {
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
     pub generation_key: [u8; 16],
     /// Every event descriptor's counter, for the lowest free number a new one takes.
-    pub event_counters: Vec<alloc::rc::Weak<core::cell::RefCell<syscall::eventfd::Counter>>>,
+    pub event_counters:
+        Vec<alloc::sync::Weak<atomic_refcell::AtomicRefCell<syscall::eventfd::Counter>>>,
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
     /// What Docker mounts over entries of `/proc`'s root, by name.
     pub proc_masked: Vec<(&'static [u8], fs::Node)>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
-    pub spaces: Vec<Rc<fs::Space>>,
+    pub spaces: Vec<Arc<fs::Space>>,
     /// Pseudo-terminal pairs by number, until both sides have closed.
-    pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
+    pub terminals: BTreeMap<u32, Arc<atomic_refcell::AtomicRefCell<tty::Pty>>>,
     /// The connection to the file backend, once one is mounted.
-    pub backend: Option<Rc<fs::backend::Client>>,
+    pub backend: Option<Arc<fs::backend::Client>>,
     /// The directories file systems are mounted on.
     pub mount_points: Vec<Node>,
     /// The mount table, in the order the mounts were made.
@@ -227,7 +232,10 @@ pub struct Kernel {
     /// Notices that such closes took message queue requests away, for the kernel to send.
     notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
     /// The open files and descriptors whose owners F_NOTIFY requests owe a signal, in order.
-    dnotified: Vec<(alloc::rc::Weak<core::cell::RefCell<file::OpenFile>>, i32)>,
+    dnotified: Vec<(
+        alloc::sync::Weak<atomic_refcell::AtomicRefCell<file::OpenFile>>,
+        i32,
+    )>,
     /// Every process's asynchronous I/O contexts.
     aio: Vec<syscall::aio::Ring>,
     /// A file's readiness changed while asynchronous poll requests wait, for the kernel to look
@@ -249,7 +257,7 @@ pub struct Kernel {
     /// have met the watches (`SIGNAL_GROUP_EXIT`).
     dying: BTreeMap<Pid, u32>,
     /// What the kernel wrote into processes' memory and has not yet told the embedder.
-    kernel_writes: core::cell::RefCell<Vec<system::KernelWrite>>,
+    kernel_writes: atomic_refcell::AtomicRefCell<Vec<system::KernelWrite>>,
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
@@ -280,7 +288,7 @@ pub struct Kernel {
     ids_let_go: Vec<i32>,
     /// What every address map notes for the kernel: a placement that found no room below the
     /// ceiling, a shared mapping put in or taken out.
-    map_notes: Rc<memory::MapNotes>,
+    map_notes: Arc<memory::MapNotes>,
     /// What the embedder has been told each process maps of shared memory.
     shared_announced: sharing::Announced,
     /// Counts the kernel's rounds of shared memory announcements, so a round sees one begun
@@ -290,10 +298,10 @@ pub struct Kernel {
     processes_away: BTreeMap<Pid, suspend::ProcessAway>,
     /// The address maps of contexts taken or copied off this kernel, with their memory: what
     /// they map stays in use while they live, until one is put back here.
-    maps_away: core::cell::RefCell<
+    maps_away: atomic_refcell::AtomicRefCell<
         Vec<(
             wcontainers_abi::MemoryId,
-            alloc::rc::Weak<core::cell::RefCell<memory::AddressMap>>,
+            alloc::sync::Weak<atomic_refcell::AtomicRefCell<memory::AddressMap>>,
         )>,
     >,
     /// Processes on their way out whose shared memory has been announced ended.
@@ -309,7 +317,7 @@ pub struct Kernel {
     /// Every inotify instance made, with the user it is charged to.
     inotify_instances: Vec<(
         u32,
-        alloc::rc::Weak<core::cell::RefCell<syscall::inotify::Instance>>,
+        alloc::sync::Weak<atomic_refcell::AtomicRefCell<syscall::inotify::Instance>>,
     )>,
     /// The core dumps being written, by the thread that writes each.
     dumps: BTreeMap<process::Tid, syscall::coredump::Dump>,
@@ -319,9 +327,9 @@ pub struct Kernel {
     counters: Counters,
     files: Files,
     /// Each user's count of queued signals, by real user id.
-    signal_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
+    signal_users: BTreeMap<u32, Arc<crossbeam_utils::atomic::AtomicCell<u64>>>,
     /// Each user's count of pages its pipes may hold (`user_struct`'s `pipe_bufs`), by real user id.
-    pipe_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
+    pipe_users: BTreeMap<u32, Arc<crossbeam_utils::atomic::AtomicCell<u64>>>,
     /// The container's System V IPC objects.
     ipc: syscall::ipc::Ipc,
     /// Every futex with waiters.
@@ -413,11 +421,11 @@ impl Kernel {
             signals_sent: VecDeque::new(),
             signals_to_returning: VecDeque::new(),
             ids_let_go: Vec::new(),
-            map_notes: Rc::default(),
+            map_notes: Arc::default(),
             shared_announced: sharing::Announced::new(),
             sharing_round: 0,
             processes_away: BTreeMap::new(),
-            maps_away: core::cell::RefCell::default(),
+            maps_away: atomic_refcell::AtomicRefCell::default(),
             sharing_left: alloc::collections::BTreeSet::new(),
             init: None,
             finished: None,
@@ -773,7 +781,7 @@ impl Kernel {
     }
 
     /// Thread `tid`'s descriptor table.
-    pub(crate) fn files(&self, tid: Tid) -> core::cell::Ref<'_, file::FdTable> {
+    pub(crate) fn files(&self, tid: Tid) -> atomic_refcell::AtomicRef<'_, file::FdTable> {
         self.threads[&tid].files.borrow()
     }
 
@@ -805,23 +813,23 @@ impl Kernel {
         self.threads[&tid].taken.borrow_mut().value(value)
     }
 
-    pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
+    pub(crate) fn files_mut(&self, tid: Tid) -> atomic_refcell::AtomicRefMut<'_, file::FdTable> {
         self.threads[&tid].files.borrow_mut()
     }
 
     /// Thread `tid`'s root, working directory and umask.
-    pub(crate) fn fs(&self, tid: Tid) -> core::cell::Ref<'_, process::FsContext> {
+    pub(crate) fn fs(&self, tid: Tid) -> atomic_refcell::AtomicRef<'_, process::FsContext> {
         self.threads[&tid].fs.borrow()
     }
 
-    pub(crate) fn fs_mut(&self, tid: Tid) -> core::cell::RefMut<'_, process::FsContext> {
+    pub(crate) fn fs_mut(&self, tid: Tid) -> atomic_refcell::AtomicRefMut<'_, process::FsContext> {
         self.threads[&tid].fs.borrow_mut()
     }
 
     /// Lets go of a thread's hold on a descriptor table; the last holder's going closes it, in its
     /// process `closer` (`put_files_struct`).
     pub(crate) fn put_files(&mut self, files: process::Files, closer: process::Pid) {
-        if let Some(table) = Rc::into_inner(files) {
+        if let Some(table) = Arc::into_inner(files) {
             let mut table = table.into_inner();
             table.close_all(closer);
             self.released.extend(table.take_released());
@@ -836,9 +844,9 @@ impl Kernel {
     /// record locks are its own.
     pub(crate) fn unshare_files(&mut self, tid: Tid) {
         let thread = self.thread_mut(tid);
-        if Rc::strong_count(&thread.files) > 1 {
+        if Arc::strong_count(&thread.files) > 1 {
             let copy = thread.files.borrow().duplicate(tid as u64);
-            thread.files = Rc::new(core::cell::RefCell::new(copy));
+            thread.files = Arc::new(atomic_refcell::AtomicRefCell::new(copy));
         }
     }
 
@@ -889,8 +897,8 @@ impl Kernel {
             .values()
             .map(|process| &process.map)
             .collect();
-        maps.sort_by_key(|map| Rc::as_ptr(map));
-        maps.dedup_by(|a, b| Rc::ptr_eq(a, b));
+        maps.sort_by_key(|map| Arc::as_ptr(map));
+        maps.dedup_by(|a, b| Arc::ptr_eq(a, b));
         let mapped: u64 = maps
             .iter()
             .flat_map(|map| {

@@ -123,7 +123,7 @@ pub(super) fn contents(kernel: &Kernel, task: Task, fd: i32) -> Result<Vec<u8>, 
 /// `show_fd_locks`: the file's flock, then the record locks taken through this file by this
 /// descriptor table or by the file itself, numbered from 1, each as `/proc/locks` shows it.
 fn locks(out: &mut String, inode: &Inode, file: &crate::file::FileRef, lock_owner: u64) {
-    let own = alloc::rc::Rc::downgrade(file);
+    let own = alloc::sync::Arc::downgrade(file);
     let (major, minor) = crate::fs::decode_device(inode.fs.device);
     let mut id = 0;
     let mut line = |out: &mut String, kind: &str, write: bool, pid: i32, range: String| {

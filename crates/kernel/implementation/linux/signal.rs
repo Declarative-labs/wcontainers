@@ -258,7 +258,13 @@ impl Kernel {
 
     /// The caller's count of pipe pages (by its real user id), and whether it is free of the limits
     /// on them (`pipe_is_unprivileged_user`: neither CAP_SYS_RESOURCE nor CAP_SYS_ADMIN).
-    pub(crate) fn pipe_pages(&mut self, tid: Tid) -> (alloc::rc::Rc<core::cell::Cell<u64>>, bool) {
+    pub(crate) fn pipe_pages(
+        &mut self,
+        tid: Tid,
+    ) -> (
+        alloc::sync::Arc<crossbeam_utils::atomic::AtomicCell<u64>>,
+        bool,
+    ) {
         let credentials = self.credentials(tid);
         let privileged = credentials.has(CAP_SYS_RESOURCE) || credentials.has(CAP_SYS_ADMIN);
         let uid = credentials.uid;
@@ -271,7 +277,7 @@ impl Kernel {
         let uid = self.credentials(tid).uid;
         let limit = self.process_of(tid).limits[RLIMIT_SIGPENDING as usize].current;
         let count = self.signal_users.entry(uid).or_default().clone();
-        (count.get() < limit).then(|| crate::process::Charge::new(&count))
+        (count.load() < limit).then(|| crate::process::Charge::new(&count))
     }
 
     /// As [`Self::send_to_process`], telling the sender as [`Self::queue_to_thread`] does.
@@ -559,7 +565,7 @@ impl Kernel {
         let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
         let special = code == SI_KERNEL as i32;
         let overrides = signal < SIGRTMIN && (special || code >= 0);
-        if overrides || count.get() < limit {
+        if overrides || count.load() < limit {
             return Ok(Some(crate::process::Charge::new(&count)));
         }
         if signal >= SIGRTMIN && !special && code != SI_USER as i32 {

@@ -8,9 +8,10 @@
 //! attributes and bytes are asked for every time (caching is the first speed-up after phase one).
 
 use alloc::collections::BTreeMap;
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
+use atomic_refcell::AtomicRefCell;
+use crossbeam_utils::atomic::AtomicCell;
 
 use fuse_abi::linux::*;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -67,7 +68,7 @@ const READAHEAD: u32 = 128 << 10;
 /// Pages of a mapped file asked for and not answered yet: the inode, the file pages the answer
 /// holds, and the threads that wait for them.
 struct Fill {
-    node: Weak<RefCell<Inode>>,
+    node: Weak<AtomicRefCell<Inode>>,
     pages: core::ops::Range<u64>,
     /// The file's count of changes through the kernel when asked (`Pages::changes`).
     changes: u64,
@@ -87,7 +88,7 @@ struct Request {
 
 /// A reply's body, as the kernel keeps it: shared by the runs of the call that asked, and used
 /// again for a later reply once nothing holds it.
-pub(crate) type Body = Rc<Vec<u8>>;
+pub(crate) type Body = Arc<Vec<u8>>;
 
 /// An answer a call had, with the request it answers.
 #[derive(Clone)]
@@ -107,7 +108,7 @@ struct Asked {
     /// Linux holds what a call has looked up and opened: dropped between runs, the backend would
     /// be told to forget or release them.
     nodes: Vec<Node>,
-    handles: BTreeMap<usize, Rc<Handle>>,
+    handles: BTreeMap<usize, Arc<Handle>>,
     /// The write the call is in, as its node and where it starts, the bytes of it the backend
     /// took in earlier runs, whose replies are gone, and whether a short answer ended it.
     write: Option<(u64, u64, u64, bool)>,
@@ -180,9 +181,9 @@ struct State {
     /// Pages a fault or copy outside a call needed and could not ask for, for their counter.
     unasked: u64,
     /// Mapped files whose pages were dropped since the kernel last made their mappings fault.
-    dropped: Vec<Weak<RefCell<Inode>>>,
+    dropped: Vec<Weak<AtomicRefCell<Inode>>>,
     /// Inodes the backend numbered, while the kernel holds them.
-    nodes: BTreeMap<u64, Weak<RefCell<Inode>>>,
+    nodes: BTreeMap<u64, Weak<AtomicRefCell<Inode>>>,
     /// Lookups the backend counted for each node, given back with FORGET when its inode goes.
     lookups: BTreeMap<u64, u64>,
     settled: Option<Settled>,
@@ -210,16 +211,16 @@ impl State {
         if let Some(free) = self
             .bodies
             .iter_mut()
-            .find(|body| Rc::strong_count(body) == 1)
+            .find(|body| Arc::strong_count(body) == 1)
         {
-            let held = Rc::get_mut(free).expect("a body only this list holds");
+            let held = Arc::get_mut(free).expect("a body only this list holds");
             let mut spare = core::mem::replace(held, bytes);
             let body = free.clone();
             spare.clear();
             self.spare.push(spare);
             return body;
         }
-        let body = Rc::new(bytes);
+        let body = Arc::new(bytes);
         self.bodies.push(body.clone());
         body
     }
@@ -228,34 +229,34 @@ impl State {
 /// The connection to one backend, reachable from every inode on it.
 pub(crate) struct Client {
     me: Weak<Client>,
-    state: RefCell<State>,
+    state: AtomicRefCell<State>,
     /// The file system its inodes are on.
     pub fs: FileSystem,
     /// The backend answered FLUSH with ENOSYS, so closes no longer ask (`fc->no_flush`).
-    no_flush: Cell<bool>,
+    no_flush: AtomicCell<bool>,
 }
 
 /// An inode of the backend: its node number there, and what keeps its place in the tree.
 pub(crate) struct Remote {
-    pub client: Rc<Client>,
+    pub client: Arc<Client>,
     pub nodeid: u64,
     /// The run of a call whose reply last gave its attributes.
-    fresh: Cell<u64>,
+    fresh: AtomicCell<u64>,
     /// The attribute version of its last change (Linux's `fi->attr_version`): an answer to a
     /// request sent before it is older than what the inode holds.
-    version: Cell<u64>,
+    version: AtomicCell<u64>,
     /// The size, blocks and block size the last answer gave.
-    pub size: Cell<u64>,
-    pub blocks: Cell<u64>,
-    pub block_size: Cell<u32>,
+    pub size: AtomicCell<u64>,
+    pub blocks: AtomicCell<u64>,
+    pub block_size: AtomicCell<u32>,
     /// While a mapping shows the file: the pages its mappings show.
     pub pages: Option<Pages>,
     /// The thread whose call took its writes' lock last (`io::lock_backend_writes`).
-    pub writer: Cell<Option<Tid>>,
+    pub writer: AtomicCell<Option<Tid>>,
     /// The access and default access control lists the inode holds (`i_acl`, `i_default_acl`):
     /// not held, or the list a read gave, empty for none. A permission check by another than the
     /// owner holds none for the access list (`check_acl` through `fuse_get_inode_acl`).
-    pub acls: RefCell<[Option<Vec<u8>>; 2]>,
+    pub acls: AtomicRefCell<[Option<Vec<u8>>; 2]>,
 }
 
 /// A mapped backend file's first `block.length` bytes in a block of shared pages, as Linux's page
@@ -272,7 +273,7 @@ pub(crate) struct Pages {
     /// taken from their answer, which may be older (Linux holds the page locked while it reads).
     pub changes: u64,
     /// The open file its bytes are read and written back through (`fuse_write_file_get`).
-    pub handle: Rc<Handle>,
+    pub handle: Arc<Handle>,
     /// Whether a shared mapping that may write has shown it, so its bytes go back to the backend.
     pub written: bool,
     /// Whether a shared mapping has been able to write it, so its pages may hold bytes the backend
@@ -281,7 +282,7 @@ pub(crate) struct Pages {
     /// Counts the kernel's changes to the file's bytes on the backend (writes, truncations,
     /// write-backs), and what it was when attributes were last taken: a change of size or time
     /// with none of them since may only have come from outside.
-    pub sent: Cell<u64>,
+    pub sent: AtomicCell<u64>,
     pub sent_at_attributes: u64,
 }
 
@@ -289,13 +290,13 @@ impl Remote {
     /// The file's size changed here (`fuse_write_update_attr`, a truncation): answers to requests
     /// sent before it are older.
     pub fn set_size(&self, size: u64) {
-        self.size.set(size);
+        self.size.store(size);
         self.changed();
     }
 
     /// What the inode holds changed, or the backend said it did (`fuse_reverse_inval_inode`).
     pub fn changed(&self) {
-        self.version.set(self.client.next_version());
+        self.version.store(self.client.next_version());
     }
 
     /// Lets go of the access control lists held (`forget_all_cached_acls`).
@@ -307,7 +308,7 @@ impl Remote {
 /// Counts a request that changes a mapped file's bytes or times as the kernel's own change of it
 /// (`Pages::sent`): WRITE, SETATTR, FALLOCATE, and COPY_FILE_RANGE for the file it writes.
 fn count_change(
-    nodes: &BTreeMap<u64, Weak<RefCell<Inode>>>,
+    nodes: &BTreeMap<u64, Weak<AtomicRefCell<Inode>>>,
     opcode: u32,
     nodeid: u64,
     parts: &[&[u8]],
@@ -334,7 +335,7 @@ fn count_change(
         && let Content::Backend(remote) = &node.borrow().content
         && let Some(held) = &remote.pages
     {
-        held.sent.set(held.sent.get() + 1);
+        held.sent.store(held.sent.load() + 1);
     }
 }
 
@@ -359,7 +360,7 @@ impl Drop for Remote {
 /// An open file or directory on the backend: its handle there, given back with RELEASE when the
 /// last descriptor and mapping of it go (`fuse_file_put`).
 pub(crate) struct Handle {
-    pub client: Rc<Client>,
+    pub client: Arc<Client>,
     pub nodeid: u64,
     pub fh: u64,
     pub flags: u32,
@@ -406,12 +407,12 @@ fn bytes_of<T: IntoBytes + Immutable>(value: &T) -> &[u8] {
 
 impl Client {
     /// A connection whose first message is INIT.
-    pub fn new(fs: FileSystem) -> Rc<Self> {
-        let client = Rc::new_cyclic(|me| Self {
+    pub fn new(fs: FileSystem) -> Arc<Self> {
+        let client = Arc::new_cyclic(|me| Self {
             me: me.clone(),
-            state: RefCell::default(),
+            state: AtomicRefCell::default(),
             fs,
-            no_flush: Cell::new(false),
+            no_flush: AtomicCell::new(false),
         });
         let init = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
@@ -542,7 +543,7 @@ impl Client {
     }
 
     /// The handle the answer just taken gives, made once however often the call runs.
-    pub fn handle(&self, make: impl FnOnce() -> Handle) -> Rc<Handle> {
+    pub fn handle(&self, make: impl FnOnce() -> Handle) -> Arc<Handle> {
         let mut state = self.state.borrow_mut();
         let tid = state.asker.expect("a handle outside a system call").tid;
         let asked = state.calls.get_mut(&tid).expect("an answer was taken");
@@ -550,7 +551,7 @@ impl Client {
         asked
             .handles
             .entry(index)
-            .or_insert_with(|| Rc::new(make()))
+            .or_insert_with(|| Arc::new(make()))
             .clone()
     }
 
@@ -609,7 +610,7 @@ impl Client {
                     && fill
                         .node
                         .upgrade()
-                        .is_some_and(|asked| Rc::ptr_eq(&asked, node))
+                        .is_some_and(|asked| Arc::ptr_eq(&asked, node))
             });
             if let Some(fill) = asked {
                 if !fill.waiters.contains(&asker.tid) {
@@ -654,7 +655,7 @@ impl Client {
             state.fills.insert(
                 unique,
                 Fill {
-                    node: Rc::downgrade(node),
+                    node: Arc::downgrade(node),
                     pages: at..end,
                     changes,
                     waiters: alloc::vec![asker.tid],
@@ -998,7 +999,7 @@ impl Client {
     /// The inode for an entry the backend answered with, made or found again, its attributes
     /// those of the answer; a directory keeps the one it was found in.
     pub fn node(
-        self: &Rc<Self>,
+        self: &Arc<Self>,
         entry: &fuse_entry_out,
         parent: Option<&Node>,
         name: &[u8],
@@ -1010,7 +1011,7 @@ impl Client {
             .get(&entry.nodeid)
             .and_then(Weak::upgrade);
         let node = found.unwrap_or_else(|| {
-            let node = Rc::new(RefCell::new(Inode {
+            let node = Arc::new(AtomicRefCell::new(Inode {
                 fs: self.fs.clone(),
                 ino: entry.attr.ino,
                 mode: 0,
@@ -1032,14 +1033,14 @@ impl Client {
                 content: Content::Backend(Remote {
                     client: self.clone(),
                     nodeid: entry.nodeid,
-                    fresh: Cell::new(0),
-                    version: Cell::new(0),
-                    size: Cell::new(0),
-                    blocks: Cell::new(0),
-                    block_size: Cell::new(0),
+                    fresh: AtomicCell::new(0),
+                    version: AtomicCell::new(0),
+                    size: AtomicCell::new(0),
+                    blocks: AtomicCell::new(0),
+                    block_size: AtomicCell::new(0),
                     pages: None,
-                    writer: Cell::new(None),
-                    acls: RefCell::new([None, None]),
+                    writer: AtomicCell::new(None),
+                    acls: AtomicRefCell::new([None, None]),
                 }),
                 flocks: Vec::new(),
                 record_locks: Vec::new(),
@@ -1055,7 +1056,7 @@ impl Client {
             self.state
                 .borrow_mut()
                 .nodes
-                .insert(entry.nodeid, Rc::downgrade(&node));
+                .insert(entry.nodeid, Arc::downgrade(&node));
             node
         });
         self.refresh(&node, &entry.attr);
@@ -1070,7 +1071,7 @@ impl Client {
         if let Some(parent) = parent {
             let mut inode = node.borrow_mut();
             if !inode.place.mount_root {
-                inode.place.parent = Some(Rc::downgrade(parent));
+                inode.place.parent = Some(Arc::downgrade(parent));
                 inode.place.held_parent = Some(parent.clone());
                 inode.place.name = name.to_vec();
             }
@@ -1079,7 +1080,7 @@ impl Client {
     }
 
     /// The root of the backend, numbered 1 by FUSE.
-    pub fn root(self: &Rc<Self>) -> Node {
+    pub fn root(self: &Arc<Self>) -> Node {
         let entry = fuse_entry_out {
             nodeid: FUSE_ROOT_ID,
             attr: fuse_attr {
@@ -1103,9 +1104,9 @@ impl Client {
         };
         let mut inode = node.borrow_mut();
         if let Content::Backend(remote) = &inode.content
-            && taken.is_some_and(|version| remote.version.get() > version)
+            && taken.is_some_and(|version| remote.version.load() > version)
         {
-            remote.fresh.set(run);
+            remote.fresh.store(run);
             return;
         }
         // `fuse_change_attributes`: a mapped file's pages are dropped when its size changed, or
@@ -1117,10 +1118,10 @@ impl Client {
         let mtime = inode.mtime;
         let stale = match &mut inode.content {
             Content::Backend(remote) => {
-                let size = remote.size.get();
+                let size = remote.size.load();
                 remote.pages.as_mut().is_some_and(|held| {
-                    let ours = held.sent.get() != held.sent_at_attributes;
-                    held.sent_at_attributes = held.sent.get();
+                    let ours = held.sent.load() != held.sent_at_attributes;
+                    held.sent_at_attributes = held.sent.load();
                     (size != attr.size || (mtime != new_mtime && auto_inval))
                         && !(held.dirtied && ours)
                 })
@@ -1137,16 +1138,16 @@ impl Client {
         inode.mtime = time(attr.mtime, attr.mtimensec);
         inode.ctime = time(attr.ctime, attr.ctimensec);
         if let Content::Backend(remote) = &inode.content {
-            remote.fresh.set(run);
-            remote.version.set(self.next_version());
-            remote.size.set(attr.size);
-            remote.blocks.set(attr.blocks);
-            remote.block_size.set(attr.blksize);
+            remote.fresh.store(run);
+            remote.version.store(self.next_version());
+            remote.size.store(attr.size);
+            remote.blocks.store(attr.blocks);
+            remote.block_size.store(attr.blksize);
         }
         drop(inode);
         if stale {
             crate::shared::backend_drop(node, 0..u64::MAX);
-            self.state.borrow_mut().dropped.push(Rc::downgrade(node));
+            self.state.borrow_mut().dropped.push(Arc::downgrade(node));
         }
     }
 
@@ -1194,7 +1195,7 @@ impl Client {
 
     /// Whether a node's attributes came from an answer this run of a call had.
     pub fn is_fresh(&self, remote: &Remote) -> bool {
-        remote.fresh.get() == self.state.borrow().run
+        remote.fresh.load() == self.state.borrow().run
     }
 }
 
@@ -1291,7 +1292,7 @@ fn message(
 }
 
 /// The connection and node number of an inode on a backend.
-pub(crate) fn remote(node: &Node) -> Option<(Rc<Client>, u64)> {
+pub(crate) fn remote(node: &Node) -> Option<(Arc<Client>, u64)> {
     remote_of(&node.borrow()).map(|remote| (remote.client.clone(), remote.nodeid))
 }
 
@@ -1300,7 +1301,7 @@ pub(crate) fn remote_number(inode: &Inode) -> u64 {
     remote_of(inode).map_or(0, |remote| remote.nodeid)
 }
 
-fn on_backend(node: &Node) -> (Rc<Client>, u64) {
+fn on_backend(node: &Node) -> (Arc<Client>, u64) {
     remote(node).expect("an inode on a backend")
 }
 
@@ -1320,7 +1321,12 @@ fn first<T: FromBytes>(body: &[u8]) -> Result<T, Errno> {
 }
 
 /// The inode an entry answer names, which must be of the type asked for when one is.
-fn entry_node(client: &Rc<Client>, body: &[u8], parent: &Node, name: &[u8]) -> Result<Node, Errno> {
+fn entry_node(
+    client: &Arc<Client>,
+    body: &[u8],
+    parent: &Node,
+    name: &[u8],
+) -> Result<Node, Errno> {
     let entry: fuse_entry_out = first(body)?;
     // A zero node is a name the backend says is not there.
     if entry.nodeid == 0 {
@@ -1475,7 +1481,7 @@ pub(crate) fn truncates_on_open(handle: &Handle) -> bool {
 }
 
 /// `fuse_do_open`: opens a file or directory on the backend.
-pub(crate) fn open(node: &Node, flags: u32) -> Result<Rc<Handle>, Errno> {
+pub(crate) fn open(node: &Node, flags: u32) -> Result<Arc<Handle>, Errno> {
     let (client, nodeid) = on_backend(node);
     let directory = node.borrow().is_directory();
     let input = fuse_open_in {
@@ -1516,7 +1522,7 @@ pub(crate) fn create(
     mode: u32,
     umask: u32,
     flags: u32,
-) -> Result<(Node, Rc<Handle>), Errno> {
+) -> Result<(Node, Arc<Handle>), Errno> {
     let (client, nodeid) = on_backend(directory);
     let (mode, umask) = masked(&client, mode, umask);
     let input = fuse_create_in {
@@ -1552,7 +1558,7 @@ pub(crate) fn tmpfile(
     mode: u32,
     umask: u32,
     flags: u32,
-) -> Result<(Node, Rc<Handle>), Errno> {
+) -> Result<(Node, Arc<Handle>), Errno> {
     let (client, nodeid) = on_backend(directory);
     let (mode, umask) = masked(&client, mode, umask);
     let input = fuse_create_in {
@@ -1807,7 +1813,7 @@ impl Handle {
     /// `fuse_dir_operations`), nor a file the backend opened with FOPEN_NOFLUSH (there is no
     /// writeback cache), nor once the backend has answered that it has no FLUSH.
     fn flushes(&self) -> bool {
-        !self.directory && self.open_flags & FOPEN_NOFLUSH == 0 && !self.client.no_flush.get()
+        !self.directory && self.open_flags & FOPEN_NOFLUSH == 0 && !self.client.no_flush.load()
     }
 }
 
@@ -1828,7 +1834,7 @@ pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
     {
         Ok(_) => Ok(()),
         Err(Errno::ENOSYS) => {
-            handle.client.no_flush.set(true);
+            handle.client.no_flush.store(true);
             Ok(())
         }
         Err(error) => Err(error),
@@ -2181,7 +2187,7 @@ impl crate::Kernel {
         loop {
             let buffer = self.waiting.buffer();
             let call: crate::waiting::Call =
-                crate::waiting::waiting_call!(notice_of(cx.system.clone(), applied, buffer));
+                crate::waiting::waiting_call(notice_of(cx.system.clone(), applied, buffer));
             if crate::waiting::Waiting::on_heap(&call) {
                 self.counters
                     .count(cx.host, crate::reason::WAITING_CALL_ON_HEAP, 0);
@@ -2275,7 +2281,7 @@ impl crate::Kernel {
             }
             self.backend_system = system_address(cx.system);
             let call: crate::waiting::Call =
-                crate::waiting::waiting_call!(ask_backend(cx.system.clone(), request.bytes));
+                crate::waiting::waiting_call(ask_backend(cx.system.clone(), request.bytes));
             if crate::waiting::Waiting::on_heap(&call) {
                 self.counters.count(
                     cx.host,
@@ -2464,7 +2470,7 @@ impl crate::Kernel {
                     if let Some(node) = client.node_of(out.ino)
                         && let Content::Backend(remote) = &node.borrow().content
                     {
-                        remote.fresh.set(0);
+                        remote.fresh.store(0);
                         remote.changed();
                         remote.forget_acls();
                     }
@@ -2507,7 +2513,7 @@ impl crate::Kernel {
                     if let Some(above) = inode.place.parent.as_ref().and_then(Weak::upgrade) {
                         let same_parent = parent
                             .as_ref()
-                            .is_some_and(|parent| Rc::ptr_eq(parent, &above));
+                            .is_some_and(|parent| Arc::ptr_eq(parent, &above));
                         if !same_parent || inode.place.name != name {
                             return Err(Errno::ENOENT);
                         }
@@ -2526,7 +2532,7 @@ impl crate::Kernel {
                         {
                             if let Content::Backend(remote) = &node.borrow().content {
                                 let end = out.offset + data.len() as u64;
-                                remote.set_size(remote.size.get().max(end));
+                                remote.set_size(remote.size.load().max(end));
                             }
                             crate::shared::backend_stored(cx, &node, out.offset, data);
                             let _ = crate::shared::changed(self, cx, &node);
@@ -2664,7 +2670,7 @@ mod tests {
                 at: 0,
                 answered: true,
             };
-            let call: crate::waiting::Call = waiting_call!(ask_backend(server.clone(), request));
+            let call: crate::waiting::Call = waiting_call(ask_backend(server.clone(), request));
             assert!(waiting.start(WaitFor::Backend(sent), call).is_none());
             server.door.open();
             let (about, answer) = waiting.next_answer().expect("answered");
@@ -2733,7 +2739,7 @@ mod tests {
             server.door.shut();
             let buffer = waiting.buffer();
             let call: crate::waiting::Call =
-                waiting_call!(notice_of(server.clone(), applied, buffer));
+                waiting_call(notice_of(server.clone(), applied, buffer));
             assert!(waiting.start(WaitFor::Notice, call).is_none());
             assert_eq!(*server.told.lock().expect("told"), Some(applied));
             server.door.open();

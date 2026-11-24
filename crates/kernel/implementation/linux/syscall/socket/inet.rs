@@ -9,9 +9,9 @@ use crate::linux_extra::{
     TCP_TIMEOUT_INIT,
 };
 use alloc::collections::VecDeque;
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{
@@ -147,15 +147,15 @@ pub(crate) struct Inet {
     pub remote: Option<Endpoint>,
     pub v6only: bool,
     /// A TCP connect waiting for room in a listener's backlog (`TCP_SYN_SENT`), and the listener.
-    pub connecting: Option<Weak<RefCell<Socket>>>,
+    pub connecting: Option<Weak<AtomicRefCell<Socket>>>,
     /// For a listener: the connects waiting for room, first first.
-    pub waiting: VecDeque<Weak<RefCell<Socket>>>,
+    pub waiting: VecDeque<Weak<AtomicRefCell<Socket>>>,
     /// For a listener with TCP_DEFER_ACCEPT: its connections held back until data comes
     /// (requests acknowledged but not yet established, `inet_rsk(req)->acked`), oldest first.
     pub deferred: Vec<SocketRef>,
     /// For a connection held back: its listener, and when it was made and when its deferral ends,
     /// on the monotonic clock.
-    pub deferral: Option<(Weak<RefCell<Socket>>, u64, u64)>,
+    pub deferral: Option<(Weak<AtomicRefCell<Socket>>, u64, u64)>,
     /// The other end's FIN came (`SOCK_DONE`).
     pub done: bool,
     /// It sent its FIN before the other end (it closes actively and holds the ports a while).
@@ -377,7 +377,7 @@ fn carry_between(kernel: &mut Kernel, from: &SocketRef, to: &SocketRef, size: u6
     let mss = send_mss(family, &inet_ref(from).traffic);
     let now = kernel.entry_now;
     // A socket connected to itself is both ends.
-    if Rc::ptr_eq(from, to) {
+    if Arc::ptr_eq(from, to) {
         let traffic = &mut inet(from).traffic;
         carry(Some(traffic), None, mss, size, fin, now);
         carry(None, Some(traffic), mss, size, fin, now);
@@ -514,7 +514,7 @@ fn hold(kernel: &mut Kernel, socket: &SocketRef, packet: Packet) {
     if inet_ref(socket).probe.is_none() {
         let until = kernel.entry_now
             + core::time::Duration::from_micros(LOOPBACK_RTO_MICROSECONDS.into()).as_nanos() as u64;
-        let probe = crate::syscall::timer::start_held_bytes(kernel, Rc::downgrade(socket), until);
+        let probe = crate::syscall::timer::start_held_bytes(kernel, Arc::downgrade(socket), until);
         inet(socket).probe = Some(probe);
     }
 }
@@ -730,7 +730,8 @@ pub(super) struct TimeWait {
 /// The ports in use: every socket holding one, and closed connections still holding theirs.
 #[derive(Default)]
 pub(crate) struct Ports {
-    pub(super) bound: alloc::collections::BTreeMap<(Protocol, u16), Vec<Weak<RefCell<Socket>>>>,
+    pub(super) bound:
+        alloc::collections::BTreeMap<(Protocol, u16), Vec<Weak<AtomicRefCell<Socket>>>>,
     /// Closed TCP connections in TIME_WAIT.
     pub(super) time_wait: Vec<TimeWait>,
     /// Connections to the outside and name lookups under way.
@@ -767,8 +768,8 @@ fn neighbour(kernel: &mut Kernel, to: &[u8; 16], through_lo: bool, tcp: bool) {
     }
 }
 
-fn inet(socket: &SocketRef) -> core::cell::RefMut<'_, Inet> {
-    core::cell::RefMut::map(socket.borrow_mut(), |own| {
+fn inet(socket: &SocketRef) -> atomic_refcell::AtomicRefMut<'_, Inet> {
+    atomic_refcell::AtomicRefMut::map(socket.borrow_mut(), |own| {
         own.inet.as_deref_mut().expect("an internet socket")
     })
 }
@@ -782,8 +783,8 @@ impl Inet {
     }
 }
 
-fn inet_ref(socket: &SocketRef) -> core::cell::Ref<'_, Inet> {
-    core::cell::Ref::map(socket.borrow(), |own| {
+fn inet_ref(socket: &SocketRef) -> atomic_refcell::AtomicRef<'_, Inet> {
+    atomic_refcell::AtomicRef::map(socket.borrow(), |own| {
         own.inet.as_deref().expect("an internet socket")
     })
 }
@@ -932,13 +933,13 @@ impl Ports {
     fn hold(&mut self, protocol: Protocol, port: u16, socket: &SocketRef) {
         let holders = self.bound.entry((protocol, port)).or_default();
         holders.retain(|other| other.strong_count() > 0);
-        holders.push(Rc::downgrade(socket));
+        holders.push(Arc::downgrade(socket));
     }
 
     fn let_go(&mut self, protocol: Protocol, port: u16, socket: &SocketRef) {
         if let Some(holders) = self.bound.get_mut(&(protocol, port)) {
             holders.retain(|other| {
-                other.strong_count() > 0 && !core::ptr::eq(other.as_ptr(), Rc::as_ptr(socket))
+                other.strong_count() > 0 && !core::ptr::eq(other.as_ptr(), Arc::as_ptr(socket))
             });
             if holders.is_empty() {
                 self.bound.remove(&(protocol, port));
@@ -1001,7 +1002,7 @@ fn conflicts(
     let reuse = flag(&own, SOL_SOCKET, SO_REUSEADDR);
     let reuse_port = flag(&own, SOL_SOCKET, SO_REUSEPORT);
     for other in kernel.sockets.inet.holders(protocol, port) {
-        if Rc::ptr_eq(&other, socket) {
+        if Arc::ptr_eq(&other, socket) {
             continue;
         }
         let them = other.borrow();
@@ -1388,7 +1389,7 @@ fn reset_peer<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, so
         .borrow()
         .peer
         .as_ref()
-        .is_some_and(|back| Rc::ptr_eq(back, socket));
+        .is_some_and(|back| Arc::ptr_eq(back, socket));
     if back {
         reset(kernel, cx, &peer);
     }
@@ -1402,7 +1403,7 @@ fn reset<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket:
         if let Some(listener) = listener.upgrade() {
             inet(&listener)
                 .deferred
-                .retain(|held| !Rc::ptr_eq(held, socket));
+                .retain(|held| !Arc::ptr_eq(held, socket));
         }
         socket.borrow_mut().state = State::Closed;
         super::released(kernel, cx, socket);
@@ -1504,8 +1505,8 @@ fn tcp_connect<S: crate::System>(
         kernel
             .counters
             .count(cx.host, crate::reason::TCP_BACKLOG_WAIT, 0);
-        inet(socket).connecting = Some(Rc::downgrade(&listener));
-        inet(&listener).waiting.push_back(Rc::downgrade(socket));
+        inet(socket).connecting = Some(Arc::downgrade(&listener));
+        inet(&listener).waiting.push_back(Arc::downgrade(socket));
         if nonblocking {
             inet(socket).in_progress = true;
             return Err(Errno::EINPROGRESS);
@@ -1704,9 +1705,9 @@ fn join<S: crate::System>(
     if defer > 0 && requests <= listener.borrow().max_backlog as usize {
         let now = kernel.entry_now;
         let until = now + defer * NANOSECONDS_PER_SECOND;
-        inet(&embryo).deferral = Some((Rc::downgrade(listener), now, until));
+        inet(&embryo).deferral = Some((Arc::downgrade(listener), now, until));
         inet(listener).deferred.push(embryo);
-        crate::syscall::timer::start_deferral(kernel, Rc::downgrade(listener), until);
+        crate::syscall::timer::start_deferral(kernel, Arc::downgrade(listener), until);
     } else {
         listener.borrow_mut().backlog.push_back(embryo);
         super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
@@ -1781,7 +1782,7 @@ fn arrived<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, embry
         if let Some((_, _, until)) = inet(embryo).deferral.as_mut() {
             *until = next;
         }
-        crate::syscall::timer::start_deferral(kernel, Rc::downgrade(&listener), next);
+        crate::syscall::timer::start_deferral(kernel, Arc::downgrade(&listener), next);
         return;
     }
     let Some(deferral) = inet(embryo).deferral.take() else {
@@ -1790,7 +1791,7 @@ fn arrived<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, embry
     if let Some(listener) = deferral.0.upgrade() {
         inet(&listener)
             .deferred
-            .retain(|held| !Rc::ptr_eq(held, embryo));
+            .retain(|held| !Arc::ptr_eq(held, embryo));
         listener.borrow_mut().backlog.push_back(embryo.clone());
         super::data_ready(kernel, cx, &listener, EPOLLIN | EPOLLRDNORM);
     }
@@ -1888,7 +1889,7 @@ pub(super) fn embryo(
         inet.sndbuf_set = listening.sndbuf_set;
         inet.rcvbuf_set = listening.rcvbuf_set;
         new.inet = Some(alloc::boxed::Box::new(inet));
-        Rc::new(RefCell::new(new))
+        Arc::new(AtomicRefCell::new(new))
     };
     let port = inet_ref(listener).local.port;
     kernel.sockets.inet.hold(Protocol::Tcp, port, &embryo);
@@ -2234,7 +2235,7 @@ pub(super) fn released<S: crate::System>(
                     if let (true, Some(until), Some(client)) = (sent, until, client) {
                         crate::syscall::timer::start_deferral(
                             kernel,
-                            Rc::downgrade(&client),
+                            Arc::downgrade(&client),
                             until,
                         );
                     }
@@ -2514,7 +2515,7 @@ fn empty_packet(kernel: &Kernel, tid: Tid, socket: &SocketRef, owner: u32) -> Pa
         consumed: 0,
         files: Vec::new(),
         cred: super::own_cred(kernel, tid),
-        sender: Rc::downgrade(socket),
+        sender: Arc::downgrade(socket),
         truesize: 0,
         source: None,
         arrival: None,
@@ -2607,7 +2608,7 @@ fn urgent_arrives<S: crate::System>(
         consumed: 0,
         files: Vec::new(),
         cred: super::own_cred(kernel, tid),
-        sender: Rc::downgrade(socket),
+        sender: Arc::downgrade(socket),
         truesize: 1,
         source: None,
         arrival: None,

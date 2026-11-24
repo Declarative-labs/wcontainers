@@ -429,7 +429,7 @@ pub(super) fn do_mmap<S: crate::System>(
                     regular.set_mapped();
                     regular.size()
                 }
-                Content::Backend(remote) => remote.size.get(),
+                Content::Backend(remote) => remote.size.load(),
                 _ => 0,
             };
             let file_pages = page_up(size).saturating_sub(offset);
@@ -545,7 +545,7 @@ pub(super) fn remap_file_pages<S: crate::System>(
     };
     let (node, path) = (node.clone(), path.clone());
     let same = |mapping: &Mapping| {
-        matches!(&mapping.backing, Backing::File { node: other, .. } if alloc::rc::Rc::ptr_eq(other, &node))
+        matches!(&mapping.backing, Backing::File { node: other, .. } if alloc::sync::Arc::ptr_eq(other, &node))
             && mapping.permissions == first.permissions
             && mapping.allowed == first.allowed
             && mapping.shared
@@ -587,7 +587,7 @@ pub(super) fn remap_file_pages<S: crate::System>(
     }
     let file_size = match &node.borrow().content {
         Content::Regular(regular) => regular.size(),
-        Content::Backend(remote) => remote.size.get(),
+        Content::Backend(remote) => remote.size.load(),
         _ => 0,
     };
     let file_pages = page_up(file_size).saturating_sub(offset);

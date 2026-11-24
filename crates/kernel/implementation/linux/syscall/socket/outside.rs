@@ -7,11 +7,10 @@
 //! resolver.
 
 use alloc::collections::BTreeMap;
-use alloc::rc::{Rc, Weak};
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use atomic_refcell::AtomicRefCell;
 use core::any::Any;
-use core::cell::RefCell;
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::ops::Range;
 
@@ -65,12 +64,12 @@ type HandleOf<S> = Handle<
 
 /// One connection, listener or UDP flow to the outside.
 struct Link {
-    socket: Weak<RefCell<Socket>>,
+    socket: Weak<AtomicRefCell<Socket>>,
     /// The destination a UDP flow carries; none for TCP.
     flow: Option<Endpoint>,
     /// The system's `HandleOf<S>`, kept without its type as the kernel is not generic over its
     /// system.
-    handle: Rc<dyn Any>,
+    handle: Arc<dyn Any + Send + Sync>,
     /// The local port the system's UDP socket of a flow is bound to.
     local_port: u16,
     /// What the wait kept for it asks beside an error or hang-up, which every wait hears; none when
@@ -88,9 +87,9 @@ struct Link {
 }
 
 impl Link {
-    fn new(socket: &SocketRef, flow: Option<Endpoint>, handle: Rc<dyn Any>) -> Self {
+    fn new(socket: &SocketRef, flow: Option<Endpoint>, handle: Arc<dyn Any + Send + Sync>) -> Self {
         Self {
-            socket: Rc::downgrade(socket),
+            socket: Arc::downgrade(socket),
             flow,
             handle,
             local_port: u16::MIN,
@@ -113,7 +112,7 @@ pub(crate) struct Outside {
     last_lookup: u64,
     lookups: BTreeMap<u64, Lookup>,
     /// The system's handles let go, ended at the next flush once no wait holds them.
-    closing: Vec<(Rc<dyn Any>, Ending)>,
+    closing: Vec<(Arc<dyn Any + Send + Sync>, Ending)>,
     /// What every pull receives into, kept between pulls so that one which finds nothing allocates
     /// nothing; a queued packet holds a copy of only the bytes it received.
     received: Vec<u8>,
@@ -130,7 +129,7 @@ enum Ending {
 
 /// A name query waiting for the system's resolver, which is asked as a waiting call of its number.
 struct Lookup {
-    socket: Weak<RefCell<Socket>>,
+    socket: Weak<AtomicRefCell<Socket>>,
     /// The server's address it asked at.
     server: Endpoint,
     query: Vec<u8>,
@@ -201,7 +200,7 @@ fn next_id(outside: &mut Outside) -> u32 {
 }
 
 /// The system's handle kept for a link.
-fn handle_of<S: crate::System>(handle: &Rc<dyn Any>) -> Option<&HandleOf<S>> {
+fn handle_of<S: crate::System>(handle: &Arc<dyn Any + Send + Sync>) -> Option<&HandleOf<S>> {
     handle.downcast_ref::<HandleOf<S>>()
 }
 
@@ -230,11 +229,11 @@ fn datagram_of<S: crate::System>(kernel: &Kernel, id: u32) -> Option<&<S as UdpS
 /// back is released, since the kernel keeps no socket bound at the system, and its pending error
 /// is left to the guest's socket, which the disconnect already set as for a connection inside the
 /// container.
-fn close_handle<S: crate::System>(system: &S, handle: Rc<dyn Any>, ending: Ending) {
+fn close_handle<S: crate::System>(system: &S, handle: Arc<dyn Any + Send + Sync>, ending: Ending) {
     let Ok(handle) = handle.downcast::<HandleOf<S>>() else {
         return;
     };
-    match Rc::try_unwrap(handle) {
+    match Arc::try_unwrap(handle) {
         Ok(Handle::Connection(connection)) => match ending {
             Ending::Closed => TcpConnections::close(system, connection, TcpClose::Orderly),
             Ending::Disconnected => {
@@ -345,7 +344,7 @@ fn open_flow<S: crate::System>(
     };
     let id = next_id(&mut kernel.sockets.inet.outside);
     let handle: HandleOf<S> = Handle::Datagram(opened);
-    let mut link = Link::new(socket, Some(to), Rc::new(handle));
+    let mut link = Link::new(socket, Some(to), Arc::new(handle));
     link.local_port = local.port();
     link.drained = true;
     kernel.sockets.inet.outside.connections.insert(id, link);
@@ -397,7 +396,7 @@ pub(super) fn open<S: crate::System>(
     };
     let id = next_id(&mut kernel.sockets.inet.outside);
     let handle: HandleOf<S> = Handle::Connection(connected.connection);
-    let mut link = Link::new(socket, None, Rc::new(handle));
+    let mut link = Link::new(socket, None, Arc::new(handle));
     link.connecting = true;
     kernel.sockets.inet.outside.connections.insert(id, link);
     watch(kernel, cx, id);
@@ -425,7 +424,7 @@ fn end_connections(kernel: &mut Kernel, socket: &SocketRef, ending: Ending) {
         .outside
         .connections
         .iter()
-        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Rc::as_ptr(socket)))
+        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Arc::as_ptr(socket)))
         .map(|(&id, _)| id)
         .collect();
     for id in ids {
@@ -498,7 +497,7 @@ fn ask_listen<S: crate::System>(
     match listening {
         Ok(listening) => {
             let handle: HandleOf<S> = Handle::Listener(listening.listener);
-            let mut link = Link::new(socket, None, Rc::new(handle));
+            let mut link = Link::new(socket, None, Arc::new(handle));
             link.drained = true;
             kernel.sockets.inet.outside.listeners.insert(id, link);
             watch(kernel, cx, id);
@@ -521,7 +520,7 @@ pub(super) fn stop_listening(kernel: &mut Kernel, socket: &SocketRef) {
         .outside
         .listeners
         .iter()
-        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Rc::as_ptr(socket)))
+        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Arc::as_ptr(socket)))
         .map(|(&id, _)| id)
         .collect();
     for id in ids {
@@ -545,7 +544,7 @@ pub(super) fn take<S: crate::System>(
         .outside
         .listeners
         .iter()
-        .find(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Rc::as_ptr(listener)))
+        .find(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Arc::as_ptr(listener)))
         .map(|(&id, link)| (id, link.handle.clone()))
     else {
         return;
@@ -600,7 +599,7 @@ pub(super) fn take<S: crate::System>(
         }
         super::inet::made_outside(kernel, &embryo, false);
         let handle: HandleOf<S> = Handle::Connection(accepted);
-        let link = Link::new(&embryo, None, Rc::new(handle));
+        let link = Link::new(&embryo, None, Arc::new(handle));
         kernel.sockets.inet.outside.connections.insert(id, link);
         pull_and_wait(kernel, cx, &embryo, id);
         listener.borrow_mut().backlog.push_back(embryo);
@@ -666,7 +665,7 @@ fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32
     let Some(wanted) = wanted else {
         return;
     };
-    let call: crate::waiting::Call = waiting_call!(ready_of(cx.system.clone(), handle, wanted));
+    let call: crate::waiting::Call = waiting_call(ready_of(cx.system.clone(), handle, wanted));
     if Waiting::on_heap(&call) {
         kernel
             .counters
@@ -678,7 +677,7 @@ fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32
 /// The system's wait on a connection or listener, owning what it waits on.
 async fn ready_of<S: crate::System>(
     system: Arc<S>,
-    handle: Rc<dyn Any>,
+    handle: Arc<dyn Any + Send + Sync>,
     interest: ReadyFor,
 ) -> Answer {
     let ready = match handle.downcast_ref::<HandleOf<S>>() {
@@ -718,7 +717,12 @@ fn failure<S: crate::System>(
     let peek = TcpReceiveRequest::Peek {
         offset: wcontainers_internet_protocol::ByteCount(0),
     };
-    match TcpConnections::receive(&**cx.system, connection, peek, &RefCell::new(&mut byte[..])) {
+    match TcpConnections::receive(
+        &**cx.system,
+        connection,
+        peek,
+        &core::cell::RefCell::new(&mut byte[..]),
+    ) {
         Err(HostError::Errno(number)) => Errno(number as u32),
         _ => otherwise,
     }
@@ -851,7 +855,7 @@ fn receive<S: crate::System>(
     into: &mut [u8],
 ) -> Result<Range<usize>, HostError> {
     if let Some(connection) = connection_of::<S>(kernel, id) {
-        let into = RefCell::new(into);
+        let into = core::cell::RefCell::new(into);
         return TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, &into)
             .map(|received| 0..received.length.0);
     }
@@ -861,7 +865,8 @@ fn receive<S: crate::System>(
     loop {
         // The flow asks for no transmit reports, and a packet that does not parse is dropped, as
         // Linux drops a malformed datagram.
-        let received = UdpSockets::receive(&**cx.system, socket, &RefCell::new(&mut *into))?;
+        let received =
+            UdpSockets::receive(&**cx.system, socket, &core::cell::RefCell::new(&mut *into))?;
         if let UdpReceived::Packet(packet) = received
             && let Some(payload) = payload_of(&into[..packet.fields.length.min(into.len())])
         {
@@ -1137,7 +1142,7 @@ pub(super) fn send<S: crate::System>(
     id: u32,
     bytes: &mut [u8],
 ) -> Result<usize, Errno> {
-    let payload = RefCell::new(&mut *bytes);
+    let payload = core::cell::RefCell::new(&mut *bytes);
     let sent = match connection_of::<S>(kernel, id) {
         Some(connection) => TcpConnections::send(&**cx.system, connection, PLAIN_SEND, &payload)
             .map(|count| count.0),
@@ -1322,7 +1327,7 @@ pub(super) fn query<S: crate::System>(
             outside.lookups.insert(
                 number,
                 Lookup {
-                    socket: Rc::downgrade(socket),
+                    socket: Arc::downgrade(socket),
                     server,
                     query: data.to_vec(),
                 },
@@ -1396,7 +1401,7 @@ fn ask<S: crate::System>(
 ) {
     let buffer = kernel.waiting.buffer();
     let call: crate::waiting::Call =
-        crate::waiting::waiting_call!(resolve(cx.system.clone(), asked, buffer));
+        crate::waiting::waiting_call(resolve(cx.system.clone(), asked, buffer));
     if crate::waiting::Waiting::on_heap(&call) {
         kernel
             .counters
@@ -1491,8 +1496,7 @@ mod tests {
             resolver.door.shut();
             let asked = questions.pop().expect("a question");
             let buffer = waiting.buffer();
-            let call: crate::waiting::Call =
-                waiting_call!(resolve(resolver.clone(), asked, buffer));
+            let call: crate::waiting::Call = waiting_call(resolve(resolver.clone(), asked, buffer));
             assert!(waiting.start(WaitFor::Name(number), call).is_none());
             resolver.door.open();
             let (about, answer) = waiting.next_answer().expect("answered");

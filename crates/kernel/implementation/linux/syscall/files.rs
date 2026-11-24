@@ -1,7 +1,7 @@
 //! Calls that name files by path: opening, making, removing, renaming, and reading and changing what a
 //! file's inode records.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
@@ -789,9 +789,9 @@ pub(super) fn open<S: crate::System>(
                 .borrow()
                 .directory()
                 .and_then(|entries| entries.get(&parent.name))
-                .is_some_and(|found| Rc::ptr_eq(&found, &node)));
+                .is_some_and(|found| Arc::ptr_eq(&found, &node)));
     if named {
-        file.borrow_mut().dentry = Some((Rc::downgrade(&parent.directory), parent.name.clone()));
+        file.borrow_mut().dentry = Some((Arc::downgrade(&parent.directory), parent.name.clone()));
     }
     if flags & O_PATH == 0 {
         super::inotify::file_changed(kernel, &file, IN_OPEN);
@@ -899,7 +899,7 @@ fn tmpfile_opened(
         credentials(kernel, tid).serial,
     );
     file.borrow_mut().created = true;
-    file.borrow_mut().dentry = Some((Rc::downgrade(directory), name));
+    file.borrow_mut().dentry = Some((Arc::downgrade(directory), name));
     super::inotify::file_changed(kernel, &file, IN_OPEN);
     file
 }
@@ -1336,7 +1336,7 @@ pub(super) fn unlinkat<S: crate::System>(
             return Err(Errno::ENOTDIR);
         }
         changes_names(&parent.directory)?;
-        if Rc::ptr_eq(&node, &kernel.fs(tid).root) || node.borrow().place.mount_root {
+        if Arc::ptr_eq(&node, &kernel.fs(tid).root) || node.borrow().place.mount_root {
             return Err(Errno::EBUSY);
         }
         if node
@@ -1576,7 +1576,7 @@ fn rename<S: crate::System>(
         return Err(Errno::EBUSY);
     }
     // A directory changing parent has its `..` rewritten, which needs write permission on it.
-    let moves_parent = !Rc::ptr_eq(&from.directory, &to.directory);
+    let moves_parent = !Arc::ptr_eq(&from.directory, &to.directory);
     if moves_parent && source_is_directory && !source.borrow().permits(&credentials, W_OK, true) {
         return Err(Errno::EACCES);
     }
@@ -1608,7 +1608,7 @@ fn rename<S: crate::System>(
         crate::fs::backend::rename(&from.directory, &from.name, &to.directory, &to.name, flags)?;
         let place = |node: &Node, directory: &Node, name: &[u8]| {
             let mut inode = node.borrow_mut();
-            inode.place.parent = Some(Rc::downgrade(directory));
+            inode.place.parent = Some(Arc::downgrade(directory));
             inode.place.name = name.to_vec();
             if inode.is_directory() {
                 inode.place.held_parent = Some(directory.clone());
@@ -1641,7 +1641,7 @@ fn rename<S: crate::System>(
     let now = kernel.now(cx);
     let set_place = |node: &Node, directory: &Node, name: &[u8]| {
         let mut inode = node.borrow_mut();
-        inode.place.parent = Some(Rc::downgrade(directory));
+        inode.place.parent = Some(Arc::downgrade(directory));
         inode.place.name = name.to_vec();
         inode.ctime = now;
     };
@@ -1659,7 +1659,7 @@ fn rename<S: crate::System>(
         set_place(&source, &to.directory, &to.name);
         let source_dir = source_is_directory;
         let target_dir = target.borrow().is_directory();
-        if source_dir != target_dir && !Rc::ptr_eq(&from.directory, &to.directory) {
+        if source_dir != target_dir && !Arc::ptr_eq(&from.directory, &to.directory) {
             let (gains, loses) = if source_dir {
                 (&to.directory, &from.directory)
             } else {
@@ -1711,7 +1711,7 @@ fn rename<S: crate::System>(
             d.put(&to.name, source.clone(), position);
         });
         set_place(&source, &to.directory, &to.name);
-        if source_is_directory && !Rc::ptr_eq(&from.directory, &to.directory) {
+        if source_is_directory && !Arc::ptr_eq(&from.directory, &to.directory) {
             from.directory.borrow_mut().nlink -= 1;
             to.directory.borrow_mut().nlink += 1;
         }
@@ -2819,7 +2819,7 @@ fn fallocate_unwatched<S: crate::System>(
         }
         if let Content::Backend(remote) = &node.borrow().content
             && mode & FALLOC_FL_KEEP_SIZE == 0
-            && remote.size.get() < end
+            && remote.size.load() < end
         {
             remote.set_size(end);
         }
@@ -3158,7 +3158,7 @@ fn flock_typed<S: crate::System>(
     }
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
-    let own = alloc::rc::Rc::downgrade(&file);
+    let own = alloc::sync::Arc::downgrade(&file);
     inode
         .flocks
         .retain(|(holder, ..)| holder.strong_count() > 0);

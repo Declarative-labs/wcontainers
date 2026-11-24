@@ -2,7 +2,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use wcontainers_abi::{CounterReading, Host, Warning};
 
@@ -266,7 +266,7 @@ pub(crate) struct Counters {
     /// Measured times: how many and their sum in nanoseconds.
     times: BTreeMap<(&'static str, u64), (u64, u64)>,
     /// Occurrences seen where the host cannot be reached (a path walk), counted at the next flush.
-    noted: RefCell<Vec<(&'static str, u64)>>,
+    noted: AtomicRefCell<Vec<(&'static str, u64)>>,
 }
 
 impl Counters {

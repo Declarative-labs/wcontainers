@@ -2,7 +2,6 @@
 //! embedder's state and execution configuration of each process kept beside the process's record.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
@@ -27,15 +26,15 @@ use crate::system::{Unsupported, pid_of};
 /// What the embedder keeps of one process: its state, and how it asked for the process to run,
 /// shared by the processes a fork made from it.
 struct ProcessData<E: Executor, State> {
-    config: Rc<interface::ExecutionConfig<E>>,
+    config: Arc<interface::ExecutionConfig<E>>,
     state: State,
 }
 
 /// The embedder's data of one process, of a type only the embedder knows; a fork's child gets a
 /// copy of its parent's.
 pub(crate) struct EmbedderData {
-    value: Box<dyn Any>,
-    copy: fn(&dyn Any) -> Box<dyn Any>,
+    value: Box<dyn Any + Send>,
+    copy: fn(&dyn Any) -> Box<dyn Any + Send>,
 }
 
 impl Clone for EmbedderData {
@@ -48,13 +47,20 @@ impl Clone for EmbedderData {
 }
 
 impl EmbedderData {
-    fn new<E: Executor + 'static, State: Clone + 'static>(data: ProcessData<E, State>) -> Self {
-        fn copy<E: Executor + 'static, State: Clone + 'static>(value: &dyn Any) -> Box<dyn Any> {
+    fn new<E: Executor<TranslatorConfig: Send + Sync> + 'static, State: Clone + Send + 'static>(
+        data: ProcessData<E, State>,
+    ) -> Self {
+        fn copy<
+            E: Executor<TranslatorConfig: Send + Sync> + 'static,
+            State: Clone + Send + 'static,
+        >(
+            value: &dyn Any,
+        ) -> Box<dyn Any + Send> {
             let data = value
                 .downcast_ref::<ProcessData<E, State>>()
                 .expect("the data's own type");
             Box::new(ProcessData::<E, State> {
-                config: Rc::clone(&data.config),
+                config: Arc::clone(&data.config),
                 state: data.state.clone(),
             })
         }
@@ -92,7 +98,7 @@ pub struct KernelWithExecutor<C: Executor, State, S> {
 /// ends a guest's turn when the kernel's interface waits for that lock.
 struct Shared<C: Executor> {
     inner: spin::Mutex<Inner<C>>,
-    let_go: spin::Mutex<Vec<Box<dyn Any>>>,
+    let_go: spin::Mutex<Vec<Box<dyn Any + Send>>>,
     /// The interrupter of the turn a runner runs under the lock, while it runs.
     running: spin::Mutex<Option<C::Interrupter>>,
     /// How many of the interface's calls wait for the lock; runners leave it to them.
@@ -143,7 +149,7 @@ impl<C: Executor> Shared<C> {
     }
 
     /// Drops what was let go of while another held the lock.
-    fn dropped_let_go(let_go: &spin::Mutex<Vec<Box<dyn Any>>>) {
+    fn dropped_let_go(let_go: &spin::Mutex<Vec<Box<dyn Any + Send>>>) {
         let let_go = core::mem::take(&mut *let_go.lock());
         drop(let_go);
     }
@@ -164,7 +170,7 @@ impl<C: Executor> Shared<C> {
     }
 
     /// `value`, which shares the kernel's records, handed out.
-    fn hold<T: 'static>(self: &Arc<Self>, value: T) -> Held<T, C> {
+    fn hold<T: Send + 'static>(self: &Arc<Self>, value: T) -> Held<T, C> {
         Held {
             value: Some(value),
             shared: Arc::clone(self),
@@ -172,36 +178,15 @@ impl<C: Executor> Shared<C> {
     }
 }
 
-// SAFETY: every use of the kernel's state and its executor holds the lock, and so does every drop
-// of a context or task it handed out (`Held`, which is not `Send`), the only values outside the
-// lock that share its records. So what they share through `Rc` and `RefCell` is touched by one
-// host thread at a time, and the rest may move between host threads: the executor, the
-// memory spaces it made (reached only through the kernel's `GuestMachine`, under the lock, so
-// that the references they share are touched by one host thread at a time), the
-// embedder's states and execution configurations, and the system with its handles are `Send`,
-// and the system's waiting calls the kernel keeps were promised to be when it was started
-// (`start`).
-unsafe impl<C, State, S> Sync for KernelWithExecutor<C, State, S>
-where
-    C: Executor<TranslatorConfig: Send> + Send,
-    State: Send,
-    S: crate::System + Send,
-    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
-    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
-    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
-    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
-{
-}
-
 /// A context or task a [`KernelWithExecutor`] handed out. It shares the kernel's records, so it is
 /// dropped under the kernel's lock, or, while that lock is held, by the lock's next holder.
-pub struct Held<T: 'static, C: Executor> {
+pub struct Held<T: Send + 'static, C: Executor> {
     /// Always there, until the kernel takes it back.
     value: Option<T>,
     shared: Arc<Shared<C>>,
 }
 
-impl<T: 'static, C: Executor> Held<T, C> {
+impl<T: Send + 'static, C: Executor> Held<T, C> {
     /// The value, if it was handed out by the kernel `shared` is of; else itself.
     fn take_from(mut self, shared: &Arc<Shared<C>>) -> Result<T, Self> {
         if !Arc::ptr_eq(&self.shared, shared) {
@@ -211,7 +196,7 @@ impl<T: 'static, C: Executor> Held<T, C> {
     }
 }
 
-impl<T: 'static, C: Executor> core::ops::Deref for Held<T, C> {
+impl<T: Send + 'static, C: Executor> core::ops::Deref for Held<T, C> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -219,7 +204,7 @@ impl<T: 'static, C: Executor> core::ops::Deref for Held<T, C> {
     }
 }
 
-impl<T: 'static, C: Executor> Drop for Held<T, C> {
+impl<T: Send + 'static, C: Executor> Drop for Held<T, C> {
     fn drop(&mut self) {
         let Some(value) = self.value.take() else {
             return;
@@ -247,11 +232,7 @@ pub struct KernelConfig<C: Executor, State, S: crate::System> {
 
 impl<C: Executor, State, S: crate::System> KernelConfig<C, State, S> {
     /// What [`KernelWithExecutor::start`] is given.
-    ///
-    /// # Safety
-    ///
-    /// As for [`KernelWithExecutor::start`].
-    pub unsafe fn new(
+    pub fn new(
         kernel: crate::Kernel,
         executor: C,
         system: Arc<S>,
@@ -270,18 +251,15 @@ impl<C: Executor, State, S: crate::System> KernelConfig<C, State, S> {
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
-    KernelWithExecutor<C, State, S>
+impl<
+    C: Cpu + Executor<TranslatorConfig: Send + Sync> + 'static,
+    State: Clone + Send + 'static,
+    S: crate::System,
+> KernelWithExecutor<C, State, S>
 {
     /// Starts a container on `kernel`, as [`crate::Kernel::start`], its first process with
     /// `state` and run as `config` says, unless the kernel cannot run it so.
-    ///
-    /// # Safety
-    ///
-    /// Every waiting call of `system` (each future its `async` calls return) may be polled and
-    /// dropped on a host thread other than the one that made it, as if it were `Send`: the
-    /// kernel keeps such calls, and its interface's calls may come from any host thread.
-    pub unsafe fn start(
+    pub fn start(
         mut kernel: crate::Kernel,
         executor: C,
         system: &Arc<S>,
@@ -296,7 +274,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
             .init
             .expect("a started container has a first process");
         let data = ProcessData {
-            config: Rc::new(config),
+            config: Arc::new(config),
             state,
         };
         if let Some(process) = kernel.processes.get_mut(&first) {
@@ -345,13 +323,9 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
 
 impl<C, State, S> interface::Kernel for KernelWithExecutor<C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send> + Send + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
-    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
-    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
-    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
-    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
 {
     type Executor = C;
     type Fallback = wcontainers_abi::Warning<'static>;
@@ -379,9 +353,7 @@ where
             state,
         } = config;
         kernel.machine.processors = parallelism;
-        // SAFETY: the config was made by `KernelConfig::new`, whose caller promised what `start`
-        // asks.
-        let kernel = unsafe { Self::start(kernel, executor, &system, start, execution, state) }
+        let kernel = Self::start(kernel, executor, &system, start, execution, state)
             .unwrap_or_else(|unsupported| {
                 panic!("the kernel cannot run as asked: {unsupported:?}")
             });
@@ -455,7 +427,7 @@ where
         else {
             return Some(self.shared.hold(context));
         };
-        let before = core::mem::replace(&mut data.config, Rc::new(config));
+        let before = core::mem::replace(&mut data.config, Arc::new(config));
         let refused = inner.kernel.resume_process(context).map(|mut context| {
             if let Some(data) = context
                 .embedder_mut()
@@ -502,29 +474,11 @@ pub struct KernelRunner<C: Executor, State, S> {
     types: PhantomData<fn() -> State>,
 }
 
-// SAFETY: as for `KernelWithExecutor`'s `Sync`: a runner reaches the kernel's state, and the
-// system, only under the kernel's lock, and the bounds are the same.
-unsafe impl<C, State, S> Send for KernelRunner<C, State, S>
-where
-    C: Executor<TranslatorConfig: Send> + Send,
-    State: Send,
-    S: crate::System + Send,
-    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
-    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
-    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
-    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
-{
-}
-
 impl<C, State, S> interface::Runner<C> for KernelRunner<C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send> + Send + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Send,
     S: crate::System + Send,
-    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
-    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
-    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
-    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
 {
     /// Runs the kernel's threads, one turn at a time under the kernel's lock, on `executor` and
     /// the memories the kernel's own executor made, until none can run, the container ends, or
@@ -675,13 +629,9 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> interface::ProcessI
 
 impl<C, State, S> interface::Process for KernelProcess<'_, C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send> + Send + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
-    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
-    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
-    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
-    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
 {
     type State = State;
     type Kernel = KernelWithExecutor<C, State, S>;
@@ -779,13 +729,9 @@ where
 impl<C, State, S> interface::ProcessOf<State, KernelWithExecutor<C, State, S>>
     for KernelProcess<'_, C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send> + Send + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
-    <S as wcontainers_tcp_sockets::TcpConnections>::Connection: Send,
-    <S as wcontainers_tcp_sockets::TcpListeners>::Listener: Send,
-    <S as wcontainers_udp_sockets::UdpSockets>::Socket: Send,
-    <S as wcontainers_system::StreamTransport>::Endpoint: Send,
 {
 }
 
@@ -956,7 +902,7 @@ mod tests {
     #[test]
     fn a_copy_has_its_own_state_and_shares_the_configuration() {
         let data = EmbedderData::new(ProcessData::<Plain, u32> {
-            config: Rc::new(config(
+            config: Arc::new(config(
                 interface::ThreadOrdering::Serial,
                 interface::ReplayDeterminism::Exact,
             )),
@@ -973,6 +919,6 @@ mod tests {
             .downcast_ref::<ProcessData<Plain, u32>>()
             .expect("the same type");
         assert_eq!((original.state, copied.state), (1, 2));
-        assert!(Rc::ptr_eq(&original.config, &copied.config));
+        assert!(Arc::ptr_eq(&original.config, &copied.config));
     }
 }

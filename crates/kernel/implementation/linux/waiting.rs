@@ -14,8 +14,6 @@ use core::task::{Context, Poll, Waker};
 
 use smallbox::SmallBox;
 
-pub(crate) use smallbox::smallbox as waiting_call;
-
 /// What a waiting call is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaitFor {
@@ -59,7 +57,12 @@ pub(crate) fn report_of(
 pub(crate) type Room = smallbox::space::S32;
 
 /// A waiting call, made with [`waiting_call`].
-pub(crate) type Call = SmallBox<dyn Future<Output = Answer>, Room>;
+pub(crate) type Call = SmallBox<dyn Future<Output = Answer> + Send, Room>;
+
+/// The waiting call `future`.
+pub(crate) fn waiting_call(future: impl Future<Output = Answer> + Send + 'static) -> Call {
+    SmallBox::new(future)
+}
 
 /// The waker of one cell: it marks the cell, and the kernel's note that some cell is marked.
 struct Mark {
@@ -257,7 +260,7 @@ impl Waiting {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use core::cell::Cell as Shared;
+    use crossbeam_utils::atomic::AtomicCell as Shared;
 
     extern crate std;
 
@@ -315,14 +318,14 @@ pub(crate) mod tests {
     /// A future that finishes once `ready` is set, keeping the waker it was last given.
     struct Gate<'a> {
         ready: &'a Shared<bool>,
-        waker: &'a core::cell::RefCell<Option<Waker>>,
+        waker: &'a atomic_refcell::AtomicRefCell<Option<Waker>>,
     }
 
     impl Future for Gate<'_> {
         type Output = Answer;
 
         fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Answer> {
-            if self.ready.get() {
+            if self.ready.load() {
                 return Poll::Ready(Answer::Backend(
                     Err(wcontainers_abi::HostError::Closed),
                     Vec::new(),
@@ -338,7 +341,7 @@ pub(crate) mod tests {
         let mut waiting = Waiting::default();
         let answer = waiting.start(
             about(1),
-            waiting_call!(async {
+            waiting_call(async {
                 Answer::Backend(Err(wcontainers_abi::HostError::Closed), Vec::new())
             }),
         );
@@ -350,15 +353,16 @@ pub(crate) mod tests {
     #[test]
     fn a_woken_call_is_answered_and_its_cell_used_again() {
         let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
-        let waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
         let mut waiting = Waiting::default();
         for round in 0..3 {
-            ready.set(false);
+            ready.store(false);
             let gate = Gate { ready, waker };
-            assert!(waiting.start(about(round), waiting_call!(gate)).is_none());
+            assert!(waiting.start(about(round), waiting_call(gate)).is_none());
             assert!(!waiting.woken());
             assert!(waiting.next_answer().is_none());
-            ready.set(true);
+            ready.store(true);
             waker.borrow_mut().take().expect("a waker").wake();
             assert!(waiting.woken());
             let (answered, _) = waiting.next_answer().expect("answered");
@@ -371,24 +375,26 @@ pub(crate) mod tests {
     #[test]
     fn a_call_polled_now_answers_before_its_waker_fires_and_only_itself() {
         let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
-        let waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
         let other: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
-        let other_waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let other_waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
         let mut waiting = Waiting::default();
         assert!(
             waiting
-                .start(about(1), waiting_call!(Gate { ready, waker }))
+                .start(about(1), waiting_call(Gate { ready, waker }))
                 .is_none()
         );
         let gate = Gate {
             ready: other,
             waker: other_waker,
         };
-        assert!(waiting.start(about(2), waiting_call!(gate)).is_none());
+        assert!(waiting.start(about(2), waiting_call(gate)).is_none());
         assert!(waiting.poll_now(about(1)).is_none());
         assert!(waiting.poll_now(about(3)).is_none());
-        ready.set(true);
-        other.set(true);
+        ready.store(true);
+        other.store(true);
         assert!(!waiting.woken());
         assert!(matches!(
             waiting.poll_now(about(1)),
@@ -402,12 +408,13 @@ pub(crate) mod tests {
     #[test]
     fn a_call_that_waits_allocates_nothing_once_its_cell_exists() {
         let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
-        let waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
         let mut waiting = Waiting::default();
         let mut round = |number| {
-            ready.set(false);
-            waiting.start(about(number), waiting_call!(Gate { ready, waker }));
-            ready.set(true);
+            ready.store(false);
+            waiting.start(about(number), waiting_call(Gate { ready, waker }));
+            ready.store(true);
             waker.borrow_mut().take().expect("a waker").wake();
             waiting.next_answer().expect("answered");
         };

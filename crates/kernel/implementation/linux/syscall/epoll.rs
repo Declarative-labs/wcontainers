@@ -6,9 +6,9 @@
 
 use crate::linux_extra::NANOSECONDS_PER_MILLISECOND;
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use super::Args;
 use crate::file::{Anon, FileRef, OpenFile};
@@ -36,7 +36,7 @@ const EVENT_SIZE: u64 = size_of::<epoll_event>() as u64;
 /// The most events one wait may ask for.
 const MAX_EVENTS: u64 = i32::MAX as u64 / EVENT_SIZE;
 
-pub(crate) type EpollRef = Rc<RefCell<Epoll>>;
+pub(crate) type EpollRef = Arc<AtomicRefCell<Epoll>>;
 
 /// What a file's readiness hangs on (Linux's wait queue): changes to a kernel object, or a
 /// process's signals for its signal descriptors.
@@ -65,7 +65,7 @@ pub(crate) struct Epoll {
 }
 
 struct Item {
-    file: Weak<RefCell<OpenFile>>,
+    file: Weak<AtomicRefCell<OpenFile>>,
     events: u32,
     data: u64,
     queue: Option<Queue>,
@@ -80,7 +80,7 @@ pub(crate) struct Watches(BTreeMap<Queue, Vec<Watch>>);
 
 #[derive(Clone)]
 struct Watch {
-    epoll: Weak<RefCell<Epoll>>,
+    epoll: Weak<AtomicRefCell<Epoll>>,
     key: Key,
     exclusive: bool,
 }
@@ -100,7 +100,8 @@ impl Watches {
         if let Some(list) = self.0.get_mut(&queue) {
             list.retain(|watch| {
                 watch.epoll.strong_count() > 0
-                    && !(watch.key == key && core::ptr::eq(watch.epoll.as_ptr(), Rc::as_ptr(epoll)))
+                    && !(watch.key == key
+                        && core::ptr::eq(watch.epoll.as_ptr(), Arc::as_ptr(epoll)))
             });
             if list.is_empty() {
                 self.0.remove(&queue);
@@ -316,7 +317,7 @@ pub(super) fn epoll_create1<S: crate::System>(
         object: kernel.next_object(),
         ..Epoll::default()
     };
-    file.borrow_mut().anon = Some(Anon::Epoll(Rc::new(RefCell::new(epoll))));
+    file.borrow_mut().anon = Some(Anon::Epoll(Arc::new(AtomicRefCell::new(epoll))));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .files_mut(tid)
@@ -351,7 +352,8 @@ pub(super) fn epoll_ctl<S: crate::System>(
     if has_event && !kernel.credentials(tid).has(CAP_BLOCK_SUSPEND) {
         wanted.events &= !EPOLLWAKEUP;
     }
-    let Some(epoll) = of(&epoll_file.borrow()).filter(|_| !Rc::ptr_eq(&epoll_file, &target)) else {
+    let Some(epoll) = of(&epoll_file.borrow()).filter(|_| !Arc::ptr_eq(&epoll_file, &target))
+    else {
         return Err(Errno::EINVAL);
     };
     let nested = of(&target.borrow());
@@ -380,7 +382,7 @@ pub(super) fn epoll_ctl<S: crate::System>(
             epoll.borrow_mut().items.insert(
                 key,
                 Item {
-                    file: Rc::downgrade(&target),
+                    file: Arc::downgrade(&target),
                     events,
                     data: wanted.data,
                     queue,
@@ -391,7 +393,7 @@ pub(super) fn epoll_ctl<S: crate::System>(
                 kernel.poll_watches.add(
                     queue,
                     Watch {
-                        epoll: Rc::downgrade(&epoll),
+                        epoll: Arc::downgrade(&epoll),
                         key,
                         exclusive: events & EPOLLEXCLUSIVE != 0,
                     },
@@ -479,7 +481,7 @@ fn loops(kernel: &Kernel, outer: &EpollRef, inner: &EpollRef) -> bool {
             .filter_map(|file| of(&file.borrow()))
             .collect();
         for inner in nested {
-            result = if Rc::ptr_eq(&inner, into) || depth > MAX_NESTS {
+            result = if Arc::ptr_eq(&inner, into) || depth > MAX_NESTS {
                 MAX_NESTS + 1
             } else {
                 result.max(down(&inner, into, depth + 1) + 1)

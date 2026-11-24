@@ -32,8 +32,12 @@ smallvec = { version = "1.13", default-features = false }
 fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "zerocopy"] }
 domain = { version = "0.12.3", default-features = false, features = ["alloc"] }
 rangemap = { version = "1.8.0", default-features = false }
-smallbox = { version = "0.8.9", default-features = false }
+# `coerce` makes a waiting call of a future without unsafe code at the call.
+smallbox = { version = "0.8.9", default-features = false, features = ["coerce"] }
 spin = { version = "0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
+# The kernel's shared records, which its runners reach from any host thread under its lock (MIT OR Apache-2.0).
+atomic_refcell = { version = "0.1.13", default-features = false }
+crossbeam-utils = { version = "0.8.23", default-features = false }
 # The exception classes of ESR_EL1 (MIT OR Apache-2.0), as the arm64 processor's state gives them.
 aarch64-cpu = "12.0.0"
 
@@ -54,7 +58,5 @@ path = "conformance_run.rs"
 [build-dependencies]
 flate2 = "1"
 
-# TODO: remove this crate's last 5 uses of unsafe (executing.rs: its two `unsafe impl` and `unsafe fn new`
-# and `start`), then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

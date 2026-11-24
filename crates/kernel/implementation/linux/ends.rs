@@ -4,7 +4,6 @@
 //! as each side takes them, waiting on the endpoint's readiness when it takes no more.
 
 use alloc::collections::BTreeMap;
-use alloc::rc::Rc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
@@ -82,7 +81,7 @@ impl Standard<EndNumber> {
 /// The kernel's side of one end.
 struct Held {
     /// The system's endpoint, of its own type.
-    endpoint: Rc<dyn Any>,
+    endpoint: Arc<dyn Any + Send + Sync>,
     /// None until the start that named it has made the first process's descriptors (and for
     /// good if that start failed).
     file: Option<FileRef>,
@@ -113,7 +112,9 @@ pub(crate) struct Ends {
 }
 
 /// The system's endpoint kept for an end.
-fn endpoint_of<S: crate::System>(endpoint: &Rc<dyn Any>) -> &<S as StreamTransport>::Endpoint {
+fn endpoint_of<S: crate::System>(
+    endpoint: &Arc<dyn Any + Send + Sync>,
+) -> &<S as StreamTransport>::Endpoint {
     endpoint
         .downcast_ref()
         .expect("an end's endpoint is its system's")
@@ -138,7 +139,7 @@ impl Ends {
             .last_key_value()
             .map_or(0, |(number, _)| number + 1);
         let held = Held {
-            endpoint: Rc::new(endpoint),
+            endpoint: Arc::new(endpoint),
             file: None,
             sends,
             blocked: false,
@@ -231,7 +232,7 @@ fn side(file: &FileRef) -> Side {
 /// The system's wait on an endpoint, owning what it waits on.
 async fn ready_of<S: crate::System>(
     system: Arc<S>,
-    endpoint: Rc<dyn Any>,
+    endpoint: Arc<dyn Any + Send + Sync>,
     interest: ReadyFor,
 ) -> Answer {
     let endpoint = endpoint_of::<S>(&endpoint);
@@ -478,7 +479,7 @@ impl Kernel {
             return;
         };
         let call: crate::waiting::Call =
-            waiting_call!(ready_of(cx.system.clone(), endpoint, wanted));
+            waiting_call(ready_of(cx.system.clone(), endpoint, wanted));
         if Waiting::on_heap(&call) {
             self.counters
                 .count(cx.host, crate::reason::WAITING_CALL_ON_HEAP, u64::from(end));

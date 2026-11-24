@@ -77,8 +77,8 @@ pub(super) fn create<S: crate::System>(
 /// `MAX_LINKS`: how many netlink protocols there are.
 const MAX_LINKS: u32 = 32;
 
-fn part(socket: &SocketRef) -> core::cell::RefMut<'_, Netlink> {
-    core::cell::RefMut::map(socket.borrow_mut(), |own| {
+fn part(socket: &SocketRef) -> atomic_refcell::AtomicRefMut<'_, Netlink> {
+    atomic_refcell::AtomicRefMut::map(socket.borrow_mut(), |own| {
         own.netlink.as_deref_mut().expect("a netlink socket")
     })
 }
@@ -287,7 +287,7 @@ fn queue<S: crate::System>(
         consumed: 0,
         files: Vec::new(),
         cred: super::own_cred(kernel, tid),
-        sender: alloc::rc::Weak::new(),
+        sender: alloc::sync::Weak::new(),
         source: None,
         arrival: None,
         time: None,
@@ -316,7 +316,7 @@ pub(crate) fn send_from_kernel<S: crate::System>(
             uid: 0,
             gid: 0,
         },
-        sender: alloc::rc::Weak::new(),
+        sender: alloc::sync::Weak::new(),
         source: None,
         arrival: None,
         time: None,

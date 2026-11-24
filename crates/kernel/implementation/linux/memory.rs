@@ -1,9 +1,9 @@
 //! A process's address space as the kernel keeps it: the ranges it has mapped and what each allows.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::Cell;
+use crossbeam_utils::atomic::AtomicCell;
 
 use rangemap::RangeSet;
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
@@ -384,16 +384,16 @@ pub(crate) struct AddressMap {
     /// The embedder's watches on these pages and its record of the pages written.
     pub watches: Watches,
     /// What the map notes for the kernels its processes are on.
-    notes: Vec<Rc<MapNotes>>,
+    notes: Vec<Arc<MapNotes>>,
 }
 
 /// What address maps note for a kernel, one value shared by every map on it.
 #[derive(Debug, Default)]
 pub(crate) struct MapNotes {
     /// The length a placement asked for that found no room below the ceiling.
-    pub outgrown: Cell<Option<u64>>,
+    pub outgrown: AtomicCell<Option<u64>>,
     /// A shared mapping was put in or taken out of some map.
-    pub sharing_changed: Cell<bool>,
+    pub sharing_changed: AtomicCell<bool>,
 }
 
 /// How much of a page's access a watch brings back: none, writes, everything.
@@ -560,7 +560,7 @@ impl Watches {
 
 impl AddressMap {
     /// A map of `end`'s width whose stack's top is at the ceiling.
-    pub fn new(end: u64, ceiling: u64, notes: Rc<MapNotes>) -> Self {
+    pub fn new(end: u64, ceiling: u64, notes: Arc<MapNotes>) -> Self {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
@@ -611,15 +611,15 @@ impl AddressMap {
     }
 
     /// Notes what changes for a kernel it is put on, too.
-    pub fn note_to(&mut self, notes: Rc<MapNotes>) {
-        if !self.notes.iter().any(|known| Rc::ptr_eq(known, &notes)) {
+    pub fn note_to(&mut self, notes: Arc<MapNotes>) {
+        if !self.notes.iter().any(|known| Arc::ptr_eq(known, &notes)) {
             self.notes.push(notes);
         }
     }
 
     /// Stops noting for a kernel no process of which runs in it any more.
-    pub fn stop_noting_to(&mut self, notes: &Rc<MapNotes>) {
-        self.notes.retain(|known| !Rc::ptr_eq(known, notes));
+    pub fn stop_noting_to(&mut self, notes: &Arc<MapNotes>) {
+        self.notes.retain(|known| !Arc::ptr_eq(known, notes));
     }
 
     /// Notes for no kernel, as a copy not yet put on one.
@@ -1062,7 +1062,7 @@ impl AddressMap {
         if end <= self.ceiling {
             return false;
         }
-        self.note(|notes| notes.outgrown.set(Some(length)));
+        self.note(|notes| notes.outgrown.store(Some(length)));
         true
     }
 
@@ -1138,7 +1138,7 @@ impl AddressMap {
             }
         }
         if self.ceiling < self.end {
-            self.note(|notes| notes.outgrown.set(Some(length)));
+            self.note(|notes| notes.outgrown.store(Some(length)));
         }
         None
     }
@@ -1217,7 +1217,7 @@ impl AddressMap {
         self.watches.forget(start, end);
         let removed = self.split_out(start, end);
         if removed.iter().any(|mapping| mapping.shared) {
-            self.note(|notes| notes.sharing_changed.set(true));
+            self.note(|notes| notes.sharing_changed.store(true));
         }
         removed
     }
@@ -1230,7 +1230,7 @@ impl AddressMap {
     /// Notes that the processes using this map changed, if it shows shared memory.
     pub fn note_sharers_changed(&self) {
         if self.has_shared() {
-            self.note(|notes| notes.sharing_changed.set(true));
+            self.note(|notes| notes.sharing_changed.store(true));
         }
     }
 
@@ -1280,7 +1280,7 @@ impl AddressMap {
             cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
         }
         if mapping.shared {
-            self.note(|notes| notes.sharing_changed.set(true));
+            self.note(|notes| notes.sharing_changed.store(true));
         }
         self.mappings.insert(mapping.start, mapping);
         self.merge_around();
@@ -1348,7 +1348,7 @@ impl AddressMap {
             .mappings
             .values()
             .filter(|mapping| {
-                matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::rc::Rc::ptr_eq(mapped, node))
+                matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::sync::Arc::ptr_eq(mapped, node))
             })
             .map(|mapping| mapping.start)
             .collect();
@@ -1640,7 +1640,7 @@ impl AddressMap {
                             ..
                         },
                     ) if mapping.shared
-                        && alloc::rc::Rc::ptr_eq(node, next_node)
+                        && alloc::sync::Arc::ptr_eq(node, next_node)
                         && !node.borrow().is_segment()
                         && offset + (last.end - last.start) == *next_offset
                         && (*file_end == last.end || *next_file_end == mapping.start) =>
@@ -1904,7 +1904,7 @@ mod tests {
 
     #[test]
     fn anonymous_memory_of_whole_pmds_starts_on_a_boundary() {
-        let notes = Rc::new(MapNotes::default());
+        let notes = Arc::new(MapNotes::default());
         let mut map = AddressMap::new(PLACEMENT_TIERS[1], PLACEMENT_TIERS[1], notes);
         // Below an odd page, as below a vDSO.
         let odd = map.find_free(PAGE_SIZE).expect("space");
@@ -1938,7 +1938,7 @@ mod tests {
     fn a_pmd_stays_in_the_lowest_range_without_its_boundary() {
         let hole = PMD_SIZE + PAGE_SIZE;
         for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1]] {
-            let notes = Rc::new(MapNotes::default());
+            let notes = Arc::new(MapNotes::default());
             let mut map = AddressMap::new(PLACEMENT_TIERS[1], ceiling, notes);
             let base = map.mmap_base;
             place(
@@ -1963,7 +1963,7 @@ mod tests {
     #[test]
     fn a_full_space_below_the_mmap_base_falls_back_to_the_gap_above_it() {
         for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1]] {
-            let notes = Rc::new(MapNotes::default());
+            let notes = Arc::new(MapNotes::default());
             let mut map = AddressMap::new(PLACEMENT_TIERS[1], ceiling, notes);
             let base = map.mmap_base;
             let top = first_tier_top(ceiling);
@@ -2012,7 +2012,7 @@ mod tests {
         for width in [1 << 36, 1 << 40, crate::user::ADDRESS_LIMIT] {
             let mut first = None;
             for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1], width] {
-                let notes = Rc::new(MapNotes::default());
+                let notes = Arc::new(MapNotes::default());
                 let mut map = AddressMap::new(width, ceiling, notes.clone());
                 let placed = fill(&mut map, length, count);
                 assert!(
@@ -2037,7 +2037,7 @@ mod tests {
                         .all(|pair| tier_of(pair[0]) <= tier_of(pair[1]))
                 );
                 let ended = placed.len() < count;
-                assert_eq!(notes.outgrown.get().is_some(), ended && ceiling < width);
+                assert_eq!(notes.outgrown.load().is_some(), ended && ceiling < width);
                 assert_eq!(
                     ended,
                     ceiling < width,
