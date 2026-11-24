@@ -1,8 +1,10 @@
 //! A kernel made through the kernel interface runs its programs on its runners, each turn through
 //! the executor interface's `execute`.
 
+use std::io::Write;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use wcontainers_executor_unicorn::driver::{
@@ -13,6 +15,9 @@ use wcontainers_kernel::{Kernel, ProcessEnd, Runner, StopReason};
 
 /// How long a guest that never traps is let run before the kernel's interface is called.
 const RUNNING_FOR: Duration = Duration::from_millis(300);
+
+/// How long the kernel's interface may take to end a running turn before the test fails.
+const TURN_ENDED_WITHIN: Duration = Duration::from_secs(30);
 
 fn out() -> PathBuf {
     std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest")
@@ -75,13 +80,29 @@ fn a_program_that_never_traps_is_interrupted_for_the_kernels_interface() {
         runner.run(&mut executor)
     });
     std::thread::sleep(RUNNING_FOR);
-    let taken: Vec<_> = kernel.suspend_tasks(&[FIRST_PROCESS]).collect();
+    // The kernel cannot move to another thread, so a call that never returns ends the test binary.
+    let (taking, taken_now) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if taken_now.recv_timeout(TURN_ENDED_WITHIN) == Err(RecvTimeoutError::Timeout) {
+            // Written past the test harness's capture, which exiting would lose.
+            let _ = writeln!(
+                std::io::stderr(),
+                "the interface's call did not end the running turn within {TURN_ENDED_WITHIN:?}"
+            );
+            std::process::exit(101);
+        }
+    });
+    let taken: Vec<_> = kernel
+        .suspend_tasks(&[FIRST_PROCESS])
+        .map(|(task, _)| task)
+        .collect();
+    drop(taking);
     assert_eq!(
         running.join().expect("the runner's host thread"),
         StopReason::Interrupted
     );
     assert_eq!(
-        taken.iter().map(|(task, _)| *task).collect::<Vec<_>>(),
+        taken,
         [FIRST_PROCESS],
         "the thread whose turn was ended is taken"
     );
