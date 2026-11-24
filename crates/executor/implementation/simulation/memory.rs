@@ -3,18 +3,64 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use wcontainers_abi::{PAGE_MASK, PAGE_SIZE, Permissions};
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, VolatileBytes,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
 };
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     Arm64, DataAccess, InstructionFetch, PagePermission,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
+
+/// The number of changes made to any space, counted after each change is in place.
+///
+/// One count serves every space, since a mapping shares pages between spaces: a copy taken at a count is current while
+/// the count stays.
+static CHANGES: AtomicU64 = AtomicU64::new(u64::MIN);
+
+/// A space as the architecture's memory changes, kept current between instructions without copying it again.
+#[derive(Default)]
+pub(crate) struct SpaceCopy {
+    /// The count of changes the copy is current at; None until taken, or once a change it cannot follow is made.
+    changes: Option<u64>,
+    deltas: Vec<MemoryDelta<'static, Arm64>>,
+    /// The place in the deltas of each page's bytes, by the page's first address.
+    page_bytes: BTreeMap<u64, usize>,
+}
+
+impl SpaceCopy {
+    pub(crate) fn deltas(&self) -> &[MemoryDelta<'static, Arm64>] {
+        &self.deltas
+    }
+
+    /// Writes the bytes into the copy's pages, adding a page of zeros where the copy had no bytes.
+    fn write_at(&mut self, start: u64, bytes: &[u8]) {
+        for (page, within, buffer) in split_at_pages(start, bytes.len()) {
+            let deltas = &mut self.deltas;
+            let place = *self.page_bytes.entry(page).or_insert_with(|| {
+                deltas.push(MemoryDelta::ValueAssignment {
+                    start: page,
+                    bytes: Cow::Owned(vec![u8::MIN; PAGE_BYTES]),
+                });
+                deltas.len() - 1
+            });
+            if let Some(MemoryDelta::ValueAssignment {
+                bytes: page_bytes, ..
+            }) = self.deltas.get_mut(place)
+            {
+                page_bytes.to_mut()[within].copy_from_slice(&bytes[buffer]);
+            }
+        }
+    }
+}
 
 /// The bytes of one page, held by every space that maps it.
 type Frame = Arc<Mutex<Box<[u8]>>>;
@@ -56,32 +102,27 @@ pub struct SimulatedBytes<'space> {
 }
 
 impl SimulatedMemory {
-    /// Returns every page's permission and bytes as the architecture's memory changes, from a space of zeros.
-    pub(crate) fn to_memory_deltas(&self) -> Vec<MemoryDelta<'static, Arm64>> {
-        let pages = self.lock_pages();
-        let mut deltas = Vec::new();
-        for (&start, page) in pages.iter() {
-            if let Some(permission) = to_page_permission(page.permissions) {
-                deltas.push(MemoryDelta::PermissionAssignment {
-                    addresses: start..start + PAGE_SIZE,
-                    permission,
-                });
-            }
-            if let Some(frame) = &page.frame {
-                deltas.push(MemoryDelta::ValueAssignment {
-                    start,
-                    bytes: Cow::Owned(lock_frame(frame).to_vec()),
-                });
-            }
+    /// Takes the copy anew unless no space changed since it was taken.
+    pub(crate) fn refresh(&self, copy: &mut SpaceCopy) {
+        let changes = CHANGES.load(Ordering::Acquire);
+        if copy.changes != Some(changes) {
+            *copy = self.take_copy(Some(changes));
         }
-        deltas
     }
 
-    /// Applies a change an instruction made, whatever the permissions.
-    pub(crate) fn apply(&self, delta: MemoryDelta<'_, Arm64>) {
+    /// Applies a change an instruction made, whatever the permissions, to the space and to the copy it ran on.
+    ///
+    /// The copy stays current only if no other change came between: otherwise it is taken anew at the next refresh.
+    pub(crate) fn apply(&self, delta: MemoryDelta<'_, Arm64>, copy: &mut SpaceCopy) {
         match delta {
             MemoryDelta::ValueAssignment { start, bytes } => {
-                self.write_at(start, &bytes);
+                let before = self.write_counted(start, &bytes);
+                if copy.changes == Some(before) {
+                    copy.write_at(start, &bytes);
+                    copy.changes = Some(before.wrapping_add(1));
+                } else {
+                    copy.changes = None;
+                }
             }
             MemoryDelta::PermissionAssignment {
                 addresses,
@@ -91,8 +132,35 @@ impl SimulatedMemory {
                 for start in page_starts(&addresses) {
                     pages.entry(start).or_default().permissions = to_permissions(permission);
                 }
+                count_change();
+                copy.changes = None;
             }
         }
+    }
+
+    /// Returns the copy of every page, current at the count of changes given (read before the pages are).
+    fn take_copy(&self, changes: Option<u64>) -> SpaceCopy {
+        let pages = self.lock_pages();
+        let mut copy = SpaceCopy {
+            changes,
+            ..SpaceCopy::default()
+        };
+        for (&start, page) in pages.iter() {
+            if let Some(permission) = to_page_permission(page.permissions) {
+                copy.deltas.push(MemoryDelta::PermissionAssignment {
+                    addresses: start..start + PAGE_SIZE,
+                    permission,
+                });
+            }
+            if let Some(frame) = &page.frame {
+                copy.page_bytes.insert(start, copy.deltas.len());
+                copy.deltas.push(MemoryDelta::ValueAssignment {
+                    start,
+                    bytes: Cow::Owned(lock_frame(frame).to_vec()),
+                });
+            }
+        }
+        copy
     }
 
     fn lock_pages(&self) -> MutexGuard<'_, BTreeMap<u64, Page>> {
@@ -128,10 +196,16 @@ impl SimulatedMemory {
 
     /// Returns the number of bytes written, starting at the address.
     fn write_at(&self, start: u64, bytes: &[u8]) -> usize {
+        self.write_counted(start, bytes);
+        bytes.len()
+    }
+
+    /// Writes the bytes, starting at the address, and returns the count of changes before the write.
+    fn write_counted(&self, start: u64, bytes: &[u8]) -> u64 {
         for (page, within, buffer) in split_at_pages(start, bytes.len()) {
             lock_frame(&self.make_frame(page))[within].copy_from_slice(&bytes[buffer]);
         }
-        bytes.len()
+        count_change()
     }
 }
 
@@ -156,6 +230,7 @@ impl MemorySpace for SimulatedMemory {
         for start in page_starts(&addresses) {
             pages.entry(start).or_default().permissions = allowed;
         }
+        count_change();
         Ok(())
     }
 
@@ -177,6 +252,7 @@ impl MemorySpace for SimulatedMemory {
             page.frame = Some(frame);
             page.mapped = true;
         }
+        count_change();
         Ok(())
     }
 
@@ -189,6 +265,7 @@ impl MemorySpace for SimulatedMemory {
                 page.mapped = false;
             }
         }
+        count_change();
         Ok(())
     }
 
@@ -214,6 +291,7 @@ impl MemorySpace for SimulatedMemory {
                 None => pages.remove(&start),
             };
         }
+        count_change();
         Ok(())
     }
 }
@@ -232,6 +310,25 @@ impl VolatileBytes for SimulatedBytes<'_> {
         let count = bytes.len().min(to_count(self.len()));
         self.space.write_at(self.addresses.start, &bytes[..count])
     }
+
+    /// Copies all the bytes out and hands them to the sink, since a slice of the guest's bytes may not be lent.
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        let mut copied = vec![u8::MIN; to_count(self.len())];
+        self.read(&mut copied);
+        sink.write(&copied)
+    }
+
+    /// Has the source fill a buffer as long as the bytes and writes what it gave, for the reason `read_to` copies.
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut buffer = vec![u8::MIN; to_count(self.len())];
+        let count = source.read(&mut buffer)?;
+        Ok(self.write(&buffer[..count]))
+    }
+}
+
+/// Counts a change now in place, and returns the count of changes before it.
+fn count_change() -> u64 {
+    CHANGES.fetch_add(1, Ordering::AcqRel)
 }
 
 fn new_frame() -> Frame {

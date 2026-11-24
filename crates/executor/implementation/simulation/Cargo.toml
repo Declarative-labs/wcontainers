@@ -18,6 +18,9 @@ path = "conformance.rs"
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
@@ -26,6 +29,8 @@ aarch64-cpu = "12.0.0"
 
 [dev-dependencies]
 wcontainers-executor-conformance = { path = "../../conformance" }
+# The encoder of the guest the interrupt tests run.
+wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
 wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }

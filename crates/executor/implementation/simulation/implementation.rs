@@ -1,13 +1,18 @@
 //! A stand-in for an ARM64 chip, for tests that need a chip whose behaviors are known.
 
 use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_abi::{
     Access, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber,
     SystemCallRequest,
 };
-use wcontainers_executor::{Executor, MemoryFaultResponse, SystemCallResponse, TrapHandler};
+use wcontainers_executor::{
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
+    TrapHandler,
+};
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture, Simulator};
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
@@ -20,7 +25,7 @@ mod memory;
 #[cfg(test)]
 mod tests;
 
-use memory::SimulatedMemory;
+use memory::{SimulatedMemory, SpaceCopy};
 
 /// A chip that runs each instruction as the set's precise instruction simulates it.
 pub struct Simulation<Set> {
@@ -33,6 +38,19 @@ impl<Set: PreciseInstructionSet<Arm64>> Simulation<Set> {
     /// TODO: temporary placeholder until the executor interface says how an executor is built.
     pub const fn new(set: Set) -> Self {
         Self { set }
+    }
+}
+
+/// The interrupter of one execution, which it checks before each instruction.
+#[derive(Default)]
+pub struct SimulationInterrupter {
+    /// Whether an interrupt is raised and not yet answered; once the execution ends no one reads it.
+    raised: Arc<AtomicBool>,
+}
+
+impl ExecutionInterrupter for SimulationInterrupter {
+    fn interrupt(&self) {
+        self.raised.store(true, Ordering::Release);
     }
 }
 
@@ -51,50 +69,73 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     type Architecture = Arm64;
     type TranslatorConfig = ();
     type GuestMemory = SimulatedMemory;
+    type Interrupter = SimulationInterrupter;
     type CreateGuestMemoryError = Infallible;
 
     fn create_guest_memory(&self) -> Result<SimulatedMemory, Infallible> {
         Ok(SimulatedMemory::default())
     }
 
-    /// Runs one instruction at a time on a fresh copy of the memory, so that each sees what other threads wrote.
-    fn execute(
-        &mut self,
+    /// Runs one instruction at a time on a copy of the memory, taken anew whenever anything but the instruction
+    /// before changed a space, so that each instruction sees what other threads wrote.
+    ///
+    /// The execution blocks: it runs to its end in its first poll, answering an interrupt between two instructions.
+    fn execute<'execution>(
+        &'execution mut self,
         mut processor: Processor,
-        memory: &SimulatedMemory,
-        handler: &mut impl TrapHandler,
-    ) -> Processor {
-        loop {
-            let before = processor.clone();
-            let deltas = memory.to_memory_deltas();
-            self.execute_single_instruction_in_place(&mut processor, &deltas, |delta| {
-                memory.apply(delta);
-            });
-            let Some(exception) = processor.exception else {
-                continue;
-            };
-            match to_trap(exception) {
-                Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
-                    SystemCallResponse::Return(value) => {
-                        // x0 holds the result: https://man7.org/linux/man-pages/man2/syscall.2.html
-                        if let Some(result) = processor.general_purpose_registers.first_mut() {
-                            *result = value;
-                        }
-                        processor.program_counter =
-                            processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
-                        processor.exception = None;
-                    }
-                    SystemCallResponse::Terminate => return processor,
-                },
-                Trap::MemoryFault { address, access } => {
-                    match handler.handle_memory_fault(address, access) {
-                        MemoryFaultResponse::Retry => processor = before,
-                        MemoryFaultResponse::Terminate => return processor,
+        memory: &'execution SimulatedMemory,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (
+        impl Future<Output = Processor> + 'execution,
+        SimulationInterrupter,
+    ) {
+        let interrupter = SimulationInterrupter::default();
+        let raised = Arc::clone(&interrupter.raised);
+        let execution = async move {
+            let mut copy = SpaceCopy::default();
+            let mut changes = Vec::new();
+            loop {
+                if raised.swap(false, Ordering::Acquire) {
+                    match handler.handle_interrupt() {
+                        InterruptResponse::Continue => {}
+                        InterruptResponse::Terminate => return processor,
                     }
                 }
-                Trap::Final => return processor,
+                let before = processor.clone();
+                memory.refresh(&mut copy);
+                self.execute_single_instruction_in_place(&mut processor, copy.deltas(), |delta| {
+                    changes.push(delta.into_owned())
+                });
+                for delta in changes.drain(..) {
+                    memory.apply(delta, &mut copy);
+                }
+                let Some(exception) = processor.exception else {
+                    continue;
+                };
+                match to_trap(exception) {
+                    Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
+                        SystemCallResponse::Return(value) => {
+                            // x0 holds the result: https://man7.org/linux/man-pages/man2/syscall.2.html
+                            if let Some(result) = processor.general_purpose_registers.first_mut() {
+                                *result = value;
+                            }
+                            processor.program_counter =
+                                processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
+                            processor.exception = None;
+                        }
+                        SystemCallResponse::Terminate => return processor,
+                    },
+                    Trap::MemoryFault { address, access } => {
+                        match handler.handle_memory_fault(address, access) {
+                            MemoryFaultResponse::Retry => processor = before,
+                            MemoryFaultResponse::Terminate => return processor,
+                        }
+                    }
+                    Trap::Final => return processor,
+                }
             }
-        }
+        };
+        (execution, interrupter)
     }
 
     /// Runs the instruction at the program counter, taking a word none of the listed instructions match as undefined.
