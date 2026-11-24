@@ -73,6 +73,12 @@ G4h round 6 run 3 (2026-11-24, from about 00:30 Pacific), the seventh round's ch
   constant buffer's `g_MaxThreadIter.z` (300). That fits its driver re-compiling the program with
   the constant buffer's values folded in after some frames. This is inferred: the driver's
   re-compilation cannot be seen from outside, but no other measured form gives 4 on the RTX 3080.
+- Tests through the rig's queue on the desktop (r7/run.sh; logs/r7b-*, r7c-*, r7g-*): lint of both
+  builds clean; the front's unit (7, 1), front.rs (60) and cache tests pass; library com 15 pass
+  (1 ignored), programs 69 pass (9 ignored, the known failures) at this run's last code (trial
+  baac4ebd, the tree committed as the run's last commits); the WebGL 2 build's run 1 passes (8
+  ignored) at d4bad0bf. The ignored programs were not run with `--ignored` this run: their causes
+  are as at run 2, apart from the WebGL 2 build's 10_0 cases, ignored for the level.
 - The check's minor finding on packed blends with `SRC_ALPHA_SAT` and `BLEND_FACTOR` is kept as
   is, judged under the graphics bar (Gap list, packed targets): one code off where the two
   references are themselves one code apart.
@@ -1655,6 +1661,15 @@ Earlier runs' measurements are in this file's git history.
   programs reporting every `--dll` library they loaded.
 
 ## Literals
+
+- G4h round 6 run 3 (2026-11-24): the check at e4ffcf04 on the desktop (logs/r7f-literals.log)
+  finds nothing in this run's new lines (a stage's slots are a named struct, not an array of
+  three). The recorder's old 48 baseline line is cut (8997446e): 580 lines. Four findings in this
+  track's files were new since round 6 run 1 because other crates gained constants. They are fixed:
+  the two refusal strings of moved stage values are imported from the infrastructure crate's
+  `stage_registers`; own_cases' iteration count carries a mark; and a byte pattern's `% 256` is a
+  cast. The whole tree's check fails on other tracks' lines (2,697 to act on, nearly all outside
+  this track).
 
 - G4h round 6 run 1 (2026-11-23): the context's slot counts are named (`CONSTANT_BUFFER_SLOTS`,
   `RESOURCE_SLOTS`, `SAMPLER_SLOTS`, `TARGET_SLOTS`, `STREAM_OUTPUT_SLOTS`; bf0291d7) and their ten
