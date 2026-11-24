@@ -63,6 +63,29 @@ Done this run, from the check's two blocking findings:
   no `unsafe` was added). Tools added for testing only (Licences): apitrace 14.0 (MIT), Pillow
   12.0.0 (MIT-CMU), py7zr 1.0.0 (LGPL-2.1, only to unpack apitrace's archive on the desktop).
 
+THE TABLE, round 5 run 3's whole run at abd98862's driver (every change above; desktop, RTX
+3080, one GPU job in the hazard group, 8 glcts at once, job 79 from 03:01 to 03:25 desktop time;
+scratch `results/g9c3/full/<list>/results.csv`, log `logs/g9c3/full.log`), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,031, Warn 6, Skip 128: 17,037 of 17,037, 100%.
+- dEQP-GLES3: 44,768; Pass 44,259, Warn 6, Fail 3, Crash 30, Skip 470: 44,265 of 44,298, 99.93%.
+- dEQP-GLES31: 37,802; Pass 36,571, Fail 20, Crash 96, Flake 3, Skip 1,112: 36,571 of 36,690,
+  99.68%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,265, Crash 6, Skip 227: 6,265 of 6,271, 99.90%.
+- KHR-GLES31: 4,101; Pass 3,708, Fail 14, Crash 45, Flake 2, Skip 332: 3,708 of 3,769, 98.38%.
+- KHR-GLES32: 1,405; Pass 1,101, Fail 8, Crash 44, Timeout 1, Skip 251: 1,101 of 1,154, 95.41%.
+- KHR-GL33 and KHR-GL46: no context (3.1 is reported; For the owner, G9's second part).
+- The measure over the GLES lists: 109,385 of 109,657 run, 99.75%. 272 failing cases, every one
+  in the gap list (`scripts/g9c1-gaps.py results/g9c3/full`: none left over).
+- Against round 5 run 2's whole run (`scripts/g9r25-table.py g9c3/full g9c2/full`): pass now
+  `polygon_offset` 5 and `all_attributes` (this run's fixes) and KHR-GLES3
+  `texture_filter_anisotropic.queries` (NotSupported before, round 5 run 2's anisotropy). Every
+  other move is in the storage coherence family (gap list): `ssbo_atomic_overwrite`,
+  `inter_invocation.image_read_write`, `compute.basic.image_barrier_single` and KHR-GLES32
+  `texture_cube_map_array.image_op_compute_sh` fail, `ssbo_atomic_alias_overwrite` and 2
+  `qualifiers.volatile_r32f` flake, 3 of its earlier flakes pass; KHR-GLES31 `vertex_ordering`
+  went from Timeout to Flake (its time sits at deqp-runner's 60 s limit).
+
 Next, in order (replacing round 5 run 2's list below):
 1. The owner's answer on the version (For the owner): Godot needs OpenGL 3.3, which needs 3.2's 32
    passed values the host's 31 cannot give without values fetched from storage. bgfx needs 4.3,
@@ -436,7 +459,7 @@ Next, in order:
 8. The owner's answer on KHR-GL33 (For the owner); waiting on other tracks as the gap list says.
 9. G9's second part (OpenGL 4.0, so that KHR-GL46 starts), after the first part's check passes.
 
-## Gap list (G9's first part, at round 5 run 2's whole run)
+## Gap list (G9's first part, at round 5 run 2's whole run; round 5 run 3's changes marked)
 
 Every failing case of round 5 run 2's whole run (276 Fail, Crash, Timeout and Flake over the seven
 lists that start, the table at the top) by group, with its cause and owner; the KHR-GL33 items are
