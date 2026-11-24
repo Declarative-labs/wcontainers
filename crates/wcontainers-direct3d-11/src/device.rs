@@ -2786,8 +2786,9 @@ impl<B: Backend> Device<B> {
             if e.slot as usize >= crate::context::VERTEX_SLOTS {
                 return Err(Error::InvalidArg("an input slot past the last"));
             }
-            let vf = format::vertex_format(e.format)
-                .ok_or(Error::InvalidArg("a format vertex input cannot have"))?;
+            let unread = Error::InvalidArg("a format vertex input cannot have");
+            let vf = format::vertex_format(e.format).ok_or(unread)?;
+            let size = format::vertex_size(e.format).ok_or(unread)?;
             let slot = e.slot as usize;
             let align = format::vertex_alignment(vf);
             let offset = if e.offset == APPEND_ALIGNED {
@@ -2799,7 +2800,7 @@ impl<B: Backend> Device<B> {
             } else {
                 e.offset
             };
-            next_offset[slot] = offset + format::vertex_size(vf);
+            next_offset[slot] = offset + size;
             let step = e.per_instance.then_some(e.step_rate);
             if resolved
                 .iter()

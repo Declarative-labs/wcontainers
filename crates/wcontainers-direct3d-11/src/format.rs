@@ -355,11 +355,14 @@ pub fn texture_format_of(dxgi: u32) -> Result<Format> {
 }
 
 /// Not served for a defined DXGI format, invalid for others.
+/// `DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE` to `DXGI_FORMAT_A4B4G4R4_UNORM`: the formats
+/// defined after `V408`, which the infrastructure crate's table does not name.
+const PAST_V408: std::ops::RangeInclusive<u32> = 189..=191;
+const UNSERVED_FORMAT: &str = "a DXGI format this front does not serve";
+
 fn unserved<T>(dxgi: u32) -> Result<T> {
-    // Defined DXGI formats: up to V408, the sampler feedback formats 189 and 190, and 191 (the
-    // infrastructure crate's table does not name the last three).
-    if matches!(dxgi, dxgi::R32G32B32A32_TYPELESS..=dxgi::V408 | 189..=191) {
-        not_implemented("a DXGI format this front does not serve")
+    if (dxgi::R32G32B32A32_TYPELESS..=dxgi::V408).contains(&dxgi) || PAST_V408.contains(&dxgi) {
+        not_implemented(UNSERVED_FORMAT)
     } else {
         Err(Error::InvalidArg("unknown format"))
     }
@@ -771,23 +774,12 @@ pub fn vertex_scalar(f: VertexFormat) -> ScalarKind {
     }
 }
 
-/// Bytes one element of a vertex format takes.
-pub fn vertex_size(format: VertexFormat) -> u32 {
-    use VertexFormat::*;
-    match format {
-        Uint8x1 | Sint8x1 | Unorm8x1 | Snorm8x1 => 1,
-        Uint8x2 | Sint8x2 | Unorm8x2 | Snorm8x2 | Uint16x1 | Sint16x1 | Unorm16x1 | Snorm16x1
-        | Float16x1 => 2,
-        Uint8x3 | Sint8x3 | Unorm8x3 | Snorm8x3 => 3,
-        Uint8x4 | Sint8x4 | Unorm8x4 | Snorm8x4 | Uint16x2 | Sint16x2 | Unorm16x2 | Snorm16x2
-        | Float16x2 | Float32x1 | Uint32x1 | Sint32x1 | Bgra8Unorm | Unorm10_10_10_2
-        | Uint10_10_10_2 | Float11_11_10 | Bgrx8Unorm => 4,
-        Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3 | Float16x3 => 6,
-        Uint16x4 | Sint16x4 | Unorm16x4 | Snorm16x4 | Float16x4 | Float32x2 | Uint32x2
-        | Sint32x2 => 8,
-        Float32x3 | Uint32x3 | Sint32x3 => 12,
-        Float32x4 | Uint32x4 | Sint32x4 => 16,
-    }
+/// Bytes one vertex element of DXGI format `dxgi` takes: a texel of that format.
+pub fn vertex_size(dxgi: u32) -> Option<u32> {
+    texture_format(dxgi).map(|f| {
+        let (_, _, bytes) = f.block();
+        bytes
+    })
 }
 
 /// The alignment of a vertex element's offset: the size of its components, at most 4 bytes.
@@ -799,7 +791,7 @@ pub fn vertex_alignment(format: VertexFormat) -> u32 {
         Uint16x1 | Sint16x1 | Unorm16x1 | Snorm16x1 | Float16x1 | Uint16x2 | Sint16x2
         | Unorm16x2 | Snorm16x2 | Float16x2 | Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3
         | Float16x3 | Uint16x4 | Sint16x4 | Unorm16x4 | Snorm16x4 | Float16x4 => 2,
-        _ => 4,
+        _ => size_of::<u32>() as u32,
     }
 }
 
