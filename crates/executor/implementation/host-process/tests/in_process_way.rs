@@ -7,17 +7,19 @@
 //! vector registers and memory; a fault at the same guest address; an access the reference faults on outside the
 //! window reaching the mark; an alignment fault reaching the floor's misalignment entry; a stack pointer written
 //! outside the window reaching the mark; a stack probe faulting only where the reference's stack pointer left the
-//! mapped stack. Stops are not resolved here (the stop crate does not know the way yet): a fault's registers are
-//! not compared.
+//! mapped stack. Every stop is resolved through the stop crate's in-process way, and the guest state it gives must
+//! be the reference's: the state before the instruction at a fault, an alignment call, the mark or a stack pointer
+//! leaving the window, the state after it at a faulting stack probe; a fault at the reference's own address.
 //!
-//! Knobs: `WCHP_IN_PROCESS_CASES` cases per form, `WCHP_SEED`.
+//! A quarter of the drawn words name the stack pointer, which random words rarely do. Knobs: `WCHP_IN_PROCESS_CASES`
+//! cases per form, `WCHP_SEED`.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use unicorn_engine::{Arch, Arm64CpuModel, HookType, Mode, Prot, RegisterARM64, Unicorn};
+use unicorn_engine::{Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, Unicorn};
 use wcontainers_abi::{LOWEST_ADDRESS, PAGE_SIZE};
 use wcontainers_arm64::thread_state::{COUNT, PAGE, RegisterPage, SCRATCH, TAG_LOW, WITHHELD};
 use wcontainers_arm64::way::{
@@ -25,6 +27,10 @@ use wcontainers_arm64::way::{
     WINDOW_BITS, Way,
 };
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode, forms};
+use wcontainers_executor_arm64_stop::in_process::{self, Resolution};
+use wcontainers_executor_arm64_stop::{
+    AFTER_PAGE, AfterPage, FloatStatus, GuestState, Interrupted, Piece, Resolved, Stop, Taken,
+};
 use wcontainers_guest_cpu::{Guest, InsideCall, Native, Route};
 use wcontainers_translator::{LookAhead, NativeRequest, translate_native_request};
 
@@ -36,6 +42,9 @@ const DEFAULT_CASES: u64 = 4;
 const DEFAULT_SEED: u64 = 0x2545_f491_4f6c_dd1d;
 /// Random words tried per case wanted before a form is given up.
 const TRIES: u64 = 64;
+/// The register fields that name the stack pointer as 31 in most forms that can: Rn, and Rd (Rt in an access).
+const RN_FIELD: u32 = 0x1f << 5;
+const RD_FIELD: u32 = 0x1f;
 
 /// The slot whose window the translated code runs in, and another whose window it must never reach.
 const SLOT: u16 = 1;
@@ -68,6 +77,10 @@ const HOST_CODE: u64 = (1 << 45) + (1 << 40);
 const REGISTER_PAGE: u64 = (1 << 45) + (1 << 41);
 /// The most instructions a translated case runs.
 const STEPS: usize = 10_000;
+/// The count when the translated code starts, which its leads are taken from.
+const COUNT_START: u64 = 1 << 40;
+/// The bytes of an instruction.
+const INSTRUCTION: u64 = 4;
 
 /// A seeded case: an instruction and the guest's state before it.
 #[derive(Clone, Debug)]
@@ -168,11 +181,42 @@ fn write_vectors(unicorn: &Unicorn<'static, ()>, q: &[u128; VECTORS]) {
     }
 }
 
-/// The first fault a run met, kept by its memory hook.
-type Faults = Rc<RefCell<Option<Outcome>>>;
+/// The hardware where translated code stopped, and what the host says it took.
+#[derive(Clone, Debug)]
+struct Trapped {
+    h: Interrupted,
+    taken: Taken,
+}
+
+/// The first fault a run met, kept by its hook, with the translated code's hardware there.
+type Faults = Rc<RefCell<Option<(Outcome, Option<Trapped>)>>>;
 
 fn first(faults: &Faults, outcome: Outcome) {
-    faults.borrow_mut().get_or_insert(outcome);
+    faults.borrow_mut().get_or_insert((outcome, None));
+}
+
+fn first_trapped(faults: &Faults, outcome: Outcome, trapped: Trapped) {
+    faults.borrow_mut().get_or_insert((outcome, Some(trapped)));
+}
+
+/// The emulator's general registers, stack pointer and flags, at host pc `pc`.
+fn hardware(unicorn: &Unicorn<'_, ()>, pc: u64) -> Interrupted {
+    Interrupted {
+        x: std::array::from_fn(|n| unicorn.reg_read(x_register(n)).expect("a register")),
+        sp: unicorn.reg_read(RegisterARM64::SP).expect("sp"),
+        pc,
+        state: unicorn.reg_read(RegisterARM64::NZCV).expect("flags"),
+        fpsr: 0,
+        fpcr: 0,
+    }
+}
+
+/// The guest's registers on the translated side: the case's, its base carrying the tag.
+fn guest_registers(case: &Case) -> [u64; GENERAL] {
+    std::array::from_fn(|n| match case.tag {
+        Some((t, tag)) if t == n => case.x[n] | tag << TAG_LOW,
+        _ => case.x[n],
+    })
 }
 
 /// The guest instruction run at the guest's own addresses.
@@ -206,7 +250,7 @@ fn reference(case: &Case) -> Outcome {
         })
         .expect("the exception hook");
     let ran = unicorn.emu_start(CODE, CODE + Arm64::MAX_LENGTH, 0, 1);
-    if let Some(outcome) = faults.take() {
+    if let Some((outcome, _)) = faults.take() {
         return outcome;
     }
     if ran.is_err() {
@@ -235,8 +279,41 @@ fn withheld_word(way: Way, r: u8) -> u64 {
     }
 }
 
-/// The case's instruction translated for the in-process way and run in slot [`SLOT`]'s window.
-fn translated(case: &Case) -> Outcome {
+/// The register page and the words after it, as translated code left them at `at`.
+fn kept(unicorn: &Unicorn<'_, ()>, at: u64) -> (RegisterPage, AfterPage) {
+    let word = |offset: usize| {
+        let mut bytes = [0; size_of::<u64>()];
+        unicorn
+            .mem_read(at + offset as u64, &mut bytes)
+            .expect("a register page word");
+        u64::from_le_bytes(bytes)
+    };
+    let words = |from: usize, into: &mut [u64]| {
+        for (k, w) in into.iter_mut().enumerate() {
+            *w = word(from + k * size_of::<u64>());
+        }
+    };
+    let mut page = RegisterPage::default();
+    words(
+        core::mem::offset_of!(RegisterPage, withheld),
+        &mut page.withheld,
+    );
+    words(core::mem::offset_of!(RegisterPage, saved), &mut page.saved);
+    page.link = word(core::mem::offset_of!(RegisterPage, link));
+    let mut exclusive = page.exclusive();
+    words(
+        core::mem::offset_of!(RegisterPage, exclusive_bytes),
+        &mut exclusive,
+    );
+    page.set_exclusive(exclusive);
+    let mut after = [0; AFTER_PAGE];
+    words(IN_PROCESS_WITHHELD_AT, &mut after);
+    (page, after)
+}
+
+/// The case's instruction translated for the in-process way and run in slot [`SLOT`]'s window, with what its stop
+/// resolves to.
+fn translated(case: &Case) -> (Outcome, Option<Resolution>) {
     let way = Way::InProcess { slot: SLOT };
     let base = way.window_base();
     let other = Way::InProcess { slot: OTHER_SLOT }.window_base();
@@ -284,11 +361,7 @@ fn translated(case: &Case) -> Outcome {
     unicorn
         .mem_map(REGISTER_PAGE, PAGE_SIZE, Prot(Prot::READ.0 | Prot::WRITE.0))
         .expect("the register page");
-    // The guest's registers, the tag on its base.
-    let guest: [u64; GENERAL] = std::array::from_fn(|n| match case.tag {
-        Some((t, tag)) if t == n => case.x[n] | tag << TAG_LOW,
-        _ => case.x[n],
-    });
+    let guest = guest_registers(case);
     for &r in way.withheld() {
         let at = REGISTER_PAGE + withheld_word(way, r);
         unicorn
@@ -317,18 +390,29 @@ fn translated(case: &Case) -> Outcome {
             move |unicorn, address, _| {
                 let code = (address - IN_PROCESS_ENTRIES) / PROCESS_ENTRY_BYTES;
                 let call = u16::try_from(code).ok().and_then(InsideCall::from_code);
-                first(&into, call.map_or(Outcome::Stray(address), Outcome::Call));
+                match call {
+                    // The call is reported at its blr, before the return address in x30.
+                    Some(call) => {
+                        let link = unicorn.reg_read(RegisterARM64::X30).expect("x30");
+                        let h = hardware(unicorn, link - INSTRUCTION);
+                        let taken = Taken::Call(call.code());
+                        first_trapped(&into, Outcome::Call(call), Trapped { h, taken });
+                    }
+                    None => first(&into, Outcome::Stray(address)),
+                }
                 unicorn.emu_stop().expect("stopped");
             },
         )
         .expect("the entries' hook");
     let into = faults.clone();
     unicorn
-        .add_mem_hook(HookType::MEM_INVALID, 1, 0, move |_, _, address, _, _| {
-            let guest = address.wrapping_sub(base);
-            first(
-                &into,
-                if address == base + OUTSIDE {
+        .add_mem_hook(
+            HookType::MEM_INVALID,
+            1,
+            0,
+            move |unicorn, kind, address, _, _| {
+                let guest = address.wrapping_sub(base);
+                let outcome = if address == base + OUTSIDE {
                     Outcome::Mark
                 } else if guest < 1 << WINDOW_BITS
                     || guest.wrapping_neg() <= 1 << WINDOW_BITS
@@ -336,11 +420,23 @@ fn translated(case: &Case) -> Outcome {
                 {
                     Outcome::Fault(guest)
                 } else {
-                    Outcome::Stray(address)
-                },
-            );
-            false
-        })
+                    first(&into, Outcome::Stray(address));
+                    return false;
+                };
+                let pc = unicorn.reg_read(RegisterARM64::PC).expect("pc");
+                let taken = Taken::Access {
+                    alignment: false,
+                    fault: address,
+                    write: matches!(
+                        kind,
+                        MemType::WRITE | MemType::WRITE_UNMAPPED | MemType::WRITE_PROT
+                    ),
+                };
+                let h = hardware(unicorn, pc);
+                first_trapped(&into, outcome, Trapped { h, taken });
+                false
+            },
+        )
         .expect("the fault hook");
     let into = faults.clone();
     unicorn
@@ -354,7 +450,7 @@ fn translated(case: &Case) -> Outcome {
         let value = match r {
             _ if r == BASE => base,
             _ if r == PAGE => REGISTER_PAGE,
-            _ if r == COUNT => 0,
+            _ if r == COUNT => COUNT_START,
             _ if r == SCRATCH || r == CHECK => u64::MAX,
             _ => guest_value,
         };
@@ -368,10 +464,32 @@ fn translated(case: &Case) -> Outcome {
         .expect("flags");
     write_vectors(&unicorn, &case.q);
     let ran = unicorn.emu_start(HOST_CODE, 0, 0, STEPS);
-    let outcome = faults.take();
-    match outcome {
-        Some(Outcome::Done(_)) => {}
-        Some(outcome) => return outcome,
+    match faults.take() {
+        Some((Outcome::Done(_), _)) => {}
+        Some((outcome, None)) => return (outcome, None),
+        Some((outcome, Some(t))) => {
+            let (page, after) = kept(&unicorn, REGISTER_PAGE);
+            let piece = Piece {
+                base: HOST_CODE,
+                length: code.bytes.len(),
+                spans: &code.spans,
+            };
+            let resolution = in_process::resolve(
+                SLOT,
+                &piece,
+                t.taken,
+                &t.h,
+                &page,
+                &after,
+                &mut FloatStatus::default(),
+                &mut |at, into| {
+                    if unicorn.mem_read(base + at, into).is_err() {
+                        into.fill(0);
+                    }
+                },
+            );
+            return (outcome, resolution);
+        }
         None => panic!("the translated code ended without an outcome: {ran:?}"),
     }
     let mut page = vec![0; PAGE_SIZE as usize];
@@ -382,7 +500,7 @@ fn translated(case: &Case) -> Outcome {
         let at = at as usize;
         u64::from_le_bytes(page[at..at + size_of::<u64>()].try_into().expect("a word"))
     };
-    Outcome::Done(Box::new(State {
+    let done = Outcome::Done(Box::new(State {
         x: std::array::from_fn(|n| {
             if way.withheld().contains(&(n as u8)) {
                 word(withheld_word(way, n as u8))
@@ -397,7 +515,8 @@ fn translated(case: &Case) -> Outcome {
         nzcv: unicorn.reg_read(RegisterARM64::NZCV).expect("flags"),
         q: read_vectors(&unicorn),
         memory: read_regions(&unicorn, base),
-    }))
+    }));
+    (done, None)
 }
 
 /// Whether the instruction is one the in-process way changes: an access, a cache or zeroing operation by address,
@@ -548,7 +667,12 @@ fn case_for(word: u32, rng: &mut fastrand::Rng) -> Case {
     let i = decode(word);
     let x: [u64; GENERAL] = std::array::from_fn(|_| value(rng));
     let stack_bottom = STACK_TOP - STACK_PAGES * PAGE_SIZE;
-    let sp = (stack_bottom + rng.u64(0..STACK_PAGES * PAGE_SIZE)) & !15;
+    // Half the stack pointers within a page of the stack's ends, where a move of it leaves the stack.
+    let sp = match rng.u32(0..4) {
+        0 => stack_bottom + rng.u64(0..PAGE_SIZE),
+        1 => STACK_TOP - rng.u64(0..=PAGE_SIZE),
+        _ => stack_bottom + rng.u64(0..STACK_PAGES * PAGE_SIZE),
+    } & !15;
     // A tag on the base register, where nothing stores or compares it as data.
     let tag = match start_address(&i, &x, sp) {
         Some((Reg::X(n), _)) if rng.u32(0..4) == 0 && !other_registers(&i).contains(&Reg::X(n)) => {
@@ -676,6 +800,84 @@ fn disagreement(
     }
 }
 
+/// How a resolved guest state differs from the one expected: registers, stack pointer, pc and flags.
+fn state_differences(
+    x: &[u64; GENERAL],
+    sp: u64,
+    pc: u64,
+    nzcv: u64,
+    got: &GuestState,
+) -> Option<String> {
+    let mut out: Vec<String> = (0..GENERAL)
+        .filter(|&n| x[n] != got.x[n])
+        .map(|n| format!("x{n} {:#x} not {:#x}", got.x[n], x[n]))
+        .collect();
+    for (name, want, have) in [
+        ("sp", sp, got.sp),
+        ("pc", pc, got.pc),
+        ("nzcv", nzcv, got.flags),
+    ] {
+        if want != have {
+            out.push(format!("{name} {have:#x} not {want:#x}"));
+        }
+    }
+    (!out.is_empty()).then(|| format!("resolved state differs: {}", out.join(", ")))
+}
+
+/// What the translated code's stop must resolve to for the reference's outcome, or why it may differ; None when
+/// it agrees. Called once the outcomes agree.
+fn resolution_disagreement(
+    case: &Case,
+    reference: &Outcome,
+    translated: &Outcome,
+    resolution: Option<&Resolution>,
+) -> Option<String> {
+    let i = decode(case.word);
+    let before = |state: &GuestState| {
+        state_differences(&guest_registers(case), case.sp, CODE, case.nzcv, state)
+    };
+    // The top byte of a tagged address is the stop crate's rule (`untag_address`), which the emulator has none of.
+    let below_tag = |a: u64| a & ((1 << TAG_LOW) - 1);
+    let at = |address: u64, want: u64, state: &GuestState| {
+        if below_tag(address) == below_tag(want) {
+            before(state)
+        } else {
+            Some(format!("resolved a fault at {address:#x}, not {want:#x}"))
+        }
+    };
+    match (reference, translated, resolution) {
+        (_, Outcome::Done(_), _) => None,
+        // The emulator's own top byte and store exclusives: what the outcomes' rules accepted.
+        (Outcome::Fault(a), _, _) if a >> TAG_LOW != 0 => None,
+        (Outcome::Done(_), _, _) if matches!(i, I::StoreExclusive { .. }) => None,
+        (
+            Outcome::Fault(a),
+            Outcome::Fault(_),
+            Some(Resolution::Resolved(Resolved::Stop(Stop::MemoryFault { address, .. }, state))),
+        )
+        | (Outcome::Fault(a), Outcome::Mark, Some(Resolution::Outside { address, state })) => {
+            at(*address, *a, state)
+        }
+        (Outcome::Done(_), Outcome::Mark, Some(Resolution::Outside { address, state })) => {
+            match i {
+                I::CleanCache { rn: Reg::X(n) } => at(*address, case.x[usize::from(n)], state),
+                _ => Some(format!("resolved outside at {address:#x}")),
+            }
+        }
+        (Outcome::Done(_), Outcome::Mark, Some(Resolution::Displaced(state))) => before(state),
+        (Outcome::Done(r), Outcome::Fault(_), Some(Resolution::Probed(state))) => {
+            state_differences(&r.x, r.sp, CODE + INSTRUCTION, r.nzcv, state)
+        }
+        (
+            _,
+            Outcome::Call(InsideCall::Misaligned),
+            Some(Resolution::Resolved(Resolved::Stop(Stop::Alignment(_), state))),
+        ) => before(state),
+        (Outcome::Exception(_), _, _) => None,
+        (_, _, resolution) => Some(format!("resolved to {resolution:x?}")),
+    }
+}
+
 #[derive(Debug, Default)]
 struct Tally {
     cases: u64,
@@ -688,6 +890,7 @@ struct Tally {
     unmonitored: u64,
     crossing: u64,
     top_byte: u64,
+    resolved: u64,
 }
 
 #[test]
@@ -703,16 +906,27 @@ fn in_process_way_agrees_with_the_reference_and_stays_in_its_window() {
             if found == cases {
                 break;
             }
-            let word = form.word(rng.u32(..));
+            // A quarter of the words name the stack pointer as their base or source, an eighth as their destination
+            // too (rule c's moves), which random words name rarely.
+            let named = match rng.u32(0..8) {
+                0 => RN_FIELD | RD_FIELD,
+                1 => RN_FIELD,
+                _ => 0,
+            };
+            let word = form.word(rng.u32(..) | named);
             if !form.presented(word) || !wanted(&decode(word)) {
                 continue;
             }
             found += 1;
             let case = case_for(word, &mut rng);
             let reference = reference(&case);
-            let translated = translated(&case);
+            let (translated, resolution) = translated(&case);
             tally.cases += 1;
-            if let Some(why) = disagreement(&case, &reference, &translated, &mut tally) {
+            let why = disagreement(&case, &reference, &translated, &mut tally).or_else(|| {
+                resolution_disagreement(&case, &reference, &translated, resolution.as_ref())
+            });
+            tally.resolved += u64::from(resolution.is_some());
+            if let Some(why) = why {
                 failures.entry(form.name.clone()).or_insert_with(|| {
                     format!("{word:#010x} {:?}: {why}\ncase {case:x?}", decode(word))
                 });
