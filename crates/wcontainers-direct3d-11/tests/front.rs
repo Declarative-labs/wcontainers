@@ -2876,6 +2876,31 @@ fn constant_buffers_past_the_back_ends_uniform_buffers_are_read_through_texture_
 }
 
 #[test]
+fn a_shader_reading_more_textures_than_the_back_end_has_is_refused_at_creation() {
+    let mut dev = device();
+    let ps_slots = corpus("constants.ps_slots");
+    dev.create_shader(&ps_slots, SourceStage::Pixel).unwrap();
+    // Its constant buffers past the back end's uniform buffers are read through textures, which
+    // a back end of one texture a stage cannot hold.
+    dev.backend.caps.limits.textures_per_stage = 1;
+    assert!(matches!(
+        dev.create_shader(&ps_slots, SourceStage::Pixel),
+        Err(Error::InvalidArg(_))
+    ));
+    assert_eq!(
+        dev.backend
+            .slow_paths()
+            .count(SlowPath::BindingsBeyondLimit),
+        1
+    );
+    assert_eq!(
+        dev.take_warnings(),
+        [SlowPath::BindingsBeyondLimit.reason()]
+    );
+    assert!(dev.removed.is_none());
+}
+
+#[test]
 fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
     let mut dev = device();
     let elements = [
