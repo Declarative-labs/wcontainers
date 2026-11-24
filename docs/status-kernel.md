@@ -8,6 +8,13 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, twelfth run: the three files still unchanged
+
+Started about 07:47 UTC on 2026-11-24 at a329bc12. The three other tracks' files (see "For the
+orchestrator") had no commit and no uncommitted edit; the owner's merges of 2026-11-23
+(e65273d5, 45dc7425) were already conformed in this track's crates in earlier runs. Nothing was
+built. A wait was started (scratch kernel/kc12, wait.sh) and ended with the run.
+
 ## KC, eleventh run: still waiting on the three files
 
 Started about 07:16 UTC on 2026-11-24 at 962a03fd. Watched the three other tracks' files from
