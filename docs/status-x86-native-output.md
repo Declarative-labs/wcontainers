@@ -15,12 +15,74 @@ results and controls) is in git: `git show 5062ac632:docs/status-x86-native-outp
   its cause and owner. Fifteen independent checks of XN1; XN2 run 1 answered the fifteenth's five minor findings
   in this file (counted speed under "Departures from the plan (XN1)", the sgdt and sidt cases under
   "Coordination", the AMD flag under gap item 2; the counted string's outcome stays gap item 1).
-- XN2 (way I, the checked forms): partly built (runs 1 to 3), see "XN2 run 3", "XN2 run 2" and "XN2 (run 1)"
-  below. Run 3 ran layers 2 and 3 and the benchmark set in I and measured the forms: neither meets its speed bar
-  with the stack form built, and the measurement chooses the other stack form (rsp held as B + rsp), which is
-  the next work. Before run 1, `carry::carry_plain`
-  refused the in-process way by an assertion for every instruction, memory or not (the fifteenth check: `add rax,
-  rcx` refused as `mov rax, [rcx]` was); that assertion is gone, and the one left refuses only a guest string in I.
+- XN2 (way I, the checked forms): built and measured (runs 1 to 4), see "XN2 run 4" and the runs before it. Run 4
+  built the stack form the measurement chose (rsp held as B + the guest's rsp); both forms then meet their speed bars
+  on the benchmark set (wrapping 1.065 and 1.091 times the unchecked form, bar 1.10; exact 1.280 and 1.323, bar
+  1.35). What is left of XN2 needs an x86 executor (gap item 1): the link, register-group and hostile-guest tests in
+  I and the X9 programs.
+
+## XN2 run 4 (2026-11-24)
+
+Built (commits ce33aa912 and 1a683fbfd; plan section 4 "As built (XN2 run 4)" has the sequences):
+- The stack form: in I host rsp is B + the guest's rsp. `push`, `pop` to a register, `call`'s push, `ret` and every
+  operand `[rsp + d]` with no index and d no lower than one page below run as the guest wrote them; no stack probe is
+  left (`window::probe_stack` is gone). An index or a lower d takes the window's form (GS at esp; exact: the offset
+  less B, probed). `push m` and `pop m` cut their operand only. An instruction naming rsp as a value (`mov rbp, rsp`,
+  `sub rsp, 16`, `lea rax, [rsp+8]`, `pop rsp`, `cmov`, `xchg`, `rdfsbase rsp`, `call rsp`) has it replaced by t or a
+  guest register kept in a stand-in slot (carry.rs `StackValue`), loaded with rsp less B where read; where written,
+  after the commit point the map holds the guest's rsp there, the exact form probes it, both cut it to 32 bits and
+  make rsp `lea rsp, [s + u]` with u the base. `leave` is its own five instructions (six and the probe, exact).
+- Layer 1 in I (test crate native.rs): the blob starts rsp at B + the case's; a case whose rsp is past 2^32 starts
+  at it modulo 2^32 for the reference too (counted, "rsp past the window taken modulo 2^32"); `guest_state` takes rsp
+  less B unless the span holds it; the exact form's probe after the commit point of an rsp write is a new ending
+  `StackRefused` (the guest as the instruction left it, compared with the CPU); the wrapping form's stops between an
+  rsp write and its cut compare rsp modulo 2^32; the second call of a float status instruction faulting in the
+  wrapping form counts as the named landing when the exact form agrees with the CPU (`fnstenv [rsp+rax*2]`).
+- Layers 2 and 3 and the benchmark blob (native_programs.rs): rsp starts at B + the guest's; the `pushfq` answer is a
+  plain `push` of the flags on the guest's rsp.
+- The window sweep (native_window.rs) now allows the stack's own accesses and `[rsp + d]` as written and checks every
+  host write of rsp: a push or pop, a return's `lea rsp, [rsp + n]` (n at most 2^16 + 8), or `lea rsp, [x + y]` of the
+  base loaded from the fixed part and a value cut to 32 bits. New shape tests `the_stack_runs_as_written` and
+  `rsp_as_a_value_is_less_b_and_written_back_cut`; `stack_and_withheld_forms_are_made` gains six rsp forms.
+
+Found by layer 1 in I while building (fixed): a `cmov` to rsp was taken as a write alone (t not loaded, so a false
+condition wrote junk); the relocation of rsp came after the withheld registers' stores, so a stop between them read
+a withheld register's old value (`shlx`, `mulx`, `bextr` naming r10 or r11 beside rsp).
+
+Results (rented x86 machine, Xeon 8488C):
+- Window cases of the plan (`the_window_cases`): wrapping 59 as the CPU and 5 the named landing, exact 64 as the CPU
+  (load 6).
+- Layer 1 in I, seed 5150, 20 cases a form (load 17 to 28): 0 forms differ in either form; exact ended StackRefused
+  57 times; 7,692 runs started with rsp taken into the window.
+- The window cases again with ten cases for the stack form added (`[rsp - 4096]` at rsp 0, `[rsp + 2^31 - 1]` at
+  2^32 - 8, `[rsp + rax*8]` reaching 2^36, `mov rsp, rax` with 2^32 + 16 and inside, `sub rsp, 16` at 8 and inside,
+  `pop rsp`, `leave` with rbp inside, at 2^32 - 8 and at 2^40, `ret 0xffff` at 2^32 - 8; load 4): wrapping 66 as the
+  CPU and 10 the named landing, exact 76 as the CPU (3 ended StackRefused).
+- Layer 1 in I, every form (2,008), 200 cases, both forms (scratch xn2r4/layers.out; 11:08 to 11:20 UTC, load 18 to
+  33, 48 jobs): seed 5150 0 forms differ in either form (exact: 452 StackRefused, 51,061 Refused; 77,680 runs started
+  with rsp taken into the window); seed 2611 0 forms differ (exact 469 StackRefused).
+- Layer 2 in I, seed 23, 10,000 programs (load 28 to 12): 0 failing; 3,361 faulted; 1,038 runs the wrapping form's
+  named landing; 227,396 blob runs (the same counts as run 3). Seed 7, 500 programs: 0 failing.
+- Layer 3 in I, seed 5, 300 Csmith programs (load 12 to 4): 264 compared, 36 did not end in time on Linux, 0 failing.
+- The x86 crate's tests and the window sweep (rented ARM64 machine, load 8): every test passes; seeds 0x5eed 20,000
+  cases, 0x2b17, 0x51 and 0xdecaf 400,000 cases each (1,600,000 pieces each, about 377,000 strings): 0 outside.
+  Clippy with warnings denied clean for wcontainers-x86, wcontainers-guest-cpu and the test crate.
+- Speed, the benchmark set at full, `taskset -c 0-9`, best of 7, each form against P (the unchecked form), two runs
+  (scratch xn2r4/bench1.out, bench2.txt):
+  - 10:54 to 11:00 UTC, load 9 to 16: wrapping geometric mean 1.091 (counted 1.013), exact 1.323 (counted 1.254).
+  - 11:01 to 11:08 UTC, load 6 rising to 36: wrapping 1.065 (counted 1.032), exact 1.280 (counted 1.302); per
+    program wrapping and exact: fib 1.173 and 1.178, sieve 0.993 and 1.187, hash 0.999 and 1.002, sort 1.060 and
+    1.249, interpret 1.414 and 1.776, matrix 1.055 and 2.603, walk 1.019 and 0.946, search 0.883 and 0.940.
+  - A third run (11:28 to 11:37 UTC) is not a measurement of the forms: another job took the load from 3 to 76
+    during it, doubling interpret's, matrix's and walk's times between ways (walk 0.59 times the host's); it gave
+    wrapping 1.102 and exact 1.359 (scratch xn2r4/bench3.out).
+  - So with the stack as the guest wrote it the earlier figures (+9 to +12 percent wrapping, +40 to +46 exact) become
+    +6.5 to +9 and +28 to +32 percent; fib's exact form went from 2.044 to 1.178.
+  - interpret's wrapping form is 1.36 to 1.41 times P uncounted but 0.74 to 0.76 times P counted, its uncounted time
+    (0.48 to 0.49 s) that of P counted (0.47 s) and its counted that of P uncounted (0.35 s), in both runs: a placement
+    effect of the hot loop, I expect, not the form's cost; not studied.
+  - The exact form's cost is now the probe of the other accesses: matrix 2.6 (six instructions and a load an access,
+    four accesses in its inner loop). A cheaper probe is the next lever if the bar is tightened.
 
 ## XN2 run 3 (2026-11-24)
 
@@ -68,7 +130,7 @@ Results (rented x86 machine, Xeon 8488C):
   then the cut access, six instructions and a load more per access; matrix's inner loop has four.
 
 The stack form, chosen by this measurement (plan 4: "keeps the cheaper that passes the way I tests"): rsp held as
-B + the guest's rsp. Not built. What it needs, in order:
+B + the guest's rsp. Built in run 4 (above), as these points planned it:
 1. Every piece in I keeps host rsp = B + guest rsp: `push`, `pop`, `call`, `ret`, `leave` and rsp-based operands run
    as the guest wrote them (no cut, no probe: the page below B and the 2^35 bytes under the probe's page, and the
    page and 2^31 bytes above the window, unmapped); an instruction that reads rsp as a value reads it less B (a
@@ -514,8 +576,8 @@ natively in process"; `WC_LAYER2_CHECK=wrapping` or `exact`); `WC_LAYER3_CASES=3
 WC_LAYER3_JOBS=48 ... --test layer3 csmith_programs_match_linux_natively_in_process -- --nocapture`; speed:
 `WC_BENCH_RUNS=7 taskset -c 0-9 cargo test -q -p wcontainers-translator-test --test benchmarks
 measure_benchmarks_natively_x86_64 -- --ignored --nocapture` (`WC_BENCH_WAYS=process,wrapping,exact`; lines "times
-the unchecked form's"). The stack floor: the same after `patch -p1 < stackfloor.diff` in the rented copy (copy at
-/work/probes/xn2/stackfloor.diff there), then `patch -R -p1`.
+the unchecked form's"). Run 3's stack floor patch (scratch xn2r3/stackfloor.diff) no longer applies: run 4 built that
+form. Scratch xn2r4/run.sh sends one command to the x86 machine, retrying while its SSH refuses.
 
 `orchestrator/cloud/arm-run <checkout> --name x86-native-output -- 'cargo test -q -p wcontainers-x86 --test
 native_window -- --nocapture'` (any Linux machine: the tests decode, they run no guest code); the sweep takes
@@ -633,6 +695,11 @@ way.
 - A 16-bit bit test borrows t as the count instead of a stand-in v; bit tests need no v in any width (the probe
   runs in u in place).
 - The exact form also probes the last byte of the forms the CPU makes in parts (answering the ninth check).
+- (Run 4) The stack: rsp held as B + the guest's rsp, the stack's accesses as the guest wrote them, chosen by run 3's
+  measurement as plan 4 asked; the run 1 and 2 forms of pushes and pops above (commit points, fix-ups, the probe of
+  rsp - n, a call's probe before the lookup) are gone with it. `leave` commits at rbp's write with the guest's rsp in
+  u, not at rsp's move. A guest rsp written outside [0, 2^32) is cut (wrapping) or faults after the write (exact),
+  named in plan 5; a thread starts with rsp in [0, 2^32], and a case of layer 1 past it starts modulo 2^32.
 
 ## Measured (the plan's probes)
 
@@ -916,11 +983,13 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   undefined flag goes to the inside or inline flags (shifts are hot). One concrete example: `rol al, 2` (c0 c0 02) of al 1
   with rflags 0xad7 before leaves 0xad6 on the Xeon and 0x2d6 on AMD (OF), which a following `jo` reads.
 - P on a 4-level host: about 3,000 guest threads per process (plan 3.3, 5).
-- Way I's stack form (XN2 run 3): measured, rsp held as B + the guest's rsp is the cheaper by far (fib's wrapping
-  form 1.355 times P with the stack cut, 1.000 with it left as written). Its one open point is a guest rsp written
-  outside the 4 GiB window: proposed, the wrapping form cuts it and the exact form faults at the write, both named
-  differences. Example: `mov rsp, rax` with rax 2^32 + 16, then `mov rbx, rsp`: the CPU gives rbx 2^32 + 16 and
-  faults only at a later push; the wrapping form would give 16, the exact form a SIGSEGV at the `mov rsp, rax`.
+- Way I's stack form (built in XN2 run 4): rsp held as B + the guest's rsp, the cheaper by far. A guest rsp written
+  outside the 4 GiB window is cut by the wrapping form and faults at the write in the exact form, both named
+  differences (plan 5). Example: `mov rsp, rax` with rax 2^32 + 16, then `mov rbx, rsp`: the CPU gives rbx 2^32 + 16
+  and faults only at a later push; the wrapping form gives 16, the exact form a SIGSEGV at the `mov rsp, rax` with
+  the instruction done. Open for the executor: an answer of the inside (`popf`, `enter`, `pushf` in I, a signal
+  return) that leaves rsp at or above 2^32 in the exact form has no host form to resume in; proposed, the same
+  fault after the answer.
 
 ## Licences
 
@@ -936,6 +1005,14 @@ No crate added by round 3. What XN1 added or turned on, every one in the lock al
 Licences read from cargo tree on the rented machine.
 
 ## Security
+
+- XN2 run 4: no `unsafe` added (grep of carry.rs, carry/window.rs, native_window.rs and the test crate's native.rs and
+  native_programs.rs finds none); no import added. The isolation now rests also on rsp: every host write of it is a
+  push or pop, a return's bounded move, or the cut `lea rsp, [s + base]`, which the window sweep checks on every
+  piece; an `[rsp + d]` made as written reaches at most one page below the window (guard) or 2^31 + 2^17 above it
+  (unmapped by the slot's layout). Two holes found and fixed while building, both by layer 1 in I, neither an escape:
+  a `cmov` to rsp with a false condition wrote t's junk (inside the window, cut), and a stop between rsp's write and a
+  withheld register's store read that register's old value.
 
 - XN2 run 2: no `unsafe` added (grep of carry.rs, carry/window.rs, native_window.rs and the test crate's native.rs
   finds none); the C speculation probe is scratch, never built into anything shipped. The in-process way's

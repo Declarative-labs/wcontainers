@@ -589,6 +589,30 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
         cases.push(with(&[0x50], &[(RSP, rsp)]));
         cases.push(with(&[0xff, 0xd0], &[(RSP, rsp), (r(RAX), CODE)]));
     }
+    // rsp held as B plus the guest's: an operand one page below rsp 0 and 2^31 - 1 past its top, an index reaching
+    // past the window, a write of rsp past it by `mov`, `sub`, `pop rsp` and `leave`, and `ret 0xffff` at the top.
+    let rbp = usize::from(wcontainers_x86::RBP);
+    cases.push(with(
+        &[0x48, 0x8b, 0x84, 0x24, 0x00, 0xf0, 0xff, 0xff],
+        &[(RSP, 0)],
+    ));
+    cases.push(with(
+        &[0x48, 0x8b, 0x84, 0x24, 0xff, 0xff, 0xff, 0x7f],
+        &[(RSP, WINDOW - 8)],
+    ));
+    cases.push(with(
+        &[0x48, 0x8b, 0x04, 0xc4],
+        &[(RSP, DATA), (r(RAX), 1 << 33)],
+    ));
+    cases.push(with(&[0x48, 0x89, 0xc4], &[(r(RAX), WINDOW + 16)]));
+    cases.push(with(&[0x48, 0x89, 0xc4], &[(r(RAX), DATA + 8)]));
+    cases.push(with(&[0x48, 0x83, 0xec, 0x10], &[(RSP, 8)]));
+    cases.push(with(&[0x48, 0x83, 0xec, 0x10], &[(RSP, DATA + 64)]));
+    cases.push(with(&[0x5c], &[(RSP, DATA)]));
+    for frame in [DATA, WINDOW - 8, 1 << 40] {
+        cases.push(with(&[0xc9], &[(rbp, frame)]));
+    }
+    cases.push(with(&[0xc2, 0xff, 0xff], &[(RSP, WINDOW - 8)]));
     // The guest's 0x67: mov rax, [ebx]; stosb; bt dword [eax], ecx; xlat.
     cases.push(with(
         &[0x67, 0x48, 0x8b, 0x03],
