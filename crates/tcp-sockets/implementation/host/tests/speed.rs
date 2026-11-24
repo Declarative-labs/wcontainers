@@ -1,6 +1,7 @@
 //! What one send and one receive of a few bytes over a loopback connection take: run with `--ignored --nocapture`.
 #![cfg(target_os = "linux")]
 
+use std::cell::RefCell;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
@@ -81,19 +82,26 @@ fn a_send_and_a_receive_take() {
         },
         transmit_statistics: Report::NotRequested,
     };
+    let mut payload = PAYLOAD;
     let mut into = [u8::MIN; PAYLOAD.len()];
     let (mut sends, mut receives) = (Vec::new(), Vec::new());
     for _ in 0..BATCHES {
         let start = Instant::now();
         for _ in 0..BATCH {
-            let taken = sockets.send(&client, request, &PAYLOAD).expect("send");
+            let taken = sockets
+                .send(&client, request, &RefCell::new(&mut payload[..]))
+                .expect("send");
             assert_eq!(taken.0, PAYLOAD.len());
         }
         sends.push(start.elapsed());
         let start = Instant::now();
         let mut received = 0;
         while received < BATCH * PAYLOAD.len() {
-            match sockets.receive(&server, TcpReceiveRequest::Read, &mut into) {
+            match sockets.receive(
+                &server,
+                TcpReceiveRequest::Read,
+                &RefCell::new(&mut into[..]),
+            ) {
                 Ok(got) => received += got.length.0,
                 Err(HostError::WouldBlock) => {}
                 Err(error) => panic!("receive: {error:?}"),

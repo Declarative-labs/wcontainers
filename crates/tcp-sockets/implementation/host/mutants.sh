@@ -220,8 +220,10 @@ mutant ic-segments-in-is-out "$state" 'segments_in: segments(info.tcpi_segs_in),
 mutant ic-authentication-icmp-inverted "$state" 'icmp_errors: if found.accept_icmps() == u32::MIN {' 'icmp_errors: if found.accept_icmps() != u32::MIN {'
 mutant ic-repair-timestamps-as-sack "$state" 'TcpRepairOption::Timestamps => (KIND_TIMESTAMP, NO_OPTION_VALUE),' 'TcpRepairOption::Timestamps => (KIND_SELECTIVE_ACK_PERMITTED, NO_OPTION_VALUE),'
 mutant ic-repair-max-window-is-send "$state" 'max_window: window.maximum_window.0,' 'max_window: window.send_window.0,'
-mutant send-claims-all "$implementation" $'.send_with_flags(bytes, flags)\n                .map(ByteCount)' \
-    $'.send_with_flags(bytes, flags)\n                .map(|_| ByteCount(bytes.len()))'
+mutant receive-cut-at-a-page "$implementation" 'fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {' \
+    'fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> { let page = into.len().min(4096); let into = &mut into[..page];'
+mutant send-claims-all "$implementation" $'.send_with_flags(bytes, self.flags)\n                .map_err(io_host_error);' \
+    $'.send_with_flags(bytes, self.flags)\n                .map(|_| bytes.len())\n                .map_err(io_host_error);'
 mutant ic-multipath-checksums-on "$state" 'checksums: found.csum_enabled != u8::MIN,' 'checksums: true,'
 mutant disconnect-keeps-every-port "$implementation" '(bound.bound_by_number.then_some(bound), pending_error)' '(Some(bound), pending_error)'
 mutant port-zero-bound-by-number "$implementation" '=> port != ANY_PORT,' '=> { let _ = port; true }'

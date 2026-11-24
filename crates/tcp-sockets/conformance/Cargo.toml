@@ -18,6 +18,9 @@ wcontainers-negative-route-advisable = { path = "../../negative-route-advisable"
 wcontainers-negative-route-advisable-conformance = { path = "../../negative-route-advisable/conformance" }
 wcontainers-readiness = { path = "../../readiness" }
 wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../byte-sink" }
+wcontainers-byte-source = { path = "../../byte-source" }
 # Reads the SYN headers an accept gives.
 etherparse = { workspace = true, features = ["std"] }
 # The raw sockets the ICMP checks capture SYNs and send errors with, as the network between the two ends.

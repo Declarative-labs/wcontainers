@@ -1,5 +1,6 @@
 //! What a wait and a receive allocate on the waiting thread, counted by allocation-counter's allocator.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::pin::pin;
@@ -127,10 +128,16 @@ fn a_warm_wait_and_a_receive_with_control_messages_allocate_nothing() {
     let waits = allocations_of(|| {
         let mut wait = pin!(sockets.wait_until_ready(&server, ReadyFor::READABLE));
         assert!(wait.as_mut().poll(&mut context).is_pending());
-        sockets.send(&client, plain(), &byte).expect("send");
+        sockets
+            .send(&client, plain(), &RefCell::new(&mut byte[..]))
+            .expect("send");
         finish(wait, &mut context);
         sockets
-            .receive(&server, TcpReceiveRequest::Read, &mut byte)
+            .receive(
+                &server,
+                TcpReceiveRequest::Read,
+                &RefCell::new(&mut byte[..]),
+            )
             .expect("receive");
     });
     assert_eq!(waits, 0, "allocations of {MEASURED_CYCLES} waits");
@@ -150,13 +157,19 @@ fn a_warm_wait_and_a_receive_with_control_messages_allocate_nothing() {
         .configure(&server, TcpSetting::UnreadByteReports(Report::Requested))
         .expect("unread byte reports");
     let receives = allocations_of(|| {
-        sockets.send(&client, plain(), &byte).expect("send");
+        sockets
+            .send(&client, plain(), &RefCell::new(&mut byte[..]))
+            .expect("send");
         finish(
             pin!(sockets.wait_until_ready(&server, ReadyFor::READABLE)),
             &mut context,
         );
         let received = sockets
-            .receive(&server, TcpReceiveRequest::Read, &mut byte)
+            .receive(
+                &server,
+                TcpReceiveRequest::Read,
+                &RefCell::new(&mut byte[..]),
+            )
             .expect("receive");
         assert!(received.timestamps.software.is_some());
         assert_eq!(received.unread_after, Some(ByteCount(0)));

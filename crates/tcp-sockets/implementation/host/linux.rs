@@ -17,6 +17,8 @@ use rustix::io::Errno;
 use rustix::net::{RecvFlags, SocketFlags, SocketType, ipproto};
 use socket2::{MsgHdr, SockAddr, SockRef};
 use wcontainers_abi::HostError;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BindingSetting, ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, FrameLength, HopLimit,
@@ -69,6 +71,7 @@ use wcontainers_tcp_sockets::{
     TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
     TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
 
 mod state;
@@ -954,26 +957,88 @@ fn record_flags(request: &TransmitReportRequest) -> (u32, u32) {
     (flags, reports)
 }
 
-/// Gives one send with an `SO_TIMESTAMPING` control message carrying the record flags.
-fn send_with_record_flags(
-    socket: BorrowedFd<'_>,
-    bytes: &[u8],
+/// One send on a connection's socket, which carries the record flags in an `SO_TIMESTAMPING` control message when any are set.
+struct Sending<'a> {
+    socket: BorrowedFd<'a>,
     flags: c_int,
     record: u32,
-) -> Result<usize, HostError> {
-    let mut control = Control::new();
-    control.push(
-        libc::SOL_SOCKET as u32,
-        libc::SO_TIMESTAMPING as u32,
-        &record,
-    );
-    let buffers = [IoSlice::new(bytes)];
-    let message = MsgHdr::new()
-        .with_buffers(&buffers)
-        .with_control(control.bytes());
-    SockRef::from(&socket)
-        .sendmsg(&message, flags)
-        .map_err(io_host_error)
+}
+
+impl ByteSink for Sending<'_> {
+    type Error = HostError;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, HostError> {
+        if self.record == 0 {
+            return SockRef::from(&self.socket)
+                .send_with_flags(bytes, self.flags)
+                .map_err(io_host_error);
+        }
+        let mut control = Control::new();
+        control.push(
+            libc::SOL_SOCKET as u32,
+            libc::SO_TIMESTAMPING as u32,
+            &self.record,
+        );
+        let buffers = [IoSlice::new(bytes)];
+        let message = MsgHdr::new()
+            .with_buffers(&buffers)
+            .with_control(control.bytes());
+        SockRef::from(&self.socket)
+            .sendmsg(&message, self.flags)
+            .map_err(io_host_error)
+    }
+}
+
+/// One receive from a connection's socket, which keeps what Linux tells of it beside the bytes.
+struct Receiving<'a> {
+    sockets: &'a HostTcpSockets,
+    socket: BorrowedFd<'a>,
+    flags: c_int,
+    timestamping: u32,
+    unread_reports: bool,
+    received: TcpReceived,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        if self.timestamping == 0 && !self.unread_reports {
+            let (_, length) = rustix::net::recv(
+                self.socket,
+                into,
+                RecvFlags::from_bits_retain(self.flags as u32),
+            )
+            .map_err(host_error)?;
+            self.received.length = ByteCount(length);
+            return Ok(length);
+        }
+        let mut control = ControlBuffer::default();
+        let message = options::receive_message(self.socket, into, self.flags, &mut control)?;
+        if message.flags & libc::MSG_CTRUNC != 0 {
+            self.sockets.shortfalls.count(CUT_CONTROL);
+        }
+        self.received.length = ByteCount(message.length);
+        for (level, kind, data) in message.messages() {
+            if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
+                let (software, hardware) = options::timestamps(data);
+                if self.timestamping & uapi::SOF_TIMESTAMPING_RX_SOFTWARE as u32 != 0 {
+                    self.received.timestamps.software = software;
+                }
+                if self.timestamping & uapi::SOF_TIMESTAMPING_RX_HARDWARE as u32 != 0 {
+                    self.received.timestamps.hardware = hardware;
+                }
+            } else if level == libc::SOL_TCP
+                && kind == uapi::TCP_CM_INQ as c_int
+                && let Ok(unread) = <[u8; size_of::<c_int>()]>::try_from(data)
+            {
+                self.received.unread_after = usize::try_from(c_int::from_ne_bytes(unread))
+                    .ok()
+                    .map(ByteCount);
+            }
+        }
+        Ok(message.length)
+    }
 }
 
 /// Gives the statistics of a transmit report from the `TCP_NLA_*` attributes of its `SCM_TIMESTAMPING_OPT_STATS`.
@@ -1953,7 +2018,7 @@ impl TcpConnections for HostTcpSockets {
         &self,
         connection: &Self::Connection,
         request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
         let socket = connection.socket.fd();
         let mut flags = libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT;
@@ -1970,14 +2035,16 @@ impl TcpConnections for HostTcpSockets {
         let packet = asked.packet == Report::Requested;
         let statistics = request.transmit_statistics == Report::Requested;
         let (record, expected) = record_flags(&asked);
+        let mut sending = Sending {
+            socket,
+            flags,
+            record,
+        };
         if record == 0
             && asked.wireless_status == Report::NotRequested
             && !connection.reports_armed.load(Ordering::Relaxed)
         {
-            return SockRef::from(&socket)
-                .send_with_flags(bytes, flags)
-                .map(ByteCount)
-                .map_err(io_host_error);
+            return payload.read_to(&mut sending).map(ByteCount);
         }
         let mut reports = connection.reports();
         if asked.wireless_status == Report::Requested && !reports.wireless_status {
@@ -1985,12 +2052,10 @@ impl TcpConnections for HostTcpSockets {
             reports.wireless_status = true;
         }
         let taken = if record == 0 {
-            SockRef::from(&socket)
-                .send_with_flags(bytes, flags)
-                .map_err(io_host_error)?
+            payload.read_to(&mut sending)?
         } else {
             self.arm_reports(connection, &mut reports, packet, statistics)?;
-            let taken = send_with_record_flags(socket, bytes, flags, record)?;
+            let taken = payload.read_to(&mut sending)?;
             if taken > 0 {
                 let last = reports.sent.wrapping_add(taken as u32).wrapping_sub(1);
                 reports.keys.insert(
@@ -2015,7 +2080,7 @@ impl TcpConnections for HostTcpSockets {
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let _receiving = locked(&connection.receiving);
         let socket = connection.socket.fd();
@@ -2033,54 +2098,22 @@ impl TcpConnections for HostTcpSockets {
         if offset != 0 {
             set_int(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, offset)?;
         }
-        let timestamping = connection.receive_timestamping.load(Ordering::Relaxed);
-        let unread_reports = connection.unread_reports.load(Ordering::Relaxed);
-        let outcome = if timestamping == 0 && !unread_reports {
-            rustix::net::recv(socket, into, RecvFlags::from_bits_retain(flags as u32))
-                .map(|(_, length)| TcpReceived {
-                    length: ByteCount(length),
-                    timestamps: ReceiveTimestamps {
-                        software: None,
-                        hardware: None,
-                    },
-                    unread_after: None,
-                })
-                .map_err(host_error)
-        } else {
-            let mut control = ControlBuffer::default();
-            options::receive_message(socket, into, flags, &mut control).map(|message| {
-                if message.flags & libc::MSG_CTRUNC != 0 {
-                    self.shortfalls.count(CUT_CONTROL);
-                }
-                let mut received = TcpReceived {
-                    length: ByteCount(message.length),
-                    timestamps: ReceiveTimestamps {
-                        software: None,
-                        hardware: None,
-                    },
-                    unread_after: None,
-                };
-                for (level, kind, data) in message.messages() {
-                    if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
-                        let (software, hardware) = options::timestamps(data);
-                        if timestamping & uapi::SOF_TIMESTAMPING_RX_SOFTWARE as u32 != 0 {
-                            received.timestamps.software = software;
-                        }
-                        if timestamping & uapi::SOF_TIMESTAMPING_RX_HARDWARE as u32 != 0 {
-                            received.timestamps.hardware = hardware;
-                        }
-                    } else if level == libc::SOL_TCP
-                        && kind == uapi::TCP_CM_INQ as c_int
-                        && let Ok(unread) = <[u8; size_of::<c_int>()]>::try_from(data)
-                    {
-                        received.unread_after = usize::try_from(c_int::from_ne_bytes(unread))
-                            .ok()
-                            .map(ByteCount);
-                    }
-                }
-                received
-            })
+        let mut receiving = Receiving {
+            sockets: self,
+            socket,
+            flags,
+            timestamping: connection.receive_timestamping.load(Ordering::Relaxed),
+            unread_reports: connection.unread_reports.load(Ordering::Relaxed),
+            received: TcpReceived {
+                length: ByteCount(usize::MIN),
+                timestamps: ReceiveTimestamps {
+                    software: None,
+                    hardware: None,
+                },
+                unread_after: None,
+            },
         };
+        let outcome = into.write_from(&mut receiving).map(|_| receiving.received);
         if offset != 0 {
             set_int(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, NO_PEEK_OFFSET)?;
         }
@@ -2604,6 +2637,7 @@ impl TcpSockets for HostTcpSockets {}
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::net::Ipv4Addr;
     use std::pin::pin;
     use std::sync::Arc;
@@ -2710,7 +2744,9 @@ mod tests {
         let (_listener, client, server) = connected(&sockets);
         let message = b"two threads";
         let offset = message.len() / 2;
-        sockets.send(&client, plain(), message).expect("send");
+        sockets
+            .send(&client, plain(), &RefCell::new(&mut message.to_vec()[..]))
+            .expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
         wait(&sockets, &server, ReadyFor::READABLE, &waker);
         let peek = |from: usize| {
@@ -2721,7 +2757,7 @@ mod tests {
                     TcpReceiveRequest::Peek {
                         offset: ByteCount(from),
                     },
-                    &mut buffer,
+                    &RefCell::new(&mut buffer[..]),
                 )
                 .map(|got| buffer[..got.length.0].to_vec())
         };
@@ -2750,7 +2786,7 @@ mod tests {
             .send(
                 &client,
                 reports(Report::Requested, Report::Requested),
-                b"reported",
+                &RefCell::new(&mut b"reported".to_vec()[..]),
             )
             .expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
