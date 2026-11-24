@@ -5,6 +5,114 @@ docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8, G9).
 
 ## Where it stands
 
+G9 round 5 run 6 (2026-11-24). Settles what it could of the independent check of run 5 (the
+orchestrator's check of d9ad74aa: five blocking findings, five minor) and builds the largest
+"for want of work" item it named. G9's first part is reported ready for its next check; THE BAR IS
+STILL NOT WHOLLY MET (below). Each finding, and what was done:
+- Blocking, KHR-GL33 does not start (the driver reports OpenGL 3.1 core, 31 passed values against
+  3.2's 32): NOT FIXED, skipped with this reason. Building the 32nd value needs the shaders
+  track's pass-through reading the stage helper's records from storage (asked in G9 run 24, still
+  "not started" in docs/status-graphics-shaders.md) and then a fragment program reading the value
+  with each fragment's barycentric weights, which core WebGPU does not give (For the owner). The
+  measure is therefore given both ways below; with KHR-GL33 counted as failed it is under the
+  floor.
+- Blocking, the programs part (Godot needs 3.3, bgfx 4.3): NOT FIXED, the same cause for Godot;
+  bgfx's 4.3 is G9's second part. Unchanged from run 3; For the owner, first item.
+- Blocking, NotSupported "for want of work": the largest group is BUILT this run. An evaluation
+  program using storage buffers or images is now run as compute work before a pass-through
+  geometry program (8abc83aa): `Nir::pass_through_geometry` (bridge `wc_nir_pass_through_geometry`,
+  written in this crate's style beside `wc_nir_point_square`: each primitive's points, lines or
+  triangles emitted as written, every output slot copied) is made when st/mesa hands the
+  evaluation program over, kept in its `Shader` and drawn as the geometry program when none is
+  bound; the stage helper then runs the evaluation program as compute work
+  (`Stages::tessellated_with` with a geometry stage), which may write storage. Its sets are bound
+  to compute work only when a geometry stage follows (WebGPU refuses writable storage visible to
+  vertex programs). The draw counts `SlowPath::VertexStorageAsCompute` (the interface's name, which
+  warns once and counts). The screen reports storage buffers and images for evaluation programs.
+  A program writing outputs at offsets known only at run time gets no pass-through and its draws
+  are refused by name. No route test: the nir crate's GLSL front makes no tessellation programs;
+  the proof is the CTS cases against the RTX 3080's OpenGL, which passes them (check run 5): 1,046
+  cases of dEQP-GLES31, KHR-GLES31 and -GLES32 that were NotSupported now run (the check's 964 and
+  82 more of the same cause), 1,042 pass and 4 fail (below). The other groups of
+  that finding are still not built, each with what it takes in the gap list: cull distances 221
+  (KHR-GLES3), program binaries 14, `shader_group_vote` 5, EXT_multisampled_render_to_texture 1,
+  multiview 3.
+- Blocking, 16 failing cases with no named cause, the 18 storage coherence cases and the 7 device
+  losses with no traced cause (`packed_depth_stencil` 6, `pbo_bounds_2d` 1): NOT TRACED to their
+  objects this run (most of the run went to the queue: the GPU queue was held by other tracks' jobs
+  for about 2.5 hours). One step was taken for all of them: run 5's 42 failing cases of these items
+  were run on Mesa's own llvmpipe from the same build (job 77, scratch
+  `results/g9c6/llvmpipe/<list>/results.csv`): all 42 pass. So none of them lies in what the two
+  drivers share (st/mesa, the GLSL compiler and linker, the CTS's expectations): each is in this
+  driver, the WebGPU back end or the stage helper. For `separable_tess_ctrl.empty` that narrows it
+  to what this screen gives st/mesa (its caps and NIR options), since Mesa's front end builds the
+  resource list. They stay on the gap list as "not yet traced (this track)", which this run does
+  not claim to settle.
+- New this run, with the pass-through: dEQP-GLES31 `opaque_type_indexing.atomic_counter.*
+  _tessellation_evaluation` 4 fail (the stage helper's extra evaluation invocations, the shaders
+  track's; gap list and Requests). The first build refused a point size the pass-through read as a
+  geometry input (2 KHR `image_op_tessellation_evaluation_sh` crashes); fixed in 5f72267f (the
+  evaluation program also writes its point size at a location, which the pass-through reads), both
+  pass at the tip.
+- Minor, the 4 KHR-GLES31 NotSupported cases "not yet read": read in the CTS source and corrected
+  in the gap list (vertex storage blocks 3, absent on WebGPU; `GL_EXT_buffer_storage` 1, not
+  reported, this track's).
+- Minor, the NotSupported counts read at run 31: KHR-GLES3 227 and KHR-GLES31 332 at run 5, now in
+  the gap list beside run 31's.
+- Minor, the sample confirming the table and the "Flake" of `texture_size samples_*_2d_array`
+  (both attempts refused with `BindingsBeyondLimit`): recorded; that item is the shaders track's.
+- Minor, the unsafe uses spread through the driver's files: unchanged and For the owner; this run
+  adds 1 line in wcontainers-opengl (the evaluation program's pass-through looked up at the draw)
+  and 2 in wcontainers-nir (the two bridge calls): the root list says 369 and 119 (eaa7ca6f).
+- Built and tested on the x86-64 machine (96 processors, load 0.2 to 3.4) at 5f72267f: fmt clean,
+  clippy with warnings denied clean with and without Mesa, the nir crate's route test 26 pass,
+  wcontainers-opengl 8 pass. No dependency or licence added. How to run: scratch
+  `scripts/g9c6-run.sh <log>` (round 5 run 5's under its name) and `scripts/g9c6-both.sh <log>`
+  (the whole run and the llvmpipe comparison of `results/g9c5/untraced-cases.txt` as one GPU job);
+  `scripts/g9c6-lint.sh`. Give a client waiting on the queue no more than the 2-hour limit of a
+  background command: this run's first client was stopped there while its job waited, and the
+  stopped client's job left the queue unrun.
+
+THE TABLE, round 5 run 6's whole run at 5f72267f's driver (desktop, RTX 3080, one GPU job in the
+hazard group, 8 glcts at once, job 77 from about 07:57 to 08:20 desktop time; scratch
+`results/g9c6/full3/<list>/results.csv`, log `logs/g9c6/full3.log`), every list whole:
+- dEQP-GLES2: 17,165 cases; Pass 17,031, Warn 6, Skip 128: 17,037 of 17,037, 100%.
+- dEQP-GLES3: 44,768; Pass 44,260, Warn 5, Fail 3, Crash 30, Skip 470: 44,265 of 44,298, 99.93%.
+- dEQP-GLES31: 37,802; Pass 37,147, Fail 22, Crash 96, Flake 3, Skip 534: 37,147 of 37,268,
+  99.68%.
+- KHR-GLES2: 473; Pass 438, Skip 35: 100%.
+- KHR-GLES3: 6,498; Pass 6,265, Crash 6, Skip 227: 6,265 of 6,271, 99.90%.
+- KHR-GLES31: 4,101; Pass 3,942, Fail 15, Crash 45, Flake 1, Skip 98: 3,942 of 4,003, 98.48%.
+- KHR-GLES32: 1,405; Pass 1,337, Fail 7, Crash 44, Skip 17: 1,337 of 1,388, 96.33%.
+- KHR-GL33 and KHR-GL46: no context ("Failed to create WGL context"; 3.1 is reported).
+- The measure over the GLES lists: 110,431 of 110,703 run, 99.75% (run 5: 109,389 of 109,657).
+  272 failing cases, every one in the gap list (`scripts/g9c1-gaps.py results/g9c6/full3`: none
+  left over). Over the GLES lists and KHR-GL33 with KHR-GL33's 9,364 cases of run 31 counted as
+  failed: 110,431 of 120,067, 91.97%, BELOW the 92.9% floor. Counting as well the NotSupported
+  cases the check found for want of work and still not built (cull distances 221, program
+  binaries 14, group vote 5, multisampled render to texture 1, multiview 3: 244), the GLES measure
+  would be 110,431 of 110,947, 99.53%.
+- Against round 5 run 5 (`scripts/g9r25-table.py g9c6/full3 g9c5/full`): 1,042 cases moved from
+  Skip to Pass (574 dEQP-GLES31, 234 each KHR-GLES31 and -GLES32: the evaluation programs' storage),
+  4 from Skip to Fail (the atomic counter item); every other move is in the storage coherence
+  family (2 Pass to Flake, 2 Flake or Fail to Pass, 1 Flake to Fail, 1 Pass to Fail, 1 Fail to
+  Pass) as in earlier runs.
+- An earlier whole run at 8abc83aa (job 73, `results/g9c6/full`) gave 110,426 of 110,703, with the
+  2 point-size crashes fixed since.
+
+Next, in order:
+1. The owner's answer on the version (For the owner); until then KHR-GL33 and the programs part
+   cannot pass, whatever is built here.
+2. Trace the 16 untraced cases and the 7 untraced device losses to their objects in this driver,
+   the back end or the stage helper (llvmpipe passes all of them).
+3. The remaining NotSupported groups for want of work: cull distances 221, program binaries 14
+   (a Gallium disk shader cache keyed by the driver's build, `get_disk_shader_cache`),
+   `shader_group_vote` 5 (vote operations in the route, the interface's `SUBGROUPS`),
+   multisampled render to texture 1, multiview 3, `GL_EXT_buffer_storage` 1.
+4. Forced early fragment tests inside the program (5); the storage coherence family proven by a
+   test.
+
+
 G9 round 5 run 5 (2026-11-24). G9's first part is ready for its independent check as the round's
 orders define it (this run's work done and measured, every failure in the gap list). The bar is
 NOT wholly met, for the two reasons of runs 3 and 4, which wait on the owner (For the owner): the
@@ -552,8 +660,11 @@ Next, in order:
 
 ## Gap list (G9's first part, at round 5 run 2's whole run; round 5 runs 3 and 5's changes marked)
 
-At round 5 run 5's whole run (`results/g9c5/full`): 268 failing cases, every one assigned to an
-item below by `scripts/g9c1-gaps.py` (none left over); the vertex ordering item has none.
+At round 5 run 6's whole run (`results/g9c6/full3`): 272 failing cases, every one assigned to an
+item below by `scripts/g9c1-gaps.py` (none left over); new item: the evaluation storage
+invocations (4). At round 5 run 5's (`results/g9c5/full`): 268. Each case of run 5's untraced,
+coherence and device-loss items (42) passes on Mesa's own llvmpipe from the same build (round 5
+run 6).
 
 Every failing case of round 5 run 2's whole run (276 Fail, Crash, Timeout and Flake over the seven
 lists that start, the table at the top) by group, with its cause and owner; the KHR-GL33 items are
@@ -622,6 +733,10 @@ Refused by this track (each refusal named; this track's work):
   is OpenGL 3.1 wherever the passed values are fewer than OpenGL 3.2's 32 (For the owner).
 
 Another track's (asked unless said otherwise):
+- dEQP-GLES31 `shaders.opaque_type_indexing.atomic_counter.*_tessellation_evaluation` 4 (new in
+  round 5 run 6, which first runs them): the stage helper runs an evaluation program as compute
+  work over more invocations than the tessellated points, and their storage writes land (counter
+  1 at 69,696 = 2,178 x the 32 expected). The shaders track (Requests, round 5 run 6).
 - KHR-GLES31 and -GLES32 `tessellation_shader.tessellation_control_to_tessellation_evaluation
   .gl_MaxPatchVertices_Position_PointSize_*` 72: an evaluation program reading
   `gl_in[].gl_PointSize`; the stage helper has no staged point size (the shaders track).
@@ -743,13 +858,15 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   `shader_api.program_binary` 14 (no binary formats): for want of work (this track; Mesa's own
   program binaries need the driver's shader cache key). `fbo.multiview` 3 (OVR_multiview): absent
   on WebGPU core (no multiview), for want of work by drawing each view.
-- dEQP-GLES31 (1,112): storage blocks in evaluation programs 498 (`builtin_functions` 418,
-  `opaque_type_indexing` 80, asking for 2 where the screen reports 0): for want of work (the stage
-  helper runs evaluation programs as compute work, which writes storage; this track and the shaders
-  track). `program_interface_query` 228 "one or more resource limits exceeded" (152
+- dEQP-GLES31 (1,112 at run 31; 534 at round 5 run 6): storage blocks in evaluation programs 498
+  (`builtin_functions` 418, `opaque_type_indexing` 80, asking for 2 where the screen reported 0):
+  BUILT in round 5 run 6 (an evaluation program using storage runs as compute work before a
+  pass-through geometry program); they run since, and 574 cases of this list moved from Skip to
+  Pass (these and the evaluation ones of the groups below), 4 to Fail (the "evaluation storage
+  invocations" item). `program_interface_query` 228 "one or more resource limits exceeded" (152
   `buffer_variable`, 36 `shader_storage_block`, 28 `uniform`, ...: storage and atomic counters in
   vertex and evaluation programs): vertex ones absent on WebGPU (no storage writes in vertex
-  programs; `VERTEX_STORAGE_WRITE` is absent there), evaluation ones for want of work as above.
+  programs; `VERTEX_STORAGE_WRITE` is absent there), evaluation ones built as above.
   Sample counts 121 (`sample_variables`, `multisample_interpolation`, `min_sample_shading`,
   `texture.multisample`), `framebuffer_fetch` 56, sRGB RG8 15, `multisample.default_framebuffer`
   8, sample mask words 5, multisampled default framebuffer 2, `geometry_shading` 2048 components
@@ -762,7 +879,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 - KHR-GLES2 (35): HDR ASTC 30, `core.internalformat` 4: as NVIDIA; `core.internalformat
   .renderbuffer.depth_component32` 1 (OES_depth32, NVIDIA runs): absent on WebGPU (no 32-bit
   normalized depth; `depth32float` holds fewer steps near 1).
-- KHR-GLES3 (228): cull distances 221 (EXT_clip_cull_distance; NVIDIA runs 205, skips 16): FOR
+- KHR-GLES3 (227 at round 5 run 5; 228 at run 31): cull distances 221 (EXT_clip_cull_distance; NVIDIA runs 205, skips 16): FOR
   WANT OF WORK, this track's: the interface names `SlowPath::CullDistanceAsGeometry` and the shaders
   crate's `stage::cull_programs` makes the stage helper's cull route from a converted vertex program;
   the route does not write `gl_CullDistance` and the screen does not report it. `texture_shadow_lod`
@@ -770,19 +887,26 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   `shader_integer_mix.prototypes` 1: as NVIDIA. `texture_filter_anisotropic.queries` 1 (NVIDIA
   runs): for want of work: the screen never set Gallium's `anisotropic_filter`, though samplers
   carried their anisotropy; reported since round 5 run 2 (93e52730).
-- KHR-GLES31 (335): evaluation-program storage 233 (`constant_expressions` and the like): as in
-  dEQP-GLES31. "Not supported" 78: storage, atomic counters and images in vertex programs 66
+- KHR-GLES31 (332 at round 5 run 5; 335 at run 31, before `polygon_offset_clamp` 3 were
+  reported; 98 at round 5 run 6): evaluation-program storage 233 (`constant_expressions` and the
+  like): built as in dEQP-GLES31, all 233 pass in round 5 run 6. "Not supported" 78: storage, atomic counters and images in vertex programs 66
   (`shader_storage_buffer_object` `-vs` and `-vsfs` cases, `shader_atomic_counters`,
   `shader_image_load_store` and `shader_image_size` vertex cases): absent on WebGPU as above;
   `shader_group_vote` 5 (EXT_shader_group_vote): for want of work (the interface's `SUBGROUPS`;
   the route has no vote operations); `polygon_offset_clamp` 3: reported since round 5 run 2
-  (`DEPTH_BIAS_CLAMP`); `compute_shader` 3 (shared contexts, draw commands made by compute work,
-  after stream output) and `vertex_attrib_binding.advanced-largeStrideAndOffsetsNewAndLegacyAPI` 1:
-  not yet read (this track). `viewport_array` 16 (OES_viewport_array): absent on WebGPU (one
+  (`DEPTH_BIAS_CLAMP`); `compute_shader` 3 and
+  `vertex_attrib_binding.advanced-largeStrideAndOffsetsNewAndLegacyAPI` 1, read in the CTS source
+  (round 5 run 6, from the check): `pipeline-gen-draw-commands` and `pipeline-post-xfb` need
+  storage blocks in vertex programs (`es31cComputeShaderTests.cpp` 4098 and 4771), absent on WebGPU
+  as above; `simple-compute-shared_context-persistent-buffer` needs `GL_EXT_buffer_storage` (line
+  790), which the driver does not report (for want of work: this track's, Gallium's persistent
+  mapping); the vertex_attrib_binding case needs storage blocks in vertex and fragment programs
+  (`es31cVertexAttribBindingTests.cpp` 2903), absent in vertex programs on WebGPU. `viewport_array` 16 (OES_viewport_array): absent on WebGPU (one
   viewport a pass) unless drawn once per viewport; for the owner. `layout_binding` vertex 3,
   `texture_cube_map_array` vertex and evaluation images 2: as the storage groups. Coherent
   advanced blending 1: absent on WebGPU. TCS and TES together 1, subroutines 1: as NVIDIA.
-- KHR-GLES32 (251): evaluation-program storage 233: as above. `ext_texture_shadow_lod` 15: the
+- KHR-GLES32 (251; 17 at round 5 run 6): evaluation-program storage 233: built as above, all 233
+  pass in round 5 run 6. `ext_texture_shadow_lod` 15: the
   shaders track's common form. Images 2: as above. TCS and TES together 1: as NVIDIA.
 - KHR-GL33 (522; the list no longer starts since round 5 run 2, For the owner): cull distances
   218: for want of work as in KHR-GLES3. `texture_swizzle` targets 154 and formats 99, stencil
@@ -839,9 +963,9 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
     Mesa drivers report OpenGL 3.2's minimum where their host falls short, and this one does not.
     The owner's rule forbids reporting a capability the driver lacks, so the screen stays at 3.1.
 
-- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (370 uses, counted on 2026-11-23 as the
-  root list counts them: every `unsafe` word outside comments) and wcontainers-nir (116) stay on
-  the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
+- Unsafe code (the 2026-11-22 rule): wcontainers-opengl (369 lines) and wcontainers-nir (119),
+  counted on 2026-11-24 (round 5 run 6) as the root list now counts them (lines holding the word
+  outside comments and attributes), stay on the root list. Nearly all of them are the C boundary itself: wcontainers-opengl is a Gallium
   driver, whose every entry point is a C function pointer Mesa calls with raw pointers to its own
   structures (`pipe_context`, `pipe_resource`, `pipe_draw_info`, ...), and wcontainers-nir walks
   Mesa's NIR through the C bridge. No vetted library gives a safe Gallium or NIR binding (bindgen
@@ -1715,6 +1839,18 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 None.
 
 ## Requests to other tracks
+
+- Shaders track (G9 round 5 run 6): an evaluation program run as compute work before a geometry
+  stage (`Stages::tessellated_with` with a geometry program) runs more invocations than the
+  tessellator's points, and their storage writes land. Measured: dEQP-GLES31
+  `opaque_type_indexing.atomic_counter.const_literal_tessellation_evaluation` (32 evaluation
+  invocations expected, one `atomicCounterIncrement` of counter 1 each) leaves counter 1 at
+  69,696, 2,178 times 32 (results/g9c6/qpa/ac.qpa); its 3 siblings fail alike. Programs writing
+  only records or storage by index are unaffected (1,040 such cases pass since this run). Asked:
+  the domain program's invocations past the tessellated points (or past a patch's own count) end
+  before the program runs, as for records. This driver now draws an evaluation program using
+  storage before a pass-through geometry program (Where it stands), so the helper's G9 run 28 ask
+  (a domain program writing storage without a geometry stage) is no longer needed by it.
 
 - Rig track (G9 round 5 run 2): the programs' frame capture for OpenGL. G9's bar compares bgfx's
   OpenGL renderer and Godot's Compatibility renderer on native OpenGL (bgfx `--gl`, Godot
