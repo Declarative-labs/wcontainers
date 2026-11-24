@@ -96,6 +96,40 @@ What neither removes: the per-piece cost of whatever is still loaded (3.6 us aga
 kernel's whole-file read (the kernel track's). Runs 2 to 4 build 2, then the fork-child half of 1, each measured
 before and after, alternating, on a quiet machine.
 
+## Round 4 run 4 (2026-11-24): one program's walk, and W1 reported complete
+
+Graviton4, CPU 41, /dev/kvm denied in every run. Scratch w1/r4d-run4 (check.sh, ab-diag.sh, mutate-walk.sh, walk.patch,
+walk2.patch; outputs *-arm.out, check-x86.out; `tree` is a git repository of the committed tree, used because the
+shared tree did not build during this run: the kernel track's uncommitted `Send` changes).
+- Built (commit 8921dc33b): the walk that loads pieces ahead is one program's. Each code records every piece its
+  memories load, and what came next, by the next piece's shared block and offset (round 4 run 3's block.patch), and
+  gives that walk to later memories only when it is dropped; for each first piece the shortest walk given is kept
+  (a later one as short replaces it). So a `true` that `sh` starts follows the last `true`'s walk, never `sh`'s, which
+  is still running, and once `sh` ends its longer walk does not replace the shorter one.
+- First built without the shortest-walk rule (walk.patch, ab1-arm.out): `sh`'s first 1,000 programs ran 0.3 ms a
+  program faster, but its second 1,000 ran 1.4 to 1.7 ms slower, because `sh`'s walk, given at the end of the first
+  run, was loaded into every later `true` (1,346 pieces ahead a program) and a walk that loads too much is never
+  corrected (nothing stops). Hence the rule.
+- Tests: tests/run.rs `pieces_in_another_block_are_loaded_ahead_where_that_block_is_placed` (run 3's),
+  `pieces_are_loaded_ahead_only_after_a_memory_that_loaded_them_has_ended` (a running memory's walk is not followed)
+  and `a_longer_walk_does_not_replace_a_shorter_one` (fails with the rule removed in the remote copy:
+  mutate-walk.sh, ab3-arm.out). run 15, kernel 12, busybox 1 passed, clippy with warnings denied clean (check2-arm.out,
+  12:56 UTC, load 8 to 22).
+- Measured, busybox `sh` starting 1,000 programs, before (the committed tree) and after alternated, 7 rounds at load 8
+  to 13 (ab3-arm.out), second runs in s: before 3.343, 3.515, 3.392, 3.398, 3.299, 3.334, 3.269; after 3.049, 3.088,
+  3.080, 3.062, 3.078, 3.107, 3.181. Paired: 0.29, 0.43, 0.31, 0.34, 0.22, 0.23, 0.09 ms a program saved, median 0.29
+  ms (9%), at the top of the account's 0.15 to 0.3. Loads a stop asked for: 17 a program before, 1.7 to 2.3 after;
+  pieces loaded ahead 306 a program in both runs. Against the models of the same rounds (1.00 to 1.24 s) P is now
+  about 2.9 times the model (2.5 to 3.0).
+- Xeon (/dev/kvm denied, 12:52 UTC, load 0.05 to 0.7, check-x86.out): the placement test five times in a row, all
+  passed, so round 4 run 3's single failure did not come back; the library's 5, stub 6, zygote 8, touch 3, threads 4,
+  stop 3, memory 12, host 1, embedder 2, files 4, slice 3, step 6 passed.
+- The whole suite at the run's end, from the committed tree (commit 8921dc33b), Graviton4, /dev/kvm denied, 13:04 to
+  13:08 UTC, load 9 to 15 (whole-arm.out): all 24 test binaries, 129 tests passed, the one failure the known
+  precise-set test at 0x1000 (the owner's); clippy with warnings denied clean.
+- W1 is reported complete with the gap list below, as round 4 asked: the bar of 1.25 cannot be met by this design (the
+  account above), and W2 (form I) is not to wait for it.
+
 ## Round 4 run 3 (2026-11-24): the load path, profiled and cut; a cross-mapping fix measured and not kept
 
 Graviton4, CPU 41, /dev/kvm denied in every run. Scratch w1/r4c-run3 (prof5.sh, under.py, stubs.py, ab-patch.sh,
@@ -247,7 +281,9 @@ What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
   program run on the host).
 - Register isolation from outside at the moment a thread enters its code: settled, a345863c2 (tests/step.rs).
 - Each seed compared with the first seed's run: settled, a345863c2.
-- Open, on the gap list: the precise-set test at 0x1000 (owner's), `Execution::restored`, the busybox `sh` bar.
+- Open, on the gap list (W1 reported complete in round 4 run 4 with it): the precise-set test at 0x1000 (the
+  owner's), `Execution::restored` (not built, as in the VM executor; its cause on the gap list), the busybox `sh` bar
+  (the account: the design's floor is about 1.4 to 1.5 times the model).
 
 ## Requests to other tracks
 
@@ -1384,85 +1420,73 @@ What comes next on W1 (runs 3 and 4 of this round, then the gap list by run 5):
     memory space or volatile bytes since round 4. No unsafe code added or touched.
   - The measured account of busybox `sh` against the model, at the top of this file. Nothing else built.
 
-## W1 not complete: the gap list
+## W1 reported complete (round 4 run 4, 2026-11-24): the gap list
 
-W1 was reported complete at round 3 run 5 and round 5 run 3 so that its independent check could run; that check
-found it not met, and it is not reported complete now. These items of plan 13's bar are not met, each with what is
-known:
-- Speed: the getppid round trip met its bar in rounds 5 run 1 and run 3 on a quiet Graviton4 (1.213 to 1.241 times W0's
-  futex slot in ten runs at load 2 to 9; bar under 1.25) but not at higher load before (1.23 to 1.31 in rounds 3 and 4,
-  load 9 to 30), and the independent check measured 1.238, 1.276 and 1.249 at load 9: at the margin, not met; about five sixths of a round trip is the host's task switch (round 5 run 2's profile). Not met: busybox `sh` starting 1,000
-  programs: translations move across execs (round 4 run 2) and pieces and last targets are loaded ahead (round 5 run
-  1): 4.36 times the model (bar 1.25; 9.25 before), 4.29 to 5.01 since round 8 run 1 read guest memory by position
-  instead of through mapped windows (Departures), 3.78 to 4.44 since round 8 run 2 loaded moved pieces by their bytes
-  alone and read each page once a load, about 3.2 (3.0 to 3.4) since round 4 runs 2 and 3 (the slot table mapped
-  once, a fork child running its parent's code, a cheaper load) (the account at the top of this file: the design's
-  floor is about 1.4 times the model, so this bar cannot be met by it; about 1.5 can); per program about 1.45 ms of memory calls (about 0.6 ms of it the
-  model's process creation), about 1.6 ms loading 440 pieces into the process's own code area, 59 turns. bench's matrix runs 3.8 to 4.0 times plain under P (other
-  workloads 0.999 to 1.36): its inner loop's counter is the guest's x18, a withheld register kept in the register
-  page (round 4 run 1); the translator's register choice is the fix. No round trip over 1 ms in 1,000,000 on an idle
-  machine (run 3; one of 1.65 ms at load 30 in round 4 run 2).
-- The executor suite's precise-set test fails as committed: its input domain puts code at 0x1000, below
-  `vm.mmap_min_addr` (For the owner). Every other test of the suite passes, and with the code at 64 KiB this one
-  passes too (run 5).
-- K2 is in the kernel (KF): with the WebAssembly output's ceiling and memory size given to both, addresses, memory
-  size, mappings, root files and the turns of one-thread programs equal the WebAssembly output's (round 5 run 2,
-  tests/kernel.rs); hello, getppid, forks, mappings, jumptables and layout equal whole, blocks and code differ only
-  where the WebAssembly side has its recorded faults and equal the program run on the host (round 6); busybox's 56
-  `text` and `files` commands give the reference's output (run 3). Turns limited to one counted event change
-  nothing (round 6's name). `differential` is built (round 7 run 2): every form's layer 1 cases, edges,
-  left-out words, float status words and exclusive pairs equal the WebAssembly output's under both of P's look-aheads,
-  with the count the rule's; met for what it compares. `count_at_every_stop` is met (round 7 run 2): bench, calls and
-  jumptables equal the VM executor's returns and hash of positions.
-- `Execution::restored` (the runtime's save of a process) is `unimplemented!` under P: a save panics. Not built;
-  For the owner.
-- x86-64: the executor, kernel and busybox suites build no tests on the Xeon (0 tests in conformance, kernel, run,
-  interrupt, copy, forged, floor, translated and busybox), because they need the x86 native output's way (W3).
-- Adversarial cases not built: the fork while a sibling is in a system call and another writes (needs several guest
-  threads running at once, which today's kernel loop never does); one P and two I containers in one embedder is
-  W2's. Built in round 4 run 2: forged exits as translated guest code after two forks (tests/forged.rs) and the
-  thread past the last index refused and counted through the `Cpu` calls (tests/run.rs); the kernel's own `clone`
-  answer to it is not tested here.
-- Placement's two measured items are met on Graviton4 (round 5 run 1: 1.010 times the free CPU's loop after the move,
-  10 moves in 10 s with every CPU contended); not measured on the Xeon, where translated code is W3's.
-- The copy unit is 8 pages, measured on translated stores (round 5 run 1).
-- The shared tree builds every host-process test binary again (round 4 run 2, with the conforming jobs' wasmtime and
-  Unicorn edits uncommitted in it): kernel and busybox pass with /dev/kvm denied, once on Graviton4; the three rounds
-  on both machines from committed code are still to run (the Xeon was not set up during round 4 run 2).
-- gVisor: P runs there with known failures (plan 6; Decision 14 is with the owner); in its kernel test, blocks and
-  jumptables pass the 300 s limit (which side was not found).
-- Xeon placement: `the_runners_of_two_containers_take_different_cpus_and_their_threads_follow` failed once in round 4
-  run 3 (12:42 UTC, load 3 to 4), the machine gone before a second run; not yet known whether it is new.
-- x86-64: everything that needs translated code is W3's (the x86 native output's way); on the Xeon the 156 tests of
-  the stub, zygote, stops, threads, memory, placement and embedder pass with /dev/kvm denied.
+W1 is reported complete so that its independent check runs and W2 (form I) can start, as the orchestrator's round 4
+asked. What is met is under "Met" below. Each item of plan 13's bar that is not met, with its cause, its measured size
+and its owner:
+- busybox `sh` starting 1,000 programs: about 2.9 times (2.5 to 3.0 in round 4 run 4, after its walk change) the model (bar 1.25). Cause: every new host process is given
+  its translated code in its own code area (about 300 pieces into each exec'd busybox at a new random base, about 2 us
+  each), two stubs a program (about 0.39 ms each against the model's 0.30), the kernel's read of the whole program file
+  at each exec (0.37 ms a program, 9.9% of the CPU), the turns' host work (each turn 10 to 60 us of the stub's mmap,
+  mprotect, futex and faults). The account at the top of this file: the design's floor is about 1.4 to 1.5 times the
+  model, so 1.25 cannot be met by this design; about 1.5 can. Owners: the owner (decision 16's exec half: an image kept
+  for a file at a base, which needs the kernel to keep a file's base across execs, or translated code that does not
+  depend on the base, the translator's), the kernel track (`loader::program_of`, Requests to other tracks), the
+  translator (the encoder's allocations, about 2%), this track (the rest of the per-piece cost, about 2 us against a
+  floor under 1 us).
+- The getppid round trip: 1.213 to 1.276 times W0's futex slot across runs (bar under 1.25): under it on a quiet
+  Graviton4 (load 2 to 9), over it at load 9 and above. About five sixths of a round trip is the host's task switch
+  (round 5 run 2's profile); what is ours is placement's two clock reads, `give` and `stop::resolve`. Owner: this
+  track; no change of design is known that moves it.
+- bench's matrix: 3.8 to 4.0 times plain under P (other workloads 0.999 to 1.36): its inner loop's counter is the
+  guest's x18, a withheld register kept in the register page. Owner: the translator's register choice (the native
+  track's ruling).
+- The executor suite's precise-set test (`agrees_with_precise_instruction_set`) fails: its input domain puts code at
+  0x1000, below `vm.mmap_min_addr`; with the code at 64 KiB it passes (round 3 run 5). 20 of 21 pass. Owner: the
+  owner (For the owner).
+- `Execution::restored` (the runtime's save of a process) is `unimplemented!` under P, as it is in the VM executor (its
+  N7): a save forks the embedder, but the stubs are the zygote's children and guest memory is shared memfds, so a
+  copy needs new stubs and copied memfds. Any save under P panics. Owner: this track, once the runtime says how a
+  native form is saved.
+- x86-64 translated code: the executor, kernel and busybox suites build no tests on the Xeon (they need the x86 native
+  output's way, W3). On the Xeon the stub, zygote, touch, threads, stop, memory, host, embedder, files, slice, step and
+  placement tests pass with /dev/kvm denied (this run, 12:52 UTC, load 0.05 to 0.7; placement five times in a row,
+  so round 4 run 3's single failure of
+  `the_runners_of_two_containers_take_different_cpus_and_their_threads_follow` did not come back). Owner: W3.
+- The adversarial fork while a sibling is in a system call and another writes: not built; it needs several guest
+  threads running during a `Cpu` call, which the kernel's one-thread `with_parts` loop never does. Owner: the kernel
+  track (parallel threads), then this track.
+- gVisor: P runs there with known failures (plan 6); in its kernel test, blocks and jumptables pass the 300 s limit
+  (which side was not found). Decision 14 (gVisor on ARM64 returning through signal frames) is the owner's.
+- Unsafe: 18 uses left in host-process, each marked with its reason (Unsafe code); the owner's rule of 2026-11-24 says
+  they go when the primitives land (Needs a primitive). Owner: the primitives' job, then this track.
+- Form I's bounds-check-bypass test as translated guest code, one per access shape: W2's (measured as a host program in
+  run 6).
 
-Met, each with its run (register isolation now with its from-outside part, round 6; the interleaving is seeded
-random, not every order): the zygote's migration and no restartable sequences left (run 1); the stop landing at every
-instruction of the stub's windows and handler (runs 8, 9); the control and register pages' escapes and the filter's
-kills (runs 2, 3, 7); a stub killed from outside and the embedder killed (run 4); threads made and ended under
-random stops (run 3); 10,000 maps of one block holding no fd (run 4); 64 memories of 2^43 bytes (run 2, through the window cache; since
-round 8 run 1 read and written by position, adding no mapping); register isolation on stub pieces and on translated threads (runs 7 and round 3 run 2); the SVE probe
-(run 1); Docker's default profile (runs 5, 9, 10 and round 3 run 3); form I's bounds-check bypass as a host program
-(run 6); every slow path counted and warned.
+Met, each with its run (register isolation with its from-outside part, round 6; the interleaving is seeded random, not
+every order): the executor suite's 20 other tests, the kernel suite's 12 with equal verdicts, addresses, memory size and
+counts against the WebAssembly output and the VM executor, busybox's 56 commands, all with /dev/kvm denied on
+Graviton4; the zygote's migration and no restartable sequences left (run 1); the stop landing at every instruction of
+the stub's windows and handler (runs 8, 9); the control and register pages' escapes and the filter's kills (runs 2, 3,
+7); a stub killed from outside and the embedder killed (run 4); threads made and ended under random stops (run 3);
+10,000 maps of one block holding no fd (run 4); 64 memories of 2^43 bytes (run 2); register isolation on stub pieces
+and on translated threads (runs 7 and round 3 run 2); the SVE probe (run 1); Docker's default profile (runs 5, 9, 10 and
+round 3 run 3); form I's bounds-check bypass as a host program (run 6); placement's two measured items on Graviton4
+(round 5 run 1); the copy unit of 8 pages (round 5 run 1); every slow path counted and warned.
 
 ## Next
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
   primitive); when they land, each use here becomes a call of one.
-- W1 is not complete (gap list). In order: busybox `sh`'s bar, the round trip's margin, the adversarial fork with a
-  writing sibling, `Execution::restored`; x86-64 and form I are W3's and W2's.
-- busybox `sh`'s bar: the account at the top of this file replaces what follows in this item. Next: the stub keeps
-  the code area's descriptor and maps the slot table whole once (its change 2), then a fork child maps its parent's
-  code area and slot table (the fork-child half of its change 1, behind a private stand-in for decision 16), each
-  measured before and after, alternating. Older notes: the loads (440 a program; left after round 8 run 2:
-  the key's hash, comparing the rest of the page with the kept code, writing the moved address places, placing, the
-  slot; perf2-arm.out) and the kernel's read of the whole program file at each exec (7 to 8%, the kernel track's
-  `loader::program_of`), and the memory calls
-  (new, fork and drop beyond the model's process creation, about 0.9 ms a program), then the turns that are left (59 a
-  program, of which 26 system calls and 21 faults). Sharing code areas between memories is decision 16's question
-  (the owner's). A fork child copying its parent's code was measured slower (round 5 run 1). Scratch
-  w1/r5run1/turns-bb.sh counts turns, landings, loads and last targets in a remote copy (its native.rs patches follow
-  the code as of 9dc2f309; one failing assertion leaves the native counters at zero).
+- W1 is reported complete (round 4 run 4) with the gap list above; its independent check runs next, then W2 (form
+  I), which the owner's rule says is built too.
+- busybox `sh`'s bar: the account at the top of this file is the basis. What is left that this track can do without
+  a ruling: the per-piece cost (about 2 us a piece, about 300 pieces an exec, against a floor under 1 us). What needs
+  others: the exec half of change 1 (the owner's decision 16, and a file's base kept across execs or translated code
+  that does not depend on the base), the kernel's whole-file read and the encoder's allocations (Requests to other
+  tracks). Scratch w1/r4d-run4/ab-diag.sh measures a change (`PATCH`, base64 of its diff) and counts loads (`DIAG`,
+  base64 of r4c-run3/diag.py).
 - The other bars: the round trip (1.213 to 1.27 times the slot across runs, under the bar when the machine is quiet);
   round 5 run 2's profile puts all of ours at about a sixth of a round trip, and cutting the register block's copies
   (round 5 run 3) changed nothing measurable; placement's two clock reads, `give` and `stop::resolve` are what is
@@ -1483,6 +1507,12 @@ round 8 run 1 read and written by position, adding no mapping); register isolati
   ("reservation refused") in an embedder that made an in-process host first.
 
 ## How to run
+
+- Since round 4 run 4: scratch w1/r4d-run4. check.sh is round 6's (`set -- <binary>[:<filter>] ...`); ab-diag.sh
+  (`PATCH=<base64 of a diff of this crate>; DIAG=<base64 of r4c-run3/diag.py>; set -- <rounds>`) alternates busybox
+  `sh` with the diff reversed and as sent, then prints loads a stop asked for and pieces loaded ahead; mutate-walk.sh
+  removes the shortest-walk rule in the remote copy, which must fail its test. When the shared tree does not build
+  because of another track's uncommitted work, send a `git archive` of HEAD made a git repository (as `tree` there).
 
 - The account (scratch w1/account): each of account.sh, account2.sh and account3.sh is one `arm-run` command with
   its Python helpers sent as base64 in environment variables (DIAG, DIAG2, DIAG3, SAMPLES, IDLE; the lines used are
