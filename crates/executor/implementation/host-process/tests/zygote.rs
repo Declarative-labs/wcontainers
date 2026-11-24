@@ -49,20 +49,10 @@ fn signal_number(signal: Signal) -> u32 {
 }
 
 #[cfg(target_env = "gnu")]
-#[expect(
-    unsafe_code,
-    reason = "glibc's size of each thread's restartable-sequences area, which no crate exposes"
-)]
-// SAFETY: glibc 2.35 and later define it, constant after start-up.
-unsafe extern "C" {
-    safe static __rseq_size: u32;
-}
-
-#[cfg(target_env = "gnu")]
 #[test]
 fn the_forking_thread_has_a_registration_to_drop() {
     assert!(
-        __rseq_size > 0,
+        wcontainers_executor_host_process::zygote::registered_area_size() > 0,
         "glibc registered no restartable-sequences area, so these tests cannot see the fault"
     );
 }

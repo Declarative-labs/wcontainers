@@ -261,6 +261,12 @@ fn registration() -> Registration {
     }
 }
 
+/// The size of the restartable-sequences area the C library registered for the calling thread, which the zygote's
+/// fork drops in its child; zero where it registered none.
+pub fn registered_area_size() -> u32 {
+    registration().size
+}
+
 #[cfg(not(target_env = "gnu"))]
 fn registration() -> Registration {
     Registration {
@@ -292,12 +298,15 @@ unsafe extern "C" {
 fn code() -> &'static [u8] {
     let start = &raw const wcontainers_host_process_zygote_start;
     let end = &raw const wcontainers_host_process_zygote_end;
-    let length = end as usize - start as usize;
+    let length = (end as usize)
+        .checked_sub(start as usize)
+        .expect("the zygote's end label before its start");
     #[expect(
         unsafe_code,
         reason = "the zygote's code, between two labels of its own assembly"
     )]
-    // SAFETY: both labels are in one text section, start before end, and text is never written.
+    // SAFETY: both labels are in one text section, start before end (checked above, so a reordered assembly panics
+    // rather than making a slice past the section), and text is never written.
     unsafe {
         core::slice::from_raw_parts(start, length)
     }
