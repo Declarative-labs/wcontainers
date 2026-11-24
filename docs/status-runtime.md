@@ -60,7 +60,37 @@ Its pieces at ecc2d094, all without any patch:
 - targeted: outside passed 9 runs of 10. `clients_talk_to_a_server_outside_as_linux` failed once (load 23); its
   message was cut by the piece's filter. At a9ddfa80, 30 more runs of the 8 tests at full passed (load 9 to 13).
 
-Results at a9ddfa80: running (started 16:22 UTC).
+Results at a9ddfa80, ARM64 machine, 12 jobs and 12 test threads, Docker 29.9.3, with nothing patched (v-*.txt are
+the verdict lists):
+- prep: clean. fmt and clippy, with warnings denied and all targets, on single-kernel and the runtime suite;
+  `cargo check --all-targets` of the wasmtime executor and the stand-in with `runtime`; single-kernel's
+  tests, 15 passed.
+- copies (load 9 to 22): no binary hung. counterclock 1 passed and 1 ignored; procsignals 4; outside 8; saving
+  1; repeats 5. threads failed 1 of 13, backend 2 of 21 and rootbackend 2 of 3, all on the stand-in's ARM list.
+- targeted: outside passed 10 runs of 10 at full, 2.1 s to 2.2 s each.
+- Stand-in (5,262 s, load 17 to 33): 432 tests. 389 passed, 35 failed and 8 were ignored. The 35 failures are
+  exactly the ARM list.
+- Full (4,326 s, load 8 to 16): equal to the stand-in test by test except for these:
+  - the known three: align and sharedviews pass, and counterclock across saves is ignored;
+  - layer1's `sequences_replay_from_their_record`, which only the stand-in runs;
+  - the address ceiling's three: java x2 and python `system_test_modules_match_reference`.
+  busybox `files` and cpulimit's wall clock test pass.
+- None (2,144 s, load 13 to 50; the runtimes' 8 tests are run apart): equal to full, test by test.
+- Bounded (6,836 s, load 38 to 49; N 237 for seed 0): equal to full except outside
+  `a_full_connection_hears_a_reset`. This time the reference was the slower side: ours "poll 1 in out err hup
+  rdhup", "so_error Connection reset by peer" and "read ends 0 eof"; theirs "poll 1 in out", "so_error none"
+  and "read ends -1 Connection reset by peer". Ours is what the test asserts. Linux's own answer depends on
+  whether the reset has arrived by the time of the poll. The kernel track's e81021d0 (after a9ddfa80: "the
+  outside tests' servers tell of a reset only once this machine's end of the connection has taken it")
+  addresses that timing; it is checked at the newer tip below.
+- LTP at full (2,971 s, load 14 to 34) against the stand-in (3,728 s, load 13 to 33): 4,226 tests each. 21 differ:
+  - dio30 and fsx22: the stand-in runs past 900 s, and ours passes (fsx22 in 411 s);
+  - 19 fs tests (gf14 to gf26, rwtest01 to 05, iogen01, linker01, openfile01, fs_inod01, inode01): on the stand-in
+    they met a full disk on the ARM64 machine. Docker said "no space left on device" (fs/iogen01.log), and all 19
+    passed on the stand-in at b315b6ad. They are run again on the stand-in below.
+  mem02, setrlimit06, getrusage04 and clock_gettime04 pass. getrusage04 and clock_gettime04 pass only because this
+  build directory already held their translations, from the fix's own LTP check earlier in this run (which
+  failed both when cold).
 
 ## J5c, third run (2026-11-24, from 04:40 UTC): J5's bar on b315b6ad
 
