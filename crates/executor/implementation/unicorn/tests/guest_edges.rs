@@ -12,10 +12,11 @@ use wcontainers_executor::{
 };
 use wcontainers_executor_unicorn::space::UnicornSpace;
 use wcontainers_executor_unicorn::standin::{ALIGNMENT_FAULT_STATUS, StandIn};
-use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, encode_syndrome};
 use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, encode_syndrome};
 use wcontainers_processor_architecture_arm64::{
-    DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch, PagePermission, Processor, ZERO_PROCESSOR,
+    DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch, PagePermission, Processor,
+    ZERO_PROCESSOR,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -56,10 +57,15 @@ impl TrapHandler for Terminating {
 
 /// Writes the instructions at the start of the code page and lets it be read and executed.
 fn place(space: &UnicornSpace, instructions: &[u32]) {
-    let bytes: Vec<u8> = instructions.iter().flat_map(|word| word.to_le_bytes()).collect();
+    let bytes: Vec<u8> = instructions
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
     let end = LOWEST_ADDRESS + u64::try_from(bytes.len()).unwrap();
     space.borrow(LOWEST_ADDRESS..end).unwrap().write(&bytes);
-    space.set_permissions(LOWEST_ADDRESS..LOWEST_ADDRESS + PAGE_SIZE, READ_EXECUTE).unwrap();
+    space
+        .set_permissions(LOWEST_ADDRESS..LOWEST_ADDRESS + PAGE_SIZE, READ_EXECUTE)
+        .unwrap();
 }
 
 /// Returns the processor at the code with the registers given.
@@ -75,17 +81,27 @@ fn start(registers: &[(usize, u64)]) -> Processor {
 }
 
 /// Returns the state the execution stopped at, which must be ready at its first poll.
-fn run(executor: &mut StandIn, space: &UnicornSpace, processor: Processor, handler: &mut Terminating) -> Processor {
+fn run(
+    executor: &mut StandIn,
+    space: &UnicornSpace,
+    processor: Processor,
+    handler: &mut Terminating,
+) -> Processor {
     let (execution, _interrupter) = executor.execute(processor, space, handler);
     match pin!(execution).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(state) => state,
-        Poll::Pending => panic!("the stand-in's execution blocks, so it is ready at its first poll"),
+        Poll::Pending => {
+            panic!("the stand-in's execution blocks, so it is ready at its first poll")
+        }
     }
 }
 
 fn read_word(space: &UnicornSpace, address: u64) -> u64 {
     let mut bytes = [u8::MIN; size_of::<u64>()];
-    space.borrow(address..address + size_of::<u64>() as u64).unwrap().read(&mut bytes);
+    space
+        .borrow(address..address + size_of::<u64>() as u64)
+        .unwrap()
+        .read(&mut bytes);
     u64::from_le_bytes(bytes)
 }
 
@@ -93,9 +109,18 @@ fn read_word(space: &UnicornSpace, address: u64) -> u64 {
 fn guest_store(executor: &mut StandIn, space: &UnicornSpace, address: u64, value: u64) {
     place(space, &[STR_X1_X0, BRK_0]);
     let mut handler = Terminating::default();
-    let stopped = run(executor, space, start(&[(0, address), (1, value)]), &mut handler);
+    let stopped = run(
+        executor,
+        space,
+        start(&[(0, address), (1, value)]),
+        &mut handler,
+    );
     assert_eq!(handler.faults, []);
-    assert_eq!(stopped.program_counter, LOWEST_ADDRESS + INSTRUCTION_BYTES, "{stopped:?}");
+    assert_eq!(
+        stopped.program_counter,
+        LOWEST_ADDRESS + INSTRUCTION_BYTES,
+        "{stopped:?}"
+    );
 }
 
 #[test]
@@ -105,7 +130,12 @@ fn a_load_past_the_end_is_a_translation_fault() {
     let space = executor.create_guest_memory().unwrap();
     place(&space, &[LDR_X1_X0, BRK_0]);
     let mut handler = Terminating::default();
-    let stopped = run(&mut executor, &space, start(&[(0, end + PAGE_SIZE)]), &mut handler);
+    let stopped = run(
+        &mut executor,
+        &space,
+        start(&[(0, end + PAGE_SIZE)]),
+        &mut handler,
+    );
     assert_eq!(handler.faults, [(end + PAGE_SIZE, Access::Read)]);
     assert_eq!(stopped.program_counter, LOWEST_ADDRESS);
     assert_eq!(
@@ -146,14 +176,19 @@ fn a_jump_to_the_end_is_a_translation_fault() {
 fn an_unaligned_exclusive_load_is_an_alignment_fault() {
     let mut executor = StandIn::new();
     let space = executor.create_guest_memory().unwrap();
-    space.set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE).unwrap();
+    space
+        .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
+        .unwrap();
     place(&space, &[LDXR_X1_X0, BRK_0]);
     let mut handler = Terminating::default();
     let before = start(&[(0, DATA + 1), (1, VALUE)]);
     let stopped = run(&mut executor, &space, before.clone(), &mut handler);
     assert_eq!(handler.faults, []);
     assert_eq!(stopped.program_counter, LOWEST_ADDRESS);
-    assert_eq!(stopped.general_purpose_registers, before.general_purpose_registers);
+    assert_eq!(
+        stopped.general_purpose_registers,
+        before.general_purpose_registers
+    );
     assert_eq!(
         stopped.exception,
         Some(Exception {
@@ -167,7 +202,9 @@ fn an_unaligned_exclusive_load_is_an_alignment_fault() {
 fn an_unaligned_exclusive_load_through_the_stack_pointer_is_its_alignment_fault() {
     let mut executor = StandIn::new();
     let space = executor.create_guest_memory().unwrap();
-    space.set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE).unwrap();
+    space
+        .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
+        .unwrap();
     place(&space, &[LDXR_X1_SP, BRK_0]);
     let mut handler = Terminating::default();
     let before = Processor {
@@ -228,10 +265,13 @@ fn a_copy_keeps_a_store_to_zeroed_pages_put_under_writable_addresses() {
     let mut executor = StandIn::new();
     let written = executor.create_guest_memory().unwrap();
     let copy = executor.create_guest_memory().unwrap();
-    written.set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE).unwrap();
+    written
+        .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
+        .unwrap();
     written.unmap_from(DATA..DATA + PAGE_SIZE).unwrap();
     guest_store(&mut executor, &written, DATA, VALUE);
-    copy.copy_from(DATA..DATA + PAGE_SIZE, &written, DATA).unwrap();
+    copy.copy_from(DATA..DATA + PAGE_SIZE, &written, DATA)
+        .unwrap();
     assert_eq!(read_word(&copy, DATA), VALUE);
 }
 
@@ -241,11 +281,16 @@ fn a_copy_keeps_a_store_made_through_another_space_s_mapping() {
     let owner = executor.create_guest_memory().unwrap();
     let mapper = executor.create_guest_memory().unwrap();
     let copy = executor.create_guest_memory().unwrap();
-    mapper.set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE).unwrap();
-    mapper.map_from(DATA..DATA + PAGE_SIZE, &owner, DATA).unwrap();
+    mapper
+        .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
+        .unwrap();
+    mapper
+        .map_from(DATA..DATA + PAGE_SIZE, &owner, DATA)
+        .unwrap();
     guest_store(&mut executor, &mapper, DATA, VALUE);
     assert_eq!(read_word(&owner, DATA), VALUE);
-    copy.copy_from(DATA..DATA + PAGE_SIZE, &owner, DATA).unwrap();
+    copy.copy_from(DATA..DATA + PAGE_SIZE, &owner, DATA)
+        .unwrap();
     assert_eq!(read_word(&copy, DATA), VALUE);
 }
 
@@ -255,11 +300,17 @@ fn a_copy_of_a_copy_keeps_a_store_the_first_copy_s_guest_made() {
     let original = executor.create_guest_memory().unwrap();
     let first = executor.create_guest_memory().unwrap();
     let second = executor.create_guest_memory().unwrap();
-    original.set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE).unwrap();
+    original
+        .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
+        .unwrap();
     original.unmap_from(DATA..DATA + PAGE_SIZE).unwrap();
-    first.copy_from(DATA..DATA + PAGE_SIZE, &original, DATA).unwrap();
+    first
+        .copy_from(DATA..DATA + PAGE_SIZE, &original, DATA)
+        .unwrap();
     guest_store(&mut executor, &first, DATA, VALUE);
-    second.copy_from(DATA..DATA + PAGE_SIZE, &first, DATA).unwrap();
+    second
+        .copy_from(DATA..DATA + PAGE_SIZE, &first, DATA)
+        .unwrap();
     assert_eq!(read_word(&second, DATA), VALUE);
     assert_eq!(read_word(&original, DATA), u64::MIN);
 }

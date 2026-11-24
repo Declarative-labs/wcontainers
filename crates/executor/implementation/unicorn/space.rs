@@ -77,7 +77,8 @@ impl HostPages {
 
     /// Returns the host address of the byte at the offset, for unicorn to map.
     fn host_address(&self, offset: u64) -> *mut u8 {
-        let offset = usize::try_from(offset).expect("an offset inside host pages fits in host memory");
+        let offset =
+            usize::try_from(offset).expect("an offset inside host pages fits in host memory");
         self.bytes.as_ptr().cast_mut().wrapping_add(offset)
     }
 
@@ -93,7 +94,9 @@ impl HostPages {
     fn list_touched(&self, offsets: Range<u64>) -> Vec<u64> {
         let touched = self.touched.borrow();
         (offsets.start / PAGE_SIZE..offsets.end / PAGE_SIZE)
-            .filter(|page| touched[to_index(page / PAGES_PER_WORD)] & (1 << (page % PAGES_PER_WORD)) != 0)
+            .filter(|page| {
+                touched[to_index(page / PAGES_PER_WORD)] & (1 << (page % PAGES_PER_WORD)) != 0
+            })
             .map(|page| page * PAGE_SIZE)
             .collect()
     }
@@ -175,7 +178,8 @@ impl Space {
     /// Notes that the host pages the addresses show may hold bytes.
     fn touch(&self, addresses: Range<u64>) {
         for (start, view) in self.list_views(addresses) {
-            view.pages.touch(view.offset..view.offset + (view.end - start));
+            view.pages
+                .touch(view.offset..view.offset + (view.end - start));
         }
     }
 
@@ -229,7 +233,10 @@ impl UnicornSpace {
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
     ) -> (Result<Exit, Unsupported>, u64) {
-        self.space.borrow_mut().memory.run_turn(registers, slice_nanoseconds, deadline, interrupt)
+        self.space
+            .borrow_mut()
+            .memory
+            .run_turn(registers, slice_nanoseconds, deadline, interrupt)
     }
 
     /// Returns what the page at the address allows, nothing past the end of the space.
@@ -251,7 +258,10 @@ impl UnicornSpace {
             .memory
             .range(addresses.start, length)
             .map_err(|_| InvalidAddressError)?;
-        if whole_pages && !(addresses.start.is_multiple_of(PAGE_SIZE) && addresses.end.is_multiple_of(PAGE_SIZE)) {
+        if whole_pages
+            && !(addresses.start.is_multiple_of(PAGE_SIZE)
+                && addresses.end.is_multiple_of(PAGE_SIZE))
+        {
             return Err(InvalidAddressError);
         }
         Ok(())
@@ -362,8 +372,8 @@ impl MemorySpace for UnicornSpace {
         if addresses.is_empty() {
             return Ok(());
         }
-        let mut copied =
-            HostPages::new(addresses.end - addresses.start).map_err(|_| CopyMemoryError::OutOfMemory)?;
+        let mut copied = HostPages::new(addresses.end - addresses.start)
+            .map_err(|_| CopyMemoryError::OutOfMemory)?;
         let mut touched = Vec::new();
         let (views, permissions) = {
             let mut source = other.space.borrow_mut();
@@ -427,7 +437,8 @@ impl VolatileBytes for UnicornBytes<'_> {
         let count = to_index(self.len()).min(into.len());
         if count > usize::MIN {
             let mut space = self.space.space.borrow_mut();
-            let end = self.addresses.start + u64::try_from(count).expect("a count of bytes fits in an address");
+            let end = self.addresses.start
+                + u64::try_from(count).expect("a count of bytes fits in an address");
             space.memory.reach(self.addresses.start, end);
             space
                 .memory
@@ -442,7 +453,8 @@ impl VolatileBytes for UnicornBytes<'_> {
         let count = to_index(self.len()).min(bytes.len());
         if count > usize::MIN {
             let mut space = self.space.space.borrow_mut();
-            let end = self.addresses.start + u64::try_from(count).expect("a count of bytes fits in an address");
+            let end = self.addresses.start
+                + u64::try_from(count).expect("a count of bytes fits in an address");
             space.memory.reach(self.addresses.start, end);
             space
                 .memory

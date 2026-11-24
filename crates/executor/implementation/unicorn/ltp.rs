@@ -464,7 +464,9 @@ fn run_one(
                         unsafe_code,
                         reason = "ends the hung child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
                     )]
-                    unsafe { libc::_exit(0) };
+                    unsafe {
+                        libc::_exit(0)
+                    };
                 }
             }
         });
@@ -514,7 +516,9 @@ fn run_one(
         unsafe_code,
         reason = "ends the forked child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
     )]
-    unsafe { libc::_exit(0) };
+    unsafe {
+        libc::_exit(0)
+    };
 }
 
 fn crash_line(test: &Test, seconds: f64) -> Line {

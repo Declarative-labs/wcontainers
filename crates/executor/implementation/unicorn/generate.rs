@@ -298,8 +298,9 @@ fn convert(text: &str) -> String {
 /// a new linux-raw-sys brings never disappears without a word.
 fn drop_unsafe_methods(text: &str) -> String {
     let word = Regex::new(r"\bunsafe\b").expect("regex");
-    let helper = Regex::new(r"\b(__BindgenBitfieldUnit|__IncompleteArrayField|__BindgenUnionField)\b")
-        .expect("regex");
+    let helper =
+        Regex::new(r"\b(__BindgenBitfieldUnit|__IncompleteArrayField|__BindgenUnionField)\b")
+            .expect("regex");
     let mut out = String::with_capacity(text.len());
     // The `impl` block being read: its opening lines, its members kept, and the member being read.
     let mut header = String::new();
@@ -370,7 +371,10 @@ fn drop_unsafe_methods(text: &str) -> String {
             member.clear();
         }
     }
-    assert!(depth == 0 && !in_impl && member.is_empty(), "unbalanced bindings");
+    assert!(
+        depth == 0 && !in_impl && member.is_empty(),
+        "unbalanced bindings"
+    );
     out
 }
 

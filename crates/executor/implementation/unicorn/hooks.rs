@@ -152,7 +152,9 @@ pub fn signal_parts(record: &SignalInformation) -> (i32, i32, i32) {
         Record::InputOutputEvent { signal, code, .. } => (signal, code as i32, 0),
         Record::IllegalInstruction { code, .. } => (Signal::SIGILL, code as i32, 0),
         Record::ArithmeticError { code, .. } => (Signal::SIGFPE, code as i32, 0),
-        Record::SegmentationFault { code, .. } => (Signal::SIGSEGV, segmentation_fault_code(code), 0),
+        Record::SegmentationFault { code, .. } => {
+            (Signal::SIGSEGV, segmentation_fault_code(code), 0)
+        }
         Record::BusError { code, .. } => (Signal::SIGBUS, bus_error_code(code), 0),
         Record::Trap { code, .. } => (Signal::SIGTRAP, trap_code(code), 0),
         Record::ChildTerminated { signal, code, .. } => (signal, child_termination_code(code), 0),
@@ -250,8 +252,14 @@ mod tests {
     #[test]
     fn codes_with_fields_have_linux_numbers() {
         let bounds = AddressBounds { lower: 1, upper: 2 };
-        assert_eq!(segmentation_fault_code(SegmentationFaultCode::SEGV_BNDERR(bounds)), 3);
-        assert_eq!(segmentation_fault_code(SegmentationFaultCode::SEGV_CPERR), 10);
+        assert_eq!(
+            segmentation_fault_code(SegmentationFaultCode::SEGV_BNDERR(bounds)),
+            3
+        );
+        assert_eq!(
+            segmentation_fault_code(SegmentationFaultCode::SEGV_CPERR),
+            10
+        );
         let bit = AddressLeastSignificantBit::new(12).expect("a bit");
         assert_eq!(bus_error_code(BusErrorCode::BUS_MCEERR_AO(bit)), 5);
         let perf = TrapCode::TRAP_PERF {
@@ -260,12 +268,27 @@ mod tests {
             delivery: PerfEventDelivery::Asynchronous,
         };
         assert_eq!(trap_code(perf), 6);
-        assert_eq!(child_termination_code(ChildTerminationCode::CLD_EXITED(ExitStatus(3))), 1);
-        assert_eq!(child_termination_code(ChildTerminationCode::CLD_DUMPED(Signal::SIGSEGV)), 3);
-        assert_eq!(child_state_code(ChildStateCode::CLD_STOPPED(Signal::SIGSTOP)), 5);
+        assert_eq!(
+            child_termination_code(ChildTerminationCode::CLD_EXITED(ExitStatus(3))),
+            1
+        );
+        assert_eq!(
+            child_termination_code(ChildTerminationCode::CLD_DUMPED(Signal::SIGSEGV)),
+            3
+        );
+        assert_eq!(
+            child_state_code(ChildStateCode::CLD_STOPPED(Signal::SIGSTOP)),
+            5
+        );
         assert_eq!(child_state_code(ChildStateCode::CLD_CONTINUED), 6);
         let data = SeccompReturnData(9);
-        assert_eq!(bad_system_call_code(BadSystemCallCode::SYS_SECCOMP(data)), 1);
-        assert_eq!(bad_system_call_code(BadSystemCallCode::SYS_USER_DISPATCH), 2);
+        assert_eq!(
+            bad_system_call_code(BadSystemCallCode::SYS_SECCOMP(data)),
+            1
+        );
+        assert_eq!(
+            bad_system_call_code(BadSystemCallCode::SYS_USER_DISPATCH),
+            2
+        );
     }
 }
