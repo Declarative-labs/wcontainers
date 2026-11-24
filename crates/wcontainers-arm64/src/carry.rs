@@ -1673,13 +1673,15 @@ pub(crate) fn exit(way: Way, code: &mut HostCode, target: u64, commit: Option<Re
 /// The words that build guest `address`, or its entry slot's address, in `rd`: as many for every address of a
 /// movable page.
 fn address_words(rd: Register, address: u64, holds: Holds) -> Vec<u32> {
-    encode::move_address(
-        rd,
-        match holds {
-            Holds::Address => address,
-            Holds::EntrySlot { table } => table | address << SLOT_SHIFT,
-        },
-    )
+    encode::move_address(rd, held(address, holds))
+}
+
+/// The value the words of an address place build.
+fn held(address: u64, holds: Holds) -> u64 {
+    match holds {
+        Holds::Address => address,
+        Holds::EntrySlot { table } => table | address << SLOT_SHIFT,
+    }
 }
 
 /// Notes that the next word written is word `part` of those building `address` in `rd`.
@@ -1704,10 +1706,13 @@ pub fn movable(way: Way) -> Range<u64> {
 
 /// Writes the word at `place` for its address.
 pub(crate) fn write_place(code: &mut [u8], place: &AddressPlace) {
-    let words = address_words(place.register, place.address, place.holds);
+    let word = encode::move_address_word(
+        place.register,
+        held(place.address, place.holds),
+        usize::from(place.part),
+    );
     let start = usize::try_from(place.start).expect("a host offset fits usize");
-    code[start..start + size_of::<u32>()]
-        .copy_from_slice(&words[usize::from(place.part)].to_le_bytes());
+    code[start..start + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
 }
 
 /// The words a loader fills: a slot's moves and jump, and a direct branch (section 3.2).

@@ -525,15 +525,25 @@ pub fn move_constant(rd: Register, value: u64) -> Vec<u32> {
 /// of the lowest half, then a `movk` for each half below the top. Any other value takes [`move_constant`]'s.
 pub fn move_address(rd: Register, value: u64) -> Vec<u32> {
     let halves = u64::BITS / MOVE_BITS;
-    let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
-    let first = match half(halves - 1) {
-        0 => movz(rd, half(0), 0),
-        u16::MAX => move_of(*MOVN, rd, !half(0), 0),
-        _ => return move_constant(rd, value),
-    };
-    std::iter::once(first)
-        .chain((1..halves - 1).map(|h| movk(rd, half(h), h)))
+    if !matches!((value >> ((halves - 1) * MOVE_BITS)) as u16, 0 | u16::MAX) {
+        return move_constant(rd, value);
+    }
+    (0..halves as usize - 1)
+        .map(|part| move_address_word(rd, value, part))
         .collect()
+}
+
+/// Word `part` of [`move_address`]'s moves, made alone: a loader writes one word of an address at a time.
+pub fn move_address_word(rd: Register, value: u64, part: usize) -> u32 {
+    let halves = u64::BITS / MOVE_BITS;
+    let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
+    let h = u32::try_from(part).expect("a value builds in few words");
+    match (half(halves - 1), h) {
+        (0, 0) => movz(rd, half(0), 0),
+        (u16::MAX, 0) => move_of(*MOVN, rd, !half(0), 0),
+        (0 | u16::MAX, h) if h < halves - 1 => movk(rd, half(h), h),
+        _ => move_constant(rd, value)[part],
+    }
 }
 
 /// How far a direct branch reaches either way, in bytes.
