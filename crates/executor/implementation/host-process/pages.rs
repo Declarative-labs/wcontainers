@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use rustix::fs::MemfdFlags;
 use rustix::io::Errno;
-use rustix::mm::{MapFlags, ProtFlags};
+use rustix::mm::ProtFlags;
 
 use crate::layout::{
     CODE_AREA, CODE_AREA_SIZE, REGISTER_PAGES_OFFSET, THREAD_PAGE_SIZE, THREAD_PAGES_SIZE,
@@ -308,33 +308,18 @@ impl ExitKind {
 /// The embedder's mapping of one stub's thread pages, written through atomics because the stub runs beside it.
 pub(crate) struct ThreadPages {
     file: OwnedFd,
-    /// The mapping's address, kept as a number so the value is `Send`; `Drop` unmaps it.
-    base: usize,
+    mapping: memmap2::MmapRaw,
 }
 
 impl ThreadPages {
     pub(crate) fn new() -> Result<Self, Errno> {
         let file = rustix::fs::memfd_create("wcontainers thread pages", MemfdFlags::CLOEXEC)?;
         rustix::fs::ftruncate(&file, THREAD_PAGES_SIZE as u64)?;
-        #[expect(
-            unsafe_code,
-            reason = "maps the thread pages where the host chooses, which rustix leaves to the caller to keep sound"
-        )]
-        // SAFETY: a new mapping at an address the host picks overlaps nothing; `Drop` unmaps it.
-        let base = unsafe {
-            rustix::mm::mmap(
-                core::ptr::null_mut(),
-                THREAD_PAGES_SIZE,
-                ProtFlags::READ | ProtFlags::WRITE,
-                MapFlags::SHARED,
-                &file,
-                0,
-            )
-        }?;
-        Ok(Self {
-            file,
-            base: base as usize,
-        })
+        let mapping = memmap2::MmapOptions::new()
+            .len(THREAD_PAGES_SIZE)
+            .map_raw(&file)
+            .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::NOMEM))?;
+        Ok(Self { file, mapping })
     }
 
     pub(crate) fn file(&self) -> BorrowedFd<'_> {
@@ -351,7 +336,7 @@ impl ThreadPages {
         // accessed through atomics here; the stub's own accesses are another process's.
         unsafe {
             core::slice::from_raw_parts(
-                self.base as *const AtomicU32,
+                self.mapping.as_ptr().cast::<AtomicU32>(),
                 THREAD_PAGES_SIZE / size_of::<AtomicU32>(),
             )
         }
@@ -366,7 +351,7 @@ impl ThreadPages {
         // SAFETY: as `words32`.
         unsafe {
             core::slice::from_raw_parts(
-                self.base as *const AtomicU64,
+                self.mapping.as_ptr().cast::<AtomicU64>(),
                 THREAD_PAGES_SIZE / size_of::<AtomicU64>(),
             )
         }
@@ -395,14 +380,5 @@ impl ThreadPages {
 
     pub(crate) fn register64(&self, thread: usize, offset: usize) -> &AtomicU64 {
         &self.words64()[Self::register_offset(thread, offset) / size_of::<u64>()]
-    }
-}
-
-impl Drop for ThreadPages {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "unmaps the mapping made by `new`")]
-        // SAFETY: the mapping is this value's alone, and every reference into it borrowed `self`.
-        let _ =
-            unsafe { rustix::mm::munmap(self.base as *mut core::ffi::c_void, THREAD_PAGES_SIZE) };
     }
 }

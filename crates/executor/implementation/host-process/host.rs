@@ -1,5 +1,5 @@
-//! The process-wide part of form P: the start-up probe, one zygote, forked anew when it ends, the window cache and the
-//! table of CPUs its runners hold.
+//! The process-wide part of form P: the start-up probe, one zygote, forked anew when it ends, and the table of CPUs
+//! its runners hold.
 //!
 //! A private stand-in for the process-wide host the owner is asked for (plan 8.5); his ruling changes this one place.
 
@@ -11,7 +11,6 @@ use rustix::io::Errno;
 
 use crate::probe::{HostProbe, Unavailable};
 use crate::stub::Stub;
-use crate::windows::{WINDOWS, WindowCache};
 use crate::zygote::{Ended, Zygote};
 
 /// One per embedder process; every P executor of the process forks its stubs through it.
@@ -20,8 +19,6 @@ pub struct HostProcessHost {
     /// The zygote, or why P became unavailable for good when a zygote could not be forked anew.
     zygote: Mutex<Result<Zygote, Unavailable>>,
     zygote_ends: AtomicU64,
-    /// Every view of every stub's memory that the embedder's process has.
-    windows: Mutex<WindowCache>,
     cpus: Mutex<CpuTable>,
 }
 
@@ -55,13 +52,11 @@ impl HostProcessHost {
     pub fn new() -> Result<Self, Unavailable> {
         let probe = HostProbe::new()?;
         let zygote = Zygote::start(&probe)?;
-        let windows = WindowCache::new(WINDOWS).map_err(Unavailable::Host)?;
         let cpus = CpuTable::new().map_err(Unavailable::Host)?;
         Ok(Self {
             probe,
             zygote: Mutex::new(Ok(zygote)),
             zygote_ends: AtomicU64::new(0),
-            windows: Mutex::new(windows),
             cpus: Mutex::new(cpus),
         })
     }
@@ -137,13 +132,6 @@ impl HostProcessHost {
     /// What the start-up probe found.
     pub fn probe(&self) -> &HostProbe {
         &self.probe
-    }
-
-    /// The window cache, for one executor call's copies.
-    pub(crate) fn windows(&self) -> std::sync::MutexGuard<'_, WindowCache> {
-        self.windows
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// How many times the zygote ended ("zygote ended"), taking every stub it had forked with it.

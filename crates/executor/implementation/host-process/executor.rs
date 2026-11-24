@@ -17,13 +17,13 @@ use wcontainers_abi::{
 };
 use zerocopy::IntoBytes;
 
+use crate::files;
 use crate::host::HostProcessHost;
 use crate::layout::{OUR_AREA, OWN_MAPPINGS};
 use crate::pages::control::MAX_COMMANDS;
 use crate::pages::{Command, Resume};
 use crate::stub::{StopWhen, Stub, TurnEnd};
 use crate::view::View;
-use crate::windows::FileKey;
 
 #[cfg(target_arch = "aarch64")]
 #[path = "execution.rs"]
@@ -93,7 +93,6 @@ impl Memory {
 /// One block of shared pages.
 struct Block {
     file: Arc<OwnedFd>,
-    key: FileKey,
     length: u64,
 }
 
@@ -663,10 +662,9 @@ impl HostProcessExecutor {
 
     /// Closes a memory that nothing uses: its views first, then its files.
     fn free(&mut self, id: MemoryId) {
-        let memory = self.memories[id.0 as usize]
+        self.memories[id.0 as usize]
             .take()
             .expect("a memory the kernel holds");
-        self.host.windows().forget(memory.stub.memory_key());
     }
 
     /// The most a range's view may allow: what is granted, less write where a page is lent, less everything where
@@ -762,12 +760,9 @@ impl HostProcessExecutor {
         );
         let zeros = [0; ZEROS];
         let stub = &self.memory(id).stub;
-        let mut windows = self.host.windows();
         for at in range.clone().step_by(ZEROS) {
             let length = (range.end - at).min(ZEROS as u64) as usize;
-            windows
-                .write(stub.memory(), stub.memory_key(), at, &zeros[..length])
-                .map_err(host_error)?;
+            files::write(stub.memory(), at, &zeros[..length]).map_err(host_error)?;
         }
         Ok(())
     }
@@ -951,15 +946,11 @@ impl HostProcessExecutor {
     /// Copies whole pages from one memory's memfd to another's at the same offsets.
     fn copy(&mut self, from: MemoryId, to: MemoryId, range: Range<u64>) -> Result<(), CpuError> {
         let (from, to) = (&self.memory(from).stub, &self.memory(to).stub);
-        let mut windows = self.host.windows();
-        let mut page = [0; PAGE_SIZE as usize];
-        for at in range.clone().step_by(PAGE_SIZE as usize) {
-            windows
-                .read(from.memory(), from.memory_key(), at, &mut page)
-                .map_err(host_error)?;
-            windows
-                .write(to.memory(), to.memory_key(), at, &page)
-                .map_err(host_error)?;
+        let mut unit = [0; COPY_UNIT as usize];
+        for at in range.clone().step_by(COPY_UNIT as usize) {
+            let bytes = &mut unit[..(range.end - at).min(COPY_UNIT) as usize];
+            files::read(from.memory(), at, bytes).map_err(host_error)?;
+            files::write(to.memory(), at, bytes).map_err(host_error)?;
         }
         self.counters.pages_copied += (range.end - range.start) / PAGE_SIZE;
         Ok(())
@@ -973,15 +964,12 @@ impl HostProcessExecutor {
             match shared {
                 Some((block, delta)) => {
                     let block = self.block(block);
-                    self.host
-                        .windows()
-                        .read(
-                            block.file.as_fd(),
-                            block.key,
-                            piece.start.wrapping_add(delta),
-                            &mut into[at],
-                        )
-                        .map_err(host_error)?;
+                    files::read(
+                        block.file.as_fd(),
+                        piece.start.wrapping_add(delta),
+                        &mut into[at],
+                    )
+                    .map_err(host_error)?;
                 }
                 None => self.read_private(id, piece, &mut into[at])?,
             }
@@ -997,16 +985,13 @@ impl HostProcessExecutor {
         into: &mut [u8],
     ) -> Result<(), CpuError> {
         let memory = self.memory(id);
-        let mut windows = self.host.windows();
         for (piece, state) in pieces(&memory.pages, range.clone()) {
             let from = match state {
                 Some(PageState::Borrowed(owner)) => &self.memory(owner).stub,
                 _ => &memory.stub,
             };
             let at = (piece.start - range.start) as usize..(piece.end - range.start) as usize;
-            windows
-                .read(from.memory(), from.memory_key(), piece.start, &mut into[at])
-                .map_err(host_error)?;
+            files::read(from.memory(), piece.start, &mut into[at]).map_err(host_error)?;
         }
         Ok(())
     }
@@ -1200,31 +1185,21 @@ impl Cpu for HostProcessExecutor {
         self.drop_code_of(id, range.clone());
         for (piece, shared) in pieces(&self.memory(id).shared, range) {
             let bytes = &from[(piece.start - address) as usize..(piece.end - address) as usize];
-            let (file, key, offset) = match shared {
+            let (file, offset) = match shared {
                 Some((block, delta)) => {
                     let block = self.block(block);
-                    (
-                        block.file.clone(),
-                        block.key,
-                        piece.start.wrapping_add(delta),
-                    )
+                    (block.file.clone(), piece.start.wrapping_add(delta))
                 }
                 None => {
                     let pages = page_cover(&piece);
                     self.unborrow(id, pages.clone(), true)?;
                     self.unlend(id, pages)?;
                     let stub = &self.memory(id).stub;
-                    self.host
-                        .windows()
-                        .write(stub.memory(), stub.memory_key(), piece.start, bytes)
-                        .map_err(host_error)?;
+                    files::write(stub.memory(), piece.start, bytes).map_err(host_error)?;
                     continue;
                 }
             };
-            self.host
-                .windows()
-                .write(file.as_fd(), key, offset, bytes)
-                .map_err(host_error)?;
+            files::write(file.as_fd(), offset, bytes).map_err(host_error)?;
         }
         Ok(())
     }
@@ -1282,7 +1257,6 @@ impl Cpu for HostProcessExecutor {
         rustix::fs::ftruncate(&file, length).map_err(host_error)?;
         let block = Block {
             file: Arc::new(file),
-            key: FileKey::new(),
             length,
         };
         Ok(SharedId(place(&mut self.blocks, block) as u32))
@@ -1346,18 +1320,13 @@ impl Cpu for HostProcessExecutor {
             let mut bytes = vec![0; (piece.end - piece.start) as usize];
             let block = self.block(block);
             let stub = &self.memory(memory).stub;
-            let mut windows = self.host.windows();
-            windows
-                .read(
-                    block.file.as_fd(),
-                    block.key,
-                    piece.start.wrapping_add(delta),
-                    &mut bytes,
-                )
-                .map_err(host_error)?;
-            windows
-                .write(stub.memory(), stub.memory_key(), piece.start, &bytes)
-                .map_err(host_error)?;
+            files::read(
+                block.file.as_fd(),
+                piece.start.wrapping_add(delta),
+                &mut bytes,
+            )
+            .map_err(host_error)?;
+            files::write(stub.memory(), piece.start, &bytes).map_err(host_error)?;
         }
         self.queue_view(memory, range);
         Ok(())
@@ -1376,10 +1345,7 @@ impl Cpu for HostProcessExecutor {
         {
             return Err(CpuError::BadAddress);
         }
-        self.host
-            .windows()
-            .read(block.file.as_fd(), block.key, offset, into)
-            .map_err(host_error)
+        files::read(block.file.as_fd(), offset, into).map_err(host_error)
     }
 
     fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
@@ -1390,18 +1356,14 @@ impl Cpu for HostProcessExecutor {
         {
             return Err(CpuError::BadAddress);
         }
-        self.host
-            .windows()
-            .write(block.file.as_fd(), block.key, offset, from)
-            .map_err(host_error)
+        files::write(block.file.as_fd(), offset, from).map_err(host_error)
     }
 
-    /// Its views go; its memfd closes once no queued map holds it.
+    /// Its memfd closes once no queued map holds it.
     fn shared_drop(&mut self, shared: SharedId) {
-        let block = self.blocks[shared.0 as usize]
+        self.blocks[shared.0 as usize]
             .take()
             .expect("a block the kernel holds");
-        self.host.windows().forget(block.key);
     }
 
     /// The memory's spare host thread, or a new one made by a turn of one of its threads.

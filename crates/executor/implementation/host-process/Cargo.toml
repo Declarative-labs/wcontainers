@@ -25,6 +25,8 @@ rangemap = { version = "1.8.0", default-features = false }
 zerocopy.workspace = true
 # A stub process's CPU clock, for placement's samples, and the signal mask around the zygote's fork: rustix has neither.
 nix = { version = "0.31.3", default-features = false, features = ["process", "signal", "time"] }
+# The embedder's mappings of a stub's thread pages and code area, made and unmapped without unsafe code of ours.
+memmap2 = "0.9.12"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
@@ -97,7 +99,7 @@ name = "zygote"
 name = "stub"
 
 [[test]]
-name = "windows"
+name = "files"
 
 [[test]]
 name = "host"

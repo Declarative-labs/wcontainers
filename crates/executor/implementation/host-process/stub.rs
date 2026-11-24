@@ -20,7 +20,6 @@ use zerocopy::IntoBytes;
 use crate::filter::stub_filter;
 use crate::layout::THREADS_PER_PROCESS;
 use crate::pages::{Command, ExitKind, Resume, ThreadPages, control, register};
-use crate::windows::FileKey;
 
 /// The stub's socket's fixed descriptor number, above the few the zygote holds when it forks.
 pub const SOCKET_FD: u32 = 8;
@@ -72,7 +71,6 @@ pub struct Stub {
     socket: OwnedFd,
     pages: ThreadPages,
     memory: OwnedFd,
-    memory_key: FileKey,
     /// One bit per thread index the executor holds, from its `new_thread` to its `end_thread`.
     held: Vec<u64>,
     /// Exits from translated code whose FP/SIMD registers came by a return through the frame ("signal frame without
@@ -166,7 +164,6 @@ impl Stub {
             socket,
             pages,
             memory,
-            memory_key: FileKey::new(),
             held,
             vectors_by_return: AtomicU64::new(0),
         }
@@ -271,11 +268,6 @@ impl Stub {
 
     pub(crate) fn zygote(&self) -> u64 {
         self.zygote
-    }
-
-    /// The memory memfd's key in the window cache.
-    pub fn memory_key(&self) -> FileKey {
-        self.memory_key
     }
 
     /// A thread's host id, as the stub reports it (untrusted).

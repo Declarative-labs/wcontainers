@@ -1,5 +1,5 @@
-//! The window cache on a real host: the embedder's views of the stubs' memories are the stubs' own bytes at the
-//! guest's addresses, and many large memories stay under the cache's bound of host mappings.
+//! The embedder's reads and writes of the stubs' memories on a real host: they are the stubs' own bytes at the
+//! guest's addresses, and many large memories add no host mapping to the embedder.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "aarch64", target_arch = "x86_64")
@@ -8,10 +8,10 @@
 use std::os::unix::fs::FileExt;
 
 use rustix::mm::ProtFlags;
+use wcontainers_executor_host_process::files;
 use wcontainers_executor_host_process::pages::Command;
 use wcontainers_executor_host_process::probe::HostProbe;
 use wcontainers_executor_host_process::stub::{Stub, TurnEnd};
-use wcontainers_executor_host_process::windows::{WINDOW_SIZE, WINDOWS, WindowCache};
 use wcontainers_executor_host_process::zygote::{Ended, Zygote};
 
 /// One embedder process has one zygote place, so tests running at once start theirs one at a time.
@@ -90,86 +90,70 @@ fn own_mappings() -> usize {
         .count()
 }
 
+/// The host's huge page, across whose edges the writes reach.
+const HUGE_PAGE: u64 = 2048 * wcontainers_abi::KIB;
+
+/// Host mappings the tests running beside one in this process may add meanwhile (their zygotes' reservations).
+const BESIDE: usize = 64;
+
 #[test]
-fn the_embedder_s_writes_are_the_stub_s_bytes_and_survive_eviction() {
+fn the_embedder_s_writes_are_the_stub_s_bytes() {
     let zygote = zygote();
     let stub = zygote.fork_stub().expect("fork");
     let start = 1_u64 << 40;
-    let windows = 16;
-    map(&stub, start, windows * WINDOW_SIZE as u64);
-    let mut cache = WindowCache::new(4).expect("cache");
+    let pages = 16;
+    map(&stub, start, pages * HUGE_PAGE);
     let mut seeded = Seeded(seed());
     let mut written = Vec::new();
-    for window in 0..windows {
-        // Each write crosses into the next window where it can.
-        let offset = start + window * WINDOW_SIZE as u64 + WINDOW_SIZE as u64 - 5;
-        let length = if window + 1 < windows { 10 } else { 5 };
+    for page in 0..pages {
+        // Each write crosses into the next huge page where it can.
+        let offset = start + page * HUGE_PAGE + HUGE_PAGE - 5;
+        let length = if page + 1 < pages { 10 } else { 5 };
         let bytes: Vec<u8> = (0..length).map(|_| seeded.next() as u8).collect();
-        cache
-            .write(stub.memory(), stub.memory_key(), offset, &bytes)
-            .expect("write");
+        files::write(stub.memory(), offset, &bytes).expect("write");
         written.push((offset, bytes));
     }
-    assert!(cache.mapped() <= 4);
-    assert!(cache.evictions() >= windows - 4, "{}", cache.evictions());
     for (offset, bytes) in &written {
         assert_eq!(&read_guest(&stub, *offset, bytes.len()), bytes);
         let mut back = vec![0; bytes.len()];
-        cache
-            .read(stub.memory(), stub.memory_key(), *offset, &mut back)
-            .expect("read");
+        files::read(stub.memory(), *offset, &mut back).expect("read");
         assert_eq!(&back, bytes);
     }
-    // A write by another path to the memfd is seen through a window already mapped.
+    // A write by another path to the memfd is read back.
     let (offset, _) = written[written.len() - 1];
     std::fs::File::from(stub.memory().try_clone_to_owned().expect("dup"))
         .write_all_at(b"other", offset)
         .expect("pwrite");
     let mut back = [0; 5];
-    cache
-        .read(stub.memory(), stub.memory_key(), offset, &mut back)
-        .expect("read");
+    files::read(stub.memory(), offset, &mut back).expect("read");
     assert_eq!(&back, b"other");
-    cache.forget(stub.memory_key());
-    assert_eq!(cache.mapped(), 0);
     end(&zygote, &stub);
 }
 
 #[test]
-fn windows_of_different_memories_never_mix() {
+fn different_memories_never_mix() {
     let zygote = zygote();
     let stubs: Vec<Stub> = (0..3).map(|_| zygote.fork_stub().expect("fork")).collect();
     let address = 1_u64 << 41;
-    let mut cache = WindowCache::new(2).expect("cache");
     for (index, stub) in stubs.iter().enumerate() {
-        map(stub, address, WINDOW_SIZE as u64);
-        cache
-            .write(
-                stub.memory(),
-                stub.memory_key(),
-                address,
-                &[index as u8 + 1; 8],
-            )
-            .expect("write");
+        map(stub, address, HUGE_PAGE);
+        files::write(stub.memory(), address, &[index as u8 + 1; 8]).expect("write");
     }
     for (index, stub) in stubs.iter().enumerate() {
         assert_eq!(read_guest(stub, address, 8), vec![index as u8 + 1; 8]);
         let mut back = [0; 8];
-        cache
-            .read(stub.memory(), stub.memory_key(), address, &mut back)
-            .expect("read");
+        files::read(stub.memory(), address, &mut back).expect("read");
         assert_eq!(back, [index as u8 + 1; 8]);
     }
     for stub in &stubs {
-        cache.forget(stub.memory_key());
         end(&zygote, stub);
     }
 }
 
-/// The plan's case: 64 guest memories of 2^43 bytes each, touched across all of it by one embedder whose own host
-/// mappings stay under the cache's bound. Knobs: WCHP_MEMORIES, WCHP_TOUCHES (per memory), WCHP_SEED.
+/// The plan's case: 64 guest memories of 2^43 bytes each, touched across all of it by one embedder that maps none of
+/// them. Knobs: WCHP_MEMORIES, WCHP_TOUCHES (per memory), WCHP_SEED.
 #[test]
-fn many_large_memories_stay_under_the_bound() {
+fn many_large_memories_add_no_host_mapping() {
     let zygote = zygote();
     let memories = knob("WCHP_MEMORIES", 64);
     let touches = knob("WCHP_TOUCHES", 512);
@@ -181,23 +165,15 @@ fn many_large_memories_stay_under_the_bound() {
     for stub in &stubs {
         map(stub, start, size);
     }
-    let before = own_mappings();
-    let mut cache = WindowCache::new(WINDOWS).expect("cache");
     let mut seeded = Seeded(seed());
-    let mut written = Vec::new();
+    let mut written = Vec::with_capacity(memories * touches);
+    let before = own_mappings();
     let mut most = 0;
     for round in 0..touches {
         for stub in &stubs {
             let offset = start + (seeded.next() % (size / 8)) * 8;
             let word = seeded.next();
-            cache
-                .write(
-                    stub.memory(),
-                    stub.memory_key(),
-                    offset,
-                    &word.to_ne_bytes(),
-                )
-                .expect("write");
+            files::write(stub.memory(), offset, &word.to_ne_bytes()).expect("write");
             written.push((offset, word));
         }
         if round % 64 == 0 {
@@ -206,29 +182,33 @@ fn many_large_memories_stay_under_the_bound() {
     }
     most = most.max(own_mappings());
     eprintln!(
-        "{memories} memories, {touches} touches each: {} windows mapped, {} evicted, at most {} host mappings ({} before the cache)",
-        cache.mapped(),
-        cache.evictions(),
-        most,
-        before
+        "{memories} memories, {touches} touches each: at most {most} host mappings, {before} before"
     );
-    assert!(most <= before + WINDOWS + 1, "{most} host mappings");
+    assert!(most <= before + BESIDE, "{most} host mappings");
     // Two touches of one word in a memory come with odds near 2^-23 at the default counts, so each word is its own.
     for (index, (offset, word)) in written.iter().enumerate() {
         let stub = &stubs[index % memories];
         let mut back = [0; 8];
-        cache
-            .read(stub.memory(), stub.memory_key(), *offset, &mut back)
-            .expect("read");
+        files::read(stub.memory(), *offset, &mut back).expect("read");
         assert_eq!(u64::from_ne_bytes(back), *word);
         if index % 61 == 0 {
             assert_eq!(read_guest(stub, *offset, 8), word.to_ne_bytes());
         }
     }
     for stub in &stubs {
-        cache.forget(stub.memory_key());
-    }
-    for stub in &stubs {
         end(&zygote, stub);
     }
+}
+
+#[test]
+fn a_range_past_the_memory_s_end_is_refused() {
+    let zygote = zygote();
+    let stub = zygote.fork_stub().expect("fork");
+    let end_of_file = rustix::fs::fstat(stub.memory()).expect("fstat").st_size as u64;
+    let mut back = [0; 8];
+    assert_eq!(
+        files::read(stub.memory(), end_of_file - 4, &mut back),
+        Err(rustix::io::Errno::FAULT)
+    );
+    end(&zygote, &stub);
 }

@@ -395,7 +395,7 @@ impl Drop for HostProcessMemory {
     }
 }
 
-/// Bytes of a form P memory, read and written through the executor's windows on the stub's memfd.
+/// Bytes of a form P memory, read and written by position in the stub's memfd.
 pub struct HostProcessBytes<'space> {
     memory: &'space HostProcessMemory,
     addresses: Range<u64>,
