@@ -3,6 +3,45 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 16 (2026-11-24, round 5 run 8): no wait on the zygote for a stub not seen to end, and where a stub's life goes
+
+Scratch w2/run16 (send.sh, send-x86.sh; hp-test.sh as run 15's, `LIST`; regress.sh, the new test with the change
+reverted, `REVERT_B64`; split.sh with inst.patch and split2.sh with inst2.patch, timing patches applied on the remote
+copy only; exitprof.sh and exitprof2.sh over run 15's whole-CPU profile; cmpclippy.sh, clippy then run 15's
+compare.sh, `CHANGE_B64`, `ROUNDS`; outputs *-arm.out, *-x86.out). enforcement-primitive's FOR-THE-OWNER.md revision 4
+(15:20) takes everything for running guest code in our own process out of the primitives' design: form I now waits
+on the owner's answer to native-in-process-decisions.md's decision 1 (is form I wanted at all), so its executor stays
+unbuilt. `page-table-split` still holds only its interface commit. No line with `unsafe` added (host-process's count
+in the root manifest is still 9).
+- Built, ae81afaeb (DESIGN-4's open item for host-process: "its memory's drop then waits on the zygote's reap, which
+  may hang"): `memory_drop` asks the zygote to reap a stub only once its socket has hung up (the exit command seen
+  within 100 ms, or a kill and then up to `STOP_IGNORED`). A stub not seen to end is left to the zygote's own end
+  (new counter `stubs_left_unreaped`, "stub left unreaped", with a warning), and a memory marked unstopped sends its
+  stub no exit command, only a kill. The zygote's reap is a blocking `wait4` during which it answers nothing, so one
+  stub that did not die would have stopped every later fork of the host. New test tests/memory.rs
+  `a_dropped_memory_s_stub_not_seen_to_end_is_not_waited_for` (a copy of the stub's socket held through
+  `pidfd_getfd`, so it never hangs up): fails with the change reverted (regress1-arm.out: counter 0, the stub
+  reaped), passes with it on Graviton4 (test1-arm.out) and the Xeon (test1-x86.out, with pages, stub and zygote).
+- Measured (split1-arm.out, Graviton4, load 29 to 33, release, busybox `sh` starting 1,000 programs, second run): a
+  stub's start and drop are 28% of a program's time. Pinned to CPU 41: a start 237 µs (the zygote's ping 17.5, the
+  fork's answer 171, the stub's own start after it 5), a drop 232 µs; unpinned: a start 199 µs (ping 14, answer 41,
+  own start 102), a drop 231 µs. Two of each a program: 0.94 ms of 3.38 ms. A drop's parts (split2-arm.out, pinned,
+  load 32): waiting for the stub's end 140 µs, the embedder closing its files 36, the reap's round trip 24,
+  dropping its code 25, the rest 3. In the stub (run 15's profile; exitprof1-arm.out, exitprof2-arm.out) `do_exit`
+  is about 106 µs a stub: unmapping 48% of it, the code area memfd's release at its last close 32% (a final `dput`),
+  the filter's release 3%.
+- Built, fcc395530: a stub's fork no longer pings the zygote first; only a failed fork asks whether the zygote still
+  answers, then starts a new one and forks again (tests/host.rs's restart test passes, test2-arm.out, with zygote,
+  stub, memory, threads, embedder and busybox). Saves the ping's 14 to 17.5 µs a start as timed above; on the whole
+  program not measurable (compare1-arm.out, 4 alternating rounds pinned, load 18 to 28, second runs: before 3.288,
+  3.270, 3.280, 3.252 s, after 3.286, 3.256, 3.300, 3.282 s).
+- What would cut the stub's life by design is the owner's (plan 12 item 16, new): a dropped memory's stub reset and
+  kept for the next memory instead of ended and a new one forked. Expected to remove most of the 0.94 ms (not built,
+  not measured), at the cost of a stub serving a guest process after another that may have escaped translation in
+  it. Without a ruling: ending a stub without waiting (reaped later) and starting the next one ahead take those waits
+  off a program's path only where another CPU is free; pinned they move no work, since stubs run on their runner's
+  CPU. Not built.
+
 ## W2 run 15 (2026-11-24, round 5 run 7): an address place written without an allocation, and where a program's time goes now
 
 Scratch w2/run15 (send.sh; profile.sh, the embedder's user time with call chains; whole.sh and ksys.sh, everything
@@ -2165,6 +2204,11 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 10 marked uses (9 lines) left since W2 run 14 wait
   for the primitives (Needs a primitive); when they land, each use here becomes a call of one.
+- Form I's executor waits on the owner's decision 1 of enforcement-primitive/native-in-process-decisions.md (is the
+  form wanted at all; revision 4 of that design leaves form I out until then). Watch that file and FOR-THE-OWNER.md.
+- A stub's start and drop are 28% of busybox's per-program time (W2 run 16); the design that cuts it is the owner's
+  (plan 12 item 16). Taking them off a program's path where another CPU is free (end without waiting, reap later;
+  start the next stub ahead) needs no ruling and is the next speed item, measured unpinned with alternating rounds.
 - Settled (W2 run 15): run 14's busybox spread (3.62 to 4.66 s) came from running unpinned; pinned to CPU 41 as
   round 4 was, the tree takes 3.38 to 3.48 s (round 4: 3.33 to 3.67 s), 3.31 to 3.39 s with run 15's change. Every
   busybox measurement pins (`taskset -c 41`, scratch w2/run15/compare.sh).
@@ -2548,6 +2592,17 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
+- Decision 16 of plan 12 (W2 run 16; not docs/native.md's decision 16): a guest process's stub, its start and its
+  end, is 28% of a program's time while busybox `sh` starts programs (Graviton4, pinned: a start 237 µs, a drop 232
+  µs, two of each a program). A dropped memory's stub, reset (guest mappings, code area, shared blocks and
+  descriptors removed, its writable pages zeroed), could serve the next memory instead of a fresh fork: expected to
+  remove most of that time, not built. A fresh fork is certain to hold nothing of an earlier guest process; a reset
+  stub is only as clean as the reset, against an earlier guest that escaped translation in it (bounded by the
+  filter). Reuse within one container, within one guest process across its execs (which needs the executor told of
+  an exec, an interface change), or never (today).
+- Form I (W2) now waits on native-in-process-decisions.md's decision 1 (enforcement-primitive revision 4): the
+  figures this track has for it are W2 run 7's crossover (plan 7) and the busybox account (plan 4.1's, and the
+  section above on busybox's factor of four).
 - Decision 15 (plan 12, W2 run 15): each stub installs the seccomp filter itself, about 90 µs a stub and 5.4% of
   the CPU while busybox `sh` starts programs. Installed once by the zygote it would cost nothing per stub, but the
   zygote's own calls (a fork's `clone`, a waiting `recvmsg`, `sendmsg`, `wait4`, `kill` and more) would then be

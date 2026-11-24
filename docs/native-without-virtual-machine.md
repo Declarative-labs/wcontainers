@@ -1637,6 +1637,13 @@ them.
     `clone`, a waiting `recvmsg`, `sendmsg`, `wait4`, `kill`, `rt_sigaction`, `dup3`, `close_range`, `prctl`): a
     stub escaped from translation could make them too. Accept that widening for the saving, or keep one install per
     stub (today).
+16. P's stubs kept for the next memory (W2 run 16; not docs/native.md's decision 16): a stub's start and drop are
+    28% of a program's time while busybox `sh` starts programs (Graviton4, pinned: 237 and 232 µs, two of each a
+    program). A dropped memory's stub, reset (its guest mappings, code area, shared blocks and descriptors removed,
+    its writable pages zeroed), would serve the next memory instead of a fresh fork (expected: most of that time).
+    A fresh fork holds nothing of an earlier guest process for certain; a reset stub only as far as the reset reaches
+    against an earlier guest that escaped translation in it. Reuse within one container, within one guest process
+    across its execs (the executor told of an exec: section 8), or never (today).
 
 ## 13. Milestones
 
