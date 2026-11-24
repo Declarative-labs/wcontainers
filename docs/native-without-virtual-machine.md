@@ -826,8 +826,12 @@ with the signal frame's x86 fields. Building it is W3 (section 13).
      marks its CPU contended and moves to the CPU that step 1 would give now; if that is its own, it stays.
   As built (W1 run 4): the runner is the thread that calls the executor, pinned from its first turn until the
   executor ends; a guest thread's move is a `Place` command of its own turn (`sched_setaffinity` of the calling
-  thread with a 1,024-bit set, the only form the filter allows), applied with the other commands; a window whose
-  stub has ended (no clock) decides nothing.
+  thread with a 1,024-bit set, the only form the filter allows), applied with the other commands. As built (W1
+  round 5 run 1): a stub's clock is read just before the stub ends and its time kept for the window (before, a
+  window holding a stub that ended decided nothing, so a runner of short-lived processes never moved); a runner
+  moves only to a CPU not found contended in the last second and at most once a second (step 1's fallback to the
+  CPU held by the fewest is for a runner's first CPU alone; with it a runner moved every window, about 50 times a
+  second, when every CPU of its set was contended; now 10 moves in 10 s, W1 round 5 run 1).
   That is the whole rule. With several guest threads of one stub running on different runners at once (not before
   the kernel allows it, 3.9), a stub's process clock mixes them and overstates a share, so a contended CPU can go
   unnoticed (never a needless move); that case is measured again when parallel threads are built. If the CPU

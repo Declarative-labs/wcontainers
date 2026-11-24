@@ -867,7 +867,26 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     interface's two `type_complexity` findings stop a clippy run that lints dependencies, the owner's file). Xeon,
     every binary once with /dev/kvm denied after the second change (all1-x86.out, load 27 to 35): 52 passed, none
     failed; clippy clean.
-  - No new unsafe code.
+  - Placement's two measured items, built as ignored measurements of tests/speed.rs on translated code (a getppid loop
+    with about 10 us of work between calls, one memory kept across the phases; knobs `WCHP_CALLS`, `WCHP_WORK`,
+    `WCHP_SET`, `WCHP_SECONDS`): `placement_after_a_move_runs_as_on_a_free_cpu` and
+    `placement_with_every_cpu_contended_moves_at_most_once_a_second`. Building them found two faults of the rule
+    (executor.rs, host.rs), now fixed: a window holding a stub that ended decided nothing (a runner of short-lived
+    processes, each loop a new memory, never moved: 0 moves in 10 s with a program spinning on its CPU); the stub's
+    clock is now read just before it ends and its time kept for the window. And with every CPU contended the runner
+    took the CPU held by the fewest, moving every window (about 50 moves a second; 420 to 513 in 10 s); a runner
+    now moves only to a CPU not found contended in the last second, and at most once a second (with the first
+    alone, 30 in 10 s as the marks expired one by one). The plan's 4.3 says so.
+  - Measured after the fixes (placement.sh, placement4-arm.out; Graviton4, 3 rounds, /dev/kvm denied, load 13 to
+    14): with a program spinning on the runner's CPU it moved once, after 9 to 15 ms, and its loop then ran 14,385 to
+    14,394 ns a call against 14,232 to 14,248 ns on that CPU once the program ended (1.0098 to 1.0108 times; bar
+    1.05) and 14,399 to 14,504 ns on the first CPU before (0.992 to 0.999 times); with all four CPUs of its set each
+    running a spinning program, 10 moves in 10.0 s in each round (bar: at most one a second). tests/placement.rs and
+    tests/host.rs pass. Seen on the way: the same loop in a new memory each time ran either 14.4 or 16.5 us a call,
+    so the comparison now keeps one memory (where its pieces lie in the code area may be the cause; not measured).
+  - Verdicts after the placement fixes, shared tree, every binary once with /dev/kvm denied: Graviton4 108 passed, 1
+    failed (the known precise-set test; all3-arm.out), Xeon 52 passed, none failed (all2-x86.out); clippy with
+    warnings denied clean on both.
 
 ## W1 complete, with its gap list (for the independent check)
 
@@ -894,9 +913,8 @@ met, each with what is known:
   W2's. Built in round 4 run 2: forged exits as translated guest code after two forks (tests/forged.rs) and the
   thread past the last index refused and counted through the `Cpu` calls (tests/run.rs); the kernel's own `clone`
   answer to it is not tested here.
-- Placement's two measured items (a getppid loop with work between calls within 5% of a free CPU's after its move;
-  at most one move a second with every CPU contended) are not measured; the move itself is tested (tests/
-  placement.rs).
+- Placement's two measured items are met on Graviton4 (round 5 run 1: 1.010 times the free CPU's loop after the move,
+  10 moves in 10 s with every CPU contended); not measured on the Xeon, where translated code is W3's.
 - The copy unit is one page, not yet measured on translated stores (8 pages the candidate).
 - The shared tree builds every host-process test binary again (round 4 run 2, with the conforming jobs' wasmtime and
   Unicorn edits uncommitted in it): kernel and busybox pass with /dev/kvm denied, once on Graviton4; the three rounds
@@ -925,28 +943,12 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   (the owner's). A fork child copying its parent's code was measured slower (round 5 run 1). Scratch
   w1/r5run1/turns-bb.sh counts turns, landings, loads and last targets in a remote copy (its native.rs patches follow
   the code as of 9dc2f309; one failing assertion leaves the native counters at zero).
-- Then the gap list's items, the speed bars first: busybox `sh` needs translations kept across execs at new bases
-  (moved translations, above); the round trip needs the embedder's per-exit work cut (the translated page's
-  copies, `stop::resolve` and `rejoin`, placement's two clock reads per turn); bench's matrix needs the withheld
+- The other bars: the round trip (1.215 to 1.27 times the slot across runs) needs the embedder's per-exit work cut
+  (the translated page's copies, `stop::resolve` and `rejoin`); bench's matrix (3.8 times plain) needs the withheld
   x18 renamed in hot loops (round 4 run 1, the native track's ruling first).
-- The speed bars (scratch w1/r3run3/speed3.sh measures all of them): busybox `sh` needs translations kept
-  across execs at new bases (moved translations, above); the round trip (1.23 to 1.31 times the slot after run 4's vectors change) needs
-  the embedder's per-exit work cut (the translated page's copies, `stop::resolve` and `rejoin`, placement's two clock
-  reads per turn); bench's
-  matrix (4.0 times plain) needs the withheld x18 renamed (round 4 run 1).
-- x86-64's stub answers `Enter` as `BadTurn`; its floor is W3's (plan 3.10).
-- Then: the copy unit on translated stores; placement's getppid item; the gVisor kernel test's blocks and jumptables
-  (which side hangs); the gap list and the W1-complete report (due by the fifth run).
-- The process way's translations are never moved (`Translation::moved`): `Native::movable` is the machine way's
-  range; `wcontainers_arm64::carry::movable(Way::Process)` is the process way's, for a P loader that keeps
-  translations.
-- W1, in this order, each tested on both rented machines with /dev/kvm denied: placement's remaining bar items
-  (a guest's getppid loop with work between calls within 5% of a free CPU's after its move, and at most one move a
-  second with every CPU contended), which need translated code to be the guest; the copy unit measured again on
-  translated code (`copy_unit_cost` with real stores), then set. Hand-written pieces stand in for translated code
-  until the translator's form exists. Then the `Executor` trait with the `with_parts` loop (4.6), the suites (also
-  inside Docker's default profile and under gVisor, as run 5's sandbox.sh does), the register-isolation tests and
-  the speed figures.
+- Then: the copy unit measured on translated stores (`copy_unit_cost` with real stores), then set; the gVisor kernel
+  test's blocks and jumptables (which side hangs).
+- x86-64's stub answers `Enter` as `BadTurn`; its floor and translated code are W3's (plan 3.10).
 - W2's part of W1's bar, form I's bounds-check-bypass test on ARM64 (one per access shape), is measured as a host
   program (run 6); at W2 the same gadgets run as translated guest code. I's stop is a real-time signal (plan 3.6)
   and queues as P's did: W2 must bound it (send only when none is pending, or a standard signal the embedder leaves
@@ -966,7 +968,7 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   mutate-ahead.sh runs tests/run.rs, then breaks loading ahead three ways in the remote copy, each of which must fail;
   ab-ahead.sh (and ab-copy.sh for the fork copy, no longer in the code) alternate busybox `sh` with and without a change
   (`set -- <rounds>`). The speed figures are still w1/r4run2/speed.sh; nokvm.sh ends with `exit`, so send speed.sh as
-  its own job.
+  its own job. placement.sh runs clippy, then the two placement measurements `set -- <rounds>` times.
 - Since round 4 run 2: scratch w1/r4run2. nokvm.sh (run 4's) runs every binary with /dev/kvm denied; speed.sh is
   run 3's speed3.sh without the VM part, speed-bb.sh busybox `sh` alone; forged.sh runs tests/forged.rs (its
   `--nocapture` prints what each forged exit did); moves2.sh runs the moving test at 100,000 cases for three seeds,
