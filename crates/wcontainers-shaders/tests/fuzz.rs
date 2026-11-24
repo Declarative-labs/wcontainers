@@ -348,3 +348,30 @@ fn a_globally_coherent_view_is_refused_by_name() {
         ))
     );
 }
+
+/// The word of `dcl_maxout` and of `dcl_gsinstances` holding its count (after the opcode).
+const COUNT_WORD: usize = 1;
+
+/// A signed geometry shader declaring more output vertices, or more instances, than Direct3D allows:
+/// refused as malformed by name, where the stage helper's slot sizes once overflowed (a caught panic,
+/// case 6539 of seed 2236067). Unchanged, it converts.
+#[test]
+fn a_geometry_count_past_direct3d_s_limit_is_refused() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/gs_instances.dxbc");
+    let original = std::fs::read(path).unwrap();
+    assert!(convert(Source::Dxbc(&original), &VariantKey::default(), None).is_ok());
+    for declaration in [
+        codes::dxbc_op::DCL_MAX_OUTPUT_VERTEX_COUNT,
+        codes::dxbc_op::DCL_GS_INSTANCE_COUNT,
+    ] {
+        let mut b = original.clone();
+        let count = instruction_at(&b, |op| op == declaration) + size_of::<u32>() * COUNT_WORD;
+        b[count..count + size_of::<u32>()].copy_from_slice(&u32::MAX.to_le_bytes());
+        sign(&mut b);
+        let refused = convert(Source::Dxbc(&b), &VariantKey::default(), None).map(|_| ());
+        assert!(
+            matches!(&refused, Err(ConvertError::Malformed(m)) if m.contains("than Direct3D allows")),
+            "{declaration}: {refused:?}"
+        );
+    }
+}

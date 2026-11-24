@@ -221,6 +221,12 @@ pub(crate) const EMIT: &str = "gs_emit";
 pub(crate) const CUT: &str = "gs_cut_strip";
 /// Why a geometry shader is malformed: it declares no vertex count.
 const NO_VERTEX_COUNT: &str = "a geometry shader without its vertex count";
+/// The most vertices and instances a geometry shader may declare (d3d11.h's
+/// `D3D11_GS_MAX_OUTPUT_VERTEX_COUNT_ACROSS_INSTANCES` and `D3D11_GS_MAX_INSTANCE_COUNT`), and why
+/// one declaring more is malformed.
+const MOST_OUTPUT_VERTICES: u32 = 1 << 10;
+const MOST_INSTANCES: u32 = 1 << 5;
+const PAST_DIRECT3D_LIMIT: &str = "a geometry shader declaring more than Direct3D allows";
 /// The compute form's output.
 const OUT_VARIABLE: &str = "stage_geometry";
 /// The invocation's number, and each stream's counters in `Counters`' order (a later stream's
@@ -287,9 +293,9 @@ impl Lowering<'_> {
             .ok_or_else(|| malformed("a geometry declaration outside a geometry shader".into()))?;
         let value = op.lits.first().copied().unwrap_or(0);
         match op.code {
-            code::SET_GS_INSTANCES => g.instances = value as u32,
+            code::SET_GS_INSTANCES => g.instances = within(value, MOST_INSTANCES)?,
             code::SET_GS_INPUT_PRIMITIVE => g.input = value,
-            code::SET_GS_OUTPUT_VERTICES => g.max_vertices = value as u32,
+            code::SET_GS_OUTPUT_VERTICES => g.max_vertices = within(value, MOST_OUTPUT_VERTICES)?,
             _ => g.output_declared(value, op.lits.get(1).copied().unwrap_or(1))?,
         }
         Ok(())
@@ -1722,6 +1728,14 @@ fn replay_emit(
     let wanted = b.load(wanted);
     let keeps = b.binary(BinaryOperator::Equal, n, wanted);
     only(b, keeps)
+}
+
+/// A declared count, refused past Direct3D's `most`.
+fn within(value: u64, most: u32) -> Result<u32> {
+    u32::try_from(value)
+        .ok()
+        .filter(|v| *v <= most)
+        .ok_or_else(|| malformed(PAST_DIRECT3D_LIMIT.into()))
 }
 
 /// This invocation's number among the slots of `stream`: stream 0's slots come first, each later
