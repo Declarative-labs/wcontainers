@@ -130,9 +130,78 @@ on WARP too and accept a word or counter equal to either real Direct3D 11's, the
 2026-11-22. Measured: the whole compute_draw file 17 of 17 on the RTX 3080 at f6c1bd56 (that
 track's scratch logs/r12-compute.log). This settles the two failures listed under G6w run 2.
 
+## G6w run 3: both routes kept, the linked one the default; the check's findings
+
+The check of run 2 found the milestone's decision replaced: the run measured a cost a user would
+see and still removed the linked route, where the milestone said to keep both and leave the
+default. Settled by following the milestone (commits cca03c0d5 to d00a19dc7):
+- The linked route is the native default again, as before G6w: build.rs compiles the C++ with the
+  host's compiler (C++ exceptions on, the boundary's `contained` and the throwing assertion back,
+  under `#if` so the WebAssembly builds are unchanged: the rebuilt module is byte-equal to the
+  committed one, only `converters.blake3` changed). It calls them through run 1's one signature
+  (`src/converters/linked.rs`, 4 unsafe lines, now built natively too), not the 15 lines of before.
+- The module route stays, behind the feature `contained-converters` (an optional `wasmtime`); the
+  fuzz test runs only with it and is ignored without it, with A11 as the reason. "Departures"
+  says why a feature. No caller changes.
+- The figures and the question are under "New for the owner"; A11 is open again on the default.
+
+The check's minor findings:
+- The pool's 1,000 instances (a valid shader refused once 1,000 threads held a session): a session
+  now lasts one conversion (`converters::Conversion`, opened by `contained` around every public
+  conversion; a call outside one gives its instance back at once), so no thread keeps an instance
+  or its memory after converting; and a conversion finding the pool full waits for an instance to
+  come back (`PoolConcurrencyLimitError`, a condition variable) instead of being refused. Test
+  `many_threads_converting_at_once_each_convert` (1,100 threads at once, each result equal to one
+  thread's) passes on both routes; with the pool cut to 4 instances in a scratch copy on the laptop
+  it passes too (`small-pool.log`), so the wait itself works.
+- The instruction bound per call: fuel is now given once per conversion, so a DXIL conversion's
+  five calls share one 2^40 bound. Not lowered: the slowest real shader needs 5.9e11 (most of it),
+  so a hostile shader can still hold one host thread for about 90 s on the ARM64 machine per
+  conversion, and refusals are not cached (a guest can vary the bytes anyway). Recorded, not more.
+- `variant.rs`'s `expect` (seed 662607 case 4304): `Wrapped::new` refuses an entry point result
+  struct with a member bound to nothing (`UNBOUND_RESULT`, `Malformed`), test
+  `a_result_member_bound_to_nothing_is_refused`; the case now gives "malformed: an entry point
+  result with a member bound to nothing" (ARM64, `arm-all.log`).
+- linked.rs's lines: under "Needs a primitive" (new section), each operation named.
+- The opengl track's restated line: gone at this tip (that file no longer restates the constant).
+- Windows: see below.
+
+Checks (ARM64 machine unless named; `arm-all.sh`, job 20261124-192427-2259944 at ea2dd344b, the
+code of the tip; load 7 to 29 of 96 cores, three fuzz seeds running beside from 19:25):
+- rustfmt, clippy with warnings denied of both routes: clean (also the laptop at d00a19dc7, and
+  clippy for wasm32-wasip1 there).
+- Whole CPU suite with every corpus (the mutation run skipped, run apart): linked route 28 binaries,
+  157 passed, 0 failed (285 s); module route the same, 157 passed (538 s). The two new tests make
+  155 into 157.
+- Corpus outputs, byte for byte, of the two routes in the same tree (`diff -r`): 4,557 files each,
+  0 lines of difference (the converter-version files included, one tree).
+- wasm32-wasip1 (laptop): the fuzz binary's 6 tests pass under wasmtime 38.0.4, the mutation run and
+  the many-threads test ignored (no threads there).
+- Literal check with history at 4ad8c9989 (`lit3.log`): no line in this crate's files or naga;
+  two baseline lines the build script briefly named were put back when naming them made a growth
+  line in another track's file (a constant of the same value), net zero.
+
+Timing (`conversion_time` release, ARM64, load 13 to 29 of 96 with the three fuzz seeds beside;
+each shader's FIRST conversion, what a program pays since conversions are cached, then the best of
+3 more; every conversion of the module route now pays its own instance; per shader median / 95th
+percentile / worst), linked then module:
+- corpus DXBC (164): 110 / 259 / 405 us, then 311 / 563 / 770 us.
+- games DXBC (467): 266 / 2,660 us / 16.3 s, then 525 / 5,287 us / 48.3 s (bf4b9f4770dfd7ca.dxbc).
+- games DXIL (350): 445 / 5,250 / 38,509 us, then 898 / 9,700 / 60,811 us.
+- runner DXBC (1,399): 120 / 310 / 900 us, then 250 / 579 / 2,057 us.
+- runner DXIL (1,327): 160 / 303 / 640 us, then 400 / 666 / 1,800 us.
+- All shaders of a corpus, first conversions summed: games DXBC 16.8 s then 49.2 s; games DXIL
+  0.74 s then 1.28 s; runner 0.43 s then 0.98 s.
+- First conversion of a process: 0.3 to 0.4 ms, then 322 to 345 ms (the module's compile).
+- Peak resident memory of the whole run: 10 to 43 MB, then 172 to 182 MB.
+The check's own figures (its chk_time.rs, load 33 to 50) agree: games DXIL median 508 then 1,007
+us, 95th percentile 5,257 then 9,701 us.
+
 ## G6w run 2: A41 closed, the Windows runs and the desktop timing
 
-G6w's bar as it stands at the end of run 2 (reported complete for its independent check):
+G6w's bar as it stands at the end of run 2 (reported complete for its independent check)
+[corrected in G6w run 3: the module route is a feature now and the linked route the native
+default again, so linked.rs is built natively too; run 3's section holds the bar as it stands]:
 - The fuzz test is not ignored natively and passes at seeds 141421, 2236067 and 1732050 of 12,000
   cases with zero process ends (ARM64, runs 1 and 2), and at 141421 on Windows (run 2).
 - Every corpus output is byte-equal between the linked C++ route and the module route (run 1:
@@ -327,7 +396,13 @@ s instead of 16 s on the ARM64 machine (60 s instead of 25 s on the laptop) at i
 conversion. Everything else is under a millisecond more per shader, once per shader, plus 0.3 to
 0.7 s at a process's first conversion. Under the owner's rule (a safe route is not chosen against
 for speed alone; conversion is cached) the module route is the default and the linked C++ route
-is removed natively; the figure is under "New for the owner".
+is removed natively; the figure is under "New for the owner". [corrected in G6w run 3, after the
+check: the milestone said that with a cost a user would see both routes stay and the default is
+left as it was, so the linked route is the native default again and the module route a feature;
+and "under a millisecond more" was not backed: the figures above are a best of 3 after one more
+conversion of the same shader, which reused the same instance, so they left out the instance
+every real conversion pays (games DXIL 95th percentile was already 3.5 ms more). Run 3's
+section has each shader's first conversion.]
 
 ## G6 reported complete for its independent check (round 7, runs 116 to 118): the gap list
 
@@ -603,12 +678,14 @@ side, and stands first for that reason:
   (this crate's, the WebGPU back end's, or the device's driver) named. No front waits on it.
 - A42 (closed in G6w run 2): a geometry shader declaring a vertex count near 2^32 overflowed the
   stage helper's slot sizes (a caught panic); now refused past Direct3D's limits.
-- A11, closed natively in G6w run 1: the converters run as their own WebAssembly module under
-  wasmtime, so each of the places below now traps inside the module and the shader is refused by
-  name ("dxil-spirv stopped: wasm trap: ...: assertion ... failed at ..."), the three the seventh
-  check named among them; the fuzz test runs by default and passes (figures in G6w run 1's
-  section). In the crate's own WebAssembly build the converters are still linked in, so there the
-  text below still holds. As it stood before:
+- A11, closed natively only with the feature `contained-converters` (G6w run 1 built it, run 3
+  made it a feature): there the converters run as their own WebAssembly module under wasmtime, so
+  each of the places below traps inside the module and the shader is refused by name ("dxil-spirv
+  stopped: wasm trap: ...: assertion ... failed at ..."), the three the seventh check named among
+  them; the fuzz test passes there (G6w runs 1 to 3). OPEN on the default route: natively the
+  converters are linked in again by default (the milestone's rule for a cost a user would see; the
+  figures and the question are under "New for the owner"), and in the crate's own WebAssembly
+  build, so there the text below still holds. As it stood before:
 - A11: signed but malformed DXIL still ends the process inside dxil-spirv, natively; in the
   browser the module traps instead. Not only in its bitcode reader: most ends come after the reader
   accepted the module, in the converter. Measured in run 119 at G6's sixth check's seed 1618033
@@ -3028,6 +3105,25 @@ Runs at a00ab267:
   `out-r78` and `outw-r78`; x86 `/work/target/shaders-tip`, 1.2 GB, and its clone; desktop
   `C:\wc\target\shaders-tip`, `C:\wc\src\shaders-tip`, `C:\wc\out\shaders-tip`; the scratch clone).
 
+## Needs a primitive
+
+- G6w run 3, the linked converters (`src/converters/linked.rs`, 4 lines, the native default and the
+  crate's own WebAssembly build): a call into a C++ library, made inline. Exact operations: call one
+  of six C functions of one signature, `int f(const uint8_t* data, size_t size, uint32_t samples,
+  uintptr_t* slots)` (`wcs_dxbc_to_ir`, `wcs_dxil_to_spirv`, `wcs_dxil_constant_sizes`,
+  `wcs_dxil_compared_gather_channels`, `wcs_dxil_declared_registers`, `wcs_dxil_views`), with
+  `data` readable for `size` bytes and `slots` writable for 6 words; then, for each of up to three
+  addresses it wrote into `slots` (two buffers and a reason, each from malloc, with its length in
+  bytes derived from the slot beside it), copy that many bytes out and call `wcs_free` on it once.
+  That is the declaration (the `unsafe extern "C"` block), the function type, the call and the
+  copy-and-free. No new line in run 3: the same 4 lines as run 1 wrote, now built natively too
+  because the linked route is the default again. boundary-unsafe-primitives DESIGN.md P3 chose the
+  module route (0 lines) for these seven functions; with the module as the native default only the
+  crate's own WebAssembly build would keep them (no engine runs inside that module), and there the
+  browser's engine interface would remove them.
+- Tests (71 lines, Windows only, calling real Direct3D 11 and 12 for the references): P3's
+  `direct3d` binding (DESIGN.md section 4), unchanged by this milestone.
+
 ## New for the owner
 
 - G6w run 2, a conflict between two references for one division: 48f3959dd (the Direct3D 11
@@ -3041,16 +3137,31 @@ Runs at a00ab267:
   every division, or the device's), and whether these two tests then compare with the other
   reference or allow both. Left failing until then; not changed by this track.
 
-- G6w run 1, the converters as WebAssembly: done and the default natively; the linked C++ route
-  and its unsafe boundary are gone natively. One cost a user would see, measured: the corpora's
+- G6w run 3, WHICH ROUTE IS THE NATIVE DEFAULT. Both are built and pass everything byte for byte;
+  the default is the linked C++ (as before G6w), the module under wasmtime is the feature
+  `contained-converters`, as the milestone says for a cost a user would see. The choice: the
+  module ends A11 (no malformed shader ends the host: zero process ends in 36,000 fuzz cases on
+  ARM64 and 12,000 on Windows, see runs 1 to 3) and removes the 4 inline unsafe lines natively; the
+  linked route lets 46 of 12,000 fuzz cases end the process. The cost, measured on the ARM64
+  machine (load 13 to 29 of 96), each shader's first conversion, linked then module:
+  - per shader 2 to 2.5 times: games DXIL median 445 then 898 us, 95th percentile 5.2 then 9.7 ms,
+    worst 39 then 61 ms; runner DXIL median 160 then 400 us; corpus DXBC median 110 then 311 us.
+  - a whole program's shaders, converted once and then cached: the games corpus's 350 DXIL shaders
+    0.74 then 1.28 s, its 467 DXBC 16.8 then 49.2 s, almost all of that one shader
+    (`games/bf4b9f4770dfd7ca.dxbc`, 16.3 then 48.3 s; about a third of its rise is the fuel bound).
+  - 0.32 to 0.35 s once per process (the module's compile; nothing cached on disk), and about 140
+    MB more peak memory (10 to 43 MB, then 172 to 182 MB).
+  Asked: make the module the default (then the linked route and its 4 lines go natively, and the
+  feature with them), or keep the linked default. If the first-conversion cost matters, the
+  cheaper levers are wasmtime's own on-disk compile cache (removes the 0.3 s after a machine's
+  first process) and a time bound instead of fuel (cheaper, but a refusal then depends on the
+  machine's speed).
+- G6w run 1, the converters as WebAssembly: [corrected in G6w run 3: run 1 made the module the
+  only native route; run 3 restored the linked route as the default and made the module a feature,
+  the entry above.] One cost a user would see, measured: the corpora's
   slowest shader (`games/bf4b9f4770dfd7ca.dxbc`, a game's DXBC shader, already 16 s natively on the
   ARM64 machine) takes 48 s at its first conversion (laptop: 25 s, now 60 s); about a third of the
-  rise is the instruction bound (fuel). Every other shader of the corpora costs under a millisecond
-  more, once (conversions are cached), and a process pays 0.3 to 0.7 s and about 130 MB of memory
-  when it first converts. Kept as the default under your rule; if the slow shader matters, the
-  choices are a time bound (wasmtime's epochs: cheaper, but a refusal then depends on the
-  machine's speed, so it cannot be cached) or a fix to dxbc-spirv's slow pass, which natively
-  takes 16 s already. Also yours: the committed module (3.5 MB, "Departures") instead of every
+  rise is the instruction bound (fuel). Also yours: the committed module (3.5 MB, "Departures") instead of every
   machine building it with wasi-sdk; and the crate's own WebAssembly build, which still links the
   converters in (no engine runs inside it; the browser would run them through the engine
   interface's browser implementation).
@@ -4363,8 +4474,12 @@ G6a run 5's tip):
 ## Next
 
 00. G6w (the converters as their own WebAssembly module) is reported complete for its independent
-   check (G6w run 2). After it: A43 (the three drawn failures whose cause is not found), the
-   owner's word on the division's reference (New for the owner), then the list below.
+   check again (G6w run 3: both routes kept, the linked one the default, the owner asked which
+   is the default). After it: the owner's word on the default route; if it is the module, delete
+   `src/converters/linked.rs`'s native use (its 4 unsafe lines then serve only the crate's own
+   WebAssembly build), make the feature's code unconditional natively and drop the feature. Then
+   A43 (the three drawn failures whose cause is not found), the owner's word on the division's
+   reference (New for the owner), then the list below.
 0. G6 is reported complete for its independent check (run 119, round 8). After the check, the gap
    list of "G6 reported complete" in the order the fronts need it; items waiting on another track
    or a ruling are not worked until those come. The order below holds for this track's own parts,
@@ -6066,6 +6181,23 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- The two routes: a plain build links the converters in (the default); `--features
+  contained-converters` runs them as their own module (natively; no effect in the wasm32 build).
+  The fuzz test runs only with the feature: `WCONTAINERS_FUZZ_SEED=<seed>
+  WCONTAINERS_FUZZ_CASES=12000 cargo test -p wcontainers-shaders --features contained-converters
+  --test fuzz mutated -- --nocapture`. The converters' module is rebuilt only with the feature
+  (`... env WASI_SDK_PATH=... cargo build -p wcontainers-shaders --features contained-converters`);
+  a default build does not read the committed module.
+- G6w run 3 (scratch `graphics-shaders/g6w-r3`): `arm-all.sh` (through `arm-run <worktree> --name
+  graphics-shaders --detach -- "$(cat arm-all.sh)"`) does everything of the run on the ARM64
+  machine in one job: rustfmt and clippy of both routes, the replay of the check's seed 662607
+  case 4304, the fuzz test on the module route at seeds 141421, 2236067 and 1732050 (12,000 each,
+  in the background), the whole CPU suite on each route with every corpus, the corpus outputs of
+  each route and their `diff -r`, and `conversion_time` of each route over the three corpora under
+  `/usr/bin/time`. `win-all.sh` does the desktop's part (clone `g6w-r3/win`): Windows clippy of both
+  routes and the whole suite on the default route as one GPU job, the timing of each route as GPU
+  jobs, the fuzz test on the module route at seed 271828 (`win/g6w-fuzz.ps1`). The wasm32 build:
+  `wasm.log`'s command (clippy for wasm32-wasip1, then the fuzz binary under the laptop's wasmtime).
 - G6w run 2 (scratch `graphics-shaders/g6w-r2`): `win-all.sh` runs, one after another, the whole
   suite on the desktop as one GPU job (Windows clippy first; the mutation run skipped there), the
   desktop timing of the module route (clone `g6w-r2/win`) and of the linked route (clone
@@ -6088,8 +6220,9 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   && arm-run tip-arm --name g6w-lit -- 'bash check-lit.sh.txt'` after `git -C tip fetch <worktree>
   agents && git -C tip checkout -B agents FETCH_HEAD`.
 - The converters' module is rebuilt by building this crate natively with `WASI_SDK_PATH` naming
-  wasi-sdk 25 (the laptop: `tools/graphics-rig/linux env
-  WASI_SDK_PATH=/home/tom/wcontainers-graphics/tools/wasi-sdk cargo build -p wcontainers-shaders`);
+  wasi-sdk 25 and the feature (the laptop: `tools/graphics-rig/linux env
+  WASI_SDK_PATH=/home/tom/wcontainers-graphics/tools/wasi-sdk cargo build -p wcontainers-shaders
+  --features contained-converters`);
   where the committed module differs, the build stops and names the two files in its build folder
   to copy into the crate. Any change to build.rs, `cpp/`, the patches or the submodules changes the
   recorded hash, so it needs this step.
@@ -6527,7 +6660,8 @@ were already there.
 
 - G6w run 1: `wasmtime` 50.0.1 (Apache-2.0 WITH LLVM-exception; already in the lock for the
   WebAssembly engine crates; features cranelift, runtime, std, parallel-compilation,
-  pooling-allocator), natively only, to run the converters' module through its safe API. Dev
+  pooling-allocator), natively only and, since run 3, only with the feature `contained-converters`
+  (an optional dependency), to run the converters' module through its safe API. Dev
   dependency `cap` 0.1.2 (MIT OR Apache-2.0, crates.io's record; new in the lock), the fuzz test's
   bound on what its Rust code holds, in place of its own allocator (5 unsafe lines). The committed
   module `converters.wasm` ships wasi-sdk 25's libc++ and libc++abi (Apache-2.0 WITH
@@ -6587,6 +6721,12 @@ were already there.
 
 ## Departures from the plan
 
+- G6w run 3: the two routes are chosen by a cargo feature, `contained-converters` (off by default:
+  the converters linked in, as before G6w; on: their module under wasmtime), not by a value at run
+  time. The milestone kept both routes because of a cost a user would see, so one of them is
+  chosen per build; a feature costs nothing at run time, builds only the chosen route (no wasmtime
+  in a default build, no C++ compiler needed with the feature) and goes away with the owner's
+  choice. Its use today: the fuzz test, which runs only with it (ignored without it, A11).
 - G6w run 1: the converters' module is committed (`crates/wcontainers-shaders/converters.wasm`,
   3.5 MB, with `converters.blake3`, the hash of the sources it was built from), so that a native
   build of this crate and of the five crates using it needs no WebAssembly SDK, as before it needed
