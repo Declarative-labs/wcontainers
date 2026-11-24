@@ -199,15 +199,16 @@ pub struct StandIn {
     digests: Option<MemoryDigests>,
 }
 
-// SAFETY: a stand-in owns everything it reaches: each memory's unicorn engine (whose shared
-// handle is cloned only inside its own hooks, which capture nothing, and which keeps no state of
-// the host thread between calls), the mappings its block pointers point into, and its records.
-// So all of it moves to another host thread together, and it is used by one at a time.
+// SAFETY: a memory owns its unicorn engine (whose shared handle is cloned only inside its own
+// hooks, which capture nothing, and which keeps no state of the host thread between calls) and its
+// records, and its block pointers point into host mappings that live while it shows them (a
+// stand-in's blocks, kept while a memory shows them, or a space's host pages). So it moves to
+// another host thread whole, and it is used by one at a time.
 #[expect(
     unsafe_code,
-    reason = "UNEXPLAINED: promises the stand-in, which owns unicorn handles, may move between threads on the claim that unicorn keeps no per-thread state, which rests on unicorn's internals nobody has read; no primitive replaces it"
+    reason = "UNEXPLAINED: promises a memory, which owns a unicorn handle, may move between threads on the claim that unicorn keeps no per-thread state, which rests on unicorn's internals nobody has read; no primitive replaces it"
 )]
-unsafe impl Send for StandIn {}
+unsafe impl Send for Memory {}
 
 fn prot(permissions: Permissions) -> Prot {
     let mut prot = Prot::NONE.0;

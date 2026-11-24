@@ -1,5 +1,9 @@
 //! Runs wcontainers-kernel on a stand-in CPU and compares it with real ARM64 Linux.
 
+// The kernel asks its system's waits to return `Send` futures; a host generic over its hooks says
+// so of its own with return type notation.
+#![feature(return_type_notation)]
+
 pub mod backend;
 pub mod buffer;
 pub mod busybox;

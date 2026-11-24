@@ -22,6 +22,8 @@ path = "bin/ltp.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+# The touched-page bits of host pages that spaces on any host thread share (MIT OR Apache-2.0).
+atomic_refcell = "0.1.13"
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }

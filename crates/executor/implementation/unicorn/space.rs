@@ -7,10 +7,10 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use atomic_refcell::AtomicRefCell;
 use memmap2::MmapMut;
 use wcontainers_abi::{CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock};
 use wcontainers_byte_sink::ByteSink;
@@ -40,7 +40,7 @@ struct Space {
 #[derive(Clone)]
 struct View {
     end: u64,
-    pages: Rc<HostPages>,
+    pages: Arc<HostPages>,
     /// Where in the host pages the view's start lies.
     offset: u64,
     /// Whether the view came from another space's pages, so a copy shows them too instead of their bytes.
@@ -51,7 +51,7 @@ struct View {
 struct HostPages {
     bytes: MmapMut,
     /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
-    touched: RefCell<Vec<u64>>,
+    touched: AtomicRefCell<Vec<u64>>,
 }
 
 /// Addresses of a space, borrowed.
@@ -68,7 +68,10 @@ impl HostPages {
         let words = length.div_ceil(PAGE_SIZE).div_ceil(PAGES_PER_WORD);
         Ok(Self {
             bytes,
-            touched: RefCell::new(vec![u64::MIN; usize::try_from(words).unwrap_or(usize::MAX)]),
+            touched: AtomicRefCell::new(vec![
+                u64::MIN;
+                usize::try_from(words).unwrap_or(usize::MAX)
+            ]),
         })
     }
 
@@ -201,7 +204,7 @@ impl UnicornSpace {
         let mut memory = Memory::new(end)?;
         let words = end.div_ceil(PAGE_SIZE).div_ceil(PAGES_PER_WORD);
         memory.reachable = Some(vec![u64::MIN; to_index(words)]);
-        let pages = Rc::new(HostPages::new(end)?);
+        let pages = Arc::new(HostPages::new(end)?);
         let mut space = Space {
             memory,
             views: BTreeMap::new(),
@@ -337,7 +340,7 @@ impl MemorySpace for UnicornSpace {
             .unwrap_or_else(|error| panic!("no host memory for zeroed pages: {error:?}"));
         let zeroed = View {
             end: addresses.end,
-            pages: Rc::new(pages),
+            pages: Arc::new(pages),
             offset: u64::MIN,
             mapping: false,
         };
@@ -388,7 +391,7 @@ impl MemorySpace for UnicornSpace {
         for offset in touched {
             copied.touch(offset..offset + PAGE_SIZE);
         }
-        let copied = Rc::new(copied);
+        let copied = Arc::new(copied);
         let views = views
             .into_iter()
             .map(|(start, view)| {
@@ -399,7 +402,7 @@ impl MemorySpace for UnicornSpace {
                 } else {
                     View {
                         end,
-                        pages: Rc::clone(&copied),
+                        pages: Arc::clone(&copied),
                         offset: start - other_start,
                         mapping: false,
                     }

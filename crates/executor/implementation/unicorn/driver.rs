@@ -1448,69 +1448,18 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
         translator: (),
     };
     let host = Arc::new(host);
-    // SAFETY: the test host's waiting calls hold only what may move between host threads (see
-    // `waiting_calls_move_between_threads`).
-    #[expect(
-        unsafe_code,
-        reason = "the kernel's configuration asks that the system's waiting calls may move between host threads, which the system interface's futures cannot say in their types"
-    )]
-    let config = unsafe {
-        wcontainers_kernel_linux::KernelConfig::new(
-            prepared.kernel,
-            cpu,
-            Arc::clone(&host),
-            start,
-            config,
-            state,
-        )
-    };
+    let config = wcontainers_kernel_linux::KernelConfig::new(
+        prepared.kernel,
+        cpu,
+        Arc::clone(&host),
+        start,
+        config,
+        state,
+    );
     let (kernel, runners) = wcontainers_kernel_linux::KernelWithExecutor::new(config, parallelism);
     let runners = runners.collect();
     (kernel, runners, host)
 }
-
-/// Fails to build unless every waiting call of the test host may move between host threads, as
-/// the kernel's start asks of a system.
-fn waiting_calls_move_between_threads(
-    host: &TestHost,
-    end: &crate::streams::End,
-    tcp: &tcp::TcpHandle,
-    udp: &udp::UdpHandle,
-    question: domain::base::Question<&domain::base::Name<[u8]>>,
-) {
-    use wcontainers_readiness::{Readiness, ReadyFor};
-    use wcontainers_system::{DomainNameResolver, FuseServer};
-    fn movable(_: &impl Send) {}
-    movable(&Readiness::<crate::streams::End>::wait_until_ready(
-        host,
-        end,
-        ReadyFor::READABLE,
-    ));
-    movable(&Readiness::<tcp::TcpHandle>::wait_until_ready(
-        host,
-        tcp,
-        ReadyFor::READABLE,
-    ));
-    movable(&Readiness::<udp::UdpHandle>::wait_until_ready(
-        host,
-        udp,
-        ReadyFor::READABLE,
-    ));
-    movable(&host.send_request(&[]));
-    movable(&host.receive_notice(None));
-    movable(&host.resolve_domain(question));
-}
-
-/// The test host's waiting calls, as [`waiting_calls_move_between_threads`] takes them.
-type WaitingCallsOf = fn(
-    &TestHost,
-    &crate::streams::End,
-    &tcp::TcpHandle,
-    &udp::UdpHandle,
-    domain::base::Question<&domain::base::Name<[u8]>>,
-);
-
-const _: WaitingCallsOf = waiting_calls_move_between_threads;
 
 /// The id of a container's first process, as the kernel numbers it inside the container.
 pub const FIRST_PROCESS: wcontainers_kernel::TaskId = wcontainers_kernel::TaskId(1);
@@ -1676,7 +1625,9 @@ fn run_hosted<H: BetweenSteps + Send>(
     injections: Injections,
 ) -> Result<Run, Failure>
 where
-    TestHost<H>: System + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>,
+    TestHost<H>: System
+        + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>
+        + wcontainers_readiness::Readiness<crate::streams::End, wait_until_ready(..): Send>,
 {
     let Prepared {
         mut kernel,
@@ -2050,7 +2001,9 @@ where
 /// What the loop asks of the test host between turns.
 impl<H: BetweenSteps + Send + 'static> wcontainers_runtime_single_kernel::System for TestHost<H>
 where
-    Self: System + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>,
+    Self: System
+        + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>
+        + wcontainers_readiness::Readiness<crate::streams::End, wait_until_ready(..): Send>,
 {
     /// The run of a copy made at a save, as the process it was copied from gets it.
     type End = Run;
