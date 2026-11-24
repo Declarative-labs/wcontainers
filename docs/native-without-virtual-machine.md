@@ -136,9 +136,12 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
   (crates/kernel/implementation/linux/container.rs, where a container starts) and places mappings top-down below it,
   so under P a guest gets other addresses and another memory size than under the WebAssembly output (about 2^32),
   and a program whose path depends on a pointer counts differently. K2 (placement low first, the memory size given
-  at start; asked of the kernel track, section 10, as native.md asks it) removes the difference. Until K2 lands,
-  P's bar against the WebAssembly output is equal verdicts, and the tests that compare addresses, memory size or the
-  count at a stop wait on it by name (13), as the VM form's N6 and N11 do. A process that reaches its ceiling is the
+  at start; asked of the kernel track, section 10, as native.md asks it) removes the difference, and is in the
+  kernel since its KF milestone: mappings are placed in tiers lowest first, the first tier's top is the lower of
+  4 GiB and the container's ceiling, and the embedder may give the ceiling (`Start::ceiling`) and the memory size
+  (`Start::memory_bytes`). A comparison with the WebAssembly output gives both that output's ceiling and memory size;
+  W1's kernel test does, and addresses, memory size, mappings and the turns of one-thread programs are then equal
+  (`addresses_memory_size_and_mappings_are_the_web_assembly_output_s`). A process that reaches its ceiling is the
   existing `on_process_outgrown` case. I's 4 GiB per process is the price of an access cut to its window for free; a larger
   window needs one more instruction per access (an `and` with the window's mask), not measured, the owner's choice
   (section 12).
@@ -1435,9 +1438,13 @@ them.
 
 **W1: form P on ARM64 Linux.** Needs the translator's `HostProcess` form and the `stop` crate with a parameter for
 the slot table's base (10), and, for the comparisons of addresses, memory size and the count with the WebAssembly
-output, the kernel's K2 (3.1). Until K2 lands the bar against the WebAssembly output is equal verdicts (output and
-status) on every suite below, and these tests are built and kept as known failures waiting on K2, by name:
-`differential` (exits, registers and memory at every look-ahead) and `count_at_every_stop`. Does not need the owner's interface items (section 8): the kernel is driven by 4.6's
+output, the kernel's K2 (3.1), which is in the kernel: the kernel test gives both outputs the WebAssembly output's
+ceiling and memory size and compares wait status, output, root files, addresses, memory size and the turns of
+one-thread programs. Two tests named here earlier are not built, each for its reason: `differential` at every
+look-ahead (P translates at one look-ahead; per instruction, the executor suite's precise-set test compares P with the
+WebAssembly translator's meaning), and the count at every stop equal to the WebAssembly output's (that output ends a
+limited turn at its own stop checks, another quantity than the count; built instead: a stop at every counted event
+changes nothing, `a_stop_at_every_counted_event_changes_nothing`). Does not need the owner's interface items (section 8): the kernel is driven by 4.6's
 `with_parts` loop, the executors are made by their crates' own constructors, and the kernel is not yet given the
 stopper. Builds: the shared layout, floor, code area, memory with copy-on-write, stops (section 3), the zygote and
 stubs, the control and register pages, placement and the runners (section 4), the start-up probe and the seccomp
@@ -1446,9 +1453,10 @@ filter. Pass bar, every item on the rented ARM64 machine:
   programs: hello, the fork, exec and signal program, and busybox's `text` and `files` commands, as N3's bar) give
   the reference's output and status, and the same verdicts as the WebAssembly output; once K2 lands, exits,
   registers and memory equal the WebAssembly output's at every look-ahead, with and without the count
-  (`differential`, the VM form's differential test, seeded, with its case knob; cases run recorded);
+  (`differential`, the VM form's differential test, seeded, with its case knob; cases run recorded; not built, see
+  this milestone's opening);
 - once K2 lands, the count at every stop is identical to the WebAssembly output's (`count_at_every_stop`, forced
-  interrupts at every counted event);
+  interrupts at every counted event; not built, see this milestone's opening for the reason and what is built);
 - the zygote survives its own migration between CPUs (the fourth check's case: moved 200 times, answering after
   each), and no registration of restartable sequences is left in it or in a stub;
 - the adversarial cases, each a kept test: a fork while a sibling thread is in a system call and another writes a

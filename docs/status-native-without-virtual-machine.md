@@ -901,6 +901,34 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
   - Verdicts after the placement fixes, shared tree, every binary once with /dev/kvm denied: Graviton4 108 passed, 1
     failed (the known precise-set test; all3-arm.out), Xeon 52 passed, none failed (all2-x86.out); clippy with
     warnings denied clean on both.
+- W1 round 5, run 2 (2026-11-24, 06:10 UTC on), Graviton4 (the Xeon answered "not set up": no /work, Docker or Nix):
+  - Conforming: nothing new. No commit since eb5b1bcc touched the executor, memory space or volatile bytes interfaces
+    (the last that did, 9b572652 and 167cffce, are conformed to since round 4); host-process has no register_tool
+    lines; form I does not exist yet. The getters entry (22eaab2d) is the sockets' and not on `agents` yet.
+  - Verdict at the start, shared tree at eb5b1bcc, every binary once with /dev/kvm denied (verdict1-arm.out, load 16
+    to 20): 109 passed, 1 failed, the known precise-set test (the executor suite's other 20 pass).
+  - K2 is in the kernel in the form P needs (KF, first run): mappings are placed in tiers lowest first, and the first
+    tier's top is the lower of 4 GiB and the container's ceiling, which the embedder may give in `Start::ceiling`
+    with the memory size in `Start::memory_bytes`. So the kernel test now gives both outputs the WebAssembly output's
+    ceiling (0xFF00_0000) as ceiling and memory size, and compares wait status, output and root files of every
+    program, and the turns of hello, getppid and a new program, `layout` (tests/guest/layout.c: sysinfo's memory, the
+    stack, break, heap and mmap addresses, and /proc/self/maps), which are equal (kernel1-arm.out). With form P
+    given its own ceiling instead (remote copy only, mutate-layout.sh), the layout test fails on the memory size
+    (mutate-layout2-arm.out).
+  - Built `a_stop_at_every_counted_event_changes_nothing` (tests/kernel.rs): jumptables, layout and forks under P
+    with every turn ending after one counted event (the policy's `turn_events`) give the same status, output and root
+    files as without, in 298, 215 and 184 turns against 65, 20 and 38 (kernel2-arm.out, 9 of 9 kernel tests passed
+    with /dev/kvm denied, clippy with warnings denied clean on every target). What is not built: the count at each
+    stop compared with the WebAssembly output's. That output ends a limited turn at its own stop checks, not at the
+    count's definition (the VM form's kernel test says the same), so the two counts are not the same quantity; the VM
+    form compares its count across look-aheads, which P cannot (it translates at one look-ahead).
+  - Where the getppid round trip goes (perf.sh, perf1-arm.out; CPU 41, 3,000,000 calls, 3,053 ns median of batch
+    means with perf recording, load 8 to 13): the host kernel 78% of the samples in the top 90 lines (task switch
+    36%, the futex's page lookup for a shared word about 8%, the stack offset's random draw 1.6%), the embedder's own
+    code 11% (`run_translated` 2.5%, `give` 1.7%, `wait_within` 1.0%, `turn_with`, `set_registers_but_vectors`,
+    `run_turn`, `stop::resolve`, `translated_page` under 1% each), clock reads in the vDSO 3.2% (two of the three
+    a round trip are placement's turn timing, one the test's), memcpy 2.2%, the stub's own code about 3%. So at most
+    about a sixth of a round trip (about 500 ns) is ours to cut; the rest is the host's switch.
 
 ## W1 complete, with its gap list (for the independent check)
 
@@ -917,11 +945,15 @@ met, each with what is known:
 - The executor suite's precise-set test fails as committed: its input domain puts code at 0x1000, below
   `vm.mmap_min_addr` (For the owner). Every other test of the suite passes, and with the code at 64 KiB this one
   passes too (run 5).
-- `differential` and `count_at_every_stop` are not built: they wait on the kernel's K2 (placement low first, memory
-  size at start), which has not landed. The bar until then, equal verdicts with the WebAssembly output, is met for
-  the kernel test programs (hello, getppid, forks, mappings, jumptables equal; blocks and code differ only where
-  the WebAssembly side has its recorded faults) and busybox's 56 `text` and `files` commands give the reference's
-  output (run 3).
+- K2 is in the kernel (KF): with the WebAssembly output's ceiling and memory size given to both, addresses, memory
+  size, mappings, root files and the turns of one-thread programs equal the WebAssembly output's (round 5 run 2,
+  tests/kernel.rs); hello, getppid, forks, mappings, jumptables and layout equal whole, blocks and code differ only
+  where the WebAssembly side has its recorded faults; busybox's 56 `text` and `files` commands give the reference's
+  output (run 3). A stop at every counted event changes nothing (round 5 run 2). Not built: `differential` as
+  exits, registers and memory at every look-ahead (P translates at one look-ahead; per instruction, the executor
+  suite's precise-set test compares P with the WebAssembly translator's meaning), and the count at every stop
+  compared with the WebAssembly output's, which ends limited turns at its own stop checks and so counts another
+  quantity (as the VM form's kernel test records).
 - Adversarial cases not built: the fork while a sibling is in a system call and another writes (needs several guest
   threads running at once, which today's kernel loop never does); one P and two I containers in one embedder is
   W2's. Built in round 4 run 2: forged exits as translated guest code after two forks (tests/forged.rs) and the
@@ -957,8 +989,9 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
   (the owner's). A fork child copying its parent's code was measured slower (round 5 run 1). Scratch
   w1/r5run1/turns-bb.sh counts turns, landings, loads and last targets in a remote copy (its native.rs patches follow
   the code as of 9dc2f309; one failing assertion leaves the native counters at zero).
-- The other bars: the round trip (1.215 to 1.27 times the slot across runs) needs the embedder's per-exit work cut
-  (the translated page's copies, `stop::resolve` and `rejoin`); bench's matrix (3.8 times plain) needs the withheld
+- The other bars: the round trip (1.215 to 1.27 times the slot across runs) needs the embedder's per-exit work cut;
+  round 5 run 2's profile puts all of ours at about a sixth of a round trip (placement's two clock reads, the
+  register block built with its vectors to be written without them, `give`, `stop::resolve`); bench's matrix (3.8 times plain) needs the withheld
   x18 renamed in hot loops (round 4 run 1, the native track's ruling first).
 - Then: the gVisor kernel test's blocks and jumptables (which side hangs).
 - x86-64's stub answers `Enter` as `BadTurn`; its floor and translated code are W3's (plan 3.10).
@@ -976,6 +1009,10 @@ cache (run 2); register isolation on stub pieces and on translated threads (runs
 
 ## How to run
 
+- Since round 5 run 2: scratch w1/r5run2. kernel.sh runs clippy on every target, then the kernel test with /dev/kvm
+  denied and its output shown (`FILTER=<name>` for one test); mutate-layout.sh gives form P its own ceiling in the
+  remote copy, which must fail the layout test; perf.sh profiles CPU 41 during the round trip by process, binary and
+  symbol. nokvm.sh is round 5 run 1's (send with `set -- <rounds>`).
 - Since round 5 run 1: scratch w1/r5run1. nokvm.sh is round 4's writing into /work/target/nwvmc, run on `tree` (a
   `git archive` of a commit made a git repository, so `arm-run`/`x86-run` take it) for verdicts from committed code;
   mutate-ahead.sh runs tests/run.rs, then breaks loading ahead three ways in the remote copy, each of which must fail;
