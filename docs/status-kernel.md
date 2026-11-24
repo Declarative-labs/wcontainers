@@ -36,6 +36,22 @@ The literal check at a7b0b008's parent 5512c9a1 (kf8/lit.sh, lit2-out.txt): base
 (27582 after a7b0b008), exits 1 on other tracks' files and the interfaces', and in this track's
 files only on the 14 lines For the orchestrator names (`WRITE_NOT_READ` is off that list).
 
+The owner's volatile bytes (e9fff41e, merged at 45dc7425): sockets, streams and the random
+source take `&impl VolatileBytes`. Conformed: the kernel passes `RefCell<&mut [u8]>` (the
+interface's own implementation); its two senders now take `&mut [u8]`, as every caller holds its
+own buffer (911f7e16). The inside's link host (fb83448d) and the stand-in's test host (fe19ffee)
+copy through a buffer; lock lines fc3977ac. Measured on the ARM64 machine: clippy over the kernel
+and abi libraries and over the inside (all targets) status 0, the inside's tests 3 pass.
+Not yet built: the kernel's tests and the stand-in, as they need the single-kernel runtime
+(described.rs, system.rs, tcp.rs, udp.rs still take slices: the runtime track's) and the executor
+suite (crates/executor/conformance still imports `VolatileBytes` from `memory_space`), neither
+this track's. The seeded test policy was converted by another agent (79209968).
+
+The whole suite was started at a7b0b008 (kf8/whole.sh) and did not run: the ARM64 machine's disk
+filled (581 of 581 GB) while it built. This track's folders were freed: /work/target/kernel/debug
+(141 GB of old builds), kernel-vb and kernel-literals; 164 GB were free after. It must be run once
+the runtime and the executor suite build again.
+
 ## KF, seventh run: the third check's findings
 
 The seventh run made the fixes (commits b7524554 to 376fba71) and started the whole suite; the
@@ -994,7 +1010,9 @@ unit-test executor conforms to the executor interface (the kernel's unit tests b
 literal fix list's steps 4 and 5 are done and the stand-in's test uses the abi's lowest address
 (baseline 27616 to 27582). In this track's files the literal check now fails only on the 14 lines
 For the orchestrator names, each a value another track named later or a fact without a shared
-home; KF has nothing else left. The whole suite at a7b0b008: see "KF, eighth run".
+home. The kernel, the inside and the stand-in take the owner's volatile bytes; the kernel's tests
+and the stand-in wait on the runtime track's and the executor suite's conversion to build, and
+then the whole suite is to run once (it did not run this run: the ARM64 machine's disk filled).
 
 KF, seventh run: every finding of the third check is fixed or recorded (see "KF, seventh run"):
 placement falls back to the gap below the stack when nothing fits below the mmap base, a hint
