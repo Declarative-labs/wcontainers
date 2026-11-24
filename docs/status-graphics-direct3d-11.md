@@ -36,6 +36,12 @@ G4h round 6 run 6 (2026-11-24, from about 06:00 Pacific):
 - Nothing of the shaders crate changed since run 5 (its division is as before, r9/div.patch still
   applies to lower.rs at 3dcd74e4); no new ruling on the WebGL 2 items, so they take ruling (2)'s
   form (Departures) and the milestone is reported for its check with the Gap list as it stands.
+- 24 literal baseline lines cut in context.rs (Literals). The front's unit 7, cache 1, front.rs
+  61 and clippy pass at that code on the rented x86 machine (96 cores, load 0.6;
+  logs/r10-lit2-front.log). Not yet run: lint of both builds and the library suite on the desktop
+  at 180958a6. They wait detached behind another track's fuzz job, which has held the desktop
+  since 04:55 Pacific (scratch r10/suite.sh, driver logs/r10b-driver.log, results
+  logs/r10b-lint.log, r10b-lib.log, r10b-webgllib.log). Read those logs before anything else.
 
 G4h round 6 run 5 (2026-11-24, from about 03:40 Pacific), the eighth round's check:
 - atg-simplecomputepc: ruled (ruling (1)), so the fix is the shaders crate's division, asked of
@@ -1765,6 +1771,14 @@ Earlier runs' measurements are in this file's git history.
   programs reporting every `--dll` library they loaded.
 
 ## Literals
+
+- G4h round 6 run 6 (2026-11-24): context.rs reads indirect draw and dispatch arguments as named
+  words (`ARGUMENT_WORD_BYTES`, `DRAW_ARGUMENT_WORDS`, `INDEXED_DRAW_ARGUMENT_WORDS`,
+  `DISPATCH_AXES`, destructured by `argument_words`), takes a structure count's size from
+  `COUNTER_BYTES` and names the depth bias's bits and refusal: 24 baseline lines cut (180958a6),
+  546 left. The check at that tree on the rented x86 machine (logs/r10-lit2-front.log) finds
+  nothing in this track's files but the stale "unparsed" line for the deleted src/required.rs, and
+  host-process's `NANOSECONDS` (that file's).
 
 - G4h round 6 run 5 (2026-11-24): own_cases' `restated` 300.0 is gone: both atg-simplecomputepc
   cases and the new `divisions` case take the count as `INSIDE_LOOPS / 4.0`, the program's loop
