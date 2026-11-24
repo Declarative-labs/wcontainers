@@ -230,6 +230,9 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
         caps.min_line_width_aa = limits.max_line_width;
     }
     caps.max_texture_anisotropy = f32::from(limits.max_anisotropy);
+    // Samplers take their anisotropy (`state::create_sampler_state`); the back end applies it to
+    // fully linear filtering only, as OpenGL lets an implementation.
+    caps.anisotropic_filter = limits.max_anisotropy > 1;
     caps.constant_buffer_offset_alignment = limits.min_uniform_offset_alignment;
     caps.max_constant_buffer_size = limits.max_uniform_buffer_size;
     caps.max_varyings = passed_values(limits);
@@ -566,6 +569,19 @@ mod tests {
             GL_3_2_PASSED_COMPONENTS
         );
         assert_eq!(caps.glsl_feature_level, GLSL_VERSION);
+    }
+
+    #[test]
+    fn anisotropic_filtering_is_reported_where_samplers_take_more_than_one() {
+        let mut ours = caps_with(
+            DIRECT3D_12_INTER_STAGE_SLOTS,
+            DIRECT3D_12_VERTEX_ATTRIBUTES,
+            true,
+        );
+        let most = ours.limits.max_anisotropy;
+        assert!(filled(&ours).anisotropic_filter == (most > 1));
+        ours.limits.max_anisotropy = 1;
+        assert!(!filled(&ours).anisotropic_filter);
     }
 
     #[test]
