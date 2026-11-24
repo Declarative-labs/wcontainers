@@ -5414,6 +5414,8 @@ dependencies = [
  "nix",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-configurable-conformance",
  "wcontainers-icmp-sockets",
@@ -5421,6 +5423,7 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5434,6 +5437,8 @@ dependencies = [
  "socket2 0.6.5",
  "stats_alloc",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-icmp-sockets",
  "wcontainers-icmp-sockets-conformance",
@@ -5443,6 +5448,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5799,6 +5805,7 @@ dependencies = [
  "wcontainers-raw-sockets",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5812,6 +5819,7 @@ dependencies = [
  "socket2 0.6.5",
  "stats_alloc",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
@@ -5821,6 +5829,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
