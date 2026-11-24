@@ -219,8 +219,9 @@ pub enum NativeReason {
     WithheldRegisterNamed,
     /// The page test and probes in front of a load or store of more than 16 bytes.
     AccessMayCrossPage,
-    /// The page test in front of a load or store of 16 bytes or fewer, which the host's model is not relied on
-    /// to do as the meaning does.
+    /// A result the host's model is not relied on to give as the meaning does: ARM64's page test in front of a
+    /// load or store of 16 bytes or fewer, x86's form the inside answers where the start-up probe found the host
+    /// differs.
     HostModelResultRouted,
     /// A repeated string instruction the inside runs, so that the count takes its passes as the meaning's does.
     RepeatedStringCounted,
