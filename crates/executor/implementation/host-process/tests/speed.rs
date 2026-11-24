@@ -561,7 +561,9 @@ fn bench_workloads_plainly_under_p_and_under_web_assembly() {
 #[ignore = "a measurement, run on its own"]
 fn busybox_sh_starting_programs() {
     let programs = knob("WCHP_PROGRAMS", 1000);
-    let script = format!("i=0; while [ $i -lt {programs} ]; do /bin/true; i=$((i+1)); done");
+    // What each pass of the loop runs: knob `WCHP_STARTED`, a command line of the image.
+    let started = std::env::var("WCHP_STARTED").unwrap_or_else(|_| "/bin/true".to_owned());
+    let script = format!("i=0; while [ $i -lt {programs} ]; do {started}; i=$((i+1)); done");
     let files = image::reference_image();
     let path = on_path("sh");
     let arguments: Vec<&[u8]> = vec![path.as_bytes(), b"-c", script.as_bytes()];
