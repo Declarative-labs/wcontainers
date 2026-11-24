@@ -48,6 +48,7 @@ use wcontainers_processor_architecture_arm64::{
 
 use crate::memory_space::{GuestMemorySpace, OutOfFrames, POOL_BASE, POOL_BYTES, Pool};
 use crate::{Exit, Host, Hypervisor, Memory, Register, Result, VirtualCpu, VirtualMachine};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// Bytes of the machine's own guest-physical memory: one block of the boot map, as large as the devices' below it.
 pub(crate) const MEMORY_BYTES: u64 = MEMORY_BASE;
@@ -85,7 +86,7 @@ const SME_TRAPS_NOTHING: u64 = 0b11 << 24;
 
 /// What a program at EL0 holds, in the order the handler loads and saves it.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct Registers {
     general_purpose: [u64; GENERAL_PURPOSE_REGISTERS],
     /// SP_EL0.
@@ -102,12 +103,14 @@ struct Registers {
     syndrome: u64,
     /// FAR_EL1 after.
     fault_address: u64,
+    /// Unused: puts `vector` where its alignment would, as bytes of the record.
+    _padding: u64,
     vector: [u128; VECTOR_REGISTERS],
 }
 
 /// One state in guest memory, as the handler reads and writes it.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct Slot {
     /// TTBR0_EL1 while the instruction runs: the slot's top-level table and its ASID.
     translation_table: u64,
@@ -115,6 +118,8 @@ struct Slot {
     next: u64,
     /// An [`Ending`], which the handler writes.
     ending: u64,
+    /// Unused: puts `before` where its alignment would, as bytes of the record.
+    _padding: u64,
     before: Registers,
     after: Registers,
 }
@@ -590,6 +595,7 @@ impl SingleStepMachine {
             translation_table: top | TTBR0_EL1::ASID.val(self.slot_count).value,
             next: 0,
             ending: Ending::NotRun as u64,
+            _padding: 0,
             before: to_registers(processor, Stepping::On),
             after: to_registers(processor, Stepping::On),
         };
@@ -727,6 +733,7 @@ impl SingleStepMachine {
                     translation_table,
                     next: u64::MIN,
                     ending: Ending::NotRun as u64,
+                    _padding: 0,
                     before: registers,
                     after: registers,
                 },
@@ -901,16 +908,13 @@ impl SingleStepMachine {
         self.memory.bytes_mut(at, length)
     }
 
-    #[expect(unsafe_code, reason = "the handler's slot, read whole; one of the single step machine's existing uses")]
     fn read_slot(&self, at: u64) -> Slot {
-        // SAFETY: the slot lies in guest memory and the guest is not running.
-        unsafe { std::ptr::read(self.memory.host(at).cast::<Slot>()) }
+        Slot::read_from_bytes(self.read_bytes(at, size_of::<Slot>() as u64)).expect("a slot's bytes")
     }
 
-    #[expect(unsafe_code, reason = "the handler's slot, written whole; one of the single step machine's existing uses")]
     fn write_slot(&mut self, at: u64, slot: Slot) {
-        // SAFETY: the slot's page lies in guest memory, and the guest is not running.
-        unsafe { std::ptr::write(self.memory.host(at).cast::<Slot>(), slot) };
+        self.write_bytes(at, size_of::<Slot>() as u64)
+            .copy_from_slice(slot.as_bytes());
     }
 }
 
@@ -1139,6 +1143,7 @@ fn to_registers(processor: &Processor, stepping: Stepping) -> Registers {
         floating_point_status: processor.floating_point_status,
         syndrome: 0,
         fault_address: 0,
+        _padding: 0,
         vector: processor.vector_registers,
     }
 }
