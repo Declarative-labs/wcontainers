@@ -5156,6 +5156,7 @@ dependencies = [
  "linux-raw-sys",
  "memmap2",
  "nix",
+ "object 0.41.0",
  "proptest",
  "rangemap",
  "rustc-hash 2.1.3",
