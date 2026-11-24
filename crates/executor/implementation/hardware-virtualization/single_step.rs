@@ -1,13 +1,14 @@
-//! An [`Executor`] that really runs one ARM64 instruction: at EL0 of a virtual machine with software step on,
-//! under a handler at EL1 that saves the registers when the step, or the instruction's own exception, ends it.
+//! An [`Executor`] that runs ARM64 code at EL0 of a virtual machine, under an EL1 handler that saves its registers.
 //!
-//! Each state is a slot in guest memory: its registers before and after, and translation tables and pages of its
-//! own. The handler goes from one slot to the next without leaving the guest, so a batch of states costs one exit.
+//! Each state is a slot in guest memory. A batch of single steps, each slot with tables of its own, costs one exit;
+//! `execute` runs from one slot on a [`GuestMemorySpace`]'s tables until a trap.
 
 use std::collections::BTreeMap;
 use std::mem::offset_of;
 use std::ops::Range;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use aarch64_cpu::registers::{
@@ -15,9 +16,17 @@ use aarch64_cpu::registers::{
     TTBR0_EL1,
 };
 use aarch64_paging::descriptor::El1Attributes;
-use wcontainers_abi::PAGE_SIZE;
+use wcontainers_abi::{
+    Access, PAGE_SIZE, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber,
+    SystemCallRequest,
+};
 use wcontainers_arm64::INSTRUCTION_BYTES;
-use wcontainers_executor::Executor;
+use wcontainers_executor::{
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
+    TrapHandler,
+};
+
+use crate::Stopper;
 use wcontainers_executor_hardware_virtualization_inside::boot::{
     BOOT_MAP_BYTES, BootRegisters, boot_registers, inside_attributes, write_boot_map,
 };
@@ -28,15 +37,20 @@ use wcontainers_executor_hardware_virtualization_inside::layout::{
 use wcontainers_executor_hardware_virtualization_inside::link::DOORBELL_FUNCTION;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_executor_hardware_virtualization_inside::syndrome::{
+    CACHE_MAINTENANCE, FAULT_STATUS,
+};
+use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, WRITE_NOT_READ};
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS, InstructionFetch,
     PagePermission, Processor, VECTOR_REGISTERS,
 };
 
+use crate::memory_space::{GuestMemorySpace, OutOfFrames, POOL_BASE, POOL_BYTES, Pool};
 use crate::{Exit, Host, Hypervisor, Memory, Register, Result, VirtualCpu, VirtualMachine};
 
-/// Bytes of guest-physical memory: one block of the boot map.
-const MEMORY_BYTES: u64 = 1 << 30;
+/// Bytes of the machine's own guest-physical memory: one block of the boot map, as large as the devices' below it.
+pub(crate) const MEMORY_BYTES: u64 = MEMORY_BASE;
 
 // Where each part lies in guest-physical memory.
 const BOOT_MAP: u64 = MEMORY_BASE;
@@ -44,9 +58,17 @@ const HANDLER: u64 = BOOT_MAP + BOOT_MAP_BYTES;
 const HANDLER_STACK: u64 = HANDLER + PAGE_SIZE;
 /// One table for each level below the top whose entries all lead to an invalid entry at the last level.
 const UNMAPPED_TABLES: u64 = HANDLER_STACK + PAGE_SIZE;
+/// The slot `execute` runs its guest from.
+const EXECUTE_SLOT: u64 = UNMAPPED_TABLES + LEAF_LEVEL as u64 * PAGE_SIZE;
 /// What the slots of a batch take their pages from.
-const ARENA: Range<u64> =
-    UNMAPPED_TABLES + LEAF_LEVEL as u64 * PAGE_SIZE..MEMORY_BASE + MEMORY_BYTES;
+const ARENA: Range<u64> = EXECUTE_SLOT + PAGE_SIZE..MEMORY_BASE + MEMORY_BYTES;
+
+/// The fault statuses of a page that does not allow an access: every table leads to a last-level entry, and every
+/// entry is marked accessed, so no other level or access flag fault comes.
+const PAGE_FAULTS: [FaultStatus; 2] = [
+    FaultStatus::TranslationFaultLevel3,
+    FaultStatus::PermissionFaultLevel3,
+];
 
 // Bytes of one register of each kind.
 const REGISTER_BYTES: usize = size_of::<u64>();
@@ -115,6 +137,8 @@ struct HandlerCode {
     vectors: *const u8,
     /// Where the host enters it to run the slot TPIDR_EL1 names.
     entry: *const u8,
+    /// Where it starts to save a slot after an exception from EL0; from the entry to here it runs no guest code.
+    save: *const u8,
     end: *const u8,
 }
 
@@ -129,6 +153,8 @@ extern "C" fn find_handler_code() -> HandlerCode {
         "str x9, [x8, #{vectors_field}]",
         "adr x9, 4f",
         "str x9, [x8, #{entry_field}]",
+        "adr x9, 5f",
+        "str x9, [x8, #{save_field}]",
         "adr x9, 9f",
         "str x9, [x8, #{end_field}]",
         "ret",
@@ -281,6 +307,7 @@ extern "C" fn find_handler_code() -> HandlerCode {
         "9:",
         vectors_field = const offset_of!(HandlerCode, vectors),
         entry_field = const offset_of!(HandlerCode, entry),
+        save_field = const offset_of!(HandlerCode, save),
         end_field = const offset_of!(HandlerCode, end),
         vector_table_bytes = const VECTOR_TABLE_BYTES,
         vector_bytes = const VECTOR_BYTES,
@@ -345,8 +372,12 @@ pub struct SingleStepMachine {
     cpu: <<Host as Hypervisor>::VirtualMachine as VirtualMachine>::Cpu,
     _machine: <Host as Hypervisor>::VirtualMachine,
     memory: Memory,
+    /// The frames of the spaces it makes, which it maps at [`POOL_BASE`].
+    pool: Arc<Mutex<Pool>>,
     /// The handler's entry, at its linear address.
     entry: u64,
+    /// Where the handler starts to save a slot, at its linear address.
+    save: u64,
     /// PSTATE as the host enters the handler.
     entry_pstate: u64,
     next_free_page: u64,
@@ -371,6 +402,8 @@ impl SingleStepMachine {
         let memory = Memory::reserve(MEMORY_BYTES)?;
         let host = NonNull::new(memory.host(MEMORY_BASE)).expect("the reservation is not at zero");
         machine.map(host, MEMORY_BASE, MEMORY_BYTES)?;
+        let pool = Pool::new()?;
+        machine.map(pool.host(), POOL_BASE, POOL_BYTES)?;
         let cpu = machine.cpu()?;
         #[cfg(target_os = "macos")]
         cpu.leave_debugging_to_guest()?;
@@ -378,7 +411,9 @@ impl SingleStepMachine {
             cpu,
             _machine: machine,
             memory,
+            pool: Arc::new(Mutex::new(pool)),
             entry: 0,
+            save: u64::MIN,
             entry_pstate: 0,
             next_free_page: ARENA.start,
             asid_count: 0,
@@ -435,6 +470,7 @@ impl SingleStepMachine {
         let bytes = unsafe { std::slice::from_raw_parts(code.vectors, length as usize) };
         self.write_bytes(HANDLER, length).copy_from_slice(bytes);
         self.entry = linear(HANDLER + (code.entry as u64 - code.vectors as u64));
+        self.save = linear(HANDLER + (code.save as u64 - code.vectors as u64));
         for level in TOP_LEVEL + 1..=LEAF_LEVEL {
             self.fill_table(unmapped_table(level), to_unmapped_entry(level));
         }
@@ -479,7 +515,6 @@ impl SingleStepMachine {
             (Register::Sctlr, sctlr),
             (Register::Vectors, linear(HANDLER)),
             (Register::StackEl1, linear(HANDLER_STACK + PAGE_SIZE)),
-            (Register::DebugControl, MDSCR_EL1::SS::SET.value),
         ] {
             self.cpu.set(register, value)?;
         }
@@ -555,14 +590,14 @@ impl SingleStepMachine {
             translation_table: top | TTBR0_EL1::ASID.val(self.slot_count).value,
             next: 0,
             ending: Ending::NotRun as u64,
-            before: to_registers(processor),
-            after: to_registers(processor),
+            before: to_registers(processor, Stepping::On),
+            after: to_registers(processor, Stepping::On),
         };
-        // SAFETY: the slot's page lies in the arena, in guest memory, and the guest is not running.
-        unsafe { std::ptr::write(self.memory.host(slot).cast::<Slot>(), slot_contents) };
+        self.write_slot(slot, slot_contents);
         if let Some(last) = self.last_slot {
-            // SAFETY: as above, for the batch's previous slot.
-            unsafe { (*self.memory.host(last).cast::<Slot>()).next = linear(slot) };
+            let mut previous = self.read_slot(last);
+            previous.next = linear(slot);
+            self.write_slot(last, previous);
         }
         self.slot_count += 1;
         self.first_slot.get_or_insert(slot);
@@ -595,19 +630,34 @@ impl SingleStepMachine {
         let Some(first) = self.first_slot else {
             return;
         };
+        self.enter(first, MDSCR_EL1::SS::SET.value);
+        match self.run_until_exit() {
+            Ended::Doorbell => {}
+            Ended::Stopped => panic!("the single step machine was stopped from another thread"),
+        }
+    }
+
+    /// Sets the virtual CPU to enter the handler at the slot, with the debug controls given.
+    fn enter(&mut self, slot: u64, debug_control: u64) {
         for (register, value) in [
-            (Register::InsideThread, linear(first)),
+            (Register::InsideThread, linear(slot)),
             (Register::Pc, self.entry),
             (Register::Pstate, self.entry_pstate),
+            (Register::DebugControl, debug_control),
         ] {
             self.cpu
                 .set(register, value)
                 .unwrap_or_else(|error| panic!("the hypervisor refused {register:?}: {error:?}"));
         }
+    }
+
+    /// Runs the virtual CPU until the handler's doorbell or a stop from another thread.
+    fn run_until_exit(&mut self) -> Ended {
         let started = Instant::now();
-        loop {
+        let ended = loop {
             match self.cpu.run() {
-                Ok(Exit::Doorbell) => break,
+                Ok(Exit::Doorbell) => break Ended::Doorbell,
+                Ok(Exit::Stopped) => break Ended::Stopped,
                 // Hypervisor.framework traps the unlock of the OS lock and leaves it to us: the lock is already
                 // open, so the handler goes on after it.
                 Ok(Exit::Exception { syndrome, .. })
@@ -623,19 +673,14 @@ impl SingleStepMachine {
                     panic!("the guest stopped other than at the handler's doorbell: {other:?}")
                 }
             }
-        }
+        };
         self.time_in_guest += started.elapsed();
+        ended
     }
 
-    /// Gives the processor after a slot's run, and each run of bytes it changed as a slice of guest memory.
-    fn read_back(
-        &self,
-        loaded: &LoadedSlot,
-        processor: &mut Processor,
-        mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    ) {
-        // SAFETY: the slot lies in guest memory and the guest is not running.
-        let slot = unsafe { std::ptr::read(self.memory.host(loaded.slot).cast::<Slot>()) };
+    /// Returns the slot at `at` once the handler has ended it by an exception from EL0.
+    fn read_ended_slot(&self, at: u64) -> Slot {
+        let slot = self.read_slot(at);
         assert!(
             slot.ending == Ending::ExceptionFromEl0 as u64,
             "the handler ended the slot by {:?}: syndrome {:#x}, return address {:#x}, saved state {:#x}",
@@ -646,6 +691,154 @@ impl SingleStepMachine {
             slot.after.program_counter,
             slot.after.saved_program_status,
         );
+        slot
+    }
+
+    /// Runs the guest on the space from the processor state until a trap the handler, or no handler, ends it.
+    ///
+    /// An interrupt is pending while `pending` is set; a stop of the virtual CPU without it is another execution's
+    /// late interrupt, and the guest runs on.
+    fn run_guest(
+        &mut self,
+        mut processor: Processor,
+        memory: &GuestMemorySpace,
+        handler: &mut impl TrapHandler,
+        pending: &AtomicBool,
+    ) -> Processor {
+        assert!(
+            memory.is_of(&self.pool),
+            "the executor runs only spaces it made"
+        );
+        let translation_table = memory.find_root();
+        // The last fault the machine answered itself: when it comes again at once, the handler answers it.
+        let mut answered: Option<(u64, Access)> = None;
+        // An interrupt that found the handler saving the slot, answered after the trap it saves.
+        let mut interrupted = false;
+        loop {
+            if (std::mem::take(&mut interrupted) || pending.swap(false, Ordering::Acquire))
+                && let InterruptResponse::Terminate = handler.handle_interrupt()
+            {
+                processor.exception = None;
+                return processor;
+            }
+            let registers = to_registers(&processor, Stepping::Off);
+            self.write_slot(
+                EXECUTE_SLOT,
+                Slot {
+                    translation_table,
+                    next: u64::MIN,
+                    ending: Ending::NotRun as u64,
+                    before: registers,
+                    after: registers,
+                },
+            );
+            self.enter(EXECUTE_SLOT, u64::MIN);
+            while let Ended::Stopped = self.run_until_exit() {
+                if !pending.swap(false, Ordering::Acquire) {
+                    continue;
+                }
+                match self.locate_stop() {
+                    Stop::Guest => {
+                        if let InterruptResponse::Terminate = handler.handle_interrupt() {
+                            return self.save_running_guest();
+                        }
+                    }
+                    Stop::Entering => {
+                        if let InterruptResponse::Terminate = handler.handle_interrupt() {
+                            processor.exception = None;
+                            return processor;
+                        }
+                    }
+                    Stop::Saving => interrupted = true,
+                }
+            }
+            let slot = self.read_ended_slot(EXECUTE_SLOT);
+            let stopped = to_processor(&slot.after);
+            processor = Processor {
+                exception: None,
+                ..stopped.clone()
+            };
+            match to_trap(slot.after.syndrome, &stopped) {
+                Trap::SystemCall(request) => match handler.handle_system_call(request) {
+                    SystemCallResponse::Return(value) => {
+                        // The result goes in the first argument's register, x0.
+                        if let Some(result) = processor.general_purpose_registers.first_mut() {
+                            *result = value;
+                        }
+                        answered = None;
+                    }
+                    SystemCallResponse::Terminate => {
+                        return Processor {
+                            program_counter: stopped.program_counter - INSTRUCTION_BYTES as u64,
+                            ..stopped
+                        };
+                    }
+                },
+                Trap::MemoryFault(address, access) => {
+                    let fault = Some((address, access));
+                    if answered != fault && memory.back_for(address, access) {
+                        answered = fault;
+                        continue;
+                    }
+                    answered = None;
+                    match handler.handle_memory_fault(address, access) {
+                        MemoryFaultResponse::Retry => {}
+                        MemoryFaultResponse::Terminate => return stopped,
+                    }
+                }
+                Trap::Ending => return stopped,
+            }
+        }
+    }
+
+    /// Says where a stop from another thread found the virtual CPU.
+    fn locate_stop(&self) -> Stop {
+        let get = |register| {
+            self.cpu
+                .get(register)
+                .unwrap_or_else(|error| panic!("the hypervisor refused {register:?}: {error:?}"))
+        };
+        if SPSR_EL1::M.read(get(Register::Pstate)) == SPSR_EL1::M::Value::EL0t as u64 {
+            return Stop::Guest;
+        }
+        if (self.entry..self.save).contains(&get(Register::Pc)) {
+            Stop::Entering
+        } else {
+            Stop::Saving
+        }
+    }
+
+    /// Returns the processor state of a guest stopped at EL0, which the handler saves as if a software step ended it.
+    fn save_running_guest(&mut self) -> Processor {
+        let get = |register| {
+            self.cpu
+                .get(register)
+                .unwrap_or_else(|error| panic!("the hypervisor refused {register:?}: {error:?}"))
+        };
+        let stepped = ESR_EL1::EC::SoftwareStepLowerEL.value;
+        for (register, value) in [
+            (Register::ExceptionLink, get(Register::Pc)),
+            (Register::SavedState, get(Register::Pstate)),
+            (Register::Syndrome, stepped),
+            (Register::Pc, self.save),
+            (Register::Pstate, self.entry_pstate),
+        ] {
+            self.cpu
+                .set(register, value)
+                .unwrap_or_else(|error| panic!("the hypervisor refused {register:?}: {error:?}"));
+        }
+        while let Ended::Stopped = self.run_until_exit() {}
+        to_processor(&self.read_ended_slot(EXECUTE_SLOT).after)
+    }
+
+    /// Gives the processor after a slot's run, and each run of bytes it changed as a slice of guest memory.
+    fn read_back(
+        &self,
+        loaded: &LoadedSlot,
+        processor: &mut Processor,
+        mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+    ) {
+        let slot = self.read_ended_slot(loaded.slot);
         *processor = to_processor(&slot.after);
         for run in &self.writable_runs[loaded.writable.clone()] {
             let before = &self.bytes_before[run.before.clone()];
@@ -685,37 +878,135 @@ impl SingleStepMachine {
     }
 
     fn read_entry(&self, at: u64) -> u64 {
-        // SAFETY: a table entry in guest memory, which the guest does not touch while it is not running.
-        unsafe { std::ptr::read(self.memory.host(at).cast::<u64>()) }
+        let mut entry = [u8::MIN; ENTRY_BYTES as usize];
+        entry.copy_from_slice(self.read_bytes(at, ENTRY_BYTES));
+        u64::from_le_bytes(entry)
     }
 
     fn write_entry(&mut self, at: u64, entry: u64) {
-        // SAFETY: as above.
-        unsafe { std::ptr::write(self.memory.host(at).cast::<u64>(), entry) }
+        self.write_bytes(at, ENTRY_BYTES)
+            .copy_from_slice(&entry.to_le_bytes());
     }
 
     fn read_bytes(&self, at: u64, length: u64) -> &[u8] {
-        assert!(
-            at + length <= MEMORY_BASE + MEMORY_BYTES,
-            "inside guest memory"
-        );
-        // SAFETY: inside guest memory, which the guest does not touch while it is not running.
-        unsafe { std::slice::from_raw_parts(self.memory.host(at), length as usize) }
+        self.memory.bytes(at, length)
     }
 
     fn write_bytes(&mut self, at: u64, length: u64) -> &mut [u8] {
-        assert!(
-            at + length <= MEMORY_BASE + MEMORY_BYTES,
-            "inside guest memory"
-        );
-        // SAFETY: as above, and the borrow of `self` keeps the bytes from being lent twice.
-        unsafe { std::slice::from_raw_parts_mut(self.memory.host(at), length as usize) }
+        self.memory.bytes_mut(at, length)
+    }
+
+    fn read_slot(&self, at: u64) -> Slot {
+        // SAFETY: the slot lies in guest memory and the guest is not running.
+        unsafe { std::ptr::read(self.memory.host(at).cast::<Slot>()) }
+    }
+
+    fn write_slot(&mut self, at: u64, slot: Slot) {
+        // SAFETY: the slot's page lies in guest memory, and the guest is not running.
+        unsafe { std::ptr::write(self.memory.host(at).cast::<Slot>(), slot) };
+    }
+}
+
+/// Interrupts one execution of the machine from any thread.
+pub struct MachineInterrupter {
+    /// Set until the execution answers the interrupt.
+    pending: Arc<AtomicBool>,
+    stopper: <<<Host as Hypervisor>::VirtualMachine as VirtualMachine>::Cpu as VirtualCpu>::Stopper,
+}
+
+impl ExecutionInterrupter for MachineInterrupter {
+    /// Marks the interrupt pending and stops the virtual CPU, which answers it at once or at its next trap or entry.
+    fn interrupt(&self) {
+        self.pending.store(true, Ordering::Release);
+        // The stopper refuses only once the virtual CPU is gone, when no execution is left to interrupt.
+        self.stopper.stop().ok();
+    }
+}
+
+/// What ended a run of the virtual CPU.
+enum Ended {
+    Doorbell,
+    Stopped,
+}
+
+/// Where a stop from another thread found the virtual CPU.
+enum Stop {
+    /// Running the guest at EL0.
+    Guest,
+    /// In the handler, before the guest runs.
+    Entering,
+    /// In the handler, saving the slot after an exception from EL0; it rings the doorbell next.
+    Saving,
+}
+
+/// What a guest's exception from EL0 asks of `execute`.
+enum Trap {
+    SystemCall(SystemCallRequest),
+    /// A page that does not allow the access, at the address.
+    MemoryFault(u64, Access),
+    /// Every other exception, which ends the run with the fault in the processor state.
+    Ending,
+}
+
+/// Returns what the exception the syndrome describes asks of `execute`, from the state it stopped at.
+fn to_trap(syndrome: u64, stopped: &Processor) -> Trap {
+    use ESR_EL1::EC::Value::{DataAbortLowerEL, InstrAbortLowerEL, SVC64};
+    let class = ESR_EL1::EC.read(syndrome);
+    if class == SVC64 as u64 {
+        let registers = &stopped.general_purpose_registers;
+        let mut arguments = [u64::MIN; SYSTEM_CALL_ARGUMENT_COUNT];
+        arguments.copy_from_slice(&registers[..SYSTEM_CALL_ARGUMENT_COUNT]);
+        return Trap::SystemCall(SystemCallRequest {
+            number: SystemCallNumber(registers[SYSTEM_CALL_NUMBER_REGISTER]),
+            arguments,
+        });
+    }
+    let access = if class == InstrAbortLowerEL as u64 {
+        Access::Execute
+    } else if class != DataAbortLowerEL as u64 {
+        return Trap::Ending;
+    } else if syndrome & WRITE_NOT_READ != 0 && syndrome & CACHE_MAINTENANCE == 0 {
+        Access::Write
+    } else {
+        Access::Read
+    };
+    let status = syndrome & FAULT_STATUS;
+    let page_fault = PAGE_FAULTS.iter().any(|&fault| fault as u64 == status);
+    match stopped.exception.and_then(|exception| exception.fault_address) {
+        Some(address) if page_fault => Trap::MemoryFault(address, access),
+        _ => Trap::Ending,
     }
 }
 
 impl Executor for SingleStepMachine {
     type Architecture = Arm64;
     type TranslatorConfig = ();
+    type GuestMemory = GuestMemorySpace;
+    type Interrupter = MachineInterrupter;
+    type CreateGuestMemoryError = OutOfFrames;
+
+    fn create_guest_memory(&self) -> std::result::Result<GuestMemorySpace, OutOfFrames> {
+        GuestMemorySpace::new(&self.pool)
+    }
+
+    /// Runs only spaces it made, blocking the polling thread, and itself gives a frame to a page that allows the access.
+    fn execute<'execution>(
+        &'execution mut self,
+        processor: Processor,
+        memory: &'execution GuestMemorySpace,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (
+        impl Future<Output = Processor> + 'execution,
+        MachineInterrupter,
+    ) {
+        let pending = Arc::new(AtomicBool::new(false));
+        let interrupter = MachineInterrupter {
+            pending: Arc::clone(&pending),
+            stopper: self.cpu.stopper(),
+        };
+        let execution = async move { self.run_guest(processor, memory, handler, &pending) };
+        (execution, interrupter)
+    }
 
     /// Reports each run of bytes whose value changed: a store of the bytes already there is not reported.
     fn execute_single_instruction_in_place(
@@ -738,7 +1029,7 @@ fn unmapped_table(level: u32) -> u64 {
 }
 
 /// What every entry of a table at the level holds where it maps nothing: the way to an invalid last-level entry.
-fn to_unmapped_entry(level: u32) -> u64 {
+pub(crate) fn to_unmapped_entry(level: u32) -> u64 {
     if level == LEAF_LEVEL {
         0
     } else {
@@ -746,11 +1037,11 @@ fn to_unmapped_entry(level: u32) -> u64 {
     }
 }
 
-fn to_table_entry(table: u64) -> u64 {
+pub(crate) fn to_table_entry(table: u64) -> u64 {
     table | (El1Attributes::VALID | El1Attributes::TABLE_OR_PAGE).bits() as u64
 }
 
-fn to_page_entry(frame: u64, data_access: DataAccess, instruction_fetch: InstructionFetch) -> u64 {
+pub(crate) fn to_page_entry(frame: u64, data_access: DataAccess, instruction_fetch: InstructionFetch) -> u64 {
     let access = match data_access {
         DataAccess::Forbidden => El1Attributes::empty(),
         DataAccess::ReadOnly => El1Attributes::USER | El1Attributes::READ_ONLY,
@@ -813,9 +1104,17 @@ fn compose_page(page: u64, memory: &[MemoryDelta<'_, Arm64>], bytes: &mut [u8]) 
     }
 }
 
-fn to_registers(processor: &Processor) -> Registers {
+/// Whether software step ends a run after one instruction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stepping {
+    On,
+    Off,
+}
+
+/// Returns the registers the handler loads to run the processor, one instruction or on.
+fn to_registers(processor: &Processor, stepping: Stepping) -> Registers {
     let el0 = SPSR_EL1::M::EL0t
-        + SPSR_EL1::SS.val(1)
+        + SPSR_EL1::SS.val(u64::from(stepping == Stepping::On))
         + SPSR_EL1::A::Masked
         + SPSR_EL1::I::Masked
         + SPSR_EL1::F::Masked;

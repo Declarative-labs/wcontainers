@@ -29,6 +29,10 @@ aarch64-paging = { version = "0.12.3", default-features = false }
 wcontainers-executor = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The guest memory's borrowed bytes, and where they are read to and written from.
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 # The files of kept translations: their names and the running program's build, and their contents.
 blake3 = "1"
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
@@ -79,10 +83,20 @@ wcontainers-executor-unicorn = { path = "../unicorn" }
 unicorn-engine = "2.1.5"
 # The system calls the exits test answers, by Linux's numbers.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
+# The executor suite, the chips' sets it agrees with and the states it runs.
+wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
+wcontainers-precise-instruction-set-neoverse-v2 = { path = "../../../precise-instruction-set/implementation/neoverse-v2" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The speed test's counts of the whole process's cycles and instructions.
 perf-event2 = "0.7.4"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
 
 [[test]]
 name = "exits"

@@ -21,6 +21,8 @@ use wcontainers_guest_cpu::Guest;
 pub mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub mod kvm;
+#[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+pub mod memory_space;
 pub mod routines;
 #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
 pub mod single_step;
@@ -189,6 +191,36 @@ impl Memory {
         );
         // SAFETY: inside the reservation.
         unsafe { self.host.as_ptr().add((at - MEMORY_BASE) as usize) }
+    }
+
+    /// Returns the bytes from guest-physical `at`, for one copy while no virtual CPU writes them.
+    #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+    #[expect(
+        unsafe_code,
+        reason = "the one view of guest memory the monitor reads through, moved here from the single step machine"
+    )]
+    fn bytes(&self, at: u64, length: u64) -> &[u8] {
+        assert!(
+            at + length <= MEMORY_BASE + self.length,
+            "inside guest memory"
+        );
+        // SAFETY: inside the reservation, which the guest does not touch while it is not running.
+        unsafe { std::slice::from_raw_parts(self.host(at), length as usize) }
+    }
+
+    /// Returns the bytes from guest-physical `at` to write, for one copy while no virtual CPU touches them.
+    #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+    #[expect(
+        unsafe_code,
+        reason = "the one view of guest memory the monitor writes through, moved here from the single step machine"
+    )]
+    fn bytes_mut(&mut self, at: u64, length: u64) -> &mut [u8] {
+        assert!(
+            at + length <= MEMORY_BASE + self.length,
+            "inside guest memory"
+        );
+        // SAFETY: as above, and the borrow of `self` keeps the bytes from being lent twice.
+        unsafe { std::slice::from_raw_parts_mut(self.host(at), length as usize) }
     }
 }
 
