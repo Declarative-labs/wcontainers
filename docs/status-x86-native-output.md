@@ -15,8 +15,8 @@ probes).
   all nine (list below), measured in scratch run6/. The sixth (scratch check-xn0f/) found two blocking and nine
   minor; run 7 fixed all eleven (list below), measured in scratch run7/. The seventh (scratch check-xn0g/) found two
   blocking and seven minor (one of them no defect, a measurement to record); run 8 fixed all nine (list below),
-  measured in scratch run8/. The run-8 fixes have not had a check of their own. Nothing is built; no code of this
-  track exists yet.
+  measured in scratch run8/. The run-8 plan is the one XN1 was built on; the eighth check's findings went into XN1
+  and XN2 (below).
 - XN1 (the output with no memory check): complete for its independent check (closed by round 3's first run,
   2026-11-23, on the orchestrator's ruling): what is built is below run by run, what is not is the gap list under
   "XN1 gap list", each item with its cause and owner. Runs 1 to 10 in detail: done: the eighth check's five
@@ -95,6 +95,11 @@ probes).
   Round 3 run 4 (after the eleventh check): the stepping pieces and the replay check filed as this track's (gap
   item 3), the repeated string's inside named as not built (item 1), the host-differs routes counted as
   "host-model result routed"; finding by finding below.
+  Round 3 run 5 (after the twelfth check): P's stepping pieces and the translation side of the replay check are
+  built (`translate_native_request` with `NativeRequest { stop, step }`, `InsideCall::Step` and `Stop`, the stop
+  word in the area's fixed part, `pushf` answered by the inside), and native layer 1 runs every case also on a
+  stepping piece, behind a replay check that goes on, and behind one that stops; the meaning-differs known kind is
+  narrowed to the named forms. Finding by finding below.
 - XN2: not started. The eighth check's way I findings (0x67 strings, the exact form's 0x67 segment operand and
   `67 d7`, `maskmovq` in the window) are fixed in the plan only; their code and tests are XN2's. `carry` refuses
   the in-process way by an assertion until then.
@@ -170,26 +175,20 @@ run:
    also covers and, or, xor, test, the bit tests, bsf and bsr, which the EPYC sweep found equal to the Xeon: which
    forms a chip's set holds is that design's to say. (Partial writes differ on AMD too, `fstp m80` and `fbstp`;
    the inside's answer for them is built and tested, run 10.)
-3. XN1 work of this track not built (corrected by round 3 run 4: it was filed as waiting on ARM64, which no source
-   supports). Owner: this track. Cause: not built in XN1's runs, which went to layers 1 to 3 and the inside's
-   answers; nothing outside this track blocks either piece's translation side.
-   - P's stepping pieces (plan 3.6, 9): the request's `step`, every instruction its own piece with every exit to the
-     inside, `InsideCall::Step` after each, `pushf` to the inside in them. Only P needs them: docs/native.md (3.4,
-     and its rejection of stepping by retranslation) runs TF in the machine and I by the hardware's single step, so
-     ARM64 will never build a version of them. Today nothing runs a guest with TF set natively: native layer 1's
-     generator keeps only the six flags, DF, NT and ID in rflags (x86_64.rs, `keep`), so no case starts with TF or
-     AC set and none is counted as not run (the tenth check's seed 600613: every one of 5,020,000 cases ended one
-     of six ways, none NotRun); only `popf` and `iret` setting TF or AC reach the inside, whose answer is checked
-     against the meaning and notes it (`Notes::trap_flag_set`). The rep string count test leaves TF out for the same
-     reason. What building them touches outside this track's files: `translate_native_for`'s signature, which
-     host-process's executor calls (another track's file), so the request's new field goes in a small shared commit.
-   - The replay check (plan 3.7, 9; docs/native.md 5.7): `stop_check`, `InsideCall::Stop`, the request's `stop`. The
-     translation side is this track's for x86. A required trait method needs ARM64's `stop_check` (docs/native.md 5.7
-     gives its sequence) in the same shared commit, since a default that does nothing would let an ARM64 replay pass
-     its stop silently; docs/native.md names the request's stop point as T3, the translator track's item, which does
-     not exist for either architecture. The replay's other half (recording, setting the thread's stop word, loading
-     the stop's translation into one process) is the executor's (item 1). Natively a stop that is not a replay is
-     the host's signal; the output's only part in it is the count's plain add.
+3. Built in round 3 run 5 (filed here by run 4 as this track's XN1 work): the translation side of P's stepping
+   pieces and of the replay check. What is left of them is not this track's:
+   - Running them: the inside's side of the calls `Step` (the meaning's debug trap after the instruction) and `Stop`
+     (the thread stops before the instruction), choosing stepping pieces for a thread whose TF is set (after the
+     inside's `popf` or `iret` notes it, `Notes::trap_flag_set`), the replay's recording, setting a thread's stop word
+     and loading the stop's piece into one process. Owner: the executor (item 1). Native layer 1 checks the
+     translation side against the CPU without one (below).
+   - ARM64's `stop_check` (docs/native.md 5.7 gives its sequence). Owner: the ARM64 native back end. Meanwhile the
+     shared trait's `stop_check` answers false for a guest that writes none and the translator refuses a stop
+     request for it by an assertion, so an ARM64 replay cannot pass its stop silently. ARM64 needs no stepping pieces
+     (docs/native.md runs TF by the hardware's single step in every ARM64 way).
+   - The guest's TF in a test case: native layer 1's generator keeps TF and AC clear (x86_64.rs, `keep`), as a case
+     with either set would need the executor to run (the reference CPU traps after every instruction); the stepping
+     piece runs every case instead, the guest's TF standing as the piece's choice.
    The other shared items wait on ARM64's version first. Owner: the ARM64 native back end (shared trait in
    gcpu/native.rs):
    - The trait's `retarget` in place of `link` (x86's is built, run 4, and the native blobs use it).
@@ -220,6 +219,85 @@ run:
    memory is a wasmtime SharedMemory held in the store's data). Seen only by the native test, since no other test
    runs that many programs in one process. Owner: the shared runner's owner (crates/wcontainers-translator-test
    runner.rs), with this track; 10,000 at a seed is the recorded bar meanwhile, nothing above it is tested.
+
+## Round 3 run 5: the twelfth check's findings, finding by finding
+
+- [blocking] P's stepping pieces and the translation side of the replay check were not built. Built:
+  - The request: `translate_native_request(code, address, &NativeRequest { look_ahead, exact_replay, stop, step },
+    way, target)` (translator native.rs); `translate_native_for` keeps its signature (host-process calls it) and
+    asks for neither. `stop` puts the replay check before the piece's first instruction (needs the count, refused
+    without it); `step` makes a stepping piece (one instruction; refused for a way the trait's `steps` says runs TF
+    on the hardware: only P steps on pieces). Neither makes a loop copy, so every turn of a loop back to the stop
+    point passes the check.
+  - Shared (gcpu): `InsideCall::Step` and `Stop` (`ALL` of eleven), `NativeReason::GuestSingleStep` ("guest single
+    step", one site a stepping piece), `HostCode::stepping`, and the trait's `steps` and `stop_check`, both with a
+    default (false) so ARM64 builds unchanged; the two executor files that match every `InsideCall` (arm64-stop
+    implementation.rs, hardware-virtualization tests/carry.rs) name the two new kinds beside `X87Control`, which
+    ARM64 code never makes.
+  - x86 (carry.rs): `stop_check` writes plan 3.7's sequence (rcx in t over it, the stop word at `area::STOP_WORD`
+    in the fixed part, `NO_STOP` on every other thread); in a stepping piece every way on is the call of kind Step
+    (a direct exit, the taken and the fall-through side of a `jcc`, a jump, call or return through t with the target
+    moved to u, never the lookup's second level), a repeated string and `pushf` go to the inside (`pushf` pushes
+    the guest's TF, which the hardware's is not: `Question::PushFlags`).
+  - Tests: tests/native_output.rs `a_stepping_piece_leaves_only_through_the_inside` (twelve shapes, counted and
+    not), `the_machine_way_makes_no_stepping_piece`, `the_replay_check_comes_first_and_writes_no_flag` (both ways:
+    the check's seven instructions, no flag written, the first call Stop, the count's add after it, the loop's
+    branch back to offset 0, no loop copy), `a_stop_point_without_the_count_is_refused`, and the map sweep
+    (`pieces_decode_and_match_their_maps`) over five ways of making each piece; tests/native_far.rs
+    `the_inside_pushes_the_guests_trap_flag`. Native layer 1 now runs each case five ways: uncounted, counted (with
+    the every-offset trap-flag run), on a stepping piece, on a counted stepping piece behind a replay check that goes
+    on (stop word 1), each against the CPU, and behind a replay check that stops (stop word 0, the count at the
+    start), which must end in the call of kind Stop with the guest's registers, flags and memory as they started.
+- [minor] the meaning-differs known kind hid a `Call_m1616` difference: the kind now applies only to the forms the
+  x86 track records as the meaning's (`sldt`, `smsw`, `str`, `wrfsbase`, `wrgsbase`; test crate native.rs
+  `meaning_differs_named`). At the check's seed 31122026 natively `Call_m1616` now fails as the WebAssembly layer 1
+  does (results below): the meaning's 16-bit far call through memory to selector 0x33 gives general protection
+  where the CPU lands. That difference is the meaning's (x86 track), recorded under "Coordination".
+- [minor] stale status text: the XN0 line no longer says nothing is built; the old results say the known failures
+  are of the kinds below, not "the same two".
+- [minor] the check's fuzz differences at seed 4127 were harness noise (both fault at the same address in all
+  three when replayed alone; the reference runner's own process had something mapped there during the fuzz).
+  Recorded so the next run does not chase it: `f2 65 3e 40 0f 9c 97 be 49 63 74` (setl gs:[rdi+0x746349be] at
+  0x746367b2) and `f3 f3 67 43 a6` (repe cmpsb at edi 0x66bbda0c).
+
+Native layer 1's known kinds (the twelfth check counted four at seed 31122026): the reference's 5-level paging (a
+page fault where a 4-level CPU and the meaning give general protection); answered by the meaning where the x86 track
+records it as differing (the five forms above); and two shared with the WebAssembly output's layer 1, Intel's
+transcendental result within one unit in the last place and not correctly rounded, and its approximation on the
+other side of the correctly rounded result (C1 differs; `TRANSCENDENTAL_DIRECTION`), on F2xm1, Fcos, Fpatan, Fptan,
+Fsin, Fsincos, Fyl2x and Fyl2xp1.
+
+## Round 3 run 5 results (rented x86 machine, Xeon 8488C, 5-level paging, 2026-11-24; logs scratch xn1r14/)
+
+- 03:07 UTC, load 12.9 before: clippy with warnings denied, `--no-deps --all-features --all-targets`, on
+  wcontainers-x86, -guest-cpu, -translator, -translator-test, -arm64 and -executor-arm64-stop: clean. `cargo test
+  -q -p wcontainers-x86`: every test passes (native_output 25, native_far with the `pushf` test). The translator's
+  own tests, wcontainers-arm64's and wcontainers-guest-cpu's pass. (wcontainers-executor-hardware-virtualization's
+  tests do not build at this time, for another track's edit in progress in the wasmtime executor:
+  `VolatileBytes` is private.)
+- The check's case, `WC_LAYER1_FORMS=Call_m1616 WC_LAYER1_CASES=3000 WC_LAYER1_SEED=31122026` natively: 1 failing
+  (`Call_m1616`, the meaning's difference above), 84 known (5-level), every one of the 2,484 runs that reached the
+  inside's answer also stopped at its replay check.
+- Native layer 1, seed 2311, 2008 forms, 300 cases a form, 32 at once (03:11 to 03:18, load 13 to 23): 0 failing;
+  640 known (5 transcendental, 635 the meaning's named forms; the 5-level lines filtered from the log); ended:
+  Exit 424,952, Fault 132,834, Answered(Answer) 25,032, Answered(Trap) 18,682, FarTarget 726, Lookup 174; a replay
+  check stopping with the guest as it started in 602,400 (every case); repeated strings with the CPU's run standing
+  in 14,413.
+- Native layer 2, seed 23, 10,000 programs (03:18 to 03:20, load 23 to 26): 0 failing, 3,361 faulted, 114,426 blob
+  runs. Native layer 3, seed 5, 300 programs, 48 at once (03:21 to 03:24): 264 compared, 36 did not end in time on
+  Linux, 0 failing. The shapes, the inside's answers and the second call: pass.
+- The literal check: no finding in a file this run changed.
+
+## Departures from the plan (round 3 run 5)
+
+- Plan 9's request field `stop: Option<u64>` (a guest pc anywhere in the piece) is `stop: bool`, the check before
+  the piece's first instruction: plan 3.7 has the inside ask for the stop pc's own piece, so the stop point is
+  always its start.
+- Plan 9's required `stop_check(way, code)` is a provided method returning whether it wrote one (false by default),
+  with `steps(way)` beside it, so that this commit needs no ARM64 code; the translator refuses a stop or step
+  request the guest cannot make by an assertion, never a piece without its check.
+- The request is a new function beside `translate_native_for`, not a change of its signature, so host-process's
+  call is unchanged.
 
 ## Round 3 run 4: the eleventh check's findings, finding by finding
 
@@ -411,7 +489,8 @@ All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round f
 - Native layer 3, the check's seed 4, 300 programs, 48 at once (21:55, load 2.7): 268 compared at three look-aheads
   with and without the count, 32 did not end in time on Linux, 0 failing (4000130 and 4000302 among the compared).
 - Native layer 1, the check's seed 31337, 2008 forms, 1,500 cases a form, 32 at once (21:56 to 22:10, load up to
-  52 with other tracks' jobs): passes; 3,283 known failures, the same two named kinds; the inside's answer equal
+  52 with other tracks' jobs): passes; 3,283 known failures, of the named kinds listed under "Native layer 1's known
+  kinds"; the inside's answer equal
   to the meaning's in 247,558 runs; the second float status call in 14,744; a repeated string under the count run
   by the inside on the hardware in 19,913; ended: Exit 2,124,033, Fault 664,510, Answered(Answer) 125,279,
   Answered(Trap) 93,553, FarTarget 3,712, Lookup 913.
@@ -434,7 +513,8 @@ All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round f
   test passes (the same counts as run 10). The `the_inside_answers_*`, `the_second_call_*` and `a_condition_holds_*`
   tests: 7 pass, the same case counts as run 10 (enter and the x87 stores 3,494, natively 732 and 70 known).
 - 20:34 UTC, load 7.9 after: native layer 1 with a new seed, 2008 forms, 100 a form, seed 777, 32 at once: passes,
-  269 known failures (the same two named kinds), 16,514 answers equal to the meaning's, 65 s. Output scratch
+  269 known failures (of the named kinds listed under "Native layer 1's known kinds"), 16,514 answers equal to
+  the meaning's, 65 s. Output scratch
   xn1close/.
 
 ## For the independent check of XN1
@@ -453,9 +533,12 @@ All five were answered in XN1 run 1 (see "What XN1 run 1 changed"); this round f
   (carry.rs `count`) as the output's only part.
 - Each gap-list item: the X9 programs have no runner (item 1); `HostMatches` with `undefined_results` false (an
   AMD host) routes every form of `native::undefined_result` Kernel, for which `native::question` gives no question
-  (item 2); `translate_native_for` has no stop or step argument and `InsideCall` no `Stop` or `Step` (item 3, this
-  track's, not built); a repeated string under the count in native layer 1 returns the CPU's own outcome
-  (native.rs `on_reference`; item 1).
+  (item 2); ARM64's `stop_check` answers false and a stop request for ARM64 panics (item 3); a repeated string
+  under the count in native layer 1 returns the CPU's own outcome (native.rs `on_reference`; item 1).
+- The stepping pieces and the replay check (round 3 run 5): tests/native_output.rs
+  `a_stepping_piece_leaves_only_through_the_inside`, `the_replay_check_comes_first_and_writes_no_flag`, and every
+  piece shape of `pieces_decode_and_match_their_maps` made also with a stop point and as a stepping piece; native
+  layer 1 runs every case five ways (summary line "a replay check stopping with the guest as it started").
 - The slow path of a form routed for the host (round 3 run 4): tests/native_output.rs
   `a_form_routed_for_the_host_is_counted`.
 
@@ -1055,7 +1138,8 @@ Native layer 1 (one command, on the rented x86 machine, which is its own referen
 stepping run at 32 jobs): `x86-run <checkout> --name x86-native-output --jobs 32 -- 'WC_LAYER1_CASES=1000
 WC_LAYER1_SEED=5150 WC_LAYER1_JOBS=32 cargo test -q -p wcontainers-translator-test --test layer1
 every_form_matches_the_cpu_natively_x86_64 -- --nocapture'`; `WC_LAYER1_FORMS=<names>` for some forms. The
-summary lines start "layer 1 natively".
+summary lines start "layer 1 natively". Since round 3 run 5 each case runs five ways (plain, counted, stepping,
+stepping behind a replay check, stopped at one): 300 a form took 7 minutes at load 13 to 23.
 
 The inside's answers against the meaning (rented x86 machine, about a minute): `cargo test -q -p
 wcontainers-translator-test --test layer1 the_inside_answers -- --nocapture` (four tests: cpuid and xgetbv; the
@@ -1515,6 +1599,12 @@ paging, AT_HWCAP2 0x2 = user FSGSBASE, vsyscall execute-only, mmap_min_addr 6553
   0x43ffffff having changed the byte at DATA + 0x2fff, the meaning at 0x44000000 with nothing changed), `wrfsbase`
   and `wrgsbase`; WebAssembly layer 1 fails the same cases (checked for
   smsw), so they are its to answer; native layer 1 counts them by name.
+- x86 track (round 3 run 5, from the twelfth check): `Call_m1616`, a 16-bit far call through memory, differs from
+  the reference at seed 31122026: `66 ff 1d 81 19 00 f4` (call far dword ptr [44001988h]), the pointer holding
+  offset 0x47ff and selector 0x33: the CPU lands at 0x47ff with rsp 0x44002ec8 and the bytes `07 00 33 00` pushed,
+  the meaning gives general protection. WebAssembly layer 1 fails it (`WC_LAYER1_FORMS=Call_m1616
+  WC_LAYER1_CASES=3000 WC_LAYER1_SEED=31122026`), and so does native layer 1 now, whose answer is the meaning's;
+  it is the meaning's to answer, not a known kind of this track's.
 - x86 and translator tracks: the rep string count (plan 3.6 and 9) changes the WebAssembly output's count if ruled;
   shared code changes (plan section 9) go in small commits that keep ARM64's suites passing. The x86 crate's core
   gains `Condition`, the x87 unit, the transcendental answers and their dependencies (plan 9), so the kernel,

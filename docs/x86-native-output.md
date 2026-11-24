@@ -1206,8 +1206,11 @@ pub struct Patch {
     pub length: u8,
 }
 ```
-The translation request gains the stop point of docs/native.md 5.7, part of the cache key: `stop: Option<u64>`, the
-guest pc before whose instruction `stop_check` goes; and, for P's guest single step (section 3.6), `step: bool`,
+The translation request gains the stop point of docs/native.md 5.7, part of the cache key: `stop: bool`, whether
+`stop_check` goes before the piece's first instruction (section 3.7 asks for the stop pc's own piece, so the stop
+point is always its start; built as `NativeRequest` beside `translate_native_for`, whose callers ask for neither,
+with `stop_check` and `steps` provided methods that answer false for a guest that has none, the translator refusing
+such a request); and, for P's guest single step (section 3.6), `step: bool`,
 also in the cache key: every instruction its own piece, every exit to the inside, `call(way, code, Step)` after
 each; and, for a thread whose x87 control word unmasks an exception (section 3.1), `x87_unmasked: bool`, also in
 the cache key: every x87 instruction on the Kernel route and every MMX instruction after a call of kind
