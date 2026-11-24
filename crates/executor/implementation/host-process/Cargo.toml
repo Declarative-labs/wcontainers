@@ -175,7 +175,7 @@ name = "in_process_cost"
 name = "in_process_speculation"
 
 [[test]]
-name = "in_process_jumps"
+name = "in_process_attacks"
 
 # An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
 [lints.rust]
