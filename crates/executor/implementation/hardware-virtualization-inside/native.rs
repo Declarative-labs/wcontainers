@@ -474,11 +474,12 @@ impl NativeCpu {
                 "a routine starts at an instruction of its page"
             );
         }
-        // SAFETY: the monitor wrote each routine at its place, with the C calling convention's signature
-        // `Placed` names, and the frame is mapped for this level to run.
+        // SAFETY: trusted, not checked: the host wrote each routine at its place with a plain copy, and its code is
+        // trusted to keep the C calling convention's signature `Placed` names; `load_vectors` overwrites v8 to v15,
+        // which a call must keep, so it is sound only because this program uses no vector register (softfloat).
         #[expect(
             unsafe_code,
-            reason = "turns five addresses of the page the monitor placed its routines in, each checked to be an instruction of the page, into function pointers of the signatures the monitor gives; the signatures are trusted from the monitor; stays a one-off"
+            reason = "UNEXPLAINED: turns five addresses of the page the monitor placed its routines in, each checked only to be an instruction of the page, into function pointers that safe calls jump through into code the host wrote with a plain copy (routines.rs answer, marked UNEXPLAINED), trusted, not checked, to keep the C calling convention; load_vectors overwrites all 32 vector registers, v8 to v15 among them, which a call must keep, and is sound only because the inside is built softfloat and uses no vector register; stays a one-off"
         )]
         let (
             read_float_control,
