@@ -158,6 +158,16 @@ impl Code {
     }
 }
 
+/// Where a thread a stop interrupted in translated code is resumed: the hardware's state there, and the piece it ran in
+/// as loaded then.
+struct Where {
+    hardware: Interrupted,
+    page: RegisterPage,
+    start: u64,
+    base: u64,
+    code: Arc<HostCode>,
+}
+
 /// A guest thread's state between its turns: the guest's own, as resolution gives it.
 pub(super) struct Guest {
     state: GuestState,
@@ -165,6 +175,8 @@ pub(super) struct Guest {
     page: RegisterPage,
     vectors: [[u64; 2]; 32],
     tpidr: u64,
+    /// Where a stop left it in translated code, kept until its registers are replaced.
+    interrupted: Option<Where>,
 }
 
 impl Guest {
@@ -182,6 +194,7 @@ impl Guest {
             page: RegisterPage::default(),
             vectors: [[0; 2]; 32],
             tpidr: 0,
+            interrupted: None,
         }
     }
 
@@ -197,6 +210,7 @@ impl Guest {
     }
 
     pub(super) fn set_registers(&mut self, from: &RegisterBlock) {
+        self.interrupted = None;
         self.state.x = from.x;
         self.state.sp = from.sp;
         self.state.pc = from.pc;
@@ -252,6 +266,9 @@ impl HostProcessExecutor {
 
     /// Every slow path counted since this was last called, with its count so far and its last detail.
     pub(super) fn take_warnings(&mut self) -> Vec<(&'static str, u64, u64)> {
+        if self.unsent.is_empty() {
+            return Vec::new();
+        }
         core::mem::take(&mut self.unsent)
             .into_iter()
             .map(|(reason, (count, detail))| (reason, count, detail))
@@ -764,7 +781,27 @@ impl HostProcessExecutor {
         if let Resume::Return(value) = resume {
             t.state.x[0] = value;
         }
-        let exit = self.run_pieces(thread, memory, index, &mut t, until, slice, clock);
+        // Nothing changed since the stop: the thread goes on in the piece it was interrupted in, if that is still
+        // loaded, so a stop never makes a translation from the pc it landed at.
+        let interrupted = t.interrupted.take().filter(|at| {
+            resume == Resume::Continue
+                && self.codes[memory.0 as usize]
+                    .as_ref()
+                    .and_then(|code| code.pieces.get(&at.start))
+                    .is_some_and(|loaded| {
+                        loaded.base == at.base && Arc::ptr_eq(&loaded.code, &at.code)
+                    })
+        });
+        let exit = self.run_pieces(
+            thread,
+            memory,
+            index,
+            &mut t,
+            interrupted.map(|at| (at.hardware, at.page)),
+            until,
+            slice,
+            clock,
+        );
         self.guests[thread.0 as usize] = Some(t);
         exit
     }
@@ -779,13 +816,13 @@ impl HostProcessExecutor {
         memory: MemoryId,
         index: usize,
         t: &mut Guest,
+        mut carried: Option<(Interrupted, RegisterPage)>,
         until: Option<u64>,
         slice: Option<Duration>,
         clock: &mut dyn FnMut() -> u64,
     ) -> Exit {
         let reached = |state: &GuestState| until.is_some_and(|until| state.count >= until);
         let register_page = (REGISTER_PAGES + index * THREAD_PAGE_SIZE) as u64;
-        let mut carried: Option<(Interrupted, RegisterPage)> = None;
         loop {
             let resumed = carried.take();
             if resumed.is_none()
@@ -854,6 +891,16 @@ impl HostProcessExecutor {
                         let state = self.resolve_interrupt(memory, &h, &held, &mut t.float);
                         match state {
                             Some(state) => {
+                                t.interrupted =
+                                    self.piece_holding(memory, h.pc).map(|(start, base, code)| {
+                                        Where {
+                                            hardware: h,
+                                            page: held.clone(),
+                                            start,
+                                            base,
+                                            code,
+                                        }
+                                    });
                                 t.state = state;
                                 t.page = held;
                                 break Ended::TurnOver;
@@ -1020,6 +1067,15 @@ impl HostProcessExecutor {
         };
         let piece = code.piece_at(h.pc)?;
         stop::interrupted(WAY, &piece, h, page, float, &mut memory_of)
+    }
+
+    /// The loaded piece holding host address `pc`: its guest start, its base and its code.
+    fn piece_holding(&self, memory: MemoryId, pc: u64) -> Option<(u64, u64, Arc<HostCode>)> {
+        let code = self.codes[memory.0 as usize].as_ref()?;
+        let (&base, &start) = code.hosts.range(..=pc).next_back()?;
+        let loaded = &code.pieces[&start];
+        (pc - base < loaded.code.bytes.len() as u64)
+            .then(|| (start, base, Arc::clone(&loaded.code)))
     }
 
     /// A stub reported what no code we loaded does: its process is ended.

@@ -529,7 +529,8 @@ impl Stub {
         }
     }
 
-    /// Waits up to `limit` for a thread to publish the end of `turn`; `None` if it has not.
+    /// Waits up to `limit` for a thread to publish the end of `turn`; `None` if it has not. The clock is read only after
+    /// a wake that did not publish it, so a wait from the first wake on may last a little longer than `limit`.
     pub fn wait_within(
         &self,
         thread: usize,
@@ -537,18 +538,24 @@ impl Stub {
         limit: Duration,
     ) -> Result<Option<TurnEnd>, Errno> {
         let request = self.pages.register32(thread, register::REQUEST);
-        let until = Instant::now() + limit;
+        let mut left = limit;
+        let mut until = None;
         loop {
             let seen = request.load(Ordering::Acquire);
             if seen == turn {
                 return Ok(Some(self.exit(thread)));
             }
-            let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Ok(None);
             }
             match futex::wait(request, futex::Flags::empty(), seen, Some(&timespec(left))) {
-                Ok(()) | Err(Errno::AGAIN | Errno::INTR | Errno::TIMEDOUT) => {}
+                Err(Errno::TIMEDOUT) => left = Duration::ZERO,
+                Ok(()) | Err(Errno::AGAIN | Errno::INTR) => {
+                    let now = Instant::now();
+                    left = until
+                        .get_or_insert(now + left)
+                        .saturating_duration_since(now);
+                }
                 Err(other) => return Err(other),
             }
         }
