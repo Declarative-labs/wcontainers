@@ -95,6 +95,11 @@ Follow-ups (patched, ARM64 machine, load 10 to 14; scratch j5c/arm-patched, `fol
 - LTP mem02: passes at none (24.3 s), and at full (3 runs) and bounded (1 run) no turn ends for 120 s
   (the harness's hang). It passed at full in J5 run 5, so the translated code at full and bounded changed
   since: for the translator track (not looked at further here).
+- python at none alone (3 hour limit; 4,669 s, load 9 to 12): `language_test_modules_match_reference` and
+  `system_program_matches_reference` pass; `system_test_modules_match_reference` fails on
+  `test_around_4GB` alone, as at full. So at none every verdict equals full's.
+- After the run this track's build output on the ARM64 machine (debug, the translation cache, tmp) was
+  deleted: 1.4 GB left (the LTP image's files).
 - outside `a_full_connection_hears_a_reset` at bounded alone: 6 runs of 6 pass, and 6 of 6 on the stand-in;
   it failed once in the whole bounded run (ours saw the peer's reset before Docker's side did): a timing
   dependent test under load, for the kernel track, as splice_holds_the_pipe was.
