@@ -5,11 +5,12 @@
 //! targets chosen to defeat the window: inside it (aligned, misaligned, tagged), just past it, one bit past it, far
 //! outside it, the guest address or the host address of a target whose slot is written, and the host addresses a
 //! guest must never reach: the middle of translated code, the floor's entries, the slot table, the register pages and
-//! the zygote. Every run must end at the entry slot of the target's window address (the ending written there, or the fault of an unwritten or
-//! misaligned slot) or, for a target outside the window, at the floor's entry for an unreachable target, which the
-//! stop crate resolves to the guest landing at the target; never anywhere else. The guest's registers must be its own
-//! there, x30 the return address after a `blr`. A stub has no floor at the in-process way's entries, so each call
-//! into the floor is pointed at the process way's entry of the same call, its only change to the translated code.
+//! the zygote. Every run must end at the entry slot of the target's window address (the ending written there, or
+//! the fault of an unwritten or misaligned slot) or, for a target outside the window, at the floor's entry for an
+//! unreachable target, which the stop crate resolves to the guest landing at the target, untagged as Linux does;
+//! never anywhere else. The guest's registers must be its own there, x30 the return address after a `blr`. A stub
+//! has no floor at the in-process way's entries, so each call into the floor is pointed at the process way's entry
+//! of the same call, its only change to the translated code.
 //!
 //! An access: twelve shapes (immediate, unscaled, register offsets plain, shifted and extended both ways, byte, pair,
 //! store, pre- and post-index), translated for the same way, each case its own drawn word, at addresses chosen to
