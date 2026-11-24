@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-shared-memory"
-description = "Memory that something outside this program may change at any moment, reached only by aligned 8-byte atomic accesses."
+description = "Memory that another party may read and write at any moment, reached only by copies and single aligned words, outside every Rust allocation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ path = "interface.rs"
 
 [features]
 # The host's mappings, which need the standard library: anonymous memory, and a memory file sealed against shrinking.
-host = ["dep:memmap2", "dep:libc", "rustix/fs", "rustix/std"]
+host = ["dep:memmap2", "rustix/fs", "rustix/std"]
 
 [dependencies]
 thiserror = { version = "2.0.21", default-features = false }
@@ -26,11 +26,11 @@ wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 memmap2 = { version = "0.9.12", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The futex wait and wake, which take the word's low half as an `&AtomicU32`; and the host file's seals, size and file
-# system, all with safe calls.
-rustix = { version = "1.1.6", default-features = false, features = ["thread"] }
-# The magic number of the huge-page file system, whose memory files can fault for want of pages.
-libc = { version = "0.2.191", optional = true }
+# The error numbers of the futex call; and the host file's seals, size and file system, all with safe calls.
+rustix = { version = "1.1.6", default-features = false }
+# The futex call, which rustix takes only on a reference; and the magic number of the huge-page file system, whose
+# memory files can fault for want of pages.
+libc = { version = "0.2.191", default-features = false }
 
 [dev-dependencies]
 wcontainers-shared-memory-conformance = { path = "conformance" }
@@ -38,13 +38,29 @@ wcontainers-volatile-bytes-conformance = { path = "../volatile-bytes/conformance
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 wcontainers-byte-source = { path = "../byte-source" }
 
+[target.'cfg(unix)'.dev-dependencies]
+# The page size, at whose boundaries the tests copy.
+rustix = { version = "1.1.6", features = ["param"] }
+# The neighbors the guard test maps around a memory and then unmaps.
+memmap2 = "0.9.12"
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Memory files, their seals and second descriptors, which the host's tests change under a mapping.
-rustix = { version = "1.1.6", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs", "param"] }
 
 [[test]]
 name = "host"
 path = "foreign_implementation/host/conformance.rs"
+required-features = ["host"]
+
+[[test]]
+name = "guard"
+path = "foreign_implementation/host/guard.rs"
+required-features = ["host"]
+
+[[test]]
+name = "process"
+path = "foreign_implementation/host/process.rs"
 required-features = ["host"]
 
 [[test]]
@@ -60,8 +76,10 @@ name = "refused"
 path = "attack/refused.rs"
 required-features = ["host"]
 
-# A low-level primitive: its 5 uses of unsafe (the unsafe trait `Mapped`, the slice of a mapping's words, a word's low
-# half for the futex, and `unsafe impl Mapped` for the host's mappings and for the heap's words) are each marked.
+# A low-level primitive: each use of unsafe is marked. In a build for x86-64 or ARM64, 14: `Region::new`'s promise; the
+# region's copy out, copy in, load, store, swap, compare-and-exchange and futex call; that architecture's 5 assembly
+# routines; and the host's mapping. Not built there: the other architecture's 5, the volatile fallback's 3, and the
+# heap's mapping, which only Miri and Kani build.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

@@ -55,8 +55,9 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/tcp-sockets/implementation/host (1)
 #   crates/icmp-sockets/conformance (1)
 # Low-level primitives, which keep their unsafe and deny it so that each use is marked:
-#   crates/shared-memory (5: the unsafe trait `Mapped`, the slice of a mapping's words, a word's low half for the futex,
-#   `unsafe impl Mapped` for the host's mappings, and for heap words, which only Miri and Kani build)
+#   crates/shared-memory (14 in a build for x86-64 or ARM64: the region's promise and its 7 accesses, the 5 assembly
+#   routines of that architecture, and the host's mapping; plus the other architecture's 5, the volatile fallback's 3,
+#   and the heap's mapping, which only Miri and Kani build)
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,5 +1,5 @@
 //! The init of a small virtual machine: sets an overcommit mode, then in a child process maps memory with
-//! `HostMapping` and touches every page through `Words`, and reports how the child ended.
+//! `HostMapping` and touches every page through `SharedMemory`, and reports how the child ended.
 use std::fs;
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, ftruncate, memfd_create};
-use wcontainers_shared_memory::{HostMapping, Words};
+use wcontainers_shared_memory::{HostMapping, SharedMemory};
 
 fn meminfo(key: &str) -> u64 {
     fs::read_to_string("/proc/meminfo")
@@ -21,12 +21,12 @@ fn meminfo(key: &str) -> u64 {
         * 1024
 }
 
-fn touch(words: &Words, label: &str) {
-    let page = rustix::param::page_size() as u64 / 8;
+fn touch(memory: &HostMapping, label: &str) {
+    let page = rustix::param::page_size() as u64;
     let mut out = std::io::stdout();
-    let total = words.count() / page;
+    let total = memory.len() / page;
     for p in 0..total {
-        words.store(p * page, p + 1).unwrap();
+        memory.store(p * page, p + 1).unwrap();
         if p % (total / 8).max(1) == 0 {
             writeln!(
                 out,
@@ -39,7 +39,7 @@ fn touch(words: &Words, label: &str) {
     writeln!(
         out,
         "  {label}: all {total} pages written, every load {}",
-        (0..total).all(|p| words.load(p * page) == Ok(p + 1))
+        (0..total).all(|p| memory.load::<u64>(p * page) == Ok(p + 1))
     )
     .ok();
 }
@@ -55,7 +55,7 @@ fn child(case: &str, bytes: u64) {
             match HostMapping::file(file.as_fd(), 0, len) {
                 Ok(m) => {
                     println!("  file: mapped {} MiB", bytes >> 20);
-                    touch(&Words::new(m), "file");
+                    touch(&m, "file");
                 }
                 Err(e) => println!("  file: refused: {e}"),
             }
@@ -67,7 +67,7 @@ fn child(case: &str, bytes: u64) {
                     bytes >> 20,
                     meminfo("Committed_AS:") >> 20
                 );
-                touch(&Words::new(m), "anonymous");
+                touch(&m, "anonymous");
             }
             Err(e) => println!("  anonymous: refused: {e}"),
         },

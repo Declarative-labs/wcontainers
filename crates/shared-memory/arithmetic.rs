@@ -1,36 +1,24 @@
-//! The offset arithmetic of `Words`, in the subset of Rust that Verus reads; proof/arithmetic.rs is a copy of it that
-//! Verus proves, and proof/agreement.rs tests that the copy and this file agree.
+//! The offset arithmetic of the region, apart from its unsafe code so that Kani checks it for every method.
 
-/// The bytes of one word.
-pub(crate) const WORD: usize = 8;
+use crate::{OutsideError, WordError};
 
-/// Where some bytes begin among the words: byte `low` of word `index`, and the `head` bytes they take of that word
-/// before the first whole word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Plan {
-    pub(crate) low: usize,
-    pub(crate) index: usize,
-    pub(crate) head: usize,
+/// Returns the offset as an index into `length` bytes, if the `count` bytes from it all lie inside them.
+pub(crate) fn bytes(length: usize, at: u64, count: usize) -> Result<usize, OutsideError> {
+    let end = at
+        .checked_add(u64::try_from(count).map_err(|_| OutsideError)?)
+        .ok_or(OutsideError)?;
+    if end > u64::try_from(length).map_err(|_| OutsideError)? {
+        return Err(OutsideError);
+    }
+    usize::try_from(at).map_err(|_| OutsideError)
 }
 
-/// Returns where `length` bytes from the byte offset `at` begin among `count` words, if they all lie inside them.
-pub(crate) fn plan(count: usize, at: u64, length: usize) -> Option<Plan> {
-    if at.checked_add(length as u64)? > count as u64 * WORD as u64 {
-        return None;
+/// Returns the offset as an index into `length` bytes of a word of `size` bytes, if the word lies inside them and the
+/// offset is a multiple of `size`.
+pub(crate) fn word(length: usize, at: u64, size: usize) -> Result<usize, WordError> {
+    let index = bytes(length, at, size)?;
+    if !index.is_multiple_of(size) {
+        return Err(WordError::Misaligned);
     }
-    let low = (at % WORD as u64) as usize;
-    let room = (WORD - low) % WORD;
-    Some(Plan {
-        low,
-        index: (at / WORD as u64) as usize,
-        head: if room < length { room } else { length },
-    })
-}
-
-/// Returns the start and the length of the bytes at the offsets, if they lie inside `count` words.
-pub(crate) fn part(count: usize, start: u64, end: u64) -> Option<(u64, u64)> {
-    if start > end || end > count as u64 * WORD as u64 {
-        return None;
-    }
-    Some((start, end - start))
+    Ok(index)
 }

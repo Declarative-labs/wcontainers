@@ -1,37 +1,78 @@
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-use core::ptr::NonNull;
+use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
+#[cfg(target_os = "linux")]
+use core::time::Duration;
 
-use crate::Mapped;
-use crate::seal::Sealed;
+#[cfg(target_os = "linux")]
+use crate::WaitError;
+use crate::foreign_implementation::region::Region;
+use crate::{OutsideError, SharedMemory, Word, WordError};
 
 /// Words on this program's heap, zero when made, for Miri and Kani, which cannot run a host's mapping; built only with
 /// `--cfg miri` or `--cfg kani`, which any build can set.
 pub struct HeapMapping {
-    words: Box<[AtomicU64]>,
+    region: Region,
+    #[expect(
+        dead_code,
+        reason = "held so that the words stay allocated while the region lives; only the region reaches them"
+    )]
+    words: Vec<AtomicU64>,
 }
 
 impl HeapMapping {
-    pub fn new(count: usize) -> Arc<HeapMapping> {
-        Arc::new(HeapMapping {
-            words: (0..count).map(|_| AtomicU64::new(0)).collect(),
-        })
+    pub fn new(count: usize) -> HeapMapping {
+        let words: Vec<AtomicU64> = (0..count).map(|_| AtomicU64::new(0)).collect();
+        let base = words.as_ptr().cast::<u8>().cast_mut();
+        #[expect(
+            unsafe_code,
+            reason = "the heap's words, which only the region reaches"
+        )]
+        // SAFETY: the vector is this value's own, freed only when it drops, after the region, and never grown; `AtomicU64`
+        // is aligned to 8; nothing but the region reaches the words, through a pointer `Vec::as_ptr` gives without a
+        // reference to them, into cells that allow writes, and no reference to them is formed after. Unlike a host's
+        // mapping these bytes are a Rust allocation, reached only by volatile accesses, so two threads racing on them is a
+        // data race, which Miri reports.
+        let region = unsafe { Region::new(base, words.len() * size_of::<u64>()) };
+        HeapMapping { region, words }
     }
 }
 
-impl Sealed for HeapMapping {}
-
-#[expect(unsafe_code, reason = "the heap's words, which only `Words` reaches")]
-// SAFETY: the box is this value's own and is freed only when it drops; `[AtomicU64]` is aligned to 8, and its size in
-// bytes is a multiple of 8 and never changes. Nothing but `base` hands out its address, and nothing writes it except
-// through that address. The pointer comes from a shared reference to the whole slice, whose cells allow writes.
-unsafe impl Mapped for HeapMapping {
-    fn base(&self) -> NonNull<u64> {
-        NonNull::from(&*self.words).cast()
+impl SharedMemory for HeapMapping {
+    fn len(&self) -> u64 {
+        self.region.len()
     }
 
-    fn len(&self) -> usize {
-        size_of_val(&*self.words)
+    fn read(&self, at: u64, into: &mut [u8]) -> Result<(), OutsideError> {
+        self.region.read(at, into)
+    }
+
+    fn write(&self, at: u64, from: &[u8]) -> Result<(), OutsideError> {
+        self.region.write(at, from)
+    }
+
+    fn load<W: Word>(&self, at: u64) -> Result<W, WordError> {
+        self.region.load(at)
+    }
+
+    fn store<W: Word>(&self, at: u64, value: W) -> Result<(), WordError> {
+        self.region.store(at, value)
+    }
+
+    fn swap<W: Word>(&self, at: u64, value: W) -> Result<W, WordError> {
+        self.region.swap(at, value)
+    }
+
+    fn compare_exchange<W: Word>(&self, at: u64, current: W, new: W) -> Result<W, WordError> {
+        self.region.compare_exchange(at, current, new)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait(&self, at: u64, expected: u32, timeout: Option<Duration>) -> Result<(), WaitError> {
+        self.region.wait(at, expected, timeout)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wake(&self, at: u64, limit: u32) -> Result<u32, WaitError> {
+        self.region.wake(at, limit)
     }
 }

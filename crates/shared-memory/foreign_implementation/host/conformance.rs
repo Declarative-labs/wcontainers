@@ -1,67 +1,75 @@
 #![cfg(unix)]
 
-use wcontainers_shared_memory::{HostMapping, OutsideError, Words};
-
-/// The bytes of each mapping: one page of the smallest size hosts use.
-const LENGTH: usize = 4096;
+use wcontainers_shared_memory::{HostMapping, OutsideError, SharedMemory, WordError};
 
 /// The bytes of one word.
 const WORD: usize = size_of::<u64>();
 
-/// Checks that the words count exactly the bytes mapped, reach the last of them, and refuse every byte after.
-fn counts_exactly(words: &Words, length: usize) {
-    assert_eq!(words.count(), (length / WORD) as u64);
+/// Returns the host's page size; under Miri, which copies a byte at a time, two cache lines instead.
+fn page() -> usize {
+    if cfg!(miri) {
+        2 * wcontainers_shared_memory_conformance::CACHE_LINE
+    } else {
+        rustix::param::page_size()
+    }
+}
+
+/// Returns the bytes of each mapping of the suite: three pages, so that it holds two page boundaries.
+fn length() -> usize {
+    3 * page()
+}
+
+/// Checks that the memory counts exactly the bytes mapped, reaches the last of them, and refuses every byte after.
+fn counts_exactly(memory: &HostMapping, length: usize) {
+    assert_eq!(memory.len(), length as u64);
     let last = length as u64 - 1;
-    assert_eq!(words.write(last, &[0xa5]), Ok(()));
+    assert_eq!(memory.write(last, &[0xa5]), Ok(()));
     let mut byte = [0];
-    assert_eq!(words.read(last, &mut byte), Ok(()));
+    assert_eq!(memory.read(last, &mut byte), Ok(()));
     assert_eq!(byte, [0xa5]);
-    for at in [length as u64, LENGTH as u64 - 1, LENGTH as u64] {
+    for at in [length as u64, length as u64 + 1, page() as u64] {
         if at >= length as u64 {
-            assert_eq!(words.read(at, &mut [0]), Err(OutsideError), "{at}");
-            assert_eq!(words.write(at, &[0]), Err(OutsideError), "{at}");
+            assert_eq!(memory.read(at, &mut [0]), Err(OutsideError), "{at}");
+            assert_eq!(memory.write(at, &[0]), Err(OutsideError), "{at}");
         }
     }
-    assert_eq!(words.load((length / WORD) as u64), Err(OutsideError));
-    assert!(words.part(0..length as u64 + 1).is_err());
+    let past = (length as u64).next_multiple_of(WORD as u64);
+    assert_eq!(
+        memory.load::<u64>(past),
+        Err(WordError::Outside(OutsideError))
+    );
+    assert!(memory.borrow(0..length as u64 + 1).is_err());
 }
 
 mod anonymous {
     use super::*;
 
-    wcontainers_shared_memory_conformance::tests!(Words::new(
-        HostMapping::anonymous(LENGTH).expect("the host maps a page")
-    ));
+    wcontainers_shared_memory_conformance::tests!(
+        HostMapping::anonymous(length()).expect("the host maps the pages"),
+        page()
+    );
 
     mod volatile_bytes {
         use super::*;
 
         wcontainers_volatile_bytes_conformance::tests!(
-            Words::new(HostMapping::anonymous(LENGTH).expect("the host maps a page"))
-                .part(3..LENGTH as u64 - 1)
+            HostMapping::anonymous(length())
+                .expect("the host maps the pages")
+                .borrow(3..length() as u64 - 1)
                 .expect("the offsets lie inside the mapping")
         );
     }
 
     #[test]
-    fn refuses_a_length_not_a_multiple_of_a_word() {
-        for length in [0, 1, 7, LENGTH + 1] {
-            assert!(HostMapping::anonymous(length).is_err(), "{length}");
-        }
+    fn refuses_no_length() {
+        assert!(HostMapping::anonymous(0).is_err());
     }
 
     #[test]
     fn counts_only_the_bytes_asked_when_they_are_not_whole_pages() {
-        for length in [
-            WORD,
-            2 * WORD,
-            LENGTH - WORD,
-            LENGTH + WORD,
-            3 * LENGTH - 5 * WORD,
-        ] {
-            let words =
-                Words::new(HostMapping::anonymous(length).expect("the host maps the bytes"));
-            counts_exactly(&words, length);
+        for length in [1, WORD - 1, WORD, page() - 1, page() + 1, 3 * page() - 5] {
+            let memory = HostMapping::anonymous(length).expect("the host maps the bytes");
+            counts_exactly(&memory, length);
         }
     }
 }
@@ -75,7 +83,7 @@ mod file {
         FallocateFlags, MemfdFlags, SealFlags, fallocate, fcntl_add_seals, ftruncate, memfd_create,
     };
     use rustix::io::Errno;
-    use wcontainers_shared_memory::{FileError, Mapped};
+    use wcontainers_shared_memory::FileError;
 
     use super::*;
 
@@ -90,10 +98,10 @@ mod file {
         file
     }
 
-    /// Returns words over a sealed memory file of the test's length; the mapping outlives the descriptor.
-    fn words() -> Words {
-        let file = memory_file(LENGTH as u64, SealFlags::SHRINK);
-        Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"))
+    /// Returns a mapping of a sealed memory file of the suite's length; the mapping outlives the descriptor.
+    fn mapped() -> HostMapping {
+        let file = memory_file(length() as u64, SealFlags::SHRINK);
+        HostMapping::file(file.as_fd(), 0, length()).expect("the host maps the file")
     }
 
     /// Opens the file again through the process's descriptor table, as a second, separate opening of the same file.
@@ -107,14 +115,14 @@ mod file {
             .expect("the file opens again")
     }
 
-    wcontainers_shared_memory_conformance::tests!(words());
+    wcontainers_shared_memory_conformance::tests!(mapped(), page());
 
     mod volatile_bytes {
         use super::*;
 
         wcontainers_volatile_bytes_conformance::tests!(
-            words()
-                .part(3..LENGTH as u64 - 1)
+            mapped()
+                .borrow(3..length() as u64 - 1)
                 .expect("the offsets lie inside the mapping")
         );
     }
@@ -134,29 +142,29 @@ mod file {
                 .enumerate()
                 .filter(|(bit, _)| chosen & 1 << bit != 0)
                 .fold(SealFlags::empty(), |seals, (_, &seal)| seals | seal);
-            let file = memory_file(LENGTH as u64, seals);
-            let mapped = HostMapping::file(file.as_fd(), 0, LENGTH);
+            let file = memory_file(page() as u64, seals);
+            let mapped = HostMapping::file(file.as_fd(), 0, page());
             if !seals.contains(SealFlags::SHRINK) {
                 assert!(matches!(mapped, Err(FileError::Unsealed)), "{seals:?}");
             } else if seals.intersects(SealFlags::WRITE | SealFlags::FUTURE_WRITE) {
                 assert!(matches!(mapped, Err(FileError::Refused(_))), "{seals:?}");
             } else {
-                let words = Words::new(mapped.expect("a file sealed against shrinking maps"));
+                let memory = mapped.expect("a file sealed against shrinking maps");
                 assert_eq!(ftruncate(&file, 0), Err(Errno::PERM), "{seals:?}");
-                counts_exactly(&words, LENGTH);
+                counts_exactly(&memory, page());
             }
         }
     }
 
     #[test]
     fn refuses_a_file_sealed_only_against_growing_before_a_safe_shrink_could_fault() {
-        let file = memory_file(2 * LENGTH as u64, SealFlags::GROW);
-        let mapped = HostMapping::file(file.as_fd(), 0, 2 * LENGTH);
+        let file = memory_file(2 * page() as u64, SealFlags::GROW);
+        let mapped = HostMapping::file(file.as_fd(), 0, 2 * page());
         if let Ok(mapping) = mapped {
-            let words = Words::new(mapping);
+            let memory = mapping;
             ftruncate(&file, 0).expect("the file shrinks");
             // With the mapping wrongly made, this load raises SIGBUS and ends the test binary.
-            let _ = words.load(0);
+            let _ = memory.load::<u64>(0);
             panic!("mapped a file that can shrink");
         }
         assert!(matches!(mapped, Err(FileError::Unsealed)));
@@ -165,9 +173,9 @@ mod file {
     #[test]
     fn refuses_a_file_that_cannot_be_sealed() {
         let file = memfd_create("words", MemfdFlags::CLOEXEC).expect("a memory file");
-        ftruncate(&file, LENGTH as u64).expect("the file grows");
+        ftruncate(&file, page() as u64).expect("the file grows");
         assert!(matches!(
-            HostMapping::file(file.as_fd(), 0, LENGTH),
+            HostMapping::file(file.as_fd(), 0, page()),
             Err(FileError::Unsealed)
         ));
         let path = std::env::temp_dir().join(format!("words-{}", std::process::id()));
@@ -178,19 +186,19 @@ mod file {
             .open(&path)
             .expect("an ordinary file");
         std::fs::remove_file(&path).expect("the file's name goes");
-        ordinary.set_len(LENGTH as u64).expect("the file grows");
+        ordinary.set_len(page() as u64).expect("the file grows");
         assert!(matches!(
-            HostMapping::file(ordinary.as_fd(), 0, LENGTH),
+            HostMapping::file(ordinary.as_fd(), 0, page()),
             Err(FileError::Unsealed)
         ));
     }
 
     #[test]
     fn refuses_a_descriptor_that_cannot_write() {
-        let file = memory_file(LENGTH as u64, SealFlags::SHRINK);
+        let file = memory_file(page() as u64, SealFlags::SHRINK);
         let reader = reopen(&file, false);
         assert!(matches!(
-            HostMapping::file(reader.as_fd(), 0, LENGTH),
+            HostMapping::file(reader.as_fd(), 0, page()),
             Err(FileError::Refused(_))
         ));
     }
@@ -217,26 +225,25 @@ mod file {
 
     #[test]
     fn counts_only_the_bytes_asked_when_they_are_not_whole_pages() {
-        let file = memory_file(3 * LENGTH as u64, SealFlags::SHRINK);
+        let file = memory_file(3 * page() as u64, SealFlags::SHRINK);
         for (offset, length) in [
-            (0, LENGTH - WORD),
+            (0, page() - WORD),
             (0, WORD),
-            (WORD as u64, LENGTH - 2 * WORD),
-            (LENGTH as u64 - WORD as u64, LENGTH + 2 * WORD),
-            (LENGTH as u64 + 3 * WORD as u64, LENGTH),
+            (WORD as u64, page() - 2 * WORD),
+            (page() as u64 - WORD as u64, page() + 2 * WORD),
+            (page() as u64 + 3 * WORD as u64, page()),
         ] {
-            let words = Words::new(
-                HostMapping::file(file.as_fd(), offset, length).expect("the host maps the file"),
-            );
-            counts_exactly(&words, length);
+            let memory =
+                HostMapping::file(file.as_fd(), offset, length).expect("the host maps the file");
+            counts_exactly(&memory, length);
         }
     }
 
     #[test]
     fn refuses_offsets_past_the_end_of_the_file() {
-        let file = memory_file(LENGTH as u64, SealFlags::SHRINK);
+        let file = memory_file(page() as u64, SealFlags::SHRINK);
         assert!(matches!(
-            HostMapping::file(file.as_fd(), 8, LENGTH),
+            HostMapping::file(file.as_fd(), 8, page()),
             Err(FileError::Short)
         ));
         assert!(matches!(
@@ -251,22 +258,24 @@ mod file {
 
     #[test]
     fn sees_what_another_mapping_of_the_file_writes() {
-        let file = memory_file(LENGTH as u64, SealFlags::SHRINK);
-        let first =
-            Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
-        let second =
-            Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
-        assert_eq!(first.store(3, u64::MAX), Ok(()));
-        assert_eq!(second.load(3), Ok(u64::MAX));
+        let file = memory_file(page() as u64, SealFlags::SHRINK);
+        let first = HostMapping::file(file.as_fd(), 0, page()).expect("the host maps the file");
+        let second = HostMapping::file(file.as_fd(), 0, page()).expect("the host maps the file");
+        assert_eq!(first.store(3 * WORD as u64, u64::MAX), Ok(()));
+        assert_eq!(second.load::<u64>(3 * WORD as u64), Ok(u64::MAX));
+        assert_eq!(second.write(5, &[7]), Ok(()));
+        let mut byte = [0];
+        assert_eq!(first.read(5, &mut byte), Ok(()));
+        assert_eq!(byte, [7]);
     }
 
     #[test]
     fn maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte() {
         for (offset, length) in [
-            (0, LENGTH),
-            (WORD as u64, LENGTH - WORD),
-            (LENGTH as u64 - WORD as u64, 2 * WORD),
-            (LENGTH as u64 + 3 * WORD as u64, LENGTH - 3 * WORD),
+            (0, page()),
+            (WORD as u64, page() - WORD),
+            (page() as u64 - WORD as u64, 2 * WORD),
+            (page() as u64 + 3 * WORD as u64, page() - 3 * WORD),
         ] {
             let end = offset + length as u64;
             let file = memory_file(end, SealFlags::SHRINK);
@@ -274,15 +283,14 @@ mod file {
                 .flat_map(|index| (index + 1).to_ne_bytes())
                 .collect();
             assert_eq!(rustix::io::pwrite(&file, &every, 0), Ok(every.len()));
-            let words = Words::new(
-                HostMapping::file(file.as_fd(), offset, length).expect("the host maps the file"),
-            );
+            let memory =
+                HostMapping::file(file.as_fd(), offset, length).expect("the host maps the file");
             let first = offset / WORD as u64 + 1;
-            assert_eq!(words.load(0), Ok(first), "{offset}");
-            let last = words.count() - 1;
-            assert_eq!(words.load(last), Ok(end / WORD as u64), "{offset}");
+            assert_eq!(memory.load::<u64>(0), Ok(first), "{offset}");
+            let last = memory.len() - WORD as u64;
+            assert_eq!(memory.load::<u64>(last), Ok(end / WORD as u64), "{offset}");
             let mut read = vec![0; length];
-            assert_eq!(words.read(0, &mut read), Ok(()));
+            assert_eq!(memory.read(0, &mut read), Ok(()));
             assert_eq!(read, every[offset as usize..], "{offset}");
         }
     }
@@ -319,7 +327,7 @@ mod file {
                     };
                     while Instant::now() < deadline && !found.load(SeqCst) {
                         tries.fetch_add(1, SeqCst);
-                        let file = memory_file(2 * LENGTH as u64, SealFlags::empty());
+                        let file = memory_file(2 * page() as u64, SealFlags::empty());
                         let (mine, theirs, go) = (spins(), spins(), AtomicBool::new(false));
                         let mapped = std::thread::scope(|inner| {
                             inner.spawn(|| {
@@ -333,7 +341,7 @@ mod file {
                             });
                             go.store(true, SeqCst);
                             (0..mine).for_each(|_| std::hint::spin_loop());
-                            HostMapping::file(file.as_fd(), 0, 2 * LENGTH)
+                            HostMapping::file(file.as_fd(), 0, 2 * page())
                         });
                         if let Ok(mapping) = mapped {
                             let size = rustix::fs::fstat(&file).expect("the file's size").st_size;
@@ -355,36 +363,35 @@ mod file {
 
     #[test]
     fn keeps_every_byte_while_another_descriptor_shrinks_truncates_grows_or_punches_the_file() {
-        let file = memory_file(2 * LENGTH as u64, SealFlags::SHRINK);
-        let words = Words::new(
-            HostMapping::file(file.as_fd(), LENGTH as u64, LENGTH).expect("the host maps the file"),
-        );
-        assert_eq!(words.write(0, &[0x5a; LENGTH]), Ok(()));
+        let file = memory_file(2 * page() as u64, SealFlags::SHRINK);
+        let memory =
+            HostMapping::file(file.as_fd(), page() as u64, page()).expect("the host maps the file");
+        assert_eq!(memory.write(0, &vec![0x5a; page()]), Ok(()));
         let other = reopen(&file, true);
-        assert_eq!(ftruncate(&other, LENGTH as u64), Err(Errno::PERM));
+        assert_eq!(ftruncate(&other, page() as u64), Err(Errno::PERM));
         assert_eq!(ftruncate(&other, 0), Err(Errno::PERM));
         let truncating = OpenOptions::new().write(true).truncate(true).open(format!(
             "/proc/self/fd/{}",
             std::os::fd::AsRawFd::as_raw_fd(&file)
         ));
         assert!(truncating.is_err(), "opening with truncation is a shrink");
-        let mut held = vec![0; LENGTH];
-        assert_eq!(words.read(0, &mut held), Ok(()));
-        assert_eq!(held, vec![0x5a; LENGTH]);
+        let mut held = vec![0; page()];
+        assert_eq!(memory.read(0, &mut held), Ok(()));
+        assert_eq!(held, vec![0x5a; page()]);
 
-        ftruncate(&other, 64 * LENGTH as u64).expect("a file sealed only against shrinking grows");
-        counts_exactly(&words, LENGTH);
+        ftruncate(&other, 64 * page() as u64).expect("a file sealed only against shrinking grows");
+        counts_exactly(&memory, page());
 
         fallocate(
             &other,
             FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
             0,
-            3 * LENGTH as u64,
+            3 * page() as u64,
         )
         .expect("the file's pages are given back");
-        assert_eq!(words.read(0, &mut held), Ok(()));
-        assert_eq!(held, vec![0; LENGTH], "a punched page reads as zeros");
-        assert_eq!(words.store(1, 7), Ok(()));
-        assert_eq!(words.load(1), Ok(7));
+        assert_eq!(memory.read(0, &mut held), Ok(()));
+        assert_eq!(held, vec![0; page()], "a punched page reads as zeros");
+        assert_eq!(memory.store(WORD as u64, 7_u64), Ok(()));
+        assert_eq!(memory.load::<u64>(WORD as u64), Ok(7));
     }
 }
