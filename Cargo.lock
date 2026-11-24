@@ -5140,6 +5140,7 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "nix",
+ "proptest",
  "rangemap",
  "rustc-hash 2.1.3",
  "rustix",
