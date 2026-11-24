@@ -9,10 +9,11 @@ use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
     UdpSocket,
 };
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::time::Duration;
 
 use domain::base::{Name, Question};
+use rustix::event::{PollFd, PollFlags, Timespec};
 use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
@@ -103,21 +104,21 @@ fn unspecified_of(address: SocketAddr) -> SocketAddr {
 }
 
 /// What a socket is ready for, from the events `poll` gave for it.
-fn ready_for(revents: i16) -> ReadinessReport {
+fn ready_for(revents: PollFlags) -> ReadinessReport {
     let mut ready = report(ReadyFor::empty(), UnconditionalEvents::empty());
     for (bit, flag) in [
-        (libc::POLLIN, ReadyFor::READABLE),
-        (libc::POLLOUT, ReadyFor::WRITABLE),
+        (PollFlags::IN, ReadyFor::READABLE),
+        (PollFlags::OUT, ReadyFor::WRITABLE),
     ] {
-        if revents & bit != 0 {
+        if revents.contains(bit) {
             ready.ready_for |= flag;
         }
     }
     for (bit, flag) in [
-        (libc::POLLERR, UnconditionalEvents::ERROR),
-        (libc::POLLHUP, UnconditionalEvents::HANG_UP),
+        (PollFlags::ERR, UnconditionalEvents::ERROR),
+        (PollFlags::HUP, UnconditionalEvents::HANG_UP),
     ] {
-        if revents & bit != 0 {
+        if revents.contains(bit) {
             ready.unconditional |= flag;
         }
     }
@@ -384,28 +385,28 @@ impl Network {
             Listener(u32),
         }
         let events = |read: bool, write: bool| {
-            let mut events = 0;
+            let mut events = PollFlags::empty();
             if read {
-                events |= libc::POLLIN;
+                events |= PollFlags::IN;
             }
             if write {
-                events |= libc::POLLOUT;
+                events |= PollFlags::OUT;
             }
             events
         };
-        let mut armed: Vec<(Watched, i32, i16)> = self
+        let mut armed: Vec<(Watched, BorrowedFd<'_>, PollFlags)> = self
             .flows
             .iter()
             .filter(|(_, flow)| flow.armed)
             .map(|(&id, flow)| {
                 let wanted = events(flow.read_armed, flow.write_armed);
-                (Watched::Flow(id), flow.socket.as_raw_fd(), wanted)
+                (Watched::Flow(id), flow.socket.as_fd(), wanted)
             })
             .collect();
         armed.extend(self.streams.iter().filter_map(|(&number, stream)| {
             let socket = stream.socket.as_ref().filter(|_| stream.armed)?;
             let wanted = events(stream.read_armed, stream.write_armed);
-            Some((Watched::Stream(number), socket.as_raw_fd(), wanted))
+            Some((Watched::Stream(number), socket.as_fd(), wanted))
         }));
         armed.extend(
             self.listeners
@@ -413,31 +414,33 @@ impl Network {
                 .filter(|(_, listener)| listener.armed)
                 .map(|(&number, listener)| {
                     let watched = Watched::Listener(number);
-                    (watched, listener.socket.as_raw_fd(), libc::POLLIN)
+                    (watched, listener.socket.as_fd(), PollFlags::IN)
                 }),
         );
-        let mut fds: Vec<libc::pollfd> = armed
+        let mut fds: Vec<PollFd<'_>> = armed
             .iter()
-            .map(|&(_, fd, events)| libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            })
+            .map(|&(_, fd, events)| PollFd::from_borrowed_fd(fd, events))
             .collect();
+        // Whole milliseconds, as a poll in milliseconds waits.
         let wait = if self.owed.is_empty() {
-            timeout.as_millis() as i32
+            Duration::from_millis(timeout.as_millis().min(i32::MAX as u128) as u64)
         } else {
-            0
+            Duration::ZERO
         };
         if !fds.is_empty() {
-            // SAFETY: the descriptors are this host's own open sockets.
-            unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, wait) };
+            let wait = Timespec::try_from(wait).expect("a wait of at most a few weeks");
+            // A wait cut short by a signal reports nothing, and is asked again.
+            let _ = rustix::event::poll(&mut fds, Some(&wait));
         }
-        for (&(watched, _, _), fd) in armed.iter().zip(&fds) {
-            let revents = fd.revents;
-            if revents == 0 {
-                continue;
-            }
+        let changed: Vec<(Watched, PollFlags)> = armed
+            .iter()
+            .zip(&fds)
+            .map(|(&(watched, _, _), fd)| (watched, fd.revents()))
+            .filter(|(_, revents)| !revents.is_empty())
+            .collect();
+        drop(fds);
+        drop(armed);
+        for (watched, revents) in changed {
             match watched {
                 Watched::Listener(number) => {
                     if let Some(listener) = self.listeners.get_mut(&number) {

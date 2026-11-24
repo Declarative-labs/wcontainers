@@ -345,25 +345,20 @@ impl Backend {
     /// Linux's FUSE queues requests: the server reads no more while its answers wait to be read, so
     /// while there is no room for the request its answers are read ahead.
     pub fn send(&mut self, unique: u64, bytes: &[u8]) {
-        use std::os::fd::AsRawFd;
+        use rustix::event::{PollFd, PollFlags};
         let mut rest = bytes;
         while !rest.is_empty() {
-            let mut ready = libc::pollfd {
-                fd: self.input.as_raw_fd(),
-                events: libc::POLLOUT | libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: waits on one descriptor this backend owns.
-            let polled = unsafe { libc::poll(&mut ready, 1, -1) };
-            if polled < 0 {
-                let error = std::io::Error::last_os_error();
-                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
-                continue;
+            let mut ready = [PollFd::new(&self.input, PollFlags::OUT | PollFlags::IN)];
+            match rustix::event::poll(&mut ready, None) {
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => panic!("waiting on the backend: {error}"),
             }
+            let readable = ready[0].revents().contains(PollFlags::IN);
             self.input
                 .set_nonblocking(true)
                 .expect("a nonblocking send");
-            if ready.revents & libc::POLLIN != 0 {
+            if readable {
                 let mut buffer = [0u8; 1 << 16];
                 loop {
                     match self.output.read(&mut buffer) {
