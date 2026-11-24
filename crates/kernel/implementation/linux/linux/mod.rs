@@ -6,8 +6,6 @@
     non_upper_case_globals,
     non_snake_case,
     dead_code,
-    unused_unsafe,
-    unsafe_op_in_unsafe_fn,
     clippy::all
 )]
 

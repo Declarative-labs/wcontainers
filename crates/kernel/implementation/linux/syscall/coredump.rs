@@ -403,14 +403,7 @@ fn notes<S: crate::System>(
             fpcr: registers.fpcr,
             __reserved: [0; 2],
         };
-        // SAFETY: `user_fpsimd_state` is plain integers with no padding.
-        let fpsimd = unsafe {
-            core::slice::from_raw_parts(
-                (&fpsimd as *const user_fpsimd_state).cast::<u8>(),
-                size_of::<user_fpsimd_state>(),
-            )
-        };
-        notes.push(Note::core(NT_PRFPREG, fpsimd.to_vec()));
+        notes.push(Note::core(NT_PRFPREG, fpsimd.as_bytes().to_vec()));
         // TPIDR_EL0, then TPIDR2_EL0, which this machine does not have (zero, as Linux gives).
         let mut tls = registers.tpidr_el0.to_le_bytes().to_vec();
         tls.extend_from_slice(&[0; 8]);
