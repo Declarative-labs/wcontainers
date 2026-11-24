@@ -14,6 +14,7 @@ use crate::context::Context;
 use crate::format;
 use crate::gallium::*;
 use crate::screen::Screen;
+use zerocopy::IntoBytes;
 
 /// What a resource holds on the back end.
 pub enum Storage<B: Backend> {
@@ -311,8 +312,7 @@ struct Transfer {
 impl Transfer {
     fn bytes(&mut self) -> &mut [u8] {
         let bytes = self.bytes;
-        // SAFETY: the words hold at least `bytes` bytes.
-        unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr().cast(), bytes) }
+        &mut self.words.as_mut_bytes()[..bytes]
     }
 }
 

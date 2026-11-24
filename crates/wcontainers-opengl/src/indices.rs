@@ -8,6 +8,7 @@ use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{IndexFormat, ProvokingVertex, Topology};
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
+use zerocopy::IntoBytes;
 
 use crate::gallium::*;
 
@@ -23,8 +24,8 @@ pub struct Rewritten {
 
 impl Rewritten {
     pub fn indices(&self) -> &[u8] {
-        // SAFETY: the words' bytes, of which the first `bytes` were written.
-        unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.bytes) }
+        // The words' bytes, of which the first `bytes` were written.
+        &self.words.as_bytes()[..self.bytes]
     }
 
     pub fn count(&self) -> u32 {
@@ -218,17 +219,9 @@ pub fn translated(
         indices
     } else {
         let mut words = words_for(indices.len());
-        // SAFETY: the words hold at least the indices' bytes.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                indices.as_ptr(),
-                words.as_mut_ptr().cast::<u8>(),
-                indices.len(),
-            );
-        }
+        words.as_mut_bytes()[..indices.len()].copy_from_slice(indices);
         aligned = words;
-        // SAFETY: as above.
-        unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), indices.len()) }
+        &aligned.as_bytes()[..indices.len()]
     };
     let pieces = if split_restart {
         restart_pieces(info, indices, count)?
