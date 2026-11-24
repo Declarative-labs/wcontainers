@@ -24,6 +24,15 @@ pub struct GuestMemory<G: Guest<Block = RegisterBlock>> {
     pub(crate) memory: MemoryId,
 }
 
+/// A run of a memory's addresses that shows a block of shared pages, from the given offset in the block.
+struct ShownRun {
+    addresses: Range<u64>,
+    block: SharedId,
+    offset: u64,
+    /// Whether the run is the memory's own pages that other memories map.
+    lent: bool,
+}
+
 /// Addresses of a [`GuestMemory`], read and written one copy at a time.
 pub struct GuestBytes<'space, G: Guest<Block = RegisterBlock>> {
     space: &'space GuestMemory<G>,
@@ -140,7 +149,8 @@ impl<G: Guest<Block = RegisterBlock>> MemorySpace for GuestMemory<G> {
 
     fn unmap_from(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
         self.checked(&addresses)?;
-        let on_pages = addresses.start.is_multiple_of(PAGE_SIZE) && addresses.end.is_multiple_of(PAGE_SIZE);
+        let on_pages =
+            addresses.start.is_multiple_of(PAGE_SIZE) && addresses.end.is_multiple_of(PAGE_SIZE);
         if !on_pages {
             return Err(InvalidAddressError);
         }
@@ -176,7 +186,9 @@ impl<G: Guest<Block = RegisterBlock>> VolatileBytes for GuestBytes<'_, G> {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        let count = usize::try_from(self.len()).unwrap_or(usize::MAX).min(into.len());
+        let count = usize::try_from(self.len())
+            .unwrap_or(usize::MAX)
+            .min(into.len());
         let space = self.space;
         space
             .world
@@ -187,7 +199,9 @@ impl<G: Guest<Block = RegisterBlock>> VolatileBytes for GuestBytes<'_, G> {
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
-        let count = usize::try_from(self.len()).unwrap_or(usize::MAX).min(bytes.len());
+        let count = usize::try_from(self.len())
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
         let space = self.space;
         let mut side = space.world.borrow_mut();
         side.write(space.memory, self.addresses.start, &bytes[..count])
@@ -199,15 +213,20 @@ impl<G: Guest<Block = RegisterBlock>> VolatileBytes for GuestBytes<'_, G> {
 }
 
 impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
-    /// Returns the shown runs of a memory overlapping the addresses, cut to them, as start, end, block and offset.
-    fn shown_within(&self, memory: MemoryId, addresses: &Range<u64>) -> Vec<(u64, u64, SharedId, u64)> {
+    /// Returns the shown runs of a memory overlapping the addresses, cut to them.
+    fn shown_within(&self, memory: MemoryId, addresses: &Range<u64>) -> Vec<ShownRun> {
         self.process(memory)
             .shown
             .range(..addresses.end)
             .filter(|(_, shown)| shown.end > addresses.start)
             .map(|(start, shown)| {
                 let from = addresses.start.max(*start);
-                (from, shown.end.min(addresses.end), shown.block, shown.offset + (from - start))
+                ShownRun {
+                    addresses: from..shown.end.min(addresses.end),
+                    block: shown.block,
+                    offset: shown.offset + (from - start),
+                    lent: shown.lent,
+                }
             })
             .collect()
     }
@@ -225,14 +244,21 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
     /// Their bytes or permissions changed.
     pub(crate) fn code_touched(&mut self, memory: MemoryId, addresses: Range<u64>) {
         let mut places = vec![(memory, addresses.clone())];
-        for (from, to, block, offset) in self.shown_within(memory, &addresses) {
-            let block_range = offset..offset + (to - from);
+        for ShownRun {
+            addresses: run,
+            block,
+            offset,
+            ..
+        } in self.shown_within(memory, &addresses)
+        {
+            let block_range = offset..offset + (run.end - run.start);
             for (&other, process) in &self.processes {
                 for (start, shown) in &process.shown {
                     let Shown {
                         end,
                         block: other_block,
                         offset: other_offset,
+                        ..
                     } = *shown;
                     let other_range = other_offset..other_offset + (end - start);
                     let (first, last) = (
@@ -262,10 +288,21 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
     }
 
     /// Sets the addresses to zeros, written through where they show a shared block and fresh pages elsewhere.
-    fn zero_keeping_mappings(&mut self, memory: MemoryId, addresses: Range<u64>) -> Result<(), CpuError> {
+    fn zero_keeping_mappings(
+        &mut self,
+        memory: MemoryId,
+        addresses: Range<u64>,
+    ) -> Result<(), CpuError> {
         let mut at = addresses.start;
         let zeros = [u8::MIN; PAGE_SIZE as usize];
-        for (from, to, _, _) in self.shown_within(memory, &addresses) {
+        for ShownRun {
+            addresses: Range {
+                start: from,
+                end: to,
+            },
+            ..
+        } in self.shown_within(memory, &addresses)
+        {
             if at < from {
                 self.zero(memory, at, from - at)?;
             }
@@ -300,12 +337,12 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
         let source = other_start..other_start + length;
         let mut pieces = Vec::new();
         let mut at = source.start;
-        for (from, to, block, offset) in self.shown_within(other, &source) {
-            if at < from {
-                pieces.push((at..from, None));
+        for run in self.shown_within(other, &source) {
+            if at < run.addresses.start {
+                pieces.push((at..run.addresses.start, None));
             }
-            pieces.push((from..to, Some((block, offset))));
-            at = to;
+            at = run.addresses.end;
+            pieces.push((run.addresses, Some((run.block, run.offset))));
         }
         if at < source.end {
             pieces.push((at..source.end, None));
@@ -319,6 +356,13 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
                     let bytes = self.code_bytes(other, &piece);
                     self.blocks.insert(block, bytes);
                     self.shared_map(block, u64::MIN, other, piece.start, piece_length)?;
+                    let lent = self
+                        .processes
+                        .get_mut(&other)
+                        .expect("a memory")
+                        .shown
+                        .get_mut(&piece.start);
+                    lent.expect("the run just shown").lent = true;
                     (block, u64::MIN)
                 }
             };
@@ -330,18 +374,21 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
         Ok(())
     }
 
-    /// Ends the mappings of the addresses, which then hold zeros where they showed a block.
+    /// Ends the mappings of the addresses, which then hold zeros where they mapped a block; pages they lend keep their bytes.
     fn unmap_pages(&mut self, memory: MemoryId, addresses: Range<u64>) -> Result<(), CpuError> {
-        let shown = self.shown_within(memory, &addresses);
-        for (from, to, _, _) in shown {
-            self.zero(memory, from, to - from)?;
+        let mapped = self
+            .shown_within(memory, &addresses)
+            .into_iter()
+            .filter(|run| !run.lent);
+        for ShownRun { addresses: run, .. } in mapped {
+            self.zero(memory, run.start, run.end - run.start)?;
         }
         self.code_touched(memory, addresses);
         self.drop_unshown_blocks();
         Ok(())
     }
 
-    /// Makes the addresses hold the bytes, permissions and shared blocks the other memory holds from its start.
+    /// Makes the addresses hold the bytes, permissions and mappings the other memory holds from its start, with pages it lends copied.
     fn copy_pages_from(
         &mut self,
         memory: MemoryId,
@@ -359,7 +406,10 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
         let mut page_bytes = [u8::MIN; PAGE_SIZE as usize];
         let runs = self.process(other).pages.data_runs();
         for run in runs {
-            let (first, end) = (run.start.max(source_pages.start), run.end.min(source_pages.end));
+            let (first, end) = (
+                run.start.max(source_pages.start),
+                run.end.min(source_pages.end),
+            );
             for page in first..end {
                 self.read(other, page * PAGE_SIZE, &mut page_bytes)?;
                 self.write(memory, into(page * PAGE_SIZE), &page_bytes)?;
@@ -376,8 +426,18 @@ impl<G: Guest<Block = RegisterBlock>> CpuSide<G> {
             self.set_permissions(memory, into(start), length, allows)?;
             page = end;
         }
-        for (from, to, block, offset) in self.shown_within(other, &source) {
-            self.shared_map(block, offset, memory, into(from), to - from)?;
+        let mapped = self
+            .shown_within(other, &source)
+            .into_iter()
+            .filter(|run| !run.lent);
+        for ShownRun {
+            addresses: run,
+            block,
+            offset,
+            ..
+        } in mapped
+        {
+            self.shared_map(block, offset, memory, into(run.start), run.end - run.start)?;
         }
         self.code_touched(memory, addresses);
         self.drop_unshown_blocks();

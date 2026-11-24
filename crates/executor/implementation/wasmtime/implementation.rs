@@ -12,7 +12,6 @@ use aarch64_cpu::registers::ESR_EL1;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::io::Write;
@@ -20,6 +19,7 @@ use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -33,10 +33,10 @@ use wcontainers_abi::{
     Access, AddressSpace, CounterReading, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
-use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_executor::{
     ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
+use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_processor_architecture::MemoryDelta;
 use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, encode_syndrome};
 use wcontainers_processor_architecture_arm64::{
@@ -661,6 +661,8 @@ struct Shown {
     end: u64,
     block: SharedId,
     offset: u64,
+    /// Whether the run is the memory's own pages that other memories map, rather than a mapping of it.
+    lent: bool,
 }
 
 /// The bytes of a range of code and their hash.
@@ -792,11 +794,11 @@ where
         let mut registers = RegisterBlock::ZERO;
         Cpu::registers(self, thread, &mut registers);
         self.single_instruction = Some(registers.pc);
-        let mut ending = Ending(None);
+        let mut ending = Ending::of_one_instruction();
         let Ok(()) = Execution::run(self, thread, Resume::FromRegisters, Turn::Free, &mut ending);
         self.single_instruction = None;
         ending
-            .0
+            .exit
             .expect("a run of one instruction ends with an exit")
     }
 
@@ -2732,6 +2734,7 @@ where
                 end: address + length,
                 block: shared,
                 offset,
+                lent: false,
             },
         );
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
@@ -3097,20 +3100,51 @@ mod tests {
     }
 }
 
-/// What a run of one instruction answers: it keeps the exit and leaves.
-struct Ending(Option<Exit>);
+/// What a run answers when its exit is handled after it left, with nothing of the executor borrowed.
+struct Ending {
+    exit: Option<Exit>,
+    /// Returns the guest's clock in nanoseconds.
+    clock: fn() -> u64,
+}
+
+impl Ending {
+    /// Returns the answer of a run of one instruction, whose execution state holds no clock.
+    fn of_one_instruction() -> Self {
+        Self {
+            exit: None,
+            clock: || panic!("an execution state holds no clock for the guest to read"),
+        }
+    }
+
+    /// Returns the answer of a run of `execute`, whose guest reads the system's monotonic clock.
+    fn of_execute() -> Self {
+        Self {
+            exit: None,
+            clock: monotonic_nanoseconds,
+        }
+    }
+}
 
 impl Answer for Ending {
     fn exit(&mut self, _: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
-        self.0 = Some(exit);
+        self.exit = Some(exit);
         Carry::Leave(Leaving::SystemAsked)
     }
 
     fn clock(&mut self, _: u64) -> u64 {
-        panic!("an execution state holds no clock for the guest to read")
+        (self.clock)()
     }
 
     fn warn(&mut self, _: Warning<'_>) {}
+}
+
+/// Returns the nanoseconds the system's monotonic clock reads.
+fn monotonic_nanoseconds() -> u64 {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let seconds = u64::try_from(now.tv_sec).expect("the monotonic clock is past its start");
+    let nanoseconds = u32::try_from(now.tv_nsec).expect("nanoseconds below a second");
+    let elapsed = std::time::Duration::new(seconds, nanoseconds).as_nanos();
+    u64::try_from(elapsed).unwrap_or(u64::MAX)
 }
 
 /// How the translator works for a container: it changes speed, never behaviour, and is part of
@@ -3183,11 +3217,6 @@ impl Arm64Executor {
         Self {
             world: Rc::new(RefCell::new(side)),
         }
-    }
-
-    /// Returns every slow path the executor's spaces took so far: how often and the time spent.
-    pub fn counters(&self) -> Vec<CounterReading> {
-        self.world.borrow().counters()
     }
 }
 
@@ -3269,15 +3298,17 @@ fn run_to_trap(
     world.borrow_mut().set_registers(thread, &registers);
     let mut resume = Resume::FromRegisters;
     let (mut registers, exit) = loop {
-        let mut trapped = Trapped(None);
+        let mut ending = Ending::of_execute();
         let Ok(()) = Execution::run(
             &mut *world.borrow_mut(),
             thread,
             resume,
             Turn::Free,
-            &mut trapped,
+            &mut ending,
         );
-        let exit = trapped.0.expect("a run the executor left ends with an exit");
+        let exit = ending
+            .exit
+            .expect("a run the executor left ends with an exit");
         let mut registers = RegisterBlock::ZERO;
         world.borrow_mut().registers(thread, &mut registers);
         let next = match exit {
@@ -3344,26 +3375,3 @@ fn run_to_trap(
     };
     single_instruction::to_processor(&registers, exception)
 }
-
-/// The answer of a run of `execute`, which keeps the exit and leaves so that no part of the executor is borrowed.
-///
-/// The trap handler is then called outside the run, and the guest's clock reads the system's monotonic clock.
-struct Trapped(Option<Exit>);
-
-impl Answer for Trapped {
-    fn exit(&mut self, _: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
-        self.0 = Some(exit);
-        Carry::Leave(Leaving::SystemAsked)
-    }
-
-    fn clock(&mut self, _: u64) -> u64 {
-        let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
-        let seconds = u64::try_from(now.tv_sec).expect("the monotonic clock is past its start");
-        let nanoseconds = u32::try_from(now.tv_nsec).expect("nanoseconds below a second");
-        let elapsed = std::time::Duration::new(seconds, nanoseconds).as_nanos();
-        u64::try_from(elapsed).unwrap_or(u64::MAX)
-    }
-
-    fn warn(&mut self, _: Warning<'_>) {}
-}
-

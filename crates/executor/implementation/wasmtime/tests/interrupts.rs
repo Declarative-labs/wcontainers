@@ -1,22 +1,24 @@
-//! An interrupter reaches its own execution only: before its first poll, from another thread while it runs, and
-//! not at all once it ended.
+//! An interrupter reaches its own execution only: before its first poll, while it runs, never once it ended.
 
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use wcontainers_abi::{Access, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest};
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
+use wcontainers_abi::{Access, PAGE_SIZE, Permissions, SystemCallRequest};
+use wcontainers_arm64::encode::{self, Register, form};
 use wcontainers_executor::memory_space::{MemorySpace, VolatileBytes};
 use wcontainers_executor::{
     ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
     TrapHandler,
 };
-use wcontainers_executor_conformance::GuestArchitecture;
 use wcontainers_executor_wasmtime::{Arm64Executor, TranslatorConfig};
-use wcontainers_processor_architecture_arm64::{Arm64, Processor};
+use wcontainers_processor_architecture_arm64::{INSTRUCTION_BYTES, Processor, ZERO_PROCESSOR};
 
-/// Where the guest's code is placed.
-const CODE: u64 = LOWEST_ADDRESS;
+/// The register the guest counts down in, x0.
+const COUNTER: Register = Register::MIN;
+/// What the guest adds to its count each time round.
+const STEP: i64 = -1;
 /// A count the guest does not finish counting down before it is interrupted.
 const ENDLESS: u64 = u64::MAX;
 /// A count the guest finishes at once.
@@ -45,20 +47,37 @@ impl TrapHandler for Interrupts {
     }
 }
 
-/// Returns a space holding the counting guest from the count, and its start state.
+/// Returns a space holding a guest that counts down from the count and then stops at a breakpoint, and its start state.
 fn counting_guest(
     executor: &Arm64Executor,
     count: u64,
 ) -> (<Arm64Executor as Executor>::GuestMemory, Processor) {
     let memory = executor.create_guest_memory().expect("a space");
-    let guest = Arm64::build_count_down(CODE, count);
-    let end = CODE + guest.code.len() as u64;
-    assert_eq!(memory.borrow(CODE..end).expect("code").write(&guest.code), guest.code.len());
+    let back = -i64::try_from(INSTRUCTION_BYTES).expect("an instruction's size fits");
+    let instructions = [
+        encode::add_immediate(COUNTER, COUNTER, STEP).expect("a step encodes"),
+        encode::compare_branch(true, COUNTER, back).expect("a branch back encodes"),
+        encode::exception(form::BRK, u16::MIN),
+    ];
+    let code: Vec<u8> = instructions
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    let end = CODE + code.len() as u64;
+    assert_eq!(
+        memory.borrow(CODE..end).expect("code").write(&code),
+        code.len()
+    );
     let code_page = CODE..CODE + PAGE_SIZE;
     memory
         .set_permissions(code_page, Permissions::READ | Permissions::EXECUTE)
         .expect("the code page");
-    (memory, guest.start)
+    let mut start = Processor {
+        program_counter: CODE,
+        ..ZERO_PROCESSOR
+    };
+    start.general_purpose_registers[usize::from(COUNTER)] = count;
+    (memory, start)
 }
 
 /// Returns the output of an execution polled once, which must complete it.
@@ -103,7 +122,7 @@ fn an_interrupt_from_another_thread_reaches_the_running_guest() {
     assert_eq!(handler.count, 1);
     assert_eq!(stopped.exception, None, "an interrupt is no exception");
     assert!(
-        stopped.general_purpose_registers[0] < ENDLESS,
+        stopped.general_purpose_registers[usize::from(COUNTER)] < ENDLESS,
         "the guest counted before it was interrupted"
     );
 }
@@ -120,6 +139,10 @@ fn an_interrupt_after_the_end_reaches_no_execution() {
     let ended = complete(execution);
     first.interrupt();
     let (execution, _second) = executor.execute(start, &memory, &mut handler);
-    assert_eq!(complete(execution), ended, "the second execution ends as the first");
+    assert_eq!(
+        complete(execution),
+        ended,
+        "the second execution ends as the first"
+    );
     assert_eq!(handler.count, usize::MIN, "no execution was interrupted");
 }

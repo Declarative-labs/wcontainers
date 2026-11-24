@@ -1,8 +1,8 @@
-//! One ARM64 instruction of an execution state, run on a CPU side of the abi.
+//! Conversions between ARM64 processor states and register blocks, and single-step runs on a CPU side.
 //!
-//! The state's memory and processor become a memory and a thread of the CPU side, run for one instruction.
+//! An execution state's memory and processor become a memory and thread there, run for exactly one instruction.
 //!
-//! What the abi's exit leaves out, such as whether a faulting page was mapped, is read from the state before.
+//! What an exit leaves out, such as whether a faulting page was mapped, is read from the state before.
 
 use std::collections::BTreeMap;
 
