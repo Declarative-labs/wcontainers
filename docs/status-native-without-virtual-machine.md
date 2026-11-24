@@ -746,6 +746,11 @@ pyro-parked/wcontainers-scratch/native-without-virtual-machine.
     loaded at the piece's entry and stored at its exits. Not built: it changes both ways, so it is for the native
     track to rule (the ask is under "Changes to the translator and the stop crate"). A rebuild of bench with
     `-ffixed-x18` to confirm it did not take effect (zig's C compiler still used x18).
+  - Final verdicts after the last code commit (5a9ade5e), every binary 3 times with /dev/kvm denied, each run first
+    proving the device cannot be opened (scratch w1/r3run6/final-arm.out, final-x86.out, about 03:30 UTC):
+    Graviton4 (load 5 to 21; the remote copy leaving out kernel, busybox and speed as above) 57 runs, 276 passed and 3
+    failed, the 3 being the precise-set test at 0x1000 once per round; Xeon (load 17 to 23) 66 runs, 156 passed, none
+    failed.
   - Not done this run: the kernel, busybox and speed tests on the shared tree (they wait on wasmtime).
   - No new unsafe code; two uses fewer.
 
