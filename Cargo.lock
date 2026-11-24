@@ -5063,6 +5063,7 @@ dependencies = [
  "perf-event2",
  "postcard",
  "proptest",
+ "rustix",
  "serde",
  "tempfile",
  "unicorn-engine",
