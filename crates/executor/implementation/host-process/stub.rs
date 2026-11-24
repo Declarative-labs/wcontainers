@@ -39,6 +39,9 @@ const TAKEN_POLL: Duration = Duration::from_millis(1);
 /// hold the stop off.
 pub const STOP_IGNORED: Duration = Duration::from_secs(10);
 
+/// The largest error number a host call answers, Linux's `MAX_ERRNO` (<https://github.com/torvalds/linux/blob/master/include/linux/err.h>).
+const MAX_ERRNO: u32 = 4095;
+
 /// The bytes of a register block that hold the vectors.
 const VECTORS: core::ops::Range<usize> =
     core::mem::offset_of!(RegisterBlock, v)..core::mem::offset_of!(RegisterBlock, fpsr);
@@ -124,7 +127,7 @@ pub enum TurnEnd {
         /// The host pc it stopped at.
         at: u64,
     },
-    /// The stub reported an exit it has no name for.
+    /// The stub reported an exit it has no name for, or one with a value no such exit holds.
     Forged,
     /// The stub's process ended: its socket hung up.
     StubEnded,
@@ -662,9 +665,12 @@ impl Stub {
             Some(ExitKind::Done) => TurnEnd::Done {
                 commands_applied: value,
             },
-            Some(ExitKind::CommandRefused) => TurnEnd::CommandRefused {
-                index: (value >> 32) as u32,
-                errno: Errno::from_raw_os_error(value as u32 as i32),
+            Some(ExitKind::CommandRefused) => match value as u32 {
+                errno @ 1..=MAX_ERRNO => TurnEnd::CommandRefused {
+                    index: (value >> 32) as u32,
+                    errno: Errno::from_raw_os_error(errno as i32),
+                },
+                _ => TurnEnd::Forged,
             },
             Some(ExitKind::BadTurn) => TurnEnd::BadTurn,
             Some(ExitKind::Stopped) => TurnEnd::Stopped {
