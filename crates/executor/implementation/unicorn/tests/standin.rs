@@ -201,12 +201,13 @@ fn a_block_a_memory_shows_is_not_dropped() {
     let memory = cpu.memory_new().unwrap();
     let block = cpu.shared_new(PAGE_SIZE).unwrap();
     cpu.shared_write(block, 0, &[7]).unwrap();
-    cpu.shared_map(block, 0, memory, 0x20000, PAGE_SIZE).unwrap();
+    cpu.shared_map(block, 0, memory, 0x20000, PAGE_SIZE)
+        .unwrap();
     cpu.set_permissions(memory, 0x20000, PAGE_SIZE, Permissions::READ)
         .unwrap();
     cpu.shared_drop(block);
     assert_eq!(
-        cpu.refused(),
+        cpu.take_refused(),
         [Refused::DroppingAShownBlock {
             block,
             shown_in: vec![memory]
@@ -215,14 +216,29 @@ fn a_block_a_memory_shows_is_not_dropped() {
     let mut byte = [0];
     cpu.read(memory, 0x20000, &mut byte).unwrap();
     assert_eq!(byte, [7], "the read reached the kept block");
-    assert!(cpu.shared_read(block, 0, &mut byte).is_err(), "the kernel's handle is gone");
+    assert!(
+        cpu.shared_read(block, 0, &mut byte).is_err(),
+        "the kernel's handle is gone"
+    );
     // A copy, as bringing back a saved container makes, keeps the block under its memory too.
     let mut copy = cpu.restored();
     copy.read(memory, 0x20000, &mut byte).unwrap();
     assert_eq!(byte, [7]);
     // Once its memory goes, so does the kept block.
     cpu.memory_drop(memory);
-    assert_eq!(cpu.refused().len(), 1);
+    assert_eq!(cpu.take_refused(), [], "nothing more was refused");
+}
+
+/// A refusal nothing took fails the test it came in, as the stand-in goes.
+#[test]
+#[should_panic(expected = "the stand-in refused the kernel's requests")]
+fn a_refusal_not_taken_fails_its_test() {
+    let mut cpu = StandIn::new();
+    let memory = cpu.memory_new().unwrap();
+    let block = cpu.shared_new(PAGE_SIZE).unwrap();
+    cpu.shared_map(block, 0, memory, 0x20000, PAGE_SIZE)
+        .unwrap();
+    cpu.shared_drop(block);
 }
 
 /// The drop's check counts only ranges a memory shows now: each way of ending the sharing (unmapping
@@ -236,7 +252,10 @@ fn a_block_whose_sharing_ended_is_dropped_without_a_refusal() {
     let ends: [End; 4] = [
         |cpu, memory, _| cpu.shared_unmap(memory, 0x20000, PAGE_SIZE).unwrap(),
         |cpu, memory, _| cpu.zero(memory, 0x20000, PAGE_SIZE).unwrap(),
-        |cpu, memory, other| cpu.shared_map(other, 0, memory, 0x20000, PAGE_SIZE).unwrap(),
+        |cpu, memory, other| {
+            cpu.shared_map(other, 0, memory, 0x20000, PAGE_SIZE)
+                .unwrap()
+        },
         |cpu, memory, _| cpu.memory_drop(memory),
     ];
     for end in ends {
@@ -246,7 +265,7 @@ fn a_block_whose_sharing_ended_is_dropped_without_a_refusal() {
             .unwrap();
         end(&mut cpu, memory, other);
         cpu.shared_drop(block);
-        assert_eq!(cpu.refused(), [], "the block's sharing had ended");
+        assert_eq!(cpu.take_refused(), [], "the block's sharing had ended");
     }
 }
 
@@ -264,5 +283,8 @@ fn a_block_no_memory_shows_is_dropped() {
     let mut byte = [0];
     cpu.read(memory, 0x20000, &mut byte).unwrap();
     assert_eq!(byte, [9]);
-    assert!(cpu.shared_read(block, 0, &mut byte).is_err(), "the block is gone");
+    assert!(
+        cpu.shared_read(block, 0, &mut byte).is_err(),
+        "the block is gone"
+    );
 }

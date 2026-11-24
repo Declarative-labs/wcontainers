@@ -22,7 +22,6 @@ use wcontainers_abi::{
 
 use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_executor::memory_space::MemorySpace;
-use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_executor::{
     ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
@@ -36,6 +35,7 @@ use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch,
     PagePermission, Processor,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::replay::{DigestMemories, MemoryDigests, digest_pages};
 use crate::space::UnicornSpace;
@@ -197,6 +197,19 @@ pub struct StandIn {
     wall_clock: bool,
     /// What each memory held as it was dropped, once asked for.
     digests: Option<MemoryDigests>,
+}
+
+/// A kernel request the stand-in refused breaks the [`Cpu`] contract, so the test it ran in fails,
+/// unless the test took the refusal ([`StandIn::take_refused`]) or is failing already.
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        if !self.refused.is_empty() && !std::thread::panicking() {
+            panic!(
+                "the stand-in refused the kernel's requests (abi/cpu.rs): {:?}",
+                self.refused
+            );
+        }
+    }
 }
 
 // SAFETY: a memory owns its unicorn engine (whose shared handle is cloned only inside its own
@@ -438,7 +451,11 @@ impl Memory {
         taken
     }
 
-    pub(crate) fn range(&self, address: u64, length: u64) -> Result<std::ops::Range<usize>, CpuError> {
+    pub(crate) fn range(
+        &self,
+        address: u64,
+        length: u64,
+    ) -> Result<std::ops::Range<usize>, CpuError> {
         let end = address.checked_add(length).ok_or(CpuError::BadAddress)?;
         if end > self.end {
             return Err(CpuError::BadAddress);
@@ -508,7 +525,9 @@ impl Memory {
     fn is_shown(&self, page: u64) -> bool {
         !self.pages[page as usize].is_empty()
             || self.reachable.as_ref().is_some_and(|reachable| {
-                reachable[(page / u64::from(u64::BITS)) as usize] & (1 << (page % u64::from(u64::BITS))) != 0
+                reachable[(page / u64::from(u64::BITS)) as usize]
+                    & (1 << (page % u64::from(u64::BITS)))
+                    != 0
             })
     }
 
@@ -529,7 +548,10 @@ impl Memory {
             reachable[word] |= bit;
         }
         if missing {
-            let pages = (start - start % PAGE_SIZE, end.div_ceil(PAGE_SIZE) * PAGE_SIZE);
+            let pages = (
+                start - start % PAGE_SIZE,
+                end.div_ceil(PAGE_SIZE) * PAGE_SIZE,
+            );
             self.reached.push(pages);
             self.remap(pages.0, pages.1);
         }
@@ -613,11 +635,9 @@ impl StandIn {
 
     /// The same CPU side for a kernel on the machine's clock: a turn also ends once its slice has
     /// passed on that clock, since an instruction then takes what it takes.
-    pub fn on_wall_clock(self) -> Self {
-        Self {
-            wall_clock: true,
-            ..self
-        }
+    pub fn on_wall_clock(mut self) -> Self {
+        self.wall_clock = true;
+        self
     }
 
     /// A new CPU side holding what this one holds, as bringing back a saved container makes it: every
@@ -691,9 +711,10 @@ impl StandIn {
         }
     }
 
-    /// What the stand-in refused of the kernel's requests so far, in order.
-    pub fn refused(&self) -> &[Refused] {
-        &self.refused
+    /// What the stand-in refused of the kernel's requests so far, in order, taken: a stand-in
+    /// dropped with a refusal not taken fails its test.
+    pub fn take_refused(&mut self) -> Vec<Refused> {
+        std::mem::take(&mut self.refused)
     }
 
     /// The memories that show any of the block's bytes, in order.
@@ -831,7 +852,10 @@ impl Memory {
         ) {
             registers.pc -= INSTRUCTION_BYTES;
         }
-        (self.to_exit(result, &stopped, registers), stopped.instructions)
+        (
+            self.to_exit(result, &stopped, registers),
+            stopped.instructions,
+        )
     }
 
     /// Returns what the hooks recorded and unicorn's result as the exit they are.
@@ -875,7 +899,9 @@ impl Memory {
             // Unicorn runs at EL1, where HVC and SMC may reach a higher level; at EL0 both are undefined.
             (
                 _,
-                Some(EXCEPTION_UNDEFINED | EXCEPTION_HYPERVISOR_CALL | EXCEPTION_SECURE_MONITOR_CALL),
+                Some(
+                    EXCEPTION_UNDEFINED | EXCEPTION_HYPERVISOR_CALL | EXCEPTION_SECURE_MONITOR_CALL,
+                ),
             )
             | (Err(uc_error::INSN_INVALID), None) => Exit::IllegalInstruction,
             // Permission and mapping faults come through the fault hook, so a data abort here is QEMU's
@@ -952,7 +978,10 @@ impl wcontainers_executor::Executor for StandIn {
         processor: Processor,
         memory: &'execution UnicornSpace,
         handler: &'execution mut impl TrapHandler,
-    ) -> (impl Future<Output = Processor> + 'execution, StandInInterrupter) {
+    ) -> (
+        impl Future<Output = Processor> + 'execution,
+        StandInInterrupter,
+    ) {
         let raised = Arc::new(AtomicBool::new(false));
         let interrupter = StandInInterrupter {
             raised: Arc::clone(&raised),
@@ -972,13 +1001,13 @@ impl wcontainers_executor::Executor for StandIn {
                 let exit = match exit {
                     Ok(exit) => exit,
                     Err(Unsupported::AlignmentFault { pc }) => {
-                        let exception = to_alignment_exception(read_instruction(memory, pc), &registers);
+                        let exception =
+                            to_alignment_exception(read_instruction(memory, pc), &registers);
                         return to_processor(&registers, Some(exception));
                     }
                     Err(unknown) => panic!("{unknown:?}"),
                 };
-                let permission_at =
-                    |address| to_page_permission(memory.read_permissions(address));
+                let permission_at = |address| to_page_permission(memory.read_permissions(address));
                 match exit {
                     Exit::Syscall(request) => match handler.handle_system_call(request) {
                         SystemCallResponse::Return(value) => registers.x[RESULT_REGISTER] = value,
@@ -1030,7 +1059,10 @@ impl wcontainers_executor::Executor for StandIn {
                 }
             })
             .fold(processor.program_counter + INSTRUCTION_BYTES, u64::max);
-        let end = named_end.div_ceil(PAGE_SIZE).saturating_mul(PAGE_SIZE).min(self.end);
+        let end = named_end
+            .div_ceil(PAGE_SIZE)
+            .saturating_mul(PAGE_SIZE)
+            .min(self.end);
         let space = UnicornSpace::new(end).expect("host memory for one more space");
         let mut pages: BTreeMap<u64, PagePermission> = BTreeMap::new();
         for delta in memory {
@@ -1047,7 +1079,8 @@ impl wcontainers_executor::Executor for StandIn {
                     }
                 }
                 MemoryDelta::ValueAssignment { start, bytes } => {
-                    let end = start + u64::try_from(bytes.len()).expect("a count of bytes fits in an address");
+                    let end = start
+                        + u64::try_from(bytes.len()).expect("a count of bytes fits in an address");
                     let written = space
                         .borrow(*start..end)
                         .expect("the bytes lie inside the space")
@@ -1081,7 +1114,8 @@ impl wcontainers_executor::Executor for StandIn {
         };
         let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
         let mut registers = to_register_block(processor);
-        let (exit, instructions) = space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None, None);
+        let (exit, instructions) =
+            space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None, None);
         self.last_instructions = instructions;
         let exception = match exit {
             Ok(exit) => {
@@ -1097,7 +1131,9 @@ impl wcontainers_executor::Executor for StandIn {
                         .unwrap_or(PagePermission::Unmapped)
                 })
             }
-            Err(Unsupported::AlignmentFault { .. }) => Some(to_alignment_exception(word, &registers)),
+            Err(Unsupported::AlignmentFault { .. }) => {
+                Some(to_alignment_exception(word, &registers))
+            }
             Err(unknown) => panic!("{unknown:?}"),
         };
         *processor = to_processor(&registers, exception);
