@@ -389,6 +389,82 @@ fn values_past_the_back_ends_locations_move_or_are_refused_by_name() {
     );
 }
 
+/// tests/registers.rs's programs passing the position and 31 values behind a geometry shader and
+/// behind a domain shader, and 30 values beside clip distances the pixel shader reads.
+const BEHIND_GEOMETRY: [&[u8]; 5] = [
+    include_bytes!("registers/gs-vs.dxbc"),
+    &[],
+    &[],
+    include_bytes!("registers/gs.dxbc"),
+    include_bytes!("registers/values-ps.dxbc"),
+];
+const BEHIND_DOMAIN: [&[u8]; 5] = [
+    include_bytes!("registers/ds-vs.dxbc"),
+    include_bytes!("registers/hs.dxbc"),
+    include_bytes!("registers/ds.dxbc"),
+    &[],
+    include_bytes!("registers/values-ps.dxbc"),
+];
+const BESIDE_LINKED: [&[u8]; 5] = [
+    include_bytes!("registers/linked-vs.dxbc"),
+    &[],
+    &[],
+    &[],
+    include_bytes!("registers/linked-ps.dxbc"),
+];
+
+/// The pipeline of `programs` (vertex, hull, domain, geometry and pixel shaders) on a recorder with
+/// `locations` inter-stage locations.
+fn staged_pipeline(programs: [&[u8]; 5], locations: u32) -> Result<PipelineId, Error> {
+    use wcontainers_direct3d_12::GraphicsPipelineDesc;
+    use wcontainers_direct3d_12::root::{RootSignatureDesc, VERSION_1_0, serialize};
+    let mut device = Device::new(Recorder::with_caps(|c| {
+        c.limits.inter_stage_slots = locations
+    }));
+    let root = device.create_root_signature(&serialize(&RootSignatureDesc {
+        version: VERSION_1_0,
+        parameters: vec![],
+        samplers: vec![],
+        flags: 0,
+    }))?;
+    let [vs, hs, ds, gs, ps] = programs;
+    let mut blend = Blend::default();
+    blend.targets[0].write_mask = wcontainers_gpu::ColorWrites::all().bits();
+    device.create_graphics_pipeline(&GraphicsPipelineDesc {
+        root: Some(root),
+        vs,
+        hs,
+        ds,
+        gs,
+        ps,
+        blend,
+        sample_mask: u32::MAX,
+        raster: scene_raster(true, FILL_MODE_SOLID).1,
+        topology_type: match hs.is_empty() {
+            true => TOPOLOGY_TYPE_TRIANGLE,
+            false => TOPOLOGY_TYPE_PATCH,
+        },
+        rtv_formats: vec![dxgi::R32G32B32A32_FLOAT],
+        samples: 1,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn values_behind_the_stage_helper_and_beside_linked_ones_move_or_are_refused_by_name() {
+    for programs in [BEHIND_GEOMETRY, BEHIND_DOMAIN, BESIDE_LINKED] {
+        // 31 values and the position, or 30, linked clip distances and the position, fit 31
+        // locations once moved.
+        let made = staged_pipeline(programs, 31);
+        assert!(made.is_ok(), "{made:?}");
+        let refused = staged_pipeline(programs, 30);
+        assert!(
+            matches!(refused, Err(Error::NotImplemented(TOO_MANY_VALUES))),
+            "{refused:?}"
+        );
+    }
+}
+
 #[test]
 fn a_pipeline_description_with_no_topology_type_is_invalid() {
     let mut device = Device::new(Recorder::new());

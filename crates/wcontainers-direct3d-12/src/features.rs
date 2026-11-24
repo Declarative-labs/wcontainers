@@ -97,8 +97,9 @@ pub fn binds_tier_1(limits: &wcontainers_gpu::Limits) -> bool {
 
 /// Whether `limits` serve Direct3D's 32 input slots and elements, fetched as laid out up to the
 /// back end's streams and attribute locations and in the vertex program past them, a storage
-/// buffer each (`VertexPulledInShader`); and its 32 registers from the vertex to the pixel stage,
-/// one the position, the rest moved onto the back end's inter-stage locations (`StageMoves`).
+/// buffer each (`VertexPulledInShader`); and its 32 registers from the last vertex stage (vertex,
+/// domain or geometry shader) to the pixel stage, one the position, the rest moved onto the back
+/// end's inter-stage locations with any the front links beside them (`StageMoves`).
 pub fn serves_stage_registers(limits: &wcontainers_gpu::Limits) -> bool {
     let fetched =
         limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;

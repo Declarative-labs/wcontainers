@@ -266,8 +266,9 @@ struct Render<B: Backend> {
     /// for (`formats::bound_program`), None where the conversion failed.
     vertex_formats: Option<Box<formats::Formats<B>>>,
     bound: Vec<(formats::Combination, Option<formats::BoundProgram<B>>)>,
-    /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
-    /// counting program made from them at the first counted draw.
+    /// For counted occlusion queries and pixel programs made later: the vertex stage drawn (the
+    /// vertex program, the domain program or the stage helper's pass-through), the pixel shader's
+    /// bytecode, and the counting program made from them at the first counted draw.
     vertex: ShaderModule,
     pixel: Vec<u8>,
     counting: Option<B::Program>,
@@ -292,8 +293,8 @@ struct Render<B: Backend> {
     instances_step_by_one: bool,
     /// The geometry stage, for pipelines with a geometry shader.
     geometry: Option<geometry::Geometry<B>>,
-    /// Where the values between its vertex and pixel programs move, which every program made for
-    /// it later follows.
+    /// Where the values between its drawn vertex stage and pixel program move, which every
+    /// program made for it later follows.
     moves: pull::StageMoves,
 }
 
@@ -1467,28 +1468,35 @@ impl<B: Backend> Device<B> {
                 *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
             }
         }
-        let moves = self.stage_moves(
-            &vs,
-            ps.as_ref(),
-            made.is_some(),
-            vs_key.linked != LinkedValues::default(),
-        )?;
-        vs = pull::moved(vs, &moves.outputs)?;
-        let ps = ps.map(|p| pull::moved(p, &moves.inputs)).transpose()?;
-        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some() || vertex_alone) {
+        // The vertex stage drawn when not the vertex program: the domain program, or the stage
+        // helper's pass-through.
+        let staged_last = match made.as_ref().filter(|m| m.shader.is_some() || vertex_alone) {
             Some(geometry::Made {
                 domain: Some(domain),
                 late: None,
                 ..
-            }) => &domain.modules[0],
-            Some(m) => m
-                .geometry
-                .stages
-                .as_ref()
-                .and_then(wcontainers_shaders::stage::Stages::passthrough)
-                .expect("a geometry stage's pass-through"),
-            None => &vs.modules[0],
+            }) => Some(&domain.modules[0]),
+            Some(m) => Some(
+                m.geometry
+                    .stages
+                    .as_ref()
+                    .and_then(wcontainers_shaders::stage::Stages::passthrough)
+                    .expect("a geometry stage's pass-through"),
+            ),
+            None => None,
         };
+        let moves = self.stage_moves(
+            staged_last.unwrap_or(&vs.modules[0]),
+            ps.as_ref().map(|p| &p.modules[0]),
+        )?;
+        let staged_last = staged_last
+            .map(|m| pull::moved_module(m.clone(), &moves.outputs))
+            .transpose()?;
+        if staged_last.is_none() {
+            vs = pull::moved(vs, &moves.outputs)?;
+        }
+        let ps = ps.map(|p| pull::moved(p, &moves.inputs)).transpose()?;
+        let vs_shader = staged_last.as_ref().unwrap_or(&vs.modules[0]);
         if wcontainers_shaders::capabilities(&vs_shader.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
             && !self.backend.caps().has(Features::CLIP_DISTANCE)
@@ -1507,6 +1515,7 @@ impl<B: Backend> Device<B> {
                 "the primitive index without the back end's (PrimitiveIdAsGeometry)",
             ));
         }
+        let vs_drawn = vs_shader.clone();
         let vs_shader = self.backend.create_shader(vs_shader)?;
         let ps_shader = match &ps {
             Some(ps) => match self.backend.create_shader(&ps.modules[0]) {
@@ -1595,7 +1604,7 @@ impl<B: Backend> Device<B> {
             typed_key: vs_typed,
             vertex_formats,
             bound: Vec::new(),
-            vertex: vs.modules[0].clone(),
+            vertex: vs_drawn,
             pixel: desc.ps.to_vec(),
             counting: None,
             per_sample: ps

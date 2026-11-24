@@ -9,7 +9,7 @@ use wcontainers_gpu::{
 };
 
 use wcontainers_directx_graphics_infrastructure::stage_registers::{
-    TOO_MANY_VALUES, input_moves, output_moves, relocate,
+    TOO_MANY_VALUES, input_moves, output_moves, passed_locations, relocate,
 };
 
 use super::*;
@@ -64,19 +64,15 @@ pub(super) struct VertexProgram<B: Backend> {
     pub streams: Vec<(u32, u32)>,
 }
 
-/// Where the values a pipeline's vertex and pixel programs pass each other move, where the back
-/// end has fewer inter-stage locations than Direct3D's 32 registers (`stage_registers`): the
-/// vertex program's outputs and the pixel program's inputs.
+/// Where the values a pipeline's last vertex stage and pixel program pass each other move, where
+/// the back end has fewer inter-stage locations than Direct3D's 32 registers (`stage_registers`):
+/// the outputs of the vertex program, the domain program or the stage helper's pass-through that
+/// is drawn, and the pixel program's inputs.
 #[derive(Clone, Debug, Default)]
 pub(super) struct StageMoves {
     pub outputs: Vec<(u32, u32)>,
     pub inputs: Vec<(u32, u32)>,
 }
-
-/// Refused: values past the back end's inter-stage locations where the front's moves are not
-/// built.
-const MOVES_NOT_BUILT: &str = "values between the stages past the back end's locations behind \
-     a geometry, hull or domain shader or stream output, or beside values the front links";
 
 /// `c` with its values between the vertex and pixel stages moved by `moves`: a vertex program's
 /// outputs, a pixel program's inputs.
@@ -87,6 +83,15 @@ pub(super) fn moved(mut c: Converted, moves: &[(u32, u32)]) -> Result<Converted,
     };
     relocate(&mut c.modules[0], values, moves).map_err(Error::NotImplemented)?;
     Ok(c)
+}
+
+/// `module`, a vertex stage the stage helper makes, with its outputs moved by `moves`.
+pub(super) fn moved_module(
+    mut module: ShaderModule,
+    moves: &[(u32, u32)],
+) -> Result<ShaderModule, Error> {
+    relocate(&mut module, &mut [], moves).map_err(Error::NotImplemented)?;
+    Ok(module)
 }
 
 /// The inputs a program fetches itself, by location, with their formats; and whether it reads
@@ -150,36 +155,24 @@ pub(super) fn pulled_streams(
 }
 
 impl<B: Backend> Device<B> {
-    /// Where the values between vertex program `vs` and pixel program `ps` move (`StageMoves`);
-    /// nothing moves behind the stage helper (`staged`) or beside values the front links
-    /// (`linked`), where a value past the back end's locations is refused.
+    /// Where the values between `last`, the vertex stage a pipeline draws, and pixel program `ps`
+    /// move (`StageMoves`): every value the two pass, those the front links beside theirs too.
     pub(super) fn stage_moves(
         &mut self,
-        vs: &Converted,
-        ps: Option<&Converted>,
-        staged: bool,
-        linked: bool,
+        last: &ShaderModule,
+        ps: Option<&ShaderModule>,
     ) -> Result<StageMoves, Error> {
         let slots = self.backend.caps().limits.inter_stage_slots;
-        let inputs = ps.map_or(&[][..], |p| p.reflection.inputs.as_slice());
-        let (Some(inputs_moved), Some(outputs)) = (
-            input_moves(inputs, slots),
-            match staged {
-                true => Some(Vec::new()),
-                false => output_moves(&vs.reflection.outputs, inputs, slots),
-            },
+        let read = ps.map_or_else(Vec::new, passed_locations);
+        let written = passed_locations(last);
+        let (Some(inputs), Some(outputs)) = (
+            input_moves(&read, slots),
+            output_moves(&written, &read, slots),
         ) else {
             self.backend.slow_paths().hit(SlowPath::VaryingsBeyondLimit);
             return Err(Error::NotImplemented(TOO_MANY_VALUES));
         };
-        let moves = StageMoves {
-            outputs,
-            inputs: inputs_moved,
-        };
-        if (staged || linked) && !(moves.outputs.is_empty() && moves.inputs.is_empty()) {
-            return Err(Error::NotImplemented(MOVES_NOT_BUILT));
-        }
-        Ok(moves)
+        Ok(StageMoves { outputs, inputs })
     }
 
     /// How a draw fetches `inputs` with the bound `views`: the streams `pulled` names in the
