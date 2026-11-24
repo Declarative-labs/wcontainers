@@ -58,14 +58,27 @@ fn process_call(code: &mut HostCode, call: InsideCall) {
         code.restore(state.clone());
         land(code, from);
         code.push(&store_page(LINK, LINK_SLOT).to_le_bytes());
-        // What x30 holds is the page's word now: the guest's x30, or the register x30 stands in for.
+        // What x30 holds is the page's word now: the guest's x30, or the register x30 stands in for; but where a stop
+        // gives the guest's x30 its whole value by a fix-up, it takes that over whatever the call leaves in x30.
         let relocated = &state.0.relocated;
-        if !relocated.iter().any(|r| r.guest == LINK) {
+        let link_fixed = state.0.fixups.iter().any(|f| {
+            matches!(*f, Fixup::Constant { register, .. } | Fixup::Address { register, .. }
+                | Fixup::Move { register, .. } if register == LINK)
+        });
+        if !link_fixed && !relocated.iter().any(|r| r.guest == LINK) {
             code.relocate(LINK, held_page(LINK_SLOT));
         }
         for r in relocated.iter().filter(|r| r.held == Held::Register(LINK)) {
             code.relocate(r.guest, held_page(LINK_SLOT));
         }
+        // A target the guest goes on at that x30 held is the page's word too.
+        let mut now = code.snapshot();
+        now.0.resume = match now.0.resume {
+            Resume::Through(Held::Register(LINK)) => Resume::Through(held_page(LINK_SLOT)),
+            Resume::Slot(Held::Register(LINK)) => Resume::Slot(held_page(LINK_SLOT)),
+            other => other,
+        };
+        code.restore(now);
         let entry = PROCESS_ENTRIES + u64::from(call.code()) * PROCESS_ENTRY_BYTES;
         for word in encode::move_address(LINK, entry) {
             code.push(&word.to_le_bytes());
