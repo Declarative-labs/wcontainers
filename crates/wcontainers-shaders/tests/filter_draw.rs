@@ -742,17 +742,52 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                         let native = differences(&webgpu_texels, &own);
                         let soft = differences(&software, &webgpu_texels);
                         let (apart, largest) = count(&native, FILTER_ALLOWANCE);
-                        let neither = (0..native.len())
+                        let neither: Vec<usize> = (0..native.len())
                             .filter(|&n| native[n] > FILTER_ALLOWANCE && soft[n] > FILTER_ALLOWANCE)
-                            .count();
+                            .collect();
                         let (own_apart, own_largest) =
                             count(&differences(&reference, &own), FILTER_ALLOWANCE);
+                        // Of those, the texels the main comparison allows and this one does not
+                        // (A18): where the GPU and warp differ, and at a level decision (within the
+                        // allowance of the own sampler or warp with the level of detail moved by
+                        // 1/256).
+                        let where_they_differ = neither
+                            .iter()
+                            .filter(|&&n| between[n] > FILTER_ALLOWANCE)
+                            .count();
+                        let at_decision = if neither.is_empty() {
+                            0
+                        } else {
+                            let moved = [-SHIFT, SHIFT].map(|shift| {
+                                let moved = Case {
+                                    bias: case.bias + shift,
+                                    ..case.clone()
+                                };
+                                ours(
+                                    &mut gpu, pixel, route, stored, &texels, &moved, mode, &key,
+                                    None,
+                                )
+                            });
+                            let near = |a: &[u8], m: &[u8], n: usize| {
+                                differences(&a[n * 16..n * 16 + 16], &m[n * 16..n * 16 + 16])[0]
+                                    <= FILTER_ALLOWANCE
+                            };
+                            neither
+                                .iter()
+                                .filter(|&&n| {
+                                    moved
+                                        .iter()
+                                        .any(|m| near(&own, m, n) || near(&software, m, n))
+                                })
+                                .count()
+                        };
                         println!(
-                            "  {format:?} {name} {route} webgpu against its own sampler: {neither} of {} texels past {FILTER_ALLOWANCE} from it and warp; from it {apart} (largest {largest}); its own sampler from direct3d on the gpu {own_apart} (largest {own_largest})",
+                            "  {format:?} {name} {route} webgpu against its own sampler: {} of {} texels past {FILTER_ALLOWANCE} from it and warp ({at_decision} of them at a level decision, {where_they_differ} where the gpu and warp differ); from it {apart} (largest {largest}); its own sampler from direct3d on the gpu {own_apart} (largest {own_largest})",
+                            neither.len(),
                             SIZE * SIZE
                         );
                         compared += 1;
-                        if neither != 0 {
+                        if !neither.is_empty() {
                             let what = format!(
                                 "{case_seed} {format:?} {name} {route} webgpu's own sampler"
                             );
