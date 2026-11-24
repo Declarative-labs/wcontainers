@@ -18,7 +18,12 @@ param(
     # How long a bgfx example runs, live and while recorded (it does not end by itself).
     [int]$Seconds = 10,
     # The longest a Godot demo may take to draw -Frames frames and end.
-    [int]$GodotSeconds = 120
+    [int]$GodotSeconds = 120,
+    # The most one channel of a pixel may differ and the pixel still be the same (the rig's
+    # tolerance, graphics-test's pixel comparison).
+    [int]$Tolerance = 8,
+    # Frames kept beside the one where the driver is furthest from both real implementations.
+    [int[]]$KeptFrames = @(10, 60, 120)
 )
 . (Join-Path $PSScriptRoot 'cts-windows.ps1')
 
@@ -167,6 +172,6 @@ foreach ($name in $chosen) {
 
     # (4) The comparison.
     $env:PYTHONPATH = $PillowDir
-    & $Python (Join-Path $PSScriptRoot 'compare-frames.py') $out $System $Llvmpipe $Driver
+    & $Python (Join-Path $PSScriptRoot 'compare-frames.py') $out $System $Llvmpipe $Driver $Tolerance @KeptFrames
     Remove-Item Env:\PYTHONPATH
 }

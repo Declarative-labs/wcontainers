@@ -9,10 +9,13 @@ the build's own dependency lists:
   native sources vendored inside those crates (every licence file below a workspace crate's own
   folder, whether its build compiles that source or not).
 
-    python linked-licences-windows.py <Mesa build folder> <repository> [output file]
+    python linked-licences-windows.py <Mesa build folder> <repository> <head lines> [output file]
+
+where <head lines> is how many lines at the top of a file are searched for its licence.
 
 One line a file: licence, kind, path. Prints the count of each licence.
 """
+import argparse
 import collections
 import json
 import os
@@ -26,7 +29,6 @@ TARGET = "x86_64-pc-windows-msvc"
 DRIVER = "wcontainers-opengl"
 # Files whose code is built into the libraries; other inputs only feed the generators.
 COMPILED = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".S", ".asm", ".def", ".rc", ".inc"}
-HEAD_LINES = 60
 SPDX = re.compile(r"SPDX-License-Identifier:\s*(.+?)\s*(\*/|-->|#)?\s*$")
 TEXTS = (
     ("Permission is hereby granted, free of charge", "MIT text"),
@@ -41,10 +43,14 @@ NINJA = shutil.which("ninja", path=os.path.join(sys.prefix, "Scripts")) or shuti
 LICENCE_FILES = re.compile(r"^(LICEN[SC]E|COPYING)(\.[A-Za-z]+)?$")
 
 
+# Lines at the top of a file searched for its licence (the script's argument).
+head_lines = None
+
+
 def licence_of(path):
     try:
         with open(path, errors="replace") as f:
-            head = [line for _, line in zip(range(HEAD_LINES), f)]
+            head = [line for _, line in zip(range(head_lines), f)]
     except OSError:
         return "unreadable"
     for line in head:
@@ -68,7 +74,7 @@ def mesa(build, lines):
     if sorted(os.path.basename(t) for t in targets) != sorted(LIBRARIES):
         sys.exit(f"linked-licences-windows: the libraries were not all found: {targets}")
     inputs = subprocess.run(
-        [NINJA, "-C", build, "-t", "inputs", *targets], check=True, capture_output=True, encoding="utf-8", errors="replace"
+        [NINJA, "-C", build, "-t", "inputs", *targets], check=True, capture_output=True, encoding="utf8", errors="replace"
     ).stdout.split()
     for path in sorted(set(inputs)):
         full = os.path.normpath(os.path.join(build, path))
@@ -101,7 +107,7 @@ def cargo(repository, lines):
     metadata = json.loads(subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--filter-platform", TARGET,
          "--manifest-path", os.path.join(repository, "Cargo.toml")],
-        check=True, capture_output=True, encoding="utf-8", errors="replace",
+        check=True, capture_output=True, encoding="utf8", errors="replace",
     ).stdout)
     packages = {p["id"]: p for p in metadata["packages"]}
     nodes = {n["id"]: n for n in metadata["resolve"]["nodes"]}
@@ -133,8 +139,16 @@ def cargo(repository, lines):
 
 
 def main():
-    build, repository = (os.path.abspath(a) for a in sys.argv[1:3])
-    out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(build, "linked-licences-windows.txt")
+    global head_lines
+    parser = argparse.ArgumentParser(description="The licence of every file linked into the Windows driver.")
+    parser.add_argument("build", help="Mesa's build folder")
+    parser.add_argument("repository")
+    parser.add_argument("head_lines", type=int, help="lines at the top of a file searched for its licence")
+    parser.add_argument("output", nargs="?", help="the list's file (linked-licences-windows.txt in the build folder)")
+    arguments = parser.parse_args()
+    build, repository = os.path.abspath(arguments.build), os.path.abspath(arguments.repository)
+    head_lines = arguments.head_lines
+    out = arguments.output or os.path.join(build, "linked-licences-windows.txt")
     lines = []
     targets = mesa(build, lines)
     outside(build, lines)
