@@ -5107,6 +5107,7 @@ dependencies = [
  "wcontainers-runtime-single-kernel",
  "wcontainers-system",
  "wcontainers-system-seeded-test-policy",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
@@ -5205,6 +5206,7 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
