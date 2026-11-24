@@ -645,6 +645,13 @@ fn fill_mode(mode: c_uint) -> FillMode {
     }
 }
 
+/// The host's depth steps in one unit of OpenGL's polygon offset. The host's step is 2^-n of an
+/// n-bit depth format (Direct3D's and Vulkan's rule, which WebGPU takes), and a positive offset of
+/// one such step at a depth halfway between two stored values can round to the value the depth
+/// had without it; OpenGL's unit is the smallest difference that is always resolved, so it is
+/// two steps, as Mesa's Direct3D 12 and Zink drivers take it.
+const DEPTH_STEPS_PER_OFFSET_UNIT: f32 = 2.0;
+
 unsafe extern "C" fn create_rasterizer_state<B: Backend>(
     pipe: *mut pipe_context,
     state: *const pipe_rasterizer_state,
@@ -693,7 +700,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         } else {
             FrontFace::Clockwise
         },
-        depth_bias: bias(state.offset_units),
+        depth_bias: bias(state.offset_units * DEPTH_STEPS_PER_OFFSET_UNIT),
         depth_bias_slope: bias(state.offset_scale),
         depth_bias_clamp: bias(state.offset_clamp),
         depth_clip: state.depth_clip_near() != 0,
