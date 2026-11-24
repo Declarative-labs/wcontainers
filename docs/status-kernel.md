@@ -56,6 +56,17 @@ Scratch kernel/kc16 (b.sh, t1.sh, whole.sh, logs beside them).
   uncommitted edit, so left alone); that track committed 6974c922, and at 4c35bb7c `cargo check
   --keep-going --workspace --all-targets` is status 0 on ARM64 (a2.log, 17:25 UTC, load 9) and
   on x86-64 (x2.log, 17:25 UTC, load 6).
+- The whole suite of this track's crates and the stand-ins at 4c35bb7c (whole.sh, job
+  kernel/20261124-173630-1292826, 17:36 to 19:06 UTC, load 18 at the start, 5 to 35 during,
+  5 at the end; 8 test threads; other agents' uncommitted edits taken back; log in the cloud
+  folder's logs/kernel): 456 passed, 35 failed, 8 ignored (136 result lines; two more passing
+  than the fifteenth run: the two new tests); clippy over this track's packages, the policy and
+  the runtime, all targets, `--no-deps`, warnings denied, status 0; fmt of the abi, kernel,
+  conformance and stand-in: no diff. The 35 failures are exactly the ARM list (kc16/fails16.txt
+  against kf7/fails7.txt: no difference), each with its cause in the thirteenth run's entry
+  (the machine's own Linux 7.0 as the reference). No stand-in refusal failed a test.
+- Thirty LTP verdicts in the same job (19:06 UTC, load 5): all 30 pass and match the committed
+  reference.
 
 Not done, for KC (what comes next, in order):
 - The cost of the atomic counts and borrows (fifteenth run): perf on the x86-64 machine, then
