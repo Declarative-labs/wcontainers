@@ -655,6 +655,77 @@ fn a_refused_command_never_leaves_a_narrowed_page_writable() {
     cpu.shared_drop(block);
 }
 
+/// As above, where the kill of the stub after the refused command fails: the zygote is held stopped and its socket
+/// shut, so it answers no request, and the stub lives on. The next turn must not run on the narrowed page's old view.
+#[test]
+fn a_failed_kill_after_a_refused_command_never_leaves_a_narrowed_page_writable() {
+    use rustix::process::{PidfdFlags, PidfdGetfdFlags, Resource, Rlimit, Signal, prlimit};
+    // A host of its own, as its zygote is broken on purpose, started once the shared one is: two hosts starting at
+    // once both want the zygote's fixed pages in this process.
+    drop(executor());
+    let host = Arc::new(HostProcessHost::new().expect("the host is refused"));
+    let zygote = host.zygote_process().expect("a zygote");
+    let mut cpu = HostProcessExecutor::new(host.clone());
+    /// Kills the zygote, its stubs with it, before the host waits for its end, even where the test fails.
+    struct KillZygote(rustix::process::Pid);
+    impl Drop for KillZygote {
+        fn drop(&mut self) {
+            let _ = rustix::process::kill_process(self.0, Signal::KILL);
+        }
+    }
+    let _kill = KillZygote(zygote);
+    let (memory, thread) = process(&mut cpu, 8);
+    assert_eq!(store(&mut cpu, thread, page(4), 1), Touched::Stored);
+    let block = cpu.shared_new(PAGE).expect("a block");
+    cpu.shared_map(block, 0, memory, page(0), PAGE)
+        .expect("the block mapped");
+    cpu.set_permissions(memory, page(4), PAGE, Permissions::READ)
+        .expect("read only");
+    let stub = cpu.stub_process(memory);
+    let limit = |current| Rlimit {
+        current,
+        maximum: None,
+    };
+    prlimit(Some(stub), Resource::As, limit(Some(1 << 20))).expect("the stub's limit");
+    // Every socket of the zygote shut, while it is stopped so it does not end on seeing it.
+    rustix::process::kill_process(zygote, Signal::STOP).expect("stop the zygote");
+    let pidfd =
+        rustix::process::pidfd_open(zygote, PidfdFlags::empty()).expect("the zygote's pidfd");
+    let mut shut = 0;
+    for entry in
+        std::fs::read_dir(format!("/proc/{}/fd", zygote.as_raw_nonzero())).expect("its descriptors")
+    {
+        let entry = entry.expect("a descriptor");
+        let target = std::fs::read_link(entry.path()).expect("its target");
+        if !target.to_string_lossy().starts_with("socket:") {
+            continue;
+        }
+        let number: i32 = entry
+            .file_name()
+            .to_string_lossy()
+            .parse()
+            .expect("a number");
+        let socket = rustix::process::pidfd_getfd(&pidfd, number, PidfdGetfdFlags::empty())
+            .expect("a copy of the zygote's socket");
+        rustix::net::shutdown(&socket, rustix::net::Shutdown::Both).expect("shut");
+        shut += 1;
+    }
+    assert!(shut > 0, "the zygote holds a socket");
+    assert_eq!(
+        cpu.touch(thread, Touch::Store(page(4), 2), None),
+        Err(CpuError::OutOfMemory)
+    );
+    assert_eq!(
+        rustix::process::test_kill_process(stub),
+        Ok(()),
+        "the stub lives on, as the kill failed"
+    );
+    let _ = prlimit(Some(stub), Resource::As, limit(None));
+    let after = cpu.touch(thread, Touch::Store(page(4), 3), None);
+    assert_ne!(after, Ok(Touched::Stored), "the read-only page was written");
+    assert_eq!(word(&mut cpu, memory, page(4)), 1);
+}
+
 /// The cost of a fork's copies to its child, one store per page over `WCHP_PAGES` written pages, in order and in a
 /// seeded order touching every `WCHP_STRIDE`th page (`WCHP_SEED`), and the host mappings each side holds after.
 #[test]

@@ -67,6 +67,9 @@ struct Memory {
     spare: Option<usize>,
     /// Dropped by the kernel, its stub ended, kept only for the pages others still borrow from it.
     retired: bool,
+    /// Its stub was not seen to end after a turn that may have left its view wider than the record: no thread of it
+    /// gets a turn again.
+    unstopped: bool,
     /// Pages translated code was made from: never writable in the view, so the first write drops it (plan 3.4).
     #[cfg(target_arch = "aarch64")]
     code_pages: rangemap::RangeSet<u64>,
@@ -812,6 +815,9 @@ impl HostProcessExecutor {
         blocks: &[Arc<OwnedFd>],
         then: Option<(Then, StopWhen<'_>)>,
     ) -> Result<TurnEnd, CpuError> {
+        if self.memory(id).unstopped {
+            return Ok(TurnEnd::StubEnded);
+        }
         let ended = self.run_rounds(id, index, commands, blocks, then);
         if !matches!(ended, Ok((_, true))) {
             self.end_stub(id);
@@ -819,11 +825,19 @@ impl HostProcessExecutor {
         ended.map(|(end, _)| end)
     }
 
-    /// Kills a memory's stub and waits until no thread of it runs, as long as `STOP_IGNORED` at most.
-    fn end_stub(&self, id: MemoryId) {
+    /// Kills a memory's stub and waits until no thread of it runs, as long as `STOP_IGNORED` at most. Where the kill
+    /// fails or the wait runs out, the stub may run on, so no thread of it gets a turn again.
+    fn end_stub(&mut self, id: MemoryId) {
         let stub = &self.memory(id).stub;
-        let _ = self.host.kill(stub);
-        let _ = stub.wait_hung_up(crate::stub::STOP_IGNORED);
+        let killed = self.host.kill(stub);
+        let ended = killed.is_ok()
+            && matches!(stub.wait_hung_up(crate::stub::STOP_IGNORED), Ok(true));
+        if !ended {
+            eprintln!(
+                "wcontainers warning: a stub was not seen to end ({killed:?}), its memory gets no turn"
+            );
+            self.memory_mut(id).unstopped = true;
+        }
     }
 
     /// `run_turn`'s rounds: how the last ended, and whether every command was applied.
@@ -1077,6 +1091,7 @@ impl Cpu for HostProcessExecutor {
             indices: vec![0],
             spare: Some(0),
             retired: false,
+            unstopped: false,
             #[cfg(target_arch = "aarch64")]
             code_pages: rangemap::RangeSet::new(),
             #[cfg(target_arch = "aarch64")]
