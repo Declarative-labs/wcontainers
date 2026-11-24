@@ -5638,6 +5638,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wcontainers-gpu",
+ "wcontainers-gpu-test",
  "wcontainers-gpu-webgpu",
  "wcontainers-nir",
  "wcontainers-shaders",
