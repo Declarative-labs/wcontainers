@@ -46,6 +46,8 @@ mod system;
 #[cfg(feature = "std")]
 mod tcp;
 #[cfg(feature = "std")]
+mod timer;
+#[cfg(feature = "std")]
 pub mod udp;
 
 #[cfg(feature = "std")]
@@ -62,6 +64,8 @@ pub use runners::{IDLE_WITHOUT_WAKE, KernelContainer, RunInterrupter};
 pub use spec::{MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, base_spec, bind_mount, spec_from_json};
 #[cfg(feature = "std")]
 pub use system::{LocalSystem, Warned};
+#[cfg(feature = "std")]
+pub use timer::SliceTimer;
 
 /// A terminal's size in characters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

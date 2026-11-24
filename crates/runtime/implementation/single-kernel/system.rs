@@ -8,10 +8,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::task::{Poll, Waker};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wcontainers_abi::{Cpu, Event, Host, HostError, PAGE_SIZE, Warning};
@@ -23,6 +21,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
 use crate::net::Network;
+use crate::timer::{SliceTimer, nanoseconds_since};
 use crate::{Execution, StopFlag, System, TerminalSize, Turn};
 
 /// A warning as the system keeps it: the kernel's or the executor's, by reason.
@@ -59,15 +58,14 @@ const INPUT_NOT_READ: &str = "standard input not read";
 const OUTPUT_NOT_WRITTEN: &str = "standard output not written";
 const ERROR_NOT_WRITTEN: &str = "standard error not written";
 
-/// The names of the system's threads.
-const TIMER_THREAD: &str = "wcontainers timer";
+/// The name of the thread that reads the input.
 const INPUT_THREAD: &str = "wcontainers input";
 
 /// The local system, serving a kernel whose threads run on the executor `E`.
 pub struct LocalSystem<E = ()> {
     state: Mutex<LocalState>,
     /// Set with the stop flag, before the first turn.
-    timer: OnceLock<Timer>,
+    timer: OnceLock<SliceTimer>,
     /// The memory programs are told the machine has, set when the container is made.
     pub(crate) machine_memory: OnceLock<u64>,
     /// Made at the container's first use of each.
@@ -99,26 +97,6 @@ pub(crate) struct LocalState {
     /// Made at the container's first use of the network.
     network: Option<Network>,
     published: Vec<(u16, SocketAddr)>,
-}
-
-/// Raises the stop flag at the deadline the last turn set, on its own thread.
-struct Timer {
-    started: Instant,
-    shared: Arc<Deadline>,
-    thread: Option<JoinHandle<()>>,
-}
-
-/// A deadline that never comes.
-const NEVER: u64 = u64::MAX;
-
-struct Deadline {
-    /// Nanoseconds after `started` at which the running turn ends; `NEVER` for no end.
-    at: AtomicU64,
-    /// The deadline the thread sleeps towards: a turn with an earlier one wakes it.
-    sleeping: AtomicU64,
-    /// Whether the system is gone.
-    gone: Mutex<bool>,
-    wake: Condvar,
 }
 
 impl LocalSystem {
@@ -197,7 +175,7 @@ impl<E> LocalSystem<E> {
     /// Drops the deadline of the turn that ended.
     fn turn_over(&self) {
         if let Some(timer) = self.timer.get() {
-            timer.shared.at.store(NEVER, Ordering::SeqCst);
+            timer.turn_over();
         }
     }
 }
@@ -341,71 +319,11 @@ impl LocalState {
 }
 
 impl<E> Drop for LocalSystem<E> {
-    /// Stops the timer thread, and the input's reader once it next waits for room (one blocked
-    /// reading is left to end with the process).
+    /// Stops the input's reader once it next waits for room (one blocked reading is left to end with
+    /// the process); the timer's thread ends as the timer is dropped.
     fn drop(&mut self) {
         self.state_mut().input_credit.stop();
-        if let Some(timer) = self.timer.get_mut() {
-            *timer
-                .shared
-                .gone
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = true;
-            timer.shared.wake.notify_one();
-            if let Some(thread) = timer.thread.take() {
-                let _ = thread.join();
-            }
-        }
     }
-}
-
-/// The timer thread: sleeps to the deadline, raises the flag when it has passed, and sleeps again
-/// when the deadline moved on meanwhile.
-///
-/// A turn stores its deadline and then reads the one slept towards; the thread stores the one it sleeps
-/// towards and then reads the deadline again, holding the lock until it waits. So either the thread
-/// sees the new deadline, or the turn sees an earlier one slept towards and wakes the thread once it
-/// waits.
-fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
-    let mut gone = shared.gone.lock().unwrap_or_else(PoisonError::into_inner);
-    loop {
-        if *gone {
-            return;
-        }
-        let at = shared.at.load(Ordering::SeqCst);
-        shared.sleeping.store(at, Ordering::SeqCst);
-        if shared.at.load(Ordering::SeqCst) != at {
-            continue;
-        }
-        let now = nanoseconds_since(started);
-        if at <= now {
-            // A deadline a turn ended before, or moved, is not raised.
-            if shared
-                .at
-                .compare_exchange(at, NEVER, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                flag.raise();
-            }
-            continue;
-        }
-        gone = if at == NEVER {
-            shared
-                .wake
-                .wait(gone)
-                .unwrap_or_else(PoisonError::into_inner)
-        } else {
-            let wait = Duration::from_nanos(at - now);
-            match shared.wake.wait_timeout(gone, wait) {
-                Ok((guard, _)) => guard,
-                Err(poisoned) => poisoned.into_inner().0,
-            }
-        };
-    }
-}
-
-fn nanoseconds_since(started: Instant) -> u64 {
-    started.elapsed().as_nanos() as u64
 }
 
 /// The room the kernel gave for input and the reader has not used, shared with the reader.
@@ -700,42 +618,13 @@ impl<E: 'static> System for LocalSystem<E> {
     fn stop_flag(&self, flag: StopFlag) {
         let state = self.state();
         state.arrivals.set_flag(flag.clone());
-        let shared = Arc::new(Deadline {
-            at: AtomicU64::new(NEVER),
-            sleeping: AtomicU64::new(NEVER),
-            gone: Mutex::new(false),
-            wake: Condvar::new(),
-        });
-        let started = state.started;
-        self.timer.get_or_init(|| {
-            let thread = {
-                let shared = shared.clone();
-                std::thread::Builder::new()
-                    .name(TIMER_THREAD.to_string())
-                    .spawn(move || time(&shared, started, &flag))
-                    .expect("a timer thread")
-            };
-            Timer {
-                started,
-                shared,
-                thread: Some(thread),
-            }
-        });
+        self.timer.get_or_init(|| SliceTimer::new(flag));
     }
 
     /// A free turn, ended by the timer thread when the kernel's slice has passed.
     fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
         if let Some(timer) = self.timer.get() {
-            let at = slice_nanoseconds.map_or(NEVER, |slice| {
-                nanoseconds_since(timer.started).saturating_add(slice)
-            });
-            let shared = &timer.shared;
-            shared.at.store(at, Ordering::SeqCst);
-            // The thread sleeps to a later deadline or none: it must wake for this one.
-            if at < shared.sleeping.load(Ordering::SeqCst) {
-                let _gone = shared.gone.lock().unwrap_or_else(PoisonError::into_inner);
-                shared.wake.notify_one();
-            }
+            timer.turn(slice_nanoseconds);
         }
         Turn::Free
     }
@@ -829,7 +718,7 @@ impl<E: 'static> System for LocalSystem<E> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalSystem, NEVER, Ordering};
+    use super::LocalSystem;
     use crate::{StopFlag, System};
     use std::time::Duration;
 
@@ -860,7 +749,6 @@ mod tests {
         system.turn_over();
         std::thread::sleep(PAST_IT);
         assert!(!flag.take());
-        let timer = system.timer.get().expect("a timer");
-        assert_eq!(timer.shared.at.load(Ordering::SeqCst), NEVER);
+        assert!(system.timer.get().expect("a timer").idle());
     }
 }
