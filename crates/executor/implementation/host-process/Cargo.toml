@@ -51,6 +51,8 @@ wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 aarch64-cpu = "12.0.0"
+# The hash of every return's position, the virtual-machine executor's, so the two compare.
+rustc-hash = { version = "2.1.3", default-features = false }
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The floor test's pieces, standing in for translated code, in the native output's own encodings.

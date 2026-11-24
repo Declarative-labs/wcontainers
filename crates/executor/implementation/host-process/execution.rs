@@ -47,10 +47,16 @@ const COPY_CHUNK: usize = 1 << 20;
 
 impl HostProcessExecutor {
     /// The count at which `turn`, starting on `thread` now, ends, and the time that bounds each entry into its code:
-    /// a unit of progress is taken as a nanosecond, since a host process cannot be stopped at an exact count.
-    fn turn_end(&self, thread: ThreadId, turn: Turn) -> (Option<u64>, Option<Duration>) {
+    /// with lone pieces none, since the thread comes back at every instruction's end; otherwise a unit of progress is
+    /// taken as a nanosecond, since linked pieces cannot be stopped at an exact count.
+    fn turn_end(&mut self, thread: ThreadId, turn: Turn) -> (Option<u64>, Option<Duration>) {
         match turn {
             Turn::Counted { limit: None } | Turn::Free => (None, None),
+            Turn::Counted { limit: Some(limit) } if self.lone => {
+                let count = self.guest_count(thread);
+                self.slow(super::native::reason::TURN_RUN_IN_STEPS, 1, count);
+                (Some(count + limit), None)
+            }
             Turn::Counted { limit: Some(limit) } => (
                 Some(self.guest_count(thread) + limit),
                 Some(Duration::from_nanos(limit)),
@@ -586,7 +592,7 @@ impl Executor for HostProcess {
         let host = &self.host;
         let executor = self.single.get_or_insert_with(|| {
             let mut executor = HostProcessExecutor::new(Arc::clone(host));
-            executor.single = true;
+            executor.lone = true;
             executor
         });
         let space = executor.memory_new().expect("the host makes one more stub");
@@ -642,10 +648,12 @@ impl Executor for HostProcess {
             .thread_new(space)
             .expect("the stub has its first host thread");
         executor.set_registers(thread, &to_register_block(processor));
+        // Reached at the first instruction's end.
+        let until = executor.guest_count(thread);
         let exit = executor.run_translated(
             thread,
             Resume::FromRegisters,
-            None,
+            Some(until),
             StopWhen::default(),
             &mut monotonic,
         );

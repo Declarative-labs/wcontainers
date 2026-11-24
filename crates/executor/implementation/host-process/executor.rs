@@ -255,9 +255,13 @@ pub struct HostProcessExecutor {
     runner: Option<Runner>,
     /// Whether the CPU clocks can be read.
     sampling: bool,
-    /// Runs one instruction per entry: pieces of one instruction and nothing more, never linked or given a slot.
+    /// Every piece is one instruction, never linked or given a slot, so a thread comes back at every instruction's end
+    /// and a turn limited to a count ends exactly at it.
     #[cfg(target_arch = "aarch64")]
-    single: bool,
+    lone: bool,
+    /// How many times a thread came back from translated code, and a hash of each return's count and pc in order.
+    #[cfg(target_arch = "aarch64")]
+    positions: (u64, rustc_hash::FxHasher),
 }
 
 impl HostProcessExecutor {
@@ -282,8 +286,27 @@ impl HostProcessExecutor {
             runner: None,
             sampling: true,
             #[cfg(target_arch = "aarch64")]
-            single: false,
+            lone: false,
+            #[cfg(target_arch = "aarch64")]
+            positions: Default::default(),
         }
+    }
+
+    /// An executor whose turns limited to a count end exactly at it, for a container whose policy gives such limits:
+    /// it runs every guest instruction as a turn of its own, the slow path "turn with a count limit run in steps".
+    #[cfg(target_arch = "aarch64")]
+    pub fn exact(host: Arc<HostProcessHost>) -> Self {
+        let mut executor = Self::new(host);
+        executor.lone = true;
+        executor
+    }
+
+    /// How many times a thread came back from translated code to the executor, and a hash of each return's count and
+    /// pc in order (a return that lost the thread's registers has none).
+    #[cfg(target_arch = "aarch64")]
+    pub fn positions(&self) -> (u64, u64) {
+        use core::hash::Hasher;
+        (self.positions.0, self.positions.1.finish())
     }
 
     /// The CPU the runner holds, once it has run a turn.

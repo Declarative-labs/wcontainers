@@ -503,6 +503,7 @@ fn bench_workloads_plainly_under_p_and_under_web_assembly() {
             "bench",
             &format!("bench-{workload}"),
             &[format!("WORKLOAD={}", k + 1), "SCALE=1".to_string()],
+            &[],
         );
         let image = std::fs::read(&path).expect("the built program");
         let mut plain = Vec::new();

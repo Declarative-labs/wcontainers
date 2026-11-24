@@ -93,9 +93,15 @@ pub fn compile(directory: &str, name: &str, with_libc: bool) -> Vec<u8> {
     image
 }
 
-/// Builds the freestanding static program `name` from `directory/source.c` with `defines` (no C library), and gives its
-/// path.
-pub fn freestanding(directory: &str, source_name: &str, name: &str, defines: &[String]) -> PathBuf {
+/// Builds the freestanding static program `name` from `directory/source.c` with `defines` and the compiler's `flags`
+/// (no C library), and gives its path.
+pub fn freestanding(
+    directory: &str,
+    source_name: &str,
+    name: &str,
+    defines: &[String],
+    flags: &[&str],
+) -> PathBuf {
     let out = out(name);
     let object = out.with_extension("o");
     let mut compile = Command::new("zig");
@@ -107,6 +113,7 @@ pub fn freestanding(directory: &str, source_name: &str, name: &str, defines: &[S
             "-c",
         ])
         .args(FREESTANDING_FLAGS)
+        .args(flags)
         .arg(include())
         .args(defines.iter().map(|define| format!("-D{define}")))
         .arg(OUTPUT_FLAG)

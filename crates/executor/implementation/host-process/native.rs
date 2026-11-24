@@ -52,8 +52,10 @@ pub mod reason {
     pub const CODE_AREA_EMPTIED: &str = "code area emptied";
     /// Every page of the slot table a memory can hold is in use, so its process is ended.
     pub const SLOT_PAGES_EXHAUSTED: &str = "slot pages exhausted";
-    /// A turn limited to a count ended past it: a host process cannot stop a thread at an exact count.
+    /// A turn limited to a count ended past it: linked pieces cannot stop a thread at an exact count.
     pub const TURN_LIMIT_PASSED: &str = "turn limit passed";
+    /// A turn limited to a count ran one instruction at a time, so that it ends exactly at the count.
+    pub const TURN_RUN_IN_STEPS: &str = "turn with a count limit run in steps";
     /// A stub reported an exit from translated code that nothing we loaded makes, so its process is ended.
     pub const EXIT_NOT_UNDERSTOOD: &str = "stub exit not understood";
     /// A fault's frame held no syndrome, so whether it wrote is taken from the page's permissions.
@@ -436,7 +438,7 @@ impl HostProcessExecutor {
         if !make {
             return None;
         }
-        let look_ahead = if self.single {
+        let look_ahead = if self.lone {
             LookAhead::Bounded(1)
         } else {
             LookAhead::Full
@@ -469,7 +471,7 @@ impl HostProcessExecutor {
         let Some(mut at) = self.load_piece(memory, pc, true)? else {
             unreachable!("a piece is made where none is kept")
         };
-        if self.single {
+        if self.lone {
             return Ok(());
         }
         let code = self.codes[memory.0 as usize].as_mut().expect("made above");
@@ -630,7 +632,7 @@ impl HostProcessExecutor {
             code.exits_to.entry(target).or_default().push(site);
         }
         // Every way out of a lone instruction, even back to itself, lands on an empty slot.
-        if self.single {
+        if self.lone {
             return Ok(Some(at));
         }
         if self.fill_slot(memory, pc, base).is_none() {
@@ -816,7 +818,7 @@ impl HostProcessExecutor {
         let link = code
             .pieces
             .get(&target)
-            .filter(|_| !self.single)
+            .filter(|_| !self.lone)
             .and_then(|piece| self.link_word(&site, piece.base));
         let mut moves = [0; SLOT_MOVES];
         let fields = core::iter::once(&words_of.last_target_first).chain(&words_of.moves[1..]);
@@ -1028,9 +1030,9 @@ impl HostProcessExecutor {
         }
     }
 
-    /// Runs `thread` from `resume` to its next exit, or, from the first exit at or after the count `until`, to
-    /// [`Exit::Stop`]; `when` says when each entry into translated code is stopped. `clock` reads the monotonic clock
-    /// for the guest's counter reads.
+    /// Runs `thread` from `resume` to its next exit, or to [`Exit::Stop`] from the first exit at or after the count
+    /// `until` (with lone pieces, the first instruction's end at or after it); `when` says when each entry into
+    /// translated code is stopped. `clock` reads the monotonic clock for the guest's counter reads.
     pub(super) fn run_translated(
         &mut self,
         thread: ThreadId,
@@ -1067,6 +1069,12 @@ impl HostProcessExecutor {
             when,
             clock,
         );
+        self.positions.0 += 1;
+        if exit != Exit::MemoryFaultWithoutRegisters {
+            use core::hash::Hasher;
+            self.positions.1.write_u64(t.state.count);
+            self.positions.1.write_u64(t.state.pc);
+        }
         self.guests[thread.0 as usize] = Some(t);
         exit
     }
@@ -1278,14 +1286,15 @@ impl HostProcessExecutor {
                 Ended::Stopped(stop) => stop,
             };
             match stop {
-                // A lone instruction has run once anything lands: its piece is never linked.
-                Stop::Landed(_) if self.single => return Exit::Stop,
+                // Lone instructions land at every instruction's end, so a limit is reached exactly there.
                 Stop::Landed(_) if reached(&t.state) => {
-                    self.slow(
-                        reason::TURN_LIMIT_PASSED,
-                        1,
-                        t.state.count - until.unwrap_or(0),
-                    );
+                    if !self.lone {
+                        self.slow(
+                            reason::TURN_LIMIT_PASSED,
+                            1,
+                            t.state.count - until.unwrap_or(0),
+                        );
+                    }
                     return Exit::Stop;
                 }
                 Stop::Landed(_) => {}

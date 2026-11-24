@@ -3,16 +3,16 @@
 //! ceiling and memory size: both give the same wait status, output and root files, and a program with one thread whose
 //! turns end only at its system calls the same turns. `layout` prints its addresses, memory size and mappings. Where
 //! the WebAssembly output is known to print otherwise, form P's status and output are the program's run on this host.
-//! Turns limited to one counted event change nothing under form P.
+//! Turns limited to one counted event change nothing under form P, and under its exact executor a stop at every counted
+//! event gives the virtual-machine executor's count and pc at every stop.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
-#[expect(dead_code, reason = "the freestanding build is the speed test's")]
 mod guest_build;
 mod kernel_host;
 
 use std::sync::{Arc, OnceLock};
 
-use guest_build::compile;
+use guest_build::{PROGRAMS, compile, freestanding};
 use kernel_host::{Output, Program, REALTIME_NANOSECONDS, run_container};
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use wcontainers_abi::Cpu;
@@ -58,10 +58,11 @@ struct Outcome {
 }
 
 /// Runs the static program `image` at the root of a container, with `arguments`, on `cpu`, with `limit` as the
-/// container's ceiling and memory size, every turn ending after `turn_events` counted events where that is given.
+/// container's ceiling and memory size (none: no ceiling, and the executor's address space as its memory size), every
+/// turn ending after `turn_events` counted events where that is given.
 fn run<E: Execution<Failure = core::convert::Infallible>>(
     cpu: &mut E,
-    limit: u64,
+    limit: Option<u64>,
     turn_events: Option<u64>,
     seed: u64,
     name: &str,
@@ -91,7 +92,7 @@ fn run<E: Execution<Failure = core::convert::Infallible>>(
         environment: &[b"PATH=/"],
         hostname: b"wcontainers",
         groups: &[],
-        limit: Some(limit),
+        limit,
         turn_events,
     };
     let ran = run_container(cpu, kernel, seed, REALTIME_NANOSECONDS, &program);
@@ -109,11 +110,13 @@ fn run<E: Execution<Failure = core::convert::Infallible>>(
 
 static HOST: OnceLock<Arc<HostProcessHost>> = OnceLock::new();
 
+fn host() -> Arc<HostProcessHost> {
+    HOST.get_or_init(|| Arc::new(HostProcessHost::new().expect("the host is refused")))
+        .clone()
+}
+
 fn host_process() -> HostProcessExecutor {
-    HostProcessExecutor::new(
-        HOST.get_or_init(|| Arc::new(HostProcessHost::new().expect("the host is refused")))
-            .clone(),
-    )
+    HostProcessExecutor::new(host())
 }
 
 fn web_assembly() -> CpuSide<Arm64> {
@@ -175,7 +178,7 @@ fn both(
     for seed in seeds() {
         let ours = run(
             &mut host_process(),
-            limit,
+            Some(limit),
             None,
             seed,
             name,
@@ -184,7 +187,7 @@ fn both(
         );
         let theirs = run(
             &mut web_assembly(),
-            limit,
+            Some(limit),
             None,
             seed,
             name,
@@ -322,7 +325,7 @@ fn one_event_turns(directory: &str, name: &str, arguments: &[&str], without: &[(
     for (seed, without) in without {
         let limited = run(
             &mut host_process(),
-            limit,
+            Some(limit),
             Some(1),
             *seed,
             name,
@@ -355,4 +358,66 @@ fn turns_limited_to_one_counted_event_change_nothing() {
     one_event_turns(OWN_GUEST, "layout", &[], &layout);
     let forks = both(VM_GUEST, "forks", true, &[], Agree::Whole);
     one_event_turns(VM_GUEST, "forks", &[], &forks);
+}
+
+/// The program `name` with a stop at every counted event under form P's exact executor, for every seed: the run's
+/// status and output, no turn past its limit, and the virtual-machine executor's returns and hash of their positions
+/// (count and pc), `returns` and `hash`, which it gives alike at look-ahead none and 256 (docs/status-native.md, N4 runs
+/// 15 to 21, and on Graviton4 again in round 7, scratch w1/r7run1/vm1-arm.out). Benchmarks are built as the
+/// virtual-machine executor's kernel test builds them.
+fn every_event_against_the_virtual_machine(name: &str, returns: u64, hash: u64) {
+    use wcontainers_executor_host_process::executor::native::reason::TURN_LIMIT_PASSED;
+    let image = if name == "jumptables" {
+        compile(VM_GUEST, name, true)
+    } else {
+        std::fs::read(freestanding(PROGRAMS, name, name, &[], &[RESERVE_X18]))
+            .expect("the built program")
+    };
+    for seed in seeds() {
+        let without = run(&mut host_process(), None, None, seed, name, &image, &[]);
+        let mut exact = HostProcessExecutor::exact(host());
+        let every = run(&mut exact, None, Some(1), seed, name, &image, &[]);
+        assert_eq!(
+            (every.status, &every.output),
+            (without.status, &without.output),
+            "{name} seed {seed}: a stop at every counted event changed the run"
+        );
+        assert!(
+            !exact
+                .slow_paths()
+                .iter()
+                .any(|(reason, _)| *reason == TURN_LIMIT_PASSED),
+            "{name} seed {seed}: a turn ended past its limit"
+        );
+        println!(
+            "{name} seed {seed}: a stop at every counted event, (returns, hash of positions) {:?}, slow paths {:?}",
+            exact.positions(),
+            exact.slow_paths()
+        );
+        assert_eq!(
+            exact.positions(),
+            (returns, hash),
+            "{name} seed {seed}: (returns, hash of positions) against the virtual-machine executor's"
+        );
+    }
+}
+
+/// The compiler flag the virtual-machine executor's kernel test builds the benchmark set with.
+const RESERVE_X18: &str = "-mcpu=generic+reserve_x18";
+
+#[test]
+fn count_at_every_stop_of_bench_is_the_virtual_machine_executor_s() {
+    every_event_against_the_virtual_machine("bench", 177_072, 10_937_141_521_840_235_265);
+}
+
+#[test]
+fn count_at_every_stop_of_calls_is_the_virtual_machine_executor_s() {
+    every_event_against_the_virtual_machine("calls", 3_004, 18_260_131_204_484_228_776);
+}
+
+/// Known failure: form P returns 5,482 times (hash 590264501367005601), two fewer than the virtual-machine executor,
+/// while its count rises by the definition's events at every instruction (status file, round 7 run 1).
+#[test]
+fn count_at_every_stop_of_jumptables_is_the_virtual_machine_executor_s() {
+    every_event_against_the_virtual_machine("jumptables", 5_484, 17_339_527_552_300_285_948);
 }
