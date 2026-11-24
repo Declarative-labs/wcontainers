@@ -187,6 +187,9 @@ struct nir_shader *wc_nir_clone(const struct nir_shader *nir);
 uint64_t wc_nir_number_vertex_elements(struct nir_shader *nir);
 /* The most vertices a geometry program emits an invocation; zero for another stage. */
 uint32_t wc_nir_geometry_vertices_out(const struct nir_shader *nir);
+/* For a geometry program writing gl_Layer, the location after its generic outputs, where the
+ * layer it names can be passed on; UINT32_MAX for one that writes none, or of another stage. */
+uint32_t wc_nir_named_layer_location(const struct nir_shader *nir);
 /* The control points of a tessellation control program's output patch; zero for another stage. */
 uint32_t wc_nir_control_points_out(const struct nir_shader *nir);
 

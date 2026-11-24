@@ -202,6 +202,7 @@ unsafe extern "C" {
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
     fn wc_nir_geometry_vertices_out(nir: *const NirShader) -> u32;
     fn wc_nir_control_points_out(nir: *const NirShader) -> u32;
+    fn wc_nir_named_layer_location(nir: *const NirShader) -> u32;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
@@ -247,6 +248,8 @@ pub struct StreamedOutput {
 /// The bridge's answer for a streamed value the route places neither at a location nor as the
 /// position.
 const STREAMED_ELSEWHERE: u32 = u32::MAX;
+/// `wc_nir_named_layer_location`'s answer for a program naming no layer.
+const NO_NAMED_LAYER: u32 = u32::MAX;
 
 /// What one component of a texture's result is made of (`enum wc_swizzle`).
 #[repr(u8)]
@@ -376,6 +379,14 @@ impl Nir {
     pub fn geometry_vertices_out(&self) -> u32 {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_geometry_vertices_out(self.0) }
+    }
+
+    /// For a geometry program writing `gl_Layer`, the location after its generic outputs, where
+    /// its pass-through can pass the layer it names on; `None` for one that writes none.
+    pub fn named_layer_location(&self) -> Option<u32> {
+        // SAFETY: self.0 is a live shader.
+        let at = unsafe { wc_nir_named_layer_location(self.0) };
+        (at != NO_NAMED_LAYER).then_some(at)
     }
 
     /// The control points of a tessellation control program's output patch; zero for another

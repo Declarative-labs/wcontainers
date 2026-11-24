@@ -468,6 +468,15 @@ wc_nir_geometry_vertices_out(const struct nir_shader *nir)
 }
 
 uint32_t
+wc_nir_named_layer_location(const struct nir_shader *nir)
+{
+   const uint64_t written = nir->info.outputs_written;
+   if (nir->info.stage != MESA_SHADER_GEOMETRY || !(written & VARYING_BIT_LAYER))
+      return UINT32_MAX;
+   return util_last_bit64(written >> VARYING_SLOT_VAR0);
+}
+
+uint32_t
 wc_nir_control_points_out(const struct nir_shader *nir)
 {
    return nir->info.stage == MESA_SHADER_TESS_CTRL ? nir->info.tess.tcs_vertices_out : 0;

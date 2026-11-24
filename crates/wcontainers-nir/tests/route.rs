@@ -745,3 +745,35 @@ fn an_array_of_arrays_of_textures_is_one_array_of_its_elements() {
     let (module, _) = wcontainers_nir::direct::rewrite(routed, bindings, &unnamed, &key).unwrap();
     wcontainers_nir::spirv::validate(&module.module).unwrap();
 }
+
+const LAYER_READ: &str = "#version 450
+layout(location = 0) in vec4 colour;
+layout(location = 0) out vec4 result;
+void main() {
+    result = colour * float(gl_Layer);
+}
+";
+
+#[test]
+fn a_fragment_programs_layer_is_a_flat_input_the_driver_places() {
+    let mut nir = Nir::from_glsl(&[(Stage::Fragment, LAYER_READ)])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .nir;
+    nir.to_common_form(Stage::Fragment).unwrap();
+    let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+    let layer = module.entry_points[0]
+        .function
+        .arguments
+        .iter()
+        .find_map(|a| match a.binding {
+            Some(naga::Binding::Location {
+                location: wcontainers_nir::direct::NAMED_LAYER_INPUT,
+                interpolation,
+                ..
+            }) => Some(interpolation),
+            _ => None,
+        });
+    assert_eq!(layer, Some(Some(naga::Interpolation::Flat)));
+}

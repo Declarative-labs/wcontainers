@@ -37,6 +37,10 @@ const IMAGE_STORE_VALUE: usize = 3;
 const HELPER_ROW_BYTES: u32 = size_of::<[u32; VectorSize::Quad as usize]>() as u32;
 /// The words of `HelperValue::TexelLayout`, and the helper block's rows holding them.
 pub const TEXEL_LAYOUT_WORDS: usize = 5;
+/// The location a fragment program's `gl_Layer` input is routed at, a flat value: the driver
+/// moves it to where a geometry program's pass-through passes the layer it names, or replaces it
+/// with zero where no earlier stage names one.
+pub const NAMED_LAYER_INPUT: u32 = u32::MAX;
 const TEXEL_LAYOUT_ROWS: u32 = TEXEL_LAYOUT_WORDS.div_ceil(VectorSize::Quad as usize) as u32;
 /// The source of a compare-and-swap holding the value compared (after the pointer); the value
 /// stored follows it, and is the only one of the other atomics.
@@ -1822,6 +1826,17 @@ impl Builder<'_> {
                     "a stage value of another built-in (Mesa's slot {})",
                     var.location
                 )));
+            }
+            FlatBuiltIn::Layer
+                if self.stage == ShaderStage::Fragment && var.mode == VarMode::Input =>
+            {
+                Binding::Location {
+                    location: NAMED_LAYER_INPUT,
+                    interpolation: Some(Interpolation::Flat),
+                    sampling: None,
+                    blend_src: None,
+                    per_primitive: false,
+                }
             }
             FlatBuiltIn::Layer | FlatBuiltIn::ViewportIndex | FlatBuiltIn::PrimitiveId => {
                 return Err(unsupported(format_args!(
