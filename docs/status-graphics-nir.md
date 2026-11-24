@@ -24,8 +24,27 @@ the floor. Done this run:
   newest block says what moved and what was corrected).
 - Found: the glcts patch did not end a glcts whose ES 3.0 context was lost (dEQP-GLES3 and
   KHR-GLES3), because glcts loads `glGetGraphicsResetStatus` only for OpenGL ES 3.2 and 4.5; 37
-  cases still follow a loss there. The patch now takes the query by name (a4352ae2). RERUN OF THE
-  TWO LISTS: see the next line.
+  cases still follow a loss there. The patch now takes the query by name (a4352ae2). It did NOT
+  help: the rerun of dEQP-GLES3, KHR-GLES3 and KHR-GLES31 on it (job 82, 14:47 to 14:53 Mac time,
+  alone; scratch `results/r6d/es30`, log `logs/r6d/es30.log`) gives the same counts (44,232 of
+  44,298; 6,265 of 6,271; KHR-GLES31 3,984 of 4,076, its one move `basic-atomic-case3-vsfs` Flake
+  to Pass), and in `gles3-main` `c65` the cases after `fbo.color.tex3d.rgb565`'s loss still run
+  and fail. A refused call does end its case in an ES 3.1 context ("ResourceError (Resource error
+  in context post-iteration routine)", e.g. `border_clamp...gather_size_npot`, KHR-GLES31
+  `shader_image_size.basic-nonMS-vs-float`); after a device loss in an ES 3.0 context the query
+  answers no reset. Not yet known whether the cause is the ES 3.0 context (made without reset
+  notification by Mesa's WGL) or the loss (the driver's reset status set by a refusal, not by the
+  back end's loss callback). Next: one group run of `c65`'s cases with the driver printing its
+  `get_device_reset_status` answers. The 37 stay on the gap list's first item.
+- Tried and withdrawn: drawing squared points behind the vertex storage pass-through while a query
+  counts (8a97d137). On the GPU the 6 `shader_image_size` `-vs-` cases still refuse with the same
+  words, so their draw streams or is tessellated rather than counted, and no case showed the change
+  right; reverted (4ecc1577, whose message is git's default "Revert ...": a shared-checkout slip,
+  see below). The 6 stay on the gap list, cause read but not traced further.
+- A shared-checkout slip, repaired: amending that revert's message with `git commit --amend
+  --only` amended instead another track's commit made in between (host-process
+  `tests/speed.rs`); its message and author were restored at once from the reflog (`-C`), the tree
+  is unchanged (now 0a4b9099, was 6653d724). This track no longer amends in the shared checkout.
 - Unsafe: wcontainers-opengl 361 to 356 (c7489ddb): the module pin is libloading's
   `open_already_loaded` and `pin` (libloading 0.8.9, ISC, already in the lock file for wgpu), and
   four stubs that touch no pointer (`name`, `flush_resource`, `set_polygon_stipple`,
@@ -905,8 +924,8 @@ cases). Each this track's unless said:
   patch now takes the query by name for older contexts (a4352ae2); the two lists' rerun is below.
   Of round 6 run 2's 60, 21 passed in this run (other batches), and the 2 `packed_depth_stencil`
   cases are counted under "destroyed while recorded".
-- Vertex storage drawn as points through the pass-through geometry program while a query counts or
-  a stream is written, 6 (KHR-GLES31 `shader_image_size` `basic-` and `advanced-nonMS-vs-` float,
+- Vertex storage drawn as points through the pass-through geometry program while a stream is
+  written or after tessellation (not while counting: run 4's change for that left them refused), 6 (KHR-GLES31 `shader_image_size` `basic-` and `advanced-nonMS-vs-` float,
   int, uint): refused, "points drawn as squares after tessellation or a geometry program while
   streaming or counting (not built)". CORRECTED: round 6 run 2 filed these 6 under the vertex
   `memoryBarrier()` item below; their only refusal is this one.
@@ -926,7 +945,7 @@ cases). Each this track's unless said:
 - "device lost: Unexpected error variant (driver implementation is at fault)", 1 (KHR-GLES31
   `shader_image_load_store.advanced-sync-imageAccess`, its first note): not yet traced to its call.
 - KHR-GLES31 `shader_storage_buffer_object.basic-atomic-case3-vsfs`, Flake (passes on one of
-  deqp-runner's two tries), no refusal or device note: an atomic counter written by the vertex
+  deqp-runner's two tries; Pass in the rerun), no refusal or device note: an atomic counter written by the vertex
   program on the compute route and the fragment program; not yet traced.
 - Refused passes turned to failures by the glcts patch, as round 6 run 3 expected: dEQP-GLES31
   `texture.border_clamp` 16 ("border on comparison" item), KHR-GLES31
