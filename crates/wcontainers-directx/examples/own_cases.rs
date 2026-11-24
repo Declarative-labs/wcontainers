@@ -2011,6 +2011,55 @@ fn main() -> windows::core::Result<()> {
                 }
             });
         }
+        // The time of divisions by a divisor read at run time: 16384 threads each run four
+        // chains of `CHAIN` divisions, each quotient feeding the next; the fastest of `RUNS` timings
+        // of `DISPATCHES` dispatches and a read of the result, in microseconds.
+        "division_cost" => {
+            const THREADS: u32 = 16384;
+            const GROUP: u32 = 64;
+            const DISPATCHES: u32 = 20;
+            const RUNS: u32 = 5;
+            let values: Vec<u8> = [0.5f32, 1.0003].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let at = |w, format, bind| Tex {
+                w,
+                h: 1,
+                format,
+                samples: 1,
+                bind,
+            };
+            let p = make(
+                &at(1, DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_SHADER_RESOURCE),
+                Some((&values, 8)),
+            )?;
+            let o = make(
+                &at(THREADS, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_UNORDERED_ACCESS),
+                None,
+            )?;
+            let program = cs("Texture2D<float2> p : register(t0);
+                RWTexture2D<float> o : register(u0);
+                static const uint CHAIN = 16384;
+                [numthreads(64, 1, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float2 v = p.Load(int3(0, 0, 0));
+                    float4 x = float4(1, 2, 3, 4) + id.x;
+                    [loop] for (uint i = 0; i < CHAIN; i++) { x = x / v.y + v.x; }
+                    o[id.xy] = x.x + x.y + x.z + x.w;
+                }");
+            let (view, store) = ([srv(&p, DXGI_FORMAT_UNKNOWN)], [uav(&o)]);
+            let mut fastest = u128::MAX;
+            for run in 0..=RUNS {
+                let start = std::time::Instant::now();
+                for _ in 0..DISPATCHES {
+                    dispatch(&program, &view, &[], &store, (THREADS / GROUP, 1, 1));
+                }
+                print_rows("division cost", &o, 4, &|row| format!("{} bytes", row.len()));
+                // The first run builds the program.
+                if run > 0 {
+                    fastest = fastest.min(start.elapsed().as_micros());
+                }
+            }
+            println!("division cost: {DISPATCHES} dispatches and a read in {fastest} us");
+        }
         // atg-simplecomputepc's frames: its dispatch, then its sprite pass drawing the result and
         // a second draw of 100 quads from another texture, frame after frame; the colour inside
         // the set (its loop count 1200 over 300) at the first and the last frame.

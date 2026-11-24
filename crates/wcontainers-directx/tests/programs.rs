@@ -447,6 +447,20 @@ fn divisions_give_a_real_devices_quotient() {
     case_either_real("divisions");
 }
 
+/// The time of a compute program's chains of divisions through ours and through the RTX 3080's
+/// Direct3D 11, printed; a measurement, run alone (`gpu-job --alone`) with `--ignored --nocapture`.
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore = "a timing, not a check: run alone on the GPU with --ignored --nocapture"]
+fn division_cost_through_ours_and_direct3d() {
+    for (label, ours) in [("division_cost-system", false), ("division_cost-ours", true)] {
+        let (code, got) = run_with("own_cases", &place(label, ours), &["division_cost"]);
+        assert_eq!(code, 0, "{got}");
+        let line = got.lines().find(|l| l.contains(" us")).unwrap_or_default();
+        println!("{label}: {line}");
+    }
+}
+
 /// atg-simplecomputepc's dispatch over 30 frames, each also drawing the result and 100 quads from
 /// another texture as the program does: the colour inside the set is the map's first texel, the
 /// correctly rounded quotient 1200 / 300 = 4, as WARP gives it in every frame. Compared with WARP
