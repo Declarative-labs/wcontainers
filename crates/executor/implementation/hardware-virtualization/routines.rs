@@ -57,7 +57,8 @@ pub fn answer(link: &mut Link, memory: &Memory) {
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     assert!(bytes.len() as u64 <= PAGE_SIZE, "the routines fit one frame");
     let host = memory.host_bytes(request.at, bytes.len() as u64);
-    // SAFETY: the bytes lie in guest memory, in the frame the inside named for them.
+    // SAFETY: the bytes lie in guest memory, in the frame the inside named for them; nothing shows the other
+    // virtual CPUs cannot reach that frame during the copy.
     #[expect(
         unsafe_code,
         reason = "UNEXPLAINED: a plain copy into whatever frame the inside named, from a safe pub fn; only the asking virtual CPU waits at the doorbell, and nothing shows the others cannot reach that frame; host_bytes checked the range; Words replaces it"

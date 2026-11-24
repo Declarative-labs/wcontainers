@@ -299,7 +299,8 @@ impl Memory {
 
 /// Writes host words at `at` in the code area or the running process's entry mirror, and makes them visible.
 fn write_code(at: u64, words: &[u32]) {
-    // SAFETY: both are mapped writable at this level, and no virtual CPU runs these words while they change.
+    // SAFETY: trusted, not checked: the address is mapped writable at this level, and no virtual CPU runs these
+    // words while they change.
     #[expect(
         unsafe_code,
         reason = "UNEXPLAINED: copies words to whatever address this private safe fn is given, on the comment's word that it is mapped writable and nothing runs it; Words replaces it"
@@ -398,7 +399,8 @@ fn copy_frame(to: u64, from: u64) {
     reason = "UNSOUND: a safe fn returning &'static mut [u8] over any frame number, which may alias another view or a frame a guest on another virtual CPU writes; Words replaces it"
 )]
 fn frame_bytes(frame: u64) -> &'static mut [u8] {
-    // SAFETY: the frame is the CPU side's, and only reached through the linear map.
+    // SAFETY: not shown: any frame number is taken, and the slice may alias another view of it or a frame a
+    // guest on another virtual CPU writes (see the reason).
     unsafe { core::slice::from_raw_parts_mut(linear(frame) as *mut u8, PAGE_SIZE as usize) }
 }
 
@@ -1647,7 +1649,8 @@ fn drop_piece(m: &mut Memory, at: u64, empty: u32) {
     reason = "UNSOUND: a private safe fn that writes a register page into whatever frame number it is given, through the linear map, the same shape as frame_bytes; its callers pass the frame taken for the thread from Frames, which only convention ties to it; Words replaces it"
 )]
 fn write_page(frame: u64, page: &RegisterPage) {
-    // SAFETY: the register page's frame is the thread's; `RegisterPage` is `#[repr(C)]` words.
+    // SAFETY: not shown: any frame number is taken, and only convention ties it to the thread's register page;
+    // `RegisterPage` is `#[repr(C)]` words.
     unsafe { ptr::write_volatile(linear(frame) as *mut RegisterPage, page.clone()) };
 }
 
@@ -1656,7 +1659,7 @@ fn write_page(frame: u64, page: &RegisterPage) {
     reason = "UNSOUND: a private safe fn that reads a register page from whatever frame number it is given, through the linear map, with a plain read that races any other virtual CPU writing that frame, the same shape as frame_bytes; its callers pass the frame taken for the thread from Frames, which only convention ties to it; Words replaces it"
 )]
 fn read_page(frame: u64) -> RegisterPage {
-    // SAFETY: as in `write_page`.
+    // SAFETY: not shown, as in `write_page`; and the plain read races any other virtual CPU writing the frame.
     unsafe { ptr::read_volatile(linear(frame) as *const RegisterPage) }
 }
 

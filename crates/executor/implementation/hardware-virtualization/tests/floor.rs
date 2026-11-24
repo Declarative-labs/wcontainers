@@ -262,7 +262,7 @@ mod hosted {
                 let bytes = page.data();
                 let host = shared.memory.host_bytes(at, bytes.len() as u64);
                 // SAFETY: the bytes lie in guest memory; the inside gave this frame for the write and runs nothing
-                // from it until answered.
+                // from it until answered; nothing shows the test's other virtual CPUs cannot reach it.
                 #[expect(
                     unsafe_code,
                     reason = "UNEXPLAINED: a plain copy into the frame the inside gave for the write while the test's other virtual CPUs run, which nothing shows cannot reach that frame; host_bytes checked the range; test only, Words replaces it"

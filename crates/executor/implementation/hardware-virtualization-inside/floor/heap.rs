@@ -16,7 +16,8 @@ use crate::layout::{BLOCK_SIZE, linear};
 #[derive(Debug)]
 pub struct Blocks;
 
-// SAFETY: it only claims memory that nothing else uses, through the `Talc` it is given.
+// SAFETY: acquire takes no talc lock and does not allocate; that no code allocates while holding the frames'
+// lock is convention only. Whether the memory it claims is the heap's alone is not shown (see `acquire`).
 #[expect(
     unsafe_code,
     reason = "promises talc that acquiring takes no talc lock and no global allocation: acquire only takes the frames' spin lock, which does not allocate; code that allocates while it holds that lock, or a panic in acquire, would deadlock, and only convention prevents it; stays a one-off"

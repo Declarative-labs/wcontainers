@@ -273,7 +273,8 @@ mod speed {
 
         /// Makes the code at `at` visible to instruction fetch.
         pub fn make_visible(at: *mut c_void, length: usize) {
-            // SAFETY: the caller's range is mapped.
+            // SAFETY: not checked: the caller's range is trusted to be mapped; its one caller passes the mapping
+            // it just made.
             #[expect(
                 unsafe_code,
                 reason = "invalidates the instruction cache over a range the caller says is mapped, which this safe fn does not check; its one caller passes the mapping it just made; test only, CodeCache replaces it"
@@ -377,7 +378,8 @@ mod speed {
         /// Makes the code at `at` visible to instruction fetch.
         pub fn make_visible(at: *mut c_void, length: usize) {
             let start = at.cast::<c_char>();
-            // SAFETY: the caller's range is mapped.
+            // SAFETY: not checked: the caller's range is trusted to be mapped; its one caller passes the mapping
+            // it just made.
             #[expect(
                 unsafe_code,
                 reason = "cleans and invalidates the caches over a range the caller says is mapped, which this safe fn does not check; its one caller passes the mapping it just made; test only, CodeCache replaces it"
@@ -487,7 +489,8 @@ mod speed {
             };
             assert_eq!(at as u64, start, "the segment's addresses are free");
             let bytes = header.data(endian, image).expect("the segment's bytes");
-            // SAFETY: the mapping holds the segment.
+            // SAFETY: the mapping spans the segment's memory size; that its file bytes fit that size is trusted
+            // from the test's own ELF, not checked.
             #[expect(
                 unsafe_code,
                 reason = "copies a segment's file bytes to its address in the mapping just made and checked, which spans its memory size; that the file bytes fit that size is trusted from the test's own ELF, not checked; test only"
@@ -541,7 +544,8 @@ mod speed {
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = on_breakpoint as *const () as usize;
         action.sa_flags = libc::SA_SIGINFO;
-        // SAFETY: installs the handler for this process's breakpoints.
+        // SAFETY: not shown: the handler takes a Mutex and can panic, which is not async-signal-safe; it holds
+        // only because the trap is synchronous.
         #[expect(
             unsafe_code,
             reason = "UNEXPLAINED: installs a SIGTRAP handler that takes a Mutex and can panic, which is not async-signal-safe and holds only because the trap is synchronous; test only, moving the comparison onto host-process removes it"
@@ -610,7 +614,8 @@ mod speed {
         let [first, buffer, length] = [0, 1, 2].map(|k| x[k]);
         let number = x[SYSCALL_NUMBER] as u32;
         if number == __NR_write {
-            // SAFETY: the program's own buffer, mapped in this process.
+            // SAFETY: trusted, not checked: the test program's buffer pointer and length name memory mapped in
+            // this process.
             #[expect(
                 unsafe_code,
                 reason = "UNEXPLAINED: a slice over a buffer pointer and length the test program passed in its write call, trusted to be mapped in this process; test only, moving the comparison onto host-process removes it"

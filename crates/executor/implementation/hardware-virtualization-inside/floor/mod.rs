@@ -56,7 +56,8 @@ pub fn cpu() -> u64 {
 )]
 fn link_page() -> &'static mut Link {
     let page = FIRST_LINK.load(Ordering::Relaxed) + cpu() * PAGE_SIZE;
-    // SAFETY: each virtual CPU has its own link page, reached through the linear map.
+    // SAFETY: not shown: each virtual CPU has its own link page, but every call makes a new `&'static mut`, so
+    // two can live at once, and the host rewrites the page while one lives (see the reason).
     unsafe { &mut *(linear(page) as *mut Link) }
 }
 
@@ -208,8 +209,8 @@ impl Floor {
             NonNull::new(linear(GIC_REDISTRIBUTORS) as *mut GicrSgi).expect("redistributors");
         // Only the redistributors of virtual CPUs up to this one are known to exist yet.
         let known = self.start.cpu as usize + 1;
-        // SAFETY: the interrupt controller's registers are mapped as device memory through the linear map, and
-        // nothing else uses them.
+        // SAFETY: the interrupt controller's registers are mapped as device memory through the linear map; that
+        // nothing else uses them rests on this safe pub method's one caller calling it once, not on a check.
         #[expect(
             unsafe_code,
             reason = "UNEXPLAINED: builds the GICv3 driver over its registers, mapped as device memory through the linear map, from a safe pub method that nothing but its one caller keeps to one call; stays a one-off"
@@ -419,7 +420,8 @@ pub fn write_frame(frame: u64, offset: u64, bytes: &[u8]) {
             .is_some_and(|end| end <= PAGE_SIZE),
         "the bytes fit the frame"
     );
-    // SAFETY: the frame is ours, and the bytes lie in it.
+    // SAFETY: not shown: the bytes lie in the frame, but the frame may be any, the floor's own or one a guest on
+    // another virtual CPU writes (see the reason).
     #[expect(
         unsafe_code,
         reason = "UNSOUND: a plain copy into any frame a caller of this safe pub fn names, which may be the floor's own or one a guest on another virtual CPU is writing; the asserts keep it inside one frame; Words replaces it"

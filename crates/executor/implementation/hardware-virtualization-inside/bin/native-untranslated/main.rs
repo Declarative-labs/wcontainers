@@ -70,7 +70,8 @@ mod untranslated {
                         .is_some_and(|end| end <= r.address + r.length)
             })
             .expect("the program wrote from its own memory");
-        // SAFETY: the region's frames are one run, reached through the linear map.
+        // SAFETY: not shown: the region's frames are one run, reached through the linear map, but the guest
+        // writes them again while the `'static` slice may live (see the reason).
         unsafe {
             core::slice::from_raw_parts(
                 linear(region.frame + (address - region.address)) as *const u8,

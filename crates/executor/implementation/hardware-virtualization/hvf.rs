@@ -81,7 +81,8 @@ impl crate::VirtualMachine for HvfVirtualMachine {
     )]
     fn map(&self, host: NonNull<u8>, at: u64, length: u64) -> Result<()> {
         let flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
-        // SAFETY: the host range is the caller's memory and outlives the mapping.
+        // SAFETY: not shown: this safe method takes any pointer and length, and nothing keeps the range alive
+        // while it is mapped (see the reason).
         code(unsafe { hv_vm_map(host.as_ptr().cast(), at, length as usize, flags) })
     }
 
@@ -95,7 +96,8 @@ impl crate::VirtualMachine for HvfVirtualMachine {
                 "giving back {length:#x} bytes at {at:#x}, which are not all guest memory"
             )));
         }
-        // SAFETY: unmapping guest-physical memory the caller mapped.
+        // SAFETY: the check above found the range all in guest memory; unmapping changes only what the virtual
+        // machine sees.
         #[expect(
             unsafe_code,
             reason = "unmaps a guest-physical range the check above found all in guest memory, which changes only what the virtual machine sees; Lend replaces it"
@@ -315,7 +317,8 @@ impl crate::Stopper for HvfStopper {
     )]
     fn stop(&self) -> Result<()> {
         let ids = [self.id];
-        // SAFETY: valid identifiers; stopping a CPU that has gone is refused by the framework, not unsound.
+        // SAFETY: the id may have gone to another virtual CPU of this process, which this then stops; that this
+        // only makes it exit rests on Apple's documentation, not on any check here.
         code(unsafe { hv_vcpus_exit(ids.as_ptr(), ids.len() as u32) })
     }
 }

@@ -213,7 +213,8 @@ impl Drop for StandIn {
 }
 
 // SAFETY: a memory owns its unicorn engine (whose shared handle is cloned only inside its own
-// hooks, which capture nothing, and which keeps no state of the host thread between calls) and its
+// hooks, which capture nothing, and which is trusted, not checked, to keep no state of the host
+// thread between calls: nobody has read unicorn's internals) and its
 // records, and its block pointers point into host mappings that live while it shows them (a
 // stand-in's blocks, kept while a memory shows them, or a space's host pages). So it moves to
 // another host thread whole, and it is used by one at a time.

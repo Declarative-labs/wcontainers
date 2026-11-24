@@ -321,8 +321,8 @@ pub fn run_ours(
             let log = log_path(logs, test);
             std::fs::create_dir_all(log.parent().expect("a directory")).expect("the log directory");
             let _ = std::fs::remove_file(result_path(&log));
-            // SAFETY: this process has one thread; the child runs the test alone and ends with
-            // `_exit`.
+            // SAFETY: trusted, not checked: this process has one thread; the child runs the test alone
+            // and ends with `_exit`.
             #[expect(
                 unsafe_code,
                 reason = "UNEXPLAINED: forks one child per test case on the claim that this process has one thread, which nothing checks; no primitive replaces it, step one re-runs the binary with Command instead"

@@ -84,7 +84,8 @@ thread_local! {
     static THREAD: i32 = rustix::thread::gettid().as_raw_nonzero().get();
 }
 
-// SAFETY: the mapping is the kernel's shared run page, which is written only through atomics here.
+// SAFETY: not shown: atomics here write the run page through a second mapping while kvm-ioctls holds
+// `&mut kvm_run` over the same page (see the reason).
 #[expect(
     unsafe_code,
     reason = "UNSOUND: promises Remote may move to another thread, from which it writes immediate_exit through its own second mapping of the run page while kvm-ioctls holds &mut kvm_run over that page on the CPU's thread (kvm-ioctls vcpu.rs:1690), the same fault as the Sync below; Kick replaces it"
@@ -319,7 +320,8 @@ impl crate::VirtualMachine for KvmVirtualMachine {
             memory_size: length,
             userspace_addr: host.as_ptr() as u64,
         };
-        // SAFETY: the host range is the caller's memory and outlives the mapping.
+        // SAFETY: not shown: this safe method takes any pointer and length, and nothing keeps the range alive
+        // while it is mapped (see the reason).
         unsafe { self.vm.set_user_memory_region(region) }
             .map_err(|e| refused(format_args!("mapping memory: {e}")))
     }
@@ -333,7 +335,8 @@ impl crate::VirtualMachine for KvmVirtualMachine {
             )));
         }
         let host = memory.host_bytes(at, length);
-        // SAFETY: the whole range is guest memory, which the caller no longer needs.
+        // SAFETY: the whole range is guest memory (checked); that nothing reaches it any more rests only on the
+        // inside's request, while virtual CPUs or the monitor's plain copies may still reach it.
         #[expect(
             unsafe_code,
             reason = "UNEXPLAINED: drops the host pages of a range give_back checked is all guest memory, which then reads as zeros, from a safe method any thread may call while virtual CPUs or the monitor's plain copies reach that range; only the inside's request says nothing uses it; a hole punch in the memfd replaces it in step one"
@@ -362,7 +365,8 @@ impl crate::VirtualMachine for KvmVirtualMachine {
             .pop_front()
             .ok_or_else(|| refused(format_args!("every virtual CPU of the machine is taken")))?;
         let bytes = self.vm.run_size();
-        // SAFETY: a shared mapping of the virtual CPU's run page, as KVM gives it to every mapper.
+        // SAFETY: not shown: a second shared mapping of the run page, through which `immediate_exit` is written
+        // while kvm-ioctls holds `&mut kvm_run` over the same page (see the reason).
         #[expect(
             unsafe_code,
             reason = "UNSOUND: maps the virtual CPU's run page a second time, so immediate_exit is written through it while kvm-ioctls holds &mut kvm_run over the page; Kick's flag and repeated signal replace it"
@@ -406,8 +410,8 @@ impl Remote {
         reason = "UNSOUND: an atomic view of immediate_exit in the second mapping of the run page, while kvm-ioctls holds &mut kvm_run over it; Kick's flag and repeated signal replace it"
     )]
     fn immediate_exit(&self) -> &AtomicU8 {
-        // SAFETY: the field lies in the mapping, which lives as long as `self`; the kernel and every writer here
-        // reach it only through atomics or the kernel's own reads.
+        // SAFETY: not shown: the field lies in the mapping, which lives as long as `self`, but kvm-ioctls holds
+        // `&mut kvm_run` over the same page while this atomic view writes it (see the reason).
         unsafe { AtomicU8::from_ptr(&raw mut (*self.run.as_ptr()).immediate_exit) }
     }
 }
@@ -641,7 +645,8 @@ impl crate::Stopper for KvmStopper {
         if thread == NOT_RUN_BY_A_THREAD {
             return Ok(());
         }
-        // SAFETY: a signal whose handler does nothing, to a thread of this process.
+        // SAFETY: a signal whose handler does nothing, to a thread of this process; the id may now name another
+        // thread, whose blocking call it can make fail with EINTR (see the reason).
         #[expect(
             unsafe_code,
             reason = "UNEXPLAINED: sends the stop signal, whose handler does nothing, to the thread id of this process that last ran the CPU; that thread may have ended and its id gone to another thread of this process, where the signal can make a blocking call such as poll fail with EINTR even under SA_RESTART, which nothing shows that thread's code handles; Kick replaces it"

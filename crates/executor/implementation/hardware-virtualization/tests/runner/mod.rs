@@ -335,7 +335,8 @@ impl Runner {
     }
 
     fn write_frames(&self, frame: u64, bytes: &[u8]) {
-        // SAFETY: the frames are the region's, in a row, and the guest is not running.
+        // SAFETY: not shown: only the first byte is checked to lie in guest memory, not the last; the guest is
+        // not running.
         #[expect(
             unsafe_code,
             reason = "UNSOUND: a plain copy into frames from a safe fn that checks only the first byte lies in guest memory, not the last; test only, Words replaces it"
@@ -393,7 +394,8 @@ impl Runner {
         reason = "reads the register page from its frame while the guest is not running; host checks only its first byte lies in guest memory, and the rest does because the frame is page-aligned and guest memory is whole pages, which nothing here asserts; test only, Words replaces it"
     )]
     fn page(&self) -> RegisterPage {
-        // SAFETY: the register page's frame holds a `RegisterPage`; the guest is not running.
+        // SAFETY: the register page's frame holds a `RegisterPage`, and the guest is not running; only its first
+        // byte is checked to lie in guest memory, the rest by page alignment, which nothing here asserts.
         unsafe { std::ptr::read(self.host(self.frame_of(REGISTER_PAGE)).cast()) }
     }
 
