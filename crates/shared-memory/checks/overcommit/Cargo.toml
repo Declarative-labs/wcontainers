@@ -1,0 +1,11 @@
+[package]
+name = "overcommit-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wcontainers-shared-memory = { path = "../..", features = ["host"] }
+rustix = { version = "1.1.6", features = ["fs", "mount", "system", "param", "process"] }

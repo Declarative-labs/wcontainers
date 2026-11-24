@@ -1,6 +1,6 @@
 # The guest-memory primitive, for review
 
-Marks: MEASURED (a run, its log in `checks/`), READ (file:line), INFERRED. Lines are as of commit 673309d7a.
+Marks: MEASURED (a run, its log in `checks/`), READ (file:line), INFERRED. Lines are as of the commit that adds the section on order.
 
 ## The trait and the struct
 
@@ -18,37 +18,50 @@ pub unsafe trait Mapped: Send + Sync + seal::Sealed {
     fn len(&self) -> usize;
 }
 
-pub struct Words { mapping: Arc<dyn Mapped>, base: AtomicPtr<u64>, count: usize }
+pub struct Words { mapping: Arc<dyn Mapped>, span: read_once::Span }   // Span: the base and count, read once, no store
 // new, count, load, store, swap, read, write, wait, wake (Linux), and part, which gives a `Part` borrowing the words.
 ```
 
-The two mappings: `HostMapping` (feature `host`: memmap2 anonymous memory, or a memory file sealed against shrinking) and `HeapMapping` (a `Box<[AtomicU64]>`), which is compiled only under Miri and Kani.
+The two mappings: `HostMapping` (feature `host`: memmap2 anonymous memory, or a memory file sealed against shrinking) and `HeapMapping` (a `Box<[AtomicU64]>`), for Miri and Kani. It is compiled only with `--cfg miri` or `--cfg kani`, and that is a convention, not a guarantee: any build can set either flag (`RUSTFLAGS="--cfg miri" cargo build` compiles a crate that names it, MEASURED). It is sound, so a crate that reached it would get words on its own heap, not undefined behavior.
 
 ## The five unsafe lines
 
 - `pub unsafe trait Mapped` (interface.rs:63): the promise above; only this crate can implement it.
-- `slice::from_raw_parts(base, self.count)` (interface.rs:257): `count` is `len / 8`, the promise keeps the range mapped, aligned and reached only atomically while `self` holds the `Arc`, and every index goes through the slice's own `get`, so wrong offset arithmetic gives an error or wrong bytes, never an access outside.
-- `AtomicU32::from_ptr(half)` (interface.rs:275): the 4 bytes lie inside a word of that slice; only the kernel reads the address.
-- `unsafe impl Mapped for HostMapping` (host/implementation.rs:105): memmap2 keeps the range mapped until drop; anonymous memory never traps; a file must carry the shrink seal (which nothing can remove), be long enough, and not be on hugetlbfs.
-- `unsafe impl Mapped for HeapMapping` (heap/implementation.rs:28): a box this value owns, aligned to 8, freed only on drop.
+- `slice::from_raw_parts(base, count)` (interface.rs:282): `base` and `count` (`len / 8`) were read from the mapping once, in `new`, and `Span` cannot change them; the promise keeps the range mapped, aligned and reached only atomically while `self` holds the `Arc`, and every index goes through the slice's own `get`, so wrong offset arithmetic gives an error or wrong bytes, never an access outside.
+- `AtomicU32::from_ptr(half)` (interface.rs:300): the 4 bytes lie inside a word of that slice; only the kernel reads the address.
+- `unsafe impl Mapped for HostMapping` (host/implementation.rs:145): memmap2 keeps the range mapped until drop; anonymous memory never traps; a file must carry the shrink seal (which nothing can remove), seen BEFORE its size is read, be long enough, and not be on hugetlbfs. Under strict overcommit a file mapping does trap: see below.
+- `unsafe impl Mapped for HeapMapping` (heap/implementation.rs:29): a box this value owns, aligned to 8, freed only on drop.
 
-## What is assumed about the kernel and the hardware
+## What is assumed about the kernel, the hardware and memmap2
 
 - Linux keeps an `mmap` range mapped until `munmap`, which only memmap2's drop calls.
-- A memory file sealed with `F_SEAL_SHRINK` can never become shorter, through any descriptor (MEASURED: `ftruncate` and `O_TRUNC` get `EPERM`).
-- Pages of a memory file or of anonymous memory are always supplied on a fault (not true under `vm.overcommit_memory=2` or a full hugetlbfs: then the fault is SIGBUS, a crash; INFERRED, not tested).
+- A memory file sealed with `F_SEAL_SHRINK` can never become shorter, through any descriptor, and no descriptor can remove the seal (MEASURED: `ftruncate` and `O_TRUNC` get `EPERM`).
+- The seal must be seen BEFORE the size is read. A size read first can be shrunk away by another descriptor, which then seals the file; the call sees a seal and a size that no longer hold together, maps past the end, and the first access is SIGBUS. Enforced by construction: `ShrinkSealedFile::new` (host/implementation.rs:100) reads the seals and is the only way to make one; only its `map` (:112) reads the size. Tested: `a_shrink_then_seal_racing_the_checks_never_maps_past_the_end` (MEASURED below).
+- The checks and the mapping see one file: they all use one `BorrowedFd`, which I/O safety keeps naming the same file while borrowed (a safe `dup2` over it is E0502, attack/refused.rs `redirect`).
+- The file system of an open file never changes, so the huge-page check stays true.
+- memmap2 returns the address of the offset asked, not of its page: it maps from the page that holds the offset and adds the rest (memmap2-0.9.12 src/unix.rs:99-100, :246, READ). The code relies on it in two places: `aligned` (alignment, which it also asserts, so a wrong address would panic) and the SAFETY comment's claim that the bytes from `base` are the file's bytes from the offset, which the size check proved lie inside the file. An address past the offset would reach bytes past the end of the file. Tested: `maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte` loads the first and last word of ranges at offsets 0, 8, 4088 and 4120 that end at the file's last byte; it fails with the base one word late or at the page start (MEASURED below).
+- Pages of a memory file or of anonymous memory are always supplied on a fault. NOT TRUE under strict overcommit (`vm.overcommit_memory=2`), MEASURED in a KVM guest of 448 MiB with the guest's own setting (checks/overcommit/): a sealed 358 MiB memory file maps, and writing its pages through `Words` ends the process with SIGBUS (signal 7) when Committed_AS reaches the CommitLimit (224 MiB). Anonymous memory is refused when mapped (`ENOMEM`), never at a fault. A crash, not a write anywhere else, but the promise's "never traps" is false for a memory file on such a host, and no check in this crate can make it true: another descriptor may punch a hole, and the page faulted back in is charged again (INFERRED). Not tested: a full hugetlbfs (refused by the huge-page check), memory-cgroup limits (expected to kill the process, INFERRED).
 - Mappings of the same file page at two addresses see each other's writes coherently (MEASURED by test, not proven).
 - `futex` wait and wake read the 4 bytes and never write them.
 - An aligned 8-byte access by a guest, the stub process or the kernel is single-copy atomic (Arm ARM; Intel SDM vol. 3A; INFERRED).
 - A relaxed `AtomicU64` load or store is one plain load or store (checkable in the assembly; not checked).
 
+## Where correctness rests on an order, or on a check staying true
+
+- The seal before the size (above): by construction, a race test, the SAFETY comment and this page.
+- The size check staying true from the check to the mapping and for the mapping's life: the seal is permanent, and the size is read inside `map`, just before `mmap`, on the same descriptor. Tests: a second descriptor's shrink and `O_TRUNC` fail, and a grow-only seal is refused.
+- The checks and the mapping on one file: one `BorrowedFd` (above).
+- The start's alignment, checked once in `aligned`: the `MmapRaw` is private (E0616, `field`) and cannot be replaced under live words (E0507, `replace`).
+- The base and count `Words::new` reads once, which the slice trusts at every use: `Span` has private fields and no method that stores, and `Words` no method that takes `&mut self`. No test can show more than that the code has no such method (READ).
+- Not order-dependent, though they check first and use after: `read`, `write` and `word` check offsets through `plan` and then index the slice with `get`, so a wrong plan gives an error or wrong bytes, never an access outside; a `Part` checks its range when made and `Words` checks it again on every access; the futex address lives only as long as the borrow of `self` the call holds.
+
 ## What each check covers, and what it does not
 
-- The suite (native, x86-64 and ARM64): 37 host tests, both mappings' kinds, sizes that are not whole pages, all 32 sets of seals, a file shrunk, truncated, grown and punched through a second descriptor. Not covered: memory pressure, other kernels.
+- The suite (native, x86-64 and ARM64): 39 host tests, among them a 4-second race of a shrink and seal against `HostMapping::file`, and a check that the bytes mapped are the file's from the offset; both mappings' kinds, sizes that are not whole pages, all 32 sets of seals, a file shrunk, truncated, grown and punched through a second descriptor. Not covered: memory pressure (only the strict-overcommit probe in a guest, run by hand), other kernels.
 - Miri: the host's anonymous mapping, the heap mapping and the checker's six attacks, with Stacked and Tree Borrows and 16 seeds of every threaded test. Not covered: memory files (Miri has no `memfd_create`) and the futex calls (Miri refuses rustix's call before our code).
 - Kani: 7 harnesses at 1 to 4 words, every 64-bit offset and index, every buffer up to 33 bytes, any contents; every cover is reached. Not covered: threads, the real futex calls (stubbed), the host mapping, larger counts.
 - Verus: the offset arithmetic for all sizes, but on proof/arithmetic.rs, a copy of arithmetic.rs; proof/agreement.rs checks the two give the same answers at the edges and on 4 million random inputs. Not covered: any unsafe line, and `read`'s promise to load no other word.
-- The compiler: seven safe or outside-crate callers refused (attack/refused.rs), among them `E0603 module seal is private` and `E0277 the trait bound Mine: Sealed is not satisfied`, each with `unsafe_code` allowed.
+- The compiler: eight safe or outside-crate callers refused (attack/refused.rs), among them `E0603 module seal is private` and `E0277 the trait bound Mine: Sealed is not satisfied`, each with `unsafe_code` allowed.
 
 ## Measurements (nanoseconds per copy, median of 11, sealed memory file; MEASURED)
 
@@ -66,4 +79,5 @@ The two mappings: `HostMapping` (feature `host`: memmap2 anonymous memory, or a 
 - The futex on a word's high half passes the suite and Miri; only Kani refuses it (`1 of 1001 failed`), and that is still so.
 - The Kani log predated the last commit and showed unreached covers; the log in `checks/` is of this tree.
 - The Verus proof was of an unlabeled hand copy; the code's arithmetic now sits in its own file, and the copy is labeled and tested against it.
-- `HeapMapping` was an ordinary crate that production code could depend on; it now exists only under `cfg(miri)` or `cfg(kani)`, so a normal build that names it fails with `E0433`.
+- `HeapMapping` was an ordinary crate that production code could depend on; it now exists only under `cfg(miri)` or `cfg(kani)`, so a normal build that names it fails with `E0433`, though any build may set those flags.
+- Round three (the second independent check): the size read before the seals passed every test, Miri and Kani, and ended in SIGBUS under a race. The order is now built into `ShrinkSealedFile`, and the race test fails that wrong order within 1.6 s in each of 120 runs (MEASURED). refused.rs named E0432 where the build gives E0433. Strict overcommit was admitted and untested; it is now measured, and it does break "never traps" for memory files.

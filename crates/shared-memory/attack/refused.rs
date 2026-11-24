@@ -90,9 +90,27 @@ mod seal_missing {
     }
 }
 
-/// Production code naming the heap's test double: E0432, since it exists only under Miri and Kani.
+/// Production code naming the heap's test double: E0433, since it exists only in a build with `--cfg miri` or
+/// `--cfg kani`. That is a convention, not a guarantee: any build can set either flag (`RUSTFLAGS="--cfg miri"`),
+/// and then this compiles.
 #[cfg(refused = "heap")]
 #[test]
 fn heap_double() {
     let _ = wcontainers_shared_memory::HeapMapping::new(1);
+}
+
+/// Pointing the descriptor at another file while `HostMapping::file` holds it borrowed, so that the checks and the
+/// mapping could see two files: E0502, since a safe `dup2` needs the descriptor it replaces mutably.
+#[cfg(all(refused = "redirect", target_os = "linux"))]
+#[test]
+fn redirect_the_descriptor() {
+    use std::os::fd::AsFd;
+
+    use rustix::fs::{MemfdFlags, memfd_create};
+
+    let mut file = memfd_create("words", MemfdFlags::ALLOW_SEALING).expect("a memory file");
+    let other = memfd_create("other", MemfdFlags::empty()).expect("a memory file");
+    let borrowed = file.as_fd();
+    rustix::io::dup2(&other, &mut file).expect("the descriptor points at the other file");
+    let _ = HostMapping::file(borrowed, 0, 8);
 }

@@ -6,7 +6,8 @@ use core::sync::atomic::AtomicU64;
 use crate::Mapped;
 use crate::seal::Sealed;
 
-/// Words on this program's heap, zero when made, built only for Miri and Kani, which cannot run a host's mapping.
+/// Words on this program's heap, zero when made, for Miri and Kani, which cannot run a host's mapping; built only with
+/// `--cfg miri` or `--cfg kani`, which any build can set.
 pub struct HeapMapping {
     words: Box<[AtomicU64]>,
 }

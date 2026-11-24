@@ -35,7 +35,7 @@ PY
   ( cd "$dir"; miri cargo +nightly miri test -p wcontainers-shared-memory --features host --test host -- anonymous 2>&1 | grep -E "Undefined Behavior|test result: |panicked at" | head -4 )
   rm -rf "$dir"
 }
-mutate slice-one-word-long crates/shared-memory/interface.rs 'core::slice::from_raw_parts(base, self.count)' 'core::slice::from_raw_parts(base, self.count + 1)'
+mutate slice-one-word-long crates/shared-memory/interface.rs 'core::slice::from_raw_parts(base, count)' 'core::slice::from_raw_parts(base, count + 1)'
 mutate length-rounded-to-a-page crates/shared-memory/foreign_implementation/host/implementation.rs '        self.map.len()
     }' '        self.map.len().next_multiple_of(4096)
     }'

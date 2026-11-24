@@ -55,38 +55,74 @@ impl HostMapping {
         offset: u64,
         length: usize,
     ) -> Result<Arc<HostMapping>, FileError> {
-        use rustix::fs::{SealFlags, fcntl_get_seals, fstat, fstatfs};
-
         if length == 0 || !length.is_multiple_of(WORD) || !offset.is_multiple_of(WORD as u64) {
             return Err(FileError::Length);
         }
-        if !fcntl_get_seals(file).is_ok_and(|seals| seals.contains(SealFlags::SHRINK)) {
-            return Err(FileError::Unsealed);
-        }
-        if fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32 {
-            return Err(FileError::HugePages);
-        }
-        let size = u64::try_from(fstat(file).map_err(io::Error::from)?.st_size).unwrap_or(u64::MIN);
-        if offset
-            .checked_add(length as u64)
-            .is_none_or(|end| end > size)
-        {
-            return Err(FileError::Short);
-        }
-        let map = MmapOptions::new()
-            .offset(offset)
-            .len(length)
-            .map_raw(&file)?;
+        let map = shrink_sealed::ShrinkSealedFile::new(file)?.map(offset, length)?;
         Ok(Arc::new(HostMapping::aligned(map)))
     }
 
-    /// Wraps a mapping whose start is a page plus a multiple of 8, so aligned to 8.
+    /// Wraps a mapping whose start is a page plus a multiple of 8, so aligned to 8: memmap2 maps from the page that
+    /// holds the offset and returns the address of the offset itself (memmap2-0.9.12 src/unix.rs:99-100, :246).
     fn aligned(map: MmapRaw) -> HostMapping {
         assert!(
             map.as_ptr().cast::<u64>().is_aligned() && !map.as_ptr().is_null(),
             "a mapping starts aligned to 8"
         );
         HostMapping { map }
+    }
+}
+
+/// The one place the host file's size is read: only from a file already seen sealed against shrinking.
+#[cfg(target_os = "linux")]
+mod shrink_sealed {
+    use std::io;
+
+    use memmap2::{MmapOptions, MmapRaw};
+    use rustix::fd::BorrowedFd;
+    use rustix::fs::{SealFlags, fcntl_get_seals, fstat, fstatfs};
+
+    use super::FileError;
+
+    // The order is the point. A seal, once seen, holds for good, so a size read after it is a size the file never goes
+    // below. A size read before it may be gone by the time the seal is seen (another descriptor shrinks the file and
+    // then seals it), and a mapping made on that size faults past the end. The field is private to this module, `new`
+    // reads the seals before it makes the value, and only `map` reads the size, so every size was read after the seals.
+    // The checks and the mapping all use the one borrowed descriptor, which I/O safety keeps naming the same file.
+
+    /// A memory file this program saw sealed against shrinking, not on the huge-page file system.
+    pub(super) struct ShrinkSealedFile<'fd> {
+        file: BorrowedFd<'fd>,
+    }
+
+    impl<'fd> ShrinkSealedFile<'fd> {
+        /// Reads the file's seals and file system, the first thing done with it.
+        pub(super) fn new(file: BorrowedFd<'fd>) -> Result<Self, FileError> {
+            if !fcntl_get_seals(file).is_ok_and(|seals| seals.contains(SealFlags::SHRINK)) {
+                return Err(FileError::Unsealed);
+            }
+            if fstatfs(file).map_err(io::Error::from)?.f_type as u32 == libc::HUGETLBFS_MAGIC as u32
+            {
+                return Err(FileError::HugePages);
+            }
+            Ok(Self { file })
+        }
+
+        /// Reads the size now, and maps the bytes from the offset for the length if the file holds all of them.
+        pub(super) fn map(&self, offset: u64, length: usize) -> Result<MmapRaw, FileError> {
+            let size = u64::try_from(fstat(self.file).map_err(io::Error::from)?.st_size)
+                .unwrap_or(u64::MIN);
+            if offset
+                .checked_add(length as u64)
+                .is_none_or(|end| end > size)
+            {
+                return Err(FileError::Short);
+            }
+            Ok(MmapOptions::new()
+                .offset(offset)
+                .len(length)
+                .map_raw(&self.file)?)
+        }
     }
 }
 
@@ -98,10 +134,14 @@ impl Sealed for HostMapping {}
 )]
 // SAFETY: `MmapRaw` keeps the range mapped readable and writable until it drops, and nothing here remaps or unmaps it.
 // Anonymous memory never traps; a file is sealed against shrinking, which no descriptor of it can undo, and was at
-// least as long as the range when mapped, so it stays so, and it is not on the huge-page file system. `aligned` checked
-// the start, and both constructors the length, which is the mapping's own and never changes. Only `base` hands out the
-// address. Whatever else reaches the bytes (another mapping of the file, another process, or the kernel through the
-// file) is an outside agent and writes only the file's pages.
+// least as long as the range when mapped, so it stays so, and it is not on the huge-page file system. The order matters:
+// the seal was seen BEFORE the size was read (`ShrinkSealedFile`), since a size read first can be shrunk away and the
+// file sealed after. memmap2 returns the address of the offset asked, not of its page, so the bytes from `base` are
+// the file's bytes from the offset. `aligned` checked the start, and both constructors the length, which is the
+// mapping's own and never changes. Only `base` hands out the address. Whatever else reaches the bytes (another mapping
+// of the file, another process, or the kernel through the file) is an outside agent and writes only the file's pages.
+// NOT KEPT: under strict overcommit (`vm.overcommit_memory=2`) a page of a file faulted in can fail to be charged, and
+// the access ends the process with SIGBUS (MEASURED, REVIEW.md); a crash, not a write anywhere else.
 unsafe impl Mapped for HostMapping {
     fn base(&self) -> NonNull<u64> {
         NonNull::new(self.map.as_mut_ptr().cast()).expect("a mapping is never at address 0")

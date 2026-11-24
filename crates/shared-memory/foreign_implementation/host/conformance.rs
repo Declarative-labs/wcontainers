@@ -75,7 +75,7 @@ mod file {
         FallocateFlags, MemfdFlags, SealFlags, fallocate, fcntl_add_seals, ftruncate, memfd_create,
     };
     use rustix::io::Errno;
-    use wcontainers_shared_memory::FileError;
+    use wcontainers_shared_memory::{FileError, Mapped};
 
     use super::*;
 
@@ -258,6 +258,99 @@ mod file {
             Words::new(HostMapping::file(file.as_fd(), 0, LENGTH).expect("the host maps the file"));
         assert_eq!(first.store(3, u64::MAX), Ok(()));
         assert_eq!(second.load(3), Ok(u64::MAX));
+    }
+
+    #[test]
+    fn maps_the_files_bytes_from_the_offset_asked_up_to_its_last_byte() {
+        for (offset, length) in [
+            (0, LENGTH),
+            (WORD as u64, LENGTH - WORD),
+            (LENGTH as u64 - WORD as u64, 2 * WORD),
+            (LENGTH as u64 + 3 * WORD as u64, LENGTH - 3 * WORD),
+        ] {
+            let end = offset + length as u64;
+            let file = memory_file(end, SealFlags::SHRINK);
+            let every: Vec<u8> = (0..end / WORD as u64)
+                .flat_map(|index| (index + 1).to_ne_bytes())
+                .collect();
+            assert_eq!(rustix::io::pwrite(&file, &every, 0), Ok(every.len()));
+            let words = Words::new(
+                HostMapping::file(file.as_fd(), offset, length).expect("the host maps the file"),
+            );
+            let first = offset / WORD as u64 + 1;
+            assert_eq!(words.load(0), Ok(first), "{offset}");
+            let last = words.count() - 1;
+            assert_eq!(words.load(last), Ok(end / WORD as u64), "{offset}");
+            let mut read = vec![0; length];
+            assert_eq!(words.read(0, &mut read), Ok(()));
+            assert_eq!(read, every[offset as usize..], "{offset}");
+        }
+    }
+
+    /// Races `HostMapping::file` against another thread that shrinks the file to nothing and then seals it.
+    ///
+    /// If the size were read before the seals, a call could see the file whole, then see it sealed after the shrink,
+    /// and map bytes past its end, which fault. Several pairs race at once, each try at a different spin of each side;
+    /// the test never touches a mapping, it asks whether one was made over bytes the file no longer has.
+    #[test]
+    fn a_shrink_then_seal_racing_the_checks_never_maps_past_the_end() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+        use std::time::{Duration, Instant};
+
+        /// The longest the test runs when no wrong mapping turns up.
+        const RUN: Duration = Duration::from_secs(4);
+        /// The pairs of racing threads.
+        const PAIRS: usize = 8;
+        /// The most spins either side waits before it starts, so that tries cover every overlap of the two.
+        const SPINS: u64 = 1 << 12;
+
+        let deadline = Instant::now() + RUN;
+        let (tries, found) = (AtomicU64::new(0), AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            for pair in 0..PAIRS as u64 {
+                let (tries, found) = (&tries, &found);
+                scope.spawn(move || {
+                    let mut seed = pair.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+                    let mut spins = move || {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        seed % SPINS
+                    };
+                    while Instant::now() < deadline && !found.load(SeqCst) {
+                        tries.fetch_add(1, SeqCst);
+                        let file = memory_file(2 * LENGTH as u64, SealFlags::empty());
+                        let (mine, theirs, go) = (spins(), spins(), AtomicBool::new(false));
+                        let mapped = std::thread::scope(|inner| {
+                            inner.spawn(|| {
+                                while !go.load(SeqCst) {
+                                    std::hint::spin_loop();
+                                }
+                                (0..theirs).for_each(|_| std::hint::spin_loop());
+                                ftruncate(&file, 0).expect("the file shrinks");
+                                fcntl_add_seals(&file, SealFlags::SHRINK)
+                                    .expect("the file takes the seal");
+                            });
+                            go.store(true, SeqCst);
+                            (0..mine).for_each(|_| std::hint::spin_loop());
+                            HostMapping::file(file.as_fd(), 0, 2 * LENGTH)
+                        });
+                        if let Ok(mapping) = mapped {
+                            let size = rustix::fs::fstat(&file).expect("the file's size").st_size;
+                            if size < mapping.len() as i64 {
+                                found.store(true, SeqCst);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let tries = tries.load(SeqCst);
+        eprintln!("{tries} tries in {RUN:?} or less");
+        assert!(
+            !found.load(SeqCst),
+            "a file the other thread shrank was mapped, after {tries} tries"
+        );
     }
 
     #[test]
