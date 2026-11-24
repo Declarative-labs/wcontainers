@@ -77,7 +77,7 @@ fn declared(
     let views = crate::dxbc::typed_views(code, ranges);
     let arrays = crate::dxbc::multisampled_arrays(code, ranges);
     let (dxil_views, dxil_arrays) = match views.is_none() || arrays.is_none() {
-        true => crate::dxil::of(dxil),
+        true => crate::dxil::of(dxil, ranges),
         false => (None, None),
     };
     (

@@ -4,21 +4,28 @@
 
 use crate::dxbc::{Kind, TypedView};
 use std::ops::Range;
-use wcontainers_gpu::ScalarKind;
+use wcontainers_gpu::{ScalarKind, SlotKind};
 use wcontainers_shaders::container::{DxilShape, DxilView, DxilViews, RANGE_WITHOUT_SIZE};
 
 /// A view's elements: its space, first register and element count.
 pub(crate) type Elements = (u32, u32, u32);
 
-/// The elements of each of a list's views, and the list's places for the slots; `None` where a
-/// range runs past the last register.
-fn places(list: &[DxilView]) -> Option<(Vec<Elements>, Places)> {
+/// The root signature's register ranges, by kind and space (`VariantKey::register_ranges`).
+type Ranges<'a> = &'a [(SlotKind, u32, Range<u32>)];
+
+/// The elements of each of a list's views (of slot kind `kind`), and the list's places for the
+/// slots; `None` where a range runs past the last register. An array without a length takes the
+/// rest of the range of `ranges` holding its first register, where one does, else one place (the
+/// converter refuses it then).
+fn places(list: &[DxilView], kind: SlotKind, ranges: Ranges) -> Option<(Vec<Elements>, Places)> {
     let each = list
         .iter()
         .map(|v| {
-            // An unbounded range is one place: the converter refuses such arrays.
             let count = match v.count {
-                RANGE_WITHOUT_SIZE => 1,
+                RANGE_WITHOUT_SIZE => ranges
+                    .iter()
+                    .find(|(k, s, r)| *k == kind && *s == v.space && r.contains(&v.register))
+                    .map_or(1, |(.., r)| r.end - v.register),
                 count => count,
             };
             if let Some(last) = count.checked_sub(1) {
@@ -34,8 +41,12 @@ fn places(list: &[DxilView]) -> Option<(Vec<Elements>, Places)> {
 /// The typed views of one list: shader resource views (`storage` false, typed buffers only) or
 /// unordered access views (textures and typed buffers), with a slot per element of an array, as
 /// the converter declares a view per element.
-fn typed(list: &[DxilView], storage: bool, out: &mut Vec<TypedView>) -> Option<()> {
-    let (each, all) = places(list)?;
+fn typed(list: &[DxilView], storage: bool, ranges: Ranges, out: &mut Vec<TypedView>) -> Option<()> {
+    let kind = match storage {
+        true => SlotKind::Storage,
+        false => SlotKind::Texture,
+    };
+    let (each, all) = places(list, kind, ranges)?;
     for (v, elements) in list.iter().zip(each) {
         let typed = match storage {
             true => v.shape != DxilShape::Other,
@@ -129,7 +140,7 @@ pub type Declared = (Option<Vec<TypedView>>, Option<Vec<Range<u32>>>);
 /// (`Texture2DMSArray`, a range of slots each), from its module's views (the process's cache keeps them); each `None`
 /// where `code` holds no DXIL module or the lists it is read from are malformed.
 pub fn declared(code: &[u8]) -> Declared {
-    of(crate::cache::dxil_views(code))
+    of(crate::cache::dxil_views(code), &[])
 }
 
 /// Whether a module of views `lists` declares a shader resource or unordered access view array
@@ -143,19 +154,19 @@ pub(crate) fn declares_unbounded_array(lists: &DxilViews) -> bool {
         .any(|v| v.count == RANGE_WITHOUT_SIZE)
 }
 
-/// `declared`, from the views of a module.
-pub(crate) fn of(lists: Option<DxilViews>) -> Declared {
+/// `declared`, from the views of a module, its arrays without a length sized by `ranges`.
+pub(crate) fn of(lists: Option<DxilViews>, ranges: Ranges) -> Declared {
     let Some(lists) = lists else {
         return (None, None);
     };
     let views = (|| {
         let mut out = Vec::new();
-        typed(lists.views.as_deref()?, false, &mut out)?;
-        typed(lists.storage.as_deref()?, true, &mut out)?;
+        typed(lists.views.as_deref()?, false, ranges, &mut out)?;
+        typed(lists.storage.as_deref()?, true, ranges, &mut out)?;
         Some(out)
     })();
     let multisampled = lists.views.as_deref().and_then(|list| {
-        let (each, all) = places(list)?;
+        let (each, all) = places(list, SlotKind::Texture, ranges)?;
         let arrays = list.iter().zip(each);
         let arrays = arrays.filter(|(v, _)| v.shape == DxilShape::MultisampledArray);
         let slots = arrays.map(|(_, e)| all.slots(e)).filter(|s| !s.is_empty());
@@ -265,7 +276,10 @@ mod tests {
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_texels.dxil");
         let first = declared(code);
         assert_eq!(declared(code), first);
-        assert_eq!(first, of(wcontainers_shaders::container::dxil_views(code)));
+        assert_eq!(
+            first,
+            of(wcontainers_shaders::container::dxil_views(code), &[])
+        );
         // Its first half is another container, read on its own.
         let mut cut = code.to_vec();
         cut.truncate(code.len() / 2);
