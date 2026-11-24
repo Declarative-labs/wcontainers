@@ -5726,6 +5726,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- Run 119's scripts in scratch `graphics-shaders/g6-r119`: `cpu-cmd.txt` (rustfmt, clippy, every
+  CPU test binary with every corpus but the mutation run) and `lit2-cmd.txt` (the literal check in a
+  fresh repository of the copy, its lines filtered to this crate and naga, the converters'
+  submodule folders left out as the copy holds them as plain files) through `arm-run <worktree>
+  --name graphics-shaders -- "$(cat X)"`; `gdb-cmd.txt` (backtraces of named fuzz cases at a seed);
+  `gpu.sh <log> "$(cat gpu1-cmd.txt)"` (Windows clippy, then the drawn tests, from the clone
+  `g6-r116/tip`, which is first set to the worktree's tip with its `origin/agents` at GitHub's).
+
 - Run 116's scripts in scratch `graphics-shaders/g6-r116` are run 115's with its folder. The clone's
   `refs/remotes/origin/agents` must name a commit GitHub's `agents` holds (`git ls-remote origin
   agents` in the worktree, then `git update-ref` in the clone): the GPU job bundles only the commits
