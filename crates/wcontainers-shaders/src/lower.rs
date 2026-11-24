@@ -2377,6 +2377,8 @@ struct FunctionLowering<'l, 'a> {
     switch_exits: Vec<Handle<LocalVariable>>,
     /// The element each descriptor picking one at run time names in the switch case being lowered.
     picked: HashMap<u32, u32>,
+    /// The regions enclosing the one being lowered.
+    nesting: usize,
 }
 
 /// Where branches go inside a construct.
@@ -2429,6 +2431,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             cur: 0,
             switch_exits: Vec::new(),
             picked: HashMap::default(),
+            nesting: 0,
         };
         let entry = fl.scan(id)?;
         let mut body = Block::new();
@@ -2750,8 +2753,20 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
 
     // Control flow.
 
-    /// Emits blocks from `label` on until reaching `stop`.
-    fn region(
+    /// Emits blocks from `label` on until reaching `stop`. Lowering recurses once per nested region,
+    /// and every pass over the module after it once per nested block, so nesting deeper than the
+    /// SPIR-V reader takes is refused.
+    fn region(&mut self, label: u32, stop: Option<u32>, t: Targets, out: &mut Block) -> Result<()> {
+        if self.nesting == naga::front::spv::NESTING_LIMIT {
+            return Err(unsupported(crate::refusal::NESTING_BEYOND_LIMIT));
+        }
+        self.nesting += 1;
+        let lowered = self.region_within(label, stop, t, out);
+        self.nesting -= 1;
+        lowered
+    }
+
+    fn region_within(
         &mut self,
         mut label: u32,
         stop: Option<u32>,

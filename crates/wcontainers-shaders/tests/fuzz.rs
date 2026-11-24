@@ -377,7 +377,102 @@ fn a_geometry_count_past_direct3d_s_limit_is_refused() {
     }
 }
 
-/// More threads than wasmtime's pool of converter instances (1,000 by default) converting at once.
+/// A signed DXIL program declaring a constant-length array of views longer than its kind binds (a
+/// mutation of `cs_buffer_array.dxil`, case 5172 of seed 577215): refused by name, where the array's
+/// length once sized its list of registers (48 GiB) and ended the process in a release build.
+#[test]
+fn a_constant_resource_array_longer_than_its_kind_binds_is_refused() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_buffer_array.dxil");
+    let mut b = std::fs::read(path).unwrap();
+    mutate(&mut b, "flip@2804.1,flip@1098.1");
+    sign(&mut b);
+    assert_eq!(
+        convert(Source::Dxil(&b), &VariantKey::default(), None).map(|_| ()),
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::BINDINGS_BEYOND_LIMIT
+        ))
+    );
+}
+
+/// Where a container's header keeps its size, then its chunk count, then its chunks' offsets: after
+/// the magic, the checksum and the version.
+const SIZE_AT: usize = CHECKSUM_AT + size_of::<container::Checksum>() + size_of::<u32>();
+const OFFSETS_AT: usize = SIZE_AT + 2 * size_of::<u32>();
+
+/// `cs_atomics.dxbc`, signed again, with its first `if` (not nested, closed by its first `endif`)
+/// nested `depth` deep: the `if` and its `endif` repeated.
+fn nested_ifs(depth: usize) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxbc");
+    let original = std::fs::read(path).unwrap();
+    let word =
+        |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + size_of::<u32>()].try_into().unwrap());
+    let instruction = |op| {
+        let at = instruction_at(&original, |o| o == op);
+        at..at + token::length(word(&original, at)) as usize * size_of::<u32>()
+    };
+    let opening = instruction(codes::dxbc_op::IF);
+    let closing = instruction(codes::dxbc_op::END_IF);
+    let added = (depth - 1) * (opening.len() + closing.len());
+    let mut b = original[..opening.end].to_vec();
+    for _ in 1..depth {
+        b.extend_from_slice(&original[opening.clone()]);
+    }
+    b.extend_from_slice(&original[opening.end..closing.end]);
+    for _ in 1..depth {
+        b.extend_from_slice(&original[closing.clone()]);
+    }
+    b.extend_from_slice(&original[closing.end..]);
+    let chunks: Vec<_> = container::chunk_list(&original)
+        .unwrap()
+        .map_while(Result::ok)
+        .collect();
+    let program = chunks
+        .iter()
+        .find(|c| c.tag().is_some_and(container::is_program))
+        .and_then(|c| c.contents())
+        .map(|c| c.as_ptr().addr() - original.as_ptr().addr())
+        .expect("the program chunk");
+    let grow = |b: &mut Vec<u8>, at: usize, by: usize| {
+        let grown = word(b, at) + u32::try_from(by).unwrap();
+        b[at..at + size_of::<u32>()].copy_from_slice(&grown.to_le_bytes());
+    };
+    // The program's length in words (after its version), its chunk's size (before it), the
+    // container's size and the offsets of the chunks after it.
+    grow(&mut b, program + size_of::<u32>(), added / size_of::<u32>());
+    grow(&mut b, program - size_of::<u32>(), added);
+    grow(&mut b, SIZE_AT, added);
+    for entry in (0..chunks.len()).map(|i| OFFSETS_AT + i * size_of::<u32>()) {
+        if word(&original, entry) as usize > program {
+            grow(&mut b, entry, added);
+        }
+    }
+    sign(&mut b);
+    b
+}
+
+/// `if`s nested half as deep as the reader takes convert; nested far deeper, where lowering them once
+/// exhausted the stack and ended the process (at a depth between 3,000 and 5,000 on an 8 MiB stack),
+/// they are refused by name.
+#[test]
+fn nesting_past_the_limit_is_refused_by_name() {
+    let variant = VariantKey::default();
+    let within = convert(
+        Source::Dxbc(&nested_ifs(naga::front::spv::NESTING_LIMIT / 2)),
+        &variant,
+        None,
+    );
+    assert!(within.is_ok(), "{:?}", within.err());
+    let far = nested_ifs(naga::front::spv::NESTING_LIMIT * 40);
+    assert_eq!(
+        convert(Source::Dxbc(&far), &variant, None).map(|_| ()),
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::NESTING_BEYOND_LIMIT
+        ))
+    );
+}
+
+/// More threads converting at once than the pool has converter instances (one per host thread) and
+/// than wasmtime's default pool (1,000).
 const MANY_THREADS: usize = 1100;
 
 /// Every thread of many converting at once gets the same conversion as one thread alone: where the

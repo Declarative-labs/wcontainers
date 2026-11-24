@@ -82,6 +82,7 @@ pub const MULTISAMPLED_ARRAY_TEXTURE: &str = "MultisampledArrayTexture";
 pub const MULTISAMPLED_STORAGE: &str = "MultisampledStorage";
 pub const MUL_EXTENDED: &str = "MulExtended";
 pub const NESTED_ARRAY_CONSTANT: &str = "NestedArrayConstant";
+pub const NESTING_BEYOND_LIMIT: &str = "NestingBeyondLimit";
 pub const NON_FINITE_CONSTANT: &str = "NonFiniteConstant";
 pub const NON_FINITE_CONSTANT_ARRAY: &str = "NonFiniteConstantArray";
 pub const NORM_AS_INTEGER: &str = "NormAsInteger";
