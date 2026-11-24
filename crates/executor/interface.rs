@@ -5,6 +5,7 @@ extern crate alloc;
 pub mod memory_space;
 
 use alloc::vec::Vec;
+use core::future::Future;
 use core::ops::Range;
 
 use wcontainers_abi::{Access, CpuError, Permissions, SystemCallRequest, ThreadId};
@@ -17,17 +18,23 @@ pub trait Executor {
     type Architecture: ProcessorArchitecture;
     type TranslatorConfig: Default;
     type GuestMemory: MemorySpace;
+    type Interrupter: ExecutionInterrupter + 'static;
 
     type CreateGuestMemoryError;
     fn create_guest_memory(&self) -> Result<Self::GuestMemory, Self::CreateGuestMemoryError>;
 
-    /// Executes from the given processor state on the given memory until a trap terminates it, and returns the processor state it stopped at.
-    fn execute(
-        &mut self,
+    /// Returns the execution from the given processor state on the given memory, and its interrupter.
+    ///
+    /// The execution runs until a trap terminates it, and completes with the processor state it stopped at.
+    fn execute<'execution>(
+        &'execution mut self,
         processor: ProcessorStateOf<Self>,
-        memory: &Self::GuestMemory,
-        handler: &mut impl TrapHandler,
-    ) -> ProcessorStateOf<Self>;
+        memory: &'execution Self::GuestMemory,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (
+        impl Future<Output = ProcessorStateOf<Self>> + 'execution,
+        Self::Interrupter,
+    );
 
     /// Executes exactly one instruction on the given processor + memory.
     ///
@@ -84,6 +91,10 @@ pub enum MemoryFaultResponse {
 pub enum InterruptResponse {
     Continue,
     Terminate,
+}
+
+pub trait ExecutionInterrupter: Send + Sync {
+    fn interrupt(&self);
 }
 
 /// An executor that can watch one thread and not its siblings.
