@@ -374,7 +374,8 @@ impl Zygote {
                 Ok(()) | Err(Errno::SRCH) => {}
                 Err(errno) => return Err(Unavailable::Host(errno)),
             }
-            let within = std::time::Duration::from_millis(1);
+            // A stop sent at once is most often too early, so the next follows soon.
+            let within = std::time::Duration::from_micros(50);
             if let Some(end) = stub
                 .wait_within(1, turn, within)
                 .map_err(Unavailable::Host)?
