@@ -665,12 +665,12 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
     file the stub already holds at an address it may map anyway), so the guest gains nothing it could not do with
     its own memory, but the structures move off guest-writable memory or are checked again after the call when
     parallel threads are built (3.9).
-    What closes it, before parallel threads exist (designed in W2 run 9; not built, because it rewrites the
-    zygote's and the stub's assembly, which is one of the marked unsafe uses the executors' primitives are to
-    replace: status, "Needs a primitive"): every structure a routine hands the host kernel only to read moves to the
+    What closes it, before parallel threads exist (designed in W2 run 9, built in W2 run 11 on both architectures
+    with no line of `unsafe` added): every structure a routine hands the host kernel only to read is on the
     thread's control page, which the embedder writes and the stub maps read-only: the `recvmsg` iovec, which names
-    one byte of the thread's register page, the `sigaltstack` record of a thread made at run time, and the cpu set
-    of `sched_setaffinity`, which the embedder writes beside the request that asks for it. The `recvmsg` header
+    one byte of the thread's register page, and the `sigaltstack` record of every thread, both written once for
+    every index before the stub starts, and the cpu set of `sched_setaffinity`, which the embedder writes beside
+    the turn that asks for it (one move to a CPU a turn). The `recvmsg` header
     itself cannot move there: the host kernel writes `msg_controllen` and `msg_flags` back into it, and with the
     header on a read-only page `recvmsg` fails with `EFAULT` after it has taken the datagram and installed the
     descriptor (MEASURED, W2 run 10, Graviton4, Linux 7.0: header read-only, -1 EFAULT, descriptor installed, byte
@@ -683,7 +683,9 @@ own read-write mapping, then cleans and invalidates by `CTR_EL0` and ends with `
     only one the filter lets it map and close. So a sibling's store reaches only bytes whose worst effect is a map
     of descriptor 0 when none came, which the host refuses (`EBADF`) and the stub reports as any failed map, or a
     control message it cannot recognise, which the stub refuses, so the embedder ends that stub as it ends any whose
-    turn was refused: the guest can end only its own process. Stub thread 0 then keeps nothing on the zygote's stack (its routines hold their state in registers), so a guest store there
+    turn was refused: the guest can end only its own process. The stub zeroes the header and the control message's
+    first two words before each receive, so nothing left there earlier passes for a descriptor. Stub thread 0 then
+    keeps nothing on the zygote's stack (its routines hold their state in registers), so a guest store there
     changes nothing the stub uses; the zygote's own fork request uses that stack before any guest code exists. The
     zygote's code and the floor's entries stay readable, which gives nothing: they hold no secret. The test that
     comes with it, once parallel threads run: a sibling storing over the whole register page and the zygote's

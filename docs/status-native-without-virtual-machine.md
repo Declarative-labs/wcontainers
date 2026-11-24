@@ -3,6 +3,38 @@
 Plan: docs/native-without-virtual-machine.md. Branch: agents (shared worktree). Scratch:
 pyro-parked/wcontainers-scratch/native-without-virtual-machine.
 
+## W2 run 11 (2026-11-24, round 5 run 3): the whole run read, and the zygote's stack closed
+
+Scratch w2/run11 (send.sh and send-x86.sh run a local script on either machine; test.sh is run 10's whole.sh with
+the test binaries in `LIST`, a `name:filter` each; outputs *-arm.out, *-x86.out). Nothing of this run adds a line with
+`unsafe` (host-process's count in the root manifest is unchanged). No primitive has landed (enforcement-primitive
+revision 2 waits on the owner's seven decisions) and `page-table-split` holds only the interface commit (90e721511),
+so host-process's four page-table methods are unchanged.
+- Read: run 10's whole host-process run (cloud/logs/nwvm/20261124-211230-1570366.log, Graviton4, load 34 to 48): all
+  26 test binaries pass but the known `agrees_with_precise_instruction_set` (the input domain's page at 0x1000, For the
+  owner); the copy test's panic line is its own expected panic.
+- Built, 166771b41, round 5's item 3 (plan 3.7 as corrected in run 10): every record the stub hands the host kernel
+  only to read is on its thread's read-only control page: `control::IOVEC` (the receive's one byte on the register
+  page) and `control::STACK_RECORD` (the thread's `stack_t`), written for every index by `ThreadPages::write_records`
+  before the stub starts, and `control::CPU_SET`, written by `give` for a turn's `Place` (`write_cpu_set`; a CPU past
+  the set or a second `Place` in one turn is `INVAL` before anything is written; the stub no longer bounds the CPU).
+  The commands end at `CPU_SET` (`MAX_COMMANDS` 121 on 4 KiB pages, was 126). The receive's header, byte and control
+  message are on the register page at `register::RECEIVE`, past the register block; the stub zeroes the header and
+  the control message's first two words, reads back only its length, level and type, and maps and closes `BLOCK_FD`
+  (0) without reading the number. Stub thread 0 keeps nothing on the zygote's stack after its start (no stack use
+  is left in either architecture's turn loop). Unit tests: pages.rs
+  `every_thread_s_records_name_its_own_receive_byte_and_signal_stack`,
+  `a_cpu_set_holds_its_cpu_alone_and_one_past_the_set_is_refused`. The race test with a sibling storing in a loop
+  waits for parallel threads (plan 3.7).
+- Verified: Graviton4 (test1-arm.out, load 25 to 31): all 26 test binaries with the change, same verdicts as the run
+  above; then clippy with warnings denied clean and the lib's pages tests, zygote, stub, threads, placement (test2).
+  x86-64 (test3-x86.out, load 29 falling to 7): pages, zygote, stub, files, host, threads, stop, touch, memory,
+  slice, placement, embedder and step pass (floor, interrupt, copy and forged hold no x86 tests); clippy there
+  found `guest_bytes_refused` unused on x86-64 (another job's c143b4001), now built for ARM64 only (6da283ffa), and
+  is clean (test4-x86.out).
+- Round 5 is complete for the independent check: items 1 and 2 built (runs 8 to 10 and W1 round 4 run 2), item 3
+  built here; the gap list is under "Next".
+
 ## W2 run 10 (2026-11-24, round 5 run 2): jumps through a register in the pieces, and plan 3.7 corrected
 
 Scratch w2/run10 (send.sh; jumps.sh with `SEEDS`, `BRANCHY`, `FILTER`; mutate.sh with `SEED`, `BRANCHY`;
@@ -1997,7 +2029,7 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
   the crossover from it (W2 run 7); the two more withheld registers are chosen per piece (W2 run 8: interpret 1.63
   to 1.30); per loop of a piece, and direct branches and counted loops drawn into the in-process test's pieces
   (W2 run 9); jumps through a register drawn into those pieces too (W2 run 10). Next without unsafe: nothing of
-  the way's code generation is left; the zygote-stack design of plan 3.7 (corrected in W2 run 10: the `recvmsg`
+  the way's code generation is left; the zygote-stack fix of plan 3.7 is built (W2 run 11; was: corrected in W2 run 10: the `recvmsg`
   header stays writable) once the stub's assembly has its primitive. The in-process executor itself waits for
   the primitives named under Needs a primitive, "Form I"; with it come the floor's handling of `Outside`,
   `Displaced` and `Probed`, the floor's half of rule e (run a displaced thread one instruction at a time, rejoin
@@ -2360,10 +2392,9 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
 
 ## For the owner
 
-- The zygote's stack (plan 3.7; W2 run 10): the fix needs no new line with `unsafe` but rewrites the stub's
-  assembly, which only the zygote's marked unsafe uses reach, on ARM64 and x86-64. It is left until the fork and
-  `Floor` primitives land, since the gap gives a guest nothing while one guest thread runs at a time. Say if you
-  want it built before then.
+- The zygote's stack (plan 3.7): built in W2 run 11 as the round asked ("build it if it needs no unsafe"). It adds
+  no line with `unsafe`, but it changes the stub's `global_asm!` on ARM64 and x86-64, which the zygote's marked unsafe
+  uses reach and which the fork and `Floor` primitives will restructure; the change moves with that code.
 - Decision 10 under P (round 7 run 1): a turn limited to a count ends exactly only under `HostProcessExecutor::exact`,
   a stand-in constructor for the embedder's choice (the VM inside's `exact_replay` is its twin), which runs every guest
   instruction as a turn. The ordinary executor ends such a turn
