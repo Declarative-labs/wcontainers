@@ -24,7 +24,7 @@ tree's build). Graviton4.
   stop crate keeps a tag where bit 55 is set, as `untag_address` does; the emulator has no tags). A quarter of the
   drawn words now name sp as base or source, an eighth as destination too, and half the stack pointers lie within a
   page of the stack's ends, since random words almost never reached rule c (0 probes in 6 seeds before).
-- Verdicts, Graviton4, 16:00 to 16:40 UTC, load 10 to 28 on 96 cores: clippy with warnings denied clean on the stop
+- Verdicts, Graviton4, 15:58 to 16:22 UTC, load 10 to 28 on 96 cores: clippy with warnings denied clean on the stop
   crate, host-process, the VM executor and its inside (all targets); the arm64 and stop crates' tests pass; before
   the sp bias, seeds 1 to 6 at 16 cases a form pass (8,876 to 8,881 cases, 6,913 to 6,977 stops resolved each;
   check-arm.out); after it, seeds 1 to 6 pass (biased-arm.out: 5,341 to 5,431 resolved, 122 to 162 displaced, 0 to
@@ -34,11 +34,20 @@ tree's build). Graviton4.
   230. Host-process with /dev/kvm denied (check-arm.out): translated 2, differential seed 1 at 64 cases (251,344
   runs), floor 6 passed 1 ignored, step 10, run 14, kernel 12 passed. The VM executor with KVM (check-vm-arm.out, on
   `tree`): exits, native (32,562 cases), floor, registers, host_branches, interrupts and probe pass.
-- Not done, next: the register-offset fusion (`[base, wT, uxtw]`, one `add` fewer, and for an access with no
-  immediate `[base, wA, uxtw]` with no add at all): the encoder must turn a byte form's shifted-register variant
-  (its option fixed at LSL) and an immediate form into the extended-register form, so it is a change to encode.rs
-  as well; its gain cannot be measured until the executor runs. The test still leaves out pieces longer than one
-  instruction, sp not 16-aligned (the emulator checks no SA0) and collisions.
+- Built, 88fd8d184: the register-offset fusion. A register-offset access's checked sum is cut by the access itself,
+  `[x24, w23, uxtw]`, one `add` fewer, wherever no page probe needs the host address (a byte access, an aligned one,
+  or one whose alignment a loop's test proved); a multi-byte one that may cross a page keeps `add t` and `[t, xzr,
+  ext]`. `encode::register_offset_uxtw` makes the word from either register-offset form (the shifted one, whose
+  option Arm's table fixes at LSL, through the extended form's fields; `field::S` and `form::LDR_64_REGISTER` are
+  new), with a unit test on both forms. Checked on Graviton4, 16:30 to 16:50 UTC, load 9 to 16 (fusion-arm.out,
+  fusion-vm-arm.out, mutate-fusion-arm.out, on `tree`): clippy clean on the arm64, stop, host-process and VM crates;
+  the arm64, translator, guest-cpu and stop crates' tests pass; in_process_way seeds 1 to 6 at 16 cases a form pass
+  (5,389 to 5,579 stops resolved each); with the fused access indexed by xzr in the remote copy 11 forms fail (the
+  byte forms among them), so the fused path is the one run; the VM executor's seven tests pass with KVM. Its gain is
+  not measured: no executor runs the way yet.
+- Not done, next: the same cut for an access with no offset (`[x24, wA, uxtw]` for `[xA]`, no `add` at all), which
+  needs the encoder to turn an immediate form into a register-offset one; the test still leaves out pieces longer
+  than one instruction, sp not 16-aligned (the emulator checks no SA0) and collisions.
 
 ## W2 run 2 (2026-11-24): the translator's in-process way, built and checked under an emulator
 
@@ -1652,9 +1661,9 @@ round 3 run 3); form I's bounds-check bypass as a host program (run 6); placemen
 - The owner's rule of 2026-11-24 comes first: add no unsafe; the 18 uses left wait for the primitives (Needs a
   primitive); when they land, each use here becomes a call of one.
 - W2 (form I): the translator's `InProcess` way is built and checked under the emulator (W2 run 2), and its stops
-  resolve through the stop crate's `in_process` module, checked on every emulated stop (W2 run 3). Next without
-  unsafe: the register-offset fusion (W2 run 3's last item says what the encoder needs), then longer pieces in the
-  test. The in-process executor itself waits for the primitives named under Needs a primitive, "Form I"; with it
+  resolve through the stop crate's `in_process` module, checked on every emulated stop, and a register-offset
+  access is cut by its own addressing (W2 run 3). Next without unsafe: the same cut for an access with no offset
+  (W2 run 3's last item says what the encoder needs), then longer pieces in the test. The in-process executor itself waits for the primitives named under Needs a primitive, "Form I"; with it
   come the floor's handling of `Outside`, `Displaced` and `Probed`, the displaced mode (rule e) and every measured
   item of W2's bar.
 - W3 now also carries the x86 native output track's in-process tests (interface-changes.md, 2026-11-24): the link,
@@ -1936,7 +1945,13 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   Verified on Graviton4 (W2 run 3 above): the arm64 and stop crates' tests, host-process's translated, differential,
   floor, step, run and kernel tests, and the VM executor's exits, native, floor, registers, host_branches,
   interrupts and probe tests pass; nothing of the VM executor changed.
-- For the translator track, not done: the InProcess way's wrapping form and its register-offset fusion.
+- 88fd8d184 (W2 run 3), crates/wcontainers-arm64 (carry.rs, encode.rs), the in-process way only: a register-offset
+  access is cut by `[base, wT, uxtw]` where no page probe needs the host address; `encode::register_offset_uxtw`,
+  `field::S` and `form::LDR_64_REGISTER` are new. The machine and process ways' output is unchanged. Verified on
+  Graviton4 (W2 run 3 above): the arm64, translator, guest-cpu and stop crates' tests and the VM executor's seven
+  tests pass.
+- For the translator track, not done: the InProcess way's wrapping form, and its cut by the access's own
+  addressing for an access with no offset.
 - Kernel: K2 (placement low first, memory size at start) as docs/native.md asks, now W1's need too: until it
   lands W1's bar is equal verdicts, and `differential` and `count_at_every_stop` wait on it by name; several threads running at once
   for `ThreadOrdering::Parallel`; calling the stopper (plan 8 item 3) from `suspend_tasks`, `suspend_threads`,

@@ -251,8 +251,9 @@ after the register page. Every failed check, and every new stack pointer outside
 at the window's base plus 2^32 (`way::OUTSIDE`, unmapped by 3.1) out of line: the floor finds there either the
 instruction's own fault (the access's address from its operand) or a stack pointer to take displaced (e), by the
 span's instruction; no new call code. An access with an immediate is `add t, base, wA, uxtw` then the copied word
-on t; a register offset becomes `[t, xzr, <its extend>]` after its sum is checked (one instruction more than the
-measured `[base, wA, uxtw]`, kept for now); a written back base gets its new value in u before the access and from
+on t; a register offset's sum, once checked, is cut by the access itself, `[base, wT, uxtw]` (the measured form;
+W2 run 3), except where a page probe in front of it needs the host address, which then becomes `add t, base, wT,
+uxtw; <access> [t, xzr, <its extend>]`; a written back base gets its new value in u before the access and from
 u after it, with a fix-up between, so the copied word's own writeback lands on t and a base that collides with a
 data register needs no other rule. A literal outside the window is known when translated. Exclusives keep and
 compare guest addresses and access through u. The direct exits' slot table is the slot's (`2^46 | k << 35`), so
@@ -263,7 +264,8 @@ the same way; a read of the mark is the access's own fault at its first byte (`O
 takes from the instruction, as the mark is a read) where the access's address before or after its immediate is
 outside the window, else a stack pointer leaving it (`Displaced`, the state before the instruction); a fault or an
 alignment fault of a rule (c) probe is `Probed`, the state after the instruction. Not built: the displaced mode (e)
-and the floor itself, the register-offset fusion, and the wrapping form.
+and the floor itself, the cut by the access's own addressing for an access with no offset (`[base, wA, uxtw]` for
+`[xA]`, which needs the encoder to turn an immediate form into a register-offset one), and the wrapping form.
 The slot table's base and reach, the entries' address and size are `wcontainers_arm64::way`'s constants, which the
 host-process layout asserts; stops resolve through `wcontainers-executor-arm64-stop` with the way as a parameter.
 Withheld registers: the VM form's three (count x18, scratch x23, register page x28) in P; two more in I (`base`
