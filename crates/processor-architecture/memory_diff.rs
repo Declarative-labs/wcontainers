@@ -96,8 +96,14 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
             ensures
                 records_unpaired(mutation@, vstd::prelude::old(written)@, *vstd::prelude::old(has_unpaired_permission), final(written)@, *final(has_unpaired_permission)),
         {
+            proof {
+                broadcast use vstd::laws_cmp::group_laws_cmp;
+            }
             match mutation {
                 MemoryDelta::ValueAssignment { start, bytes } => {
+                    proof {
+                        assert(ADDRESSES_END == 0x1_0000_0000_0000_0000) by (compute_only);
+                    }
                     // VERUS: no deref of a `Cow`, so its two cases are matched.
                     let bytes: &[u8] = match bytes { Cow::Borrowed(borrowed) => borrowed, Cow::Owned(owned) => owned.as_slice() };
                     let ghost before = written@;
@@ -120,8 +126,7 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                     }
                 },
                 MemoryDelta::PermissionAssignment { addresses, .. } => {
-                    // VERUS: no `Range::is_empty`, so emptiness is its start not below its end.
-                    *has_unpaired_permission |= addresses.start < addresses.end;
+                    *has_unpaired_permission |= !addresses.is_empty();
                     proof {
                         assert(written@.is_prefix_of(written@)) by {
                             assert(written@.take(written@.len() as int) =~= written@);
@@ -166,21 +171,22 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                 assert(mutations@.take(0) =~= Seq::<MemoryDelta<'_, Architecture>>::empty());
                 assert(bytes_resolved(memory_of(mutations@.take(0)), rendered@, start));
             }
-            // VERUS: no `for` over a slice whose position a proof can name, so the mutations are walked by index.
-            let mut index: usize = 0;
-            while index < mutations.len()
+            for mutation in walking: mutations
                 invariant
-                    index <= mutations@.len(),
+                    walking.seq() == mutations@.as_ref(),
                     rendered@.len() == length,
                     start as int + length as int <= address_count(),
-                    bytes_resolved(memory_of(mutations@.take(index as int)), rendered@, start),
-                decreases mutations@.len() - index,
+                    bytes_resolved(memory_of(mutations@.take(walking.index())), rendered@, start),
             {
                 let ghost before = rendered@;
+                let ghost index = walking.index();
+                proof {
+                    assert(*mutation == mutations@[index]);
+                }
                 if let MemoryDelta::ValueAssignment {
                     start: mutation_start,
                     bytes,
-                } = &mutations[index]
+                } = mutation
                 {
                     // VERUS: no deref of a `Cow`, so its two cases are matched.
                     let bytes: &[u8] = match bytes { Cow::Borrowed(borrowed) => borrowed, Cow::Owned(owned) => owned.as_slice() };
@@ -206,9 +212,8 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                     }
                 }
                 proof {
-                    lemma_resolved_after_change(mutations@, index as int, before, rendered@, start);
+                    lemma_resolved_after_change(mutations@, index, before, rendered@, start);
                 }
-                index += 1;
             }
             proof {
                 assert(mutations@.take(mutations@.len() as int) =~= mutations@);
@@ -224,6 +229,7 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
         {
             proof {
                 Architecture::equality_is_identity();
+                broadcast use vstd::laws_cmp::group_laws_cmp;
             }
             // VERUS: no `RangeMap`, so its `new` and `insert` are trusted.
             let mut rendered = new_range_map();
@@ -231,35 +237,35 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                 assert(mutations@.take(0) =~= Seq::<MemoryDelta<'_, Architecture>>::empty());
                 assert(assignments(mutations@.take(0)) =~= Seq::empty());
             }
-            // VERUS: no `for` over a slice whose position a proof can name, so the mutations are walked by index.
-            let mut index: usize = 0;
-            while index < mutations.len()
+            for mutation in walking: mutations
                 invariant
-                    index <= mutations@.len(),
+                    walking.seq() == mutations@.as_ref(),
                     obeys_concrete_eq::<Architecture::PagePermission>(),
-                    permissions_resolved::<Architecture>(memory_of(mutations@.take(index as int)), rendered),
-                decreases mutations@.len() - index,
+                    permissions_resolved::<Architecture>(memory_of(mutations@.take(walking.index())), rendered),
             {
                 let ghost before = rendered;
-                // VERUS: no `let` chain in a condition and no `Range::is_empty`, so the empty check is a guard.
-                match &mutations[index] {
-                    MemoryDelta::PermissionAssignment {
-                        addresses,
-                        permission,
-                    } if addresses.start < addresses.end => {
+                let ghost index = walking.index();
+                proof {
+                    assert(*mutation == mutations@[index]);
+                }
+                // VERUS: no `let` in a condition joined by `&&`, so the empty check is an `if` of its own.
+                if let MemoryDelta::PermissionAssignment {
+                    addresses,
+                    permission,
+                } = mutation
+                {
+                    if !addresses.is_empty() {
                         insert_range(&mut rendered, addresses, *permission);
-                    },
-                    _ => {},
+                    }
                 }
                 proof {
-                    lemma_memory_of_take(mutations@, index as int);
-                    let memory = memory_of(mutations@.take(index as int));
-                    assert forall|address: u64| #[trigger] apply(memory, mutations@[index as int]@)(address).1
+                    lemma_memory_of_take(mutations@, index);
+                    let memory = memory_of(mutations@.take(index));
+                    assert forall|address: u64| #[trigger] apply(memory, mutations@[index]@)(address).1
                         == permission_or_default::<Architecture>(range_map_values(&rendered)(address)) by {
                         assert(memory(address).1 == permission_or_default::<Architecture>(range_map_values(&before)(address)));
                     }
                 }
-                index += 1;
             }
             proof {
                 assert(mutations@.take(mutations@.len() as int) =~= mutations@);
@@ -269,8 +275,7 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
 
         // Mutations both lists make in the same order leave the same memory wherever no other mutation reaches, so only
         // what the unpaired mutations reach can differ.
-        // VERUS: no shift in a constant it evaluates, so the end is the last address plus one.
-        const ADDRESSES_END: u128 = u64::MAX as u128 + 1;
+        const ADDRESSES_END: u128 = 1 << u64::BITS;
         proof {
             Architecture::equality_is_identity();
         }
@@ -651,28 +656,30 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
             range_map_get(permissions, address).unwrap_or(Architecture::DEFAULT_PERMISSION)
         };
         // Between two neighboring bounds each list leaves one permission.
-        // VERUS: no `for` over a consumed iterator whose first item is taken apart, so the bounds are walked by index.
-        if bounds.is_empty() {
+        let ghost all = bounds@;
+        let mut bounds = bounds.into_iter();
+        let Some(mut start) = bounds.next() else {
             proof {
                 lemma_permissions_outside::<Architecture>(memory_old, memory_new, after_values, old_permissions, new_permissions,
-                    bounds@, 0, 0);
+                    all, 0, 0);
                 lemma_permissions_sent(memory_old, memory_new, hook_after_bytes, *mutation_hook, permission_changes);
                 lemma_bytes_then_permissions(memory_old, memory_new, hook_before, hook_after_bytes, *mutation_hook);
             }
             return;
-        }
-        let ghost low = bounds@[0] as int;
-        let mut end_index: usize = 1;
-        while end_index < bounds.len()
+        };
+        let ghost low = all[0] as int;
+        for end in walking: bounds
             invariant
-                1 <= end_index <= bounds@.len(),
-                low == bounds@[0] as int,
-                strictly_ascending(bounds@),
+                1 <= all.len(),
+                walking.seq() == all.drop_first(),
+                start == all[walking.index()],
+                low == all[0] as int,
+                strictly_ascending(all),
                 permissions_resolved::<Architecture>(memory_old, old_permissions),
                 permissions_resolved::<Architecture>(memory_new, new_permissions),
-                values_by_bounds(range_map_values(&old_permissions), bounds@),
-                values_by_bounds(range_map_values(&new_permissions), bounds@),
-                permissions_up_to(memory_old, memory_new, apply_all(after_values, permission_changes), low, bounds@[end_index - 1] as int),
+                values_by_bounds(range_map_values(&old_permissions), all),
+                values_by_bounds(range_map_values(&new_permissions), all),
+                permissions_up_to(memory_old, memory_new, apply_all(after_values, permission_changes), low, start as int),
                 receives(hook_after_bytes, *mutation_hook, permission_changes),
                 memory_old == memory_new ==> permission_changes.len() == 0 && *mutation_hook == hook_after_bytes,
                 memory_old == memory_of(old@),
@@ -684,43 +691,45 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                 forall|permissions: &RangeMap<u64, Architecture::PagePermission>, address: u64, permission: Architecture::PagePermission|
                     #[trigger] read_permission.ensures((permissions, address), permission)
                         ==> permission == permission_or_default::<Architecture>(range_map_values(permissions)(address)),
-            decreases bounds@.len() - end_index,
         {
             proof {
                 reveal(obeys_concrete_eq);
             }
-            let addresses = bounds[end_index - 1]..bounds[end_index];
+            let ghost end_index = walking.index() + 1;
+            proof {
+                assert(end == all[end_index]);
+            }
+            let addresses = start..end;
+            start = end;
             let permission = read_permission(&new_permissions, addresses.start);
             if read_permission(&old_permissions, addresses.start) != permission {
                 proof {
                     assert(memory_old(addresses.start).1 != memory_new(addresses.start).1);
                 }
                 let ghost hook_now = *mutation_hook;
-                let mutation = MemoryDelta::PermissionAssignment {
+                let ghost change = Assignment::<Architecture::PagePermission>::PermissionAssignment { addresses, permission };
+                mutation_hook.on_memory_mutated(MemoryDelta::PermissionAssignment {
                     addresses,
                     permission,
-                };
-                let ghost change = mutation@;
-                mutation_hook.on_memory_mutated(mutation);
+                });
                 proof {
                     lemma_receives_one(hook_after_bytes, hook_now, *mutation_hook, permission_changes, change);
                     lemma_apply_all_push(after_values, permission_changes, change);
                     lemma_permission_interval::<Architecture>(memory_old, memory_new, apply_all(after_values, permission_changes),
-                        apply_all(after_values, permission_changes.push(change)), old_permissions, new_permissions, bounds@,
-                        end_index as int, low, true);
+                        apply_all(after_values, permission_changes.push(change)), old_permissions, new_permissions, all,
+                        end_index, low, true);
                     permission_changes = permission_changes.push(change);
                 }
             } else {
                 proof {
                     lemma_permission_interval::<Architecture>(memory_old, memory_new, apply_all(after_values, permission_changes),
-                        apply_all(after_values, permission_changes), old_permissions, new_permissions, bounds@, end_index as int, low, false);
+                        apply_all(after_values, permission_changes), old_permissions, new_permissions, all, end_index, low, false);
                 }
             }
-            end_index += 1;
         }
         proof {
             lemma_permissions_outside::<Architecture>(memory_old, memory_new, apply_all(after_values, permission_changes), old_permissions,
-                new_permissions, bounds@, low, bounds@[bounds@.len() - 1] as int);
+                new_permissions, all, low, all[all.len() - 1] as int);
             lemma_permissions_sent(memory_old, memory_new, hook_after_bytes, *mutation_hook, permission_changes);
             lemma_bytes_then_permissions(memory_old, memory_new, hook_before, hook_after_bytes, *mutation_hook);
         }

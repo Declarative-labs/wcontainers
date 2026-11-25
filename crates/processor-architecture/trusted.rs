@@ -8,6 +8,8 @@ use core::ptr;
 use rangemap::RangeMap;
 #[cfg(verus_keep_ghost)]
 use vstd::laws_eq::obeys_concrete_eq;
+#[cfg(verus_keep_ghost)]
+use vstd::std_specs::cmp::PartialOrdSpec;
 use vstd::prelude::*;
 
 verus! {
@@ -96,6 +98,19 @@ pub fn append_bounds<V: Eq + Clone>(map: &RangeMap<u64, V>, bounds: &mut Vec<u64
         bounds.push(addresses.start);
         bounds.push(addresses.end);
     }
+}
+
+/// `Range::is_empty` as std defines it: a range is empty when its start is not below its end.
+#[cfg(verus_keep_ghost)]
+#[cfg_attr(verus_keep_ghost, verus::trusted)]
+#[verifier::external_fn_specification]
+pub fn ex_range_is_empty<Idx: PartialOrd<Idx>>(range: &Range<Idx>) -> (empty: bool)
+    where
+        Idx: PartialOrd<Idx>,
+    ensures
+        Idx::obeys_partial_cmp_spec() ==> empty == !(range.start.partial_cmp_spec(&range.end) == Some(core::cmp::Ordering::Less)),
+{
+    range.is_empty()
 }
 
 /// Whether the two slices are the same slice, which then holds the same bytes.
