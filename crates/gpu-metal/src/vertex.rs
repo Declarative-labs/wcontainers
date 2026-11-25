@@ -162,6 +162,36 @@ fn half_one() -> u16 {
     15 << 10
 }
 
+/// Returns the ranges of a stream of `length` bytes that a widened copy reads, from element `first` to `end` at `stride`,
+/// `element` bytes of each, and the stride they lie at once read: one range when the elements lie close, one an element
+/// otherwise, so that no more than twice the elements' bytes are read. None when a place overflows.
+pub(crate) fn find_element_reads(
+    first: u64,
+    end: u64,
+    stride: u64,
+    element: u64,
+    length: u64,
+) -> Option<(u64, Vec<(u64, u64)>)> {
+    let count = end.saturating_sub(first);
+    let start = first.checked_mul(stride)?;
+    if count == 0 || start >= length {
+        return Some((stride, Vec::new()));
+    }
+    if stride <= element.saturating_mul(2) {
+        let span = count.saturating_sub(1).checked_mul(stride)?.checked_add(element)?;
+        return Some((stride, vec![(start, span.min(length.saturating_sub(start)))]));
+    }
+    let mut reads = Vec::new();
+    for at in 0..count {
+        let offset = at.checked_mul(stride)?.checked_add(start)?;
+        if offset >= length {
+            break;
+        }
+        reads.push((offset, element.min(length.saturating_sub(offset))));
+    }
+    Some((element, reads))
+}
+
 impl<M: Metal> MetalGpu<M> {
     /// Returns the draw's layout and streams with each stream of a format naga lacks widened, or none if it has none.
     ///
@@ -246,25 +276,25 @@ impl<M: Metal> MetalGpu<M> {
                 })
                 .max()
                 .unwrap_or(u64::MIN);
-            let skipped = first.checked_mul(source_stride).ok_or(overflow)?;
-            let read = end
-                .saturating_sub(first)
-                .saturating_sub(1)
-                .checked_mul(source_stride)
-                .and_then(|bytes| bytes.checked_add(last_attribute))
-                .ok_or(overflow)?
-                .min(length.saturating_sub(skipped));
-            let read = if end == u64::MIN { u64::MIN } else { read };
+            // Only the bytes of the elements the draw reads are read back, each element's alone when they lie apart.
+            let (packed, reads) = find_element_reads(first, end, source_stride, last_attribute, length).ok_or(overflow)?;
             let resumed = self.end_open_pass();
-            let read_offset = binding.offset.checked_add(skipped).ok_or(overflow)?;
-            let bytes = self.read_buffer_now(&raw, read_offset, read);
+            let mut bytes = Vec::new();
+            for (at, size) in reads {
+                let offset = binding.offset.checked_add(at).ok_or(overflow)?;
+                let mut element = self.read_buffer_now(&raw, offset, size);
+                if packed != source_stride {
+                    element.resize(usize::try_from(packed).map_err(|_| overflow)?, 0);
+                }
+                bytes.extend_from_slice(&element);
+            }
             self.pass = resumed;
             let size = |n: u64| usize::try_from(n).map_err(|_| overflow);
             // The elements before the first the draw reads stay zero.
             let mut out = vec![0; size(first.checked_mul(u64::from(stride)).ok_or(overflow)?)?];
             out.reserve(size(copy_bytes)?.saturating_sub(out.len()));
             for element in 0..size(end.saturating_sub(first))? {
-                let at = element.checked_mul(s.stride as usize).ok_or(overflow)?;
+                let at = element.checked_mul(size(packed)?).ok_or(overflow)?;
                 for (_, a) in &places {
                     let start = at.checked_add(a.offset as usize).ok_or(overflow)?;
                     let end = start
@@ -309,5 +339,30 @@ impl<M: Metal> MetalGpu<M> {
         }));
         self.widened_layouts.insert(of, block.clone());
         block
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_element_reads;
+
+    #[test]
+    fn a_widened_copy_reads_each_element_it_needs_and_no_more() {
+        // Two elements a gigabyte apart: twelve bytes of each, not the gigabyte between.
+        assert_eq!(
+            find_element_reads(0, 2, 1 << 30, 12, 2 << 30),
+            Some((12, vec![(0, 12), (1 << 30, 12)]))
+        );
+        // Elements close together: one range, from the first element read to the end of the last.
+        assert_eq!(find_element_reads(1, 4, 16, 12, 1000), Some((16, vec![(16, 44)])));
+        // The last element is cut at the stream's end, and one past it is not read.
+        assert_eq!(
+            find_element_reads(0, 3, 100, 12, 105),
+            Some((12, vec![(0, 12), (100, 5)]))
+        );
+        // No element, or a first one past the end, reads nothing; a place past `u64` refuses.
+        assert_eq!(find_element_reads(5, 5, 100, 12, 1000), Some((100, Vec::new())));
+        assert_eq!(find_element_reads(20, 21, 100, 12, 1000), Some((100, Vec::new())));
+        assert_eq!(find_element_reads(1 << 40, 1 << 41, 1 << 30, 12, u64::MAX), None);
     }
 }
