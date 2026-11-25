@@ -190,10 +190,54 @@ pub fn translator<G: GuestTest>() -> PathBuf {
     path
 }
 
+/// The flags and protections of `mmap` the page's stand-in reads, the same on ARM64 and x86-64.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Mapping {
+    r#type: u32,
+    private: u32,
+    anonymous: u32,
+    fixed: u32,
+    fixed_no_replace: u32,
+    grows_down: u32,
+    read: u32,
+    write: u32,
+    execute: u32,
+    stack_guard_gap_pages: u64,
+}
+
+/// The system calls that hand out memory, for the page's settings.
+#[derive(Serialize)]
+struct Memory {
+    mmap: u64,
+    munmap: u64,
+    mapping: Mapping,
+}
+
 /// The stand-in kernel's numbers, for the page's settings.
 fn stand_in<G: GuestTest>() -> Value {
+    use linux_raw_sys::general::{
+        MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_PRIVATE, MAP_TYPE,
+        PROT_EXEC, PROT_READ, PROT_WRITE,
+    };
     let numbers = G::STAND_IN;
-    serde_json::json!({
+    let memory = Memory {
+        mmap: numbers.mmap,
+        munmap: numbers.munmap,
+        mapping: Mapping {
+            r#type: MAP_TYPE,
+            private: MAP_PRIVATE,
+            anonymous: MAP_ANONYMOUS,
+            fixed: MAP_FIXED,
+            fixed_no_replace: MAP_FIXED_NOREPLACE,
+            grows_down: MAP_GROWSDOWN,
+            read: PROT_READ,
+            write: PROT_WRITE,
+            execute: PROT_EXEC,
+            stack_guard_gap_pages: crate::runner::STACK_GUARD_GAP_PAGES,
+        },
+    };
+    let mut settings = serde_json::json!({
         "write": numbers.write,
         "writev": numbers.writev,
         "exit": numbers.exit,
@@ -204,7 +248,15 @@ fn stand_in<G: GuestTest>() -> Value {
             "bases": set.bases.iter().map(|&(code, at)| [code, at as u64]).collect::<Vec<_>>(),
             "limit": set.limit.to_string(),
         })),
-    })
+    });
+    let Value::Object(all) = &mut settings else {
+        unreachable!("the settings are an object")
+    };
+    let Ok(Value::Object(more)) = serde_json::to_value(memory) else {
+        unreachable!("the memory calls are an object")
+    };
+    all.extend(more);
+    settings
 }
 
 /// What happened in Chrome: the program's output and status, and the runner's report.

@@ -633,6 +633,9 @@ impl GuestTest for X86_64 {
         exit: 60,
         exit_group: 231,
         brk: 12,
+        // https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl
+        mmap: 9,
+        munmap: 11,
         // arch_prctl with ARCH_SET_GS or ARCH_SET_FS, below the top of user space.
         set_base: Some(SetBase {
             number: 158,

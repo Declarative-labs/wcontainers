@@ -1,6 +1,6 @@
 // The browser runner, as a module worker: one guest thread, its memory, the hooks, and a stand-in for the
-// kernel that answers write, writev, exit, exit_group and brk. It does what the wasmtime runner does, with
-// every name and number taken from the translator's own contract.
+// kernel that answers write, writev, exit, exit_group, brk, and mmap and munmap of private anonymous memory.
+// It does what the wasmtime runner does, with every name and number taken from the translator's own contract.
 
 // Where the thread block and the permission table sit in the state memory.
 const BLOCK_AT = 0;
@@ -121,6 +121,8 @@ function run({
   // The names of the kinds of stop, a trap's among them.
   const stops = runner.stopKinds;
   const locks = new Uint8Array(permissionPages);
+  // Which pages are mapped: given permissions (none too) by the set-up, mmap or brk.
+  const mapped = new Uint8Array(permissionPages);
   // Translate the instruction at this address without locking its page, at the next exact load there.
   let exactMark = null;
   // Each translation instantiated: the guest bytes it was made from, the addresses it gave pieces.
@@ -142,6 +144,8 @@ function run({
     const at = slotEntry(address);
     return at === null ? 0 : new Uint32Array(state.buffer)[at];
   };
+  // The program break: where it starts, the page after the blob, and where it is now.
+  let breakStart = 0;
   let programBreak = 0;
   // The thread left to give up its WebAssembly frames, and runs on from its registers.
   let framesGivenUp = false;
@@ -208,7 +212,10 @@ function run({
   function setPermissions(start, end, permissions) {
     const first = Math.floor(start / pageSize);
     const last = Math.ceil(end / pageSize);
-    for (let page = first; page < last; page++) pagePermissions[page] = permissions;
+    for (let page = first; page < last; page++) {
+      pagePermissions[page] = permissions;
+      mapped[page] = 1;
+    }
     for (let page = Math.max(first - 1, 0); page < Math.min(last, permissionPages); page++) writePermissionByte(page);
   }
 
@@ -265,13 +272,153 @@ function run({
     slowPath(reason.codeWrittenWithoutAnnouncement, start, 0);
   }
 
+  // A call the stand-in does not have, or a form of one it does not answer: counted, and "not implemented".
+  function notImplemented(number) {
+    const ENOSYS = 38n;
+    slowPath(reason.systemCallNotImplemented, number, 0);
+    return -ENOSYS;
+  }
+
+  // Whether code a translation in use was made from lies on pages [first, end). The stand-in neither maps nor
+  // unmaps such pages: their pieces would carry on running.
+  function holdsCode(first, end) {
+    const start = BigInt(first * pageSize);
+    const stop = BigInt(end * pageSize);
+    return translations.some((t) => t.read.some(([s, e]) => s < stop && start < e));
+  }
+
+  // The instruction pieces made one at a time for addresses on pages [first, end) are dropped.
+  function forgetExactPieces(first, end) {
+    const size = BigInt(pageSize);
+    const on = (address) => address / size >= BigInt(first) && address / size < BigInt(end);
+    for (const address of [...exactPieces.keys()]) {
+      if (on(address) || on(address + BigInt(contract.maxLength - 1))) exactPieces.delete(address);
+    }
+  }
+
+  // Map pages [first, end) of memory as new anonymous memory: zero, allowing `permissions`.
+  function mapPages(first, end, permissions) {
+    guest().fill(0, first * pageSize, end * pageSize);
+    forgetExactPieces(first, end);
+    setPermissions(first * pageSize, end * pageSize, permissions);
+  }
+
+  // Unmap pages [first, end), those of memory among them.
+  function unmapPages(first, end) {
+    end = Math.min(end, permissionPages);
+    if (first >= end) return;
+    forgetExactPieces(first, end);
+    setPermissions(first * pageSize, end * pageSize, 0);
+    mapped.fill(0, first, end);
+  }
+
+  // Where a new mapping of `count` pages goes, as Linux places one from the top down: the highest free pages
+  // below the highest mapped run and its guard gap, never the first page. The first page, or null.
+  function freePages(count) {
+    let end = permissionPages;
+    const highest = mapped.lastIndexOf(1);
+    if (highest >= 0) {
+      let bottom = highest;
+      while (bottom > 0 && mapped[bottom - 1]) bottom--;
+      end = bottom - calls.mapping.stackGuardGapPages;
+    }
+    for (;;) {
+      const start = end - count;
+      if (start <= 0) return null;
+      let taken = -1;
+      for (let page = end - 1; page >= start; page--) {
+        if (mapped[page]) {
+          taken = page;
+          break;
+        }
+      }
+      if (taken < 0) return start;
+      end = taken;
+    }
+  }
+
+  // Linux's brk: the break moves to `wanted` when that is not below where it started and the pages it gains,
+  // and the one after them, are free; the answer is the break as it then is.
+  function moveBreak(wanted) {
+    const size = BigInt(pageSize);
+    const now = BigInt(programBreak);
+    if (wanted < BigInt(breakStart)) return now;
+    const end = Number((now + size - 1n) / size);
+    const wantedPages = (wanted + size - 1n) / size;
+    if (wantedPages > BigInt(end)) {
+      if (wantedPages >= BigInt(permissionPages) || mapped.subarray(end, Number(wantedPages) + 1).includes(1)) {
+        return now;
+      }
+      mapPages(end, Number(wantedPages), contract.read | contract.write);
+    } else if (wantedPages < BigInt(end)) {
+      if (holdsCode(Number(wantedPages), end)) {
+        notImplemented(BigInt(calls.brk));
+        return now;
+      }
+      unmapPages(Number(wantedPages), end);
+    }
+    programBreak = Number(wanted);
+    return wanted;
+  }
+
+  // Linux's mmap of private anonymous memory, placed where the call says (MAP_FIXED, and MAP_FIXED_NOREPLACE
+  // where nothing is) or where `freePages` finds room. Shared memory, files, memory that grows down and pages
+  // holding code are not answered.
+  function map(number, [address, length, protection, flags, , offset]) {
+    const EEXIST = 17n;
+    const EINVAL = 22n;
+    const ENOMEM = 12n;
+    const m = calls.mapping;
+    const size = BigInt(pageSize);
+    const has = (bits) => (flags & BigInt(bits)) !== 0n;
+    if (offset % size !== 0n) return -EINVAL;
+    if ((flags & BigInt(m.type)) !== BigInt(m.private) || !has(m.anonymous) || has(m.growsDown)) {
+      return notImplemented(number);
+    }
+    if (length === 0n) return -EINVAL;
+    const count = (length + size - 1n) / size;
+    if (count * size >= 1n << 64n) return -ENOMEM;
+    let first;
+    if (has(m.fixed | m.fixedNoReplace)) {
+      if (address % size !== 0n) return -EINVAL;
+      if (address / size + count > BigInt(permissionPages)) return -ENOMEM;
+      first = Number(address / size);
+      if (has(m.fixedNoReplace) && mapped.subarray(first, first + Number(count)).includes(1)) return -EEXIST;
+    } else {
+      first = freePages(Number(count));
+      if (first === null) return -ENOMEM;
+    }
+    const end = first + Number(count);
+    if (holdsCode(first, end)) return notImplemented(number);
+    // Linux on both gives a page that may be written leave to read it too.
+    const permissions =
+      (protection & BigInt(m.read | m.write) ? contract.read : 0) |
+      (protection & BigInt(m.write) ? contract.write : 0) |
+      (protection & BigInt(m.execute) ? contract.execute : 0);
+    mapPages(first, end, permissions);
+    return BigInt(first) * size;
+  }
+
+  // Linux's munmap: the pages of a page aligned range are no longer mapped, mapped or not before.
+  function unmap(address, length) {
+    const EINVAL = 22n;
+    const size = BigInt(pageSize);
+    const end = address + ((length + size - 1n) / size) * size;
+    if (address % size !== 0n || length === 0n || end >= 1n << 64n) return -EINVAL;
+    const first = address / size;
+    const last = end / size;
+    if (first >= BigInt(permissionPages)) return 0n;
+    if (holdsCode(Number(first), Number(last))) return notImplemented(BigInt(calls.munmap));
+    unmapPages(Number(first), Number(last < BigInt(permissionPages) ? last : BigInt(permissionPages)));
+    return 0n;
+  }
+
   // The stand-in kernel.
   function standIn(number, a) {
     const EPERM = 1n;
     const EBADF = 9n;
     const EFAULT = 14n;
     const EINVAL = 22n;
-    const ENOSYS = 38n;
     // Linux's limit on the vectors of one writev.
     const IOV_MAX = 1024n;
     // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
@@ -325,10 +472,12 @@ function run({
         stop({ kind: stops.finished, status: Number(BigInt.asIntN(32, a[0])) });
         raiseStopFlag();
         return 0n;
-      // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
-      // cannot.
       case BigInt(calls.brk):
-        return BigInt(programBreak);
+        return moveBreak(a[0]);
+      case BigInt(calls.mmap):
+        return map(number, a);
+      case BigInt(calls.munmap):
+        return unmap(a[0], a[1]);
       default: {
         const set = calls.setBase;
         const base = set && number === BigInt(set.number) && set.bases.find(([code]) => BigInt(code) === a[0]);
@@ -337,8 +486,7 @@ function run({
           new DataView(state.buffer, BLOCK_AT).setBigUint64(base[1], a[1], true);
           return 0n;
         }
-        slowPath(reason.systemCallNotImplemented, number, 0);
-        return -ENOSYS;
+        return notImplemented(number);
       }
     }
   }
@@ -637,6 +785,10 @@ function run({
   guest().set(blob, load);
   const loaded = { bytes: blob, load: BigInt(load), linkAddress, codeStart: 0n, codeEnd: BigInt(codeBytes) };
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
+  breakStart = programBreak;
+  // The pages mapped at the start, which each run of the program starts from again.
+  const mappedAtStart = mapped.slice();
+  const permissionsAtStart = pagePermissions.slice();
   if (moduleBytes.length) return loadModules();
   if (cases) return runCases();
   instantiateCode(loaded, 0n, lookAhead, omit, bound);
@@ -708,6 +860,13 @@ function run({
   postMessage({ stopFlag: { buffer: state.buffer, index: (BLOCK_AT + contract.stopFlag) / 4 } });
   const runs = [];
   for (let run = 0; run < repeat; run++) {
+    for (let page = 0; page < permissionPages; page++) {
+      if (mapped[page] !== mappedAtStart[page] || pagePermissions[page] !== permissionsAtStart[page]) {
+        setPermissions(page * pageSize, (page + 1) * pageSize, permissionsAtStart[page]);
+        mapped[page] = mappedAtStart[page];
+      }
+    }
+    programBreak = breakStart;
     guest().set(blob, load);
     guest().set(stack, sp);
     stdout.length = 0;
