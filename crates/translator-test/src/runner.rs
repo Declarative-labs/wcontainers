@@ -485,7 +485,7 @@ impl<G: GuestTest> Machine<G> {
         host.state
             .as_ref()
             .unwrap()
-            .write(host.slots_at as usize, &vec![0; entries]);
+            .fill(host.slots_at as usize, entries, u8::MIN);
         let loads = std::mem::take(&mut host.loads);
         let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for load in &loads {

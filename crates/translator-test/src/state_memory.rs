@@ -1,11 +1,11 @@
-//! The state memory the guest thread shares with the runner, reached only through WebAssembly's own copies and stores.
+//! The state memory the guest thread shares with the runner, reached only through WebAssembly's own loads and stores.
 
 use std::sync::{Arc, Mutex};
 use wasm_encoder::{
     CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    MemArg, MemArgTarget, MemorySection, MemoryType, TypeSection, ValType,
+    MemArg, MemArgTarget, MemoryType, TypeSection, ValType,
 };
-use wasmtime::{Engine, Extern, Instance, Memory, Module, SharedMemory, Store, TypedFunc};
+use wasmtime::{Engine, Extern, Instance, Module, SharedMemory, Store, TypedFunc};
 use wcontainers_translator::contract::{ENV, STATE, WASM_PAGE_BYTES};
 
 /// The state memory and the module that reaches it, which another host thread may use as well.
@@ -15,39 +15,45 @@ pub struct StateMemory {
     access: Arc<Mutex<Access>>,
 }
 
-/// The module's instance in a store of its own, with its private memory for the bytes copied in and out.
+/// The words one call loads or stores, as a tuple wasmtime can pass.
+type Words = (u64, u64, u64, u64, u64, u64, u64, u64);
+/// How many words that is, and their bytes.
+const WORDS: usize = size_of::<Words>() / size_of::<u64>();
+const CHUNK: usize = size_of::<Words>();
+/// What a store of words takes: the offset, then the words.
+type StoreWords = (u32, u64, u64, u64, u64, u64, u64, u64, u64);
+
+/// The module's instance in a store of its own, which has no memory of its own to reserve.
 struct Access {
     store: Store<()>,
-    scratch: Memory,
-    copy_out: TypedFunc<(u32, u32), ()>,
-    copy_in: TypedFunc<(u32, u32), ()>,
+    load_words: TypedFunc<u32, Words>,
+    store_words: TypedFunc<StoreWords, ()>,
+    load_byte: TypedFunc<u32, u32>,
+    store_byte: TypedFunc<(u32, u32), ()>,
+    fill: TypedFunc<(u32, u32, u32), ()>,
     store_u32: TypedFunc<(u32, u32), ()>,
     store_u64: TypedFunc<(u32, u64), ()>,
 }
 
-/// The module's exports.
-const COPY_OUT: &str = "copy_out";
-const COPY_IN: &str = "copy_in";
+/// The module's exports, in the order of its functions.
+const LOAD_WORDS: &str = "load_words";
+const STORE_WORDS: &str = "store_words";
+const LOAD_BYTE: &str = "load_byte";
+const STORE_BYTE: &str = "store_byte";
+const FILL: &str = "fill";
 const STORE_U32: &str = "store_u32";
 const STORE_U64: &str = "store_u64";
-const SCRATCH: &str = "scratch";
 
 /// The most pages a 32-bit memory has, so that the import takes a state memory of any size.
 ///
 /// https://webassembly.github.io/spec/core/valid/types.html#memory-types
 const MOST_PAGES: u64 = (u32::MAX as u64 + 1) / WASM_PAGE_BYTES;
 
-/// The import's index among the memories, which come before the module's own.
+/// The state memory's index, the module's only memory.
 const STATE_INDEX: u32 = u32::MIN;
-const SCRATCH_INDEX: u32 = STATE_INDEX + 1;
-/// Where the scratch memory's copy starts.
-const SCRATCH_AT: u32 = u32::MIN;
-/// The module's two function types.
-const TWO_WORDS: u32 = u32::MIN;
-const WORD_AND_WIDE: u32 = TWO_WORDS + 1;
-/// The parameters of each function: an offset in the state memory, then a length or a value.
+/// The parameters of each function: an offset in the state memory, then the values.
 const OFFSET_PARAMETER: u32 = u32::MIN;
-const LENGTH_OR_VALUE_PARAMETER: u32 = OFFSET_PARAMETER + 1;
+const FIRST_VALUE_PARAMETER: u32 = OFFSET_PARAMETER + 1;
 
 impl StateMemory {
     /// Makes a state memory of `pages` WebAssembly pages, all zero.
@@ -62,11 +68,11 @@ impl StateMemory {
         )
         .expect("the state memory's module");
         let access = Access {
-            scratch: instance
-                .get_memory(&mut store, SCRATCH)
-                .expect("the scratch memory"),
-            copy_out: instance.get_typed_func(&mut store, COPY_OUT).unwrap(),
-            copy_in: instance.get_typed_func(&mut store, COPY_IN).unwrap(),
+            load_words: instance.get_typed_func(&mut store, LOAD_WORDS).unwrap(),
+            store_words: instance.get_typed_func(&mut store, STORE_WORDS).unwrap(),
+            load_byte: instance.get_typed_func(&mut store, LOAD_BYTE).unwrap(),
+            store_byte: instance.get_typed_func(&mut store, STORE_BYTE).unwrap(),
+            fill: instance.get_typed_func(&mut store, FILL).unwrap(),
             store_u32: instance.get_typed_func(&mut store, STORE_U32).unwrap(),
             store_u64: instance.get_typed_func(&mut store, STORE_U64).unwrap(),
             store,
@@ -90,36 +96,66 @@ impl StateMemory {
     /// Copies the bytes from `at` into `into`; they must lie inside the memory.
     pub fn read(&self, at: usize, into: &mut [u8]) {
         let mut access = self.access.lock().unwrap();
-        access.make_room(into.len());
         let Access {
             store,
-            scratch,
-            copy_out,
+            load_words,
+            load_byte,
             ..
         } = &mut *access;
-        copy_out
-            .call(&mut *store, (address(at), address(into.len())))
-            .expect("bytes inside the state memory");
-        scratch
-            .read(&*store, SCRATCH_AT as usize, into)
-            .expect("bytes inside the scratch memory");
+        let (chunks, rest) = into.as_chunks_mut::<CHUNK>();
+        let mut offset = at;
+        for chunk in chunks {
+            let (a, b, c, d, e, f, g, h) = load_words
+                .call(&mut *store, address(offset))
+                .expect("bytes inside the state memory");
+            let (words, _) = chunk.as_chunks_mut::<{ size_of::<u64>() }>();
+            for (bytes, word) in words.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+                *bytes = word.to_le_bytes();
+            }
+            offset += CHUNK;
+        }
+        for byte in rest {
+            let value = load_byte
+                .call(&mut *store, address(offset))
+                .expect("a byte inside the state memory");
+            *byte = u8::try_from(value).unwrap();
+            offset += 1;
+        }
     }
 
     /// Copies `bytes` to the memory from `at`; they must fit inside it.
     pub fn write(&self, at: usize, bytes: &[u8]) {
         let mut access = self.access.lock().unwrap();
-        access.make_room(bytes.len());
         let Access {
             store,
-            scratch,
-            copy_in,
+            store_words,
+            store_byte,
             ..
         } = &mut *access;
-        scratch
-            .write(&mut *store, SCRATCH_AT as usize, bytes)
-            .expect("bytes inside the scratch memory");
-        copy_in
-            .call(&mut *store, (address(at), address(bytes.len())))
+        let (chunks, rest) = bytes.as_chunks::<CHUNK>();
+        let mut offset = at;
+        for chunk in chunks {
+            let (words, _) = chunk.as_chunks::<{ size_of::<u64>() }>();
+            let words: [u64; WORDS] = std::array::from_fn(|i| u64::from_le_bytes(words[i]));
+            let [a, b, c, d, e, f, g, h] = words;
+            store_words
+                .call(&mut *store, (address(offset), a, b, c, d, e, f, g, h))
+                .expect("bytes inside the state memory");
+            offset += CHUNK;
+        }
+        for &byte in rest {
+            store_byte
+                .call(&mut *store, (address(offset), u32::from(byte)))
+                .expect("a byte inside the state memory");
+            offset += 1;
+        }
+    }
+
+    /// Sets `length` bytes from `at` to `byte`; they must fit inside the memory.
+    pub fn fill(&self, at: usize, length: usize, byte: u8) {
+        let mut access = self.access.lock().unwrap();
+        let Access { store, fill, .. } = &mut *access;
+        fill.call(&mut *store, (address(at), address(length), u32::from(byte)))
             .expect("bytes inside the state memory");
     }
 
@@ -162,19 +198,6 @@ impl StateMemory {
     }
 }
 
-impl Access {
-    /// Grows the scratch memory to hold at least `length` bytes.
-    fn make_room(&mut self, length: usize) {
-        let have = self.scratch.data_size(&self.store);
-        if have < length {
-            let pages = (length - have).div_ceil(WASM_PAGE_BYTES as usize) as u64;
-            self.scratch
-                .grow(&mut self.store, pages)
-                .expect("a scratch memory that grows");
-        }
-    }
-}
-
 /// Returns `at` as an offset in the state memory, a 32-bit memory.
 fn address(at: usize) -> u32 {
     u32::try_from(at).unwrap()
@@ -201,12 +224,91 @@ fn module(engine: &Engine) -> Module {
     module
 }
 
-/// Returns the module, which copies between the imported state memory and a scratch memory of its own and stores words.
+/// Returns the module, whose functions load and store the imported state memory's words and bytes.
 fn module_bytes() -> Vec<u8> {
+    let at = |offset: usize, align: usize| MemArg {
+        offset: offset as u64,
+        align: align.trailing_zeros(),
+        target: MemArgTarget::Memory(STATE_INDEX),
+        ordering: None,
+    };
+    let words = [ValType::I64; WORDS];
+    let word_offsets = (0..WORDS).map(|i| i * size_of::<u64>());
+    // Each function: its parameters, its results and its body after the parameters are pushed.
+    let mut functions: Vec<(Vec<ValType>, Vec<ValType>, Function)> = Vec::new();
+    let mut f = Function::new([]);
+    let mut sink = f.instructions();
+    for offset in word_offsets.clone() {
+        sink.local_get(OFFSET_PARAMETER)
+            .i64_load(at(offset, size_of::<u8>()));
+    }
+    sink.end();
+    functions.push((vec![ValType::I32], words.to_vec(), f));
+    let mut f = Function::new([]);
+    let mut sink = f.instructions();
+    for (value, offset) in (FIRST_VALUE_PARAMETER..).zip(word_offsets) {
+        sink.local_get(OFFSET_PARAMETER)
+            .local_get(value)
+            .i64_store(at(offset, size_of::<u8>()));
+    }
+    sink.end();
+    let mut store_words_parameters = vec![ValType::I32];
+    store_words_parameters.extend(words);
+    functions.push((store_words_parameters, Vec::new(), f));
+    let mut f = Function::new([]);
+    f.instructions()
+        .local_get(OFFSET_PARAMETER)
+        .i32_load8_u(at(usize::MIN, size_of::<u8>()))
+        .end();
+    functions.push((vec![ValType::I32], vec![ValType::I32], f));
+    let mut f = Function::new([]);
+    f.instructions()
+        .local_get(OFFSET_PARAMETER)
+        .local_get(FIRST_VALUE_PARAMETER)
+        .i32_store8(at(usize::MIN, size_of::<u8>()))
+        .end();
+    functions.push((vec![ValType::I32, ValType::I32], Vec::new(), f));
+    // fill(at, length, byte): memory.fill takes the place, the byte and the length.
+    let mut f = Function::new([]);
+    f.instructions()
+        .local_get(OFFSET_PARAMETER)
+        .local_get(FIRST_VALUE_PARAMETER + 1)
+        .local_get(FIRST_VALUE_PARAMETER)
+        .memory_fill(STATE_INDEX)
+        .end();
+    functions.push((vec![ValType::I32; 3], Vec::new(), f));
+    let mut f = Function::new([]);
+    f.instructions()
+        .local_get(OFFSET_PARAMETER)
+        .local_get(FIRST_VALUE_PARAMETER)
+        .i32_atomic_store(at(usize::MIN, size_of::<u32>()))
+        .end();
+    functions.push((vec![ValType::I32, ValType::I32], Vec::new(), f));
+    let mut f = Function::new([]);
+    f.instructions()
+        .local_get(OFFSET_PARAMETER)
+        .local_get(FIRST_VALUE_PARAMETER)
+        .i64_atomic_store(at(usize::MIN, size_of::<u64>()))
+        .end();
+    functions.push((vec![ValType::I32, ValType::I64], Vec::new(), f));
+    let names = [
+        LOAD_WORDS,
+        STORE_WORDS,
+        LOAD_BYTE,
+        STORE_BYTE,
+        FILL,
+        STORE_U32,
+        STORE_U64,
+    ];
+    assert_eq!(names.len(), functions.len());
+
     let mut module = wasm_encoder::Module::new();
     let mut types = TypeSection::new();
-    types.ty().function([ValType::I32, ValType::I32], []);
-    types.ty().function([ValType::I32, ValType::I64], []);
+    for (parameters, results, _) in &functions {
+        types
+            .ty()
+            .function(parameters.iter().copied(), results.iter().copied());
+    }
     module.section(&types);
     let mut imports = ImportSection::new();
     imports.import(
@@ -221,69 +323,18 @@ fn module_bytes() -> Vec<u8> {
         }),
     );
     module.section(&imports);
-    let mut functions = FunctionSection::new();
-    for ty in [TWO_WORDS, TWO_WORDS, TWO_WORDS, WORD_AND_WIDE] {
-        functions.function(ty);
-    }
-    module.section(&functions);
-    let mut memories = MemorySection::new();
-    memories.memory(MemoryType {
-        minimum: u64::MIN,
-        maximum: None,
-        memory64: false,
-        shared: false,
-        page_size_log2: None,
-    });
-    module.section(&memories);
+    let mut declared = FunctionSection::new();
     let mut exports = ExportSection::new();
-    for (index, name) in [COPY_OUT, COPY_IN, STORE_U32, STORE_U64]
-        .into_iter()
-        .enumerate()
-    {
-        exports.export(name, ExportKind::Func, index as u32);
+    for (index, name) in (u32::MIN..).zip(names) {
+        declared.function(index);
+        exports.export(name, ExportKind::Func, index);
     }
-    exports.export(SCRATCH, ExportKind::Memory, SCRATCH_INDEX);
+    module.section(&declared);
     module.section(&exports);
     let mut code = CodeSection::new();
-    // copy_out(at, length): the state memory's bytes from `at` to the scratch memory's start.
-    let mut f = Function::new([]);
-    f.instructions()
-        .i32_const(SCRATCH_AT.cast_signed())
-        .local_get(OFFSET_PARAMETER)
-        .local_get(LENGTH_OR_VALUE_PARAMETER)
-        .memory_copy(SCRATCH_INDEX, STATE_INDEX)
-        .end();
-    code.function(&f);
-    // copy_in(at, length): the scratch memory's first bytes to the state memory from `at`.
-    let mut f = Function::new([]);
-    f.instructions()
-        .local_get(OFFSET_PARAMETER)
-        .i32_const(SCRATCH_AT.cast_signed())
-        .local_get(LENGTH_OR_VALUE_PARAMETER)
-        .memory_copy(STATE_INDEX, SCRATCH_INDEX)
-        .end();
-    code.function(&f);
-    // store_u32(at, value) and store_u64(at, value).
-    let aligned = |bytes: usize| MemArg {
-        offset: u64::MIN,
-        align: bytes.trailing_zeros(),
-        target: MemArgTarget::Memory(STATE_INDEX),
-        ordering: None,
-    };
-    let mut f = Function::new([]);
-    f.instructions()
-        .local_get(OFFSET_PARAMETER)
-        .local_get(LENGTH_OR_VALUE_PARAMETER)
-        .i32_atomic_store(aligned(size_of::<u32>()))
-        .end();
-    code.function(&f);
-    let mut f = Function::new([]);
-    f.instructions()
-        .local_get(OFFSET_PARAMETER)
-        .local_get(LENGTH_OR_VALUE_PARAMETER)
-        .i64_atomic_store(aligned(size_of::<u64>()))
-        .end();
-    code.function(&f);
+    for (_, _, f) in &functions {
+        code.function(f);
+    }
     module.section(&code);
     module.finish()
 }
