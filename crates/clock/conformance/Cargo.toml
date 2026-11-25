@@ -9,3 +9,6 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-clock = { path = ".." }
+
+[lints]
+workspace = true
