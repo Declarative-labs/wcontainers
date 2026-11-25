@@ -1104,6 +1104,11 @@ pub const MAX_TEXTURE_SIDE: u32 = 32_768;
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 pub const MAX_TEXTURE_SLOTS: u32 = 128;
 
+/// The most bytes between the elements of one vertex buffer, WebGPU's most and so the interface's.
+///
+/// https://www.w3.org/TR/webgpu/#dom-supported-limits-maxvertexbufferarraystride
+pub const MAX_VERTEX_STRIDE: u32 = 2048;
+
 /// The most viewports and scissor rectangles one draw has.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf

@@ -5,7 +5,7 @@
 #![cfg(target_os = "macos")]
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
@@ -40,7 +40,7 @@ use wcontainers_metal::{
     DepthStencilDescriptor, EncodeBlitCommandsError, EncodeComputeCommandsError,
     EncodeRenderCommandsError, FunctionSource, IndexType, LayerDescriptor, LoadAction,
     MAX_ANISOTROPY, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SIDE,
-    MAX_TEXTURE_SLOTS, MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError,
+    MAX_TEXTURE_SLOTS, MAX_VERTEX_STRIDE, MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError,
     MakeComputePipelineStateError, MakeDepthStencilStateError, MakeFunctionError, MakeLayerError,
     MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, MakeTextureViewError,
     Metal, NextDrawableError, Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass,
@@ -57,10 +57,11 @@ use wcontainers_metal::{
 /// https://developer.apple.com/documentation/metal/mtllanguageversion/version3_1
 const LANGUAGE_VERSION: (u8, u8) = (3, 1);
 
-/// The bytes of the buffer bound to vertex buffer slots no command filled, whose length the function reads as zero.
+/// The bytes of the buffer bound to vertex buffer slots no command filled, whose length the function reads as zero: one
+/// element of the longest stride, which Metal's validation wants a vertex buffer to hold.
 ///
 /// https://developer.apple.com/documentation/metal/mtldevice/makebuffer(length:options:)
-const EMPTY_BUFFER_BYTES: usize = 16;
+const EMPTY_BUFFER_BYTES: usize = MAX_VERTEX_STRIDE as usize;
 
 /// The longest side of a 2D, cube or multisampled texture on GPUs of the Apple7 to Apple9 families.
 ///
@@ -205,6 +206,8 @@ struct Reads {
     samplers: Vec<u32>,
     /// The vertex buffer slots it reads its inputs from.
     vertex_buffers: Vec<u32>,
+    /// The buffer slots it writes, which must hold buffers rather than bytes.
+    written: Vec<u32>,
     /// What each length in the buffer of lengths is the length of, in naga's order.
     sizes: Vec<SizeOf>,
     sizes_index: u32,
@@ -417,18 +420,20 @@ impl Metal for DirectMetal {
     }
 
     fn max_buffer_length(&self) -> u64 {
-        self.device.maxBufferLength() as u64
+        (self.device.maxBufferLength() as u64).saturating_sub(u64::from(MAX_VERTEX_STRIDE))
     }
 
     fn make_buffer(&mut self, length: u64) -> Result<DirectBuffer, MakeBufferError> {
         if length > self.max_buffer_length() {
             return Err(MakeBufferError::TooLong);
         }
-        // Metal makes no buffer of no bytes, so such a buffer holds one unread byte.
+        // Every buffer holds `MAX_VERTEX_STRIDE` unread bytes past its length: Metal's validation stops a draw whose
+        // vertex buffer holds less than one element from its offset (MEASURED: 16 bytes at a stride of 24), though the
+        // function's bounds checks read none of it. So a buffer of no bytes is one Metal makes too.
         let raw = self
             .device
             .newBufferWithLength_options(
-                ns_uinteger(length).max(1),
+                ns_uinteger(length.saturating_add(u64::from(MAX_VERTEX_STRIDE))),
                 MTLResourceOptions::StorageModeShared,
             )
             .ok_or(MakeBufferError::Refused)?;
@@ -503,9 +508,13 @@ impl Metal for DirectMetal {
     ) -> Result<DirectTexture, MakeTextureError> {
         let d = descriptor;
         let facts = format_facts(d.pixel_format);
+        // A cube is one slice of six faces (MEASURED: Metal's validation stops a cube of array length 5).
         let one_slice = matches!(
             d.texture_type,
-            TextureType::Type2D | TextureType::Type2DMultisample | TextureType::Type3D
+            TextureType::Type2D
+                | TextureType::Type2DMultisample
+                | TextureType::TypeCube
+                | TextureType::Type3D
         );
         let max_side = if d.texture_type == TextureType::Type3D {
             MAX_3D_SIDE
@@ -921,11 +930,43 @@ impl Metal for DirectMetal {
                 "a combined depth and stencil format beside another format",
             ));
         }
+        // Metal's validation stops a pipeline that blends with the second source into any attachment but the first, or
+        // with more than one color attachment (MEASURED: `OneMinusSource1Alpha` at attachment 3, and at attachment 0
+        // beside others).
+        let second_source = d.color_attachments.iter().flatten().any(|attachment| {
+            attachment.blending.is_some_and(|b| {
+                [
+                    b.source_rgb_blend_factor,
+                    b.destination_rgb_blend_factor,
+                    b.source_alpha_blend_factor,
+                    b.destination_alpha_blend_factor,
+                ]
+                .iter()
+                .any(|factor| reads_second_source(*factor))
+            })
+        });
+        if second_source && d.color_attachments.iter().skip(1).any(Option::is_some) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a second source's blend factor in a pipeline of more than its first color attachment",
+            ));
+        }
         for attachment in d.color_attachments.iter().flatten() {
             let facts = format_facts(attachment.pixel_format);
             if !facts.color {
                 return Err(MakeRenderPipelineStateError::Invalid(
                     "a color format no color attachment takes",
+                ));
+            }
+            // Metal's validation stops a pipeline that writes some channels of a shared-exponent target, but not all
+            // or none (MEASURED: a mask of 0xe into `RGB9E5Float`).
+            let mask = attachment.write_mask;
+            let channels = [mask.red, mask.green, mask.blue, mask.alpha];
+            if attachment.pixel_format == PixelFormat::Rgb9e5Float
+                && channels.contains(&true)
+                && channels.contains(&false)
+            {
+                return Err(MakeRenderPipelineStateError::Invalid(
+                    "a write mask of some channels of a shared-exponent format",
                 ));
             }
             if attachment.blending.is_some() && !facts.blend {
@@ -1051,9 +1092,11 @@ impl Metal for DirectMetal {
     }
 
     fn make_command_buffer(&mut self) -> Result<DirectCommandBuffer, MakeCommandBufferError> {
-        let raw = self
-            .queue
-            .commandBuffer()
+        // Metal hands the command buffer back autoreleased; a pool of its own releases that reference here, since the
+        // calling thread may never drain one, and a command buffer kept alive by it holds one of the queue's places,
+        // so that once they are all held the next one waits for ever (MEASURED in the fuzzer: 64 dropped and never
+        // committed, then a wait in `commandBuffer`).
+        let raw = autoreleasepool(|_| self.queue.commandBuffer())
             .ok_or(MakeCommandBufferError::Refused)?;
         Ok(DirectCommandBuffer(Rc::new(CommandBufferState {
             raw,
@@ -1073,13 +1116,16 @@ impl Metal for DirectMetal {
         let area = check_pass(pass, self.limits)?;
         check_render_commands(pass, area, commands)?;
         let descriptor = pass_descriptor(pass);
-        let encoder = command_buffer
-            .0
-            .raw
-            .renderCommandEncoderWithDescriptor(&descriptor)
-            .ok_or(EncodeRenderCommandsError::Invalid(
-                "Metal made no render encoder",
-            ))?;
+        // The encoder holds its command buffer, so it is released at once as in `make_command_buffer`.
+        let encoder = autoreleasepool(|_| {
+            command_buffer
+                .0
+                .raw
+                .renderCommandEncoderWithDescriptor(&descriptor)
+        })
+        .ok_or(EncodeRenderCommandsError::Invalid(
+            "Metal made no render encoder",
+        ))?;
         let mut used = Vec::new();
         if let Some(buffer) = pass.visibility_result_buffer {
             used.push(buffer.clone());
@@ -1106,14 +1152,10 @@ impl Metal for DirectMetal {
         for command in commands {
             check_blit(command, self.limits)?;
         }
-        let encoder =
-            command_buffer
-                .0
-                .raw
-                .blitCommandEncoder()
-                .ok_or(EncodeBlitCommandsError::Invalid(
-                    "Metal made no blit encoder",
-                ))?;
+        // Released at once, as in `encode_render_commands`.
+        let encoder = autoreleasepool(|_| command_buffer.0.raw.blitCommandEncoder()).ok_or(
+            EncodeBlitCommandsError::Invalid("Metal made no blit encoder"),
+        )?;
         for command in commands {
             encode_blit(&encoder, command);
             for buffer in blit_buffers(command) {
@@ -1133,7 +1175,8 @@ impl Metal for DirectMetal {
             return Err(EncodeComputeCommandsError::Committed);
         }
         check_compute_commands(commands)?;
-        let encoder = command_buffer.0.raw.computeCommandEncoder().ok_or(
+        // Released at once, as in `encode_render_commands`.
+        let encoder = autoreleasepool(|_| command_buffer.0.raw.computeCommandEncoder()).ok_or(
             EncodeComputeCommandsError::Invalid("Metal made no compute encoder"),
         )?;
         let mut bound = StageBindings::default();
@@ -1390,6 +1433,8 @@ fn full_chain(side: u32) -> u32 {
 struct StageBindings {
     /// The bytes the bounds checks see at each filled buffer slot, and the offset they start at.
     buffers: BTreeMap<u32, (u64, u64)>,
+    /// The buffer slots filled with bytes, which Metal copies and a function may only read.
+    bytes: BTreeSet<u32>,
     textures: BTreeMap<u32, DirectTexture>,
     samplers: BTreeMap<u32, ()>,
 }
@@ -1445,6 +1490,10 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
             }
             Some(_) => {}
         }
+    }
+    // Metal's validation stops a function that writes a slot holding bytes (MEASURED: `cs_shared` at slot 2).
+    if reads.written.iter().any(|slot| bound.bytes.contains(slot)) {
+        return Err("bytes at a buffer slot the function writes");
     }
     if let Some((slot, least)) = reads.immediates
         && bytes_past(bound, slot) < least
@@ -1772,6 +1821,7 @@ fn check_render_commands(
                     &mut bound.fragment
                 };
                 stage.buffers.insert(*index, (*length, *offset));
+                stage.bytes.remove(index);
             }
             RenderCommand::SetVertexBytes { bytes, index }
             | RenderCommand::SetFragmentBytes { bytes, index } => {
@@ -1787,6 +1837,7 @@ fn check_render_commands(
                     &mut bound.fragment
                 };
                 stage.buffers.insert(*index, (bytes.len() as u64, u64::MIN));
+                stage.bytes.insert(*index);
             }
             RenderCommand::SetVertexTexture { texture, index } => {
                 check_slot(*index, MAX_TEXTURE_SLOTS)?;
@@ -1838,6 +1889,17 @@ fn check_render_commands(
                 }
             }
             RenderCommand::SetVisibilityResultMode { mode, offset } => {
+                // Metal's validation checks the offset whatever the mode, and with no buffer too (MEASURED: an
+                // offset of 15, and of 2^63, with counting off).
+                if !offset.is_multiple_of(VISIBILITY_RESULT_BYTES)
+                    || offset
+                        .checked_add(VISIBILITY_RESULT_BYTES)
+                        .is_none_or(|end| end > VISIBILITY_RESULT_SPAN)
+                {
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "a visibility result offset",
+                    ));
+                }
                 let Some(buffer) = pass.visibility_result_buffer else {
                     if *mode == VisibilityResultMode::Disabled {
                         continue;
@@ -1846,12 +1908,7 @@ fn check_render_commands(
                         "counting with no visibility result buffer",
                     ));
                 };
-                if !offset.is_multiple_of(VISIBILITY_RESULT_BYTES)
-                    || !buffer.holds(*offset, VISIBILITY_RESULT_BYTES)
-                    || offset
-                        .checked_add(VISIBILITY_RESULT_BYTES)
-                        .is_none_or(|end| end > VISIBILITY_RESULT_SPAN)
-                {
+                if !buffer.holds(*offset, VISIBILITY_RESULT_BYTES) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "a visibility result offset",
                     ));
@@ -2325,6 +2382,7 @@ fn check_compute_commands(
                     ));
                 }
                 bound.buffers.insert(*index, (*length, *offset));
+                bound.bytes.remove(index);
             }
             ComputeCommand::SetBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
@@ -2334,6 +2392,7 @@ fn check_compute_commands(
                     ));
                 }
                 bound.buffers.insert(*index, (bytes.len() as u64, u64::MIN));
+                bound.bytes.insert(*index);
             }
             ComputeCommand::SetTexture { texture, index } => {
                 check_slot(*index, MAX_TEXTURE_SLOTS)?;
@@ -2436,10 +2495,11 @@ fn check_region(
         at.checked_add(n)
             .is_some_and(|end| most.is_some_and(|most| end <= most))
     };
-    // A region may end at the level's edge inside a block, which counts as whole.
+    // A region may end at the level's edge inside a block, which counts as whole; Metal's validation stops one that
+    // reaches past the level's own texels into that block (MEASURED: 4 rows into a level of 1 of ASTC 4x4).
     let (bw, bh) = block;
-    if !fits(origin.x, size.width, w.checked_next_multiple_of(bw))
-        || !fits(origin.y, size.height, h.checked_next_multiple_of(bh))
+    if !fits(origin.x, size.width, Some(w))
+        || !fits(origin.y, size.height, Some(h))
         || !fits(origin.z, size.depth, Some(d))
     {
         return Err("a region outside the level");
@@ -3079,6 +3139,9 @@ fn translation(
                 };
                 if let naga::AddressSpace::Storage { access } = var.space {
                     target.mutable = access.contains(naga::StorageAccess::STORE);
+                    if target.mutable {
+                        reads.written.push(index);
+                    }
                 }
                 target.buffer = Some(slot_number(index));
                 buffer_slots.push(index);
@@ -3163,9 +3226,9 @@ fn translation(
                     "a vertex buffer slot past the last or taken",
                 ));
             }
-            if layout.stride == 0 {
+            if layout.stride == 0 || layout.stride > MAX_VERTEX_STRIDE {
                 return Err(MakeFunctionError::Unchecked(
-                    "a vertex buffer of stride zero",
+                    "a vertex buffer of stride zero or past MAX_VERTEX_STRIDE",
                 ));
             }
             let mut attributes = Vec::new();
@@ -3651,6 +3714,17 @@ fn stencil_operation(operation: StencilOperation) -> MTLStencilOperation {
         StencilOperation::IncrementWrap => MTLStencilOperation::IncrementWrap,
         StencilOperation::DecrementWrap => MTLStencilOperation::DecrementWrap,
     }
+}
+
+/// Returns whether a blend factor reads the fragment function's second color output.
+fn reads_second_source(factor: BlendFactor) -> bool {
+    matches!(
+        factor,
+        BlendFactor::Source1Color
+            | BlendFactor::OneMinusSource1Color
+            | BlendFactor::Source1Alpha
+            | BlendFactor::OneMinusSource1Alpha
+    )
 }
 
 /// Returns Metal's blend factor of a blend factor.
