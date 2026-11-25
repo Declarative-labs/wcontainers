@@ -47,8 +47,6 @@ mod state;
 pub use backend::{
     ClearValue, FanOrLoop, Gpu, IndexSource, Object, PrepareDesc, RingKind, generate_mips_by_draws,
 };
-/// The trait's old name, kept only until every crate names it [`Gpu`].
-pub use backend::Gpu as Backend;
 pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
 pub use draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,
