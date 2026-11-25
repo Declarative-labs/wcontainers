@@ -10,3 +10,6 @@ path = "conformance.rs"
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-negative-route-advisable = { path = ".." }
+
+[lints]
+workspace = true

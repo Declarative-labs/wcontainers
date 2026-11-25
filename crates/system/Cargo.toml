@@ -20,3 +20,6 @@ wcontainers-icmp-sockets = { path = "../icmp-sockets" }
 wcontainers-raw-sockets = { path = "../raw-sockets" }
 wcontainers-route-resolver = { path = "../route-resolver" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true

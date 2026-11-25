@@ -14,3 +14,6 @@ wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel = { path = "../kernel" }
 wcontainers-negative-route-advisable = { path = "../negative-route-advisable" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true
