@@ -40,4 +40,6 @@ unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]
+# As the workspace allows it.
+type_complexity = "allow"
 arithmetic_side_effects = "deny"

@@ -4878,6 +4878,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-behavior-source"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-behavior-source-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-behavior-source",
+]
+
+[[package]]
 name = "wcontainers-byte-sink"
 version = "0.1.0"
 
@@ -5049,6 +5064,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "wcontainers-abi",
+ "wcontainers-behavior-source",
  "wcontainers-processor-architecture",
  "wcontainers-volatile-bytes",
 ]
@@ -5812,8 +5828,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-privilege-level"
+version = "0.1.0"
+
+[[package]]
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
+dependencies = [
+ "rangemap",
+]
 
 [[package]]
 name = "wcontainers-processor-architecture-arm64"

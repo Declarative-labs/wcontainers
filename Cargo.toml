@@ -71,6 +71,9 @@ wgpu = { path = "third_party/wgpu" }
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 
+[workspace.lints.clippy]
+type_complexity = "allow"
+
 # Tests run real programs through the translator and the kernel, so unoptimized builds are too slow to be useful.
 [profile.dev]
 opt-level = 1

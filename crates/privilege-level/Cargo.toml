@@ -1,0 +1,10 @@
+[package]
+name = "wcontainers-privilege-level"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[lints]
+workspace = true

@@ -9,5 +9,9 @@
   ],
   "cmake.sourceDirectory": "/Users/thomaseaton/Documents/GitHub/wcontainers/crates/shaders/dxil-spirv",
   "rust-analyzer.rustfmt.overrideCommand": ["cargo", "reviewable", "format"],
-  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"]
+  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
+  // The Rust tools must run with the Nix shell's environment that `.envrc` loads. The direnv extension loads it, but
+  // by default it only offers to restart the other extensions; without that restart rust-analyzer keeps the old
+  // environment, one dependency's build script fails, and every check takes seconds longer.
+  "direnv.restart.automatic": true
 }

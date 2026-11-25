@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-behavior-source-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-behavior-source = { path = ".." }
+
+[lints]
+workspace = true

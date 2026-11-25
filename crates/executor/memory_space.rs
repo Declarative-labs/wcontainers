@@ -8,7 +8,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
     reviewable::explicit_shared_error::InvalidAddressError,
     reason = "an address outside the space is the one way each of these methods fails"
 )]
-/// An address space, held with full authority over it: every address is all zeros and allows nothing until it is written or given permissions.
+/// An address space, shared by everyone who runs on it: every address is all zeros and allows nothing until it is written or given permissions.
 ///
 /// Bytes borrowed from the space ignore the permissions, which bind only the code executed on it.
 pub trait MemorySpace: Sized {
@@ -16,6 +16,9 @@ pub trait MemorySpace: Sized {
     type Bytes<'space>: VolatileBytes
     where
         Self: 'space;
+
+    /// The one holder of the space's pages, made with the space.
+    type PageTable: PageTable;
 
     fn borrow(&self, addresses: Range<u64>) -> Result<Self::Bytes<'_>, InvalidAddressError>;
 
@@ -31,27 +34,34 @@ pub trait MemorySpace: Sized {
         }
         Ok(())
     }
+}
 
+#[allow(
+    reviewable::explicit_shared_error::InvalidAddressError,
+    reason = "an address outside the space is the one way each of these methods fails"
+)]
+/// The pages of one address space, held by the one party that may change them.
+pub trait PageTable: Sized {
     fn set_permissions(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         allowed: Permissions,
     ) -> Result<(), InvalidAddressError>;
 
-    /// Maps the pages of the other space that start at the given address into the addresses in this space.
+    /// Maps the pages of the other table's space that start at the given address into the addresses in this space.
     fn map_from(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         other: &Self,
         other_start: u64,
     ) -> Result<(), MapMemoryError>;
 
     /// Ends the mapping of the addresses, which become zeroed out wherever they were previously mapped from.
-    fn unmap_from(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError>;
+    fn unmap_from(&mut self, addresses: Range<u64>) -> Result<(), InvalidAddressError>;
 
-    /// Copies the bytes, permissions and mappings of the other space that start at the given address into the addresses of this space.
+    /// Copies the bytes, permissions and mappings of the other table's space that start at the given address into the addresses of this space.
     fn copy_from(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         other: &Self,
         other_start: u64,
