@@ -31,8 +31,9 @@ use objc2_metal::{
     MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerBorderColor, MTLSamplerDescriptor,
     MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLScissorRect, MTLSize,
     MTLStencilDescriptor, MTLStencilOperation, MTLStorageMode, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage, MTLTriangleFillMode, MTLViewport,
-    MTLVisibilityResultMode, MTLVisibilityResultType, MTLWinding,
+    MTLTextureDescriptor, MTLTextureSwizzle, MTLTextureSwizzleChannels, MTLTextureType,
+    MTLTextureUsage, MTLTriangleFillMode, MTLViewport, MTLVisibilityResultMode,
+    MTLVisibilityResultType, MTLWinding,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -51,9 +52,9 @@ use wcontainers_metal::{
     PrimitiveType, ReadContentsError, ReadTimestampsError, RenderCommand, RenderPassDescriptor,
     RenderPipelineDescriptor, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
     SamplerMinMagFilter, SamplerMipFilter, Size, StandaloneMetal, StencilDescriptor,
-    StencilOperation, StoreAction, TextureDescriptor, TextureType, TextureViewDescriptor,
-    TriangleFillMode, VISIBILITY_RESULT_BYTES, VertexFormat, VertexStepFunction,
-    VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
+    StencilOperation, StoreAction, TextureDescriptor, TextureSwizzle, TextureSwizzleChannels,
+    TextureType, TextureViewDescriptor, TriangleFillMode, VISIBILITY_RESULT_BYTES, VertexFormat,
+    VertexStepFunction, VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
 };
 
 /// The Metal Shading Language version functions are written in and compiled as.
@@ -259,6 +260,8 @@ struct TextureState {
     pixel_format_view: bool,
     /// A drawable's texture, which only passes draw into.
     framebuffer_only: bool,
+    /// A view whose reads swizzle its channels, of which no other view is made.
+    swizzled: bool,
     /// The texture's storage, the same for every view of it, to tell overlapping copies.
     storage: usize,
     /// The level and slice of the storage that are this view's first, zero for a texture.
@@ -800,6 +803,7 @@ impl Metal for DirectMetal {
             render_target: d.usage.render_target,
             pixel_format_view: d.usage.pixel_format_view,
             framebuffer_only: false,
+            swizzled: false,
             storage,
             base_level: u32::MIN,
             base_slice: u32::MIN,
@@ -896,6 +900,13 @@ impl Metal for DirectMetal {
         if refuses!("view: a cube of a texture not square", !square) {
             return Err(MakeTextureViewError::Incompatible);
         }
+        let swizzled = d.swizzle != TextureSwizzleChannels::IDENTITY;
+        if refuses!(
+            "view: a swizzle of a texture drawn into, or a view of a swizzled view",
+            t.swizzled || (swizzled && t.render_target)
+        ) {
+            return Err(MakeTextureViewError::Incompatible);
+        }
         let (base_level, base_slice) = (
             base_level.unwrap_or(u32::MAX),
             base_slice.unwrap_or(u32::MAX),
@@ -905,14 +916,16 @@ impl Metal for DirectMetal {
         #[expect(unsafe_code, reason = "the call that makes a texture view")]
         // SAFETY: the levels and slices lie inside the texture, the format is the texture's, its sRGB twin, or, where
         // the texture was made for such views, the stencil of its depth and stencil or one of the same size, and the
-        // type is one Metal makes of the texture's for that many slices.
+        // type is one Metal makes of the texture's for that many slices; a swizzle other than each channel its own is
+        // of a texture no pass draws into, so only reads see it.
         let raw = unsafe {
             t.raw
-                .newTextureViewWithPixelFormat_textureType_levels_slices(
+                .newTextureViewWithPixelFormat_textureType_levels_slices_swizzle(
                     pixel_format(d.pixel_format),
                     texture_type(d.texture_type),
                     levels,
                     slices,
+                    swizzle_channels(d.swizzle),
                 )
         }
         .ok_or(MakeTextureViewError::Refused)?;
@@ -932,6 +945,7 @@ impl Metal for DirectMetal {
             render_target: t.render_target,
             pixel_format_view: false,
             framebuffer_only: false,
+            swizzled,
             storage: t.storage,
             base_level,
             base_slice,
@@ -1663,6 +1677,7 @@ impl Metal for DirectMetal {
             render_target: true,
             pixel_format_view: false,
             framebuffer_only: true,
+            swizzled: false,
             storage,
             base_level: u32::MIN,
             base_slice: u32::MIN,
@@ -4861,6 +4876,24 @@ fn pixel_format(format: PixelFormat) -> MTLPixelFormat {
 }
 
 /// Returns Metal's texture type of a texture type.
+/// Returns Metal's swizzle of a view's channels.
+fn swizzle_channels(swizzle: TextureSwizzleChannels) -> MTLTextureSwizzleChannels {
+    let one = |channel| match channel {
+        TextureSwizzle::Zero => MTLTextureSwizzle::Zero,
+        TextureSwizzle::One => MTLTextureSwizzle::One,
+        TextureSwizzle::Red => MTLTextureSwizzle::Red,
+        TextureSwizzle::Green => MTLTextureSwizzle::Green,
+        TextureSwizzle::Blue => MTLTextureSwizzle::Blue,
+        TextureSwizzle::Alpha => MTLTextureSwizzle::Alpha,
+    };
+    MTLTextureSwizzleChannels {
+        red: one(swizzle.red),
+        green: one(swizzle.green),
+        blue: one(swizzle.blue),
+        alpha: one(swizzle.alpha),
+    }
+}
+
 fn texture_type(texture_type: TextureType) -> MTLTextureType {
     match texture_type {
         TextureType::Type2D => MTLTextureType::Type2D,

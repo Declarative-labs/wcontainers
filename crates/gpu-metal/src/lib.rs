@@ -781,6 +781,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     level_count: desc.mip_count,
                     first_slice: if three_d { 0 } else { desc.base_layer },
                     slice_count: if three_d { 1 } else { desc.layer_count },
+                    swizzle: convert::view_swizzle(desc.format),
                 },
             )
             .map_err(|_| {

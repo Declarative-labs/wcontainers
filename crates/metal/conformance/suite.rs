@@ -11,9 +11,10 @@ use wcontainers_metal::{
     RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
     SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
     SamplerMipFilter, ScissorRect, Size, StencilDescriptor, StencilOperation, StoreAction,
-    TextureDescriptor, TextureType, TextureUsage, TextureViewDescriptor, VISIBILITY_RESULT_BYTES,
-    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepFunction, Viewport,
-    VisibilityResultMode, WaitUntilCompletedError, WriteContentsError,
+    TextureDescriptor, TextureSwizzle, TextureSwizzleChannels, TextureType, TextureUsage,
+    TextureViewDescriptor, VISIBILITY_RESULT_BYTES, VertexAttribute, VertexBufferLayout,
+    VertexFormat, VertexStepFunction, Viewport, VisibilityResultMode, WaitUntilCompletedError,
+    WriteContentsError,
 };
 
 /// The side of the square textures the tests draw into and copy, in texels: one block of a compressed format.
@@ -613,6 +614,7 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
                 level_count: SINGLE,
                 first_slice: u32::MIN,
                 slice_count: SINGLE,
+                swizzle: TextureSwizzleChannels::IDENTITY,
             },
         )
         .expect("Metal answers make texture view");
@@ -681,6 +683,214 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
         .expect("Metal answers encode render commands");
     finish(&mut subject, &command_buffer);
     assert_eq!(read_texture(&mut subject, &drawn), bytes);
+}
+
+/// Fills a `TARGET_SIDE` square texture of `pixel_format` with `texel` repeated, draws the covering triangle sampling
+/// `view_of(texture)` into an `rgba8Unorm` target, and returns the target's first texel.
+fn sampled_texel<M: Metal>(
+    subject: &mut M,
+    pixel_format: PixelFormat,
+    texel: &[u8],
+    view_of: impl FnOnce(&mut M, &M::Texture) -> M::Texture,
+) -> [u8; 4] {
+    let row = u64::from(TARGET_SIDE) * texel.len() as u64;
+    let source = filled(subject, &texel.repeat((TARGET_SIDE * TARGET_SIDE) as usize));
+    let texture = subject
+        .make_texture(&TextureDescriptor {
+            usage: TextureUsage {
+                shader_read: true,
+                shader_write: false,
+                render_target: false,
+                pixel_format_view: true,
+            },
+            ..described(TextureType::Type2D, pixel_format)
+        })
+        .expect("Metal answers make texture");
+    let view = view_of(subject, &texture);
+    let sampler = subject
+        .make_sampler_state(&SamplerDescriptor {
+            min_filter: SamplerMinMagFilter::Nearest,
+            mag_filter: SamplerMinMagFilter::Nearest,
+            mip_filter: SamplerMipFilter::NotMipmapped,
+            s_address_mode: SamplerAddressMode::ClampToEdge,
+            t_address_mode: SamplerAddressMode::ClampToEdge,
+            r_address_mode: SamplerAddressMode::ClampToEdge,
+            border_color: SamplerBorderColor::TransparentBlack,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 0.0,
+            max_anisotropy: SINGLE,
+            compare_function: None,
+        })
+        .expect("Metal answers make sampler state");
+    let state = pipeline(subject, SAMPLED);
+    let depth_stencil = no_depth(subject);
+    let vertices = covering(subject);
+    let drawn = target(subject);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_blit_commands(
+            &command_buffer,
+            &[BlitCommand::CopyFromBufferToTexture {
+                source_buffer: source,
+                source_offset: u64::MIN,
+                source_bytes_per_row: row,
+                source_bytes_per_image: row * u64::from(TARGET_SIDE),
+                source_size: Size {
+                    width: TARGET_SIDE,
+                    height: TARGET_SIDE,
+                    depth: SINGLE,
+                },
+                destination_texture: texture,
+                destination_slice: u32::MIN,
+                destination_level: u32::MIN,
+                destination_origin: Origin::default(),
+                options: BlitOption::None,
+            }],
+        )
+        .expect("Metal answers encode blit commands");
+    let bound = vec![
+        RenderCommand::SetFragmentTexture {
+            texture: view,
+            index: u32::MIN,
+        },
+        RenderCommand::SetFragmentSamplerState {
+            sampler,
+            index: u32::MIN,
+        },
+    ];
+    let commands = covering_draw(&state, &vertices, &depth_stencil, bound);
+    subject
+        .encode_render_commands(&command_buffer, &pass(&drawn), &commands)
+        .expect("Metal answers encode render commands");
+    finish(subject, &command_buffer);
+    let texels = read_texture(subject, &drawn);
+    [texels[0], texels[1], texels[2], texels[3]]
+}
+
+/// A 16-bit texel of four different 4-bit channels: 1 to 4 from its high bits down.
+const NIBBLES: u16 = 0x1234;
+
+/// Checks where `abgr4Unorm` holds its channels: measured, alpha in the low four bits, then blue, green and red.
+pub fn samples_abgr4_with_alpha_in_its_low_bits<M: Metal>(mut subject: M) {
+    let seen = sampled_texel(
+        &mut subject,
+        PixelFormat::Abgr4Unorm,
+        &NIBBLES.to_le_bytes(),
+        |_, texture| texture.clone(),
+    );
+    // A 4-bit channel n samples as n / 15, which an 8-bit target holds as n * 17.
+    assert_eq!(seen, [17, 34, 51, 68]);
+}
+
+/// Returns a view of a whole one-level 2D texture in `pixel_format` whose reads swizzle as `swizzle` says.
+fn swizzled_view<M: Metal>(
+    subject: &mut M,
+    texture: &M::Texture,
+    pixel_format: PixelFormat,
+    swizzle: TextureSwizzleChannels,
+) -> Result<M::Texture, wcontainers_metal::MakeTextureViewError> {
+    subject.make_texture_view(
+        texture,
+        &TextureViewDescriptor {
+            pixel_format,
+            texture_type: TextureType::Type2D,
+            first_level: u32::MIN,
+            level_count: SINGLE,
+            first_slice: u32::MIN,
+            slice_count: SINGLE,
+            swizzle,
+        },
+    )
+}
+
+/// Checks that a view's swizzle moves and replaces the channels its samples give, of an `rgba8Unorm` texture and of an
+/// `abgr4Unorm` one holding Direct3D's `B4G4R4A4` bits (blue in the low four bits, alpha in the high), which the
+/// swizzle reads back in their places.
+pub fn samples_a_swizzled_view<M: Metal>(mut subject: M) {
+    let seen = sampled_texel(
+        &mut subject,
+        PixelFormat::Rgba8Unorm,
+        &[10, 20, 30, 40],
+        |subject, texture| {
+            swizzled_view(
+                subject,
+                texture,
+                PixelFormat::Rgba8Unorm,
+                TextureSwizzleChannels {
+                    red: TextureSwizzle::Blue,
+                    green: TextureSwizzle::Zero,
+                    blue: TextureSwizzle::One,
+                    alpha: TextureSwizzle::Red,
+                },
+            )
+            .expect("Metal answers make texture view")
+        },
+    );
+    assert_eq!(seen, [30, 0, 255, 10]);
+    // Blue 1, green 2, red 3 and alpha 4, from the low bits up.
+    let b4g4r4a4: u16 = 0x4321;
+    let seen = sampled_texel(
+        &mut subject,
+        PixelFormat::Abgr4Unorm,
+        &b4g4r4a4.to_le_bytes(),
+        |subject, texture| {
+            swizzled_view(
+                subject,
+                texture,
+                PixelFormat::Abgr4Unorm,
+                TextureSwizzleChannels {
+                    red: TextureSwizzle::Green,
+                    green: TextureSwizzle::Blue,
+                    blue: TextureSwizzle::Alpha,
+                    alpha: TextureSwizzle::Red,
+                },
+            )
+            .expect("Metal answers make texture view")
+        },
+    );
+    assert_eq!(seen, [51, 34, 17, 68]);
+}
+
+/// Checks that a swizzle is refused on a view of a texture made to be drawn into, and that no view is made of a
+/// swizzled view, while each channel its own is taken on both textures.
+pub fn refuses_a_swizzle_of_a_texture_drawn_into<M: Metal>(mut subject: M) {
+    let swizzle = TextureSwizzleChannels {
+        red: TextureSwizzle::Alpha,
+        ..TextureSwizzleChannels::IDENTITY
+    };
+    let drawn = target(&mut subject);
+    assert_eq!(
+        swizzled_view(&mut subject, &drawn, PixelFormat::Rgba8Unorm, swizzle).err(),
+        Some(wcontainers_metal::MakeTextureViewError::Incompatible)
+    );
+    swizzled_view(
+        &mut subject,
+        &drawn,
+        PixelFormat::Rgba8Unorm,
+        TextureSwizzleChannels::IDENTITY,
+    )
+    .expect("Metal answers make texture view");
+    let read = subject
+        .make_texture(&TextureDescriptor {
+            usage: TextureUsage {
+                shader_read: true,
+                shader_write: false,
+                render_target: false,
+                pixel_format_view: true,
+            },
+            ..described(TextureType::Type2D, PixelFormat::Rgba8Unorm)
+        })
+        .expect("Metal answers make texture");
+    let view = swizzled_view(&mut subject, &read, PixelFormat::Rgba8Unorm, swizzle)
+        .expect("Metal answers make texture view");
+    for again in [swizzle, TextureSwizzleChannels::IDENTITY] {
+        assert_eq!(
+            swizzled_view(&mut subject, &view, PixelFormat::Rgba8Unorm, again).err(),
+            Some(wcontainers_metal::MakeTextureViewError::Incompatible)
+        );
+    }
 }
 
 /// Checks that a compute function doubles every word of a storage buffer.
@@ -1010,6 +1220,7 @@ pub fn refuses_a_stencil_view_of_a_texture_not_made_for_views<M: Metal>(mut subj
                     level_count: SINGLE,
                     first_slice: u32::MIN,
                     slice_count: SINGLE,
+                    swizzle: TextureSwizzleChannels::IDENTITY,
                 },
             )
             .is_err()
@@ -1658,6 +1869,7 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
                         level_count: SINGLE,
                         first_slice,
                         slice_count: SINGLE,
+                        swizzle: TextureSwizzleChannels::IDENTITY,
                     },
                 )
                 .is_err()
@@ -3224,6 +3436,7 @@ pub fn answers_a_size_query_of_a_level_past_the_last<M: Metal>(mut subject: M) {
                 level_count: SINGLE,
                 first_slice: u32::MIN,
                 slice_count: SINGLE,
+                swizzle: TextureSwizzleChannels::IDENTITY,
             },
         )
         .expect("Metal answers make texture view");
@@ -3366,6 +3579,21 @@ macro_rules! tests {
         #[test]
         fn refuses_a_texture_of_another_type_at_a_queried_slot() {
             $crate::refuses_a_texture_of_another_type_at_a_queried_slot($value);
+        }
+
+        #[test]
+        fn samples_abgr4_with_alpha_in_its_low_bits() {
+            $crate::samples_abgr4_with_alpha_in_its_low_bits($value);
+        }
+
+        #[test]
+        fn samples_a_swizzled_view() {
+            $crate::samples_a_swizzled_view($value);
+        }
+
+        #[test]
+        fn refuses_a_swizzle_of_a_texture_drawn_into() {
+            $crate::refuses_a_swizzle_of_a_texture_drawn_into($value);
         }
 
         #[test]

@@ -344,6 +344,43 @@ pub struct TextureViewDescriptor {
     /// The first slice: a layer, or a face of a cube counted across every cube.
     pub first_slice: u32,
     pub slice_count: u32,
+    /// What each channel the view's reads give holds. Other than [`TextureSwizzleChannels::IDENTITY`] only on a texture
+    /// not made to be drawn into, and not of a view with one.
+    pub swizzle: TextureSwizzleChannels,
+}
+
+/// What one channel of a view's reads holds: one of the texel's channels, or a constant.
+///
+/// https://developer.apple.com/documentation/metal/mtltextureswizzle
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureSwizzle {
+    Zero,
+    One,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+}
+
+/// What the red, green, blue and alpha channels of a view's reads hold.
+///
+/// https://developer.apple.com/documentation/metal/mtltextureswizzlechannels
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureSwizzleChannels {
+    pub red: TextureSwizzle,
+    pub green: TextureSwizzle,
+    pub blue: TextureSwizzle,
+    pub alpha: TextureSwizzle,
+}
+
+impl TextureSwizzleChannels {
+    /// Each channel its own.
+    pub const IDENTITY: TextureSwizzleChannels = TextureSwizzleChannels {
+        red: TextureSwizzle::Red,
+        green: TextureSwizzle::Green,
+        blue: TextureSwizzle::Blue,
+        alpha: TextureSwizzle::Alpha,
+    };
 }
 
 /// Why a texture view was not made.

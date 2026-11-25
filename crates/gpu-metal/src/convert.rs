@@ -7,8 +7,8 @@ use wcontainers_gpu::{
 };
 use wcontainers_metal::{
     BlendFactor, BlendOperation, CompareFunction, CullMode, PixelFormat, SamplerAddressMode,
-    SamplerBorderColor, SamplerMinMagFilter, StencilDescriptor, StencilOperation, VertexFormat,
-    Winding,
+    SamplerBorderColor, SamplerMinMagFilter, StencilDescriptor, StencilOperation, TextureSwizzle,
+    TextureSwizzleChannels, VertexFormat, Winding,
 };
 
 /// Returns the Metal format a texture of an interface format is held in, if this implementation holds it.
@@ -85,16 +85,38 @@ pub(crate) fn pixel_format(format: Format) -> Option<PixelFormat> {
         F::Etc2Rgba8UnormSrgb => P::EacRgba8Srgb,
         F::Astc4x4Unorm => P::Astc4x4Ldr,
         F::Astc4x4UnormSrgb => P::Astc4x4Srgb,
+        // Direct3D's bits, which Metal reads as alpha, blue, green and red from the low bits up: views swizzle them back
+        // (`view_swizzle`).
+        F::Bgra4Unorm => P::Abgr4Unorm,
         F::Bgrx8Unorm
         | F::Bgrx8UnormSrgb
         | F::Bgr5a1Unorm
-        | F::Bgra4Unorm
         | F::Rgbg8Unorm
         | F::Grgb8Unorm
         | F::Rgb32Uint
         | F::Rgb32Sint
         | F::Rgb32Float => return None,
     })
+}
+
+/// Returns the swizzle of a view in an interface format, which puts each channel of a format Metal holds in another bit
+/// order back in its place.
+///
+/// `Bgra4Unorm` holds Direct3D's `B4G4R4A4` bits, blue in the low four and alpha in the high, which `abgr4Unorm` reads
+/// as alpha, blue, green and red from the low bits up (measured: the Metal conformance suite's
+/// `samples_abgr4_with_alpha_in_its_low_bits`), so its red reads Metal's green, and so on.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/abgr4unorm
+pub(crate) fn view_swizzle(format: Format) -> TextureSwizzleChannels {
+    match format {
+        Format::Bgra4Unorm => TextureSwizzleChannels {
+            red: TextureSwizzle::Green,
+            green: TextureSwizzle::Blue,
+            blue: TextureSwizzle::Alpha,
+            alpha: TextureSwizzle::Red,
+        },
+        _ => TextureSwizzleChannels::IDENTITY,
+    }
 }
 
 /// Returns whether a format's depth is held as 32-bit float while its buffers hold 24-bit unorm in the low bits of a word.
@@ -180,6 +202,8 @@ pub(crate) fn format_caps() -> FormatCaps {
             true,
         ),
         (&[F::Rgb9e5Float, F::A8Unorm], filtered, false),
+        // Sampled only: a pass would draw Metal's bit order into it, which views swizzle for reads alone.
+        (&[F::Bgra4Unorm], filtered, false),
         (
             &[F::Depth16Unorm, F::Depth24Plus, F::Depth32Float],
             depth,

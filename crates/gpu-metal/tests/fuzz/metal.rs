@@ -10,9 +10,9 @@ use wcontainers_metal::{
     RenderPassDescriptor, RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor,
     ResolveTarget, ResourceSlot, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
     SamplerMinMagFilter, SamplerMipFilter, ScissorRect, Size, StandaloneMetal, StencilDescriptor,
-    StencilOperation, StoreAction, TextureDescriptor, TextureType, TextureUsage,
-    TextureViewDescriptor, TriangleFillMode, VertexAttribute, VertexBufferLayout, VertexFormat,
-    VertexStepFunction, Viewport, VisibilityResultMode, Winding,
+    StencilOperation, StoreAction, TextureDescriptor, TextureSwizzle, TextureSwizzleChannels,
+    TextureType, TextureUsage, TextureViewDescriptor, TriangleFillMode, VertexAttribute,
+    VertexBufferLayout, VertexFormat, VertexStepFunction, Viewport, VisibilityResultMode, Winding,
 };
 use wcontainers_metal_direct::DirectMetal;
 use wcontainers_test_window::StandaloneTestWindow;
@@ -856,6 +856,7 @@ impl World {
             level_count: random.u32(&[1, 2]),
             first_slice: random.u32(&[0, 1, 6]),
             slice_count: random.u32(&[1, 6, 12]),
+            swizzle: random_swizzle(random),
         };
         let refuse = view_refused(&parent, &d);
         let view = self.metal.make_texture_view(&texture, &d);
@@ -2100,6 +2101,8 @@ struct Made {
     usage: TextureUsage,
     /// A drawable's texture, which only passes draw into.
     drawable: bool,
+    /// A view whose reads swizzle its channels.
+    swizzled: bool,
 }
 
 impl Made {
@@ -2124,6 +2127,7 @@ impl Made {
             samples: d.sample_count,
             usage: d.usage,
             drawable: false,
+            swizzled: false,
         }
     }
 
@@ -2145,6 +2149,7 @@ impl Made {
                 pixel_format_view: false,
             },
             drawable: true,
+            swizzled: false,
         }
     }
 
@@ -2165,6 +2170,7 @@ impl Made {
                 ..self.usage
             },
             drawable: false,
+            swizzled: d.swizzle != TextureSwizzleChannels::IDENTITY,
         }
     }
 
@@ -2637,11 +2643,34 @@ fn buffer_copy_refused(
 }
 
 /// Returns whether a view `d` of a texture is one `direct` must refuse; a format it may take as an sRGB twin is not.
+/// Returns each channel its own most of the time, else any channel or constant for each.
+fn random_swizzle(random: &mut Random) -> TextureSwizzleChannels {
+    if !random.chance(20) {
+        return TextureSwizzleChannels::IDENTITY;
+    }
+    let all = [
+        TextureSwizzle::Zero,
+        TextureSwizzle::One,
+        TextureSwizzle::Red,
+        TextureSwizzle::Green,
+        TextureSwizzle::Blue,
+        TextureSwizzle::Alpha,
+    ];
+    TextureSwizzleChannels {
+        red: random.pick(&all),
+        green: random.pick(&all),
+        blue: random.pick(&all),
+        alpha: random.pick(&all),
+    }
+}
+
 fn view_refused(made: &Made, d: &TextureViewDescriptor) -> bool {
     let past = |first: u32, count: u32, most: u32| {
         u64::from(first).saturating_add(u64::from(count)) > u64::from(most)
     };
     if made.drawable
+        || made.swizzled
+        || (d.swizzle != TextureSwizzleChannels::IDENTITY && made.usage.render_target)
         || d.level_count == 0
         || d.slice_count == 0
         || past(d.first_level, d.level_count, made.levels)
@@ -3111,6 +3140,7 @@ impl World {
                 as u32,
             first_slice: first_slice as u32,
             slice_count: slice_count as u32,
+            swizzle: random_swizzle(random),
         };
         match random.broken(6) {
             Some(0) => {

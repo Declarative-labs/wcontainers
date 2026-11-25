@@ -2194,3 +2194,117 @@ pub fn programs_ask_a_texture_its_levels_and_samples<H: Host>() {
     }
     ok(&mut b);
 }
+
+/// Draws, at each pixel of a row, the texel of the same column of row 0 of the texture at binding 32.
+const LOADED_ROW: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(i32(at.x), 0), 0);
+}
+";
+
+/// The `Bgra4Unorm` texels [`bgra4_texels_sample_and_copy_in_direct3d_bit_order`] writes, as red, green, blue and alpha
+/// of 0 to 15 each.
+const BGRA4_TEXELS: [[u16; 4]; 4] = [[3, 2, 1, 4], [0, 0, 0, 15], [15, 0, 15, 0], [12, 5, 10, 8]];
+
+/// The bits of a `Bgra4Unorm` texel: blue in the low four, then green, red and alpha (Direct3D's `B4G4R4A4_UNORM`).
+fn bgra4(rgba: [u16; 4]) -> u16 {
+    let [r, g, b, a] = rgba;
+    (a << 12) | (r << 8) | (g << 4) | b
+}
+
+/// `Bgra4Unorm` texels sample with each channel from its Direct3D bits (blue in the low four, alpha in the high), and
+/// copy between buffers and textures as their bytes, at a buffer offset of one texel and a row pitch past the row.
+/// Where the format is sampled.
+pub fn bgra4_texels_sample_and_copy_in_direct3d_bit_order<H: Host>() {
+    let mut b = H::make();
+    let format = Format::Bgra4Unorm;
+    if !b.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE) {
+        return;
+    }
+    const N: u32 = 4;
+    let bytes: Vec<u8> = BGRA4_TEXELS
+        .iter()
+        .flat_map(|t| bgra4(*t).to_le_bytes())
+        .collect();
+    let copied = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let tex = texture(&mut b, format, (N, 1), 1, 1, copied);
+    b.write_texture(
+        &region(&tex, 0, 0, 0, 0),
+        extent(N, 1, 1),
+        &bytes,
+        N * 2,
+        1,
+        WriteMode::Ordered,
+    );
+    let sampled = view(&mut b, &tex, format);
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let p = program(&mut b, LOADED_ROW, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&sampled),
+        }])
+        .expect("create_binding_set");
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    // A 4-bit channel n is n / 15, which an 8-bit target holds as n * 17.
+    let row: Vec<u8> = BGRA4_TEXELS
+        .iter()
+        .flat_map(|t| t.map(|n| (n * 17) as u8))
+        .collect();
+    assert_close(&got, &row.repeat(N as usize), 1, 4, N as usize);
+    // The bytes copy out at an offset of one texel and a pitch of six texels, and back into a second texture.
+    let (offset, pitch) = (2u32, 12u32);
+    let size = u64::from(offset + pitch);
+    let out = buffer(&mut b, size, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    let before = pattern(size as usize, 5);
+    b.write_buffer(&out, 0, &before, WriteMode::Ordered);
+    let side = CopyBufferTexture {
+        buffer: &out,
+        offset: u64::from(offset),
+        row_pitch: pitch,
+        rows_per_layer: 1,
+    };
+    b.copy_texture_to_buffer(&region(&tex, 0, 0, 0, 0), &side, extent(N, 1, 1));
+    let mut expected = before;
+    expected[offset as usize..offset as usize + bytes.len()].copy_from_slice(&bytes);
+    assert_eq!(read_buffer(&mut b, &out, 0, size), expected, "copied out");
+    let second = texture(&mut b, format, (N, 1), 1, 1, copied);
+    b.copy_buffer_to_texture(&side, &region(&second, 0, 0, 0, 0), extent(N, 1, 1));
+    assert_eq!(
+        read_texture(&mut b, region(&second, 0, 0, 0, 0), extent(N, 1, 1), 2),
+        bytes,
+        "copied in"
+    );
+    ok(&mut b);
+}
