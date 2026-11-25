@@ -6257,6 +6257,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-volatile-bytes-pointer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
+]
+
+[[package]]
 name = "wcontainers-volatile-bytes-shared-mapping"
 version = "0.1.0"
 dependencies = [
@@ -6268,6 +6279,7 @@ dependencies = [
  "wcontainers-byte-source",
  "wcontainers-volatile-bytes",
  "wcontainers-volatile-bytes-conformance",
+ "wcontainers-volatile-bytes-pointer",
 ]
 
 [[package]]

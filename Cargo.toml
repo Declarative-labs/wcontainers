@@ -55,8 +55,8 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/tcp-sockets/implementation/host (1)
 #   crates/icmp-sockets/conformance (1)
 # Low-level primitives, which keep their unsafe and deny it so that each use is marked:
-#   crates/volatile-bytes/implementation/shared-mapping (5: the call to memcpy, its two callers, the mapping's promise
-#   and the one call that makes it)
+#   crates/volatile-bytes/implementation/pointer (4: the call to memcpy, its two callers, and the pointer's promise)
+#   crates/volatile-bytes/implementation/shared-mapping (1: the one call that makes that promise for a mapping)
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
