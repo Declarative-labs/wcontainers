@@ -419,7 +419,10 @@ fn each_instruction_has_the_behavior_of_its_first_pair() {
         (Instruction::Rdvl, later),
     ]);
     assert_eq!(measured.to_precise(Instruction::Rdvl), first);
-    assert_eq!(measured.to_precise(Instruction::Brk), PreciseInstruction::Brk);
+    assert_eq!(
+        measured.to_precise(Instruction::Brk),
+        PreciseInstruction::Brk
+    );
 }
 
 /// The trusted `unmeasured`, which promises never to return: an instruction the measurements do not hold panics.
