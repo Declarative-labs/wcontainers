@@ -44,24 +44,26 @@ owner's `VolatileBytes` interface change, which main's older copies predate (INF
 
 | Crate | Compiles (check --all-targets) | Unsafe lines | Lint table | Tests listed |
 |---|---|---|---|---|
-| internet-protocol linux-socket-options | yes | 2 | own `[lints.rust]`, denies | 1 (tests/readiness.rs) |
-| tcp-sockets host | yes | 1 | own `[lints.rust]`, denies | 146: suite run 143, unit 2, speed 1, allocations (self-running, needs root) |
+| internet-protocol linux-socket-options | yes | 2 | own `[lints.rust]`, only `unsafe_op_in_unsafe_fn = "deny"` | 1 (tests/readiness.rs) |
+| tcp-sockets host | yes | 1 | own `[lints.rust]`, only `unsafe_op_in_unsafe_fn = "deny"` | 146: suite run 143, unit 2, speed 1, allocations (self-running, needs root) |
 | udp-sockets host | yes | 0 | workspace | 84: suite 80, readiness 3, speed 1, allocations (self-running) |
 | icmp-sockets host | yes | 0 | workspace | 75: suite run 69, counters 5, waiting 1 |
 | raw-sockets host | yes | 0 | workspace | 57: suite run 54, counters 2, waiting 1 |
 | route-resolver host | yes | 0 | workspace | 39: suite run 38, counters 1 |
 | tcp-sockets suite | yes | 0 | workspace | (library; run by the host) |
 | udp-sockets suite | yes | 0 | workspace | (library) |
-| icmp-sockets suite | yes | 1 | own `[lints.rust]`, denies | (library) |
+| icmp-sockets suite | yes | 1 | own `[lints.rust]`, only `unsafe_op_in_unsafe_fn = "deny"` | (library) |
 | raw-sockets suite | yes | 0 | workspace | (library) |
-| route-resolver suite | yes | 2 | own `[lints.rust]`, denies | (library) |
+| route-resolver suite | yes | 2 | own `[lints.rust]`, only `unsafe_op_in_unsafe_fn = "deny"` | (library) |
 | configurable suite | yes | 0 | workspace | 2 |
 | readiness suite | yes | 0 | workspace | 13 |
 | negative-route-advisable suite | yes | 0 | workspace | 7 |
 
 MEASURED. The suite counts meet HS1's bar exactly (TCP 143, UDP 80, ICMP 69, raw 54, route resolver 38). The four
-crates with their own table compile at agents only because the table lowers `forbid` to `deny`; under main's rule
-their 6 lines are refused.
+crates with their own table compile at agents only because that table replaces the workspace lints: it holds only
+`unsafe_op_in_unsafe_fn = "deny"` and names no `unsafe_code` level, so `unsafe_code` stays at the compiler's default,
+allowed (READ: their Cargo.toml at agents; corrected on 2026-11-25, this line said the table lowered `forbid` to
+`deny`). Under main's rule, where every crate inherits `unsafe_code = "forbid"`, their 6 lines are refused.
 
 ### Linter findings by rule (`cargo reviewable check`, same on both machines)
 
@@ -264,8 +266,9 @@ runtime's RT1 needs those hosts, so RT1 holds on owner question 1 even after HS1
   after. At main: linux-socket-options 40, tcp host 23, udp host 11, route-resolver host 2, tcp suite 4, icmp suite 15,
   route-resolver suite 4, all others 0 (99). At agents: linux-socket-options 2, tcp host 1, icmp suite 1,
   route-resolver suite 2, all others 0 (6). MEASURED by `git grep`.
-- Marked exceptions: none in these crates; the 6 lines at agents sit under per-crate `[lints.rust]` tables that deny
-  instead of forbid, which main's rule removes.
+- Marked exceptions: none in these crates; the 6 lines at agents sit in crates whose own `[lints.rust]` table holds
+  only `unsafe_op_in_unsafe_fn = "deny"` and so leaves `unsafe_code` allowed and unmarked (READ); main's rule removes
+  those tables.
 - New dependencies: none added by HS0. Already in the agents suites and hosts and outside the vetted four: stats_alloc
   0.1.10 (MIT, icmp and raw host tests; holds its own `GlobalAlloc` unsafe), netlink-packet-core 0.9.0,
   netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT, TCP suite). To vet before HS1 keeps them.
