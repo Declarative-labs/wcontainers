@@ -26,8 +26,28 @@ Measured (rented machines, `-j 12` except the x86 library check, which ran at 96
   the same 26 pass at c86ddeb60 on ARM64.
 - No line of code with `unsafe` (one comment line in the manifest, as at origin/agents).
 
-Not cleared: `cargo reviewable check` finds 31,840 findings in the kernel's two crates, 20,898 of
-them in the generated bindings (linux/linux/). By rule and cause, in scratch lint-after/summary.txt.
+Linter, repair after the failed check (2026-11-25): 31,840 findings became 31,285 (scratch
+kp1-repair/lint/summary.txt). 404 items no other crate can reach went from `pub` to `pub(crate)`
+(rustc's `unreachable_pub` suggestions, 538 findings), and 8 constants that restated a binding now
+name it (`SIGNALS`, `ROBUST_LIST_LIMIT`, `MAX_LINKS`, the four `SS_*`). The rest cannot be
+cleared in KP1. Each group, with its smallest example:
+
+| Findings | Cause | Smallest example |
+|---|---|---|
+| 20,898 | generated bindings: a rule question | `linux/general.rs:1832 pub const ROBUST_LIST_LIMIT: u32 = 2048;` is pub, has no link, and is also in another binding file |
+| 1,083 `public_outside_interface` | the crate's surface, which other tracks' crates use | `implementation.rs:60 pub use cgroup::MOUNT as CGROUP_MOUNT;` |
+| 666 | the model's answer is needed, and its key may not go to a rented machine | `conformance/suite.rs:64` `taken_tasks_are_resumed`, name_unanswered |
+| 8,619 | rewriting the comments and literals of 74,000 lines | `build.rs:11 "cargo::rerun-if-changed={source}"`, magic_literal |
+| 3 | the `System` trait's `Send` bounds | `system.rs:63 wait_until_ready(..): Send` |
+| 14 | later milestones: the `Cpu` adapter (KP2), the suite (KS) | `guest_machine.rs:164` implements abi `Cpu` |
+| 1 | a rule question: the executor's interface asks its caller to implement `TrapHandler` | `running.rs:31` implements `TrapHandler` |
+| 1 | the same fact is in a crate the kernel does not depend on | `running.rs:229 ALIGNMENT_FAULT = 33`, also hardware-virtualization-inside syndrome.rs:7 |
+
+The 666 are grammar_unclear, verb_not_first, name_unanswered, summary_unclear,
+summary_unanswered, summary_restates_declaration, type_summary_not_noun_phrase and hook_name.
+The 8,619 are magic_literal, number_constant_without_link, the summary shape rules,
+comment_too_long and comment_budget_exceeded. Every rewritten summary of a function or type
+also needs the model's answer.
 
 ## For the owner
 
@@ -51,4 +71,35 @@ pub trait ProcessTracer<K: Kernel> {
 }
 
 pub trait System<K: Kernel>: ProcessTracer<K> + FallbackObserver<K::Fallback> + /* ... */ Sync {}
+```
+
+2. The kernel's `System` bounds its waits' futures as `Send` with return type notation
+   (system.rs:63, `#![feature(return_type_notation)]` at implementation.rs:13), which the linter
+   cannot parse and calls an exclusion. Without it, the interfaces would say `Send` themselves:
+
+```rust
+pub trait Readiness<Handle> {
+    fn wait_until_ready(
+        &self,
+        handle: &Handle,
+        interest: ReadyFor,
+    ) -> impl Future<Output = Result<ReadinessReport, HostError>> + Send;
+}
+
+pub trait FuseServer {
+    fn send_request(&self, request: &[u8]) -> impl Future<Output = Result<Self::Reply, HostError>> + Send;
+    fn receive_notice(
+        &self,
+        applied: Option<Result<(), Errno>>,
+    ) -> impl Future<Output = Result<Self::Notice, HostError>> + Send;
+    // ...
+}
+
+pub trait DomainNameResolver {
+    fn resolve_domain(
+        &self,
+        question: Question<&Name<[u8]>>,
+    ) -> impl Future<Output = Result<Message<Self::AnswerBytes>, HostError>> + Send;
+    // ...
+}
 ```

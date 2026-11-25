@@ -271,7 +271,7 @@ pub(crate) struct Counters {
 
 impl Counters {
     /// Counts one occurrence and warns the host.
-    pub fn count<H: Host>(&mut self, host: &H, reason: &'static str, detail: u64) {
+    pub(crate) fn count<H: Host>(&mut self, host: &H, reason: &'static str, detail: u64) {
         let count = self.counts.entry((reason, detail)).or_insert(0);
         *count += 1;
         host.warn(Warning {
@@ -284,7 +284,7 @@ impl Counters {
     /// The one path for something Linux has that is not built here: counts it under one of
     /// [`reason::NOT_BUILT`], warns, and gives back the error Linux answers when it lacks the
     /// feature.
-    pub fn refuse<H: Host>(
+    pub(crate) fn refuse<H: Host>(
         &mut self,
         host: &H,
         reason: &'static str,
@@ -297,7 +297,7 @@ impl Counters {
     }
 
     /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
-    pub fn refuse_flag<H: Host>(
+    pub(crate) fn refuse_flag<H: Host>(
         &mut self,
         host: &H,
         number: u32,
@@ -313,25 +313,25 @@ impl Counters {
     }
 
     /// Adds a measured time under a reason, without a warning: a measurement, not a slow path.
-    pub fn measure(&mut self, reason: &'static str, detail: u64, nanoseconds: u64) {
+    pub(crate) fn measure(&mut self, reason: &'static str, detail: u64, nanoseconds: u64) {
         let entry = self.times.entry((reason, detail)).or_insert((0, 0));
         entry.0 += 1;
         entry.1 += nanoseconds;
     }
 
     /// Notes an occurrence to count at the next [`Counters::flush`].
-    pub fn note(&self, reason: &'static str, detail: u64) {
+    pub(crate) fn note(&self, reason: &'static str, detail: u64) {
         self.noted.borrow_mut().push((reason, detail));
     }
 
     /// Counts and warns of every noted occurrence.
-    pub fn flush<H: Host>(&mut self, host: &H) {
+    pub(crate) fn flush<H: Host>(&mut self, host: &H) {
         for (reason, detail) in core::mem::take(self.noted.get_mut()) {
             self.count(host, reason, detail);
         }
     }
 
-    pub fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {
+    pub(crate) fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {
         let counted = self
             .counts
             .iter()

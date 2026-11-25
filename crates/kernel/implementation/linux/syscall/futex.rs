@@ -1190,7 +1190,7 @@ pub(crate) struct TaskEnd {
 impl TaskEnd {
     /// The end of task `tid`, taken off the kernel from process `pid`; none if it makes no stores
     /// here.
-    pub fn of_away(pid: Pid, tid: Tid, away: &crate::process::Away) -> Option<Self> {
+    pub(crate) fn of_away(pid: Pid, tid: Tid, away: &crate::process::Away) -> Option<Self> {
         let stores = away.last_stores?;
         Some(Self {
             pid,
@@ -1259,9 +1259,6 @@ pub(crate) fn task_end<S: crate::System>(
         wake_one_in(kernel, end.pid, clear);
     }
 }
-
-/// The most entries `exit_robust_list` follows (`ROBUST_LIST_LIMIT`).
-pub(crate) const ROBUST_LIST_LIMIT: usize = 2048;
 
 /// `exit_robust_list`: each lock on the list (and the one being taken or let go) that the task
 /// holds is marked as its owner's death, and a plain one with waiters wakes one.

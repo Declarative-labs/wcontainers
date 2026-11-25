@@ -107,7 +107,7 @@ pub(crate) struct Context<'a, S> {
 impl<S: System> Context<'_, S> {
     /// What a refused request to make a memory, thread or shared block means to the guest; a host
     /// that cannot do it at all is counted.
-    pub fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
+    pub(crate) fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
         if error == wcontainers_abi::CpuError::NotSupported {
             self.refused += 1;
         }
@@ -116,7 +116,7 @@ impl<S: System> Context<'_, S> {
 
     /// Fills `into` from the system's random source. Linux's randomness never fails, so neither
     /// may the kernel's: a failed source stops the kernel.
-    pub fn random(&self, into: &mut [u8]) {
+    pub(crate) fn random(&self, into: &mut [u8]) {
         if let Err(error) = self.host.fill_random_bytes(&core::cell::RefCell::new(into)) {
             panic!("the system's random source failed: {error:?}");
         }
@@ -124,7 +124,7 @@ impl<S: System> Context<'_, S> {
 
     /// The kernel's monotonic clock, which never goes backwards, also across a restore on another
     /// host.
-    pub fn monotonic(&mut self) -> u64 {
+    pub(crate) fn monotonic(&mut self) -> u64 {
         self.host
             .monotonic_nanoseconds()
             .wrapping_add(self.monotonic_offset)
@@ -150,7 +150,7 @@ pub(crate) struct Machine {
 impl Machine {
     /// `kernel.threads-max`: as many threads as an eighth of memory holds stacks of
     /// `THREAD_SIZE` (`set_max_threads`), at least `MIN_THREADS` and at most `FUTEX_TID_MASK`.
-    pub fn threads_max(&self) -> u64 {
+    pub(crate) fn threads_max(&self) -> u64 {
         use crate::linux_extra::{MIN_THREADS, THREAD_SIZE};
         (self.memory_bytes / (THREAD_SIZE * 8)).clamp(
             MIN_THREADS,

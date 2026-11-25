@@ -362,38 +362,38 @@ pub(crate) const PIPE_DEF_BUFFERS: u64 = 16;
 /// `sigcontext` ends in 4096 bytes of records.
 pub(crate) mod frame {
     /// Offsets in `struct rt_sigframe`.
-    pub const UC_FLAGS: u64 = 128;
-    pub const UC_LINK: u64 = 136;
-    pub const UC_STACK: u64 = 144;
-    pub const UC_SIGMASK: u64 = 168;
-    pub const FAULT_ADDRESS: u64 = 304;
-    pub const REGS: u64 = 312;
-    pub const SP: u64 = 560;
-    pub const PC: u64 = 568;
-    pub const PSTATE: u64 = 576;
-    pub const RESERVED: u64 = 592;
-    pub const RESERVED_SIZE: u64 = 4096;
+    pub(crate) const UC_FLAGS: u64 = 128;
+    pub(crate) const UC_LINK: u64 = 136;
+    pub(crate) const UC_STACK: u64 = 144;
+    pub(crate) const UC_SIGMASK: u64 = 168;
+    pub(crate) const FAULT_ADDRESS: u64 = 304;
+    pub(crate) const REGS: u64 = 312;
+    pub(crate) const SP: u64 = 560;
+    pub(crate) const PC: u64 = 568;
+    pub(crate) const PSTATE: u64 = 576;
+    pub(crate) const RESERVED: u64 = 592;
+    pub(crate) const RESERVED_SIZE: u64 = 4096;
     /// `sizeof(struct rt_sigframe)`.
-    pub const SIZE: u64 = 4688;
+    pub(crate) const SIZE: u64 = 4688;
     /// `struct frame_record`: the caller's frame pointer and link register.
-    pub const RECORD_SIZE: u64 = 16;
+    pub(crate) const RECORD_SIZE: u64 = 16;
     /// The records in `__reserved`: each starts with a magic number and its size.
-    pub const FPSIMD_MAGIC: u32 = 0x4650_8001;
-    pub const FPSIMD_SIZE: u32 = 528;
-    pub const ESR_MAGIC: u32 = 0x4553_5201;
-    pub const ESR_SIZE: u32 = 16;
+    pub(crate) const FPSIMD_MAGIC: u32 = 0x4650_8001;
+    pub(crate) const FPSIMD_SIZE: u32 = 528;
+    pub(crate) const ESR_MAGIC: u32 = 0x4553_5201;
+    pub(crate) const ESR_SIZE: u32 = 16;
     /// The exception classes and the instruction length bit of an ESR (`asm/esr.h`).
-    pub const ESR_EC_SHIFT: u32 = 26;
-    pub const ESR_IL: u64 = 1 << 25;
-    pub const ESR_EC_IABT_LOW: u64 = 0x20;
-    pub const ESR_EC_PC_ALIGN: u64 = 0x22;
-    pub const ESR_EC_DABT_LOW: u64 = 0x24;
-    pub const ESR_EC_SP_ALIGN: u64 = 0x26;
+    pub(crate) const ESR_EC_SHIFT: u32 = 26;
+    pub(crate) const ESR_IL: u64 = 1 << 25;
+    pub(crate) const ESR_EC_IABT_LOW: u64 = 0x20;
+    pub(crate) const ESR_EC_PC_ALIGN: u64 = 0x22;
+    pub(crate) const ESR_EC_DABT_LOW: u64 = 0x24;
+    pub(crate) const ESR_EC_SP_ALIGN: u64 = 0x26;
     /// A data abort's write bit, and the fault status codes of a level 3 translation and permission
     /// fault.
-    pub const ESR_WNR: u64 = 1 << 6;
-    pub const ESR_FSC_TRANSLATION_3: u64 = 0x07;
-    pub const ESR_FSC_PERMISSION_3: u64 = 0x0f;
+    pub(crate) const ESR_WNR: u64 = 1 << 6;
+    pub(crate) const ESR_FSC_TRANSLATION_3: u64 = 0x07;
+    pub(crate) const ESR_FSC_PERMISSION_3: u64 = 0x0f;
 }
 
 /// `AT_MINSIGSTKSZ` on the reference's CPU: arm64's `signal_minsigstksz`, the frame's size with the
@@ -432,7 +432,7 @@ pub(crate) const BAUD_TABLE: [u32; 31] = [
 
 /// What n_tty's line discipline holds at most when a pty's reader tells the other side's writers of
 /// room (`TTY_THRESHOLD_UNTHROTTLE`, internal to `n_tty.c`).
-pub const TTY_THRESHOLD_UNTHROTTLE: usize = 128;
+pub(crate) const TTY_THRESHOLD_UNTHROTTLE: usize = 128;
 
 // System V IPC (`linux/ipc.h`, `linux/shm.h`, `asm-generic/ipcbuf.h`, `asm-generic/shmbuf.h`), which
 // linux-raw-sys does not generate.

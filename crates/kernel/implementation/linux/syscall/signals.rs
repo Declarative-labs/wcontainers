@@ -7,8 +7,7 @@ use crate::signal::{UNBLOCKABLE, sender_info};
 use crate::{Context, Errno, Kernel};
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
-/// The number of signals.
-const SIGNALS: u32 = crate::process::SIGNALS as u32;
+use crate::linux_extra::SIGNALS;
 
 /// Linux's `check_kill_permission`: an unknown signal is refused only once a target is found; a
 /// process of the same session may always be continued; otherwise the sender's ids must match the

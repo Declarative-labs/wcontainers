@@ -100,7 +100,7 @@ pub(crate) struct Kept {
 }
 
 impl Kept {
-    pub fn of(inode: &super::Inode) -> Self {
+    pub(crate) fn of(inode: &super::Inode) -> Self {
         Self {
             mode: inode.mode,
             uid: inode.uid,
@@ -214,7 +214,7 @@ const ATTR_FILES: &[(&[u8], ProcessFile)] = &[
 
 impl ProcessFile {
     /// Whether it is a file of `attr`.
-    pub fn is_attr(self) -> bool {
+    pub(crate) fn is_attr(self) -> bool {
         ATTR_FILES.iter().any(|(_, file)| *file == self)
     }
 }
@@ -326,7 +326,7 @@ impl Namespace {
     /// The namespace's inode number on nsfs. The user and time namespaces are the machine's first,
     /// which have Linux's fixed numbers (`PROC_USER_INIT_INO`, `PROC_TIME_INIT_INO`); the others are
     /// the container's own, numbered as Linux numbers new ones.
-    pub fn ino(self) -> u64 {
+    pub(crate) fn ino(self) -> u64 {
         match self {
             Namespace::User => 0xEFFF_FFFD,
             Namespace::Time | Namespace::TimeForChildren => 0xEFFF_FFFA,
@@ -344,7 +344,7 @@ impl Namespace {
     }
 
     /// The `CLONE_NEW*` flag of its type, which `NS_GET_NSTYPE` answers.
-    pub fn clone_flag(self) -> u32 {
+    pub(crate) fn clone_flag(self) -> u32 {
         match self {
             Namespace::Net => CLONE_NEWNET,
             Namespace::Uts => CLONE_NEWUTS,
@@ -361,7 +361,7 @@ impl Namespace {
     }
 
     /// What its link reads and a descriptor of it shows (`ns_get_name`).
-    pub fn link(self) -> Vec<u8> {
+    pub(crate) fn link(self) -> Vec<u8> {
         format!("{}:[{}]", self.kind(), self.ino()).into_bytes()
     }
 }
@@ -804,7 +804,7 @@ pub(crate) fn is_sysctl_root(index: usize) -> bool {
 impl Entry {
     /// A directory's path below the tree's root, for finding it again when the inodes above it, which
     /// are made at each lookup, are gone.
-    pub fn directory_path(&self) -> Option<String> {
+    pub(crate) fn directory_path(&self) -> Option<String> {
         match *self {
             Entry::Root => Some(String::new()),
             Entry::Process(task) => Some(task.path()),
@@ -821,7 +821,7 @@ impl Entry {
 
     /// The process an entry belongs to, for the entries inside a process's directory and the
     /// directory itself.
-    pub fn of_process(&self) -> Option<Pid> {
+    pub(crate) fn of_process(&self) -> Option<Pid> {
         match *self {
             Entry::Process(task)
             | Entry::ProcessFile(task, _)
@@ -845,7 +845,7 @@ impl Entry {
     }
 
     /// Whether a change to the entry's owner, mode or times lasts (see [`Kept`]).
-    pub fn keeps_attributes(&self) -> bool {
+    pub(crate) fn keeps_attributes(&self) -> bool {
         matches!(
             self,
             Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_)
@@ -853,7 +853,7 @@ impl Entry {
     }
 
     /// The size `stat` reports: none, except for descriptor links.
-    pub fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         match self {
             // Linux's `proc_fd_instantiate` gives descriptor links a size of 64 (measured too).
             Entry::Fd(..) => 64,
@@ -864,7 +864,7 @@ impl Entry {
     }
 
     /// How a file of the tree makes its bytes, which also sets how it seeks and what it takes.
-    pub fn style(&self) -> Style {
+    pub(crate) fn style(&self) -> Style {
         match self {
             Entry::ProcessFile(
                 _,
@@ -879,7 +879,7 @@ impl Entry {
     }
 
     /// What a write to the file does.
-    pub fn writing(&self) -> Writing {
+    pub(crate) fn writing(&self) -> Writing {
         match self {
             Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
             Entry::ProcessFile(_, ProcessFile::CoredumpFilter) => Writing::CoredumpFilter,
@@ -898,7 +898,7 @@ impl Entry {
 
     /// Whether reads and writes go a segment at a time (Linux's `do_loop_readv_writev`, which takes
     /// no flag but RWF_HIPRI): the files with a plain `read` or `write` and no iterating one.
-    pub fn loops(&self, writing: bool) -> bool {
+    pub(crate) fn loops(&self, writing: bool) -> bool {
         match self.style() {
             Style::Sysctl => false,
             // `proc_reg_read_iter` reads the entries outside the process directories and the

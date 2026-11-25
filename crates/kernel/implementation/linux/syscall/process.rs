@@ -11,8 +11,9 @@ use crate::counters::reason;
 use crate::credentials::{CAP_SETGID, CAP_SETUID};
 use crate::linux::general::*;
 use crate::linux::prctl::*;
+use crate::linux_extra::SIGNALS;
 use crate::linux_extra::{SECBIT_KEEP_CAPS, SECBIT_NO_CAP_AMBIENT_RAISE};
-use crate::process::{LIMITS, Limit, SIGNALS, Tid};
+use crate::process::{LIMITS, Limit, Tid};
 use crate::signal::UNBLOCKABLE;
 use crate::{Context, Errno, Kernel};
 

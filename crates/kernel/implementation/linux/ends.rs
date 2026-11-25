@@ -122,7 +122,7 @@ fn endpoint_of<S: crate::System>(
 
 impl Ends {
     /// Notes a wake on `channel`: if an end's pipe or terminal is on it, something moved.
-    pub fn woken(&mut self, channel: Channel) {
+    pub(crate) fn woken(&mut self, channel: Channel) {
         if self.watched.contains(&channel) {
             self.moved = true;
         }
@@ -153,7 +153,7 @@ impl Ends {
     }
 
     /// Whether the kernel can send on an end now.
-    pub fn takes(&self, end: EndNumber) -> bool {
+    pub(crate) fn takes(&self, end: EndNumber) -> bool {
         self.held
             .get(&end)
             .is_some_and(|held| held.sends && !held.blocked && !held.hung_up)
@@ -161,7 +161,7 @@ impl Ends {
 
     /// Sends bytes out of an end: how many the system took. If it took fewer, the end waits until
     /// the system can take more; if its side has let go, the end goes when next served.
-    pub fn send<S: crate::System>(
+    pub(crate) fn send<S: crate::System>(
         &mut self,
         cx: &Context<'_, S>,
         end: EndNumber,

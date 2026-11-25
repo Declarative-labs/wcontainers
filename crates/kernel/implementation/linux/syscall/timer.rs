@@ -184,7 +184,7 @@ impl Timers {
     }
 
     /// The earliest time a wall clock timer fires.
-    pub fn earliest(&self) -> Option<u64> {
+    pub(crate) fn earliest(&self) -> Option<u64> {
         self.due.first().map(|(at, _)| *at)
     }
 
@@ -874,7 +874,7 @@ pub(super) fn timer_create<S: crate::System>(
         let signal = field(core::mem::offset_of!(sigevent, sigev_signo));
         let how = field(core::mem::offset_of!(sigevent, sigev_notify)) as u32;
         let thread = field(core::mem::offset_of!(sigevent, _sigev_un));
-        let valid_signal = signal > 0 && signal as u32 <= crate::process::SIGNALS as u32;
+        let valid_signal = signal > 0 && signal as u32 <= crate::linux_extra::SIGNALS;
         // `good_sigevent`.
         match how {
             SIGEV_NONE => Notify::None,

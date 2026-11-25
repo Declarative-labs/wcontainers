@@ -98,7 +98,7 @@ impl Drop for MessageQueue {
 
 /// What a queue's file reads as, `stat` shows and `poll` reports.
 impl MessageQueue {
-    pub fn text(&self) -> Vec<u8> {
+    pub(crate) fn text(&self) -> Vec<u8> {
         let notify = self.notify.as_ref();
         let kind = notify.map_or(0, |notify| notify.kind as i32);
         let signal = notify
@@ -115,7 +115,7 @@ impl MessageQueue {
         .into_bytes()
     }
 
-    pub fn poll(&self) -> u16 {
+    pub(crate) fn poll(&self) -> u16 {
         let mut events = 0;
         if self.count > 0 {
             events |= POLLIN | POLLRDNORM;
@@ -128,7 +128,10 @@ impl MessageQueue {
 
     /// `mqueue_flush_file`: a close by the process to be told takes its request away; gives
     /// the notice a SIGEV_THREAD request sends then.
-    pub fn flush(&mut self, pid: Pid) -> Option<(crate::syscall::socket::SocketRef, Vec<u8>)> {
+    pub(crate) fn flush(
+        &mut self,
+        pid: Pid,
+    ) -> Option<(crate::syscall::socket::SocketRef, Vec<u8>)> {
         if self
             .notify
             .as_ref()

@@ -19,9 +19,10 @@ use crate::fs::{
 };
 use crate::linux::general::*;
 use crate::linux::ptrace::sock_filter;
+use crate::linux_extra::SIGNALS;
 use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RDONLY, ST_RELATIME, sched_attr};
 use crate::loader::Image;
-use crate::process::{Pid, Process, SIGNALS, Thread, Tid, limits_from};
+use crate::process::{Pid, Process, Thread, Tid, limits_from};
 use crate::{Context, Errno, Kernel};
 
 /// The permission bits, owner and time of a file added before the container starts.
@@ -1098,7 +1099,7 @@ impl Kernel {
                     sa_flags: 0,
                     sa_restorer: 0,
                     sa_mask: kernel_sigset_t { sig: [0] },
-                }; SIGNALS],
+                }; SIGNALS as usize],
             )),
         };
         self.processes.insert(pid, process);

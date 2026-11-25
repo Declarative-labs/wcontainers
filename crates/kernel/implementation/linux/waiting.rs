@@ -140,18 +140,18 @@ pub(crate) struct Waiting {
 
 impl Waiting {
     /// An empty buffer for a call to bring its answer back in, one kept if there is one.
-    pub fn buffer(&mut self) -> Vec<u8> {
+    pub(crate) fn buffer(&mut self) -> Vec<u8> {
         self.spare.pop().unwrap_or_default()
     }
 
     /// Keeps a buffer an answer came back in, once read, for a later call.
-    pub fn reuse(&mut self, mut buffer: Vec<u8>) {
+    pub(crate) fn reuse(&mut self, mut buffer: Vec<u8>) {
         buffer.clear();
         self.spare.push(buffer);
     }
 
     /// Whether a waiting call's waker fired since the last [`Waiting::next_answer`] found none.
-    pub fn woken(&self) -> bool {
+    pub(crate) fn woken(&self) -> bool {
         !self.live.is_empty() && self.any.load(Ordering::Acquire)
     }
 
@@ -176,7 +176,7 @@ impl Waiting {
     }
 
     /// Starts waiting on `call`: its answer if it has one at once, else it is kept until woken.
-    pub fn start(&mut self, about: WaitFor, call: Call) -> Option<Answer> {
+    pub(crate) fn start(&mut self, about: WaitFor, call: Call) -> Option<Answer> {
         let mut cell = self.cell();
         cell.call.set(Some(call));
         match cell.poll() {
@@ -193,7 +193,7 @@ impl Waiting {
 
     /// Starts waiting on `call` as if already woken, so that its first poll, and any answer it has
     /// at once, comes when the kernel next settles.
-    pub fn start_woken(&mut self, about: WaitFor, call: Call) {
+    pub(crate) fn start_woken(&mut self, about: WaitFor, call: Call) {
         let mut cell = self.cell();
         cell.call.set(Some(call));
         cell.mark.wake_by_ref();
@@ -201,7 +201,7 @@ impl Waiting {
     }
 
     /// The answer of a woken call that has finished, and what it was for.
-    pub fn next_answer(&mut self) -> Option<(WaitFor, Answer)> {
+    pub(crate) fn next_answer(&mut self) -> Option<(WaitFor, Answer)> {
         if !self.any.swap(false, Ordering::AcqRel) {
             return None;
         }
@@ -228,7 +228,7 @@ impl Waiting {
     }
 
     /// The answer of the kept call `about`, if polling it now, woken or not, finds one.
-    pub fn poll_now(&mut self, about: WaitFor) -> Option<Answer> {
+    pub(crate) fn poll_now(&mut self, about: WaitFor) -> Option<Answer> {
         let index = self.live.iter().position(|(kept, _)| *kept == about)?;
         let Poll::Ready(answer) = self.live[index].1.poll() else {
             return None;
@@ -239,7 +239,7 @@ impl Waiting {
     }
 
     /// Drops the calls `which` names, unanswered: each is cancelled as its system's future says.
-    pub fn drop_where(&mut self, mut which: impl FnMut(&WaitFor) -> bool) {
+    pub(crate) fn drop_where(&mut self, mut which: impl FnMut(&WaitFor) -> bool) {
         let mut index = 0;
         while index < self.live.len() {
             if which(&self.live[index].0) {
@@ -252,7 +252,7 @@ impl Waiting {
     }
 
     /// Whether a call kept here waits for its answer on the heap, too large for its cell's room.
-    pub fn on_heap(call: &Call) -> bool {
+    pub(crate) fn on_heap(call: &Call) -> bool {
         call.is_heap()
     }
 }

@@ -39,7 +39,7 @@ pub(crate) struct Time {
 }
 
 impl Time {
-    pub fn from_nanoseconds(nanoseconds: u64) -> Self {
+    pub(crate) fn from_nanoseconds(nanoseconds: u64) -> Self {
         Self {
             seconds: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
             nanoseconds: (nanoseconds % NANOSECONDS_PER_SECOND) as u32,
@@ -90,7 +90,7 @@ pub(crate) struct Space {
 }
 
 impl Space {
-    pub fn new(max_blocks: u64, max_inodes: u64) -> Arc<Self> {
+    pub(crate) fn new(max_blocks: u64, max_inodes: u64) -> Arc<Self> {
         Arc::new(Self {
             max_blocks: AtomicCell::new(max_blocks),
             max_inodes: AtomicCell::new(max_inodes),
@@ -101,22 +101,22 @@ impl Space {
     }
 
     /// Sets the limits, as mounting with `size=` and `nr_inodes=` does.
-    pub fn set_limits(&self, max_blocks: u64, max_inodes: u64) {
+    pub(crate) fn set_limits(&self, max_blocks: u64, max_inodes: u64) {
         self.max_blocks.store(max_blocks);
         self.max_inodes.store(max_inodes);
     }
 
-    pub fn max_blocks(&self) -> u64 {
+    pub(crate) fn max_blocks(&self) -> u64 {
         self.max_blocks.load()
     }
 
-    pub fn max_inodes(&self) -> u64 {
+    pub(crate) fn max_inodes(&self) -> u64 {
         self.max_inodes.load()
     }
 
     /// Takes inode space (`shmem_reserve_inode` takes [`INODE_SPACE`]); `ENOSPC` when too little
     /// is left.
-    pub fn take_ispace(&self, amount: u64) -> Result<(), Errno> {
+    pub(crate) fn take_ispace(&self, amount: u64) -> Result<(), Errno> {
         let used = self.used_ispace.load();
         let max = self.max_inodes.load();
         if max != 0 && used + amount > max * INODE_SPACE {
@@ -126,30 +126,30 @@ impl Space {
         Ok(())
     }
 
-    pub fn give_ispace(&self, amount: u64) {
+    pub(crate) fn give_ispace(&self, amount: u64) {
         self.used_ispace.store(self.used_ispace.load() - amount);
     }
 
     /// The pages that may still be taken.
-    pub fn free_blocks(&self) -> u64 {
+    pub(crate) fn free_blocks(&self) -> u64 {
         match self.max_blocks.load() {
             0 => u64::MAX,
             max => max.saturating_sub(self.used_blocks.load()),
         }
     }
 
-    pub fn used_blocks(&self) -> u64 {
+    pub(crate) fn used_blocks(&self) -> u64 {
         self.used_blocks.load()
     }
 
     /// The inodes there is still space for, as `statfs` reports them.
-    pub fn free_inodes(&self) -> u64 {
+    pub(crate) fn free_inodes(&self) -> u64 {
         (self.max_inodes.load() * INODE_SPACE).saturating_sub(self.used_ispace.load()) / INODE_SPACE
     }
 
     /// Whether a file on it has been mapped, so that pages faults bring in may be missing from the
     /// count.
-    pub fn has_mapped_files(&self) -> bool {
+    pub(crate) fn has_mapped_files(&self) -> bool {
         self.mapped.load() != 0
     }
 
@@ -195,19 +195,19 @@ fn sys_not_built(counters: &crate::counters::Counters, at_root: bool, name: &[u8
 pub(crate) const DELETED: &str = " (deleted)";
 
 impl FileSystem {
-    pub fn read_only(&self) -> bool {
+    pub(crate) fn read_only(&self) -> bool {
         self.flags & crate::linux_extra::ST_RDONLY != 0
     }
 
     /// Devices opened from it are refused (`nodev`).
-    pub fn no_devices(&self) -> bool {
+    pub(crate) fn no_devices(&self) -> bool {
         self.flags & crate::linux_extra::ST_NODEV != 0
     }
 
     /// Whether nothing on it may run: a `noexec` mount, or secret memory, pipes, process descriptors
     /// and the anonymous inode, whose file systems say so themselves (`SB_I_NOEXEC`; measured)
     /// without showing it in statfs's flags.
-    pub fn no_execute(&self) -> bool {
+    pub(crate) fn no_execute(&self) -> bool {
         self.flags & crate::linux_extra::ST_NOEXEC != 0
             || matches!(
                 self.kind,
@@ -261,7 +261,7 @@ pub(crate) enum Kind {
 impl Kind {
     /// The block size `stat` reports. `statfs` reports a page for every kind (measured on the
     /// reference, where proc's files say 1024 and its file system 4096).
-    pub fn block_size(self) -> u32 {
+    pub(crate) fn block_size(self) -> u32 {
         match self {
             Kind::Proc | Kind::Devpts => 1024,
             Kind::Hugetlbfs { page_shift } => 1 << page_shift,
@@ -272,7 +272,7 @@ impl Kind {
     /// The largest file the file system has (`s_maxbytes`): tmpfs's and the pseudo file systems'
     /// (`pseudo_fs_fill_super`) `MAX_LFS_FILESIZE` (measured for pidfs, pipes, timer descriptors and
     /// secret memory), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
-    pub fn max_bytes(self) -> u64 {
+    pub(crate) fn max_bytes(self) -> u64 {
         match self {
             Kind::Tmpfs
             | Kind::Pidfs
@@ -291,7 +291,7 @@ impl Kind {
     }
 
     /// The magic number `statfs` reports.
-    pub fn magic(self) -> u64 {
+    pub(crate) fn magic(self) -> u64 {
         match self {
             Kind::Tmpfs => TMPFS_MAGIC.into(),
             Kind::Devpts => DEVPTS_SUPER_MAGIC.into(),
@@ -439,7 +439,7 @@ pub(crate) struct Regular {
 
 impl Content {
     /// The block of shared pages a mapped file's mappings show, while it has one.
-    pub fn block(&self) -> Option<Block> {
+    pub(crate) fn block(&self) -> Option<Block> {
         match self {
             Content::Regular(regular) => regular.block,
             Content::Backend(remote) => remote.pages.as_ref().map(|pages| pages.block),
@@ -485,11 +485,11 @@ impl Regular {
         self.space.clone_from(space);
     }
 
-    pub fn is_mapped(&self) -> bool {
+    pub(crate) fn is_mapped(&self) -> bool {
         self.mapped
     }
 
-    pub fn set_mapped(&mut self) {
+    pub(crate) fn set_mapped(&mut self) {
         if !self.mapped
             && let Some(space) = &self.space
         {
@@ -503,13 +503,13 @@ impl Regular {
     }
 
     /// How many pages from `first` up to `end` (not included) are not held yet.
-    pub fn missing_pages(&self, first: u64, end: u64) -> u64 {
+    pub(crate) fn missing_pages(&self, first: u64, end: u64) -> u64 {
         (first..end).filter(|page| !self.holds(*page)).count() as u64
     }
 
     /// Holds a page of zeros where it held none, as a write whose copy failed leaves it; its space
     /// is known to be free.
-    pub fn hold_page(&mut self, page: u64) {
+    pub(crate) fn hold_page(&mut self, page: u64) {
         if !self.holds(page)
             && let Some(space) = &self.space
         {
@@ -520,7 +520,7 @@ impl Regular {
     }
 
     /// Reserves a page for `fallocate` if it holds none; `false` when tmpfs is full.
-    pub fn reserve(&mut self, page: u64) -> bool {
+    pub(crate) fn reserve(&mut self, page: u64) -> bool {
         if self.holds(page) {
             return true;
         }
@@ -535,7 +535,7 @@ impl Regular {
     }
 
     /// Gives back pages `fallocate` reserved in this call, when it fails part way.
-    pub fn unreserve(&mut self, pages: &[u64]) {
+    pub(crate) fn unreserve(&mut self, pages: &[u64]) {
         for page in pages {
             if self.allocated.remove(page)
                 && let Some(space) = &self.space
@@ -547,7 +547,7 @@ impl Regular {
 
     /// How many of `length` bytes at `offset` a write may change, as tmpfs's `shmem_write_begin` allows
     /// them page by page under its seals; `EPERM` when none.
-    pub fn writable(&self, offset: u64, length: u64) -> Result<u64, Errno> {
+    pub(crate) fn writable(&self, offset: u64, length: u64) -> Result<u64, Errno> {
         if self.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 {
             return Err(Errno::EPERM);
         }
@@ -584,7 +584,7 @@ impl Regular {
     }
 
     /// Whether the seals allow a change of size (tmpfs's `shmem_setattr`).
-    pub fn may_resize(&self, length: u64) -> Result<(), Errno> {
+    pub(crate) fn may_resize(&self, length: u64) -> Result<(), Errno> {
         let size = self.size;
         if (length < size && self.seals & F_SEAL_SHRINK != 0)
             || (length > size && self.seals & F_SEAL_GROW != 0)
@@ -595,7 +595,7 @@ impl Regular {
     }
 
     /// A file holding `bytes`, as unpacking an image makes it.
-    pub fn with_bytes(bytes: Vec<u8>) -> Self {
+    pub(crate) fn with_bytes(bytes: Vec<u8>) -> Self {
         let mut regular = Self::default();
         regular.mark_written(0, bytes.len() as u64);
         regular.size = bytes.len() as u64;
@@ -603,12 +603,12 @@ impl Regular {
         regular
     }
 
-    pub fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         self.size
     }
 
     /// Up to `count` bytes from `offset`, stopping at the end of the file.
-    pub fn read(&self, cpu: &mut dyn Cpu, offset: u64, count: u64) -> Vec<u8> {
+    pub(crate) fn read(&self, cpu: &mut dyn Cpu, offset: u64, count: u64) -> Vec<u8> {
         let start = offset.min(self.size());
         let end = start.saturating_add(count).min(self.size());
         let mut bytes = vec![0; (end - start) as usize];
@@ -628,11 +628,11 @@ impl Regular {
     }
 
     /// Every byte of the file.
-    pub fn bytes(&self, cpu: &mut dyn Cpu) -> Vec<u8> {
+    pub(crate) fn bytes(&self, cpu: &mut dyn Cpu) -> Vec<u8> {
         self.read(cpu, 0, self.size())
     }
 
-    pub fn write(&mut self, cpu: &mut dyn Cpu, offset: u64, bytes: &[u8]) {
+    pub(crate) fn write(&mut self, cpu: &mut dyn Cpu, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
         if (self.data.len() as u64) < end {
             self.data.resize(end as usize, 0);
@@ -674,7 +674,7 @@ impl Regular {
     }
 
     /// Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back.
-    pub fn punch(&mut self, cpu: &mut dyn Cpu, offset: u64, end: u64) {
+    pub(crate) fn punch(&mut self, cpu: &mut dyn Cpu, offset: u64, end: u64) {
         let (from, to) = (offset.min(self.size()), end.min(self.size()));
         let held = self.data.len() as u64;
         self.data[from.min(held) as usize..to.min(held) as usize].fill(0);
@@ -696,7 +696,7 @@ impl Regular {
 
     /// Sets the size. Pages dropped from the end are gone from shared mappings too, so they read as
     /// zero if the file grows again.
-    pub fn truncate(&mut self, cpu: &mut dyn Cpu, length: u64) {
+    pub(crate) fn truncate(&mut self, cpu: &mut dyn Cpu, length: u64) {
         if let Some(block) = self.block
             && length < self.size()
         {
@@ -709,7 +709,7 @@ impl Regular {
     }
 
     /// Moves the bytes the block holds back into the file's own memory, ending the block.
-    pub fn take_block(&mut self, cpu: &mut dyn Cpu) -> Option<Block> {
+    pub(crate) fn take_block(&mut self, cpu: &mut dyn Cpu) -> Option<Block> {
         let block = self.block.take()?;
         let end = block.length.min(self.size());
         if (self.data.len() as u64) < end {
@@ -763,7 +763,7 @@ pub(crate) struct Place {
 pub(crate) const FIRST_POSITION: u64 = 3;
 
 impl Directory {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
             names: BTreeMap::new(),
@@ -773,13 +773,13 @@ impl Directory {
         }
     }
 
-    pub fn get(&self, name: &[u8]) -> Option<Node> {
+    pub(crate) fn get(&self, name: &[u8]) -> Option<Node> {
         let position = self.names.get(name)?;
         Some(self.entries[position].1.clone())
     }
 
     /// Adds a name with a new position, in place of what the name held.
-    pub fn insert(&mut self, name: &[u8], node: Node) {
+    pub(crate) fn insert(&mut self, name: &[u8], node: Node) {
         let position = self.next_position;
         self.next_position += 1;
         self.put(name, node, position);
@@ -787,7 +787,7 @@ impl Directory {
 
     /// The position of a name: its own if it is here, otherwise a new one, taken now
     /// (`simple_offset_add`).
-    pub fn position_for(&mut self, name: &[u8]) -> u64 {
+    pub(crate) fn position_for(&mut self, name: &[u8]) -> u64 {
         if let Some(position) = self.names.get(name) {
             return *position;
         }
@@ -798,7 +798,7 @@ impl Directory {
 
     /// Puts an inode under a name at a position, at the head of the list, in place of what the name
     /// held.
-    pub fn put(&mut self, name: &[u8], node: Node, position: u64) -> Option<Node> {
+    pub(crate) fn put(&mut self, name: &[u8], node: Node, position: u64) -> Option<Node> {
         let old = self.remove(name);
         let rank = self.next_rank;
         self.next_rank += 1;
@@ -808,7 +808,7 @@ impl Directory {
         old
     }
 
-    pub fn remove(&mut self, name: &[u8]) -> Option<Node> {
+    pub(crate) fn remove(&mut self, name: &[u8]) -> Option<Node> {
         let position = self.names.remove(name)?;
         let (_, node, rank) = self.entries.remove(&position).expect("entry");
         self.list.remove(&rank);
@@ -816,23 +816,23 @@ impl Directory {
     }
 
     /// Puts another inode under an existing name, keeping its position, at the head of the list.
-    pub fn replace(&mut self, name: &[u8], node: Node) {
+    pub(crate) fn replace(&mut self, name: &[u8], node: Node) {
         let position = self.names[name];
         self.put(name, node, position);
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// The entries tmpfs lists from a position, after `.` and `..` (`offset_iterate_dir`): down the
     /// list from its head at 2 or below, otherwise from the entry with the greatest position at or
     /// below it, or from the head when there is none.
-    pub fn listed_from(&self, position: u64) -> impl Iterator<Item = (u64, &[u8], &Node)> {
+    pub(crate) fn listed_from(&self, position: u64) -> impl Iterator<Item = (u64, &[u8], &Node)> {
         let start = (position > 2)
             .then(|| self.entries.range(..=position).next_back())
             .flatten()
@@ -844,7 +844,7 @@ impl Directory {
     }
 
     /// Every entry, oldest first.
-    pub fn iter(&self) -> impl Iterator<Item = (&[u8], &Node)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u8], &Node)> {
         self.entries
             .values()
             .map(|(name, node, _)| (name.as_slice(), node))
@@ -852,30 +852,30 @@ impl Directory {
 }
 
 impl Inode {
-    pub fn file_type(&self) -> u32 {
+    pub(crate) fn file_type(&self) -> u32 {
         self.mode & S_IFMT
     }
 
     /// The block size `stat` reports: the backend's for its inodes, else the file system kind's.
-    pub fn block_size(&self) -> u32 {
+    pub(crate) fn block_size(&self) -> u32 {
         match &self.content {
             Content::Backend(remote) if remote.block_size.load() != 0 => remote.block_size.load(),
             _ => self.fs.kind.block_size(),
         }
     }
 
-    pub fn is_directory(&self) -> bool {
+    pub(crate) fn is_directory(&self) -> bool {
         self.file_type() == S_IFDIR
     }
 
-    pub fn directory(&self) -> Option<&Directory> {
+    pub(crate) fn directory(&self) -> Option<&Directory> {
         match &self.content {
             Content::Directory(directory) => Some(directory),
             _ => None,
         }
     }
 
-    pub fn directory_mut(&mut self) -> Option<&mut Directory> {
+    pub(crate) fn directory_mut(&mut self) -> Option<&mut Directory> {
         match &mut self.content {
             Content::Directory(directory) => Some(directory),
             _ => None,
@@ -883,7 +883,7 @@ impl Inode {
     }
 
     /// The size `stat` reports.
-    pub fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => file.size(),
             Content::Directory(_) if matches!(self.fs.kind, Kind::Devpts | Kind::Sysfs) => 0,
@@ -902,7 +902,7 @@ impl Inode {
     }
 
     /// The 512 byte blocks `stat` reports.
-    pub fn blocks(&self) -> u64 {
+    pub(crate) fn blocks(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => (file.pages.len() + file.allocated.len()) as u64 * 8,
             Content::Backend(remote) => remote.blocks.load(),
@@ -912,14 +912,14 @@ impl Inode {
     }
 
     /// A tmpfs link whose target takes a page of its own.
-    pub fn has_long_target(&self) -> bool {
+    pub(crate) fn has_long_target(&self) -> bool {
         self.fs.kind == Kind::Tmpfs
             && matches!(&self.content, Content::Symlink(target) if target.len() + 1 > SHORT_SYMLINK)
     }
 
     /// Takes the inode space a new value of an extended attribute needs, before the checks of
     /// whether it may be set (`shmem_xattr_handler_set`).
-    pub fn reserve_xattr(&self, name: &[u8], value: &[u8]) -> Result<(), Errno> {
+    pub(crate) fn reserve_xattr(&self, name: &[u8], value: &[u8]) -> Result<(), Errno> {
         match &self.fs.space {
             Some(space) if charged_xattr(name) => space.take_ispace(xattr_space(name, value)),
             _ => Ok(()),
@@ -927,7 +927,7 @@ impl Inode {
     }
 
     /// Gives back space [`Self::reserve_xattr`] took, when the attribute was not set after all.
-    pub fn unreserve_xattr(&self, name: &[u8], value: &[u8]) {
+    pub(crate) fn unreserve_xattr(&self, name: &[u8], value: &[u8]) {
         if let Some(space) = &self.fs.space
             && charged_xattr(name)
         {
@@ -936,7 +936,7 @@ impl Inode {
     }
 
     /// Puts a value whose space is reserved in place of the old one, giving the old one's back.
-    pub fn put_xattr(&mut self, name: Vec<u8>, value: Vec<u8>) {
+    pub(crate) fn put_xattr(&mut self, name: Vec<u8>, value: Vec<u8>) {
         let old = self.xattrs.insert(name.clone(), value);
         if let Some(old) = old {
             self.unreserve_xattr(&name, &old);
@@ -944,7 +944,7 @@ impl Inode {
     }
 
     /// Removes an extended attribute, giving back its space.
-    pub fn remove_xattr(&mut self, name: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn remove_xattr(&mut self, name: &[u8]) -> Option<Vec<u8>> {
         let old = self.xattrs.remove(name)?;
         self.unreserve_xattr(name, &old);
         Some(old)
@@ -953,7 +953,7 @@ impl Inode {
     /// What a write, truncation or change of owner takes away from a file that is not a directory: the
     /// set-user and set-group bits when `mode_bits`, and file capabilities that are not empty (Linux's
     /// `cap_inode_need_killpriv`).
-    pub fn drop_privileges(&mut self, mode_bits: bool) {
+    pub(crate) fn drop_privileges(&mut self, mode_bits: bool) {
         if mode_bits {
             self.mode &= !privileges_to_drop(self.mode);
         }
@@ -971,23 +971,23 @@ impl Inode {
     /// regular files do.
     /// A secret memory file: no reads, writes or positions, one size change, only shared mappings.
     /// Whether it is a System V shared memory segment's file.
-    pub fn is_segment(&self) -> bool {
+    pub(crate) fn is_segment(&self) -> bool {
         matches!(&self.content, Content::Regular(regular) if regular.segment)
     }
 
-    pub fn is_shared_anonymous(&self) -> bool {
+    pub(crate) fn is_shared_anonymous(&self) -> bool {
         matches!(&self.content, Content::Regular(regular) if regular.anonymous)
     }
 
     /// An inode of process descriptors (regular inside, shown with no file type) or the anonymous
     /// inode (with none): no attributes change and there is no `fallocate` (`pidfs_setattr`,
     /// `anon_inode_setattr`; measured).
-    pub fn is_anonymous(&self) -> bool {
+    pub(crate) fn is_anonymous(&self) -> bool {
         matches!(self.fs.kind, Kind::Pidfs | Kind::Anon)
     }
 
     /// The mode `stat` shows.
-    pub fn shown_mode(&self) -> u32 {
+    pub(crate) fn shown_mode(&self) -> u32 {
         if self.is_anonymous() {
             self.mode & !S_IFMT
         } else {
@@ -996,16 +996,16 @@ impl Inode {
     }
 
     /// Whether nothing may change it (`IS_IMMUTABLE`).
-    pub fn immutable(&self) -> bool {
+    pub(crate) fn immutable(&self) -> bool {
         self.fsflags & FS_IMMUTABLE_FL != 0
     }
 
-    pub fn is_secret(&self) -> bool {
+    pub(crate) fn is_secret(&self) -> bool {
         self.fs.kind == Kind::Secretmem
     }
 
     /// The size of its huge pages, for a file on hugetlbfs.
-    pub fn huge_page_size(&self) -> Option<u64> {
+    pub(crate) fn huge_page_size(&self) -> Option<u64> {
         match self.fs.kind {
             Kind::Hugetlbfs { page_shift } => Some(1 << page_shift),
             _ => None,
@@ -1013,13 +1013,13 @@ impl Inode {
     }
 
     /// Whether its name is shown as deleted: it was unlinked, or never had one in any directory.
-    pub fn shown_deleted(&self) -> bool {
+    pub(crate) fn shown_deleted(&self) -> bool {
         self.nlink == 0 || self.is_secret()
     }
 
     /// Notes that `name` in `directory` no longer leads here, as of the kernel's object number
     /// `serial`; what was noted of a directory that is gone is dropped.
-    pub fn name_removed(&mut self, directory: &Node, name: &[u8], serial: u64) {
+    pub(crate) fn name_removed(&mut self, directory: &Node, name: &[u8], serial: u64) {
         self.removed_names.retain(|(place, gone, _)| {
             place.strong_count() > 0
                 && !(Weak::ptr_eq(place, &Arc::downgrade(directory)) && gone == name)
@@ -1030,7 +1030,7 @@ impl Inode {
 
     /// Whether `name` in `directory` was taken from it at or after the kernel's object number
     /// `since`.
-    pub fn name_removed_since(
+    pub(crate) fn name_removed_since(
         &self,
         directory: &Weak<AtomicRefCell<Inode>>,
         name: &[u8],
@@ -1043,7 +1043,7 @@ impl Inode {
 
     /// Whether opening it with O_DIRECT is allowed (`FMODE_CAN_ODIRECT`): tmpfs's regular files
     /// and the backend's (`fuse_open`).
-    pub fn takes_direct_io(&self) -> bool {
+    pub(crate) fn takes_direct_io(&self) -> bool {
         match self.content {
             Content::Regular(_) => self.fs.kind == Kind::Tmpfs,
             Content::Backend(_) => self.file_type() == S_IFREG,
@@ -1052,14 +1052,14 @@ impl Inode {
     }
 
     /// The `d_type` of a directory entry for this inode.
-    pub fn dirent_type(&self) -> u8 {
+    pub(crate) fn dirent_type(&self) -> u8 {
         (self.file_type() >> 12) as u8
     }
 
     /// Linux's `generic_permission`: whether `credentials` may access this inode for `mask` (`R_OK`,
     /// `W_OK`, `X_OK` bits). With `CAP_DAC_OVERRIDE` reading and writing are always allowed, and running
     /// a file needs at least one execute bit.
-    pub fn permits(&self, credentials: &Credentials, mask: u32, use_fs_ids: bool) -> bool {
+    pub(crate) fn permits(&self, credentials: &Credentials, mask: u32, use_fs_ids: bool) -> bool {
         let uid = if use_fs_ids {
             credentials.fsuid
         } else {
@@ -1181,7 +1181,7 @@ impl Default for Numbers {
 }
 
 impl Numbers {
-    pub fn file_system(&mut self, kind: Kind, flags: u32) -> FileSystem {
+    pub(crate) fn file_system(&mut self, kind: Kind, flags: u32) -> FileSystem {
         let minor = self.next_device_minor;
         self.next_device_minor += 1;
         FileSystem {
@@ -1192,7 +1192,7 @@ impl Numbers {
         }
     }
 
-    pub fn ino(&mut self) -> u64 {
+    pub(crate) fn ino(&mut self) -> u64 {
         let ino = self.next_ino;
         self.next_ino += 1;
         ino
@@ -1310,7 +1310,7 @@ pub(crate) struct Parent {
 impl<'a> Walk<'a> {
     /// Finds the inode a path names, starting at `start` for a relative path. The last part is
     /// followed when it is a symbolic link only if `follow`.
-    pub fn resolve(&self, start: &Node, path: &[u8], follow: bool) -> Result<Node, Errno> {
+    pub(crate) fn resolve(&self, start: &Node, path: &[u8], follow: bool) -> Result<Node, Errno> {
         let mut links = 0;
         self.resolve_counted(start, path, follow, &mut links)
     }
@@ -1340,7 +1340,7 @@ impl<'a> Walk<'a> {
 
     /// Finds the inode a path names, following every link, and its path from the root as Linux's
     /// `d_path` gives it.
-    pub fn locate(&self, start: &Node, path: &[u8]) -> Result<(Node, Vec<u8>), Errno> {
+    pub(crate) fn locate(&self, start: &Node, path: &[u8]) -> Result<(Node, Vec<u8>), Errno> {
         let mut links = 0;
         let mut at = start.clone();
         let mut path = path.to_vec();
@@ -1397,13 +1397,18 @@ impl<'a> Walk<'a> {
     }
 
     /// Resolves a symbolic link's target found in `at`, following the last part.
-    pub fn resolve_from(&self, at: &Node, target: &[u8], links: &mut u32) -> Result<Node, Errno> {
+    pub(crate) fn resolve_from(
+        &self,
+        at: &Node,
+        target: &[u8],
+        links: &mut u32,
+    ) -> Result<Node, Errno> {
         self.resolve_counted(at, target, true, links)
     }
 
     /// Walks every part of a path but the last, which is returned unresolved. "." and ".." as the last
     /// part are resolved, and the name is then empty.
-    pub fn parent(&self, start: &Node, path: &[u8]) -> Result<Parent, Errno> {
+    pub(crate) fn parent(&self, start: &Node, path: &[u8]) -> Result<Parent, Errno> {
         let mut links = 0;
         self.parent_counted(start, path, &mut links)
     }
@@ -1473,7 +1478,7 @@ impl<'a> Walk<'a> {
     }
 
     /// One step from a directory to a name in it, crossing mounts.
-    pub fn step(&self, directory: &Node, name: &[u8]) -> Result<Node, Errno> {
+    pub(crate) fn step(&self, directory: &Node, name: &[u8]) -> Result<Node, Errno> {
         // A removed directory holds nothing, and Linux looks nothing up in it (`IS_DEADDIR`) before the
         // file system sees the name.
         {
@@ -1557,7 +1562,12 @@ impl<'a> Walk<'a> {
     }
 
     /// Follows a node while it is a symbolic link, relative to the directory it was found in.
-    pub fn follow(&self, directory: &Node, node: Node, links: &mut u32) -> Result<Node, Errno> {
+    pub(crate) fn follow(
+        &self,
+        directory: &Node,
+        node: Node,
+        links: &mut u32,
+    ) -> Result<Node, Errno> {
         let target = {
             let inode = node.borrow();
             if inode.file_type() != S_IFLNK {
@@ -1595,7 +1605,7 @@ impl<'a> Walk<'a> {
 
     /// A directory's path as Linux's `d_path` gives it: from the walk's root, or from the top when the
     /// root is not above it, with " (deleted)" once it has been removed. None for other files.
-    pub fn path_of(&self, node: &Node) -> Option<Vec<u8>> {
+    pub(crate) fn path_of(&self, node: &Node) -> Option<Vec<u8>> {
         let (mut path, _) = self.ascend(node, true).ok()?;
         if node.borrow().nlink == 0 {
             path.extend_from_slice(DELETED.as_bytes());
@@ -1605,7 +1615,7 @@ impl<'a> Walk<'a> {
 
     /// The path of a directory as `getcwd` gives it: from the walk's root, or, for one outside it,
     /// from the top marked "(unreachable)". ENOENT once it has been removed.
-    pub fn cwd_path(&self, node: &Node) -> Result<Vec<u8>, Errno> {
+    pub(crate) fn cwd_path(&self, node: &Node) -> Result<Vec<u8>, Errno> {
         let (path, reachable) = self.ascend(node, false)?;
         if reachable {
             return Ok(path);

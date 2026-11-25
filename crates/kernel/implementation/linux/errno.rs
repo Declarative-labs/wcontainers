@@ -13,10 +13,10 @@ macro_rules! numbers {
     ($($name:ident),* $(,)?) => {
         #[allow(dead_code, reason = "every number Linux names, whether the kernel returns it or not")]
         impl Errno {
-            $(pub const $name: Self = Self(Linux::$name as u32);)*
+            $(pub(crate) const $name: Self = Self(Linux::$name as u32);)*
 
             /// The interface's error for this number, if Linux has one.
-            pub fn to_linux(self) -> Option<Linux> {
+            pub(crate) fn to_linux(self) -> Option<Linux> {
                 [$(Linux::$name),*].into_iter().find(|linux| *linux as u32 == self.0)
             }
         }
@@ -163,31 +163,31 @@ numbers!(
 
 impl Errno {
     /// Not an error: the call parked its thread and runs again when woken.
-    pub const PARKED: Self = Self(u32::MAX);
+    pub(crate) const PARKED: Self = Self(u32::MAX);
 
     /// The interface's error for one, which every number an embedder can give is.
-    pub fn from_linux(linux: Linux) -> Self {
+    pub(crate) fn from_linux(linux: Linux) -> Self {
         Self(linux as u32)
     }
 
     /// The interface's error for a number the kernel chose itself, which is always one of Linux's.
-    pub fn to_known(self) -> Linux {
+    pub(crate) fn to_known(self) -> Linux {
         self.to_linux()
             .expect("the kernel's own errors are Linux's error numbers")
     }
 
     /// The value a system call returns in x0 for this error.
-    pub fn to_return(self) -> u64 {
+    pub(crate) fn to_return(self) -> u64 {
         (-i64::from(self.0)) as u64
     }
 
     /// Whether a call's return value is an error (Linux's `IS_ERR_VALUE`: the last 4095 values).
-    pub fn is_error_return(value: u64) -> bool {
+    pub(crate) fn is_error_return(value: u64) -> bool {
         value >= (-4095i64) as u64
     }
 
     /// The restart answer a call's return value carries, if it is one.
-    pub fn restart_of(value: u64) -> Option<Self> {
+    pub(crate) fn restart_of(value: u64) -> Option<Self> {
         let code = Self(u32::try_from((value as i64).checked_neg()?).ok()?);
         [
             Self::ERESTARTSYS,

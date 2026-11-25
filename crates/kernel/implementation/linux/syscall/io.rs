@@ -3046,7 +3046,7 @@ fn fcntl_other<S: crate::System>(
             .map_or(0, |owner| owner.signal as u64)),
         F_SETSIG if !path_only => {
             let signal = argument as i32;
-            if !(0..=crate::process::SIGNALS as i32).contains(&signal) {
+            if !(0..=crate::linux_extra::SIGNALS as i32).contains(&signal) {
                 return Err(Errno::EINVAL);
             }
             let mut file = descriptor.file.borrow_mut();

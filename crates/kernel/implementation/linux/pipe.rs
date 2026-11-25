@@ -81,7 +81,7 @@ impl Clone for Pipe {
 
 impl Pipe {
     /// An unnamed pipe, made with one reader and one writer.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             opened_readers: 1,
             opened_writers: 1,
@@ -90,7 +90,7 @@ impl Pipe {
     }
 
     /// A named pipe's buffer, made when it is opened with no end open.
-    pub fn named() -> Self {
+    pub(crate) fn named() -> Self {
         Self {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
@@ -107,7 +107,7 @@ impl Pipe {
 
     /// An unnamed pipe whose slots count against its maker's pages (`alloc_pipe_info`): a user
     /// past the soft limit, without CAP_SYS_RESOURCE or CAP_SYS_ADMIN, gets a small one.
-    pub fn counted(
+    pub(crate) fn counted(
         count: &alloc::sync::Arc<crossbeam_utils::atomic::AtomicCell<u64>>,
         privileged: bool,
     ) -> Self {
@@ -124,7 +124,7 @@ impl Pipe {
 
     /// Whether its maker may let it grow to `slots` (`pipe_set_size`): within the soft limit, or
     /// with CAP_SYS_RESOURCE or CAP_SYS_ADMIN; then its count changes to the new slots.
-    pub fn account(&mut self, slots: usize, privileged: bool) -> bool {
+    pub(crate) fn account(&mut self, slots: usize, privileged: bool) -> bool {
         let Some(old) = &self.accounted else {
             return true;
         };
@@ -139,7 +139,7 @@ impl Pipe {
     }
 
     /// Notes an open file of one of its ends, which has seen `seen_writers` writers opened.
-    pub fn opened(&mut self, file: &FileRef, seen_writers: u32) {
+    pub(crate) fn opened(&mut self, file: &FileRef, seen_writers: u32) {
         self.ends.retain(|(end, _)| end.strong_count() > 0);
         self.ends
             .push((alloc::sync::Arc::downgrade(file), seen_writers));
@@ -149,7 +149,7 @@ impl Pipe {
     }
 
     /// Notes that an open file of one of its ends set (or cleared) `FASYNC`.
-    pub fn async_changed(&self, set: bool) {
+    pub(crate) fn async_changed(&self, set: bool) {
         let count = self.asynchronous.load();
         self.asynchronous.store(match set {
             true => count + 1,
@@ -158,7 +158,7 @@ impl Pipe {
     }
 
     /// The open files of its reading (or writing) ends with `FASYNC` set, which I/O signals go to.
-    pub fn async_ends(&self, readers: bool) -> Vec<FileRef> {
+    pub(crate) fn async_ends(&self, readers: bool) -> Vec<FileRef> {
         if self.asynchronous.load() == 0 {
             return Vec::new();
         }
@@ -185,7 +185,7 @@ impl Pipe {
     }
 
     /// Whether any end is open.
-    pub fn is_open(&self) -> bool {
+    pub(crate) fn is_open(&self) -> bool {
         self.ends.iter().any(|(end, _)| end.strong_count() > 0)
     }
 
@@ -208,38 +208,38 @@ impl Pipe {
             .map_or(0, |(_, seen)| *seen)
     }
 
-    pub fn readers(&self) -> usize {
+    pub(crate) fn readers(&self) -> usize {
         self.count(OpenFile::readable)
     }
 
-    pub fn writers(&self) -> usize {
+    pub(crate) fn writers(&self) -> usize {
         self.count(OpenFile::writable)
     }
 
     /// Bytes waiting to be read (`FIONREAD`).
-    pub fn unread(&self) -> u64 {
+    pub(crate) fn unread(&self) -> u64 {
         self.slots
             .iter()
             .map(|slot| (slot.page.len() - slot.read) as u64)
             .sum()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
 
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.free_pages() == 0
     }
 
     /// Pages a writer may fill.
-    pub fn free_pages(&self) -> usize {
+    pub(crate) fn free_pages(&self) -> usize {
         self.capacity.saturating_sub(self.slots.len())
     }
 
     /// Bytes the embedder's writes can take: the free pages and the space left in a last page they
     /// may join.
-    pub fn free_bytes_for_end(&self) -> u64 {
+    pub(crate) fn free_bytes_for_end(&self) -> u64 {
         let free = self.capacity.saturating_sub(self.slots.len()) as u64 * PAGE_SIZE;
         let tail = match self.slots.back() {
             Some(last) if last.merge => PAGE_SIZE - last.page.len() as u64,
@@ -250,7 +250,7 @@ impl Pipe {
 
     /// Puts in what fits of the embedder's bytes, filling the last page it may join and then new
     /// pages. Returns how many went in.
-    pub fn deliver(&mut self, bytes: &[u8]) -> usize {
+    pub(crate) fn deliver(&mut self, bytes: &[u8]) -> usize {
         let fits = bytes
             .len()
             .min(usize::try_from(self.free_bytes_for_end()).unwrap_or(usize::MAX));
@@ -276,7 +276,7 @@ impl Pipe {
     /// slot's piece that does not fit is copied up to the fault and left unread, and the read ends
     /// there, as `pipe_read` does when a copy falls short. Returns what was taken and what was copied
     /// but left.
-    pub fn take_into(&mut self, count: usize, room: usize) -> (Vec<u8>, Vec<u8>) {
+    pub(crate) fn take_into(&mut self, count: usize, room: usize) -> (Vec<u8>, Vec<u8>) {
         let mut out = Vec::new();
         while out.len() < count {
             let Some(slot) = self.slots.front_mut() else {
@@ -303,7 +303,7 @@ impl Pipe {
 
     /// How many bytes of a `length`-byte write the merge step puts in the last slot: the part that
     /// is not whole pages, if it fits after what is there (`pipe_write`'s first step).
-    pub fn mergeable(&self, length: usize, packet: bool) -> usize {
+    pub(crate) fn mergeable(&self, length: usize, packet: bool) -> usize {
         let chars = length & (PAGE_SIZE as usize - 1);
         match self.slots.back() {
             Some(last)
@@ -319,13 +319,13 @@ impl Pipe {
     }
 
     /// Adds bytes to the last slot (the merge step).
-    pub fn merge(&mut self, bytes: &[u8]) {
+    pub(crate) fn merge(&mut self, bytes: &[u8]) {
         let last = self.slots.back_mut().expect("a slot to merge into");
         last.page.extend_from_slice(bytes);
     }
 
     /// Fills one new slot with at most a page.
-    pub fn push(&mut self, bytes: Vec<u8>, packet: bool) {
+    pub(crate) fn push(&mut self, bytes: Vec<u8>, packet: bool) {
         debug_assert!(bytes.len() <= PAGE_SIZE as usize && !self.is_full());
         self.slots.push_back(Slot {
             page: bytes,
@@ -336,7 +336,7 @@ impl Pipe {
     }
 
     /// Adds a slot of spliced bytes, which no write adds to.
-    pub fn push_spliced(&mut self, bytes: Vec<u8>) {
+    pub(crate) fn push_spliced(&mut self, bytes: Vec<u8>) {
         debug_assert!(bytes.len() <= PAGE_SIZE as usize && !self.is_full());
         self.slots.push_back(Slot {
             page: bytes,
@@ -347,13 +347,13 @@ impl Pipe {
     }
 
     /// Unread bytes of the front slot.
-    pub fn front_len(&self) -> Option<usize> {
+    pub(crate) fn front_len(&self) -> Option<usize> {
         self.slots.front().map(|slot| slot.page.len() - slot.read)
     }
 
     /// Moves up to `length` bytes of the front slot into `other` (`splice_pipe_to_pipe`): the whole
     /// slot as it is, or a copy of its first bytes that no write adds to. Returns the bytes moved.
-    pub fn move_front(&mut self, other: &mut Pipe, length: usize) -> usize {
+    pub(crate) fn move_front(&mut self, other: &mut Pipe, length: usize) -> usize {
         let slot = self.slots.front_mut().expect("a slot to move");
         let available = slot.page.len() - slot.read;
         if length >= available {
@@ -374,7 +374,7 @@ impl Pipe {
 
     /// Copies up to `length` unread bytes of slot `index` into `other` as a slot no write adds to
     /// (`link_pipe`). Returns the bytes copied, or `None` past the last slot.
-    pub fn copy_slot(&self, index: usize, other: &mut Pipe, length: usize) -> Option<usize> {
+    pub(crate) fn copy_slot(&self, index: usize, other: &mut Pipe, length: usize) -> Option<usize> {
         let slot = self.slots.get(index)?;
         let count = (slot.page.len() - slot.read).min(length);
         other.slots.push_back(Slot {
@@ -388,7 +388,7 @@ impl Pipe {
 
     /// Takes `count` bytes from the front slots, which hold at least that many; whether a slot
     /// emptied and went.
-    pub fn consume_front(&mut self, mut count: usize) -> bool {
+    pub(crate) fn consume_front(&mut self, mut count: usize) -> bool {
         let mut emptied = false;
         while count > 0 {
             let slot = self.slots.front_mut().expect("a slot to consume");
@@ -404,13 +404,13 @@ impl Pipe {
     }
 
     /// The front slot's unread bytes.
-    pub fn front_bytes(&self) -> &[u8] {
+    pub(crate) fn front_bytes(&self) -> &[u8] {
         let slot = self.slots.front().expect("a slot");
         &slot.page[slot.read..]
     }
 
     /// Up to `count` unread bytes of the slots from the front, left in place.
-    pub fn unread_bytes(&self, count: usize) -> Vec<u8> {
+    pub(crate) fn unread_bytes(&self, count: usize) -> Vec<u8> {
         let mut out = Vec::new();
         for slot in &self.slots {
             let left = count - out.len();
@@ -424,7 +424,7 @@ impl Pipe {
     }
 
     /// Slots in use.
-    pub fn occupancy(&self) -> usize {
+    pub(crate) fn occupancy(&self) -> usize {
         self.slots.len()
     }
 }

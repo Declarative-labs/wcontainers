@@ -56,7 +56,7 @@ pub(crate) struct RunQueue {
 }
 
 impl RunQueue {
-    pub fn insert(&mut self, tid: Tid, vruntime: u64, weight: u64) {
+    pub(crate) fn insert(&mut self, tid: Tid, vruntime: u64, weight: u64) {
         debug_assert!(
             !self.positions.contains_key(&tid),
             "thread {tid} queued twice"
@@ -68,7 +68,7 @@ impl RunQueue {
     }
 
     /// Takes a thread out, wherever it is; returns whether it was there.
-    pub fn remove(&mut self, tid: Tid, weight: u64) -> bool {
+    pub(crate) fn remove(&mut self, tid: Tid, weight: u64) -> bool {
         let Some((vruntime, sequence)) = self.positions.remove(&tid) else {
             return false;
         };
@@ -77,12 +77,12 @@ impl RunQueue {
         true
     }
 
-    pub fn contains(&self, tid: Tid) -> bool {
+    pub(crate) fn contains(&self, tid: Tid) -> bool {
         self.positions.contains_key(&tid)
     }
 
     /// The thread with the least virtual runtime, taken out of the queue.
-    pub fn pop(&mut self, weight_of: impl Fn(Tid) -> u64) -> Option<Tid> {
+    pub(crate) fn pop(&mut self, weight_of: impl Fn(Tid) -> u64) -> Option<Tid> {
         let entry = self.queue.pop_first()?;
         self.positions.remove(&entry.2);
         self.load -= weight_of(entry.2);
@@ -90,21 +90,21 @@ impl RunQueue {
     }
 
     /// The least virtual runtime queued.
-    pub fn leftmost(&self) -> Option<(u64, Tid)> {
+    pub(crate) fn leftmost(&self) -> Option<(u64, Tid)> {
         self.queue.first().map(|entry| (entry.0, entry.2))
     }
 
     /// The greatest virtual runtime queued.
-    pub fn rightmost(&self) -> Option<u64> {
+    pub(crate) fn rightmost(&self) -> Option<u64> {
         self.queue.last().map(|entry| entry.0)
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.queue.len()
     }
 
     /// `update_min_vruntime`, with `current` the running thread's virtual runtime if one runs.
-    pub fn update_min(&mut self, current: Option<u64>) {
+    pub(crate) fn update_min(&mut self, current: Option<u64>) {
         let least = match (current, self.leftmost()) {
             (Some(current), Some((left, _))) => current.min(left),
             (Some(current), None) => current,
@@ -116,13 +116,13 @@ impl RunQueue {
 
     /// Where a thread that wakes is put (`place_entity` with `GENTLE_FAIR_SLEEPERS`): no further
     /// back than half a period behind the least.
-    pub fn place_woken(&self, vruntime: u64) -> u64 {
+    pub(crate) fn place_woken(&self, vruntime: u64) -> u64 {
         vruntime.max(self.min_vruntime.saturating_sub(LATENCY / 2))
     }
 
     /// Where a new child is put (`place_entity` with `START_DEBIT`): a slice behind the least, so
     /// it does not take the CPU from those already waiting.
-    pub fn place_new(&self, weight: u64, running: usize) -> u64 {
+    pub(crate) fn place_new(&self, weight: u64, running: usize) -> u64 {
         self.min_vruntime + scale(slice(weight, self.load + weight, running + 1), weight)
     }
 }
@@ -136,14 +136,14 @@ pub(crate) struct Parked {
 }
 
 impl Parked {
-    pub fn insert(&mut self, tid: Tid, channel: Channel, deadline: Option<u64>) {
+    pub(crate) fn insert(&mut self, tid: Tid, channel: Channel, deadline: Option<u64>) {
         self.by_channel.entry(channel).or_default().insert(tid);
         if let Some(at) = deadline {
             self.deadlines.insert((at, tid));
         }
     }
 
-    pub fn remove(&mut self, tid: Tid, channel: Channel, deadline: Option<u64>) {
+    pub(crate) fn remove(&mut self, tid: Tid, channel: Channel, deadline: Option<u64>) {
         if let Some(waiters) = self.by_channel.get_mut(&channel) {
             waiters.remove(&tid);
             if waiters.is_empty() {
@@ -156,7 +156,7 @@ impl Parked {
     }
 
     /// The threads parked on any channel `wanted` accepts, in thread order.
-    pub fn on(&self, wanted: impl Fn(&Channel) -> bool) -> Vec<Tid> {
+    pub(crate) fn on(&self, wanted: impl Fn(&Channel) -> bool) -> Vec<Tid> {
         let mut found: Vec<Tid> = self
             .by_channel
             .iter()
@@ -168,7 +168,7 @@ impl Parked {
     }
 
     /// The threads parked on exactly `channel` and on `also`, in thread order.
-    pub fn on_either(&self, channel: Channel, also: Option<Channel>) -> Vec<Tid> {
+    pub(crate) fn on_either(&self, channel: Channel, also: Option<Channel>) -> Vec<Tid> {
         let mut found: Vec<Tid> = [Some(channel), also]
             .into_iter()
             .flatten()
@@ -179,12 +179,12 @@ impl Parked {
         found
     }
 
-    pub fn earliest(&self) -> Option<u64> {
+    pub(crate) fn earliest(&self) -> Option<u64> {
         self.deadlines.first().map(|(at, _)| *at)
     }
 
     /// The threads whose deadline is at or before `now`, in thread order.
-    pub fn due(&self, now: u64) -> Vec<Tid> {
+    pub(crate) fn due(&self, now: u64) -> Vec<Tid> {
         let mut found: Vec<Tid> = self
             .deadlines
             .iter()

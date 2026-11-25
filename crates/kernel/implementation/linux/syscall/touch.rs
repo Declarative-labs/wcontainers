@@ -580,7 +580,7 @@ fn robust_list<S: crate::System>(
             || sized(memory, address, size_of::<u32>(), AccessKind::Write)
     };
     let mut entry = word(&bytes, offset_of!(robust_list_head, list)) & !1;
-    for _ in 0..super::futex::ROBUST_LIST_LIMIT {
+    for _ in 0..crate::linux::general::ROBUST_LIST_LIMIT {
         if entry == head {
             break;
         }

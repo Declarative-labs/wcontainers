@@ -74,9 +74,6 @@ pub(super) fn create<S: crate::System>(
     Ok(socket)
 }
 
-/// `MAX_LINKS`: how many netlink protocols there are.
-const MAX_LINKS: u32 = 32;
-
 fn part(socket: &SocketRef) -> atomic_refcell::AtomicRefMut<'_, Netlink> {
     atomic_refcell::AtomicRefMut::map(socket.borrow_mut(), |own| {
         own.netlink.as_deref_mut().expect("a netlink socket")
