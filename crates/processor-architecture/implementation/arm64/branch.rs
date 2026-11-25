@@ -81,33 +81,102 @@ pub fn simulate_branch<LevelSpecific>(
     operation: BranchOperation,
 ) -> Result<Option<u64>, Exception> {
     use BranchOperation as O;
-    let read = read_operands(processor, word, operands)?;
     let address = processor.program_counter;
     let next = address.wrapping_add(INSTRUCTION_SIZE);
+    let base = operands.iter().find_map(|operand| match *operand {
+        Operand::GeneralPurposeRegister { number, .. } => Some(number.read(word)),
+        _ => None,
+    });
+    if (crate::planted::is(425) || (crate::planted::is(145) && base == Some(LINK_REGISTER)))
+        && operation == O::BranchWithLinkToRegister
+    {
+        write_register(
+            processor,
+            LINK_REGISTER,
+            next,
+            RegisterThirtyOne::ZeroRegister,
+        );
+    }
+    let read = read_operands(processor, word, operands)?;
     let when = |when: BranchWhen, value: u64| (value == 0) == (when == BranchWhen::Zero);
     let (written, link, target) = match (operation, read.sources()) {
-        (O::FormAddress, &[offset]) => (Some(address.wrapping_add(offset)), None, None),
+        (O::FormAddress, &[offset]) => {
+            let offset = if crate::planted::is(28) {
+                offset << 2
+            } else {
+                offset
+            };
+            (Some(address.wrapping_add(offset)), None, None)
+        }
         (O::FormPageAddress, &[offset]) => {
-            let page = address & !low_ones(PAGE_OFFSET_BITS);
-            (Some(page.wrapping_add(offset)), None, None)
+            let page = if crate::planted::is(147) {
+                address
+            } else {
+                address & !low_ones(PAGE_OFFSET_BITS)
+            };
+            let formed = page.wrapping_add(offset);
+            let formed = if crate::planted::is(29) {
+                formed & low_ones(u32::BITS)
+            } else {
+                formed
+            };
+            (Some(formed), None, None)
         }
         (O::Branch, &[offset]) => (None, None, Some(address.wrapping_add(offset))),
-        (O::BranchWithLink, &[offset]) => (None, Some(next), Some(address.wrapping_add(offset))),
+        (O::BranchWithLink, &[offset]) => (
+            None,
+            Some(if crate::planted::is(141) {
+                address
+            } else {
+                next
+            }),
+            Some(address.wrapping_add(offset)),
+        ),
         (O::BranchConditionally, &[condition, offset]) => {
+            // GT is condition 12, GE condition 10.
+            let condition = if crate::planted::is(25) && condition == 12 {
+                10
+            } else {
+                condition
+            };
             let taken = CONDITIONS[condition as usize].holds(processor.condition_flags);
             (None, None, taken.then(|| address.wrapping_add(offset)))
         }
         (O::CompareAndBranch(branch_when), &[value, offset]) => {
+            let value = if crate::planted::is(22) {
+                value & low_ones(u32::BITS)
+            } else {
+                value
+            };
             let taken = when(branch_when, value);
             (None, None, taken.then(|| address.wrapping_add(offset)))
         }
         // [TBZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/TBZ--Test-bit-and-branch-if-zero-):
         // the bit b5:b40 of the register, which with b5 clear lies in its low word, the W register's.
         (O::TestBitAndBranch(branch_when), &[value, bit, offset]) => {
-            let taken = when(branch_when, (value >> bit) & 1);
+            let bit = if crate::planted::any(&[424, 143, 23]) {
+                bit % 32
+            } else {
+                bit
+            };
+            let taken = when(branch_when, (value >> bit) & 1) != crate::planted::is(252);
             (None, None, taken.then(|| address.wrapping_add(offset)))
         }
+        (O::Return, &[target]) if crate::planted::is(27) => (None, None, Some(target & !3)),
+        (O::Return, &[_]) if crate::planted::any(&[426, 148]) => (
+            None,
+            None,
+            Some(processor.general_purpose_registers[LINK_REGISTER as usize]),
+        ),
+        (O::BranchToRegister, &[target]) if crate::planted::is(427) && !is_upper_half(target) => {
+            (None, None, Some(target & low_ones(VIRTUAL_ADDRESS_BITS)))
+        }
         (O::BranchToRegister | O::Return, &[target]) => (None, None, Some(target)),
+        (O::BranchWithLinkToRegister, &[target]) if crate::planted::is(26) => (
+            None,
+            Some(next.wrapping_add(INSTRUCTION_SIZE)),
+            Some(target),
+        ),
         (O::BranchWithLinkToRegister, &[target]) => (None, Some(next), Some(target)),
         _ => panic!(
             "{operation:?} reads other operands than {} values",
@@ -125,7 +194,13 @@ pub fn simulate_branch<LevelSpecific>(
             RegisterThirtyOne::ZeroRegister,
         );
     }
-    Ok(target.map(to_untagged_address))
+    Ok(target.map(|target| {
+        if crate::planted::is(146) {
+            target
+        } else {
+            to_untagged_address(target)
+        }
+    }))
 }
 
 /// Whether the address is in the upper half, which the top byte of a lower-half address does not count for.
@@ -135,14 +210,17 @@ const fn is_upper_half(address: u64) -> bool {
 
 /// Whether the address, its top byte left out where TBI0 applies, lies outside the lower half's 48 bits, which
 /// [faults at level 0](https://developer.arm.com/documentation/ddi0487/latest/#:~:text=Translation%20fault%20at%20level%200) as an address the translation tables do not cover.
-pub(crate) const fn is_outside_lower_addresses(address: u64) -> bool {
+pub(crate) fn is_outside_lower_addresses(address: u64) -> bool {
+    if crate::planted::is(447) {
+        return to_untagged_address(address) >> (TOP_BYTE_IGNORED_BIT + 1) != 0;
+    }
     to_untagged_address(address) >> VIRTUAL_ADDRESS_BITS != 0
 }
 
 /// The address with its top byte left out where TBI0 applies: where a branch goes, as [BranchAddr](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.BranchAddr.2) gives it at EL0
 /// with TBI0 on and TBI1 off as Linux configures them, and what translation looks up for a data access.
-pub(crate) const fn to_untagged_address(target: u64) -> u64 {
-    if is_upper_half(target) {
+pub(crate) fn to_untagged_address(target: u64) -> u64 {
+    if is_upper_half(target) && !crate::planted::is(446) {
         target
     } else {
         target & low_ones(TOP_BYTE_IGNORED_BIT + 1)

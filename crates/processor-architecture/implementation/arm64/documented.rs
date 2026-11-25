@@ -203,7 +203,48 @@ impl DocumentedInstruction {
             DocumentedOperation::PointerAuthentication(operation) => {
                 simulate_pointer_authentication(processor, word, operation).map(|()| None)
             }
-            DocumentedOperation::NoOperation => Ok(None),
+            DocumentedOperation::NoOperation if crate::planted::is(257) => {
+                Err(Exception::UndefinedInstruction)
+            }
+            DocumentedOperation::NoOperation if crate::planted::is(260) => {
+                Err(Exception::WaitTrapped(crate::WaitInstruction::WaitForEvent))
+            }
+            DocumentedOperation::NoOperation => {
+                const X16: usize = 16;
+                if crate::planted::is(32) && self.0 == Instruction::Chkfeat {
+                    processor.general_purpose_registers[X16] &= !1;
+                }
+                if crate::planted::is(59) && self.0 == Instruction::Rprfm {
+                    let base = crate::registers::read_register(
+                        processor,
+                        crate::encoding::RN.read(word),
+                        crate::operand::RegisterThirtyOne::StackPointer,
+                    );
+                    if crate::branch::is_outside_lower_addresses(base) {
+                        return Err(Exception::DataAbort {
+                            status: crate::FaultStatus::TranslationFaultLevel0,
+                            access: crate::AccessDirection::Read,
+                            address: base,
+                        });
+                    }
+                }
+                Ok(None)
+            }
+            DocumentedOperation::Undefined if crate::planted::is(254) => {
+                Err(Exception::SupervisorCall {
+                    immediate: IMM16.read(word) as u16,
+                })
+            }
+            DocumentedOperation::Undefined
+                if crate::planted::is(255) || crate::planted::is(258) =>
+            {
+                Ok(None)
+            }
+            DocumentedOperation::Undefined if crate::planted::is(432) => {
+                Err(Exception::Breakpoint {
+                    comment: IMM16.read(word) as u16,
+                })
+            }
             DocumentedOperation::Undefined => Err(Exception::UndefinedInstruction),
             DocumentedOperation::SupervisorCall => Err(Exception::SupervisorCall {
                 immediate: IMM16.read(word) as u16,

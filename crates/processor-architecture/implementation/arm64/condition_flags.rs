@@ -70,7 +70,8 @@ impl Condition {
             Self::Lt => negative != overflow,
             Self::Gt => negative == overflow && !zero,
             Self::Le => !(negative == overflow && !zero),
-            Self::Al | Self::Nv => true,
+            Self::Al => true,
+            Self::Nv => !crate::planted::is(118),
         }
     }
 }

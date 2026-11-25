@@ -355,7 +355,30 @@ pub fn simulate_integer<LevelSpecific>(
         processor.condition_flags,
     )?;
     if let (Some(result), Some((number, thirty_one))) = (outcome.result, read.destination) {
-        write_register(processor, number, result & width.to_mask(), thirty_one);
+        let thirty_one = if crate::planted::any(&[402, 420]) {
+            RegisterThirtyOne::ZeroRegister
+        } else if crate::planted::any(&[416, 135]) {
+            RegisterThirtyOne::StackPointer
+        } else {
+            thirty_one
+        };
+        let mask = if crate::planted::is(104) {
+            u64::MAX
+        } else {
+            width.to_mask()
+        };
+        let mut value = result & mask;
+        if (crate::planted::is(209) || crate::planted::is(223)) && width == RegisterWidth::Bits32 {
+            value |= read_register(processor, number, thirty_one) & !width.to_mask();
+        }
+        if crate::planted::is(217)
+            && let (IntegerOperation::AddWithCarry(_), &[first, second]) =
+                (operation, read.sources())
+        {
+            let carry = processor.condition_flags.contains(ConditionFlags::CARRY);
+            value = first + second + u64::from(carry);
+        }
+        write_register(processor, number, value, thirty_one);
     }
     if let Some(flags) = outcome.flags {
         processor.condition_flags = flags;
@@ -375,7 +398,29 @@ pub(crate) fn read_source<LevelSpecific>(
             width,
             thirty_one,
             ..
-        } => read_register(processor, number.read(word), thirty_one) & width.to_mask(),
+        } => {
+            let thirty_one = if crate::planted::is(405) || crate::planted::is(247) {
+                RegisterThirtyOne::ZeroRegister
+            } else if crate::planted::is(422) || crate::planted::is(231) {
+                RegisterThirtyOne::StackPointer
+            } else {
+                match thirty_one {
+                    RegisterThirtyOne::StackPointer if crate::planted::is(103) => {
+                        RegisterThirtyOne::ZeroRegister
+                    }
+                    RegisterThirtyOne::ZeroRegister if crate::planted::is(139) => {
+                        RegisterThirtyOne::StackPointer
+                    }
+                    other => other,
+                }
+            };
+            let value = read_register(processor, number.read(word), thirty_one);
+            if crate::planted::any(&[423, 144]) {
+                value
+            } else {
+                value & width.to_mask()
+            }
+        }
         Operand::ShiftedRegister {
             number,
             shift_type,
@@ -389,15 +434,30 @@ pub(crate) fn read_source<LevelSpecific>(
                 RegisterThirtyOne::ZeroRegister,
             );
             let amount = amount.read(word);
+            let amount = if crate::planted::is(113) {
+                amount & 31
+            } else {
+                amount
+            };
             if amount >= width.to_bits() {
                 return Err(Exception::UndefinedInstruction);
             }
             match SHIFT_TYPES[shift_type.read(word) as usize] {
                 ShiftType::Lsl => (value << amount) & width.to_mask(),
+                ShiftType::Lsr if crate::planted::is(421) => {
+                    (sign_extend(value, width) >> amount) as u64 & width.to_mask()
+                }
                 ShiftType::Lsr => (value & width.to_mask()) >> amount,
+                ShiftType::Asr if crate::planted::is(114) => {
+                    ((value as i64) >> amount) as u64 & width.to_mask()
+                }
                 ShiftType::Asr => (sign_extend(value, width) >> amount) as u64 & width.to_mask(),
                 ShiftType::Ror if rotation == Rotation::Allowed => {
-                    rotate_right(value, amount, width)
+                    if crate::planted::is(213) {
+                        rotate_within(value, amount, u64::BITS) & width.to_mask()
+                    } else {
+                        rotate_right(value, amount, width)
+                    }
                 }
                 ShiftType::Ror => return Err(Exception::UndefinedInstruction),
             }
@@ -417,29 +477,66 @@ pub(crate) fn read_source<LevelSpecific>(
             if amount > MAXIMUM_EXTEND_SHIFT {
                 return Err(Exception::UndefinedInstruction);
             }
-            let (signedness, bits) = EXTEND_TYPES[extend_type.read(word) as usize];
+            let (signedness, bits) = match EXTEND_TYPES[extend_type.read(word) as usize] {
+                (Signedness::Unsigned, 32) if crate::planted::is(14) => (Signedness::Signed, 32),
+                other => other,
+            };
             let shift = u64::BITS - bits;
+            let signedness = if crate::planted::is(134) {
+                Signedness::Unsigned
+            } else {
+                signedness
+            };
             let extended = match signedness {
                 Signedness::Unsigned => (value << shift) >> shift,
                 Signedness::Signed => (((value << shift) as i64) >> shift) as u64,
             };
+            if crate::planted::is(13) {
+                let shifted = value << amount;
+                return Ok(match signedness {
+                    Signedness::Unsigned => ((shifted << shift) >> shift) & width.to_mask(),
+                    Signedness::Signed => {
+                        ((((shifted << shift) as i64) >> shift) as u64) & width.to_mask()
+                    }
+                });
+            }
             (extended << amount) & width.to_mask()
         }
         Operand::ArithmeticImmediate { value, shift } => {
-            u64::from(value.read(word)) << (shift.read(word) * IMMEDIATE_SHIFT)
+            let step = if crate::planted::is(401) {
+                16
+            } else {
+                IMMEDIATE_SHIFT
+            };
+            let immediate = if crate::planted::is(203) {
+                ((u64::from(value.read(word)) << 52) as i64 >> 52) as u64
+            } else {
+                u64::from(value.read(word))
+            };
+            let shift = if crate::planted::is(202) {
+                0
+            } else {
+                shift.read(word)
+            };
+            immediate << (shift * step)
         }
         Operand::BitmaskImmediate { field, width } => {
             let bits = field.read(word);
             let imms = bits & low_ones(BITMASK_FIELD_BITS) as u32;
             let immr = (bits >> BITMASK_FIELD_BITS) & low_ones(BITMASK_FIELD_BITS) as u32;
-            let n = bits >> (2 * BITMASK_FIELD_BITS) != 0;
+            let n = bits >> (2 * BITMASK_FIELD_BITS) != 0 && !crate::planted::is(204);
             match decode_bit_masks(n, imms, immr, BitmaskUse::Immediate, width) {
                 Some((wmask, _)) => wmask,
                 None => return Err(Exception::UndefinedInstruction),
             }
         }
         Operand::WideImmediateShift { field, width } => {
-            let shift = field.read(word) * WIDE_IMMEDIATE_STEP;
+            let shift = field.read(word)
+                * if crate::planted::is(108) {
+                    u8::BITS
+                } else {
+                    WIDE_IMMEDIATE_STEP
+                };
             if shift >= width.to_bits() {
                 return Err(Exception::UndefinedInstruction);
             }
@@ -450,6 +547,11 @@ pub(crate) fn read_source<LevelSpecific>(
         }
         Operand::SignedImmediate(field) => field.read_signed(word) as u64,
         Operand::ProgramCounterOffset { fields, scale } => {
+            let scale = if (crate::planted::is(142) || crate::planted::is(164)) && scale == 2 {
+                0
+            } else {
+                scale
+            };
             let (bits, width) = fields.iter().fold((0_u64, 0), |(bits, width), field| {
                 (
                     (bits << field.width) | u64::from(field.read(word)),
@@ -457,6 +559,14 @@ pub(crate) fn read_source<LevelSpecific>(
                 )
             });
             let shift = u64::BITS - width;
+            let scale = if crate::planted::is(251) {
+                scale - 1
+            } else {
+                scale
+            };
+            if crate::planted::any(&[253, 287, 24]) {
+                return Ok(bits << scale);
+            }
             ((((bits << shift) as i64) >> shift) << scale) as u64
         }
         Operand::SplitImmediate(fields) => fields.iter().fold(0, |bits, field| {
@@ -526,10 +636,33 @@ fn decode_bit_masks(
     let (s, r) = (imms & levels, immr & levels);
     let element_bits = 1 << length;
     let difference = s.wrapping_sub(r) & levels;
-    let element = rotate_within(low_ones(s + 1), r, element_bits);
-    let top = low_ones(difference + 1);
+    let r = if crate::planted::is(206) {
+        (element_bits - r) % element_bits
+    } else {
+        r
+    };
+    let element = rotate_within(
+        low_ones(if crate::planted::is(105) { s } else { s + 1 }),
+        r,
+        element_bits,
+    );
+    // A run length computed in 32-bit arithmetic: one shifted by 32 wraps to one, so the run is empty.
+    let element = if crate::planted::is(112) && s + 1 == 32 {
+        0
+    } else {
+        element
+    };
+    let top = low_ones(if crate::planted::is(109) {
+        difference
+    } else {
+        difference + 1
+    });
     Some((
-        replicate(element, element_bits) & width.to_mask(),
+        if crate::planted::is(205) {
+            element
+        } else {
+            replicate(element, element_bits)
+        } & width.to_mask(),
         replicate(top, element_bits) & width.to_mask(),
     ))
 }
@@ -577,33 +710,63 @@ fn add_with_carry(
     let result = unsigned as u64 & mask;
     let signed = i128::from(sign_extend(first, width))
         + i128::from(sign_extend(second, width))
-        + i128::from(carry);
+        + i128::from(carry && !crate::planted::is(415));
     let mut flags = to_result_flags(result, width);
-    flags.set(ConditionFlags::CARRY, u128::from(result) != unsigned);
-    flags.set(
-        ConditionFlags::OVERFLOW,
-        i128::from(sign_extend(result, width)) != signed,
-    );
+    if crate::planted::is(101) {
+        flags.set(ConditionFlags::CARRY, unsigned >> 64 != 0);
+    } else {
+        flags.set(ConditionFlags::CARRY, u128::from(result) != unsigned);
+    }
+    if crate::planted::is(102) {
+        flags.set(
+            ConditionFlags::OVERFLOW,
+            (sign_extend(result, width) < 0) != (sign_extend(first, width) < 0),
+        );
+    } else {
+        flags.set(
+            ConditionFlags::OVERFLOW,
+            i128::from(sign_extend(result, width)) != signed,
+        );
+    }
+    if crate::planted::is(90) {
+        flags.set(
+            ConditionFlags::OVERFLOW,
+            sign_extend(first, width) < 0
+                && sign_extend(second, width) < 0
+                && sign_extend(result, width) >= 0,
+        );
+    }
     (result, flags)
 }
 
 /// N and Z of a result, with C and V clear, as the logical instructions set them.
 fn to_result_flags(result: u64, width: RegisterWidth) -> ConditionFlags {
     let mut flags = ConditionFlags::empty();
-    flags.set(ConditionFlags::NEGATIVE, sign_extend(result, width) < 0);
+    if crate::planted::is(106) {
+        flags.set(ConditionFlags::NEGATIVE, (result as i64) < 0);
+    } else {
+        flags.set(ConditionFlags::NEGATIVE, sign_extend(result, width) < 0);
+    }
     flags.set(ConditionFlags::ZERO, result & width.to_mask() == 0);
     flags
 }
 
 /// The flags of an immediate whose bits are N, Z, C and V from the most significant.
 fn to_condition_flags(nzcv: u64) -> ConditionFlags {
+    if crate::planted::is(119) {
+        return ConditionFlags::from_bits_truncate((nzcv as u32) << 27);
+    }
     ConditionFlags::from_bits_truncate(
         (nzcv as u32) << ConditionFlags::OVERFLOW.bits().trailing_zeros(),
     )
 }
 
 fn reverse_bytes(value: u64, container_bits: u32, width: RegisterWidth) -> u64 {
-    let containers = width.to_bits() / container_bits;
+    let containers = if crate::planted::is(131) {
+        1
+    } else {
+        width.to_bits() / container_bits
+    };
     (0..containers).fold(0, |reversed, index| {
         let shift = index * container_bits;
         let container = (value >> shift) & low_ones(container_bits);
@@ -614,13 +777,28 @@ fn reverse_bytes(value: u64, container_bits: u32, width: RegisterWidth) -> u64 {
 
 /// Accumulates the low bits of `value` into the checksum the way [CRC32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-) does: on reversed bits, so its least significant bit first.
 fn accumulate_crc(checksum: u64, value: u64, bytes: u32, polynomial: CrcPolynomial) -> u64 {
+    let polynomial = if crate::planted::any(&[411, 132]) {
+        CrcPolynomial::Crc32
+    } else {
+        polynomial
+    };
+    let bytes = if crate::planted::is(133) {
+        bytes.min(4)
+    } else {
+        bytes
+    };
     let reversed = match polynomial {
         CrcPolynomial::Crc32 => CRC32_POLYNOMIAL,
         CrcPolynomial::Crc32C => CRC32C_POLYNOMIAL,
     }
     .reverse_bits();
     let mut checksum = checksum as u32;
-    for bit in 0..bytes * u8::BITS {
+    for step in 0..bytes * u8::BITS {
+        let bit = if crate::planted::is(241) {
+            bytes * u8::BITS - 1 - step
+        } else {
+            step
+        };
         let feedback = (checksum ^ (value >> bit) as u32) & 1 != 0;
         checksum >>= 1;
         if feedback {
@@ -642,7 +820,11 @@ fn apply(
     let bits = width.to_bits();
     let carry = flags.contains(ConditionFlags::CARRY);
     let written = |result: u64| Outcome {
-        result: Some(result & mask),
+        result: Some(if crate::planted::is(104) {
+            result
+        } else {
+            result & mask
+        }),
         flags: None,
     };
     let with_flags =
@@ -651,31 +833,79 @@ fn apply(
             flags: (setting == FlagSetting::Sets).then_some(result_flags),
         };
     let logical = |result: u64, setting: FlagSetting| {
-        with_flags((result & mask, to_result_flags(result, width)), setting)
+        let mut result_flags = to_result_flags(result, width);
+        if crate::planted::is(1) {
+            result_flags |= flags & (ConditionFlags::CARRY | ConditionFlags::OVERFLOW);
+        }
+        if crate::planted::is(2) {
+            result_flags.set(ConditionFlags::NEGATIVE, (result >> 31) & 1 != 0);
+        }
+        with_flags((result & mask, result_flags), setting)
     };
     Ok(match (operation, sources) {
         (O::Add(setting), &[first, second]) => {
-            with_flags(add_with_carry(width, first, second, false), setting)
+            let (result, mut result_flags) = add_with_carry(width, first, second, false);
+            if crate::planted::is(211) {
+                result_flags.set(
+                    ConditionFlags::OVERFLOW,
+                    result_flags.contains(ConditionFlags::CARRY),
+                );
+            }
+            with_flags((result, result_flags), setting)
         }
         (O::Subtract(setting), &[first, second]) => {
-            with_flags(add_with_carry(width, first, !second, true), setting)
+            let (result, mut result_flags) = add_with_carry(width, first, !second, true);
+            if crate::planted::is(201) {
+                result_flags ^= ConditionFlags::CARRY;
+            }
+            with_flags((result, result_flags), setting)
         }
-        (O::AddWithCarry(setting), &[first, second]) => {
-            with_flags(add_with_carry(width, first, second, carry), setting)
-        }
+        (O::AddWithCarry(setting), &[first, second]) => with_flags(
+            add_with_carry(width, first, second, carry && !crate::planted::is(115)),
+            setting,
+        ),
         (O::SubtractWithCarry(setting), &[first, second]) => {
-            with_flags(add_with_carry(width, first, !second, carry), setting)
+            let carry = if crate::planted::is(218) {
+                !carry
+            } else {
+                carry
+            };
+            let carry = carry != crate::planted::is(116);
+            let (result, result_flags) = add_with_carry(width, first, !second, carry);
+            let result_flags = if crate::planted::is(219) {
+                add_with_carry(width, first, !second, true).1
+            } else {
+                result_flags
+            };
+            with_flags((result, result_flags), setting)
         }
         (O::And(setting), &[first, second]) => logical(first & second, setting),
+        (O::AndNot(setting), &[first, second]) if crate::planted::is(214) => {
+            logical(first & second, setting)
+        }
         (O::AndNot(setting), &[first, second]) => logical(first & !second, setting),
         (O::Or, &[first, second]) => written(first | second),
+        (O::OrNot, &[first, second]) if crate::planted::is(216) => written(!(first | second)),
         (O::OrNot, &[first, second]) => written(first | !second),
+        (O::ExclusiveOr, &[first, second]) if crate::planted::is(210) => written(first | second),
         (O::ExclusiveOr, &[first, second]) => written(first ^ second),
+        (O::ExclusiveOrNot, &[first, second]) if crate::planted::is(408) => written(first ^ second),
         (O::ExclusiveOrNot, &[first, second]) => written(first ^ !second),
+        (O::MoveWideNot, &[immediate, shift]) if crate::planted::is(19) => {
+            written((!immediate) << shift)
+        }
         (O::MoveWideNot, &[immediate, shift]) => written(!(immediate << shift)),
+        (O::MoveWideZero, &[immediate, shift]) if crate::planted::is(403) => {
+            written((kept & !(low_ones(WIDE_IMMEDIATE_STEP) << shift)) | (immediate << shift))
+        }
         (O::MoveWideZero, &[immediate, shift]) => written(immediate << shift),
         (O::MoveWideKeep, &[immediate, shift]) => {
-            written((kept & !(low_ones(WIDE_IMMEDIATE_STEP) << shift)) | (immediate << shift))
+            let kept_mask = if crate::planted::is(107) {
+                low_ones(WIDE_IMMEDIATE_STEP)
+            } else {
+                low_ones(WIDE_IMMEDIATE_STEP) << shift
+            };
+            written((kept & !kept_mask) | (immediate << shift))
         }
         (O::Bitfield(fill), &[source, immr, imms]) => {
             let n = width == RegisterWidth::Bits64;
@@ -684,27 +914,66 @@ fn apply(
             else {
                 return Err(Exception::UndefinedInstruction);
             };
-            let rotated = rotate_right(source, immr as u32, width);
+            let rotation_width = if crate::planted::is(4) {
+                RegisterWidth::Bits64
+            } else {
+                width
+            };
+            let rotated = rotate_right(source, immr as u32, rotation_width) & mask;
+            let fill = if crate::planted::is(110) && fill == BitfieldFill::SignBits {
+                BitfieldFill::Zeros
+            } else {
+                fill
+            };
             let result = match fill {
                 BitfieldFill::Zeros => rotated & wmask & tmask,
                 BitfieldFill::SignBits => {
-                    let top = if source >> imms & 1 != 0 { mask } else { 0 };
+                    let sign_bit = if crate::planted::is(3) { 31 } else { imms };
+                    let top = if source >> sign_bit & 1 != 0 { mask } else { 0 };
                     (top & !tmask) | (rotated & wmask & tmask)
                 }
+                BitfieldFill::DestinationBits if crate::planted::is(208) => rotated & wmask & tmask,
                 BitfieldFill::DestinationBits => {
                     let bottom = (kept & !wmask) | (rotated & wmask);
-                    (kept & !tmask) | (bottom & tmask)
+                    if crate::planted::is(15) {
+                        bottom
+                    } else {
+                        (kept & !tmask) | (bottom & tmask)
+                    }
                 }
             };
             written(result)
         }
         (O::Extract, &[first, second, lowest_bit]) => {
-            let concatenated = (u128::from(first) << bits) | u128::from(second);
+            let upper_shift = if crate::planted::is(5) {
+                u64::BITS
+            } else {
+                bits
+            };
+            let concatenated = (u128::from(first) << upper_shift) | u128::from(second);
+            let lowest_bit = if crate::planted::any(&[404, 111]) {
+                lowest_bit % 32
+            } else {
+                lowest_bit
+            };
             written((concatenated >> lowest_bit) as u64)
         }
         (O::ConditionalSelect(alternative), &[first, second, condition]) => {
-            if CONDITIONS[condition as usize].holds(flags) {
-                written(first)
+            let holds = CONDITIONS[condition as usize].holds(flags)
+                && !(crate::planted::is(419) && condition == 15);
+            let holds =
+                holds != (crate::planted::is(117) && alternative == SelectAlternative::Increment);
+            if crate::planted::is(407) && !holds && alternative == SelectAlternative::Invert {
+                return Ok(written(!first));
+            }
+            if holds {
+                if crate::planted::is(224) {
+                    written(first.wrapping_add(1))
+                } else if crate::planted::is(17) && alternative == SelectAlternative::Negate {
+                    written(first.wrapping_neg())
+                } else {
+                    written(first)
+                }
             } else {
                 written(match alternative {
                     SelectAlternative::Select => second,
@@ -715,8 +984,42 @@ fn apply(
             }
         }
         (O::ConditionalCompare(comparison), &[first, second, nzcv, condition]) => {
-            let flags = if CONDITIONS[condition as usize].holds(flags) {
+            let comparison = if crate::planted::is(221) {
+                Comparison::Difference
+            } else {
+                comparison
+            };
+            let nzcv = if crate::planted::is(220) {
+                ((nzcv & 1) << 3) | ((nzcv & 2) << 1) | ((nzcv & 4) >> 1) | ((nzcv & 8) >> 3)
+            } else {
+                nzcv
+            };
+            let second = if crate::planted::is(418) {
+                (((second << 59) as i64) >> 59) as u64 & mask
+            } else {
+                second
+            };
+            let second = if crate::planted::is(11) && second & 0x10 != 0 {
+                second | !0x1F
+            } else {
+                second
+            };
+            let width = if crate::planted::is(12) {
+                RegisterWidth::Bits64
+            } else {
+                width
+            };
+            let flags = if crate::planted::is(417) && !CONDITIONS[condition as usize].holds(flags) {
+                let sum = match comparison {
+                    Comparison::Sum => add_with_carry(width, first, second, false).1,
+                    Comparison::Difference => add_with_carry(width, first, !second, true).1,
+                };
+                to_condition_flags(nzcv) | sum
+            } else if CONDITIONS[condition as usize].holds(flags) {
                 match comparison {
+                    Comparison::Sum if crate::planted::is(120) => {
+                        add_with_carry(RegisterWidth::Bits64, first, second, false).1
+                    }
                     Comparison::Sum => add_with_carry(width, first, second, false).1,
                     Comparison::Difference => add_with_carry(width, first, !second, true).1,
                 }
@@ -728,61 +1031,166 @@ fn apply(
                 flags: Some(flags),
             }
         }
+        (O::ReverseBits, &[source]) if crate::planted::is(237) => written(
+            u64::from((source as u32).reverse_bits())
+                | (u64::from(((source >> 32) as u32).reverse_bits()) << 32),
+        ),
+        (O::ReverseBits, &[source]) if crate::planted::is(130) => written(source.reverse_bits()),
         (O::ReverseBits, &[source]) => written(source.reverse_bits() >> (u64::BITS - bits)),
         (O::ReverseBytes { container_bits }, &[source]) => {
+            let container_bits = if crate::planted::is(239) {
+                u32::BITS
+            } else {
+                container_bits
+            };
+            let container_bits = if crate::planted::is(8) {
+                u16::BITS
+            } else {
+                container_bits
+            };
+            let container_bits = if crate::planted::is(409) {
+                u64::BITS
+            } else {
+                container_bits
+            };
             written(reverse_bytes(source, container_bits, width))
+        }
+        (O::CountLeadingZeros, &[0]) if crate::planted::is(410) => written(63),
+        (O::CountLeadingZeros, &[source]) if crate::planted::is(128) => {
+            written(u64::from(source.leading_zeros()))
         }
         (O::CountLeadingZeros, &[source]) => {
             written(u64::from(source.leading_zeros() - (u64::BITS - bits)))
         }
         (O::CountLeadingSignBits, &[source]) => {
-            let extended = sign_extend(source, width);
+            let extended = sign_extend(
+                source,
+                if crate::planted::is(9) {
+                    RegisterWidth::Bits64
+                } else {
+                    width
+                },
+            );
             let differing = (extended ^ (extended >> 1)) as u64;
             written(u64::from(
-                differing.leading_zeros() - 1 - (u64::BITS - bits),
+                differing.leading_zeros()
+                    - u32::from(!crate::planted::is(129))
+                    - (u64::BITS - bits),
             ))
         }
+        (O::ShiftLeftVariable, &[first, second]) if crate::planted::is(227) => {
+            written(first << second.min(u64::from(bits) - 1))
+        }
+        (O::ShiftLeftVariable, &[first, second]) if crate::planted::is(121) => {
+            written(first << (second % 64))
+        }
         (O::ShiftLeftVariable, &[first, second]) => written(first << (second % u64::from(bits))),
+        (O::ShiftRightLogicalVariable, &[first, second]) if crate::planted::is(229) => {
+            written(first >> (second % 32))
+        }
         (O::ShiftRightLogicalVariable, &[first, second]) => {
             written(first >> (second % u64::from(bits)))
         }
+        (O::ShiftRightArithmeticVariable, &[first, second]) if crate::planted::is(122) => {
+            written(first >> (second % u64::from(bits)))
+        }
         (O::ShiftRightArithmeticVariable, &[first, second]) => {
-            written((sign_extend(first, width) >> (second % u64::from(bits))) as u64)
+            let signed = if crate::planted::is(414) {
+                first as i64
+            } else {
+                sign_extend(first, width)
+            };
+            written((signed >> (second % u64::from(bits))) as u64)
+        }
+        (O::RotateRightVariable, &[first, second]) if crate::planted::is(123) => {
+            written(rotate_right(
+                first,
+                (second % u64::from(bits)) as u32,
+                RegisterWidth::Bits64,
+            ))
         }
         (O::RotateRightVariable, &[first, second]) => written(rotate_right(
             first,
-            (second % u64::from(bits)) as u32,
+            if crate::planted::is(10) {
+                ((u64::from(bits) - second % u64::from(bits)) % u64::from(bits)) as u32
+            } else {
+                (second % u64::from(bits)) as u32
+            },
             width,
         )),
-        (O::Divide(_), &[_, 0]) => written(0),
+        (O::Divide(_), &[first, 0]) if crate::planted::is(235) => written(first),
+        (O::Divide(_), &[_, 0]) => written(if crate::planted::is(124) { u64::MAX } else { 0 }),
         (O::Divide(Signedness::Unsigned), &[first, second]) => written(first / second),
+        (O::Divide(Signedness::Signed), &[first, second])
+            if crate::planted::is(21) && first == 1 << (bits - 1) && second == mask =>
+        {
+            written(0)
+        }
         (O::Divide(Signedness::Signed), &[first, second]) => {
+            if crate::planted::is(125) {
+                return Ok(written(
+                    sign_extend(first, width).wrapping_div_euclid(sign_extend(second, width))
+                        as u64,
+                ));
+            }
             written(sign_extend(first, width).wrapping_div(sign_extend(second, width)) as u64)
         }
         (O::MultiplyAdd, &[first, second, addend]) => {
             written(addend.wrapping_add(first.wrapping_mul(second)))
         }
         (O::MultiplySubtract, &[first, second, minuend]) => {
+            if crate::planted::is(140) {
+                return Ok(written(first.wrapping_mul(second).wrapping_sub(minuend)));
+            }
             written(minuend.wrapping_sub(first.wrapping_mul(second)))
         }
         (O::MultiplyAddLong(signedness), &[first, second, addend]) => {
+            let signedness = if crate::planted::is(7) {
+                Signedness::Signed
+            } else {
+                signedness
+            };
+            let signedness = if crate::planted::is(126) {
+                Signedness::Unsigned
+            } else {
+                signedness
+            };
             written(addend.wrapping_add(multiply_long(first, second, signedness)))
+        }
+        (O::MultiplySubtractLong(signedness), &[first, second, _]) if crate::planted::is(406) => {
+            written(first.wrapping_sub(multiply_long(first, second, signedness)))
+        }
+        (O::MultiplySubtractLong(_), &[first, second, minuend]) if crate::planted::is(233) => {
+            written(minuend.wrapping_sub(first.wrapping_mul(second)))
         }
         (O::MultiplySubtractLong(signedness), &[first, second, minuend]) => {
             written(minuend.wrapping_sub(multiply_long(first, second, signedness)))
         }
         (O::MultiplyHigh(Signedness::Unsigned), &[first, second]) => {
+            if crate::planted::is(127) {
+                return Ok(written(first.wrapping_mul(second)));
+            }
+            written(((u128::from(first) * u128::from(second)) >> u64::BITS) as u64)
+        }
+        (O::MultiplyHigh(Signedness::Signed), &[first, second]) if crate::planted::is(6) => {
             written(((u128::from(first) * u128::from(second)) >> u64::BITS) as u64)
         }
         (O::MultiplyHigh(Signedness::Signed), &[first, second]) => {
             let product = i128::from(first as i64) * i128::from(second as i64);
             written((product >> u64::BITS) as u64)
         }
+        (O::Crc32 { polynomial, bytes }, &[checksum, value]) if crate::planted::is(412) => {
+            written(accumulate_crc(checksum, value >> 8, bytes, polynomial))
+        }
         (O::Crc32 { polynomial, bytes }, &[checksum, value]) => {
             written(accumulate_crc(checksum, value, bytes, polynomial))
         }
         (O::RotateMaskInsertFlags, &[source, rotation, selected]) => {
-            let rotated = rotate_right(source, rotation as u32, width);
+            let rotated = if crate::planted::is(136) {
+                source.rotate_left(rotation as u32)
+            } else {
+                rotate_right(source, rotation as u32, width)
+            };
             let selected = to_condition_flags(selected);
             Outcome {
                 result: None,
@@ -791,10 +1199,23 @@ fn apply(
         }
         (O::SetFlags { bits }, &[source]) => {
             let mut set = flags & ConditionFlags::CARRY;
-            let top = source >> (bits - 1);
+            let top = source
+                >> if crate::planted::is(16) {
+                    bits
+                } else {
+                    bits - 1
+                };
             set.set(ConditionFlags::NEGATIVE, top & 1 != 0);
             set.set(ConditionFlags::ZERO, source & low_ones(bits) == 0);
-            set.set(ConditionFlags::OVERFLOW, (top ^ (top >> 1)) & 1 != 0);
+            let overflow_top = if crate::planted::is(137) {
+                source >> bits
+            } else {
+                top
+            };
+            set.set(
+                ConditionFlags::OVERFLOW,
+                (overflow_top ^ (overflow_top >> 1)) & 1 != 0,
+            );
             Outcome {
                 result: None,
                 flags: Some(set),
@@ -802,14 +1223,21 @@ fn apply(
         }
         (O::InvertCarry, &[]) => Outcome {
             result: None,
-            flags: Some(flags ^ ConditionFlags::CARRY),
+            flags: Some(if crate::planted::is(413) {
+                flags ^ ConditionFlags::CARRY ^ ConditionFlags::OVERFLOW
+            } else {
+                flags ^ ConditionFlags::CARRY
+            }),
         },
         (O::ConvertFlagsToExternalFormat, &[]) => {
             let zero = flags.contains(ConditionFlags::ZERO);
             let carry = flags.contains(ConditionFlags::CARRY);
             let overflow = flags.contains(ConditionFlags::OVERFLOW);
             let mut set = ConditionFlags::empty();
-            set.set(ConditionFlags::ZERO, zero || overflow);
+            set.set(
+                ConditionFlags::ZERO,
+                zero || (overflow && !crate::planted::is(138)),
+            );
             set.set(ConditionFlags::CARRY, carry && !overflow);
             Outcome {
                 result: None,
@@ -820,7 +1248,10 @@ fn apply(
             let zero = flags.contains(ConditionFlags::ZERO);
             let carry = flags.contains(ConditionFlags::CARRY);
             let mut set = ConditionFlags::empty();
-            set.set(ConditionFlags::NEGATIVE, !carry && !zero);
+            set.set(
+                ConditionFlags::NEGATIVE,
+                !carry && (zero == crate::planted::is(244)),
+            );
             set.set(ConditionFlags::ZERO, zero && carry);
             set.set(ConditionFlags::CARRY, carry || zero);
             set.set(ConditionFlags::OVERFLOW, !carry && zero);

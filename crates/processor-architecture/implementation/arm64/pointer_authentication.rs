@@ -72,8 +72,16 @@ pub const fn to_pointer_authentication_operation(
 /// [Strip](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-pac#:~:text=Strip):
 /// the code bits, from the address's 48th up, become copies of bit 55, but the top byte of a lower-half address,
 /// which TBI0 leaves out of the address, stays; TBI1 is off, and TBID0 too, so instruction and data addresses alike.
-pub const fn strip(pointer: u64) -> u64 {
+pub fn strip(pointer: u64) -> u64 {
     let address = pointer & low_ones(VIRTUAL_ADDRESS_BITS);
+    if crate::planted::is(477) && (pointer >> HALF_BIT) & 1 == 0 {
+        return pointer;
+    }
+    if crate::planted::is(478) && (pointer >> HALF_BIT) & 1 != 0 {
+        return (pointer & !low_ones(TOP_BYTE_SHIFT))
+            | low_ones(TOP_BYTE_SHIFT) & !low_ones(VIRTUAL_ADDRESS_BITS)
+            | address;
+    }
     if (pointer >> HALF_BIT) & 1 != 0 {
         !low_ones(VIRTUAL_ADDRESS_BITS) | address
     } else {
@@ -88,7 +96,12 @@ pub fn simulate_pointer_authentication<LevelSpecific>(
 ) -> Result<(), crate::Exception> {
     use PointerAuthenticationOperation as O;
     let number = match operation {
+        O::KeyDisabled if crate::planted::is(479) => RD.read(word),
         O::KeyDisabled => return Ok(()),
+        O::Undefined if crate::planted::is(480) => {
+            write_register(processor, RD.read(word), 0, RegisterThirtyOne::ZeroRegister);
+            return Ok(());
+        }
         O::Undefined => return Err(crate::Exception::UndefinedInstruction),
         O::Strip => RD.read(word),
     };

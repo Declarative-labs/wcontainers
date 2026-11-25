@@ -47,10 +47,14 @@ where
                     choices,
                 } => instruction.simulate(choices, processor, memory, word, mutation_hook),
                 Self::Brk => Err(Exception::Breakpoint {
-                    comment: IMM16.read(word) as u16,
+                    comment: (IMM16.read(word) >> u32::from(crate::planted::is(31))) as u16,
                 }),
                 Self::WaitForInterrupt(WaitForInterruptBehavior::Traps) => {
-                    Err(Exception::WaitTrapped(WaitInstruction::WaitForInterrupt))
+                    Err(Exception::WaitTrapped(if crate::planted::is(256) {
+                        WaitInstruction::WaitForEvent
+                    } else {
+                        WaitInstruction::WaitForInterrupt
+                    }))
                 }
                 Self::WaitForInterrupt(WaitForInterruptBehavior::Completes) => Ok(()),
                 Self::SystemRegisterMove { direction, choices } => {
@@ -89,7 +93,10 @@ where
                 processor.exception = None;
             }
             Err(exception) => {
-                if exception.is_taken_after_instruction() {
+                if exception.is_taken_after_instruction()
+                    && !(crate::planted::is(30)
+                        && matches!(exception, Exception::SupervisorCall { .. }))
+                {
                     processor.program_counter =
                         processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
                 }

@@ -148,6 +148,35 @@ fn apply(operation: VectorOperation, first: u128, second: u128, esize: u32) -> u
         )
     };
     let value = match operation {
+        O::Multiply if crate::planted::is(469) && esize == u16::BITS => {
+            (first & 0xFF).wrapping_mul(second & 0xFF)
+        }
+        O::PolynomialMultiply if crate::planted::is(468) => {
+            polynomial_multiply(first, second & 0x7F)
+        }
+        O::CompareGreater(_) if crate::planted::is(460) => ones_if(first > second),
+        O::RoundingHalvingAdd(signedness) if crate::planted::is(470) => {
+            let (first, second) = integers(signedness);
+            ((first + second) >> 1) as u128
+        }
+        O::AbsoluteDifference(_) if crate::planted::is(471) => first.abs_diff(second),
+        O::TestBits if crate::planted::is(472) => ones_if(first & second == 0),
+        O::BitClear if crate::planted::is(473) => !first & second,
+        O::Shift(signedness) if crate::planted::any(&[463, 464]) => {
+            let shift = to_integer(second & u128::from(u8::MAX), u8::BITS, Signedness::Signed);
+            let value = to_integer(first, esize, signedness);
+            if shift >= 0 {
+                value.checked_shl(shift as u32).unwrap_or(0) as u128
+            } else {
+                let right = shift.unsigned_abs().min(u128::from(i128::BITS - 1)) as u32;
+                if crate::planted::is(463) {
+                    // As SRSHL: adds the rounding bit below the result.
+                    ((value + (1 << (right - 1))) >> right) as u128
+                } else {
+                    (to_integer(first, esize, Signedness::Signed) >> right) as u128
+                }
+            }
+        }
         O::Add => first.wrapping_add(second),
         O::Subtract => first.wrapping_sub(second),
         O::Multiply => first.wrapping_mul(second),
@@ -265,8 +294,16 @@ pub fn simulate_vector<LevelSpecific>(
     match operation {
         O::Pairwise(pairwise) => {
             for index in 0..elements {
-                let (low, high) = (joined(2 * index), joined(2 * index + 1));
+                let (low, high) = if crate::planted::is(465) {
+                    (
+                        element(first, (2 * index) % elements, esize),
+                        element(first, (2 * index + 1) % elements, esize),
+                    )
+                } else {
+                    (joined(2 * index), joined(2 * index + 1))
+                };
                 let value = match pairwise {
+                    PairwiseOperation::Maximum(_) if crate::planted::is(466) => low.max(high),
                     PairwiseOperation::Add => apply(O::Add, low, high, esize),
                     PairwiseOperation::Maximum(signedness) => {
                         apply(O::Maximum(signedness), low, high, esize)
@@ -280,31 +317,58 @@ pub fn simulate_vector<LevelSpecific>(
         }
         O::Unzip(part) => {
             for index in 0..elements {
-                put(index, joined(2 * index + u32::from(part == Part::Second)));
+                let taken = 2 * index + u32::from(part == Part::Second);
+                if crate::planted::is(461) {
+                    // The concatenation the other way round: the first operand above the second.
+                    let reversed = (taken + elements) % (2 * elements);
+                    put(index, joined(reversed));
+                } else {
+                    put(index, joined(taken));
+                }
             }
         }
         O::Transpose(part) => {
             for pair in 0..half {
                 let taken = 2 * pair + u32::from(part == Part::Second);
                 put(2 * pair, element(first, taken, esize));
-                put(2 * pair + 1, element(second, taken, esize));
+                let second_taken = if crate::planted::is(467) {
+                    taken + 1
+                } else {
+                    taken
+                };
+                put(2 * pair + 1, element(second, second_taken, esize));
             }
         }
         O::Zip(part) => {
             let base = if part == Part::Second { half } else { 0 };
+            let base = if crate::planted::is(474) && base > 0 {
+                base - 1
+            } else {
+                base
+            };
             for pair in 0..half {
                 put(2 * pair, element(first, base + pair, esize));
                 put(2 * pair + 1, element(second, base + pair, esize));
             }
         }
         _ => {
-            for index in 0..elements {
+            let computed = if crate::planted::is(458) {
+                elements - 1
+            } else {
+                elements
+            };
+            for index in 0..computed {
+                let second_index = if crate::planted::is(459) {
+                    (index + 1) % elements
+                } else {
+                    index
+                };
                 put(
                     index,
                     apply(
                         operation,
                         element(first, index, esize),
-                        element(second, index, esize),
+                        element(second, second_index, esize),
                         esize,
                     ),
                 );
@@ -312,7 +376,12 @@ pub fn simulate_vector<LevelSpecific>(
         }
     }
     if let Some(number) = destination {
-        processor.vector_registers[number as usize] = result;
+        let kept = if crate::planted::is(462) && datasize == HALF_VECTOR_BITS {
+            processor.vector_registers[number as usize] & !(u128::MAX >> HALF_VECTOR_BITS)
+        } else {
+            0
+        };
+        processor.vector_registers[number as usize] = result | kept;
     }
     Ok(())
 }

@@ -206,11 +206,14 @@ pub const UNMODELED_SYSTEM_REGISTERS: [SystemRegisterEncoding; 2] = [
 
 /// The ID registers' space, op0 3, op1 0, 1 or 3, CRn 0: [FEAT_IDST](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_IDST) traps a read
 /// at EL0 where it reaches no register EL0 may read, and a write there is undefined.
-const fn is_identification_register(encoding: SystemRegisterEncoding) -> bool {
+fn is_identification_register(encoding: SystemRegisterEncoding) -> bool {
     const ID_OP0: u32 = 3;
     const ID_OP1: [u32; 3] = [0, 1, 3];
     encoding.op0 == ID_OP0
-        && (encoding.op1 == ID_OP1[0] || encoding.op1 == ID_OP1[1] || encoding.op1 == ID_OP1[2])
+        && (encoding.op1 == ID_OP1[0]
+            || encoding.op1 == ID_OP1[1]
+            || encoding.op1 == ID_OP1[2]
+            || (crate::planted::is(429) && encoding.op1 == 2))
         && encoding.crn == 0
 }
 
@@ -299,6 +302,9 @@ pub fn simulate_system_register_move<LevelSpecific>(
             FixedValue::ReadOnlyThreadId => choices.read_only_thread_id,
         },
         (A::Held(register), AccessDirection::Read) => match register {
+            HeldRegister::ConditionFlags if crate::planted::is(428) => {
+                u64::from(processor.condition_flags.bits() >> 28)
+            }
             HeldRegister::ConditionFlags => u64::from(processor.condition_flags.bits()),
             HeldRegister::FloatingPointControl => processor.floating_point_control,
             HeldRegister::FloatingPointStatus => processor.floating_point_status,
@@ -314,7 +320,14 @@ pub fn simulate_system_register_move<LevelSpecific>(
                     processor.floating_point_control = value & choices.floating_point_control_bits;
                 }
                 HeldRegister::FloatingPointStatus => {
-                    processor.floating_point_status = value & choices.floating_point_status_bits;
+                    processor.floating_point_status = if crate::planted::is(430) {
+                        value
+                    } else {
+                        value & choices.floating_point_status_bits
+                    };
+                }
+                HeldRegister::SoftwareThreadId if crate::planted::is(431) => {
+                    processor.software_thread_id = value & 0xFFFF_FFFF;
                 }
                 HeldRegister::SoftwareThreadId => processor.software_thread_id = value,
             }

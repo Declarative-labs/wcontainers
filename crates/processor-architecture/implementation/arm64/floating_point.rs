@@ -182,15 +182,23 @@ impl Context {
     }
 
     /// Whether denormal values of the precision flush to zero.
-    const fn flushes(&self, precision: Precision) -> bool {
+    fn flushes(&self, precision: Precision) -> bool {
         match precision {
-            Precision::Half => !self.conversion && self.fpcr & FLUSH_HALF_TO_ZERO != 0,
+            Precision::Half if crate::planted::is(489) => {
+                !self.conversion && self.fpcr & (FLUSH_HALF_TO_ZERO | FLUSH_TO_ZERO) != 0
+            }
+            Precision::Half => {
+                (!self.conversion || crate::planted::is(73)) && self.fpcr & FLUSH_HALF_TO_ZERO != 0
+            }
             Precision::Single | Precision::Double => self.fpcr & FLUSH_TO_ZERO != 0,
         }
     }
 
-    const fn alternative_half(&self, precision: Precision) -> bool {
-        matches!(precision, Precision::Half) && self.conversion && self.fpcr & ALTERNATIVE_HALF != 0
+    fn alternative_half(&self, precision: Precision) -> bool {
+        !crate::planted::is(488)
+            && matches!(precision, Precision::Half)
+            && self.conversion
+            && self.fpcr & ALTERNATIVE_HALF != 0
     }
 
     const fn default_nan(&self) -> bool {
@@ -222,7 +230,11 @@ fn unpack(bits: u64, precision: Precision, context: &mut Context) -> Unpacked {
         if fraction == 0 {
             return other(Kind::Zero);
         }
-        if context.flushes(precision) {
+        if context.flushes(precision)
+            && !crate::planted::is(318)
+            && !crate::planted::is(347)
+            && !(crate::planted::is(83) && precision == Precision::Half)
+        {
             // A half-precision input flushed under FZ16 raises no Input Denormal: what a Neoverse V2 shows on
             // every generated state (the manual page could not be read to confirm it).
             if precision != Precision::Half {
@@ -254,9 +266,14 @@ fn process_nan(operand: Unpacked, precision: Precision, context: &mut Context) -
     let mut bits = operand.bits;
     if operand.kind == Kind::SignalingNaN {
         context.raise(INVALID_OPERATION);
-        bits |= precision.to_quiet_bit();
+        if !crate::planted::any(&[485, 315]) {
+            bits |= precision.to_quiet_bit();
+        }
     }
-    if context.default_nan() {
+    if context.default_nan()
+        || crate::planted::is(314)
+        || (crate::planted::is(484) && operand.kind == Kind::QuietNaN)
+    {
         return precision.to_default_nan();
     }
     bits
@@ -264,6 +281,10 @@ fn process_nan(operand: Unpacked, precision: Precision, context: &mut Context) -
 
 /// [FPProcessNaNs](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPProcessNaNs) and [FPProcessNaNs3](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPProcessNaNs3): the first signaling NaN, else the first quiet one, of the operands in order.
 fn process_nans(operands: &[Unpacked], precision: Precision, context: &mut Context) -> Option<u64> {
+    if crate::planted::is(490) {
+        let first = operands.iter().find(|operand| operand.is_nan())?;
+        return Some(process_nan(*first, precision, context));
+    }
     let first = operands
         .iter()
         .find(|operand| operand.kind == Kind::SignalingNaN)
@@ -395,8 +416,15 @@ fn rounds_up(
 ) -> bool {
     use core::cmp::Ordering::{Equal, Greater};
     match rounding {
+        Rounding::TiesToEven if crate::planted::any(&[481, 491, 496]) => {
+            discarded != core::cmp::Ordering::Less
+        }
         Rounding::TiesToEven => discarded == Greater || (discarded == Equal && lowest_kept_odd),
+        Rounding::TiesAway if crate::planted::is(493) => {
+            discarded == Greater || (discarded == Equal && lowest_kept_odd)
+        }
         Rounding::TiesAway => discarded != core::cmp::Ordering::Less,
+        Rounding::TowardMinusInfinity if crate::planted::is(494) => false,
         Rounding::TowardPlusInfinity => inexact && !sign,
         Rounding::TowardMinusInfinity => inexact && sign,
         Rounding::TowardZero => false,
@@ -429,14 +457,19 @@ fn shift_right_rounding(
 
 /// [FPRoundBase](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPRoundBase): rounds a nonzero real to the precision, raising the flags it does.
 fn round(value: Real, precision: Precision, rounding: Rounding, context: &mut Context) -> u64 {
+    let rounding = if crate::planted::is(61) && rounding == Rounding::TiesToEven {
+        Rounding::TiesAway
+    } else {
+        rounding
+    };
     let fraction_bits = precision.to_fraction_bits() as i32;
     let alternative = context.alternative_half(precision);
     // The real's own exponent, of its most significant bit.
     let top = (u128::BITS - 1 - value.significand.leading_zeros()) as i32 + value.exponent;
     let minimum = precision.to_minimum_exponent();
-    if context.flushes(precision) && top < minimum {
+    if context.flushes(precision) && top < minimum && !crate::planted::any(&[506, 319]) {
         context.raise(UNDERFLOW);
-        return precision.to_zero(value.sign);
+        return precision.to_zero(value.sign && !crate::planted::is(79));
     }
     let mut biased = (top - minimum + 1).max(0);
     let scale = if biased == 0 { minimum } else { top };
@@ -451,10 +484,21 @@ fn round(value: Real, precision: Precision, rounding: Rounding, context: &mut Co
     } else {
         shift_right_rounding(value.significand, shift as u32, value.sticky)
     };
-    if biased == 0 && inexact {
+    if biased == 0 && (inexact || crate::planted::is(84)) && !crate::planted::any(&[483, 312]) {
         context.raise(UNDERFLOW);
     }
-    if rounds_up(rounding, value.sign, mantissa & 1 != 0, discarded, inexact) {
+    let tie_rounding = if crate::planted::is(311) && rounding == Rounding::TiesToEven {
+        Rounding::TiesAway
+    } else {
+        rounding
+    };
+    if rounds_up(
+        tie_rounding,
+        value.sign,
+        mantissa & 1 != 0,
+        discarded,
+        inexact,
+    ) {
         mantissa += 1;
         if mantissa == 1 << fraction_bits {
             biased = 1;
@@ -468,7 +512,9 @@ fn round(value: Real, precision: Precision, rounding: Rounding, context: &mut Co
     let mut inexact = inexact;
     let result = if !alternative {
         if biased as u64 >= precision.to_exponent_ones() {
-            context.raise(OVERFLOW);
+            if !crate::planted::is(328) {
+                context.raise(OVERFLOW);
+            }
             inexact = true;
             let to_infinity = match rounding {
                 Rounding::TiesToEven | Rounding::TiesAway => true,
@@ -493,7 +539,7 @@ fn round(value: Real, precision: Precision, rounding: Rounding, context: &mut Co
         sign | ((biased as u64) << fraction_bits)
             | (mantissa as u64 & low_ones(fraction_bits as u32))
     };
-    if inexact {
+    if inexact && !crate::planted::any(&[482, 497, 313, 63]) {
         context.raise(INEXACT);
     }
     result
@@ -504,7 +550,10 @@ fn round(value: Real, precision: Precision, rounding: Rounding, context: &mut Co
 /// and [FPMulAdd](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPMulAdd).
 fn round_sum(value: Real, precision: Precision, rounding: Rounding, context: &mut Context) -> u64 {
     if value.is_zero() {
-        return precision.to_zero(rounding == Rounding::TowardMinusInfinity);
+        return precision.to_zero(
+            (rounding == Rounding::TowardMinusInfinity || crate::planted::is(62))
+                && !crate::planted::is(352),
+        );
     }
     round(value, precision, rounding, context)
 }
@@ -907,7 +956,11 @@ pub fn simulate_floating_point<LevelSpecific>(
         flags: 0,
         conversion: false,
     };
-    let fbits = FIXED_POINT_SCALE_LIMIT - SCALE.read(word);
+    let fbits = if crate::planted::is(87) {
+        SCALE.read(word)
+    } else {
+        FIXED_POINT_SCALE_LIMIT - SCALE.read(word)
+    };
     let result = apply(
         operation,
         sources,
@@ -919,8 +972,14 @@ pub fn simulate_floating_point<LevelSpecific>(
     );
     match (result, destination) {
         (Outcome::Value(bits), Some(Destination::FloatingPoint { number, precision })) => {
+            let kept = if crate::planted::any(&[502, 503, 336, 339, 82]) {
+                processor.vector_registers[number as usize]
+                    & !(u128::MAX >> (u128::BITS - precision.to_bits()))
+            } else {
+                0
+            };
             processor.vector_registers[number as usize] =
-                u128::from(bits & low_ones(precision.to_bits()));
+                u128::from(bits & low_ones(precision.to_bits())) | kept;
         }
         (Outcome::Value(value), Some(Destination::General { number, width })) => {
             write_register(
@@ -932,6 +991,11 @@ pub fn simulate_floating_point<LevelSpecific>(
         }
         (Outcome::Flags(flags), _) => processor.condition_flags = flags,
         (Outcome::Value(_), None) => panic!("{operation:?} writes no register"),
+    }
+    if crate::planted::is(80) {
+        const CUMULATIVE: u64 =
+            INVALID_OPERATION | DIVIDE_BY_ZERO | OVERFLOW | UNDERFLOW | INEXACT | INPUT_DENORMAL;
+        processor.floating_point_status &= !CUMULATIVE;
     }
     processor.floating_point_status |= context.flags;
     Ok(())
@@ -975,12 +1039,34 @@ fn apply(
         | Source::Immediate(bits) => bits,
     };
     Outcome::Value(match operation {
+        O::Move if crate::planted::is(360) && is_nan_bits(bits_of(0), precision) => {
+            bits_of(0) | precision.to_quiet_bit()
+        }
         O::Move => bits_of(0),
         O::MoveImmediate => expand_immediate(bits_of(0), precision),
+        O::Absolute
+            if crate::planted::is(501)
+                && bits_of(0) & !precision.to_sign_bit() > precision.to_infinity(false) =>
+        {
+            bits_of(0)
+        }
         O::Absolute => bits_of(0) & !precision.to_sign_bit(),
+        O::Negate if crate::planted::is(81) => {
+            let operand = unpack(bits_of(0), precision, context);
+            let bits = if operand.kind == Kind::SignalingNaN {
+                context.raise(INVALID_OPERATION);
+                bits_of(0) | precision.to_quiet_bit()
+            } else {
+                bits_of(0)
+            };
+            bits ^ precision.to_sign_bit()
+        }
+        O::Negate if crate::planted::is(337) && is_nan_bits(bits_of(0), precision) => bits_of(0),
         O::Negate => bits_of(0) ^ precision.to_sign_bit(),
         O::ConditionalSelect => {
-            if CONDITIONS[condition as usize].holds(flags) {
+            if CONDITIONS[condition as usize].holds(flags)
+                && !(crate::planted::is(498) && condition == 15)
+            {
                 bits_of(0)
             } else {
                 bits_of(1)
@@ -998,11 +1084,20 @@ fn apply(
             add(first, second, precision, rounding, context)
         }
         O::Multiply | O::MultiplyNegated => {
-            let first = unpack(bits_of(0), precision, context);
+            let mut first = unpack(bits_of(0), precision, context);
             let second = unpack(bits_of(1), precision, context);
+            let early = crate::planted::is(89)
+                && operation == O::MultiplyNegated
+                && !first.is_nan()
+                && !second.is_nan();
+            if early {
+                first.sign = !first.sign;
+            }
             let product = process_nans(&[first, second], precision, context)
                 .unwrap_or_else(|| multiply(first, second, precision, rounding, context));
-            if operation == O::MultiplyNegated {
+            let negated_zero_kept =
+                crate::planted::is(317) && product & !precision.to_sign_bit() == 0;
+            if operation == O::MultiplyNegated && !early && !negated_zero_kept {
                 product ^ precision.to_sign_bit()
             } else {
                 product
@@ -1020,10 +1115,21 @@ fn apply(
             let mut first = unpack(bits_of(0), precision, context);
             let mut second = unpack(bits_of(1), precision, context);
             let maximum = matches!(operation, O::Maximum | O::MaximumNumber);
-            if matches!(operation, O::MaximumNumber | O::MinimumNumber) {
+            if matches!(operation, O::MaximumNumber | O::MinimumNumber) && !crate::planted::is(486)
+            {
                 // FPMaxNum and FPMinNum: a quiet NaN against a number loses, as the infinity on its side would.
                 let infinity = unpack(precision.to_infinity(maximum), precision, context);
+                let replaced = |kind: Kind| {
+                    kind == Kind::QuietNaN || (crate::planted::is(85) && kind == Kind::SignalingNaN)
+                };
                 match (first.kind, second.kind) {
+                    _ if crate::planted::is(68) => {}
+                    (nan, kind) if crate::planted::is(85) && replaced(nan) && !replaced(kind) => {
+                        first = infinity
+                    }
+                    (kind, nan) if crate::planted::is(85) && replaced(nan) && !replaced(kind) => {
+                        second = infinity
+                    }
                     (Kind::QuietNaN, kind)
                         if kind != Kind::QuietNaN && kind != Kind::SignalingNaN =>
                     {
@@ -1047,7 +1153,7 @@ fn apply(
             let operand = unpack(bits_of(0), precision, context);
             match operand.kind {
                 Kind::QuietNaN | Kind::SignalingNaN => process_nan(operand, precision, context),
-                Kind::Zero => precision.to_zero(operand.sign),
+                Kind::Zero => precision.to_zero(operand.sign && !crate::planted::is(65)),
                 Kind::Infinity if !operand.sign => operand.bits,
                 _ if operand.sign => {
                     context.raise(INVALID_OPERATION);
@@ -1087,11 +1193,29 @@ fn apply(
             } else {
                 unpack(0, precision, context)
             };
-            return Outcome::Flags(compare(first, second, signaling, context));
+            return Outcome::Flags(compare(
+                first,
+                second,
+                signaling && !crate::planted::is(499),
+                context,
+            ));
         }
         // The compare unpacks its sources only where the condition holds, so only there can it raise a flag.
         O::ConditionalCompare { signaling } => {
-            if !CONDITIONS[condition as usize].holds(flags) {
+            let signaling = signaling && !crate::planted::is(343);
+            if !CONDITIONS[condition as usize].holds(flags) != crate::planted::is(342) {
+                if crate::planted::is(344) {
+                    let mut scratch = Context {
+                        fpcr: 0,
+                        flags: 0,
+                        conversion: false,
+                    };
+                    if [bits_of(0), bits_of(1)].iter().any(|bits| {
+                        unpack(*bits, precision, &mut scratch).kind == Kind::SignalingNaN
+                    }) {
+                        context.raise(INVALID_OPERATION);
+                    }
+                }
                 return Outcome::Flags(ConditionFlags::from_bits_truncate(
                     (bits_of(2) as u32) << ConditionFlags::OVERFLOW.bits().trailing_zeros(),
                 ));
@@ -1105,6 +1229,13 @@ fn apply(
             exact,
         } => {
             let operand = unpack(bits_of(0), precision, context);
+            let chosen = if crate::planted::is(331) && chosen == Some(Rounding::TiesToEven) {
+                Some(Rounding::TiesAway)
+            } else if crate::planted::is(333) && chosen.is_none() {
+                Some(Rounding::TiesToEven)
+            } else {
+                chosen
+            };
             round_to_integral(
                 operand,
                 chosen.unwrap_or(rounding),
@@ -1122,7 +1253,7 @@ fn apply(
             round_to_integral(
                 operand,
                 chosen.unwrap_or(rounding),
-                true,
+                !crate::planted::is(504),
                 Some(bits),
                 precision,
                 context,
@@ -1149,6 +1280,13 @@ fn apply(
             };
             let operand = unpack(bits_of(0), precision, context);
             let fbits = if fixed_point { fbits } else { 0 };
+            let chosen = if crate::planted::is(322) && chosen == Some(Rounding::TiesToEven) {
+                Some(Rounding::TiesAway)
+            } else if crate::planted::is(324) && chosen == Some(Rounding::TowardMinusInfinity) {
+                Some(Rounding::TowardZero)
+            } else {
+                chosen
+            };
             to_fixed(
                 operand,
                 fbits,
@@ -1166,9 +1304,22 @@ fn apply(
                 panic!("a conversion from an integer reads a general-purpose register");
             };
             let fbits = if fixed_point { fbits } else { 0 };
+            let fbits = if crate::planted::is(329) { 0 } else { fbits };
+            let rounding = if crate::planted::is(327) {
+                Rounding::TowardZero
+            } else {
+                rounding
+            };
             from_fixed(value, width, fbits, unsigned, precision, rounding, context)
         }
     })
+}
+
+/// Whether the bits of the precision are a NaN, for the planted bugs.
+fn is_nan_bits(bits: u64, precision: Precision) -> bool {
+    let fraction_bits = precision.to_fraction_bits();
+    (bits >> fraction_bits) & precision.to_exponent_ones() == precision.to_exponent_ones()
+        && bits & low_ones(fraction_bits) != 0
 }
 
 /// [VFPExpandImm](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-vfpexpandimm): an 8-bit immediate as a value of the precision.
@@ -1177,13 +1328,20 @@ fn expand_immediate(immediate: u64, precision: Precision) -> u64 {
     const IMMEDIATE_EXPONENT_LOW_BITS: u32 = 2;
     let exponent_bits = precision.to_exponent_bits();
     let fraction_bits = precision.to_fraction_bits();
-    let sign = (immediate >> (u8::BITS - 1)) & 1;
+    let sign = (immediate >> (u8::BITS - 1 - u32::from(crate::planted::is(340)))) & 1;
     let not_six = ((immediate >> (u8::BITS - 2)) & 1) ^ 1;
     let six = (immediate >> (u8::BITS - 2)) & 1;
     let exponent_low =
         (immediate >> IMMEDIATE_FRACTION_BITS) & low_ones(IMMEDIATE_EXPONENT_LOW_BITS);
+    let exponent_low = if crate::planted::is(91) {
+        ((exponent_low & 1) << 1) | (exponent_low >> 1)
+    } else {
+        exponent_low
+    };
     let replicated = if six != 0 {
-        low_ones(exponent_bits - IMMEDIATE_EXPONENT_LOW_BITS - 1)
+        low_ones(
+            exponent_bits - IMMEDIATE_EXPONENT_LOW_BITS - 1 - u32::from(crate::planted::is(88)),
+        )
     } else {
         0
     };
@@ -1272,10 +1430,18 @@ fn divide(
         }
         (Kind::Infinity, _) => precision.to_infinity(sign),
         (_, Kind::Zero) => {
-            context.raise(DIVIDE_BY_ZERO);
+            context.raise(if crate::planted::is(64) {
+                INVALID_OPERATION
+            } else {
+                DIVIDE_BY_ZERO
+            });
             precision.to_infinity(sign)
         }
-        (Kind::Zero, _) | (_, Kind::Infinity) => precision.to_zero(sign),
+        (Kind::Zero, _) | (_, Kind::Infinity) => precision.to_zero(if crate::planted::is(487) {
+            first.sign
+        } else {
+            sign
+        }),
         _ => round(
             divide_reals(to_real(first), to_real(second)),
             precision,
@@ -1322,7 +1488,11 @@ fn maximum_or_minimum(
     precision: Precision,
 ) -> u64 {
     if first.kind == Kind::Zero && second.kind == Kind::Zero {
-        let sign = if maximum {
+        let sign = if crate::planted::is(67) {
+            first.sign
+        } else if maximum && crate::planted::is(505) {
+            first.sign || second.sign
+        } else if maximum || crate::planted::any(&[316, 346]) {
             first.sign && second.sign
         } else {
             first.sign || second.sign
@@ -1354,8 +1524,12 @@ fn multiply_add(
 ) -> u64 {
     let infinite_times_zero = (first.kind == Kind::Infinity && second.kind == Kind::Zero)
         || (first.kind == Kind::Zero && second.kind == Kind::Infinity);
-    let nan = process_nans(&[addend, first, second], precision, context);
-    if addend.kind == Kind::QuietNaN && infinite_times_zero {
+    let nan = if crate::planted::is(349) {
+        process_nans(&[addend, second, first], precision, context)
+    } else {
+        process_nans(&[addend, first, second], precision, context)
+    };
+    if addend.kind == Kind::QuietNaN && infinite_times_zero && !crate::planted::is(350) {
         context.raise(INVALID_OPERATION);
         return precision.to_default_nan();
     }
@@ -1386,6 +1560,24 @@ fn multiply_add(
             exponent: 0,
             sticky: false,
         }
+    } else if crate::planted::is(66) {
+        let rounded = round(
+            multiply_reals(to_real(first), to_real(second)),
+            precision,
+            rounding,
+            context,
+        );
+        let unpacked = unpack(rounded, precision, context);
+        match unpacked.kind {
+            Kind::Number => Real::from_number(unpacked),
+            Kind::Infinity => return rounded,
+            _ => Real {
+                sign: product_sign,
+                significand: 0,
+                exponent: 0,
+                sticky: false,
+            },
+        }
     } else {
         multiply_reals(to_real(first), to_real(second))
     };
@@ -1402,8 +1594,14 @@ fn compare(
     context: &mut Context,
 ) -> ConditionFlags {
     if first.is_nan() || second.is_nan() {
-        if signaling || first.kind == Kind::SignalingNaN || second.kind == Kind::SignalingNaN {
+        let signaling = (signaling && !crate::planted::is(70)) || crate::planted::is(69);
+        if (signaling || first.kind == Kind::SignalingNaN || second.kind == Kind::SignalingNaN)
+            && !crate::planted::is(500)
+        {
             context.raise(INVALID_OPERATION);
+        }
+        if crate::planted::is(341) {
+            return ConditionFlags::ZERO | ConditionFlags::CARRY;
         }
         return ConditionFlags::CARRY | ConditionFlags::OVERFLOW;
     }
@@ -1452,8 +1650,15 @@ fn round_to_integral(
     precision: Precision,
     context: &mut Context,
 ) -> u64 {
+    let within_bits = if crate::planted::is(495) {
+        None
+    } else {
+        within_bits
+    };
     let out_of_range = |context: &mut Context, bits: u32| {
-        context.raise(INVALID_OPERATION);
+        if !crate::planted::is(86) {
+            context.raise(INVALID_OPERATION);
+        }
         // The most negative integer of the range, which every format holds exactly.
         let real = Real {
             sign: true,
@@ -1494,7 +1699,7 @@ fn round_to_integral(
         }
     }
     let result = if magnitude == 0 {
-        precision.to_zero(sign)
+        precision.to_zero(sign && !crate::planted::any(&[330, 78]))
     } else {
         round(
             Real {
@@ -1508,7 +1713,7 @@ fn round_to_integral(
             context,
         )
     };
-    if exact && inexact {
+    if exact && inexact && !crate::planted::is(332) {
         context.raise(INEXACT);
     }
     result
@@ -1532,16 +1737,26 @@ fn convert(
             if operand.kind == Kind::SignalingNaN {
                 context.raise(INVALID_OPERATION);
             }
-            if context.default_nan() {
+            if context.default_nan() || crate::planted::is(321) {
                 return to.to_default_nan();
             }
             let payload = operand.bits & low_ones(from.to_fraction_bits());
+            let payload = if crate::planted::is(71) { 0 } else { payload };
+            if crate::planted::is(72) && operand.kind == Kind::SignalingNaN {
+                let payload = payload >> (from.to_fraction_bits() - to.to_fraction_bits());
+                return to.to_infinity(operand.sign) | (payload & !to.to_quiet_bit());
+            }
             let payload = if to.to_fraction_bits() >= from.to_fraction_bits() {
                 payload << (to.to_fraction_bits() - from.to_fraction_bits())
             } else {
                 payload >> (from.to_fraction_bits() - to.to_fraction_bits())
             };
-            to.to_infinity(operand.sign) | to.to_quiet_bit() | payload
+            let quiet = if crate::planted::is(320) && operand.kind == Kind::SignalingNaN {
+                0
+            } else {
+                to.to_quiet_bit()
+            };
+            to.to_infinity(operand.sign) | quiet | payload
         }
         Kind::Infinity if alternative => {
             context.raise(INVALID_OPERATION);
@@ -1566,11 +1781,27 @@ fn to_fixed(
     let (sign, magnitude, inexact) = match operand.kind {
         Kind::QuietNaN | Kind::SignalingNaN => {
             context.raise(INVALID_OPERATION);
+            if crate::planted::is(74) && !unsigned {
+                return (1_u64 << (bits - 1)) & width.to_mask();
+            }
             return 0;
         }
         Kind::Zero => return 0,
         Kind::Infinity => (operand.sign, u128::MAX, false),
-        Kind::Number => to_integral(operand, fbits, rounding),
+        Kind::Number if crate::planted::is(326) => {
+            let mut divided = operand;
+            divided.exponent -= 2 * fbits as i32;
+            to_integral(divided, fbits, rounding)
+        }
+        Kind::Number => to_integral(
+            operand,
+            fbits,
+            if crate::planted::is(76) && rounding == Rounding::TiesAway {
+                Rounding::TiesToEven
+            } else {
+                rounding
+            },
+        ),
     };
     let (minimum, maximum): (i128, i128) = if unsigned {
         (0, (1 << bits) - 1)
@@ -1579,11 +1810,22 @@ fn to_fixed(
     };
     let magnitude = i128::try_from(magnitude).unwrap_or(i128::MAX);
     let value = if sign { -magnitude } else { magnitude };
+    if crate::planted::any(&[75, 355]) && unsigned && value < 0 {
+        return 0;
+    }
     if value < minimum || value > maximum {
-        context.raise(INVALID_OPERATION);
+        if !crate::planted::is(325) {
+            context.raise(INVALID_OPERATION);
+        }
+        if crate::planted::is(475) && value > maximum {
+            return (maximum + 1) as u64 & width.to_mask();
+        }
+        if crate::planted::is(476) && value < minimum {
+            return width.to_mask();
+        }
         return value.clamp(minimum, maximum) as u64 & width.to_mask();
     }
-    if inexact {
+    if inexact && !crate::planted::any(&[492, 323]) {
         context.raise(INEXACT);
     }
     value as u64 & width.to_mask()
@@ -1615,7 +1857,7 @@ fn from_fixed(
     if magnitude == 0 {
         return precision.to_zero(false);
     }
-    round(
+    let result = round(
         Real {
             sign: negative,
             significand: u128::from(magnitude),
@@ -1625,5 +1867,9 @@ fn from_fixed(
         precision,
         rounding,
         context,
-    )
+    );
+    if crate::planted::is(77) {
+        context.flags &= !INEXACT;
+    }
+    result
 }

@@ -807,8 +807,29 @@ fn read_addressed<LevelSpecific>(
                 scale,
             } => {
                 let value = match signedness {
+                    Signedness::Signed if crate::planted::any(&[438, 54]) => {
+                        u64::from(field.read(word))
+                    }
                     Signedness::Unsigned => u64::from(field.read(word)),
                     Signedness::Signed => field.read_signed(word) as u64,
+                };
+                let scale = if crate::planted::is(448) {
+                    scale - 1
+                } else {
+                    scale
+                };
+                let scale = match scale {
+                    1 if crate::planted::is(53) => 2,
+                    3 if crate::planted::is(56) => 2,
+                    0 if crate::planted::is(57) => 3,
+                    other => other,
+                } + u32::from(crate::planted::is(152));
+                let scale = if crate::planted::is(279) || crate::planted::is(280) {
+                    3
+                } else if crate::planted::any(&[281, 291, 294]) {
+                    scale + 1
+                } else {
+                    scale
                 };
                 addressed.offset = value << scale;
             }
@@ -821,25 +842,33 @@ fn read_addressed<LevelSpecific>(
                 let value = read_register(
                     processor,
                     number.read(word),
-                    RegisterThirtyOne::ZeroRegister,
+                    if crate::planted::is(55) {
+                        RegisterThirtyOne::StackPointer
+                    } else {
+                        RegisterThirtyOne::ZeroRegister
+                    },
                 );
                 let is_set = |field: Option<crate::encoding::Field>, fixed: bool| {
                     field.map_or(fixed, |field| field.read(word) != 0)
                 };
                 // Where option<0> is absent the option is LSL, which takes the register whole.
-                let bits = if is_set(doubleword, true) {
+                let bits = if is_set(doubleword, true) || crate::planted::is(286) {
                     u64::BITS
                 } else {
                     u32::BITS
                 };
                 let shift_bits = u64::BITS - bits;
-                let extended = if is_set(signed, false) {
+                let extended = if (is_set(signed, false) && !crate::planted::any(&[445, 455, 37]))
+                    || (crate::planted::is(285) && !is_set(doubleword, true))
+                {
                     (((value << shift_bits) as i64) >> shift_bits) as u64
                 } else {
                     (value << shift_bits) >> shift_bits
                 };
                 let amount = if shift.read(word) != 0 {
-                    operation.bytes.trailing_zeros()
+                    operation.bytes.trailing_zeros() + u32::from(crate::planted::any(&[444, 454]))
+                        - u32::from(crate::planted::is(38) && operation.bytes == DOUBLEWORD)
+                        - u32::from(crate::planted::is(153))
                 } else {
                     0
                 };
@@ -880,7 +909,13 @@ fn constrain(
     // A SIMD and floating-point register is never the base.
     if let (true, Some((base, _)), false) = (writeback, addressed.base, addressed.vector)
         && is_general_purpose(base)
-        && registers.iter().any(|(number, _)| *number == base)
+        && registers[..if crate::planted::is(168) {
+            1
+        } else {
+            registers.len()
+        }]
+            .iter()
+            .any(|(number, _)| *number == base)
     {
         match operation.transfer {
             Transfer::Load(_) => match choices.load_into_base {
@@ -951,19 +986,48 @@ where
         } => (writeback, pair_order_reversed),
     };
     let registers = &addressed.registers[..addressed.count];
+    let planted_writeback = |processor: &mut Processor<LevelSpecific>, base: u64, address: u64| {
+        if writeback && let Some((number, indexing)) = addressed.base {
+            let written_back = match indexing {
+                Indexing::PostIndex => base.wrapping_add(addressed.offset),
+                Indexing::Offset | Indexing::PreIndex => address,
+            };
+            write_register(
+                processor,
+                number,
+                written_back,
+                RegisterThirtyOne::StackPointer,
+            );
+        }
+    };
     let (base, address) = match addressed.base {
         None => (0, processor.program_counter.wrapping_add(addressed.offset)),
         Some((number, indexing)) => {
             let base = read_register(processor, number, RegisterThirtyOne::StackPointer);
-            let misaligned =
-                !is_general_purpose(number) && !base.is_multiple_of(STACK_POINTER_ALIGNMENT);
-            if misaligned
+            let checked = if crate::planted::is(60) && indexing == Indexing::PostIndex {
+                base.wrapping_add(addressed.offset)
+            } else {
+                base
+            };
+            let misaligned = !is_general_purpose(number)
+                && !checked.is_multiple_of(if crate::planted::is(165) {
+                    8
+                } else {
+                    STACK_POINTER_ALIGNMENT
+                });
+            if (misaligned
                 && choices.misaligned_stack_pointer == Some(MisalignedStackPointer::Faults)
+                && !crate::planted::is(282))
+                || (misaligned && crate::planted::is(288))
             {
                 return Err(Exception::StackPointerAlignmentFault);
             }
             match indexing {
+                Indexing::PostIndex if crate::planted::is(278) => {
+                    (base, base.wrapping_add(addressed.offset))
+                }
                 Indexing::PostIndex => (base, base),
+                Indexing::PreIndex if crate::planted::is(150) => (base, base),
                 Indexing::Offset | Indexing::PreIndex => {
                     (base, base.wrapping_add(addressed.offset))
                 }
@@ -979,18 +1043,42 @@ where
         | Transfer::Atomic(_)
         | Transfer::CompareAndSwapPair => AccessDirection::Read,
     };
-    let within_sixteen_bytes =
-        address % SINGLE_COPY_ATOMIC_BYTES + total as u64 <= SINGLE_COPY_ATOMIC_BYTES;
-    let aligned = match (operation.alignment, choices.misaligned_exclusive) {
-        (Alignment::Unchecked, _) => true,
-        (Alignment::WithinSixteenBytes, _)
-        | (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes) | None) => {
-            within_sixteen_bytes
-        }
-        (Alignment::Exclusive, Some(MisalignedExclusive::AlignmentFault)) => {
-            address.is_multiple_of(total as u64)
-        }
+    let granule = if crate::planted::is(265) {
+        SINGLE_COPY_ATOMIC_BYTES / 2
+    } else {
+        SINGLE_COPY_ATOMIC_BYTES
     };
+    let within_sixteen_bytes = address % granule + total as u64 <= granule;
+    let aligned = crate::planted::is(276)
+        || match (operation.alignment, choices.misaligned_exclusive) {
+            _ if crate::planted::is(436) => true,
+            (Alignment::Unchecked, _) if crate::planted::any(&[443, 456]) => within_sixteen_bytes,
+            (Alignment::WithinSixteenBytes, _) if crate::planted::is(437) => {
+                address % 8 + total as u64 <= 8
+            }
+            (Alignment::Unchecked, _) => true,
+            (Alignment::WithinSixteenBytes, _) if crate::planted::is(41) => {
+                address.is_multiple_of(total as u64)
+            }
+            (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes) | None)
+                if crate::planted::is(42) =>
+            {
+                true
+            }
+            (Alignment::WithinSixteenBytes, _) if crate::planted::is(158) => {
+                address.is_multiple_of(total as u64)
+            }
+            (Alignment::Exclusive, _) if crate::planted::is(166) => {
+                address.is_multiple_of(total as u64)
+            }
+            (Alignment::WithinSixteenBytes, _)
+            | (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes) | None) => {
+                within_sixteen_bytes
+            }
+            (Alignment::Exclusive, Some(MisalignedExclusive::AlignmentFault)) => {
+                address.is_multiple_of(total as u64)
+            }
+        };
     let tag = choices
         .fault_address_tag
         .unwrap_or(FaultAddressTag::KeepsTopByte);
@@ -1002,10 +1090,43 @@ where
         });
     }
     // TBI0, which Linux sets for EL0, leaves the top byte of a lower-half address out of translation.
-    let location = to_untagged_address(address);
+    let location = if crate::planted::is(301) {
+        address
+    } else {
+        to_untagged_address(address)
+    };
     match operation.transfer {
+        Transfer::Prefetch if crate::planted::is(51) => {
+            if let Some((fault_address, status)) =
+                find_fault(memory, location, u64::from(DOUBLEWORD), access)
+            {
+                return Err(Exception::DataAbort {
+                    status,
+                    access,
+                    address: to_fault_address(address, fault_address, tag),
+                });
+            }
+        }
         Transfer::Prefetch => {}
         Transfer::StoreExclusive => {
+            if crate::planted::is(58) {
+                let (status, width) = registers[0];
+                write_register(
+                    processor,
+                    status,
+                    STORE_EXCLUSIVE_FAILED & width.to_mask(),
+                    RegisterThirtyOne::ZeroRegister,
+                );
+            }
+            if crate::planted::is(267) {
+                let (status, width) = registers[0];
+                write_register(
+                    processor,
+                    status,
+                    STORE_EXCLUSIVE_FAILED & width.to_mask(),
+                    RegisterThirtyOne::ZeroRegister,
+                );
+            }
             if choices.failed_store_exclusive == Some(FailedStoreExclusive::ChecksAccess)
                 && let Some((fault_address, status)) =
                     find_fault(memory, location, total as u64, access)
@@ -1020,7 +1141,11 @@ where
             write_register(
                 processor,
                 status,
-                STORE_EXCLUSIVE_FAILED & width.to_mask(),
+                if crate::planted::any(&[442, 163]) {
+                    0
+                } else {
+                    STORE_EXCLUSIVE_FAILED
+                } & width.to_mask(),
                 RegisterThirtyOne::ZeroRegister,
             );
         }
@@ -1041,27 +1166,64 @@ where
             read_bytes_into(memory, location, &mut read[..bytes]);
             let old = u64::from_le_bytes(read);
             let [(first, first_width), (second, second_width), ..] = addressed.registers;
-            let operand = read_register(processor, first, RegisterThirtyOne::ZeroRegister) & mask;
-            let shift = u64::BITS - operation.bytes * u8::BITS;
+            let unmasked = read_register(processor, first, RegisterThirtyOne::ZeroRegister);
+            let operand = unmasked
+                & if crate::planted::is(440) {
+                    u64::MAX
+                } else {
+                    mask
+                };
+            let shift = if crate::planted::is(272) {
+                u64::BITS - u8::BITS
+            } else {
+                u64::BITS - operation.bytes * u8::BITS
+            };
             let signed = |value: u64| ((value << shift) as i64) >> shift;
             let new = match atomic {
+                AtomicOperation::Add if crate::planted::is(439) => Some(old),
                 AtomicOperation::Add => Some(old.wrapping_add(operand) & mask),
+                AtomicOperation::Clear if crate::planted::is(47) => Some(old & operand),
                 AtomicOperation::Clear => Some(old & !operand),
+                AtomicOperation::ExclusiveOr if crate::planted::is(270) => Some(old | operand),
                 AtomicOperation::ExclusiveOr => Some(old ^ operand),
                 AtomicOperation::Set => Some(old | operand),
+                AtomicOperation::SignedMaximum if crate::planted::is(160) => Some(old.max(operand)),
                 AtomicOperation::SignedMaximum => Some(if signed(old) >= signed(operand) {
                     old
                 } else {
                     operand
                 }),
+                AtomicOperation::SignedMinimum if crate::planted::is(48) => Some(old.min(operand)),
                 AtomicOperation::SignedMinimum => Some(if signed(old) <= signed(operand) {
                     old
                 } else {
                     operand
                 }),
                 AtomicOperation::UnsignedMaximum => Some(old.max(operand)),
+                AtomicOperation::UnsignedMinimum if crate::planted::is(273) => {
+                    Some(if signed(old) <= signed(operand) {
+                        old
+                    } else {
+                        operand
+                    })
+                }
                 AtomicOperation::UnsignedMinimum => Some(old.min(operand)),
+                AtomicOperation::Swap if crate::planted::is(300) => {
+                    Some(read_register(processor, second, RegisterThirtyOne::ZeroRegister) & mask)
+                }
                 AtomicOperation::Swap => Some(operand),
+                AtomicOperation::CompareAndSwap if crate::planted::is(44) => {
+                    (old & 0xFF == operand & 0xFF).then(|| {
+                        read_register(processor, second, RegisterThirtyOne::ZeroRegister) & mask
+                    })
+                }
+                AtomicOperation::CompareAndSwap if crate::planted::is(161) => {
+                    Some(read_register(processor, second, RegisterThirtyOne::ZeroRegister) & mask)
+                }
+                AtomicOperation::CompareAndSwap if crate::planted::is(162) => (old == unmasked)
+                    .then(|| {
+                        read_register(processor, second, RegisterThirtyOne::ZeroRegister) & mask
+                    }),
                 AtomicOperation::CompareAndSwap => (old == operand).then(|| {
                     read_register(processor, second, RegisterThirtyOne::ZeroRegister) & mask
                 }),
@@ -1074,14 +1236,33 @@ where
             }
             let (target, width) = match atomic {
                 AtomicOperation::CompareAndSwap => (first, first_width),
+                _ if crate::planted::is(300) => (first, first_width),
                 _ => (second, second_width),
             };
-            write_register(
-                processor,
-                target,
-                old & width.to_mask(),
-                RegisterThirtyOne::ZeroRegister,
-            );
+            let returned = if crate::planted::is(275) {
+                ((old << 48) as i64 >> 48) as u64
+            } else {
+                match (atomic, new) {
+                    (AtomicOperation::Swap, Some(new)) if crate::planted::is(49) => new,
+                    (_, Some(new)) if crate::planted::is(159) => new,
+                    _ => old,
+                }
+            };
+            if !(crate::planted::is(268)
+                && atomic == AtomicOperation::CompareAndSwap
+                && old != operand)
+            {
+                write_register(
+                    processor,
+                    target,
+                    returned & width.to_mask(),
+                    if crate::planted::is(167) {
+                        RegisterThirtyOne::StackPointer
+                    } else {
+                        RegisterThirtyOne::ZeroRegister
+                    },
+                );
+            }
         }
         Transfer::CompareAndSwapPair => {
             for direction in [AccessDirection::Read, AccessDirection::Write] {
@@ -1107,15 +1288,32 @@ where
                     read_register(processor, first + 1, RegisterThirtyOne::ZeroRegister) & mask;
                 u128::from(low) | (u128::from(high) << element_bits)
             };
-            if old == read_pair(compared) {
+            let equal = if crate::planted::is(45) {
+                old as u64 & mask == read_pair(compared) as u64 & mask
+            } else {
+                old == read_pair(compared)
+            };
+            if equal {
+                let new = read_pair(swapped);
+                let new = if crate::planted::is(46) {
+                    let low = new & ((1_u128 << element_bits) - 1);
+                    (new >> element_bits) | (low << element_bits)
+                } else {
+                    new
+                };
                 mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
                     start: location,
-                    bytes: Cow::Owned(read_pair(swapped).to_le_bytes()[..total].to_vec()),
+                    bytes: Cow::Owned(new.to_le_bytes()[..total].to_vec()),
                 });
             }
+            let returned_to = if crate::planted::is(269) {
+                swapped
+            } else {
+                compared
+            };
             for (number, value) in [
-                (compared, old as u64),
-                (compared + 1, (old >> element_bits) as u64),
+                (returned_to, old as u64),
+                (returned_to + 1, (old >> element_bits) as u64),
             ] {
                 write_register(
                     processor,
@@ -1128,6 +1326,11 @@ where
         Transfer::Store => {
             let mut data = [0; MAXIMUM_BYTES];
             for (index, (number, _)) in registers.iter().enumerate() {
+                let number = if crate::planted::is(283) {
+                    &registers[0].0
+                } else {
+                    number
+                };
                 let value = if addressed.vector {
                     processor.vector_registers[*number as usize]
                 } else {
@@ -1137,34 +1340,120 @@ where
                         RegisterThirtyOne::ZeroRegister,
                     ))
                 };
-                data[index * bytes..(index + 1) * bytes]
+                let value = if crate::planted::is(290) {
+                    value >> 16
+                } else {
+                    value
+                };
+                let stride = if crate::planted::is(156) {
+                    size_of::<u64>()
+                } else {
+                    bytes
+                };
+                if index * stride + bytes > data.len() {
+                    continue;
+                }
+                data[index * stride..index * stride + bytes]
                     .copy_from_slice(&value.to_le_bytes()[..bytes]);
+                if crate::planted::is(299) {
+                    data[index * bytes..(index + 1) * bytes].reverse();
+                }
             }
-            store(
+            let written = match operation.bytes {
+                DOUBLEWORD if crate::planted::is(43) => total / 2,
+                BYTE if crate::planted::is(50) => (2 * total).min(MAXIMUM_BYTES),
+                _ => total,
+            };
+            if crate::planted::any(&[262, 284])
+                && writeback
+                && find_fault(memory, location, total as u64, AccessDirection::Write).is_some()
+            {
+                write_back(processor, &addressed, base, address);
+            }
+            if let Err(exception) = store(
                 memory,
                 address,
                 location,
                 tag,
-                &data[..total],
+                &data[..written],
                 choices
                     .across_fault
                     .unwrap_or(StoreAcrossFault::WritesNothing),
                 mutation_hook,
-            )?;
+            ) {
+                if crate::planted::is(449) {
+                    planted_writeback(processor, base, address);
+                }
+                return Err(exception);
+            }
         }
         Transfer::Load(signedness) => {
             let mut data = [0; MAXIMUM_BYTES];
-            load(memory, address, location, tag, &mut data[..total])?;
+            let pair_of_words =
+                crate::planted::is(39) && registers.len() == 2 && bytes == WORD as usize;
+            let fetched = if pair_of_words { 2 * total } else { total };
+            if let Err(exception) = load(memory, address, location, tag, &mut data[..fetched]) {
+                if crate::planted::is(434) {
+                    planted_writeback(processor, base, address);
+                }
+                if crate::planted::any(&[261, 295]) && writeback {
+                    write_back(processor, &addressed, base, address);
+                }
+                if crate::planted::is(149)
+                    && writeback
+                    && let Some((number, Indexing::PostIndex)) = addressed.base
+                {
+                    let written_back = base.wrapping_add(addressed.offset);
+                    write_register(
+                        processor,
+                        number,
+                        written_back,
+                        RegisterThirtyOne::StackPointer,
+                    );
+                }
+                return Err(exception);
+            }
+            if pair_of_words {
+                data.copy_within(2 * bytes..3 * bytes, bytes);
+            }
+            let signedness = if crate::planted::any(&[441, 289]) {
+                Signedness::Signed
+            } else if crate::planted::is(296) {
+                Signedness::Unsigned
+            } else {
+                signedness
+            };
             let mut values = [0_u128; MAXIMUM_REGISTERS];
             for (index, value) in values[..registers.len()].iter_mut().enumerate() {
                 let mut bytes_of = [0; size_of::<u128>()];
-                bytes_of[..bytes].copy_from_slice(&data[index * bytes..(index + 1) * bytes]);
+                let from = if crate::planted::is(266) { 0 } else { index };
+                bytes_of[..bytes].copy_from_slice(&data[from * bytes..(from + 1) * bytes]);
                 let loaded = u128::from_le_bytes(bytes_of);
                 let shift = u128::BITS - operation.bytes * u8::BITS;
+                let shift = if crate::planted::is(36) && operation.bytes == WORD {
+                    u128::BITS - u16::BITS
+                } else {
+                    shift
+                };
+                let signedness =
+                    if crate::planted::any(&[52, 151]) || (crate::planted::is(155) && index == 1) {
+                        Signedness::Unsigned
+                    } else {
+                        signedness
+                    };
                 *value = match signedness {
                     Signedness::Unsigned => loaded,
                     Signedness::Signed => (((loaded << shift) as i128) >> shift) as u128,
                 };
+            }
+            if crate::planted::is(450) {
+                values[1] = values[0];
+            }
+            if crate::planted::is(457) {
+                values.swap(0, 1);
+            }
+            if crate::planted::is(292) {
+                values.swap(0, 1);
             }
             let order: &[usize] = if pair_order_reversed {
                 &[1, 0]
@@ -1174,15 +1463,67 @@ where
             for &index in order.iter().filter(|index| **index < registers.len()) {
                 let (number, width) = registers[index];
                 if addressed.vector {
-                    processor.vector_registers[number as usize] = values[index];
+                    processor.vector_registers[number as usize] = if crate::planted::is(451) {
+                        let mask = u128::MAX >> (u128::BITS - operation.bytes * u8::BITS);
+                        (processor.vector_registers[number as usize] & !mask) | values[index]
+                    } else {
+                        values[index]
+                    };
                     continue;
                 }
-                let value = values[index] as u64 & width.to_mask();
+                let mut value = values[index] as u64 & width.to_mask();
+                if crate::planted::any(&[277, 297]) {
+                    value = values[index] as u64;
+                }
+                if crate::planted::is(293) && width == RegisterWidth::Bits32 {
+                    value |= read_register(processor, number, RegisterThirtyOne::ZeroRegister)
+                        & !width.to_mask();
+                }
                 write_register(processor, number, value, RegisterThirtyOne::ZeroRegister);
             }
         }
     }
-    if writeback && let Some((number, indexing)) = addressed.base {
+    if writeback
+        && !crate::planted::is(154)
+        && let Some((number, indexing)) = addressed.base
+    {
+        let written_back = match indexing {
+            Indexing::PostIndex => base.wrapping_add(addressed.offset),
+            Indexing::Offset | Indexing::PreIndex => address,
+        };
+        let written_back = if crate::planted::is(34) {
+            to_untagged_address(written_back)
+        } else {
+            written_back
+        };
+        let written_back = if crate::planted::any(&[435, 453]) {
+            written_back & low_ones(56)
+        } else {
+            written_back
+        };
+        let written_back = if crate::planted::is(263) {
+            to_untagged_address(written_back)
+        } else {
+            written_back
+        };
+        write_register(
+            processor,
+            number,
+            written_back,
+            RegisterThirtyOne::StackPointer,
+        );
+    }
+    Ok(())
+}
+
+/// The planted bugs' writeback on a fault.
+fn write_back<LevelSpecific>(
+    processor: &mut Processor<LevelSpecific>,
+    addressed: &Addressed,
+    base: u64,
+    address: u64,
+) {
+    if let Some((number, indexing)) = addressed.base {
         let written_back = match indexing {
             Indexing::PostIndex => base.wrapping_add(addressed.offset),
             Indexing::Offset | Indexing::PreIndex => address,
@@ -1194,7 +1535,6 @@ where
             RegisterThirtyOne::StackPointer,
         );
     }
-    Ok(())
 }
 
 /// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
@@ -1211,7 +1551,9 @@ fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     if let Some((fault_location, status)) = find_fault(memory, location, bytes.len() as u64, access)
     {
         let below_fault = &bytes[..fault_location.wrapping_sub(location) as usize];
-        if across_fault == StoreAcrossFault::WritesBytesBelowFault && !below_fault.is_empty() {
+        if (across_fault == StoreAcrossFault::WritesBytesBelowFault || crate::planted::is(40))
+            && !below_fault.is_empty()
+        {
             mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
                 start: location,
                 bytes: Cow::Borrowed(below_fault),
@@ -1220,7 +1562,11 @@ fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
         return Err(Exception::DataAbort {
             status,
             access,
-            address: to_fault_address(address, fault_location, tag),
+            address: if crate::planted::is(157) {
+                address
+            } else {
+                to_fault_address(address, fault_location, tag)
+            },
         });
     }
     mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
@@ -1281,9 +1627,13 @@ fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermissio
 
 /// The fault address FAR_EL1 gives for a fault at `fault_location` of an access to `address`, with the tag the
 /// behavior keeps.
-const fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
+fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
     let location = to_untagged_address(fault_location);
-    let tag_bits = address ^ to_untagged_address(address);
+    let tag_bits = if crate::planted::any(&[264, 35]) {
+        0
+    } else {
+        address ^ to_untagged_address(address)
+    };
     let kept = match tag {
         FaultAddressTag::KeepsTopByte => tag_bits,
         FaultAddressTag::ClearsTopNibble => tag_bits & !(u64::MAX << UNKNOWN_TAG_BITS_SHIFT),

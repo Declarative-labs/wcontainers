@@ -26,6 +26,7 @@ mod listing;
 pub mod load_store;
 pub mod memory;
 pub mod operand;
+pub mod planted;
 pub mod pointer_authentication;
 mod registers;
 pub mod simd;
