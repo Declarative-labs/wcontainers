@@ -299,11 +299,9 @@ fn to_error(
     break_machine(&mut chip);
     let mut processor = state.processor.clone();
     let mut mutations: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
-    let Err(refusal) = chip.execute_single_instruction_in_place(
-        &mut processor,
-        state.memory(),
-        &mut mutations,
-    ) else {
+    let Err(refusal) =
+        chip.execute_single_instruction_in_place(&mut processor, state.memory(), &mut mutations)
+    else {
         panic!("{loading:?}: the chip ran a state it cannot");
     };
     assert!(

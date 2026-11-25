@@ -198,8 +198,12 @@ where
             PreciseInstruction::Brk => Err(Exception::Breakpoint {
                 comment: IMM16.read(word) as u16,
             }),
-            PreciseInstruction::Rdvl(VectorLengthReading::Undefined) => Err(Exception::UndefinedInstruction),
-            PreciseInstruction::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception::SmeTrap(code)),
+            PreciseInstruction::Rdvl(VectorLengthReading::Undefined) => {
+                Err(Exception::UndefinedInstruction)
+            }
+            PreciseInstruction::Rdvl(VectorLengthReading::SmeTrapped(code)) => {
+                Err(Exception::SmeTrap(code))
+            }
             PreciseInstruction::Rdvl(VectorLengthReading::Reads(length)) => {
                 let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
                 write_register(
@@ -231,8 +235,7 @@ where
     };
     match outcome {
         Ok(()) => {
-            processor.program_counter =
-                processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
+            processor.program_counter = processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
             processor.exception = None;
         }
         Err(exception) => processor.exception = Some(exception),

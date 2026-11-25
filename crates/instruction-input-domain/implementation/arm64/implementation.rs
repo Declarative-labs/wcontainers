@@ -98,10 +98,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
     type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
     /// The operands of the assembly syntax in its order, then the state the instruction reads besides them.
-    fn list_operand_types(
-        &self,
-        instruction: Instruction<Infallible>,
-    ) -> Self::OperandTypes<'_> {
+    fn list_operand_types(&self, instruction: Instruction<Infallible>) -> Self::OperandTypes<'_> {
         use OperandType::{
             AccessPlacement, ConditionFlags, DataPagePermission, RegisterNumber, RegisterValue,
             SignedImmediate, UnsignedImmediate,
@@ -160,10 +157,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         operand_types.iter().copied()
     }
 
-    fn generate_critical_values(
-        &self,
-        operand_type: OperandType,
-    ) -> Self::CriticalValues<'_> {
+    fn generate_critical_values(&self, operand_type: OperandType) -> Self::CriticalValues<'_> {
         let values: Vec<OperandValue> = match operand_type {
             // Two ordinary registers, so that one can appear twice, and the zero register or stack pointer.
             OperandType::RegisterNumber(_) => [0, 1, GENERAL_PURPOSE_REGISTERS as u32]

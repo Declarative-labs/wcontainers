@@ -19,16 +19,11 @@ use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::iter::IteratorSpec;
 
-// VERUS: no proof apart from the code it proves, so the proofs, and the memory diff with its proof, are files of their own.
+// `MemorySnapshot::diff`, with its proof.
 mod memory_diff;
-#[cfg(verus_keep_ghost)]
-pub mod memory_proof;
 mod trusted;
 #[cfg(test)]
 mod trusted_tests;
-
-#[cfg(verus_keep_ghost)]
-use memory_proof::{lemma_appended_memory, lemma_empty_diff, lemma_execution_state_clone};
 
 verus! {
 
@@ -61,10 +56,9 @@ pub trait ProcessorArchitecture: Sized + Clone {
     /// The behaviors a chip is known to show for the instruction, in the order they are listed.
     spec fn known_behaviors(instruction: Self::Instruction) -> Seq<Self::PreciseInstruction>;
 
-    /// `==` on processors, on permissions and on instructions holds exactly for the same value.
+    /// `==` on permissions and on instructions holds exactly for the same value.
     proof fn equality_is_identity()
         ensures
-            obeys_concrete_eq::<Self::ProcessorState>(),
             obeys_concrete_eq::<Self::PagePermission>(),
             obeys_concrete_eq::<Self::Instruction>(),
     ;
@@ -81,7 +75,6 @@ pub trait ProcessorArchitecture: Sized + Clone {
             instructions.obeys_prophetic_iter_laws(),
             instructions.remaining() == Self::instructions(),
             instructions.decrease() is Some,
-            Self::instructions().no_duplicates(),
     ;
 
     /// Returns the set of behaviors a chip is known to show for the instruction.
@@ -137,6 +130,20 @@ pub open spec fn apply_all<Permission>(memory: Memory<Permission>, changes: Seq<
     decreases changes.len(),
 {
     if changes.len() == 0 { memory } else { apply(apply_all(memory, changes.drop_last()), changes.last()) }
+}
+
+/// Applying two lists of changes one after the other is applying the joined list.
+pub proof fn lemma_apply_all_append<Permission>(memory: Memory<Permission>, first: Seq<Assignment<Permission>>, second: Seq<Assignment<Permission>>)
+    ensures
+        apply_all(memory, first + second) == apply_all(apply_all(memory, first), second),
+    decreases second.len(),
+{
+    if second.len() == 0 {
+        assert(first + second =~= first);
+    } else {
+        lemma_apply_all_append(memory, first, second.drop_last());
+        assert((first + second).drop_last() =~= first + second.drop_last());
+    }
 }
 
 /// The memory a list of mutations leaves, applied in order to the zeroed memory.
@@ -227,9 +234,16 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
                 && memory_of(after.memory_mutations@) == apply_all(memory_of(before.memory_mutations@), changes)),
     {
         let mut mutations = Vec::new();
+        let ghost none = mutations;
         let processor = self.simulate(&before.processor, before.memory(), &mut mutations)?;
-        // VERUS: no fact about the memory of a joined list without its proof, so the proof is named.
-        proof { lemma_appended_memory(before.memory_mutations@, mutations); }
+        proof {
+            assert(assignments(none@) =~= Seq::empty());
+            assert(assignments(before.memory_mutations@ + mutations@) =~= assignments(before.memory_mutations@) + assignments(mutations@));
+            lemma_apply_all_append(zeroed::<Architecture>(), assignments(before.memory_mutations@), assignments(mutations@));
+            assert(none.applied_to(memory_of(before.memory_mutations@)) == memory_of(before.memory_mutations@));
+            assert(mutations.applied_to(memory_of(before.memory_mutations@))
+                == apply_all(memory_of(before.memory_mutations@), assignments(mutations@)));
+        }
         before.memory_mutations.append(&mut mutations);
         Ok(ExecutionStateExpectation {
             processor,
@@ -302,8 +316,16 @@ impl<Architecture: ProcessorArchitecture> Clone for ExecutionState<'_, Architect
             processor: self.processor.clone(),
             memory_mutations: self.memory_mutations.clone(),
         };
-        // VERUS: no fact that a clone of each part is the same value without its proof, so the proof is named.
-        proof { lemma_execution_state_clone(*self, cloned); }
+        proof {
+            Architecture::clone_is_identity();
+            assert(vstd::pervasive::cloned(self.processor, cloned.processor));
+            assert(assignments(cloned.memory_mutations@) =~= assignments(self.memory_mutations@)) by {
+                assert forall|index: int| 0 <= index < self.memory_mutations@.len()
+                    implies #[trigger] cloned.memory_mutations@[index]@ == self.memory_mutations@[index]@ by {
+                    assert(vstd::pervasive::cloned(self.memory_mutations@[index], cloned.memory_mutations@[index]));
+                }
+            }
+        }
         cloned
     }
 }
@@ -379,30 +401,30 @@ impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImp
 /// Two snapshots are equal when they hold the same memory, regardless of the order of mutations.
 impl<Architecture: ProcessorArchitecture> PartialEq for MemorySnapshot<'_, '_, Architecture> {
     fn eq(&self, other: &Self) -> bool {
-        // VERUS: no fact that an empty diff leaves the same memory without its proof, so the proof is named.
-        proof { lemma_empty_diff::<Architecture>(); }
         // VERUS: no closure that captures a mutable reference, so the mutations are collected and counted.
         let mut mutations = Vec::new();
+        let ghost none = mutations;
         self.diff(other, &mut mutations);
+        proof {
+            // A diff that sends nothing leaves the memory as it was.
+            if mutations@.len() == 0 {
+                let changes = choose|changes: Seq<Assignment<Architecture::PagePermission>>|
+                    #![trigger apply_all(memory_of(self.mutations@), changes)] receives(none, mutations, changes)
+                    && apply_all(memory_of(self.mutations@), changes) == memory_of(other.mutations@);
+                assert(assignments(none@) =~= Seq::empty());
+                assert(assignments(mutations@) =~= Seq::empty());
+                assert(mutations.applied_to(memory_of(self.mutations@)) == apply_all(none.applied_to(memory_of(self.mutations@)), changes));
+            }
+        }
         mutations.is_empty()
     }
 }
 
 impl<Architecture: ProcessorArchitecture> Eq for MemorySnapshot<'_, '_, Architecture> {}
 
-// VERUS: no `==` without a statement of what it means, so this one states nothing.
-#[cfg(verus_keep_ghost)]
-impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionState<'_, Architecture> {
-    open spec fn obeys_eq_spec() -> bool {
-        false
-    }
-
-    open spec fn eq_spec(&self, other: &Self) -> bool {
-        false
-    }
-}
-
 /// Two states are equal when they hold the same processor and the same memory.
+// VERUS: no `==` without a statement of what it means, and no proof calls this one, so the verifier leaves it out.
+#[verifier::external]
 impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Architecture> {
     fn eq(&self, other: &Self) -> bool {
         self.processor == other.processor && self.memory() == other.memory()
@@ -436,19 +458,9 @@ impl<'memory, Architecture: ProcessorArchitecture> ExecutionState<'memory, Archi
     }
 }
 
-// VERUS: no `==` without a statement of what it means, so this one states nothing.
-#[cfg(verus_keep_ghost)]
-impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionStateExpectation<'_, Architecture> {
-    open spec fn obeys_eq_spec() -> bool {
-        false
-    }
-
-    open spec fn eq_spec(&self, other: &Self) -> bool {
-        false
-    }
-}
-
 /// Two expectations are equal when they hold the same processor expectation and the same memory.
+// VERUS: no `==` without a statement of what it means, and no proof calls this one, so the verifier leaves it out.
+#[verifier::external]
 impl<Architecture: ProcessorArchitecture> PartialEq
     for ExecutionStateExpectation<'_, Architecture>
 {

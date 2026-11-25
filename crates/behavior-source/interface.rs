@@ -10,22 +10,18 @@ use vstd::prelude::*;
 use vstd::std_specs::iter::IteratorSpec;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 #[cfg(verus_keep_ghost)]
-use wcontainers_processor_architecture::memory_proof::lemma_appended_memory;
-#[cfg(verus_keep_ghost)]
 use wcontainers_processor_architecture::{
-    Assignment, Memory, memory_of, receives, simulated_after, state_after,
+    Assignment, Memory, apply_all, assignments, lemma_apply_all_append, memory_of, receives,
+    simulated_after, state_after, zeroed,
 };
 use wcontainers_processor_architecture::{
     ExecutionState, ExecutionStateExpectation, MemorySink, MemorySnapshot, ProcessorArchitecture,
     Simulator,
 };
 
-// VERUS: no proof apart from the code it proves, so the lemmas the measurement names are a file of their own, public
-// since a provided method that names a private function crashes the verifier at a caller in another crate.
-pub mod measurement;
-
-#[cfg(verus_keep_ghost)]
-use measurement::{agrees_on_first, expects};
+// VERUS: no value of type `Infallible` it can rule out, so a trusted function takes out the success; public, since a
+// provided method that names a private function crashes the verifier at a caller in another crate.
+pub mod trusted;
 
 verus! {
 
@@ -77,6 +73,7 @@ pub trait BehaviorSource {
                 == state_after(before, old(self).shown(before.processor, memory_of(before.memory_mutations@))),
     {
         let mut mutations = Vec::new();
+        let ghost none = mutations;
         self.execute_single_instruction_in_place(
             &mut before.processor,
             MemorySnapshot {
@@ -84,8 +81,14 @@ pub trait BehaviorSource {
             },
             &mut mutations,
         )?;
-        // VERUS: no fact about the memory of a joined list without its proof, so the proof is named.
-        proof { lemma_appended_memory(before.memory_mutations@, mutations); }
+        proof {
+            assert(assignments(none@) =~= Seq::empty());
+            assert(assignments(before.memory_mutations@ + mutations@) =~= assignments(before.memory_mutations@) + assignments(mutations@));
+            lemma_apply_all_append(zeroed::<Self::Architecture>(), assignments(before.memory_mutations@), assignments(mutations@));
+            assert(none.applied_to(memory_of(before.memory_mutations@)) == memory_of(before.memory_mutations@));
+            assert(mutations.applied_to(memory_of(before.memory_mutations@))
+                == apply_all(memory_of(before.memory_mutations@), assignments(mutations@)));
+        }
         before.memory_mutations.append(&mut mutations);
         Ok(before)
     }
@@ -114,8 +117,6 @@ pub trait BehaviorSource {
                 generator.states(instruction),
             ),
     {
-        // VERUS: no function outside the trait can run a source's method, so the loops carry their invariants here; the
-        // lemmas they name are in measurement.rs.
         let ghost known = <Self::Architecture as ProcessorArchitecture>::known_behaviors(instruction);
         let ghost states = generator.states(instruction);
         let ghost shown: Shown<Self::Architecture> = |processor, memory| old(self).shown(processor, memory);
@@ -134,16 +135,14 @@ pub trait BehaviorSource {
                 shown == (|processor, memory| old(self).shown(processor, memory)),
                 forall|processor, memory| #[trigger] self.shown(processor, memory) == old(self).shown(processor, memory),
                 candidates@.no_duplicates(),
-                // Each candidate is a known behavior that agreed with the source on every state so far, and each
-                // known behavior that did is a candidate.
+                // The candidates are the known behaviors that agreed with the source on every state so far.
                 forall|at: int| 0 <= at < candidates@.len() ==> known.contains(#[trigger] candidates@[at])
-                    && agrees_on_first(candidates@[at], shown, states, iterator.index()),
-                forall|behavior| known.contains(behavior) && agrees_on_first(behavior, shown, states, iterator.index())
+                    && agrees_on_every_state(candidates@[at], shown, states.take(iterator.index() as int)),
+                forall|behavior| known.contains(behavior) && agrees_on_every_state(behavior, shown, states.take(iterator.index() as int))
                     ==> #[trigger] candidates@.contains(behavior),
         {
-            let ghost done = iterator.index();
+            let ghost done = iterator.index() as int;
             proof {
-                assert(0 <= done < states.len());
                 assert(before == states[done]);
             }
             // VERUS: no proof through a `map` and `collect` chain here, so the behaviors are simulated by index into a list
@@ -161,8 +160,7 @@ pub trait BehaviorSource {
                 decreases candidates@.len() - index,
             {
                 let precise = candidates[index];
-                // VERUS: no value of type `Infallible` it can rule out, so the success is taken out by a trusted function.
-                let after = measurement::infallible_ok(precise.simulate_state(before.clone()));
+                let after = trusted::infallible_ok(precise.simulate_state(before.clone()));
                 simulated_results.push((precise, after));
                 index += 1;
             }
@@ -183,38 +181,72 @@ pub trait BehaviorSource {
             // VERUS: no proof through a `filter` and `collect` chain here, so the agreeing behaviors are kept by index, in a
             // list made to hold them all.
             let mut agreeing = Vec::with_capacity(simulated_results.len());
-            // Where in the simulated results each agreeing behavior came from.
+            // Where in the candidates each agreeing behavior came from.
             let ghost mut sources: Seq<int> = Seq::empty();
             let mut index = 0;
             while index < simulated_results.len()
                 invariant
                     index <= simulated_results@.len(),
+                    simulated_results@.len() == candidates@.len(),
+                    forall|at: int| 0 <= at < candidates@.len() ==> (#[trigger] simulated_results@[at]).0 == candidates@[at]
+                        && (simulated_results@[at].1.processor, memory_of(simulated_results@[at].1.memory_mutations@))
+                            == simulated_after(candidates@[at], before),
+                    (observed_result.processor, memory_of(observed_result.memory_mutations@))
+                        == state_after(before, shown(before.processor, memory_of(before.memory_mutations@))),
                     sources.len() == agreeing@.len(),
                     forall|first: int, second: int| 0 <= first < second < sources.len() ==> #[trigger] sources[first] < #[trigger] sources[second],
                     forall|at: int| 0 <= at < agreeing@.len() ==> 0 <= #[trigger] sources[at] < index
-                        && agreeing@[at] == simulated_results@[sources[at]].0
-                        && expects(observed_result, simulated_results@[sources[at]].1),
-                    forall|from: int| 0 <= from < index && #[trigger] expects(observed_result, simulated_results@[from].1)
-                        ==> agreeing@.contains(simulated_results@[from].0),
+                        && agreeing@[at] == candidates@[sources[at]] && agrees_on(candidates@[sources[at]], shown, before),
+                    forall|from: int| 0 <= from < index && #[trigger] agrees_on(candidates@[from], shown, before)
+                        ==> agreeing@.contains(candidates@[from]),
                 decreases simulated_results@.len() - index,
             {
-                let ghost agreeing_before = agreeing@;
-                let ghost sources_before = sources;
-                if observed_result.meets_expectations(&simulated_results[index].1) {
+                let ghost (agreeing_before, sources_before) = (agreeing@, sources);
+                let agrees = observed_result.meets_expectations(&simulated_results[index].1);
+                if agrees {
                     agreeing.push(simulated_results[index].0);
                     proof {
                         sources = sources.push(index as int);
                     }
                 }
                 proof {
-                    measurement::lemma_agreeing_step(simulated_results@, observed_result, index as int, agreeing_before, agreeing@, sources_before,
-                        sources);
+                    assert(agrees == agrees_on(candidates@[index as int], shown, before));
+                    assert forall|at: int| 0 <= at < agreeing_before.len() implies #[trigger] agreeing@[at] == agreeing_before[at]
+                        && sources[at] == sources_before[at] by {}
+                    assert forall|from: int| 0 <= from < index && #[trigger] agrees_on(candidates@[from], shown, before)
+                        implies agreeing@.contains(candidates@[from]) by {
+                        let at = choose|at: int| 0 <= at < agreeing_before.len() && agreeing_before[at] == candidates@[from];
+                        assert(agreeing@[at] == agreeing_before[at]);
+                    }
+                    if agreeing@.len() > agreeing_before.len() {
+                        assert(agreeing@[agreeing@.len() - 1] == candidates@[index as int]);
+                    }
                 }
                 index += 1;
             }
             proof {
-                measurement::lemma_candidates_step(known, shown, states, done, before, candidates@, simulated_results@, agreeing@, observed_result,
-                    sources);
+                assert forall|first: int, second: int| 0 <= first < second < agreeing@.len() implies agreeing@[first] != agreeing@[second] by {
+                    assert(sources[first] < sources[second]);
+                }
+                assert forall|at: int| 0 <= at < agreeing@.len() implies known.contains(#[trigger] agreeing@[at])
+                    && agrees_on_every_state(agreeing@[at], shown, states.take(done + 1)) by {
+                    assert(agrees_on_every_state(candidates@[sources[at]], shown, states.take(done)));
+                    assert forall|state: int| 0 <= state <= done implies #[trigger] agrees_on(agreeing@[at], shown, states.take(done + 1)[state]) by {
+                        if state < done {
+                            assert(states.take(done)[state] == states.take(done + 1)[state]);
+                        }
+                    }
+                }
+                assert forall|behavior| known.contains(behavior) && agrees_on_every_state(behavior, shown, states.take(done + 1))
+                    implies #[trigger] agreeing@.contains(behavior) by {
+                    assert forall|state: int| 0 <= state < done implies #[trigger] agrees_on(behavior, shown, states.take(done)[state]) by {
+                        assert(states.take(done)[state] == states.take(done + 1)[state]);
+                    }
+                    assert(candidates@.contains(behavior));
+                    let at = choose|at: int| 0 <= at < candidates@.len() && candidates@[at] == behavior;
+                    assert(states.take(done + 1)[done] == before);
+                    assert(agrees_on(candidates@[at], shown, states.take(done + 1)[done]));
+                }
             }
             candidates = agreeing;
             if candidates.is_empty() {
@@ -229,7 +261,13 @@ pub trait BehaviorSource {
         match candidates.as_slice() {
             [precise] => {
                 proof {
-                    measurement::lemma_candidates_at_end(known, shown, states, candidates@);
+                    assert(states.take(states.len() as int) =~= states);
+                    assert forall|behavior| #[trigger] known.contains(behavior)
+                        implies (agrees_on_every_state(behavior, shown, states) <==> behavior == candidates@[0]) by {
+                        if agrees_on_every_state(behavior, shown, states) {
+                            assert(candidates@.contains(behavior));
+                        }
+                    }
                 }
                 Ok(*precise)
             }
@@ -265,8 +303,6 @@ pub trait BehaviorSource {
                 |instruction| generator.states(instruction),
             ),
     {
-        // VERUS: no function outside the trait can run a source's method, so the loop carries its invariant here; the
-        // lemma it names is in measurement.rs.
         let ghost instructions = <Self::Architecture as ProcessorArchitecture>::instructions();
         let ghost shown: Shown<Self::Architecture> = |processor, memory| old(self).shown(processor, memory);
         let ghost states = |instruction| generator.states(instruction);
@@ -292,7 +328,8 @@ pub trait BehaviorSource {
                 self.measure_instruction(instruction, generator)?,
             ));
             proof {
-                measurement::lemma_measured_one_more(measured_before, measurements@, shown, shown_at_call, states);
+                assert(shown_at_call =~= shown);
+                assert forall|at: int| 0 <= at < measured_before.len() implies #[trigger] measurements@[at] == measured_before[at] by {}
             }
         }
         Ok(measurements)
