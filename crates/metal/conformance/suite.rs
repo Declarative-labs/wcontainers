@@ -2548,6 +2548,278 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
     ));
 }
 
+/// Encodes `draws` after the covering draw's bindings into one pass of a new target, and returns its texels.
+fn drawn_with_all<M: Metal>(
+    subject: &mut M,
+    state: &M::RenderPipelineState,
+    draws: Vec<RenderCommand<M>>,
+) -> Vec<u8> {
+    let mut draws = draws.into_iter();
+    let first = draws.next().expect("one draw at least");
+    let mut commands = green_draw(subject, state, first);
+    commands.extend(draws);
+    let texture = target(subject);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_render_commands(&command_buffer, &pass(&texture), &commands)
+        .expect("Metal answers encode render commands");
+    finish(subject, &command_buffer);
+    read_texture(subject, &texture)
+}
+
+/// Checks that an indexed draw of 16-bit indices in a buffer of an odd length counts only whole indices from its offset,
+/// so that one reaching the last, lone byte draws nothing, and that an offset off two bytes or past the end is refused.
+pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let (green, clear) = green_and_clear();
+    // Three 16-bit indices 0, 1, 2 and one byte more: 7 bytes.
+    let indices = filled(&mut subject, &[0, 0, 1, 0, 2, 0, 0xff]);
+    for (arguments, index_offset, drawn) in [
+        ([3, 1, 0, 0, 0], 0u64, &green),
+        // From byte 2, five bytes are left: two whole indices.
+        ([3, 1, 0, 0, 0], 2, &clear),
+        ([2, 1, 0, 0, 0], 2, &clear),
+        // From byte 6, one byte: no whole index.
+        ([1, 1, 0, 0, 0], 6, &clear),
+        ([3, 1, 1, 0, 0], 0, &clear),
+        ([u32::MAX, 1, 1, 0, 0], 0, &clear),
+    ] {
+        let buffer = filled(&mut subject, &word_bytes(&arguments));
+        let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            index_type: IndexType::UInt16,
+            index_buffer: indices.clone(),
+            index_buffer_offset: index_offset,
+            indirect_buffer: buffer,
+            indirect_buffer_offset: u64::MIN,
+        };
+        assert_eq!(
+            &drawn_with(&mut subject, &state, draw),
+            drawn,
+            "16-bit indexed draw of {arguments:?} from byte {index_offset}"
+        );
+    }
+    let texture = target(&mut subject);
+    for index_offset in [1u64, 7, 8] {
+        let buffer = filled(&mut subject, &word_bytes(&[1, 1, 0, 0, 0]));
+        let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            index_type: IndexType::UInt16,
+            index_buffer: indices.clone(),
+            index_buffer_offset: index_offset,
+            indirect_buffer: buffer,
+            indirect_buffer_offset: u64::MIN,
+        };
+        refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
+    }
+}
+
+/// Checks that one buffer may be a draw's arguments, indices and vertices at once (its words read as positions are all
+/// within a pixel's width of the origin, so the triangle covers no pixel centre), that arguments ending at a buffer's last
+/// byte are taken, and that a buffer shorter than an indexed draw's or a dispatch's arguments is refused.
+pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let (green, clear) = green_and_clear();
+    // Words: the indexed arguments [3, 1, 0, 0, 0], read as indices 3, 1, 0.
+    let shared = filled(&mut subject, &word_bytes(&[3, 1, 0, 0, 0, 0, 0, 0]));
+    let depth_stencil = no_depth(&mut subject);
+    let color = filled(
+        &mut subject,
+        &word_bytes(&[0, 1.0f32.to_bits(), 0, 1.0f32.to_bits()]),
+    );
+    let commands = vec![
+        RenderCommand::SetRenderPipelineState(state.clone()),
+        RenderCommand::SetDepthStencilState(depth_stencil),
+        RenderCommand::SetVertexBuffer {
+            buffer: shared.clone(),
+            offset: u64::MIN,
+            length: 32,
+            index: VERTICES,
+        },
+        RenderCommand::SetViewports(vec![Viewport {
+            origin_x: 0.0,
+            origin_y: 0.0,
+            width: f64::from(TARGET_SIDE),
+            height: f64::from(TARGET_SIDE),
+            znear: 0.0,
+            zfar: 1.0,
+        }]),
+        RenderCommand::SetScissorRects(vec![ScissorRect {
+            x: u32::MIN,
+            y: u32::MIN,
+            width: TARGET_SIDE,
+            height: TARGET_SIDE,
+        }]),
+        RenderCommand::SetFragmentBuffer {
+            buffer: color,
+            offset: u64::MIN,
+            length: COLOR_BYTES,
+            index: u32::MIN,
+        },
+        RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            index_type: IndexType::UInt32,
+            index_buffer: shared.clone(),
+            index_buffer_offset: u64::MIN,
+            indirect_buffer: shared.clone(),
+            indirect_buffer_offset: u64::MIN,
+        },
+    ];
+    let texture = target(&mut subject);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_render_commands(&command_buffer, &pass(&texture), &commands)
+        .expect("Metal answers encode render commands");
+    finish(&mut subject, &command_buffer);
+    assert_eq!(
+        read_texture(&mut subject, &texture),
+        clear,
+        "one buffer in every role"
+    );
+    // Arguments ending at the last byte of a 36-byte buffer are taken; a 16-byte buffer is short for indexed ones.
+    let mut words = vec![0u32; 4];
+    words.extend([3, 1, 0, 0, 0]);
+    let edge = filled(&mut subject, &word_bytes(&words));
+    let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
+    let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
+        primitive_type: PrimitiveType::Triangle,
+        index_type: IndexType::UInt32,
+        index_buffer: indices.clone(),
+        index_buffer_offset: u64::MIN,
+        indirect_buffer: edge,
+        indirect_buffer_offset: 16,
+    };
+    assert_eq!(
+        &drawn_with(&mut subject, &state, draw),
+        &green,
+        "arguments at the buffer's end"
+    );
+    let short = filled(&mut subject, &word_bytes(&[3, 1, 0, 0]));
+    let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
+        primitive_type: PrimitiveType::Triangle,
+        index_type: IndexType::UInt32,
+        index_buffer: indices,
+        index_buffer_offset: u64::MIN,
+        indirect_buffer: short,
+        indirect_buffer_offset: u64::MIN,
+    };
+    let texture = target(&mut subject);
+    refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
+    // An 8-byte buffer is short for a dispatch's 12.
+    let words_buffer = filled(&mut subject, &pattern(WORDS_BYTES as usize));
+    let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
+    let compute_state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("Metal answers make compute pipeline state");
+    let eight = filled(&mut subject, &word_bytes(&[1, 1]));
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    assert!(matches!(
+        subject.encode_compute_commands(
+            &command_buffer,
+            &[
+                ComputeCommand::SetComputePipelineState(compute_state),
+                ComputeCommand::SetBuffer {
+                    buffer: words_buffer,
+                    offset: u64::MIN,
+                    length: WORDS_BYTES,
+                    index: WORDS_SLOT,
+                },
+                ComputeCommand::DispatchThreadgroupsIndirect {
+                    indirect_buffer: eight,
+                    indirect_buffer_offset: u64::MIN,
+                    max_threadgroups: u32::MAX,
+                },
+            ],
+        ),
+        Err(EncodeComputeCommandsError::OutOfRange(_))
+    ));
+}
+
+/// The indirect draws of one pass in `draws_a_thousand_indirect_draws_in_one_pass`.
+const THOUSAND: usize = 1000;
+
+/// Checks a thousand indirect draws in one pass, each at its own offset of one buffer, indexed and not in turn: every one
+/// whose counts wrap or reach past its indices draws nothing, and a good last one still draws.
+pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let (green, clear) = green_and_clear();
+    let most = u32::MAX;
+    // Read as an indexed draw: past the three indices, or first instance plus instances wrapping.
+    let hostile: [[u32; 5]; 5] = [
+        [3, 1, 1, 0, 0],
+        [most, 1, 0, 0, 0],
+        [3, 2, 0, 0, most],
+        [2, 1, most, 0, 0],
+        [3, most, 0, 0, 2],
+    ];
+    // Read as a draw without indices: first vertex plus count, or first instance plus instances, wrapping.
+    let plain: [[u32; 5]; 3] = [[3, 1, most, 0, 0], [3, 2, 0, most, 0], [most, 1, 1, 0, 0]];
+    let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
+    for last_is_good in [true, false] {
+        let mut words = Vec::new();
+        for k in 0..THOUSAND {
+            if k == THOUSAND - 1 && last_is_good {
+                words.extend([3, 1, 0, 0, 0]);
+            } else if k % 2 == 0 {
+                words.extend(hostile[k % hostile.len()]);
+            } else {
+                words.extend(plain[k % plain.len()]);
+            }
+        }
+        let arguments = filled(&mut subject, &word_bytes(&words));
+        let draws: Vec<RenderCommand<M>> = (0..THOUSAND)
+            .map(|k| {
+                let at = (k * 20) as u64;
+                if k % 2 == 0 {
+                    RenderCommand::DrawIndexedPrimitivesIndirect {
+                        primitive_type: PrimitiveType::Triangle,
+                        index_type: IndexType::UInt32,
+                        index_buffer: indices.clone(),
+                        index_buffer_offset: u64::MIN,
+                        indirect_buffer: arguments.clone(),
+                        indirect_buffer_offset: at,
+                    }
+                } else {
+                    RenderCommand::DrawPrimitivesIndirect {
+                        primitive_type: PrimitiveType::Triangle,
+                        indirect_buffer: arguments.clone(),
+                        indirect_buffer_offset: at,
+                    }
+                }
+            })
+            .collect();
+        let seen = drawn_with_all(&mut subject, &state, draws);
+        if last_is_good {
+            assert_eq!(&seen, &green, "the good last draw");
+        } else {
+            assert_eq!(&seen, &clear, "a thousand hostile draws");
+        }
+    }
+}
+
+/// Checks that a draw without indices of the largest count a `u32` holds from vertex 0, which fits, is drawn: the
+/// covering triangle, its vertices past the three bound reading zeros.
+pub fn draws_the_largest_count_from_vertex_zero<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let (green, _) = green_and_clear();
+    let buffer = filled(&mut subject, &word_bytes(&[u32::MAX, 1, 0, 0]));
+    let draw = RenderCommand::DrawPrimitivesIndirect {
+        primitive_type: PrimitiveType::Triangle,
+        indirect_buffer: buffer,
+        indirect_buffer_offset: u64::MIN,
+    };
+    let start = std::time::Instant::now();
+    let seen = drawn_with(&mut subject, &state, draw);
+    eprintln!("u32::MAX vertices: {} ms", start.elapsed().as_millis());
+    assert_eq!(seen, green);
+}
+
 /// The compute function that steps a generator `words[1]` times, to keep the GPU busy for a while.
 const SPIN: &str = "spin";
 
@@ -2670,6 +2942,313 @@ pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
     );
 }
 
+/// Checks that a timestamp buffer whose handle is dropped after its timestamps are encoded and before the work runs is
+/// kept until the work completes.
+pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subject: M) {
+    let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
+        return;
+    };
+    let words = filled(
+        &mut subject,
+        &word_bytes(&[1, SPIN_STEPS, 0, 0, 0, 0, 0, 0]),
+    );
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 0)
+        .expect("Metal answers encode timestamp");
+    spin(&mut subject, &command_buffer, &words);
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 1)
+        .expect("Metal answers encode timestamp");
+    drop(timestamps);
+    finish(&mut subject, &command_buffer);
+}
+
+/// Checks that a read of timestamps waits for committed work that writes them after that work's command buffer handle
+/// was dropped, is refused while an uncommitted writer is held, and is taken once that writer is dropped.
+pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subject: M) {
+    let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
+        return;
+    };
+    let words = filled(
+        &mut subject,
+        &word_bytes(&[1, SPIN_STEPS, 0, 0, 0, 0, 0, 0]),
+    );
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 0)
+        .expect("Metal answers encode timestamp");
+    spin(&mut subject, &command_buffer, &words);
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 1)
+        .expect("Metal answers encode timestamp");
+    subject
+        .commit(&command_buffer)
+        .expect("Metal answers commit");
+    drop(command_buffer);
+    let mut read = [0; 2];
+    subject
+        .read_timestamps(&timestamps, 0, &mut read)
+        .expect("Metal answers read timestamps");
+    // The spin runs for tens of milliseconds, so the two places are more than a millisecond apart once it ended.
+    assert!(
+        read[0] != 0 && read[0] <= read[1] && read[1] - read[0] > 1_000_000,
+        "{read:?}"
+    );
+    let second = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_timestamp(&second, &timestamps, 1)
+        .expect("Metal answers encode timestamp");
+    assert_eq!(
+        subject.read_timestamps(&timestamps, 0, &mut read),
+        Err(wcontainers_metal::ReadTimestampsError::UsedByUncommittedWork)
+    );
+    drop(second);
+    subject
+        .read_timestamps(&timestamps, 0, &mut read)
+        .expect("Metal answers read timestamps");
+}
+
+/// Checks a buffer of the most places, written at its first place and twice at its last, then read whole and at its last.
+pub fn writes_and_reads_timestamps_at_the_most_places<M: Metal>(mut subject: M) {
+    let most = wcontainers_metal::MAX_TIMESTAMPS;
+    let Ok(timestamps) = subject.make_timestamp_buffer(most) else {
+        return;
+    };
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    for index in [0, most - 1, most - 1] {
+        subject
+            .encode_timestamp(&command_buffer, &timestamps, index)
+            .expect("Metal answers encode timestamp");
+    }
+    finish(&mut subject, &command_buffer);
+    let mut read = vec![0; most as usize];
+    subject
+        .read_timestamps(&timestamps, 0, &mut read)
+        .expect("Metal answers read timestamps");
+    let last = read[most as usize - 1];
+    assert!(read[0] != 0 && read[0] <= last, "{} {last}", read[0]);
+    let mut one = [0; 1];
+    subject
+        .read_timestamps(&timestamps, most - 1, &mut one)
+        .expect("Metal answers read timestamps");
+    assert_eq!(one[0], last);
+}
+
+/// Functions that ask a texture its levels and then reach a thousand levels past them.
+const QUERIES: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn size_past() -> @location(0) vec4<f32> {
+    let n = textureNumLevels(t);
+    let d = textureDimensions(t, n + 1000u);
+    return vec4<f32>(f32(d.x) / 255.0, f32(d.y) / 255.0, f32(n) / 255.0, 1.0);
+}
+@fragment fn load_past() -> @location(0) vec4<f32> {
+    let n = textureNumLevels(t);
+    return textureLoad(t, vec2<i32>(0, 0), i32(n) + 1000);
+}
+";
+
+/// The levels of the textures `QUERIES` reads: four by four texels down to one.
+const QUERIED_LEVELS: u32 = 3;
+
+/// Compiles one entry point of `QUERIES`.
+fn query_function<M: Metal>(
+    subject: &mut M,
+    stage: naga::ShaderStage,
+    entry_point: &str,
+) -> M::Function {
+    let module = naga::front::wgsl::parse_str(QUERIES).expect("the queries parse");
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("the queries validate");
+    let vertex_buffers = [VertexBufferLayout {
+        buffer_index: VERTICES,
+        stride: 8,
+        step_function: VertexStepFunction::PerVertex,
+        attributes: vec![VertexAttribute {
+            location: u32::MIN,
+            offset: u32::MIN,
+            format: VertexFormat::Float2,
+        }],
+    }];
+    subject
+        .make_function(&FunctionSource {
+            module: &module,
+            info: &info,
+            stage,
+            entry_point,
+            resources: &SLOTS[2..3],
+            immediates_buffer_index: IMMEDIATES,
+            sizes_buffer_index: SIZES,
+            vertex_buffers: &vertex_buffers,
+            point_size: false,
+        })
+        .expect("Metal answers make function")
+}
+
+/// Draws with the `QUERIES` fragment function `fragment` reading `texture` at slot 0, and returns the first texel drawn
+/// or the encode's refusal.
+fn query_drawn<M: Metal>(
+    subject: &mut M,
+    fragment: &str,
+    texture: &M::Texture,
+) -> Result<Vec<u8>, EncodeRenderCommandsError> {
+    let vertex = query_function(subject, naga::ShaderStage::Vertex, VERTEX);
+    let fragment = query_function(subject, naga::ShaderStage::Fragment, fragment);
+    let mut color_attachments = [None; MAX_COLOR_ATTACHMENTS];
+    color_attachments[0] = Some(RenderPipelineColorAttachmentDescriptor {
+        pixel_format: PixelFormat::Rgba8Unorm,
+        blending: None,
+        write_mask: ColorWriteMask {
+            red: true,
+            green: true,
+            blue: true,
+            alpha: true,
+        },
+    });
+    let state = subject
+        .make_render_pipeline_state(&RenderPipelineDescriptor {
+            vertex_function: &vertex,
+            fragment_function: Some(&fragment),
+            color_attachments,
+            depth_attachment_pixel_format: None,
+            stencil_attachment_pixel_format: None,
+            raster_sample_count: SINGLE,
+            alpha_to_coverage_enabled: false,
+            rasterization_enabled: true,
+            input_primitive_topology: PrimitiveTopologyClass::Triangle,
+        })
+        .expect("Metal answers make render pipeline state");
+    let depth_stencil = no_depth(subject);
+    let vertices = covering(subject);
+    let drawn = target(subject);
+    let bound = vec![RenderCommand::SetFragmentTexture {
+        texture: texture.clone(),
+        index: u32::MIN,
+    }];
+    let commands = covering_draw(&state, &vertices, &depth_stencil, bound);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject.encode_render_commands(&command_buffer, &pass(&drawn), &commands)?;
+    finish(subject, &command_buffer);
+    Ok(read_texture(subject, &drawn)[..RGBA8_BYTES as usize].to_vec())
+}
+
+/// Makes a sampled `rgba8Unorm` texture of `QUERIED_LEVELS` levels whose last level's one texel holds `texel`.
+fn levels_texture<M: Metal>(
+    subject: &mut M,
+    texture_type: TextureType,
+    array_length: u32,
+    texel: [u8; 4],
+) -> M::Texture {
+    let texture = subject
+        .make_texture(&TextureDescriptor {
+            texture_type,
+            pixel_format: PixelFormat::Rgba8Unorm,
+            width: TARGET_SIDE,
+            height: TARGET_SIDE,
+            depth: SINGLE,
+            mipmap_level_count: QUERIED_LEVELS,
+            sample_count: SINGLE,
+            array_length,
+            usage: TextureUsage {
+                shader_read: true,
+                shader_write: false,
+                render_target: true,
+                pixel_format_view: true,
+            },
+        })
+        .expect("Metal answers make texture");
+    let source = filled(subject, &texel);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_blit_commands(
+            &command_buffer,
+            &[BlitCommand::CopyFromBufferToTexture {
+                source_buffer: source,
+                source_offset: u64::MIN,
+                source_bytes_per_row: RGBA8_BYTES,
+                source_bytes_per_image: RGBA8_BYTES,
+                source_size: Size {
+                    width: SINGLE,
+                    height: SINGLE,
+                    depth: SINGLE,
+                },
+                destination_texture: texture.clone(),
+                destination_slice: u32::MIN,
+                destination_level: QUERIED_LEVELS - 1,
+                destination_origin: Origin::default(),
+                options: BlitOption::None,
+            }],
+        )
+        .expect("Metal answers encode blit commands");
+    finish(subject, &command_buffer);
+    texture
+}
+
+/// A texel no cleared target holds.
+const LAST_LEVEL_TEXEL: [u8; 4] = [10, 20, 30, 40];
+
+/// Checks that a size query of a level a thousand past the last, which naga writes as Metal's `get_width(lod)` with no
+/// clamp, completes, of a texture and of a one-level view, and that the level count it draws beside it is right.
+pub fn answers_a_size_query_of_a_level_past_the_last<M: Metal>(mut subject: M) {
+    let texture = levels_texture(&mut subject, TextureType::Type2D, SINGLE, LAST_LEVEL_TEXEL);
+    let seen = query_drawn(&mut subject, "size_past", &texture).expect("a query past the levels");
+    eprintln!("size of level n + 1000: {seen:?}");
+    assert_eq!(seen[2], QUERIED_LEVELS as u8);
+    let view = subject
+        .make_texture_view(
+            &texture,
+            &TextureViewDescriptor {
+                pixel_format: PixelFormat::Rgba8Unorm,
+                texture_type: TextureType::Type2D,
+                first_level: QUERIED_LEVELS - 1,
+                level_count: SINGLE,
+                first_slice: u32::MIN,
+                slice_count: SINGLE,
+            },
+        )
+        .expect("Metal answers make texture view");
+    let seen = query_drawn(&mut subject, "size_past", &view).expect("a query past the levels");
+    eprintln!("size of level n + 1000 of a one-level view: {seen:?}");
+    assert_eq!(seen[2], SINGLE as u8);
+}
+
+/// Checks that a load a thousand levels past the level count reads the last level, as naga's restricted loads clamp it.
+pub fn loads_the_last_level_for_a_level_past_it<M: Metal>(mut subject: M) {
+    let texture = levels_texture(&mut subject, TextureType::Type2D, SINGLE, LAST_LEVEL_TEXEL);
+    let seen = query_drawn(&mut subject, "load_past", &texture).expect("a load past the levels");
+    assert_eq!(seen, LAST_LEVEL_TEXEL);
+}
+
+/// Checks that a 2D array texture at a queried function's 2D texture slot is refused before Metal.
+pub fn refuses_a_texture_of_another_type_at_a_queried_slot<M: Metal>(mut subject: M) {
+    let texture = levels_texture(&mut subject, TextureType::Type2DArray, 2, LAST_LEVEL_TEXEL);
+    let seen = query_drawn(&mut subject, "size_past", &texture);
+    assert!(
+        matches!(seen, Err(EncodeRenderCommandsError::Unbound(_))),
+        "{seen:?}"
+    );
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -2737,6 +3316,56 @@ macro_rules! tests {
         #[test]
         fn refuses_indirect_arguments_outside_their_buffer() {
             $crate::refuses_indirect_arguments_outside_their_buffer($value);
+        }
+
+        #[test]
+        fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer() {
+            $crate::draws_only_whole_16_bit_indices_of_an_odd_length_buffer($value);
+        }
+
+        #[test]
+        fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end() {
+            $crate::draws_with_one_buffer_in_every_role_and_arguments_at_its_end($value);
+        }
+
+        #[test]
+        fn draws_a_thousand_indirect_draws_in_one_pass() {
+            $crate::draws_a_thousand_indirect_draws_in_one_pass($value);
+        }
+
+        #[test]
+        fn draws_the_largest_count_from_vertex_zero() {
+            $crate::draws_the_largest_count_from_vertex_zero($value);
+        }
+
+        #[test]
+        fn keeps_a_timestamp_buffer_dropped_before_its_work_runs() {
+            $crate::keeps_a_timestamp_buffer_dropped_before_its_work_runs($value);
+        }
+
+        #[test]
+        fn waits_for_a_dropped_writer_before_reading_timestamps() {
+            $crate::waits_for_a_dropped_writer_before_reading_timestamps($value);
+        }
+
+        #[test]
+        fn writes_and_reads_timestamps_at_the_most_places() {
+            $crate::writes_and_reads_timestamps_at_the_most_places($value);
+        }
+
+        #[test]
+        fn answers_a_size_query_of_a_level_past_the_last() {
+            $crate::answers_a_size_query_of_a_level_past_the_last($value);
+        }
+
+        #[test]
+        fn loads_the_last_level_for_a_level_past_it() {
+            $crate::loads_the_last_level_for_a_level_past_it($value);
+        }
+
+        #[test]
+        fn refuses_a_texture_of_another_type_at_a_queried_slot() {
+            $crate::refuses_a_texture_of_another_type_at_a_queried_slot($value);
         }
 
         #[test]
