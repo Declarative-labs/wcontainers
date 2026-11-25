@@ -2,14 +2,18 @@ extern crate std;
 
 use alloc::vec::Vec;
 use core::convert::Infallible;
+use core::iter::Rev;
 use std::path::Path;
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
-use wcontainers_behavior_source_recording::Recording;
+use wcontainers_behavior_source_recording::{NotRecorded, Recording};
+use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
+use wcontainers_processor_architecture::{
+    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture,
+};
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadIntoBaseWithWriteback, MisalignedStackPointer, PreciseInstruction,
     Processor, SmeTrapCode, StoreAcrossFault, User, VectorLength, VectorLengthReading,
@@ -18,6 +22,17 @@ use wcontainers_processor_architecture_arm64::{
 use crate::MeasuredInstructionSet;
 
 type Generator = CriticalValueProduct<Arm64InputDomain>;
+
+/// Measures every instruction on the source with the generator and builds the set from what it shows.
+fn measure_set(
+    mut source: impl BehaviorSource<Architecture = Arm64<User>>,
+    generator: &impl DistinguishingStateGenerator<Arm64<User>>,
+) -> MeasuredInstructionSet<Arm64<User>> {
+    match source.measure_instructions(generator) {
+        Ok(measurements) => MeasuredInstructionSet::from_measurements(&measurements),
+        Err(_) => panic!("the source shows one known behavior of every instruction"),
+    }
+}
 
 /// The folder of a chip's committed recordings.
 fn read_recording(chip: &str) -> Recording {
@@ -71,9 +86,7 @@ fn assert_measures_as(
     recording: Recording,
     expected: impl Fn(Instruction<Infallible>) -> PreciseInstruction<Infallible>,
 ) {
-    let Ok(measured) = MeasuredInstructionSet::<Recording, Generator>::measure(recording) else {
-        panic!("a recording of a known chip measures as that chip");
-    };
+    let measured = measure_set(recording, &Generator::new(Arm64InputDomain));
     for instruction in Arm64::<User>::list_instructions() {
         assert_eq!(measured.to_precise(instruction), expected(instruction));
     }
@@ -108,23 +121,25 @@ struct ThreadIdChanged(Recording);
 
 impl BehaviorSource for ThreadIdChanged {
     type Architecture = Arm64<User>;
+    type Error = NotRecorded;
 
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
+    ) -> Result<(), NotRecorded> {
         self.0
-            .execute_single_instruction_in_place(processor, memory, mutation_hook);
+            .execute_single_instruction_in_place(processor, memory, mutation_hook)?;
         processor.software_thread_id ^= 1;
+        Ok(())
     }
 }
 
 #[test]
 fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
-    let source = ThreadIdChanged(read_recording("neoverse-v2"));
-    let Err(failure) = MeasuredInstructionSet::<ThreadIdChanged, Generator>::measure(source) else {
+    let mut source = ThreadIdChanged(read_recording("neoverse-v2"));
+    let Err(failure) = source.measure_instructions(&Generator::new(Arm64InputDomain)) else {
         panic!("no known behavior changes TPIDR_EL0");
     };
     let MeasureInstructionError::NoBehaviorAgrees {
@@ -146,6 +161,40 @@ fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
     assert_eq!(named, listed);
 }
 
+/// The critical value product's states of each instruction, last first, all of which the recording holds.
+struct LastFirst(Generator);
+
+impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {
+    type States<'generator>
+        = Rev<alloc::vec::IntoIter<ExecutionState<'static, Arm64<User>>>>
+    where
+        Self: 'generator;
+
+    fn generate_states(&self, instruction: Instruction<Infallible>) -> Self::States<'_> {
+        let states: Vec<_> = self.0.generate_states(instruction).collect();
+        states.into_iter().rev()
+    }
+}
+
+/// Checks that two generators that each tell the behaviors apart measure one recording as the same set.
+#[test]
+fn either_generator_measures_the_recording_as_the_same_set() {
+    let first = measure_set(
+        read_recording("neoverse-v2"),
+        &Generator::new(Arm64InputDomain),
+    );
+    let second = measure_set(
+        read_recording("neoverse-v2"),
+        &LastFirst(Generator::new(Arm64InputDomain)),
+    );
+    for instruction in Arm64::<User>::list_instructions() {
+        assert_eq!(
+            first.to_precise(instruction),
+            second.to_precise(instruction)
+        );
+    }
+}
+
 /// The live chip measures as its recording; it runs only where the host is a Neoverse V2 under KVM.
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[test]
@@ -157,15 +206,11 @@ fn this_chip_measures_as_the_neoverse_v2_recording() {
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
-    let Ok(measured) = MeasuredInstructionSet::<KvmSingleStepMachine, Generator>::measure(chip)
-    else {
-        panic!("the chip shows one known behavior of every instruction");
-    };
-    let Ok(recorded) =
-        MeasuredInstructionSet::<Recording, Generator>::measure(read_recording("neoverse-v2"))
-    else {
-        panic!("the recording measures");
-    };
+    let measured = measure_set(chip, &Generator::new(Arm64InputDomain));
+    let recorded = measure_set(
+        read_recording("neoverse-v2"),
+        &Generator::new(Arm64InputDomain),
+    );
     for instruction in Arm64::<User>::list_instructions() {
         assert_eq!(
             measured.to_precise(instruction),
@@ -328,16 +373,17 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
-    let Ok(recorded) =
-        MeasuredInstructionSet::<Recording, Generator>::measure(read_recording("neoverse-v2"))
-    else {
-        panic!("the recording measures");
-    };
+    let recorded = measure_set(
+        read_recording("neoverse-v2"),
+        &Generator::new(Arm64InputDomain),
+    );
     let mut level_0_faults = 0;
     for (instruction, before) in to_states_past_the_last_addressable_byte() {
         let precise = recorded.to_precise(instruction);
         let Ok(simulated) = precise.simulate(before.clone());
-        let observed = chip.execute_single_instruction(before);
+        let Ok(observed) = chip.execute_single_instruction(before) else {
+            panic!("{instruction:?}: the chip refused a state it runs");
+        };
         assert!(
             observed == simulated,
             "{instruction:?}: the chip gives {:?}, {precise:?} simulates {:?}",

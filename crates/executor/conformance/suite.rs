@@ -39,7 +39,16 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
         for before in generator.generate_states(instruction) {
             states += 1;
             let Ok(simulated) = precise.simulate(before.clone());
-            let executed = executor.execute_single_instruction(before.clone());
+            let Ok(executed) = executor.execute_single_instruction(before.clone()) else {
+                disagreeing += 1;
+                first.get_or_insert_with(|| {
+                    format!(
+                        "  before: {:?}\n  the executor gave an error",
+                        before.processor
+                    )
+                });
+                continue;
+            };
             if simulated != executed {
                 disagreeing += 1;
                 first.get_or_insert_with(|| describe(&before, &simulated, &executed));

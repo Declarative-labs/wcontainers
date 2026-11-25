@@ -8,8 +8,8 @@ use wcontainers_processor_architecture_arm64::{
     PagePermission, User, ZERO_PROCESSOR,
 };
 
-use crate::Recording;
 use crate::text::{MalformedRecording, from_text, to_file_name, to_text};
+use crate::{NotRecorded, Recording};
 
 /// The folders of the committed recordings, one for each chip.
 const RECORDINGS: [&str; 2] = [
@@ -91,7 +91,7 @@ after pc=0x1004 | value 0x2000 8877665544332211
         next: (0, 0),
         played: None,
     };
-    assert!(recording.execute_single_instruction(before) == after);
+    assert!(matches!(recording.execute_single_instruction(before), Ok(played) if played == after));
 }
 
 #[test]
@@ -142,18 +142,41 @@ fn permission_changed_inside_a_range_is_seen() {
     assert!(to_state(&memory, &whole_rewritten) != to_state(&memory, &upper_unmapped));
 }
 
+/// Checks that a state the recording holds no case of is an error that writes neither the processor nor the hook.
+///
+/// The states after it play as on a fresh recording.
 #[test]
-#[should_panic(expected = "the recording holds no state equal to the one given")]
 fn recording_plays_only_its_states() {
-    let Ok(mut recording) = Recording::read(Path::new(RECORDINGS[0])) else {
-        panic!("reading {}", RECORDINGS[0]);
+    let read = || match Recording::read(Path::new(RECORDINGS[0])) {
+        Ok(recording) => recording,
+        Err(error) => panic!("reading {}: {error}", RECORDINGS[0]),
     };
-    let Some((_, before, _)) = recording.cases().next() else {
-        panic!("the recording holds a case");
-    };
-    let mut unrecorded = before.clone();
+    let (mut recording, mut fresh) = (read(), read());
+    let cases: Vec<_> = fresh
+        .cases()
+        .take(3)
+        .map(|(_, before, _)| before.clone())
+        .collect();
+    let mut unrecorded = cases[1].clone();
     unrecorded.processor.stack_pointer ^= 1;
-    recording.execute_single_instruction(unrecorded);
+    let mut processor = unrecorded.processor.clone();
+    let mut mutations: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
+    let played = recording.execute_single_instruction(cases[0].clone());
+    let refused = recording.execute_single_instruction_in_place(
+        &mut processor,
+        &unrecorded.memory_mutations,
+        &mut mutations,
+    );
+    assert!(matches!(refused, Err(NotRecorded)));
+    assert!(processor == unrecorded.processor && mutations.is_empty());
+    assert!(
+        matches!((played, fresh.execute_single_instruction(cases[0].clone())), (Ok(first), Ok(second)) if first == second)
+    );
+    for before in &cases[1..] {
+        let after = recording.execute_single_instruction(before.clone());
+        let expected = fresh.execute_single_instruction(before.clone());
+        assert!(matches!((after, expected), (Ok(after), Ok(expected)) if after == expected));
+    }
 }
 
 #[test]
