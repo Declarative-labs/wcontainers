@@ -1,15 +1,13 @@
 use std::convert::Infallible;
-use std::iter::Rev;
 use std::path::Path;
-use std::vec::IntoIter;
 
+use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
 use wcontainers_processor_architecture::ExecutionState;
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, User};
 
 /// What a Neoverse V2 under KVM did, written by the record tool.
 const RECORDINGS: &str = concat!(
@@ -17,12 +15,20 @@ const RECORDINGS: &str = concat!(
     "/../../../behavior-source/implementation/recording/recordings/neoverse-v2"
 );
 
-type Measured = MeasuredInstructionSet<Recording>;
+type Measured = MeasuredInstructionSet<Arm64<User>>;
 
 fn recording() -> Recording {
     match Recording::read(Path::new(RECORDINGS)) {
         Ok(recording) => recording,
         Err(error) => panic!("reading {RECORDINGS}: {error}"),
+    }
+}
+
+/// Each instruction with the behavior the recording shows on every state the critical value product makes.
+fn measure_recording() -> Vec<(Instruction<Infallible>, PreciseInstruction<Infallible>)> {
+    match recording().measure_instructions(&CriticalValueProduct::new(Arm64InputDomain)) {
+        Ok(measurements) => measurements,
+        Err(_) => panic!("the recording shows one known behavior of every instruction"),
     }
 }
 
@@ -40,25 +46,8 @@ fn recorded_cases() -> Vec<RecordedCase> {
         .collect()
 }
 
-/// The critical value product's states of each instruction, last first, all of which the recording holds.
-struct LastFirst(CriticalValueProduct<Arm64InputDomain>);
-
-impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {
-    type States<'generator>
-        = Rev<IntoIter<ExecutionState<'static, Arm64<User>>>>
-    where
-        Self: 'generator;
-
-    fn generate_states(&self, instruction: Instruction<Infallible>) -> Self::States<'_> {
-        let states: Vec<_> = self.0.generate_states(instruction).collect();
-        states.into_iter().rev()
-    }
-}
-
 wcontainers_precise_instruction_set_conformance::tests!(
     Measured,
-    recording(),
-    CriticalValueProduct::new(Arm64InputDomain),
-    LastFirst(CriticalValueProduct::new(Arm64InputDomain)),
+    measure_recording(),
     recorded_cases()
 );

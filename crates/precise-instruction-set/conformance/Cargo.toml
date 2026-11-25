@@ -8,7 +8,6 @@ publish = false
 path = "suite.rs"
 
 [dependencies]
-wcontainers-distinguishing-state-generator = { path = "../../distinguishing-state-generator" }
 wcontainers-precise-instruction-set = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
 
