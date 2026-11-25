@@ -1023,9 +1023,10 @@ impl World {
                 return;
             }
             match mode {
+                // The bytes outside the written part are undefined until written, on a lost device too.
+                WriteMode::Discard if self.lost => shadow.allow_all(),
                 _ if self.lost => shadow.allow(offset, bytes.len() as u64),
                 WriteMode::Ordered => shadow.wrote_pending(offset, &bytes),
-                // The bytes outside the written part are undefined until written.
                 WriteMode::Discard => {
                     shadow.allow_all();
                     shadow.wrote_pending(offset, &bytes);
