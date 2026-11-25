@@ -1612,10 +1612,10 @@ pub fn resolves_average_in_the_format_named<H: Host>() {
     let at = |t| region(t, 0, 0, 0, 0);
     for format in [Format::Rgba8Unorm, Format::Rgba8UnormSrgb] {
         for t in [&linear, &srgb] {
-            let losses = b.slow_paths().count(SlowPath::ResolveInStoredFormat);
+            let losses = b.slow_paths().counts[SlowPath::ResolveInStoredFormat as usize];
             b.resolve(&at(&ms), &at(t), format);
             let stored = format == Format::Rgba8Unorm
-                || b.slow_paths().count(SlowPath::ResolveInStoredFormat) > losses;
+                || b.slow_paths().counts[SlowPath::ResolveInStoredFormat as usize] > losses;
             let mut expected = Vec::new();
             for row in 0..N as usize {
                 for x in 0..N {

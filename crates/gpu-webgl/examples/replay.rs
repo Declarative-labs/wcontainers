@@ -130,8 +130,8 @@ pub fn replay_report() -> String {
         };
         let slow: Vec<String> = SLOW_PATHS
             .iter()
-            .filter(|&&p| slow.count(p) > 0)
-            .map(|&p| format!("{:?} {}", p, slow.count(p)))
+            .filter(|&&p| slow.counts[p as usize] > 0)
+            .map(|&p| format!("{:?} {}", p, slow.counts[p as usize]))
             .collect();
         format!("{status:?}, {name}; slow paths: {}", slow.join(", "))
     })

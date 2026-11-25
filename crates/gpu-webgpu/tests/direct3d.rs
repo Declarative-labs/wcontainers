@@ -269,7 +269,7 @@ fn mips_against_direct3d(
         assert_eq!(b.status(), DeviceStatus::Ok);
         if worst.is_empty() {
             assert!(!filtered);
-            assert!(b.slow_paths().count(SlowPath::FilterInShader) > 0);
+            assert!(b.slow_paths().counts[SlowPath::FilterInShader as usize] > 0);
             worst = levels;
         }
     }
@@ -875,7 +875,7 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     }
     assert_eq!(native.status(), DeviceStatus::Ok);
     assert_eq!(decoded.status(), DeviceStatus::Ok);
-    assert!(decoded.slow_paths().count(SlowPath::BlockDecoded) > 0);
+    assert!(decoded.slow_paths().counts[SlowPath::BlockDecoded as usize] > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
 }
 
@@ -1274,7 +1274,7 @@ fn converted_formats_load_filter_and_draw_as_direct3d_does() {
         texels.len() / 4
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert!(b.slow_paths().count(SlowPath::FormatConverted) > 0);
+    assert!(b.slow_paths().counts[SlowPath::FormatConverted as usize] > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
 }
 

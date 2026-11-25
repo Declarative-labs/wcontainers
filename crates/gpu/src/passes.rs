@@ -321,7 +321,7 @@ impl<B: Gpu> PassTracker<B> {
                         "a pass split at a storage write discards an attachment",
                     ));
                 }
-                b.slow_paths().hit(SlowPath::UsageScopeSplit);
+                b.record_slow_path(SlowPath::UsageScopeSplit);
                 let mut ops = self.ops;
                 for (load, _) in &mut ops.colors {
                     *load = LoadOp::Load;
@@ -569,7 +569,7 @@ impl<B: Gpu> PassTracker<B> {
             // Integer samples cannot be averaged by a resolve.
             return Err(GpuError::Absent(Features::MULTISAMPLE_READ));
         } else {
-            b.slow_paths().hit(SlowPath::MultisampleCopyResolved);
+            b.record_slow_path(SlowPath::MultisampleCopyResolved);
             let k = self.temporary(b, (src.width, src.height, src.format, 1))?;
             b.resolve(&src.region(), &self.pool[k].region(), src.format);
             (self.pool[k].view.clone(), Builtin::SampleCopy(kind, false))
@@ -646,7 +646,7 @@ impl<B: Gpu> PassTracker<B> {
                 .flat_map(|c| core::iter::once(&c.target).chain(&c.resolve))
                 .any(|t| (t.width, t.height) != (width, height));
             if fitted {
-                b.slow_paths().hit(SlowPath::AttachmentsFitted);
+                b.record_slow_path(SlowPath::AttachmentsFitted);
                 let extent = Extent {
                     width: common.0,
                     height: common.1,

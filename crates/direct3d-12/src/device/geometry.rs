@@ -851,10 +851,10 @@ impl<B: Gpu> Replay<B> {
             false => 1,
         };
         if selects.layer {
-            d.backend.slow_paths().hit(SlowPath::LayerSplit);
+            d.backend.record_slow_path(SlowPath::LayerSplit);
         }
         if selects.viewport {
-            d.backend.slow_paths().hit(SlowPath::MultiViewportSplit);
+            d.backend.record_slow_path(SlowPath::MultiViewportSplit);
         }
         // Clears waiting for the views are of every layer; each run's pass loads its own.
         self.settle(d)?;

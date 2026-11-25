@@ -210,7 +210,7 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
         let in_programs = device
             .backend()
             .slow_paths()
-            .count(SlowPath::DepthClampInShader);
+            .counts[SlowPath::DepthClampInShader as usize];
         assert_eq!(in_programs > 0, !hidden.is_empty(), "the slow path's count");
         eprintln!("warnings: {:?}", device.take_warnings());
         picture
@@ -583,7 +583,7 @@ fn clamp_scene(
     let in_programs = device
         .backend()
         .slow_paths()
-        .count(SlowPath::DepthClampInShader);
+        .counts[SlowPath::DepthClampInShader as usize];
     assert_eq!(
         in_programs > 0,
         !hidden.is_empty(),
@@ -593,7 +593,7 @@ fn clamp_scene(
     let clipped = device
         .backend()
         .slow_paths()
-        .count(SlowPath::ClipDistanceInShader);
+        .counts[SlowPath::ClipDistanceInShader as usize];
     assert_eq!(
         clipped > 0,
         route.clipped && !hidden.is_empty(),

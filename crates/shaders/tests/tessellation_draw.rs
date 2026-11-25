@@ -841,7 +841,7 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -
     .unwrap();
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert!(
-        b.slow_paths().count(SlowPath::TessellationAsCompute) > 0,
+        b.slow_paths().counts[SlowPath::TessellationAsCompute as usize] > 0,
         "the slow path is counted"
     );
     out
@@ -1335,7 +1335,7 @@ fn ours_staged<B: Backend>(
         SlowPath::TessellationAsCompute,
         SlowPath::StreamOutAsCompute,
     ] {
-        assert!(b.slow_paths().count(path) > 0, "{path:?} is counted");
+        assert!(b.slow_paths().counts[path as usize] > 0, "{path:?} is counted");
     }
     stages.destroy(b);
     let vertices = words.chunks(4).map(|v| [v[0], v[1], v[2], v[3]]).collect();
@@ -1930,7 +1930,7 @@ fn culled_ours<B: Backend>(
     .unwrap();
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert!(
-        b.slow_paths().count(SlowPath::CullDistanceAsGeometry) > 0,
+        b.slow_paths().counts[SlowPath::CullDistanceAsGeometry as usize] > 0,
         "the slow path is counted"
     );
     stages.destroy(b);

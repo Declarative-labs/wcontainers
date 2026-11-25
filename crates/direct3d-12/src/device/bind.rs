@@ -569,7 +569,7 @@ impl<B: Gpu> Device<B> {
                             .next_multiple_of(CONSTANT_REGISTER as usize),
                         0,
                     );
-                    self.backend.slow_paths().hit(SlowPath::ImmediatesSpilled);
+                    self.backend.record_slow_path(SlowPath::ImmediatesSpilled);
                     let align = self.backend.caps().limits.min_uniform_offset_alignment;
                     let mut offset = [0];
                     let buffer = self.backend.write_buffer_ring(
@@ -805,7 +805,7 @@ impl<B: Gpu> Device<B> {
         else {
             return Err(Error::Invalid("an upload buffer without its memory"));
         };
-        self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+        self.backend.record_slow_path(SlowPath::ConstantBufferGrown);
         let held = host.cells();
         let (start, end) = (
             offset as usize,
@@ -901,8 +901,7 @@ impl<B: Gpu> Device<B> {
             .push((b.visibility, value, pull::words(&[rest as u32])));
         if rest != 0 {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::StorageOffsetInShader);
+                .record_slow_path(SlowPath::StorageOffsetInShader);
             self.bound_offsets.push(b.visibility);
         }
         self.storage_range(id, start, rest + size, writable)
@@ -972,8 +971,7 @@ impl<B: Gpu> Device<B> {
             .max(STORAGE_WORD)
             .min(width.next_multiple_of(STORAGE_WORD) - start);
         self.backend
-            .slow_paths()
-            .hit(SlowPath::TexelBufferAsStorage);
+            .record_slow_path(SlowPath::TexelBufferAsStorage);
         self.bound_formats.push((
             b.visibility,
             (
@@ -1223,7 +1221,7 @@ impl<B: Gpu> Device<B> {
                      shader or a vertex shader before one",
                 ));
             }
-            self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
+            self.backend.record_slow_path(SlowPath::SwizzleInShader);
             self.bound_swizzles.push((
                 b.visibility,
                 b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
@@ -1462,7 +1460,7 @@ impl<B: Gpu> Device<B> {
                 }
             }
             if !wait.is_empty() {
-                self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+                self.backend.record_slow_path(SlowPath::ReadBackWait);
             }
             for (k, i) in wait.into_iter().enumerate() {
                 self.finish_read(i - k);
@@ -1480,7 +1478,7 @@ impl<B: Gpu> Device<B> {
         else {
             return Ok(());
         };
-        self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
+        self.backend.record_slow_path(SlowPath::MappedUploadWhole);
         let cells = host.cells();
         let mut from = 0;
         for (start, end) in skip.into_iter().chain([(cells.len(), cells.len())]) {

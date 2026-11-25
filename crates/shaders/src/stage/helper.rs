@@ -1446,11 +1446,11 @@ impl<B: Gpu> Stages<B> {
 
         let mut last = None;
         if self.stores {
-            backend.slow_paths().hit(SlowPath::VertexStorageAsCompute);
+            backend.record_slow_path(SlowPath::VertexStorageAsCompute);
         }
         if let Some(c) = vertex_cull {
             if c.distances != 0 {
-                backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+                backend.record_slow_path(SlowPath::CullDistanceAsGeometry);
             }
             let mut cv = [0u32; word_at(size_of::<CullValues>())];
             let at = |offset| word_at(offset);
@@ -1516,7 +1516,7 @@ impl<B: Gpu> Stages<B> {
                     crate::variant::LINE_REACH_ALONG,
                 ),
             };
-            backend.slow_paths().hit(path);
+            backend.record_slow_path(path);
             let units = primitives * instances;
             let mut lv = [0u32; word_at(size_of::<LineValues>())];
             let at = |offset| word_at(offset);
@@ -1575,7 +1575,7 @@ impl<B: Gpu> Stages<B> {
             });
         }
         if let Some(p) = &self.numbered {
-            backend.slow_paths().hit(SlowPath::PrimitiveIdAsGeometry);
+            backend.record_slow_path(SlowPath::PrimitiveIdAsGeometry);
             let units = primitives * instances;
             let mut pv = [0u32; word_at(size_of::<PrimitiveValues>())];
             let at = |offset| word_at(offset);
@@ -1630,9 +1630,9 @@ impl<B: Gpu> Stages<B> {
             Some(_) => ROTATE_NONE,
         };
         if let Some(h) = &mut self.hull {
-            backend.slow_paths().hit(SlowPath::TessellationAsCompute);
+            backend.record_slow_path(SlowPath::TessellationAsCompute);
             if rotate != ROTATE_NONE {
-                backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+                backend.record_slow_path(SlowPath::ProvokingRewrite);
             }
             let patch_bytes = (u64::from(tess::HEADER_WORDS)
                 + u64::from(patch_total) * u64::from(h.patch_words))
@@ -1758,7 +1758,7 @@ impl<B: Gpu> Stages<B> {
             (domain_cull, &self.domain, list, listed)
         {
             // The tessellator's primitives the domain stage's cull distances keep, listed.
-            backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+            backend.record_slow_path(SlowPath::CullDistanceAsGeometry);
             let records = d.records.as_ref().unwrap();
             let list_base = (points + 1) * d.words;
             let mut cv = [0u32; word_at(size_of::<CullValues>())];
@@ -1818,7 +1818,7 @@ impl<B: Gpu> Stages<B> {
         }
 
         if let Some(g) = &self.geometry {
-            backend.slow_paths().hit(SlowPath::GeometryAsCompute);
+            backend.record_slow_path(SlowPath::GeometryAsCompute);
             let out = &self.out.as_ref().unwrap().buffer;
             let (input, input_bytes, part, sets) = match (domain_records, later) {
                 (Some((r, bytes)), Some(later)) => (r, bytes, 1, later.geometry_sets),
@@ -1893,10 +1893,10 @@ impl<B: Gpu> Stages<B> {
                 // provoking vertex needs; stream output still takes every primitive from the index
                 // slots.
                 if c.distances > 0 {
-                    backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+                    backend.record_slow_path(SlowPath::CullDistanceAsGeometry);
                 }
                 if self.rotate != ROTATE_NONE {
-                    backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+                    backend.record_slow_path(SlowPath::ProvokingRewrite);
                 }
                 let units = u32::try_from(invocations).map_err(|_| GpuError::OutOfMemory)?;
                 let index_slots = 2 * g.max_vertices;
@@ -1958,7 +1958,7 @@ impl<B: Gpu> Stages<B> {
         }
 
         if let (Some(declared), Some(targets)) = (&self.stream, &draw.stream_output) {
-            backend.slow_paths().hit(SlowPath::StreamOutAsCompute);
+            backend.record_slow_path(SlowPath::StreamOutAsCompute);
             let streams = self.geometry.as_ref().map_or(1, |g| g.streams);
             let filled_words = STREAM_BUFFERS as u64 + 2 * u64::from(streams);
             if targets.filled.size < filled_words * u64::from(WORD) {

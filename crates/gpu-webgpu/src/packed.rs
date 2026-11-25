@@ -471,7 +471,7 @@ impl WebGpu {
                 texels.truncate(at + wide);
             }
         }
-        self.slow.hit(SlowPath::FormatConverted);
+        self.record_slow_path(SlowPath::FormatConverted);
         self.write_texels(
             region,
             extent,
@@ -530,7 +530,7 @@ impl WebGpu {
             self.fail("the texture a converted copy goes through could not be made");
             return None;
         };
-        self.slow.hit(SlowPath::FormatConverted);
+        self.record_slow_path(SlowPath::FormatConverted);
         Some(staged)
     }
 

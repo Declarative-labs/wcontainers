@@ -320,7 +320,7 @@ fn thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12() {
     let pulled = device
         .backend()
         .slow_paths()
-        .count(SlowPath::VertexPulledInShader);
+        .counts[SlowPath::VertexPulledInShader as usize];
     assert_eq!(pulled > 0, caps.limits.vertex_streams < INPUT_SLOTS);
 }
 

@@ -729,7 +729,7 @@ impl WebGpu {
             let (data, rows_per_layer) = if extent.depth_or_layers > 1
                 && u64::from(rows_per_layer) > rows
             {
-                self.slow.hit(SlowPath::RowsRepacked);
+                self.record_slow_path(SlowPath::RowsRepacked);
                 let layer = u64::from(row_pitch) * u64::from(rows_per_layer);
                 let tight = u64::from(row_pitch) * (rows - 1) + row;
                 let mut out = Vec::new();
@@ -822,7 +822,7 @@ impl WebGpu {
             (src.0.base.get() + src_offset, dst.0.base.get() + dst_offset);
         // One GPU buffer: the same buffer, or two living in the uniform arena.
         if src.0.storage.get() == dst.0.storage.get() {
-            self.slow.hit(SlowPath::CopyWithinBuffer);
+            self.record_slow_path(SlowPath::CopyWithinBuffer);
             // The temporary holds the bytes in the same place of their word as the source.
             let at = src_offset % ALIGN;
             let temp = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -880,7 +880,7 @@ impl WebGpu {
         // Depth and stencil go through a temporary texture of their format, each half by the
         // draws below.
         if within && FORMAT_FACTS[df as usize].depth_stencil {
-            self.slow.hit(SlowPath::CopyWithinTexture);
+            self.record_slow_path(SlowPath::CopyWithinTexture);
             let Ok(temp) = self.create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
                 format: d.desc.format,
@@ -997,7 +997,7 @@ impl WebGpu {
             // Regions of one subresource, typeless twins, or a block-compressed format and an
             // uncompressed one whose texels are its blocks: the destination's extent covers the
             // same blocks.
-            self.slow.hit(if within {
+            self.record_slow_path(if within {
                 SlowPath::CopyWithinTexture
             } else {
                 SlowPath::CopyThroughBuffer
@@ -1379,7 +1379,7 @@ impl WebGpu {
             return;
         }
         // The rows go through a buffer at a pitch and place WebGPU takes, one buffer copy per row.
-        self.slow.hit(SlowPath::RowsRepacked);
+        self.record_slow_path(SlowPath::RowsRepacked);
         let api_pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
         let layers = u64::from(extent.depth_or_layers);
         let temp = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1438,7 +1438,7 @@ impl WebGpu {
             return;
         }
         if !zero {
-            self.slow.hit(SlowPath::PatternClearCopied);
+            self.record_slow_path(SlowPath::PatternClearCopied);
         }
         // One block of whole patterns, in the same place of its word as the range, copied over the
         // range; its size is a multiple of the pattern and of 4, so every copy starts on a pattern and
@@ -1575,7 +1575,7 @@ impl WebGpu {
                             "a read back of a two-pixel format starting inside a pair",
                         ));
                     }
-                    self.slow.hit(SlowPath::FormatConverted);
+                    self.record_slow_path(SlowPath::FormatConverted);
                 }
                 let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
                 let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));

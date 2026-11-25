@@ -465,7 +465,7 @@ impl Gl {
             extensions,
             renderer,
             caps,
-            slow: SlowPaths::default(),
+            slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost: None,
             next_id: 1,
@@ -755,7 +755,7 @@ impl Gl {
     pub fn frame_report(&self) -> String {
         let mut line = format!("{FRAME_REPORT}{}", self.presented);
         for path in SLOW_PATHS {
-            let count = self.slow.count(path);
+            let count = self.slow.counts[path as usize];
             if count > 0 {
                 line += &format!(" {path:?}={count}");
             }
@@ -983,7 +983,7 @@ impl Gl {
             }
             _ => {}
         }
-        self.slow.hit(SlowPath::MultisampleCopyResolved);
+        self.record_slow_path(SlowPath::MultisampleCopyResolved);
         let resolved = match self.create_texture(&TextureDesc {
             samples: 1,
             usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
@@ -1112,7 +1112,7 @@ impl Gl {
         let d = from.desc;
         let kept = from.host.as_ref().zip(to.host.as_ref());
         if let Some((a, b)) = kept {
-            self.slow.hit(SlowPath::HostCopyKept);
+            self.record_slow_path(SlowPath::HostCopyKept);
             b.copy_from(a);
         }
         for mip in 0..d.mip_levels {
@@ -1154,7 +1154,7 @@ impl Gl {
             .iter()
             .any(|r| format::float_bits(r.texture.desc.format));
         if !float && self.copy_by_draw(src, dst, extent) {
-            self.slow.hit(SlowPath::CopyThroughBuffer);
+            self.record_slow_path(SlowPath::CopyThroughBuffer);
         } else {
             self.copy_through_pbo(src, dst, extent);
         }
@@ -1169,7 +1169,7 @@ impl Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.slow.hit(SlowPath::CopyThroughBuffer);
+        self.record_slow_path(SlowPath::CopyThroughBuffer);
         let read = src
             .texture
             .read
@@ -1339,7 +1339,7 @@ impl Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.slow.hit(SlowPath::CopyWithinTexture);
+        self.record_slow_path(SlowPath::CopyWithinTexture);
         let format = src.texture.desc.format;
         if !self.caps.formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             let d = &src.texture.desc;
@@ -1710,7 +1710,7 @@ impl Gl {
             Fetch::DepthArray if region.stencil => Fetch::StencilArray,
             k => k,
         };
-        self.slow.hit(SlowPath::DepthReadByDraw);
+        self.record_slow_path(SlowPath::DepthReadByDraw);
         let mut scratch = self.create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
             format: Format::R32Uint,
@@ -1908,7 +1908,7 @@ impl Gl {
         if dst.stencil {
             self.stencil_by_draw(&src, dst, extent);
         } else if self.copy_by_draw(&src, dst, extent) {
-            self.slow.hit(SlowPath::DepthWrittenByDraw);
+            self.record_slow_path(SlowPath::DepthWrittenByDraw);
         } else {
             self.unbuilt("depth written into textures of this format");
         }
@@ -1924,7 +1924,7 @@ impl Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.slow.hit(SlowPath::StencilWrittenByDraw);
+        self.record_slow_path(SlowPath::StencilWrittenByDraw);
         let k = usize::from(src.texture.target == glow::TEXTURE_2D_ARRAY);
         if self.stencil_write[k].is_none() {
             match depth::build_stencil_write(&self.gl, k == 1) {
@@ -2061,7 +2061,7 @@ impl Gl {
     /// test only where its bit is set and adding the bit's weight by blending with the constant colour,
     /// which unorm8 blending sums exactly ([`SlowPath::StencilCopiedByDraw`]).
     fn stencil_bits(&mut self, src: &Texture, mip: u32, layer: u32) -> Result<Texture, GpuError> {
-        self.slow.hit(SlowPath::StencilCopiedByDraw);
+        self.record_slow_path(SlowPath::StencilCopiedByDraw);
         if self.bits_program.is_none() {
             match depth::build_bits(&self.gl) {
                 Ok(p) => self.bits_program = Some(p),
@@ -2183,7 +2183,7 @@ impl Gl {
         let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
         let mut packed = vec![0; (cols * rows * bytes * extent.depth_or_layers) as usize];
         if src.texture.host.is_none() {
-            self.slow.hit(SlowPath::HostCopyReadBack);
+            self.record_slow_path(SlowPath::HostCopyReadBack);
         }
         if self.read_texture_now(src, extent, &mut packed).is_err() {
             self.unbuilt("copies into textures kept on the host from formats GL cannot read back");
@@ -2213,7 +2213,7 @@ impl Gl {
             ));
         }
         let Some(h) = &t.host else { return Ok(()) };
-        self.slow.hit(SlowPath::HostCopyReadBack);
+        self.record_slow_path(SlowPath::HostCopyReadBack);
         let d = t.desc;
         let twin = match d.format {
             Format::R8Snorm => Format::R8Sint,
@@ -2500,7 +2500,7 @@ impl Gl {
             self.destroy(Object::Texture(held));
             return Err(self.unbuilt("reading back this format"));
         }
-        self.slow.hit(SlowPath::CopyThroughBuffer);
+        self.record_slow_path(SlowPath::CopyThroughBuffer);
         Ok(held)
     }
 
@@ -2534,7 +2534,7 @@ impl Gl {
             wide.resize(texels * read.texel_read(), 0);
         }
         if read.converts() {
-            self.slow.hit(SlowPath::FormatConverted);
+            self.record_slow_path(SlowPath::FormatConverted);
         }
         for i in 0..extent.depth_or_layers as usize {
             let layer = self.read_layer(region, i as u32);
@@ -2598,7 +2598,7 @@ impl Gl {
         if which.is_some_and(|i| i != stale.index) {
             return;
         }
-        self.slow.hit(SlowPath::IndexTwinReadBack);
+        self.record_slow_path(SlowPath::IndexTwinReadBack);
         let (from, to) = if stale.index {
             (buffer.data, buffer.index)
         } else {
@@ -2661,7 +2661,7 @@ impl Gl {
         let parallel = self.extensions.contains("KHR_parallel_shader_compile");
         // SAFETY: a plain query of a live program.
         if !parallel || !unsafe { self.gl.get_program_completion_status(program.raw) } {
-            self.slow.hit(SlowPath::PipelineMiss);
+            self.record_slow_path(SlowPath::PipelineMiss);
         }
         match shader::finish(&self.gl, program) {
             Ok(l) => {
@@ -2682,7 +2682,7 @@ impl Gl {
     /// stored, made at the first draw with it ([`SlowPath::VertexFormatConverted`], counted per draw).
     /// None when it could not be made, which has lost the device.
     fn variant(&mut self, program: &ProgramObj, key: u32) -> Option<Rc<ProgramObj>> {
-        self.slow.hit(SlowPath::VertexFormatConverted);
+        self.record_slow_path(SlowPath::VertexFormatConverted);
         if let Some((_, v)) = program.variants.borrow().iter().find(|(k, _)| *k == key) {
             return Some(v.clone());
         }
@@ -3038,7 +3038,7 @@ impl Gl {
         };
         let (first, count, base_vertex) = (*first, *count, *base_vertex);
         let (first_instance, instances) = (*first_instance, *instances);
-        self.slow.hit(SlowPath::RestartRewrite);
+        self.record_slow_path(SlowPath::RestartRewrite);
         let Ok(bytes) = self.read_indices(index, first, count) else {
             return self.invalid("indices past the end of the index buffer".into());
         };
@@ -3284,7 +3284,7 @@ impl Gl {
             }
         }
         if base_vertex != 0 || first_instance != 0 || later != 0 {
-            self.slow.hit(SlowPath::BaseVertexRebind);
+            self.record_slow_path(SlowPath::BaseVertexRebind);
         }
         if self
             .apply_vertices(call, base_vertex, first_instance, later)
@@ -3402,7 +3402,7 @@ impl Gpu for Gl {
         let indices = desc.usage.contains(BufferUsage::INDEX);
         let other = !(desc.usage - BufferUsage::INDEX - copies).is_empty() || !indices;
         if indices && other {
-            self.slow.hit(SlowPath::IndexBufferTwin);
+            self.record_slow_path(SlowPath::IndexBufferTwin);
         }
         let gl = &self.gl;
         // SAFETY: plain GL calls. Each GL buffer is first bound to the target that fixes its WebGL
@@ -3457,7 +3457,7 @@ impl Gpu for Gl {
             }
             _ => match host::decoded(desc.format) {
                 Some(decoded) => {
-                    self.slow.hit(SlowPath::BlockDecoded);
+                    self.record_slow_path(SlowPath::BlockDecoded);
                     (format::gl_format(decoded), Some(decoded))
                 }
                 None => (format::gl_format(desc.format), format::widened(desc.format)),
@@ -3515,7 +3515,7 @@ impl Gpu for Gl {
             own: None,
             stencil_mode: Cell::new(false),
             host: host::kept(desc.format).then(|| {
-                self.slow.hit(SlowPath::HostCopyKept);
+                self.record_slow_path(SlowPath::HostCopyKept);
                 host::HostCopy::new(desc)
             }),
             decoded,
@@ -4123,7 +4123,7 @@ impl Gpu for Gl {
         let format = region.texture.desc.format;
         if format::converts_writes(format) {
             // Converted into tightly packed rows of the stored texels.
-            self.slow.hit(SlowPath::FormatConverted);
+            self.record_slow_path(SlowPath::FormatConverted);
             let row = extent.width as usize * FORMAT_FACTS[format as usize].block.2 as usize;
             let (rows, layers) = (extent.height as usize, extent.depth_or_layers as usize);
             let mut stored = Vec::new();
@@ -4458,7 +4458,7 @@ impl Gpu for Gl {
         if !copied {
             // WebGL copies between GL buffers of one type only: an index-only and a data-only
             // buffer meet on the host.
-            self.slow.hit(SlowPath::HostCopyReadBack);
+            self.record_slow_path(SlowPath::HostCopyReadBack);
             let mut bytes = vec![0; size as usize];
             let read = ReadSource::Buffer {
                 buffer: src,
@@ -4516,7 +4516,7 @@ impl Gpu for Gl {
         if FORMAT_FACTS[from as usize].depth_stencil || FORMAT_FACTS[to as usize].depth_stencil {
             // A colour and a depth format of one typeless group.
             if self.copy_by_draw(src, dst, extent) {
-                self.slow.hit(if FORMAT_FACTS[to as usize].depth_stencil {
+                self.record_slow_path(if FORMAT_FACTS[to as usize].depth_stencil {
                     SlowPath::DepthWrittenByDraw
                 } else {
                     SlowPath::CopyThroughBuffer
@@ -4551,7 +4551,7 @@ impl Gpu for Gl {
                 // writes the bits.
                 self.copy_host_kept(src, dst, extent);
             } else if self.copy_by_draw(src, dst, extent) {
-                self.slow.hit(SlowPath::CopyThroughBuffer);
+                self.record_slow_path(SlowPath::CopyThroughBuffer);
             } else if float || src.texture.host.is_some() {
                 // 32-bit floats are no targets without EXT_color_buffer_float.
                 self.copy_host_kept(src, dst, extent);
@@ -4634,7 +4634,7 @@ impl Gpu for Gl {
             let (pitch, per_layer) = (u64::from(src.row_pitch), u64::from(src.rows_per_layer));
             let size = pitch * (per_layer * (layers - 1) + rows - 1) + row;
             let mut bytes = vec![0; size as usize];
-            self.slow.hit(SlowPath::HostCopyReadBack);
+            self.record_slow_path(SlowPath::HostCopyReadBack);
             let read = ReadSource::Buffer {
                 buffer: src.buffer,
                 offset: src.offset,
@@ -4705,7 +4705,7 @@ impl Gpu for Gl {
                     &mut packed,
                 );
             } else {
-                self.slow.hit(SlowPath::HostCopyReadBack);
+                self.record_slow_path(SlowPath::HostCopyReadBack);
                 if self.read_texture_now(src, extent, &mut packed).is_err() {
                     return self.invalid("a copy out of a format that cannot be read back".into());
                 }
@@ -4770,7 +4770,7 @@ impl Gpu for Gl {
             ));
             return;
         }
-        self.slow.hit(SlowPath::PatternClearCopied);
+        self.record_slow_path(SlowPath::PatternClearCopied);
         // A multiple of every pattern length (1 to 16 bytes); `size` is whole patterns.
         const PATTERN_SPAN: usize = 256;
         let mut block = [0u8; PATTERN_SPAN];
@@ -4824,7 +4824,7 @@ impl Gpu for Gl {
         }
         if format != s.desc.format {
             // GL resolves only between equal formats, averaging the stored values.
-            self.slow.hit(SlowPath::ResolveInStoredFormat);
+            self.record_slow_path(SlowPath::ResolveInStoredFormat);
         }
         let target = if d.desc.format == s.desc.format {
             d.clone()
@@ -5025,7 +5025,7 @@ impl Gpu for Gl {
         }
         .filter(|r| r.repacks());
         if repack.is_some_and(format::ReadAs::converts) {
-            self.slow.hit(SlowPath::FormatConverted);
+            self.record_slow_path(SlowPath::FormatConverted);
         }
         Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
             pbo: Some(pbo),
@@ -5530,7 +5530,7 @@ impl Gpu for Gl {
                     match restart::rewrite(bytes, format) {
                         restart::Rewrite::Unneeded => {}
                         restart::Rewrite::Widened(w, shift) => {
-                            self.slow.hit(SlowPath::RestartRewrite);
+                            self.record_slow_path(SlowPath::RestartRewrite);
                             widened = w;
                             bytes = &widened;
                             format = IndexFormat::U32;
@@ -5797,7 +5797,7 @@ impl Gpu for Gl {
                 ..*call
             });
         } else {
-            self.slow.hit(SlowPath::CaptureExpanded);
+            self.record_slow_path(SlowPath::CaptureExpanded);
             for later in 0..instances {
                 for (first, count) in capture::runs(&list) {
                     let run = DrawCall {

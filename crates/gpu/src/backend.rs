@@ -143,6 +143,19 @@ pub trait Gpu: Sized {
     fn status(&mut self) -> DeviceStatus;
     /// What the fast-path defaults keep between calls. Back ends hold a `Helpers::default()`.
     fn helpers(&mut self) -> &mut Helpers<Self>;
+    /// Records one use of `path` in the slow-path counters; its first use queues a warning for the host.
+    fn record_slow_path(&mut self, path: SlowPath) {
+        let paths = self.slow_paths();
+        let count = &mut paths.counts[path as usize];
+        if *count == 0 {
+            paths.unwarned.push(path);
+        }
+        *count += 1;
+    }
+    /// Takes the warnings queued since the last call, for the host's warning hook.
+    fn take_slow_path_warnings(&mut self) -> Vec<SlowPath> {
+        core::mem::take(&mut self.slow_paths().unwarned)
+    }
 
     // ---- Objects ----
 
@@ -334,7 +347,7 @@ pub trait Gpu: Sized {
     ) -> Result<(), GpuError> {
         let rb = self.read_back(src)?;
         if self.read_state(&rb) == ReadState::Pending {
-            self.slow_paths().hit(SlowPath::ReadBackWait);
+            self.record_slow_path(SlowPath::ReadBackWait);
             self.wait_read(&rb);
         }
         self.finish_read(rb, dst);
@@ -370,7 +383,7 @@ pub trait Gpu: Sized {
             FanOrLoop::TriangleFan => (Topology::TriangleList, SlowPath::FanConverted),
             FanOrLoop::LineLoop => (Topology::LineList, SlowPath::LoopConverted),
         };
-        self.slow_paths().hit(path);
+        self.record_slow_path(path);
         self.draw(&DrawCall {
             index: Some(IndexBinding {
                 buffer: &buffer,
@@ -733,7 +746,7 @@ pub trait Gpu: Sized {
         }
         let rb = self.read_queries(set, first, count)?;
         if self.read_state(&rb) == ReadState::Pending {
-            self.slow_paths().hit(SlowPath::QueryResolveWait);
+            self.record_slow_path(SlowPath::QueryResolveWait);
             self.wait_read(&rb);
         }
         let mut bytes = core::mem::take(&mut self.helpers().scratch);
@@ -889,7 +902,7 @@ pub fn generate_mips_by_draws<B: Gpu>(
         };
         // A cube read by loads without views: the level above copied into a 2D array first.
         let copy = if copied {
-            b.slow_paths().hit(SlowPath::ReinterpretCopy);
+            b.record_slow_path(SlowPath::ReinterpretCopy);
             let above = |n: u32| (n >> (mip - 1)).max(1);
             let extent = Extent {
                 width: above(desc.width),
@@ -941,7 +954,7 @@ pub fn generate_mips_by_draws<B: Gpu>(
             )?;
             for slice in 0..slices {
                 if read != MipRead::Filtered {
-                    b.slow_paths().hit(SlowPath::FilterInShader);
+                    b.record_slow_path(SlowPath::FilterInShader);
                 }
                 let ring;
                 let mut entries = alloc::vec![BindingEntry {

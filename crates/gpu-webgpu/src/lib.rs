@@ -605,7 +605,7 @@ impl WebGpu {
             device,
             queue,
             caps,
-            slow: SlowPaths::default(),
+            slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost,
             next_id: 1,
@@ -664,7 +664,7 @@ impl WebGpu {
             }
         }
         for path in SLOW_PATHS {
-            let count = self.slow.count(path);
+            let count = self.slow.counts[path as usize];
             if count > 0 {
                 line += &format!(" {path:?}={count}");
             }
@@ -1246,7 +1246,7 @@ impl Gpu for WebGpu {
                     "a use of a converted format this back end does not declare",
                 ));
             }
-            self.slow.hit(wcontainers_gpu::SlowPath::FormatConverted);
+            self.record_slow_path(wcontainers_gpu::SlowPath::FormatConverted);
         }
         usage |= copies & allowed;
         // Copies between a buffer and a converted format are draws, into the texture or from it.

@@ -90,7 +90,7 @@ impl<B: Gpu> Device<B> {
             size,
             BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
         )?;
-        self.backend.slow_paths().hit(why);
+        self.backend.record_slow_path(why);
         self.note(v.resource, writable);
         self.bound_formats
             .push((b.visibility, (true, slot), format));

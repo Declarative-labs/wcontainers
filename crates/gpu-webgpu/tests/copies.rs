@@ -284,8 +284,8 @@ fn buffers_and_writes_fill_depth_exactly() {
         let (copied, copied_view) = depth_texture(&mut b, format);
         let (written, written_view) = depth_texture(&mut b, format);
         let before = (
-            b.slow_paths().count(SlowPath::DepthWrittenByDraw),
-            b.slow_paths().count(SlowPath::RowsRepacked),
+            b.slow_paths().counts[SlowPath::DepthWrittenByDraw as usize],
+            b.slow_paths().counts[SlowPath::RowsRepacked as usize],
         );
         b.copy_buffer_to_texture(
             &CopyBufferTexture {
@@ -316,8 +316,8 @@ fn buffers_and_writes_fill_depth_exactly() {
         }
         assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
         let after = (
-            b.slow_paths().count(SlowPath::DepthWrittenByDraw),
-            b.slow_paths().count(SlowPath::RowsRepacked),
+            b.slow_paths().counts[SlowPath::DepthWrittenByDraw as usize],
+            b.slow_paths().counts[SlowPath::RowsRepacked as usize],
         );
         assert_eq!(
             (after.0 - before.0, after.1 - before.1),
@@ -376,8 +376,8 @@ fn group_textures_copy_into_part_of_depth_exactly() {
             let (dst, dst_view) = depth_texture(&mut b, format);
             clear_depth(&mut b, &dst_view, format, 0.5);
             let before = (
-                b.slow_paths().count(SlowPath::DepthWrittenByDraw),
-                b.slow_paths().count(SlowPath::StencilWrittenByDraw),
+                b.slow_paths().counts[SlowPath::DepthWrittenByDraw as usize],
+                b.slow_paths().counts[SlowPath::StencilWrittenByDraw as usize],
             );
             // Source texels (1..6, 1..3) to destination texels (2..7, 2..4).
             b.copy_texture(&region(&src, 1, 1), &region(&dst, 2, 2), extent(5, 2));
@@ -402,8 +402,8 @@ fn group_textures_copy_into_part_of_depth_exactly() {
             let stencil = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
             assert_eq!(
                 (
-                    b.slow_paths().count(SlowPath::DepthWrittenByDraw) - before.0,
-                    b.slow_paths().count(SlowPath::StencilWrittenByDraw) - before.1
+                    b.slow_paths().counts[SlowPath::DepthWrittenByDraw as usize] - before.0,
+                    b.slow_paths().counts[SlowPath::StencilWrittenByDraw as usize] - before.1
                 ),
                 (1, u64::from(stencil)),
                 "{source:?} into {format:?}"
@@ -538,7 +538,7 @@ fn typeless_group_copies_keep_the_bits() {
             H,
             WriteMode::Ordered,
         );
-        let before = b.slow_paths().count(SlowPath::CopyThroughBuffer);
+        let before = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize];
         // The whole texture, then a part moved by one texel each way.
         b.copy_texture(&region(&src, 0, 0), &region(&dst, 0, 0), extent(W, H));
         b.copy_texture(&region(&src, 0, 0), &region(&dst, 1, 1), extent(3, 2));
@@ -556,7 +556,7 @@ fn typeless_group_copies_keep_the_bits() {
         assert_eq!(got, want, "{from:?} to {to:?}");
         assert_eq!(b.status(), DeviceStatus::Ok, "{from:?} to {to:?}");
         assert_eq!(
-            b.slow_paths().count(SlowPath::CopyThroughBuffer) - before,
+            b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize] - before,
             if through_buffer { 2 } else { 0 },
             "{from:?} to {to:?}"
         );
@@ -601,7 +601,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
             SlowPath::StencilWrittenByDraw,
             SlowPath::DepthReadByDraw,
         ]
-        .map(|p| b.slow_paths().count(p))
+        .map(|p| b.slow_paths().counts[p as usize])
     };
     let delta = |b: &mut WebGpu, before: [u64; 3]| {
         let now = count(b);
@@ -815,10 +815,10 @@ fn copies_within_one_subresource_go_through_a_buffer() {
         ..region(&t, 0, 0)
     };
     b.copy_texture(&region(&t, 2, 1), &level1, extent(4, 2));
-    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinTexture), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinTexture as usize], 0);
     // Mip 0 at (0, 0) into mip 0 at (4, 2), 3 by 2: one subresource.
     b.copy_texture(&region(&t, 0, 0), &region(&t, 4, 2), extent(3, 2));
-    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinTexture), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinTexture as usize], 1);
     let mut want = texels.clone();
     for y in 0..2 {
         for x in 0..3 {
@@ -891,7 +891,7 @@ fn depth_copies_within_one_subresource_go_through_a_texture() {
             ..extent(3, 2)
         },
     );
-    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinTexture), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinTexture as usize], 1);
     for layer in 0..2 {
         let mut want = bytes[(layer * W * H * 4) as usize..][..(W * H * 4) as usize].to_vec();
         let from = want.clone();
@@ -953,9 +953,9 @@ fn sixteen_bit_group_copies_into_depth_keep_the_bits() {
             WriteMode::Ordered,
         );
         let (d, _) = depth_texture(b, Format::Depth16Unorm);
-        let before = b.slow_paths().count(SlowPath::DepthWrittenByDraw);
+        let before = b.slow_paths().counts[SlowPath::DepthWrittenByDraw as usize];
         b.copy_texture(&region(&s, 0, 0), &region(&d, 0, 0), extent(W, H));
-        assert!(b.slow_paths().count(SlowPath::DepthWrittenByDraw) > before);
+        assert!(b.slow_paths().counts[SlowPath::DepthWrittenByDraw as usize] > before);
         assert_eq!(read(b, &d, 2), bytes, "{source:?} into depth16unorm");
         assert_eq!(b.status(), DeviceStatus::Ok, "{source:?}");
     }
@@ -1036,7 +1036,7 @@ fn volume_writes_with_padded_slices_keep_every_slice() {
     b.finish_read(rb, &mut got);
     let want: Vec<u8> = [&data[0..16], &data[24..40]].concat();
     assert_eq!(got, want);
-    assert_eq!(b.slow_paths().count(SlowPath::RowsRepacked), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::RowsRepacked as usize], 1);
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 

@@ -264,7 +264,7 @@ impl Recorder {
                 limits,
                 formats: FormatCaps { uses, samples },
             },
-            slow: SlowPaths::default(),
+            slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost: None,
             objects: Vec::new(),

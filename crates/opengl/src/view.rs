@@ -114,7 +114,7 @@ impl<B: Gpu> View<B> {
         let resource = unsafe { Resource::<B>::of(self.base.texture) };
         if let Some(twin) = &self.twin {
             let (source, desc) = resource.texture().ok_or("a twin of a buffer's view")?;
-            backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+            backend.record_slow_path(SlowPath::ReinterpretCopy);
             for level in 0..twin.levels {
                 let mip = twin.first_level + level;
                 let side = |n: u32| (n >> mip).max(1);
@@ -141,7 +141,7 @@ impl<B: Gpu> View<B> {
         let buffer = resource
             .buffer()
             .ok_or("a texel buffer view of a texture")?;
-        backend.slow_paths().hit(SlowPath::TexelBufferAsTexture);
+        backend.record_slow_path(SlowPath::TexelBufferAsTexture);
         let row_pitch = TEXEL_BUFFER_TEXTURE_WIDTH * copy.texel_bytes;
         let rows = copy.length / TEXEL_BUFFER_TEXTURE_WIDTH;
         let last = copy.length % TEXEL_BUFFER_TEXTURE_WIDTH;
@@ -406,7 +406,7 @@ pub fn image_texels<B: Gpu>(
             intent: MapIntent::Rarely,
         })
         .map_err(|e| format!("an image's texels: {e:?}"))?;
-    backend.slow_paths().hit(SlowPath::AtomicsThroughBuffer);
+    backend.record_slow_path(SlowPath::AtomicsThroughBuffer);
     backend.copy_texture_to_buffer(
         &layout.region::<B>(texture),
         &layout.rows::<B>(&buffer),
@@ -509,7 +509,7 @@ impl<B: Gpu> Images<B> {
             })
             .map_err(|_| "a copy of a fetched target the device does not make")?;
         let three_d = desc.dimension == TextureDimension::D3;
-        backend.slow_paths().hit(SlowPath::BlendInShader);
+        backend.record_slow_path(SlowPath::BlendInShader);
         backend.copy_texture(
             &corner::<B>(source, three_d, surface.level, 0, 0, layer),
             &corner::<B>(&texture, false, 0, 0, 0, 0),
@@ -711,7 +711,7 @@ impl<B: Gpu> Twin<B> {
                 desc.format
             ));
         }
-        backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        backend.record_slow_path(SlowPath::ReinterpretCopy);
         let side = |n: u32| (n >> mip).max(1);
         let extent = Extent {
             width: side(desc.width),
@@ -865,7 +865,7 @@ pub fn image_view<B: Gpu>(
                 desc.format
             ));
         }
-        backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        backend.record_slow_path(SlowPath::ReinterpretCopy);
         let extent = Extent {
             width: size(desc.width),
             height: size(desc.height),

@@ -555,7 +555,7 @@ impl<B: Gpu> Device<B> {
         let cpu = now();
         self.backend.submit();
         if self.backend.read_state(&read) == ReadState::Pending {
-            self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            self.backend.record_slow_path(SlowPath::ReadBackWait);
             self.backend.wait_read(&read);
         }
         let mut bytes = [0u8; size_of::<u64>()];
@@ -603,7 +603,7 @@ impl<B: Gpu> Device<B> {
         {
             return Ok(predicate);
         }
-        self.backend.slow_paths().hit(SlowPath::PredicationIndirect);
+        self.backend.record_slow_path(SlowPath::PredicationIndirect);
         self.upload(resource)?;
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let records = self.scratch(
@@ -637,7 +637,7 @@ impl<B: Gpu> Device<B> {
         let value = match p.value {
             Some(v) => v,
             None => {
-                self.backend.slow_paths().hit(SlowPath::PredicationWait);
+                self.backend.record_slow_path(SlowPath::PredicationWait);
                 self.upload(p.resource)?;
                 let (buffer, _) = self.buffer(p.resource)?;
                 let buffer = buffer.clone();

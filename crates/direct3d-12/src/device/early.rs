@@ -219,7 +219,7 @@ impl<B: Gpu> Replay<B> {
                 "early depth-stencil tests per primitive of an instanced draw",
             ));
         }
-        d.backend.slow_paths().hit(SlowPath::EarlyTestsPerPrimitive);
+        d.backend.record_slow_path(SlowPath::EarlyTestsPerPrimitive);
         let primitives = match count.checked_sub(per) {
             Some(rest) => rest / step + 1,
             None => 0,

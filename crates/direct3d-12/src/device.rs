@@ -526,8 +526,7 @@ impl<B: Gpu> Device<B> {
     pub fn take_warnings(&mut self) -> Vec<String> {
         let mut out: Vec<String> = self
             .backend
-            .slow_paths()
-            .take_warnings()
+            .take_slow_path_warnings()
             .into_iter()
             .map(|p| SLOW_PATH_REASONS[p as usize].to_string())
             .collect();
@@ -1707,7 +1706,7 @@ impl<B: Gpu> Device<B> {
     /// Counts the slow paths pipeline `pid`'s programs take by themselves.
     fn pipeline_slow_paths(&mut self, pid: PipelineId) {
         for &p in &self.pipelines[pid.0 as usize].slow_paths {
-            self.backend.slow_paths().hit(p);
+            self.backend.record_slow_path(p);
         }
     }
 
@@ -3952,7 +3951,7 @@ impl<B: Gpu> Replay<B> {
         self.pass_early = early;
         self.pass_written = written;
         if early {
-            d.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+            d.backend.record_slow_path(SlowPath::EarlyTestsInShader);
         }
         d.pipeline_slow_paths(pid);
         if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
@@ -3977,7 +3976,7 @@ impl<B: Gpu> Replay<B> {
                 .ok_or(Error::NotImplemented(
                     "patch topologies without a hull shader",
                 ))?;
-            d.backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+            d.backend.record_slow_path(SlowPath::AdjacencyDropped);
             if kept.is_empty() {
                 return Ok(());
             }
@@ -4105,10 +4104,10 @@ impl<B: Gpu> Replay<B> {
         d.render_mut(pid).inputs = inputs;
         let fetch = fetch?;
         for why in pulled.iter().flatten() {
-            d.backend.slow_paths().hit(*why);
+            d.backend.record_slow_path(*why);
         }
         if unknown_count && fetches_vertices {
-            d.backend.slow_paths().hit(SlowPath::IndirectFetchPastEnd);
+            d.backend.record_slow_path(SlowPath::IndirectFetchPastEnd);
         }
         let variant = if fetch.inputs.is_empty() {
             None
@@ -4305,7 +4304,7 @@ impl<B: Gpu> Replay<B> {
         if !short.is_empty() {
             self.end_pass(d)?;
             for (slot, id, buffer, offset, held, needed) in short {
-                d.backend.slow_paths().hit(SlowPath::VertexFetchZeroed);
+                d.backend.record_slow_path(SlowPath::VertexFetchZeroed);
                 if !offset.is_multiple_of(4) {
                     return Err(Error::NotImplemented(
                         "a vertex buffer view read past its end at an address not a multiple of 4",
@@ -4374,7 +4373,7 @@ impl<B: Gpu> Replay<B> {
                 },
             ) if rewrite && count > 0 => {
                 self.end_pass(d)?;
-                d.backend.slow_paths().hit(SlowPath::RestartRewrite);
+                d.backend.record_slow_path(SlowPath::RestartRewrite);
                 // 16-bit indices are widened and keep every value; 32-bit ones restart at the
                 // largest 16-bit value.
                 let wide = format == IndexFormat::U32;

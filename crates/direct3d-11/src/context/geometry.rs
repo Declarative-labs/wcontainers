@@ -194,7 +194,7 @@ impl<B: Gpu> Device<B> {
             &mut bytes,
         );
         self.gpu(read)?;
-        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.backend.record_slow_path(SlowPath::ReadBackWait);
         Ok(Some(
             u32::from_le_bytes(bytes).saturating_sub(offset) / stride,
         ))
@@ -1176,7 +1176,7 @@ impl<B: Gpu> Device<B> {
             &mut bytes,
         );
         self.gpu(read)?;
-        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.backend.record_slow_path(SlowPath::ReadBackWait);
         let mut counts = crate::query::Streamed::default();
         for (count, word) in counts
             .as_flattened_mut()
@@ -1206,10 +1206,10 @@ impl<B: Gpu> Device<B> {
         let layers = self.target_layers()?;
         let viewports = self.ctx.viewports.len() as u32;
         if layers > 1 {
-            self.backend.slow_paths().hit(SlowPath::LayerSplit);
+            self.backend.record_slow_path(SlowPath::LayerSplit);
         }
         if viewports > 1 {
-            self.backend.slow_paths().hit(SlowPath::MultiViewportSplit);
+            self.backend.record_slow_path(SlowPath::MultiViewportSplit);
         }
         let bound = (self.ctx.targets.clone(), self.ctx.depth.clone());
         let mut r = Ok(());

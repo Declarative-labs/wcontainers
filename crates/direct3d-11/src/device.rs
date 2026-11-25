@@ -547,7 +547,7 @@ impl<B: Gpu> Device<B> {
 
     /// Counts a slow path the library around the front takes for this device.
     pub fn count_slow_path(&mut self, path: SlowPath) {
-        self.backend.slow_paths().hit(path);
+        self.backend.record_slow_path(path);
     }
 
     pub fn feature_level(&self) -> u32 {
@@ -930,8 +930,7 @@ impl<B: Gpu> Device<B> {
     /// The warnings not yet shown: each slow path the first time it is taken.
     pub fn take_warnings(&mut self) -> Vec<&'static str> {
         self.backend
-            .slow_paths()
-            .take_warnings()
+            .take_slow_path_warnings()
             .into_iter()
             .map(|path| SLOW_PATH_REASONS[path as usize])
             .collect()
@@ -1602,7 +1601,7 @@ impl<B: Gpu> Device<B> {
         if format::texture_format(d.format)
             .is_some_and(|f| f != format && FORMAT_FACTS[f as usize].integer_twin == Some(format))
         {
-            self.backend.slow_paths().hit(SlowPath::NormAsInteger);
+            self.backend.record_slow_path(SlowPath::NormAsInteger);
         }
         // The back end's cubes are whole: a cube texture of other layer counts is a 2D array
         // whose cube views see its first sixes.
@@ -1781,7 +1780,7 @@ impl<B: Gpu> Device<B> {
         }
         if row_pitch < row || (depth > 1 && slice_pitch < row_pitch * rows) {
             // Rows or slices laid over each other (a pitch of zero repeats one), packed apart.
-            self.backend.slow_paths().hit(SlowPath::RowsRepacked);
+            self.backend.record_slow_path(SlowPath::RowsRepacked);
             let mut packed = Vec::with_capacity((row * rows * depth) as usize);
             for z in 0..depth {
                 for y in 0..rows {

@@ -39,7 +39,7 @@ fn dispatch<B: Gpu>(context: &mut Context<B>, info: &pipe_grid_info) -> Result<(
     let bound = context.stages.get(Stage::Compute);
     let (variant, swizzled) = Variant::sampling(bound);
     if swizzled {
-        backend.slow_paths().hit(SlowPath::SwizzleInShader);
+        backend.record_slow_path(SlowPath::SwizzleInShader);
     }
     let programs = &mut context.programs;
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.

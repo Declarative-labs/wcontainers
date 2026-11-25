@@ -150,7 +150,7 @@ impl<B: Gpu> Device<B> {
         }
         self.end_pass();
         for t in &self.ctx.through[stage] {
-            self.backend.slow_paths().hit(t.why);
+            self.backend.record_slow_path(t.why);
             let texture = t.texture.gpu.handle.clone();
             self.backend.copy_texture_to_buffer(
                 &region(t, &texture),
@@ -380,7 +380,7 @@ impl<B: Gpu> Device<B> {
             return false;
         }
         self.end_pass();
-        self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        self.backend.record_slow_path(SlowPath::ReinterpretCopy);
         for (v, _) in &views {
             if let ShaderView::Texture(t) = &**v {
                 self.copy_twin(t, true);

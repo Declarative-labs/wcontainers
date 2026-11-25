@@ -363,7 +363,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         if passes.is_open() {
             passes.close(b)?;
         }
-        b.slow_paths().hit(SlowPath::OcclusionCountReplay);
+        b.record_slow_path(SlowPath::OcclusionCountReplay);
         let count = self.count(b, &targets, copied, &draws);
         self.draws = draws;
         self.draws.clear();

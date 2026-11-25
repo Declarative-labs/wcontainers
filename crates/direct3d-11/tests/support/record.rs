@@ -128,7 +128,7 @@ impl Recorder {
                     ..Default::default()
                 },
             },
-            slow: SlowPaths::default(),
+            slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             next: 0,
             log: Vec::new(),

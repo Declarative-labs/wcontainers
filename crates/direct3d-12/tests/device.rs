@@ -249,7 +249,7 @@ fn the_triangle_scene_replays() {
         device
             .backend()
             .slow_paths()
-            .count(wcontainers_gpu::SlowPath::MappedUploadWhole),
+            .counts[wcontainers_gpu::SlowPath::MappedUploadWhole as usize],
         1
     );
 }
@@ -384,7 +384,7 @@ fn values_past_the_back_ends_locations_move_or_are_refused_by_name() {
     );
     let slow = device.backend().slow_paths();
     assert_eq!(
-        slow.count(wcontainers_gpu::SlowPath::VaryingsBeyondLimit),
+        slow.counts[wcontainers_gpu::SlowPath::VaryingsBeyondLimit as usize],
         1
     );
 }
@@ -768,7 +768,7 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
             .cloned()
             .collect::<Vec<_>>()
     };
-    let copied = |d: &mut Device<Recorder>| d.backend().slow_paths().count(AliasCopied);
+    let copied = |d: &mut Device<Recorder>| d.backend().slow_paths().counts[AliasCopied as usize];
     // Nothing written yet, and c overlaps nothing: no copies of inherited bytes.
     assert_eq!(
         run(&mut device, vec![copy(c, upload), copy(readback, c)]).len(),

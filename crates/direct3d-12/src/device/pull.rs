@@ -169,7 +169,7 @@ impl<B: Gpu> Device<B> {
             input_moves(&read, slots),
             output_moves(&written, &read, slots),
         ) else {
-            self.backend.slow_paths().hit(SlowPath::VaryingsBeyondLimit);
+            self.backend.record_slow_path(SlowPath::VaryingsBeyondLimit);
             return Err(Error::NotImplemented(TOO_MANY_VALUES));
         };
         Ok(StageMoves { outputs, inputs })
@@ -369,7 +369,7 @@ impl<B: Gpu> Device<B> {
             for slot in &helpers.slots {
                 let words = match (slot.value, bases) {
                     (HelperValue::DrawBase, Bases::Direct(b)) => {
-                        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+                        self.backend.record_slow_path(SlowPath::DrawBaseInHelpers);
                         words(&[b[0], b[1]])
                     }
                     (
@@ -381,8 +381,7 @@ impl<B: Gpu> Device<B> {
                         },
                     ) => {
                         self.backend
-                            .slow_paths()
-                            .hit(SlowPath::DrawBaseFromArguments);
+                            .record_slow_path(SlowPath::DrawBaseFromArguments);
                         arguments =
                             Some(((*args).clone(), offset + if *indexed { 20 } else { 16 }));
                         words(&[(offset / 4) as u32, u32::from(*indexed)])

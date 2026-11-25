@@ -294,7 +294,7 @@ impl<B: Gpu> Device<B> {
             return p.clone().map(Some).ok_or(refused);
         }
         // A program made at the draw, as a state combination first met there.
-        self.backend.slow_paths().hit(SlowPath::PipelineMiss);
+        self.backend.record_slow_path(SlowPath::PipelineMiss);
         let made = self.combined_program(pid, &combination);
         self.render_mut(pid)
             .bound
@@ -316,7 +316,7 @@ impl<B: Gpu> Device<B> {
         let (visibility, code) = (f.visibility, f.code.clone());
         let key = keyed(&f.key, &f.made, Some(&bound));
         // A program made at the draw, as a state combination first met there.
-        self.backend.slow_paths().hit(SlowPath::PipelineMiss);
+        self.backend.record_slow_path(SlowPath::PipelineMiss);
         let made = self.formats_program(pid, visibility, &code, key);
         let f = self.pipelines[pid.0 as usize]
             .formats
@@ -478,16 +478,16 @@ impl<B: Gpu> Device<B> {
             }
         }
         if lod_bias != 0 {
-            self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
+            self.backend.record_slow_path(SlowPath::LodBiasInShader);
         }
         if border != 0 {
-            self.backend.slow_paths().hit(SlowPath::BorderInShader);
+            self.backend.record_slow_path(SlowPath::BorderInShader);
         }
         if clamped != 0 {
-            self.backend.slow_paths().hit(SlowPath::MinLodClamp);
+            self.backend.record_slow_path(SlowPath::MinLodClamp);
         }
         if filtered != 0 {
-            self.backend.slow_paths().hit(SlowPath::FilterInShader);
+            self.backend.record_slow_path(SlowPath::FilterInShader);
         }
         Ok(Some(Bound {
             formats,

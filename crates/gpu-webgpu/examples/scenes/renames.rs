@@ -225,7 +225,7 @@ pub fn discarded_textures_are_renamed_from_the_pool(b: &mut WebGpu) {
     }
     eprintln!("texture renames and spares reused per frame: {seen:?}");
     assert_eq!(seen, [(3, 0), (3, 3), (3, 3), (3, 3)]);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 0);
     // The pass draws into the target: a discard of it is ordered in the pass instead.
     let before = *b.counters();
     begin(b, &k, [0.0, 1.0, 0.0, 1.0]);
@@ -245,7 +245,7 @@ pub fn discarded_textures_are_renamed_from_the_pool(b: &mut WebGpu) {
         .concat()
     );
     assert_eq!(b.counters().texture_renames, before.texture_renames);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 1);
     b.destroy(Object::Texture(texture));
     let fence = b.submit();
     b.wait_fence(&fence);

@@ -379,8 +379,7 @@ fn stencil_by_bits<B: Gpu>(context: &mut Context<B>, info: &pipe_blit_info) {
     context
         .screen()
         .backend()
-        .slow_paths()
-        .hit(SlowPath::StencilWrittenByDraw);
+        .record_slow_path(SlowPath::StencilWrittenByDraw);
     // SAFETY: as above.
     save(context, unsafe { &mut *blitter });
     // SAFETY: as above; both resources are live textures of this driver.

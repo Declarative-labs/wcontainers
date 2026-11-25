@@ -497,7 +497,7 @@ impl SwapChain {
         let result = gpu::call_windowed(move |s| {
             let d = &mut s.front;
             if stretched {
-                d.backend().slow_paths().hit(SlowPath::FrameStretched);
+                d.backend().record_slow_path(SlowPath::FrameStretched);
             }
             if flags & PRESENT_DO_NOT_WAIT != 0 && d.would_wait(id) {
                 return Err(None);

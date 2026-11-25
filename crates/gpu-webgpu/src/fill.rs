@@ -6,6 +6,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, SlowPath, TargetLayout};
 
 use crate::{Stream, WebGpu, convert};
@@ -398,7 +399,7 @@ impl WebGpu {
         dst: &wgpu::TextureView,
         format: wgpu::TextureFormat,
     ) {
-        self.slow.hit(SlowPath::ResolveByDraw);
+        self.record_slow_path(SlowPath::ResolveByDraw);
         if !self.fills.resolves.contains_key(&format) {
             let program = self.texel_program(RESOLVE_WGSL, true, format, 1);
             self.fills.resolves.insert(format, program);
@@ -433,7 +434,7 @@ impl WebGpu {
     /// the subresource and draws it back from the copy, per sample where multisampled
     /// (`PackedTargetQuantised`). In the frame's encoder, outside a pass.
     pub(crate) fn quantise(&mut self, target: &PackedTarget) {
-        self.slow.hit(SlowPath::PackedTargetQuantised);
+        self.record_slow_path(SlowPath::PackedTargetQuantised);
         let samples = target.texture.sample_count();
         let size = target
             .texture
@@ -533,7 +534,7 @@ impl WebGpu {
     /// Draws `frame` into `window`, a texture of its size in the window's own format
     /// (`PresentConverted`), in the frame's encoder.
     pub(crate) fn present_by_draw(&mut self, frame: &wgpu::Texture, window: &wgpu::Texture) {
-        self.slow.hit(SlowPath::PresentConverted);
+        self.record_slow_path(SlowPath::PresentConverted);
         let format = window.format();
         if !self.fills.presents.contains_key(&format) {
             let program = self.texel_program(PRESENT_WGSL, false, format, 1);
@@ -755,7 +756,7 @@ impl WebGpu {
     ) {
         let float = targets.colors[index]
             .is_some_and(|f| FORMAT_FACTS[f as usize].kind == FormatKind::Float);
-        self.slow.hit(if float {
+        self.record_slow_path(if float {
             SlowPath::FloatBitsClearByDraw
         } else {
             SlowPath::IntegerClearByDraw
@@ -885,7 +886,7 @@ impl WebGpu {
         size: [u32; 2],
         layers: u32,
     ) {
-        self.slow.hit(SlowPath::DepthWrittenByDraw);
+        self.record_slow_path(SlowPath::DepthWrittenByDraw);
         let (src_tex, src_format, how) = src;
         let (dst_tex, dst_format) = dst;
         let Some(raw_dst) = convert::texture_format(dst_format) else {
@@ -1066,7 +1067,7 @@ impl WebGpu {
         size: [u32; 2],
         layers: u32,
     ) {
-        self.slow.hit(SlowPath::StencilWrittenByDraw);
+        self.record_slow_path(SlowPath::StencilWrittenByDraw);
         let raw = dst.format();
         if !self.fills.stencils.contains_key(&raw) {
             let program = self.stencil_program(raw);
@@ -1197,7 +1198,7 @@ impl WebGpu {
         size: [u32; 2],
         layers: u32,
     ) {
-        self.slow.hit(SlowPath::DepthReadByDraw);
+        self.record_slow_path(SlowPath::DepthReadByDraw);
         let (src_tex, read) = src;
         if !self.fills.reads.contains_key(&read) {
             let program = self.read_program(read, dst.format());

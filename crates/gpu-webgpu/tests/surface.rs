@@ -58,7 +58,7 @@ fn float_frames_show_on_windows_without_float_formats() {
     }
     eprintln!(
         "float frames converted at present: {}",
-        b.slow_paths().count(SlowPath::PresentConverted)
+        b.slow_paths().counts[SlowPath::PresentConverted as usize]
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

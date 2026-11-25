@@ -66,7 +66,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
     )
     .map_err(|e| e.to_string())?;
     let vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
-    let segmented = b.slow_paths().count(SlowPath::QueriesSegmented);
+    let segmented = b.slow_paths().counts[SlowPath::QueriesSegmented as usize];
     b.begin_pass(&pass_with(&t, &set));
     for (query, drawn) in [
         (PAGE - 1, true),
@@ -107,7 +107,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
         ));
     }
     // One split moved the part to the second page, one carried 4999.
-    let split = b.slow_paths().count(SlowPath::QueriesSegmented) - segmented;
+    let split = b.slow_paths().counts[SlowPath::QueriesSegmented as usize] - segmented;
     if split != 2 {
         return Err(format!(
             "occlusion set of {QUERIES}: {split} segmented, not 2"

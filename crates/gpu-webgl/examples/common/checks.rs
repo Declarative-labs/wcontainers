@@ -944,13 +944,13 @@ pub fn srgb_copies_keep_every_byte<H: Host>() {
             side,
             WriteMode::Ordered,
         );
-        let before = b.slow_paths().count(SlowPath::CopyThroughBuffer);
+        let before = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize];
         b.copy_texture(
             &layer_at(&src, 0, 0, 0, false),
             &layer_at(&dst, 0, 0, 0, false),
             whole,
         );
-        let counted = b.slow_paths().count(SlowPath::CopyThroughBuffer) - before;
+        let counted = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize] - before;
         let got = read_typeless(&mut b, &dst, to, size);
         assert_eq!(b.status(), DeviceStatus::Ok, "{from:?} to {to:?}");
         let texel = texel as usize;
@@ -1106,7 +1106,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
         b.destroy(Object::Texture(u));
         got
     };
-    let count = |b: &mut H::Backend, path| b.slow_paths().count(path);
+    let count = |b: &mut H::Backend, path| b.slow_paths().counts[path as usize];
     b.begin_pass(&kit::pass(&v, clear, None));
     b.end_pass();
     let gpu = count(&mut b, SlowPath::CopyThroughBuffer);
@@ -1403,8 +1403,8 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
                 bytes[at..at + 3 * texel].to_vec()
             })
             .collect();
-        let drawn = b.slow_paths().count(SlowPath::CopyThroughBuffer);
-        let converted = b.slow_paths().count(SlowPath::FormatConverted);
+        let drawn = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize];
+        let converted = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         let source = ReadSource::Texture {
             region: TextureRegion { ..region },
             extent: part,
@@ -1444,9 +1444,9 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
             (SlowPath::CopyThroughBuffer, drawn)
         };
         assert!(
-            b.slow_paths().count(path) >= before + 3,
+            b.slow_paths().counts[path as usize] >= before + 3,
             "{format:?}: {path:?} counted {} times in three reads",
-            b.slow_paths().count(path) - before
+            b.slow_paths().counts[path as usize] - before
         );
         assert_eq!(b.status(), DeviceStatus::Ok);
         b.destroy(Object::Buffer(out));
@@ -2660,7 +2660,7 @@ pub fn copies_within_one_float_format_take_the_probed_route<
         };
         b.copy_texture(&at(&a), &at(&c), extent);
         let counted = [SlowPath::CopyThroughBuffer, SlowPath::HostCopyReadBack]
-            .map(|s| b.slow_paths().count(s) - before.count(s));
+            .map(|s| b.slow_paths().counts[s as usize] - before.counts[s as usize]);
         println!(
             "{format:?}: exact float blits {}, counted {counted:?}",
             b.exact_float_blits()
@@ -2931,7 +2931,7 @@ pub fn copies_within_one_subresource<H: Host>() {
         (Format::Rgba16Float, TextureDimension::D3, [8, 4, 2]),
         (Format::R16Float, TextureDimension::D2, [8, 4, 2]),
     ];
-    let before = b.slow_paths().count(SlowPath::CopyWithinTexture);
+    let before = b.slow_paths().counts[SlowPath::CopyWithinTexture as usize];
     for (n, (format, dimension, size)) in cases.into_iter().enumerate() {
         let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let t = kit::texture(&mut b, dimension, format, size, 1, usage, false);
@@ -3011,7 +3011,7 @@ pub fn copies_within_one_subresource<H: Host>() {
     }
     // Every copy but that of the texture kept on the host, which reads the region before it writes.
     assert_eq!(
-        b.slow_paths().count(SlowPath::CopyWithinTexture) - before,
+        b.slow_paths().counts[SlowPath::CopyWithinTexture as usize] - before,
         cases.len() as u64 - 1,
         "each copy through a texture counted"
     );
@@ -3455,7 +3455,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
         let got = kit::read(b, &t, 0, 0, [4, 4, 1], 4, false);
         got.as_chunks::<4>().0.iter().filter(|p| p[0] == 1).count()
     };
-    let rewrites = |b: &mut H::Backend| b.slow_paths().count(SlowPath::RestartRewrite);
+    let rewrites = |b: &mut H::Backend| b.slow_paths().counts[SlowPath::RestartRewrite as usize];
     for format in formats {
         let width = INDEX_FORMATS[format as usize].size as usize;
         let largest = INDEX_FORMATS[format as usize].restart_value;
@@ -4165,12 +4165,12 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                     cube,
                     reinterpret: false,
                 };
-                let before = b.slow_paths().count(SlowPath::FilterInShader);
+                let before = b.slow_paths().counts[SlowPath::FilterInShader as usize];
                 b.generate_mips(&native, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips");
                 generate_mips_by_draws(&mut b, &drawn, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips_by_draws");
-                assert_eq!(b.slow_paths().count(SlowPath::FilterInShader), before);
+                assert_eq!(b.slow_paths().counts[SlowPath::FilterInShader as usize], before);
                 let what =
                     format!("{format:?} {dimension:?} {size:?} cube {cube}, from level {first}");
                 for mip in 0..levels {
@@ -4386,9 +4386,9 @@ pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
         height: 4,
         depth_or_layers: 1,
     };
-    let before = b.slow_paths().count(SlowPath::MultisampleCopyResolved);
+    let before = b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize];
     b.copy_texture(&region(&ms), &region(&copy), extent);
-    let counted = b.slow_paths().count(SlowPath::MultisampleCopyResolved) - before;
+    let counted = b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize] - before;
     b.resolve(&region(&ms), &region(&of_source), f);
     b.resolve(&region(&copy), &region(&of_copy), f);
     let [end, source, copied] =
@@ -4837,7 +4837,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
                 offset: 0,
             }),
         ];
-        let before = b.slow_paths().count(SlowPath::IndexTwinReadBack);
+        let before = b.slow_paths().counts[SlowPath::IndexTwinReadBack as usize];
         b.begin_pass(&kit::pass(&v, [u32::MAX; 4], None));
         b.draw(&DrawCall {
             vertex_layout: &layout,
@@ -4866,7 +4866,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
             ..kit::call(&k, &numbers, None, &whole, Topology::PointList, 4)
         });
         b.end_pass();
-        let refreshed = b.slow_paths().count(SlowPath::IndexTwinReadBack) - before;
+        let refreshed = b.slow_paths().counts[SlowPath::IndexTwinReadBack as usize] - before;
         let got = kit::read(&mut b, &t, 0, 0, [8, 4, 1], 16, false);
         let texel = |p: usize| -> [u32; 4] {
             core::array::from_fn(|c| {
@@ -4897,7 +4897,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
                 "as indices {as_indices}: pixel {p}"
             );
         }
-        if as_indices && b.slow_paths().count(SlowPath::IndexBufferTwin) > 0 {
+        if as_indices && b.slow_paths().counts[SlowPath::IndexBufferTwin as usize] > 0 {
             assert_eq!(refreshed, 1, "the index twin refreshed once");
         }
     }
@@ -6270,7 +6270,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             model[d..d + row].copy_from_slice(&fresh[r * row..(r + 1) * row]);
         }
         let staging = buffer(&mut b, BufferUsage::VERTEX, &staged);
-        let readbacks = b.slow_paths().count(SlowPath::HostCopyReadBack);
+        let readbacks = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
         b.copy_buffer_to_texture(
             &CopyBufferTexture {
                 buffer: &staging,
@@ -6282,7 +6282,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             extent(8, 4, 1),
         );
         assert_eq!(
-            b.slow_paths().count(SlowPath::HostCopyReadBack),
+            b.slow_paths().counts[SlowPath::HostCopyReadBack as usize],
             readbacks + 1,
             "{format:?}: the buffer read back"
         );
@@ -6366,7 +6366,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
         let d = at(0, 0, 0);
         model[d..d + block].copy_from_slice(&solid[s..s + block]);
         assert_eq!(
-            b.slow_paths().count(SlowPath::HostCopyReadBack),
+            b.slow_paths().counts[SlowPath::HostCopyReadBack as usize],
             readbacks + 2,
             "{format:?}: {plain:?} read back"
         );
@@ -6569,7 +6569,7 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
             b.caps().formats.uses[format as usize].contains(want),
             "{format:?}: {want:?}"
         );
-        let before = b.slow_paths().count(SlowPath::FormatConverted);
+        let before = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         let t = kit::texture(
             &mut b,
             TextureDimension::D2,
@@ -6580,14 +6580,14 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
             false,
         );
         b.write_texture(&region!(&t), extent(4, 2), &bgra, 16, 2, WriteMode::Ordered);
-        let written = b.slow_paths().count(SlowPath::FormatConverted);
+        let written = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         assert!(written > before);
         assert_eq!(
             kit::read(&mut b, &t, 0, 0, [4, 2, 1], 4, false),
             bgra,
             "{format:?} now"
         );
-        let read = b.slow_paths().count(SlowPath::FormatConverted);
+        let read = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         assert!(
             read > written,
             "{format:?}: a read swapping on the host is not counted"
@@ -6603,7 +6603,7 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
         let mut later = vec![0; 32];
         b.finish_read(rb, &mut later);
         assert_eq!(later, bgra, "{format:?} later");
-        assert!(b.slow_paths().count(SlowPath::FormatConverted) > read);
+        assert!(b.slow_paths().counts[SlowPath::FormatConverted as usize] > read);
         // Loaded through a view of its own format, texel (0, 0) is red 200 (sRGB decoded for the
         // sRGB format).
         let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
@@ -6708,9 +6708,9 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
         row_pitch: 4,
         rows_per_layer: 2,
     };
-    let before = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let before = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     b.copy_texture_to_buffer(&region!(&t), &into, extent(4, 2));
-    assert!(b.slow_paths().count(SlowPath::HostCopyReadBack) > before);
+    assert!(b.slow_paths().counts[SlowPath::HostCopyReadBack as usize] > before);
     assert_eq!(read_buffer(&mut b, &buf, 8), bytes, "r8uint in a buffer");
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -7481,7 +7481,7 @@ pub fn packed_vertex_formats_are_converted<H: Host>() {
         buffer: &vb,
         offset: 0,
     })];
-    let before = b.slow_paths().count(SlowPath::VertexFormatConverted);
+    let before = b.slow_paths().counts[SlowPath::VertexFormatConverted as usize];
     b.begin_pass(&kit::pass(&target, [0; 4], None));
     for p in &programs {
         let mut call = kit::call(&k, p, None, &vp, Topology::PointList, 3);
@@ -7492,7 +7492,7 @@ pub fn packed_vertex_formats_are_converted<H: Host>() {
     b.end_pass();
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(
-        b.slow_paths().count(SlowPath::VertexFormatConverted) - before,
+        b.slow_paths().counts[SlowPath::VertexFormatConverted as usize] - before,
         2
     );
     let got: Vec<u32> = kit::read(&mut b, &t, 0, 0, [3, 2, 1], 16, false)

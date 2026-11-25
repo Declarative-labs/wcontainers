@@ -546,7 +546,7 @@ impl<B: Gpu> SwapChain<B> {
     /// The sequential blit model's move at present: each buffer takes the next one's contents, and
     /// the last takes the first's, by way of `spare`.
     fn move_down(&self, backend: &mut B, spare: &B::Texture) {
-        backend.slow_paths().hit(SlowPath::SequentialBuffersCopied);
+        backend.record_slow_path(SlowPath::SequentialBuffersCopied);
         let extent = Extent {
             width: self.desc.width,
             height: self.desc.height,

@@ -1163,7 +1163,7 @@ fn aliased_lines_into_a_multisampled_target_draw_as_direct3d_does() {
     }
     let mut failures = Vec::new();
     let mut compared = 0;
-    let before = backend.slow_paths().count(SlowPath::AliasedLinesAsQuads);
+    let before = backend.slow_paths().counts[SlowPath::AliasedLinesAsQuads as usize];
     for (name, (case, vertices), indices) in &scenes {
         let drawn_from = (vertices.as_slice(), indices.as_slice());
         let references: Vec<Vec<u8>> = gpus
@@ -1235,7 +1235,7 @@ fn aliased_lines_into_a_multisampled_target_draw_as_direct3d_does() {
             }
         }
     }
-    assert!(backend.slow_paths().count(SlowPath::AliasedLinesAsQuads) > before);
+    assert!(backend.slow_paths().counts[SlowPath::AliasedLinesAsQuads as usize] > before);
     eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
@@ -1604,13 +1604,13 @@ fn ours_stored<B: Backend>(
         },
         stream_output: None,
     };
-    let before = b.slow_paths().count(SlowPath::VertexStorageAsCompute);
+    let before = b.slow_paths().counts[SlowPath::VertexStorageAsCompute as usize];
     let last = stages.run(b, &draw).unwrap().expect("primitives");
     assert_eq!(
-        b.slow_paths().count(SlowPath::VertexStorageAsCompute),
+        b.slow_paths().counts[SlowPath::VertexStorageAsCompute as usize],
         before + 1
     );
-    assert_eq!(b.slow_paths().count(SlowPath::CullDistanceAsGeometry), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::CullDistanceAsGeometry as usize], 0);
     let layout = stages.vertex_layout().unwrap();
     let picture = drawn(
         b,

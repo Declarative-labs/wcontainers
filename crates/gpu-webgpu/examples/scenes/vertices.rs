@@ -218,7 +218,7 @@ pub fn lacking_vertex_formats(b: &mut WebGpu, seed: u64, n: u32) {
         let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
         let (values, values_view) = draw::texture_2d(b, target, n, 1, usage).unwrap();
         let (floats, floats_view) = draw::texture_2d(b, Format::R32Float, n, 1, usage).unwrap();
-        let before = b.slow_paths().count(SlowPath::VertexFormatConverted);
+        let before = b.slow_paths().counts[SlowPath::VertexFormatConverted as usize];
         let (bytes, mut want) = stream(&mut rng, f, n as usize);
         let vb = draw::buffer(b, &bytes, BufferUsage::VERTEX).unwrap();
         // Three frames: the first makes the shadow, the second keeps it, the third follows a write.
@@ -297,7 +297,7 @@ pub fn lacking_vertex_formats(b: &mut WebGpu, seed: u64, n: u32) {
                     "{f:?} frame {frame} vertex {i}: the float beside it"
                 );
             }
-            let made = b.slow_paths().count(SlowPath::VertexFormatConverted) - before;
+            let made = b.slow_paths().counts[SlowPath::VertexFormatConverted as usize] - before;
             // One shadow made (splitting the pass) at the first draw and one after the write.
             assert_eq!(made, [1, 1, 2][frame], "{f:?} frame {frame}");
         }

@@ -177,7 +177,7 @@ fn pipelines_and_bind_groups_are_cached() {
     );
     assert_eq!(
         b.slow_paths()
-            .count(wcontainers_gpu::SlowPath::PipelineMiss),
+            .counts[wcontainers_gpu::SlowPath::PipelineMiss as usize],
         2
     );
 }

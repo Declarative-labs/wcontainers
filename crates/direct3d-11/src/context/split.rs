@@ -86,7 +86,7 @@ impl<B: Gpu> Device<B> {
         if self.ctx.so_targets.iter().any(Option::is_some) {
             return not_implemented(SPLIT_WITH_STREAM_OUTPUT);
         }
-        self.backend.slow_paths().hit(SlowPath::TargetsSplit);
+        self.backend.record_slow_path(SlowPath::TargetsSplit);
         let targets = self.ctx.targets.clone();
         let blend = self.ctx.blend.clone();
         let saved = self.save_depth_stencil()?;

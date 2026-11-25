@@ -522,7 +522,7 @@ impl<B: Gpu> Device<B> {
             }
             if !waited {
                 waited = true;
-                self.backend.slow_paths().hit(SlowPath::PredicationWait);
+                self.backend.record_slow_path(SlowPath::PredicationWait);
             }
             match &*q.state.borrow() {
                 State::Ended {
@@ -662,7 +662,7 @@ impl<B: Gpu> Device<B> {
             self.queries.stretch = Some(slot);
             return true;
         }
-        self.backend.slow_paths().hit(SlowPath::QuerySetSplitPass);
+        self.backend.record_slow_path(SlowPath::QuerySetSplitPass);
         false
     }
 
@@ -674,7 +674,7 @@ impl<B: Gpu> Device<B> {
         };
         self.backend.end_query();
         if segmented && self.queries.running.len() > 1 {
-            self.backend.slow_paths().hit(SlowPath::QueriesSegmented);
+            self.backend.record_slow_path(SlowPath::QueriesSegmented);
         }
         let set = self.queries.pass_set.clone().expect("the open pass's set");
         for q in &self.queries.running {

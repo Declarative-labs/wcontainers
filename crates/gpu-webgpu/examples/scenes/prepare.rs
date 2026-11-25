@@ -115,7 +115,7 @@ pub fn first_draws(
     b.wait_fence(&fence);
     let prepared = now() - started;
     let (misses, built) = (
-        b.slow_paths().count(SlowPath::PipelineMiss),
+        b.slow_paths().counts[SlowPath::PipelineMiss as usize],
         b.counters().pipelines,
     );
     let mut pass = PassDesc {
@@ -180,7 +180,7 @@ pub fn first_draws(
         prepared,
         draws,
         frame,
-        misses: b.slow_paths().count(SlowPath::PipelineMiss) - misses,
+        misses: b.slow_paths().counts[SlowPath::PipelineMiss as usize] - misses,
         built: b.counters().pipelines - built,
     }
 }
@@ -225,7 +225,7 @@ pub fn prepared_strips(b: &mut WebGpu) -> Result<String, String> {
     let fence = b.submit();
     b.wait_fence(&fence);
     let (misses, built) = (
-        b.slow_paths().count(SlowPath::PipelineMiss),
+        b.slow_paths().counts[SlowPath::PipelineMiss as usize],
         b.counters().pipelines,
     );
     let mut pass = PassDesc {
@@ -295,7 +295,7 @@ pub fn prepared_strips(b: &mut WebGpu) -> Result<String, String> {
     let fence = b.submit();
     b.wait_fence(&fence);
     let (misses, built) = (
-        b.slow_paths().count(SlowPath::PipelineMiss) - misses,
+        b.slow_paths().counts[SlowPath::PipelineMiss as usize] - misses,
         b.counters().pipelines - built,
     );
     if b.status() != DeviceStatus::Ok {

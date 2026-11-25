@@ -346,8 +346,8 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
         }
     }
     assert!(beyond.is_empty(), "beyond the tolerance: {beyond:?}");
-    assert!(decoded.slow_paths().count(SlowPath::BlockDecoded) > 0);
-    assert_eq!(native.slow_paths().count(SlowPath::BlockDecoded), 0);
+    assert!(decoded.slow_paths().counts[SlowPath::BlockDecoded as usize] > 0);
+    assert_eq!(native.slow_paths().counts[SlowPath::BlockDecoded as usize], 0);
 }
 
 #[test]
@@ -479,7 +479,7 @@ fn bc_copies_keep_the_blocks_natively_and_decoded() {
                 "{route}: sampled"
             );
             assert_eq!(b.status(), DeviceStatus::Ok, "{route}");
-            let host = b.slow_paths().count(SlowPath::HostCopyReadBack);
+            let host = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
             eprintln!("{route} texture {case}: HostCopyReadBack {host}");
             assert_eq!(host > 0, route == "decoded");
         }

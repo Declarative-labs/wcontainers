@@ -273,8 +273,8 @@ fn multisampled_targets_of_different_sizes_are_fitted() {
         [Some(&params), None, None, None],
     );
     passes.close(&mut b).unwrap();
-    assert_eq!(b.slow_paths().count(SlowPath::AttachmentsFitted), 1);
-    assert_eq!(b.slow_paths().count(SlowPath::MultisampleCopyResolved), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::AttachmentsFitted as usize], 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize], 0);
 
     let check = target(&mut b, 3, 3, 1);
     let read = b

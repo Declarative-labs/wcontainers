@@ -49,7 +49,7 @@ impl wcontainers_gpu_test::Host for Native {
     }
 
     fn shown(b: &mut WebGpu, _: u32) -> Vec<u8> {
-        let converted = b.slow_paths().count(SlowPath::PresentConverted);
+        let converted = b.slow_paths().counts[SlowPath::PresentConverted as usize];
         eprintln!("frames converted at present (PresentConverted): {converted}");
         // A Metal layer takes no `rgba8unorm`, so there every frame is drawn into the window's format.
         if cfg!(target_os = "macos") {

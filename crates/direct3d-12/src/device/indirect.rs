@@ -212,7 +212,7 @@ impl<B: Gpu> Replay<B> {
             None => (source, args_offset, false),
             Some((c, count_offset)) => {
                 self.settle(d)?;
-                d.backend.slow_paths().hit(SlowPath::IndirectCountExpanded);
+                d.backend.record_slow_path(SlowPath::IndirectCountExpanded);
                 d.upload(c)?;
                 let counts = d.buffer(c)?.0.clone();
                 let counts_size = width(d, c)?.next_multiple_of(STORAGE_WORD);
@@ -280,7 +280,7 @@ impl<B: Gpu> Replay<B> {
     ) -> Result<(), Error> {
         self.settle(d)?;
         if !d.in_program_memory(args) || count.is_some_and(|c| !d.in_program_memory(c.0)) {
-            d.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+            d.backend.record_slow_path(SlowPath::IndirectReadBack);
         }
         let bytes = d.read_now(args, args_offset, span)?;
         let n = match count {

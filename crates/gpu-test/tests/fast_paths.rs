@@ -224,7 +224,7 @@ fn read_back_now_reads_back_later_and_waits() {
     .unwrap();
     assert_eq!(got, [3, 4, 5, 6]);
     assert_eq!(names(&r, from), ["read_back", "wait_read", "finish_read"]);
-    assert_eq!(r.slow_paths().count(SlowPath::ReadBackWait), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::ReadBackWait as usize], 1);
     healthy(&mut r);
 }
 
@@ -598,7 +598,7 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
     let got = mipped(&mut r, Format::Rgba8Unorm, Format::Rgba8Unorm, &texels, 4);
     let reds: Vec<u8> = got.chunks(4).map(|c| c[0]).collect();
     assert_eq!(reds, [40, 72, 168, 200]);
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 0);
     healthy(&mut r);
 
     // r32float holding k, on a back end that does not filter it.
@@ -612,7 +612,7 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     assert_eq!(values, [2.5, 4.5, 10.5, 12.5]);
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 1);
     healthy(&mut r);
 
     // rgba16uint holding rgba16unorm values 4000 k in every channel.
@@ -630,7 +630,7 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
         .flat_map(|&v| [v; 4])
         .collect();
     assert_eq!(values, expected);
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 1);
     healthy(&mut r);
 }
 
@@ -712,7 +712,7 @@ fn fans_become_lists_in_the_ring() {
     .unwrap();
     assert_eq!(names(&r, from), ["write_buffer", "draw"]);
     r.end_pass();
-    assert_eq!(r.slow_paths().count(SlowPath::FanConverted), 2);
+    assert_eq!(r.slow_paths().counts[SlowPath::FanConverted as usize], 2);
     // Both triangles keep the fan's winding, so the back-face culling keeps them: all covered.
     assert_eq!(read(&mut r, &t, 0, 0, 4), [255, 0, 0, 255].repeat(16));
     healthy(&mut r);
@@ -788,7 +788,7 @@ fn loops_become_line_lists_in_the_ring() {
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     assert_eq!(indices, [2, 3, 3, 4, 4, 5, 5, 2]);
-    assert_eq!(r.slow_paths().count(SlowPath::LoopConverted), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::LoopConverted as usize], 1);
     assert_eq!(
         r.violations,
         ["LineList is not drawn by the recording back end yet"]
@@ -1004,7 +1004,7 @@ fn resolve_queries_reads_them_back_and_writes_them_in_order() {
     let Some(Call::WriteBuffer(_, 8, _, WriteMode::Ordered)) = r.calls.last() else {
         panic!("the results are not an ordered write at the offset")
     };
-    assert_eq!(r.slow_paths().count(SlowPath::QueryResolveWait), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::QueryResolveWait as usize], 1);
     let mut got = [0u8; 16];
     r.read_back_now(
         &ReadSource::Buffer {

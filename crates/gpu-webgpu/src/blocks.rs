@@ -3,6 +3,7 @@
 //! would be, and the back end keeps the blocks on the host, updated by every write and copy, to
 //! answer read backs and copies in blocks.
 
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
     CopyBufferTexture, Extent, FORMAT_FACTS, Format, ReadSource, SlowPath, TextureDesc,
     TextureDimension, TextureRegion, WriteMode,
@@ -254,7 +255,7 @@ impl WebGpu {
             }
             take(&t.desc, &blocks, &area)
         };
-        self.slow.hit(SlowPath::BlockDecoded);
+        self.record_slow_path(SlowPath::BlockDecoded);
         // The texels the area covers inside the level, which may end inside a block.
         let size = |n: u32| (n >> region.mip).max(1);
         let (block_width, block_height, _) = FORMAT_FACTS[t.desc.format as usize].block;
@@ -295,7 +296,7 @@ impl WebGpu {
 
     /// Reads a region back and waits for it: the bytes of a texture the host keeps no copy of.
     pub(crate) fn read_now(&mut self, src: &ReadSource<'_, Self>, len: usize) -> Option<Vec<u8>> {
-        self.slow.hit(SlowPath::HostCopyReadBack);
+        self.record_slow_path(SlowPath::HostCopyReadBack);
         let rb = match self.read_back_impl(src) {
             Ok(rb) => rb,
             Err(_) => {

@@ -101,7 +101,7 @@ fn ordered_write_in_a_pass_splits_it() {
     let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
     b.finish_read(rb, &mut rgba);
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 1);
     assert!(
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the split pass lost or changed what it drew"
@@ -262,7 +262,7 @@ fn clears_to_a_pattern_fill_exactly() {
     want.extend(pattern.iter().cycle().take(SIZE as usize));
     want.extend([0xee; 16]);
     assert!(got == want, "the pattern clear wrote the wrong bytes");
-    assert_eq!(b.slow_paths().count(SlowPath::PatternClearCopied), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::PatternClearCopied as usize], 1);
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
@@ -304,7 +304,7 @@ fn arena_buffers_keep_command_order() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     let k = b.counters();
     assert_eq!((k.renames, k.slices, k.staged_writes), (0, 1, 1), "{k:?}");
-    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinBuffer), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize], 1);
 }
 
 /// Seeded random buffer writes in every mode, copies between buffers and within one, and clears to
@@ -417,7 +417,7 @@ fn byte_granular_buffer_operations_match_a_model() {
         "{no_overwrites} no-overwrite writes, {demoted} made ordered, {within} copies within one buffer"
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinBuffer), within);
+    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize], within);
 }
 
 /// Writes of any length after a submit, so that none meets a recorded command, take effect in the
@@ -509,7 +509,7 @@ fn writes_ahead_of_a_pass_do_not_split_it() {
     assert_eq!(finish(&mut b, small, 4)[1..], [7, 7, 7]);
     let rgba = finish(&mut b, rb, (scene::WIDTH * scene::HEIGHT * 4) as usize);
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 0);
     assert!(
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the picture changed"
@@ -615,7 +615,7 @@ fn copies_within_one_buffer_are_exact_and_counted() {
     assert_eq!(finish(&mut b, whole, 64), model);
     assert_eq!(finish(&mut b, copied, 16), words(7));
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinBuffer), 4);
+    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize], 4);
 }
 
 /// A scripted scene of four frames, each drawing the triangle four times with a `Discard` write of
@@ -662,7 +662,7 @@ fn renamed_buffers_reuse_the_pools_storage() {
     b.submit();
     assert_eq!(b.counters().spares_dropped, 3, "{:?}", b.counters());
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 0);
 }
 
 /// A set of WebGPU's largest size has no spare slot of its own, so queries carried across splits
@@ -727,8 +727,8 @@ fn queries_carry_across_splits_in_a_set_of_the_largest_size() {
         wgpu::QUERY_SET_MAX_QUERIES
     );
     assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 3);
-    assert_eq!(b.slow_paths().count(SlowPath::QueriesSegmented), 3);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 3);
+    assert_eq!(b.slow_paths().counts[SlowPath::QueriesSegmented as usize], 3);
     assert!(
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the picture changed"
@@ -784,8 +784,8 @@ fn queries_carry_across_pass_splits() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     eprintln!("query results: {words:?}");
     assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 3);
-    assert_eq!(b.slow_paths().count(SlowPath::QueriesSegmented), 3);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 3);
+    assert_eq!(b.slow_paths().counts[SlowPath::QueriesSegmented as usize], 3);
     assert!(
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the picture changed"

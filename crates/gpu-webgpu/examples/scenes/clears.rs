@@ -34,7 +34,7 @@ const SIZE: (u32, u32, u32) = (5, 3, 2);
 /// Clears every format to each of [`VALUES`] and reads every texel back: fails at the first bit
 /// that differs. One line saying what was checked and how many clears were drawn.
 pub fn float_clears_keep_their_bits(b: &mut WebGpu) -> Result<String, String> {
-    let before = b.slow_paths().count(SlowPath::FloatBitsClearByDraw);
+    let before = b.slow_paths().counts[SlowPath::FloatBitsClearByDraw as usize];
     let (w, h, layers) = SIZE;
     for format in FORMATS {
         let desc = TextureDesc {
@@ -94,7 +94,7 @@ pub fn float_clears_keep_their_bits(b: &mut WebGpu) -> Result<String, String> {
             }
         }
     }
-    let drawn = b.slow_paths().count(SlowPath::FloatBitsClearByDraw) - before;
+    let drawn = b.slow_paths().counts[SlowPath::FloatBitsClearByDraw as usize] - before;
     Ok(format!(
         "float clears: {:?} to {} values each, every bit kept, {drawn} clears drawn",
         FORMATS,

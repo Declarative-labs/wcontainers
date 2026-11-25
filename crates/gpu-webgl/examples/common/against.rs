@@ -86,7 +86,7 @@ fn r32float_filtered_in_the_program_without_filtering(
     slow: &SlowPaths,
 ) -> Result<(), String> {
     let filterable = caps.formats.uses[Format::R32Float as usize].contains(FormatUse::FILTER);
-    if !filterable && slow.count(SlowPath::FilterInShader) == 0 {
+    if !filterable && slow.counts[SlowPath::FilterInShader as usize] == 0 {
         return Err("r32float is not filterable, but no FilterInShader was counted".into());
     }
     Ok(())

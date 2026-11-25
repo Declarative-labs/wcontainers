@@ -1064,7 +1064,7 @@ impl<B: Gpu> Device<B> {
         let slice = self.gpu(slice)?;
         let id = self.id();
         let slice = Kept::new(slice, id, Object::Texture, &self.graveyard);
-        self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        self.backend.record_slow_path(SlowPath::ReinterpretCopy);
         let cleared =
             self.backend
                 .clear_texture(&slice.handle, &desc, view.format, 0..1, 0..1, value);
@@ -1447,7 +1447,7 @@ impl<B: Gpu> Device<B> {
         if bytes == 0 {
             return Ok((0, 0));
         }
-        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.backend.record_slow_path(SlowPath::ReadBackWait);
         self.settle();
         let handle = buffer.handle();
         let rb = self.backend.read_back(&ReadSource::Buffer {
@@ -1628,7 +1628,7 @@ impl<B: Gpu> Device<B> {
         if self.ctx.pass_open
             && (meets(&written, &self.ctx.pass_read) || meets(&read, &self.ctx.pass_written))
         {
-            self.backend.slow_paths().hit(SlowPath::UsageScopeSplit);
+            self.backend.record_slow_path(SlowPath::UsageScopeSplit);
             self.end_pass();
         }
         if !self.ctx.pass_open {
@@ -1690,7 +1690,7 @@ impl<B: Gpu> Device<B> {
         // Targets on twins of their textures start from the texture's texels.
         for t in targets.iter().flatten() {
             if t.copied() && clear_of(t).is_none() {
-                self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+                self.backend.record_slow_path(SlowPath::ReinterpretCopy);
                 self.copy_twin(t, true);
             }
         }
@@ -1879,7 +1879,7 @@ impl<B: Gpu> Device<B> {
 
     /// An indirect dispatch's group counts read back (`IndirectReadBack`), for pipeline statistics.
     fn read_dispatch(&mut self, args: &Buffer<B>, offset: u32) -> Result<[u32; DISPATCH_AXES]> {
-        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        self.backend.record_slow_path(SlowPath::IndirectReadBack);
         self.settle();
         let handle = args.handle();
         let mut bytes = [0u8; DISPATCH_AXES * ARGUMENT_WORD_BYTES];
@@ -1906,7 +1906,7 @@ impl<B: Gpu> Device<B> {
         offset: u32,
         indexed: bool,
     ) -> Result<(Range, u32, u32)> {
-        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        self.backend.record_slow_path(SlowPath::IndirectReadBack);
         self.settle();
         let size = indirect_bytes(indexed) as usize;
         let handle = args.handle();
@@ -2113,7 +2113,7 @@ impl<B: Gpu> Device<B> {
     /// Refused: a vertex and pixel program pair passing more values than the back end's
     /// inter-stage locations hold after moving them (`VaryingsBeyondLimit`).
     fn varyings_beyond_limit<T>(&mut self) -> Result<T> {
-        self.backend.slow_paths().hit(SlowPath::VaryingsBeyondLimit);
+        self.backend.record_slow_path(SlowPath::VaryingsBeyondLimit);
         not_implemented(VARYINGS_BEYOND_LIMIT)
     }
 
@@ -2232,7 +2232,7 @@ impl<B: Gpu> Device<B> {
         }
         (v.decoded, v.decoded_formats) = self.decoded_slots(stage, s);
         if v.stencil != 0 {
-            self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
+            self.backend.record_slow_path(SlowPath::SwizzleInShader);
         }
         if matches!(stage, VERTEX | PIXEL) {
             v.constants_as_storage = self.constants_past_declared(stage, s);
@@ -2314,7 +2314,7 @@ impl<B: Gpu> Device<B> {
     /// Counts the slow paths `s`'s program takes by itself, whatever its variant.
     pub(super) fn program_paths(&mut self, s: &Shader<B>) {
         for &path in &s.reflection.slow_paths {
-            self.backend.slow_paths().hit(path);
+            self.backend.record_slow_path(path);
         }
     }
 
@@ -2419,7 +2419,7 @@ impl<B: Gpu> Device<B> {
         if slots == 0 {
             return (0, 0);
         }
-        self.backend.slow_paths().hit(SlowPath::NormAsInteger);
+        self.backend.record_slow_path(SlowPath::NormAsInteger);
         (slots, self.format_list_id(formats))
     }
 
@@ -2732,7 +2732,7 @@ impl<B: Gpu> Device<B> {
 
     /// Moves a buffer into a back-end buffer of `size` bytes whose bytes past its own are zero.
     fn grow(&mut self, b: &Buffer<B>, size: u64) -> Result<()> {
-        self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+        self.backend.record_slow_path(SlowPath::ConstantBufferGrown);
         self.settle();
         let old = b.size.get();
         let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size));
@@ -2803,7 +2803,7 @@ impl<B: Gpu> Device<B> {
             self.settle();
             match &w.copy {
                 WindowCopy::Buffer(twin) => {
-                    self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+                    self.backend.record_slow_path(SlowPath::ConstantBufferGrown);
                     if length > 0 {
                         self.backend
                             .copy_buffer(&c.handle(), offset, &twin.handle, 0, length);
@@ -2994,8 +2994,7 @@ impl<B: Gpu> Device<B> {
         if copy.copied.get() != Some(source) {
             self.settle();
             self.backend
-                .slow_paths()
-                .hit(SlowPath::TexelBufferAsTexture);
+                .record_slow_path(SlowPath::TexelBufferAsTexture);
             self.copy_rows(&b.handle(), 0, texels, &copy.texture.handle);
             copy.copied.set(Some(source));
         }
@@ -3070,7 +3069,7 @@ impl<B: Gpu> Device<B> {
             (any(|v| v.filter_in_shader != 0), SlowPath::FilterInShader),
         ];
         for (_, path) in paths.iter().filter(|(taken, _)| *taken) {
-            self.backend.slow_paths().hit(*path);
+            self.backend.record_slow_path(*path);
         }
     }
 
@@ -3153,8 +3152,7 @@ impl<B: Gpu> Device<B> {
         };
         if cs.typed.iter().any(|t| t.buffer) {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::TexelBufferAsStorage);
+                .record_slow_path(SlowPath::TexelBufferAsStorage);
         }
         let helper_set = self.compute_helpers(&helpers)?;
         if !self.queries.statistics.is_empty() {
@@ -3407,7 +3405,7 @@ impl<B: Gpu> Device<B> {
         self.helper_blocks = None;
         self.compute_helpers = None;
         if v.twin.is_some() {
-            self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+            self.backend.record_slow_path(SlowPath::ReinterpretCopy);
             self.copy_twin(v, true);
         }
         for (&(origin, end), &offset) in boxes.iter().zip(&offsets) {
@@ -4235,8 +4233,7 @@ impl<B: Gpu> Device<B> {
             }
         };
         self.backend
-            .slow_paths()
-            .hit(SlowPath::EarlyTestsPerPrimitive);
+            .record_slow_path(SlowPath::EarlyTestsPerPrimitive);
         let targets = self.ctx.targets.clone();
         let ps = self.ctx.ps.clone();
         let mut r = Ok(());
@@ -4498,8 +4495,7 @@ impl<B: Gpu> Device<B> {
                 HelperValue::TextureLevels { texture }
                 | HelperValue::TextureSamples { texture } => {
                     self.backend
-                        .slow_paths()
-                        .hit(SlowPath::TextureInfoInHelpers);
+                        .record_slow_path(SlowPath::TextureInfoInHelpers);
                     let view = match self.ctx.resources[stage]
                         .get(texture as usize)
                         .and_then(Option::as_deref)
@@ -4592,7 +4588,7 @@ impl<B: Gpu> Device<B> {
             .iter()
             .any(|h| h.value == HelperValue::DrawBase)
         {
-            self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+            self.backend.record_slow_path(SlowPath::DrawBaseInHelpers);
         }
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut offsets = [0u64; 2];
@@ -4931,7 +4927,7 @@ impl<B: Gpu> Device<B> {
         };
         let shader_viewport = self.viewport_in_shader();
         if shader_viewport.is_some() {
-            self.backend.slow_paths().hit(SlowPath::ViewportInShader);
+            self.backend.record_slow_path(SlowPath::ViewportInShader);
         }
         let vk = StageVariant {
             viewport_adjust: shader_viewport.is_some(),
@@ -4970,12 +4966,11 @@ impl<B: Gpu> Device<B> {
         });
         if clip.is_some() {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::ClipDistanceInShader);
+                .record_slow_path(SlowPath::ClipDistanceInShader);
         }
         let pk = if early || clip.is_some() {
             if early {
-                self.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+                self.backend.record_slow_path(SlowPath::EarlyTestsInShader);
             }
             StageVariant {
                 samples: target_samples,
@@ -4985,20 +4980,19 @@ impl<B: Gpu> Device<B> {
             pk
         };
         if clamps {
-            self.backend.slow_paths().hit(SlowPath::DepthClampInShader);
+            self.backend.record_slow_path(SlowPath::DepthClampInShader);
         }
         if depth_bias {
-            self.backend.slow_paths().hit(SlowPath::DepthBiasInShader);
+            self.backend.record_slow_path(SlowPath::DepthBiasInShader);
         }
         self.count_sampling_in_shader(&[&vk, &pk]);
         if vk.from_arguments {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::DrawBaseFromArguments);
+                .record_slow_path(SlowPath::DrawBaseFromArguments);
         }
         if vk.pulled != 0 {
             for path in self.ctx.layout.iter().flat_map(|l| &l.pulled_paths) {
-                self.backend.slow_paths().hit(*path);
+                self.backend.record_slow_path(*path);
             }
         }
         if vs
@@ -5008,8 +5002,7 @@ impl<B: Gpu> Device<B> {
             .any(|t| t.buffer)
         {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::TexelBufferAsStorage);
+                .record_slow_path(SlowPath::TexelBufferAsStorage);
         }
         if self.ctx.hs.is_some() || self.ctx.ds.is_some() {
             return self.draw_tessellated(
@@ -5086,7 +5079,7 @@ impl<B: Gpu> Device<B> {
         self.ctx.pulled_set = vk.pulled;
         self.update_set(PIXEL, &[], &helpers[1].relocated)?;
         for r in helpers.iter().flat_map(|h| &h.relocated) {
-            self.backend.slow_paths().hit(match r.read_as {
+            self.backend.record_slow_path(match r.read_as {
                 ConstantsReadAs::Storage => SlowPath::ConstantsAsStorage,
                 ConstantsReadAs::Texture => SlowPath::ConstantsAsTexture,
             });
@@ -5151,7 +5144,7 @@ impl<B: Gpu> Device<B> {
                 let Some((t, list)) = adjacency_indices(self.ctx.topology, count) else {
                     return not_implemented("a topology without a geometry or hull shader");
                 };
-                self.backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+                self.backend.record_slow_path(SlowPath::AdjacencyDropped);
                 let bytes: Vec<u8> = list.iter().flat_map(|i| i.to_le_bytes()).collect();
                 let mut offsets = [0u64];
                 let ring = self.backend.write_buffer_ring(
@@ -5962,14 +5955,14 @@ impl<B: Gpu> Device<B> {
                 self.flush();
                 return Err(Error::StillDrawing);
             }
-            self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            self.backend.record_slow_path(SlowPath::ReadBackWait);
             self.backend.wait_read(&rb);
             if let Some(s) = &stencil_rb {
                 self.backend.wait_read(s);
             }
         }
         if !reads {
-            self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
+            self.backend.record_slow_path(SlowPath::StagingRefreshed);
         }
         match (stencil_rb, second.map(|s| s.1)) {
             (None, _) => self.backend.finish_read(rb, shadow),
@@ -6026,7 +6019,7 @@ impl<B: Gpu> Device<B> {
             return;
         }
         self.before_write();
-        self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
+        self.backend.record_slow_path(SlowPath::MappedUploadWhole);
         match resource {
             Resource::Buffer(b) => {
                 b.writes.set(b.writes.get() + 1);

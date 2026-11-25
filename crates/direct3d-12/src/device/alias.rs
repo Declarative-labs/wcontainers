@@ -150,7 +150,7 @@ impl<B: Gpu> Device<B> {
             self.stamp += 1;
             r.written = self.stamp;
         }
-        self.backend.slow_paths().hit(SlowPath::DepthWrittenByDraw);
+        self.backend.record_slow_path(SlowPath::DepthWrittenByDraw);
         Ok((self.make_twin(id, depth, dxgi_depth)?, depth))
     }
 
@@ -283,7 +283,7 @@ impl<B: Gpu> Device<B> {
             } else {
                 SlowPath::AliasCopied
             };
-            self.backend.slow_paths().hit(path);
+            self.backend.record_slow_path(path);
             for o in from {
                 self.alias_copy(o, id)?;
             }

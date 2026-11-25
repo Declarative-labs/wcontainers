@@ -7,6 +7,7 @@ use std::hash::Hash;
 use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
     DispatchGroups, DrawCall, DrawRange, FORMAT_FACTS, Features, FormatKind, FormatUse, GpuError,
@@ -1171,13 +1172,13 @@ impl WebGpu {
                     pass.rp.end_occlusion_query();
                     let slot = set.0.take(page).expect("the page has room");
                     set.0.carry(index, page, slot, false);
-                    self.slow.hit(SlowPath::QueriesSegmented);
+                    self.record_slow_path(SlowPath::QueriesSegmented);
                     carried = Some(slot);
                 }
                 pass.page = page;
             }
         }
-        self.slow.hit(why);
+        self.record_slow_path(why);
         drop(pass.rp);
         for t in &pass.packed {
             self.quantise(t);
@@ -1455,7 +1456,7 @@ impl WebGpu {
             let (id, pipeline, layout) = match self.caches.pipelines.get(&key) {
                 Some(p) => p.clone(),
                 None => {
-                    self.slow.hit(SlowPath::PipelineMiss);
+                    self.record_slow_path(SlowPath::PipelineMiss);
                     let p = self.render_pipeline(
                         &key,
                         &PrepareDesc {
@@ -1665,7 +1666,7 @@ impl WebGpu {
         let (pipeline, layout) = match self.caches.computes.get(&(*id, keys)) {
             Some(p) => p.clone(),
             None => {
-                self.slow.hit(SlowPath::PipelineMiss);
+                self.record_slow_path(SlowPath::PipelineMiss);
                 let layout = self
                     .program_layout(&call.program.0, keys)
                     .map_err(GpuError::Invalid)?;

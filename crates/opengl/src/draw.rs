@@ -203,7 +203,7 @@ impl<B: Gpu> Programs<B> {
             Entry::Vacant(slot) => slot.insert(convert(backend, shader, variant)?),
         };
         for &path in &built.slow_paths {
-            backend.slow_paths().hit(path);
+            backend.record_slow_path(path);
         }
         Ok(built)
     }
@@ -559,7 +559,7 @@ fn fit_input_kinds<B: Gpu>(
     if mismatched.is_empty() {
         return Ok(vertex);
     }
-    backend.slow_paths().hit(SlowPath::VertexPulledInShader);
+    backend.record_slow_path(SlowPath::VertexPulledInShader);
     let mut pulled = vertex.pulled.clone();
     pulled.extend(mismatched);
     pulled.sort_unstable_by_key(|&(location, _)| location);
@@ -1698,7 +1698,7 @@ pub(crate) fn binding_sets<B: Gpu>(
             if offset + size > end {
                 // Read past the buffer's end as zero: the bound bytes moved into a buffer of
                 // the declared size.
-                backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+                backend.record_slow_path(SlowPath::ConstantBufferGrown);
                 let size = size.next_multiple_of(STORAGE_WORD);
                 let grown = backend
                     .create_buffer(&BufferDesc {
@@ -1875,7 +1875,7 @@ pub(crate) fn binding_sets<B: Gpu>(
                 }
                 SlotKind::Storage if views_buffer::<B>(bound_image(bound, b.register)?) => {
                     let image = bound_image(bound, b.register)?;
-                    backend.slow_paths().hit(SlowPath::TexelBufferAsStorage);
+                    backend.record_slow_path(SlowPath::TexelBufferAsStorage);
                     BindingResource::StorageBuffer {
                         range: image_buffer::<B>(image, storage_align)?.0,
                         writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
@@ -2205,7 +2205,7 @@ fn draw_indirect<B: Gpu>(
     let screen = context.screen();
     {
         let mut backend = screen.backend();
-        backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        backend.record_slow_path(SlowPath::IndirectReadBack);
         context
             .tracker
             .close(&mut backend)
@@ -2302,8 +2302,7 @@ fn draw<B: Gpu>(
         context
             .screen()
             .backend()
-            .slow_paths()
-            .hit(SlowPath::VertexStorageAsCompute);
+            .record_slow_path(SlowPath::VertexStorageAsCompute);
         gs = &**pass_through;
         geometry_shader = Some(&**pass_through);
     }
@@ -2417,7 +2416,7 @@ fn draw<B: Gpu>(
     // geometry program rewritten to make them.
     let (vs, tes, gs, point_coord, squares_block_at) = match squares {
         Some((before, geometry, at, block)) => {
-            backend.slow_paths().hit(SlowPath::PointsAsQuads);
+            backend.record_slow_path(SlowPath::PointsAsQuads);
             if before.is_null() {
                 (vs, tes, geometry, Some(at), block)
             } else if tessellated {
@@ -2431,10 +2430,10 @@ fn draw<B: Gpu>(
     // A geometry program the API bound, rewritten to make squares, keeps its own variant.
     let own_squares = point_coord.is_none() || geometry_shader.is_some();
     if transform.half_z {
-        backend.slow_paths().hit(SlowPath::ClipDepthRewrite);
+        backend.record_slow_path(SlowPath::ClipDepthRewrite);
     }
     if transform.reverse_z {
-        backend.slow_paths().hit(SlowPath::ViewportDepthFlip);
+        backend.record_slow_path(SlowPath::ViewportDepthFlip);
     }
     let fragment_shader = fragment_program;
     let fragment = Variant {
@@ -2464,7 +2463,7 @@ fn draw<B: Gpu>(
         ..Variant::default()
     };
     if fragment.second_source.is_some() {
-        backend.slow_paths().hit(SlowPath::BlendInShader);
+        backend.record_slow_path(SlowPath::BlendInShader);
     }
     let programs = &mut context.programs;
     // The fragment program first: the last stage's outputs are interpolated as its inputs.
@@ -2585,22 +2584,22 @@ fn draw<B: Gpu>(
     let first_id = first_shader.id;
     programs.built_for(backend, first_shader, &first_variant)?;
     if !first_variant.swizzles.is_empty() || !fragment.swizzles.is_empty() {
-        backend.slow_paths().hit(SlowPath::SwizzleInShader);
+        backend.record_slow_path(SlowPath::SwizzleInShader);
     }
     if first_variant.border != 0 || fragment.border != 0 {
-        backend.slow_paths().hit(SlowPath::BorderInShader);
+        backend.record_slow_path(SlowPath::BorderInShader);
     }
     if first_variant.lod_bias != 0 || fragment.lod_bias != 0 {
-        backend.slow_paths().hit(SlowPath::LodBiasInShader);
+        backend.record_slow_path(SlowPath::LodBiasInShader);
     }
     if !vertex.packed.is_empty() {
-        backend.slow_paths().hit(SlowPath::VertexFormatConverted);
+        backend.record_slow_path(SlowPath::VertexFormatConverted);
     }
     let made = if tessellated {
         let Some(d) = draws.first() else {
             return Ok(());
         };
-        backend.slow_paths().hit(SlowPath::TessellationAsCompute);
+        backend.record_slow_path(SlowPath::TessellationAsCompute);
         let control = Variant {
             swizzles: swizzles(context.stages.get(Stage::TessControl)),
             nearest: nearest_samplers(context.stages.get(Stage::TessControl)),
@@ -2656,7 +2655,7 @@ fn draw<B: Gpu>(
         }
     } else if gs.is_null() {
         for path in paths {
-            backend.slow_paths().hit(path);
+            backend.record_slow_path(path);
         }
         if context.streams.active() {
             for d in draws {
@@ -2955,7 +2954,7 @@ fn draw<B: Gpu>(
         None => 1,
     };
     if runs > 1 {
-        backend.slow_paths().hit(SlowPath::LayerSplit);
+        backend.record_slow_path(SlowPath::LayerSplit);
         if !context.framebuffer.twins.is_empty() {
             return refused(format_args!(
                 "a layered target drawn through a twin (not built)"
@@ -3381,7 +3380,7 @@ fn helper_indices<B: Gpu>(
         (widened, SlowPath::IndexWidened),
     ];
     for (_, path) in paths.into_iter().filter(|&(taken, _)| taken) {
-        backend.slow_paths().hit(path);
+        backend.record_slow_path(path);
     }
     let rewritten = if !indexed {
         indices::generated(mode, d.start, d.count, true, provoking, provoking)?
@@ -4385,7 +4384,7 @@ fn face_passes<'a, B: Gpu>(
                 .faces
                 .as_ref()
                 .ok_or("a rasterizer state without its blocks a face")?;
-            backend.slow_paths().hit(SlowPath::StencilFacesSplit);
+            backend.record_slow_path(SlowPath::StencilFacesSplit);
             vec![face(FRONT, front), face(BACK, back)]
         }
     })
@@ -4531,7 +4530,7 @@ fn draw_ranges<B: Gpu>(
         host: host_provoking,
     };
     if drops_adjacency {
-        backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+        backend.record_slow_path(SlowPath::AdjacencyDropped);
     }
     for d in draws {
         if d.count == 0 {
@@ -4539,7 +4538,7 @@ fn draw_ranges<B: Gpu>(
         }
         if index_size == 0 && (provoking.is_some() || drops_adjacency || counted_fan) {
             if provoking.is_some() {
-                backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+                backend.record_slow_path(SlowPath::ProvokingRewrite);
             }
             let p = provoking.unwrap_or(same);
             // Lists with adjacency, whose adjacent vertices are then dropped.
@@ -4618,7 +4617,7 @@ fn draw_ranges<B: Gpu>(
                     (needs_widening(backend, format), SlowPath::IndexWidened),
                 ];
                 for (_, path) in paths.into_iter().filter(|&(taken, _)| taken) {
-                    backend.slow_paths().hit(path);
+                    backend.record_slow_path(path);
                 }
                 let Provoking { api, host } = provoking.unwrap_or(same);
                 let lists = lists_only || drops_adjacency;
@@ -4649,7 +4648,7 @@ fn draw_ranges<B: Gpu>(
             }
             let widened;
             let (indices, format) = if needs_widening(backend, format) {
-                backend.slow_paths().hit(SlowPath::IndexWidened);
+                backend.record_slow_path(SlowPath::IndexWidened);
                 widened = widen(indices, restart);
                 (widened.as_slice(), IndexFormat::U16)
             } else {

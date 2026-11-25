@@ -701,8 +701,7 @@ pub fn condition_holds<B: Gpu>(context: &mut Context<B>) -> bool {
     context
         .screen()
         .backend()
-        .slow_paths()
-        .hit(SlowPath::PredicationWait);
+        .record_slow_path(SlowPath::PredicationWait);
     if let Some(counted) = &mut query.counted {
         let mut backend = context.screen().backend();
         return match counted_value(&mut context.tracker, &mut backend, counted, true) {

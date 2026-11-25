@@ -428,7 +428,7 @@ pub fn kept(format: Format, texels: &[u8]) -> Vec<u8> {
 /// X as one).
 pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let texels = &kept(format, written)[..];
-    let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let waits = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     let h = SIZE.1 as usize;
     let row = row_bytes(format, SIZE.0);
     let len = row * h;
@@ -519,7 +519,7 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let got = read(b, &at(&back, 4, 2), part, want.len());
     ensure!(got == want, "{format:?}: copied from {other:?}");
     ensure!(
-        b.slow_paths().count(SlowPath::HostCopyReadBack) == waits,
+        b.slow_paths().counts[SlowPath::HostCopyReadBack as usize] == waits,
         "{format:?}: copies with a buffer or between textures waited for the host"
     );
     volume_copies(b, format, texels)?;
@@ -530,7 +530,7 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
 /// slice the texels with its rows turned by its number; slice 0 stays as made. No copy waits for
 /// the host.
 fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
-    let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let waits = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     let (row, h, pitch) = (row_bytes(format, SIZE.0), SIZE.1 as usize, 256usize);
     let slices: Vec<u8> = (0..3)
         .flat_map(|s| {
@@ -610,7 +610,7 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
         out[s..] == kept_slices[s..],
         "{format:?}: slices 1 and 2 of a 3D texture copied through buffers"
     );
-    let now = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let now = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     ensure!(
         now == waits,
         "{format:?}: copies with a buffer waited for the host {} times",
@@ -686,7 +686,7 @@ pub fn three_channels(b: &mut B, seed: u64, cases: u32) -> Result<String> {
             "{format:?} declares {uses:?}"
         );
     }
-    let hits = b.slow_paths().count(SlowPath::FormatConverted);
+    let hits = b.slow_paths().counts[SlowPath::FormatConverted as usize];
     for (i, format) in THREE_CHANNEL.into_iter().enumerate() {
         for c in 0..u64::from(cases) {
             let texels = texels(format, seed + c * THREE_CHANNEL.len() as u64 + i as u64);
@@ -700,7 +700,7 @@ pub fn three_channels(b: &mut B, seed: u64, cases: u32) -> Result<String> {
         }
     }
     ensure!(
-        b.slow_paths().count(SlowPath::FormatConverted) > hits,
+        b.slow_paths().counts[SlowPath::FormatConverted as usize] > hits,
         "FormatConverted was not counted"
     );
     ensure!(
@@ -811,7 +811,7 @@ pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
             "{format:?} drawn loads {l} from its bytes"
         );
     }
-    let hits = b.slow_paths().count(SlowPath::FormatConverted);
+    let hits = b.slow_paths().counts[SlowPath::FormatConverted as usize];
     ensure!(hits > 0, "FormatConverted was not counted");
     ensure!(
         b.status() == DeviceStatus::Ok,

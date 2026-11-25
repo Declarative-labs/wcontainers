@@ -108,7 +108,7 @@ fn sequential_blit_buffers_move_down_at_each_present() {
     assert!(at("end_pass") < at("copy_texture") && at("copy_texture") < at("submit"));
     assert_eq!(
         b.slow_paths()
-            .count(wcontainers_gpu::SlowPath::SequentialBuffersCopied),
+            .counts[wcontainers_gpu::SlowPath::SequentialBuffersCopied as usize],
         1
     );
     // One buffer moves nowhere.

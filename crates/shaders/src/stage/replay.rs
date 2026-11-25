@@ -632,7 +632,7 @@ impl<B: Gpu> GeometryReplay<B> {
             return Ok(None);
         }
         if self.geometry.is_some() {
-            backend.slow_paths().hit(SlowPath::GeometryAsReplay);
+            backend.record_slow_path(SlowPath::GeometryAsReplay);
         }
         let limits = backend.caps().limits;
         let too_many = |_| GpuError::OutOfMemory;
@@ -724,7 +724,7 @@ impl<B: Gpu> GeometryReplay<B> {
                     crate::variant::LINE_REACH_ALONG,
                 ),
             };
-            backend.slow_paths().hit(path);
+            backend.record_slow_path(path);
             // A back end without clip depth from zero draws vertex programs converted with
             // `CLIP_DEPTH_REWRITE`.
             let clip_zero_one = backend
@@ -784,7 +784,7 @@ impl<B: Gpu> GeometryReplay<B> {
         if let (Some(replayed), Some((width, rows))) = (&self.primitives, rows) {
             // Each primitive's vertices, or where its cull distances drop it the empty record's, or
             // each with its number.
-            backend.slow_paths().hit(match replayed.numbered {
+            backend.record_slow_path(match replayed.numbered {
                 true => SlowPath::PrimitiveIdAsGeometry,
                 false => SlowPath::CullDistanceAsGeometry,
             });
@@ -1158,7 +1158,7 @@ fn stream_out<B: Gpu>(
     vertices: u32,
     (stream, streams): (u32, u32),
 ) -> Result<(), StageError> {
-    backend.slow_paths().hit(SlowPath::StreamOutAfterReplay);
+    backend.record_slow_path(SlowPath::StreamOutAfterReplay);
     let filled_words = STREAM_BUFFERS + 2 * streams as usize;
     let filled_bytes = filled_words as u64 * u64::from(WORD);
     if targets.filled.size < filled_bytes {

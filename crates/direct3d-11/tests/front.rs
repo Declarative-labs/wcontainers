@@ -801,7 +801,7 @@ fn topology_scene() {
     );
     assert!(draws[5].contains("U32))"), "{}", draws[5]);
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::AdjacencyDropped),
+        dev.backend.slow_paths().counts[SlowPath::AdjacencyDropped as usize],
         4
     );
     assert!(
@@ -932,7 +932,7 @@ fn dynamic_constants_upload_whole_on_unmap() {
             .ends_with("at 0 64 bytes Discard")
     );
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::MappedUploadWhole),
+        dev.backend.slow_paths().counts[SlowPath::MappedUploadWhole as usize],
         1
     );
     assert!(matches!(
@@ -1158,7 +1158,7 @@ fn vertex_ids_read_the_draws_bases_from_the_helper_constants() {
     assert_eq!(sets[1], sets[2]);
     assert_ne!(sets[0], sets[1]);
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::DrawBaseInHelpers),
+        dev.backend.slow_paths().counts[SlowPath::DrawBaseInHelpers as usize],
         5
     );
 
@@ -1194,7 +1194,7 @@ fn vertex_ids_read_the_draws_bases_from_the_helper_constants() {
         dev.backend.log.last()
     );
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::IndirectReadBack),
+        dev.backend.slow_paths().counts[SlowPath::IndirectReadBack as usize],
         1
     );
     // A buffer not made for arguments, an offset off a word or arguments past the end are invalid
@@ -1265,7 +1265,7 @@ fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_as_
         assert_eq!(
             dev.backend
                 .slow_paths()
-                .count(SlowPath::AntialiasedLinesAsQuads),
+                .counts[SlowPath::AntialiasedLinesAsQuads as usize],
             u64::from(rectangles)
         );
     }
@@ -1303,11 +1303,11 @@ fn lines_and_points_are_drawn_without_the_depth_bias_as_direct3d_draws_them() {
             })
             .unwrap();
         dev.rs_set_state(Some(state));
-        let before = dev.backend.slow_paths().count(SlowPath::DepthBiasInShader);
+        let before = dev.backend.slow_paths().counts[SlowPath::DepthBiasInShader as usize];
         dev.ia_set_primitive_topology(topology::TRIANGLELIST);
         dev.draw(3, 0);
         assert_eq!(
-            dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+            dev.backend.slow_paths().counts[SlowPath::DepthBiasInShader as usize],
             before
         );
         for t in [topology::LINELIST, topology::POINTLIST] {
@@ -1316,7 +1316,7 @@ fn lines_and_points_are_drawn_without_the_depth_bias_as_direct3d_draws_them() {
         }
         assert!(dev.removed.is_none());
         assert_eq!(
-            dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+            dev.backend.slow_paths().counts[SlowPath::DepthBiasInShader as usize],
             before
         );
         // Each draw's raster block's bias: the triangle's, then none.
@@ -1479,7 +1479,7 @@ fn a_negative_fractional_viewport_origin_below_11_0_is_mapped_in_the_vertex_prog
             .find(|l| l.starts_with("draw "))
             .unwrap()
             .clone();
-        let counted = dev.backend.slow_paths().count(SlowPath::ViewportInShader);
+        let counted = dev.backend.slow_paths().counts[SlowPath::ViewportInShader as usize];
         if mapped {
             // The enclosing whole-pixel viewport, cut to the pixels whose centres the API's covers.
             assert!(
@@ -1696,7 +1696,7 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
     assert_eq!(
         dev.backend
             .slow_paths()
-            .count(SlowPath::ConstantBufferGrown),
+            .counts[SlowPath::ConstantBufferGrown as usize],
         1
     );
     // Its whole writes cover the grown bytes, so those past the program's stay zero.
@@ -2042,7 +2042,7 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
             .iter()
             .any(|l| l.starts_with("read_back"))
     );
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 0);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize], 0);
 
     // A write-only map reads back only what the GPU wrote since the shadow was filled.
     let writable = staging(&mut dev, cpu::WRITE);
@@ -2055,7 +2055,7 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
             .any(|l| l.starts_with("read_back"))
     );
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::StagingRefreshed),
+        dev.backend.slow_paths().counts[SlowPath::StagingRefreshed as usize],
         0
     );
     dev.copy_subresource_region(&writable, 0, [0; 3], &src, 0, None)
@@ -2064,10 +2064,10 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
     assert_eq!(mapped.data[0].get(), 7, "the GPU's bytes are kept");
     dev.unmap(&writable, 0);
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::StagingRefreshed),
+        dev.backend.slow_paths().counts[SlowPath::StagingRefreshed as usize],
         1
     );
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 1);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize], 1);
 }
 
 #[test]
@@ -2414,7 +2414,7 @@ fn a_sampler_with_a_level_of_detail_bias_is_read_through_a_program_that_adds_it(
         .filter(|l| l.contains(&format!(" {fragment}=uniform ")))
         .count();
     assert_eq!(sets, 1, "{log:#?}");
-    assert!(dev.backend.slow_paths().count(SlowPath::LodBiasInShader) >= 2);
+    assert!(dev.backend.slow_paths().counts[SlowPath::LodBiasInShader as usize] >= 2);
 
     // Without a bias the plain program draws again, with no helper block.
     dev.set_samplers(PIXEL, 0, &[None]).unwrap();
@@ -2477,7 +2477,7 @@ fn border_and_mirror_once_addressing_the_back_end_lacks_is_applied_in_the_progra
     let colour = [0.25f32, 0.5, 0.75, 1.0].map(f32::to_bits);
     assert!(words.windows(4).any(|w| w == colour), "{words:?}");
     assert!(words.contains(&1), "R32_FLOAT has red alone: {words:?}");
-    assert!(dev.backend.slow_paths().count(SlowPath::BorderInShader) >= 2);
+    assert!(dev.backend.slow_paths().counts[SlowPath::BorderInShader as usize] >= 2);
 
     // Mirror-once alone samples natively through the clamping sampler, the program mirroring.
     let mirror = SamplerDesc {
@@ -2501,7 +2501,7 @@ fn border_and_mirror_once_addressing_the_back_end_lacks_is_applied_in_the_progra
     let state = [1, 1, 1, 4, 0, 0, 1, 0, 32f32.to_bits()];
     assert!(words.windows(9).any(|w| w == state), "{words:?}");
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::MirrorOnceInShader),
+        dev.backend.slow_paths().counts[SlowPath::MirrorOnceInShader as usize],
         1
     );
 }
@@ -2542,7 +2542,7 @@ fn a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler() {
     assert_eq!(sets, 1, "{log:#?}");
     let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
     assert_eq!(helper_f32(&dev, &log, fragment, 0), Some(1.5), "{log:#?}");
-    assert!(dev.backend.slow_paths().count(SlowPath::MinLodClamp) >= 2);
+    assert!(dev.backend.slow_paths().counts[SlowPath::MinLodClamp as usize] >= 2);
 
     // A clamp at the view's first level clamps nothing: the plain program draws again.
     texture.min_lod.set(0.0);
@@ -2599,7 +2599,7 @@ fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     dev.draw(3, 0);
     assert!(dev.removed.is_none());
     assert_eq!(draws(&dev), 1);
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::FilterInShader as usize], 0);
     // An empty slot reads Direct3D's default sampler, which filters linearly: the program
     // filters from loads, reading the default sampler's state.
     dev.set_samplers(PIXEL, 0, &[None]).unwrap();
@@ -2612,7 +2612,7 @@ fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     let words = helper_words(&dev, &log, fragment);
     let state = [1, 1, 1, 2, 2, 2, 1, 0, 32f32.to_bits()];
     assert!(words.windows(9).any(|w| w == state), "{words:?}");
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::FilterInShader), 1);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::FilterInShader as usize], 1);
 }
 
 #[test]
@@ -2716,7 +2716,7 @@ fn a_depth_bias_clamp_the_back_end_lacks_is_added_by_the_pixel_program() {
     let values = [1000.0f32, 2.0, 0.001, 1.0 / 16_777_215.0].map(f32::to_bits);
     assert!(words.windows(4).any(|w| w == values), "{words:?}");
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+        dev.backend.slow_paths().counts[SlowPath::DepthBiasInShader as usize],
         1
     );
     // Float depth's step varies with the depth: refused by name.
@@ -2901,7 +2901,7 @@ fn a_shader_reading_more_textures_than_the_back_end_has_is_refused_at_creation()
     assert_eq!(
         dev.backend
             .slow_paths()
-            .count(SlowPath::BindingsBeyondLimit),
+            .counts[SlowPath::BindingsBeyondLimit as usize],
         1
     );
     assert_eq!(
@@ -3114,7 +3114,7 @@ fn a_geometry_shader_runs_as_compute_before_the_draw_of_its_output() {
     );
     assert!(log[draw].contains("count: 24"), "{}", log[draw]);
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::GeometryAsCompute),
+        dev.backend.slow_paths().counts[SlowPath::GeometryAsCompute as usize],
         1
     );
     // Without a geometry shader the same draw is drawn as points.
@@ -3199,7 +3199,7 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
     assert_eq!(
         dev.backend
             .slow_paths()
-            .count(SlowPath::TessellationAsCompute),
+            .counts[SlowPath::TessellationAsCompute as usize],
         1
     );
     // Stream output of the domain stage (a geometry shader object made from its bytecode): the
@@ -3242,7 +3242,7 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
     assert!(dispatches >= 4, "{log:#?}");
     assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::StreamOutAsCompute),
+        dev.backend.slow_paths().counts[SlowPath::StreamOutAsCompute as usize],
         1
     );
     dev.gs_set_shader(None);
@@ -3314,7 +3314,7 @@ fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
     );
     assert!(!log.iter().any(|l| l.starts_with("draw ")));
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::StreamOutAsCompute),
+        dev.backend.slow_paths().counts[SlowPath::StreamOutAsCompute as usize],
         1
     );
     // DrawAuto reads the filled size back; the recording back end runs no program, so the target
@@ -3327,7 +3327,7 @@ fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
     dev.draw_auto();
     assert!(dev.removed.is_none());
     assert!(!log_from(&dev, from).iter().any(|l| l.starts_with("draw ")));
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 1);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize], 1);
 }
 
 #[test]
@@ -3378,7 +3378,7 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
             "{log:#?}"
         );
     }
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReinterpretCopy), 2);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReinterpretCopy as usize], 2);
     assert!(dev.removed.is_none());
 }
 
@@ -3467,7 +3467,7 @@ fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_sa
         .collect();
     assert_eq!(copies.len(), 2, "{log:#?}");
     assert!(copies[0] < begins[0] && begins[0] < copies[1] && copies[1] < begins[1]);
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::TargetsSplit), 1);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::TargetsSplit as usize], 1);
 }
 
 #[test]
@@ -3545,9 +3545,9 @@ fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_view
         .flat_map(|l| (0..viewports.len() as u32).map(move |v| [l, v]))
         .collect();
     assert_eq!(runs, expected, "{log:#?}");
-    assert_eq!(dev.backend.slow_paths().count(SlowPath::LayerSplit), 1);
+    assert_eq!(dev.backend.slow_paths().counts[SlowPath::LayerSplit as usize], 1);
     assert_eq!(
-        dev.backend.slow_paths().count(SlowPath::MultiViewportSplit),
+        dev.backend.slow_paths().counts[SlowPath::MultiViewportSplit as usize],
         1
     );
 }
@@ -3595,7 +3595,7 @@ fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
         .unwrap();
     dev.draw(3, 0);
     assert!(dev.removed.is_none(), "{:?}", dev.removed);
-    assert!(dev.backend.slow_paths().count(SlowPath::NormAsInteger) > 0);
+    assert!(dev.backend.slow_paths().counts[SlowPath::NormAsInteger as usize] > 0);
     let mut blend = BlendDesc::default_state();
     blend.targets[0].enable = true;
     let blend = dev.create_blend_state(&blend).unwrap();

@@ -183,7 +183,7 @@ fn program<B: Gpu>(b: &mut B, source: &str) -> Result<B::Program, String> {
     let source = if b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE) {
         source
     } else {
-        b.slow_paths().hit(SlowPath::ClipDepthRewrite);
+        b.record_slow_path(SlowPath::ClipDepthRewrite);
         rewritten = clip_depth_rewrite(source);
         &rewritten
     };
@@ -730,7 +730,7 @@ pub fn draw<B: Gpu>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u8>, 
     }
     let converted = |b: &mut B| {
         let s = b.slow_paths();
-        s.count(SlowPath::FanConverted) + s.count(SlowPath::LoopConverted)
+        s.counts[SlowPath::FanConverted as usize] + s.counts[SlowPath::LoopConverted as usize]
     };
     let before = converted(b);
     let fan = |first, count| IndexSource::Sequential { first, count };

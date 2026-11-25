@@ -370,7 +370,7 @@ impl<B: Gpu> Device<B> {
     /// present, since programs may end without releasing the device.
     pub(crate) fn report_ahead(&mut self) {
         let (drawn, not) = self.ahead.prepared_use();
-        let missed = self.backend.slow_paths().count(SlowPath::PipelineMiss);
+        let missed = self.backend.slow_paths().counts[SlowPath::PipelineMiss as usize];
         let (started, started_drawn) = self.warm.used();
         let counts = UseCounts {
             drawn,

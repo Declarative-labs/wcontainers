@@ -104,7 +104,7 @@ pub fn whole<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Warns once of each slow path the first time it is taken, on the process's error output.
 fn warn_slow_paths<B: Gpu>(backend: &mut B) {
-    for path in backend.slow_paths().take_warnings() {
+    for path in backend.take_slow_path_warnings() {
         eprintln!(
             "{}: slow path: {}",
             DRIVER_NAME.to_string_lossy(),
@@ -118,7 +118,7 @@ fn slow_path_counts<B: Gpu>(backend: &mut B) -> Vec<(&'static str, u64)> {
     let paths = backend.slow_paths();
     SLOW_PATHS
         .iter()
-        .map(|&path| (SLOW_PATH_REASONS[path as usize], paths.count(path)))
+        .map(|&path| (SLOW_PATH_REASONS[path as usize], paths.counts[path as usize]))
         .filter(|&(_, count)| count > 0)
         .collect()
 }
@@ -700,14 +700,14 @@ mod tests {
         let mut backend = Recorder::with_caps(|_| {});
         assert!(slow_path_counts(&mut backend).is_empty());
         for _ in 0..FANS {
-            backend.slow_paths().hit(SlowPath::FanConverted);
+            backend.record_slow_path(SlowPath::FanConverted);
         }
-        backend.slow_paths().hit(SlowPath::PointsAsQuads);
+        backend.record_slow_path(SlowPath::PointsAsQuads);
         assert_eq!(
-            backend.slow_paths().take_warnings(),
+            backend.take_slow_path_warnings(),
             [SlowPath::FanConverted, SlowPath::PointsAsQuads]
         );
-        assert!(backend.slow_paths().take_warnings().is_empty());
+        assert!(backend.take_slow_path_warnings().is_empty());
         assert_eq!(
             slow_path_counts(&mut backend),
             [

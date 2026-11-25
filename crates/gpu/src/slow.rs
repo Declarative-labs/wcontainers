@@ -709,39 +709,17 @@ pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
 /// Counters for every slow path, and the warnings not yet handed to the host.
 #[derive(Clone, Debug)]
 pub struct SlowPaths {
-    counts: [u64; SLOW_PATH_COUNT],
-    unwarned: Vec<SlowPath>,
+    /// How many times each path has been taken, at the path's place in [`SlowPath`].
+    pub counts: [u64; SLOW_PATH_COUNT],
+    /// The paths taken for the first time since the host last took the warnings, in that order.
+    pub unwarned: Vec<SlowPath>,
 }
 
-impl Default for SlowPaths {
-    fn default() -> Self {
-        SlowPaths {
-            counts: [0; SLOW_PATH_COUNT],
-            unwarned: Vec::new(),
-        }
-    }
-}
-
-impl SlowPaths {
-    /// Records one use of `path`. The first use queues a warning.
-    pub fn hit(&mut self, path: SlowPath) {
-        let c = &mut self.counts[path as usize];
-        if *c == 0 {
-            self.unwarned.push(path);
-        }
-        *c += 1;
-    }
-
-    /// How many times `path` has been taken.
-    pub fn count(&self, path: SlowPath) -> u64 {
-        self.counts[path as usize]
-    }
-
-    /// Takes the warnings raised since the last call, for the host's warning hook.
-    pub fn take_warnings(&mut self) -> Vec<SlowPath> {
-        core::mem::take(&mut self.unwarned)
-    }
-}
+/// The counters of a back end that has taken no slow path yet.
+pub const NO_SLOW_PATHS: SlowPaths = SlowPaths {
+    counts: [0; SLOW_PATH_COUNT],
+    unwarned: Vec::new(),
+};
 
 #[cfg(test)]
 mod tests {

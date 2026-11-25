@@ -339,8 +339,7 @@ impl<B: Gpu> Replay<B> {
         let program = d.pixel_counting(pid)?;
         let (off, none, _) = d.counting_blocks()?;
         d.backend
-            .slow_paths()
-            .hit(SlowPath::PixelInvocationsCounted);
+            .record_slow_path(SlowPath::PixelInvocationsCounted);
         Ok(Some((program, off, none)))
     }
 
@@ -367,7 +366,7 @@ impl<B: Gpu> Replay<B> {
             return Ok((0, 0));
         }
         self.settle(d)?;
-        d.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        d.backend.record_slow_path(SlowPath::ReadBackWait);
         let data = d.read_now(id, offset + start, bytes)?;
         let line = self.topology == Topology::LineStrip;
         let (mut vertices, mut prims) = (0, 0);
