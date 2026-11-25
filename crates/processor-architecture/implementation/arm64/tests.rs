@@ -169,9 +169,9 @@ fn run(
     before: ExecutionState<'static, Arm64<User>>,
 ) -> (Processor<()>, Vec<MemoryDelta<'static, Arm64<User>>>) {
     let given = before.memory_mutations.len();
-    let Ok(mut after) = precise.simulate(before);
+    let Ok(mut after) = precise.simulate_state(before);
     let made = after.memory_mutations.split_off(given);
-    (after.processor, made)
+    (after.processor.processor, made)
 }
 
 fn assert_completed(before: &Processor<()>, after: &Processor<()>) {
@@ -1297,4 +1297,122 @@ fn flag_conversions_follow_the_manual() {
     );
     let udf = run_documented(Instruction::Udf, &[], &[], ConditionFlags::empty());
     assert_eq!(udf.exception, Some(Exception::UndefinedInstruction));
+}
+
+#[test]
+fn an_exclusive_load_marks_its_granule_and_a_store_exclusive_there_stores() {
+    let load = encode(Instruction::Ldxr64, &[(RT, 0), (RN, 1)]);
+    let mut before = to_state(load, READ_WRITE, READ_WRITE);
+    before.processor.general_purpose_registers[1] = DATA + 8;
+    let (loaded, _) = run(to_load_store(Instruction::Ldxr64, NO_CHOICES), before);
+    assert_eq!(
+        loaded.exclusive_monitor,
+        ExclusiveMonitor::Exclusive { address: DATA + 8 }
+    );
+    let choices = LoadStoreChoices {
+        failed_store_exclusive: Some(FailedStoreExclusive::ChecksAccess),
+        store_exclusive_overlap: Some(StoreExclusiveOverlap::Runs),
+        ..NO_CHOICES
+    };
+    let store = encode(Instruction::Stxr64, &[(RM, 2), (RT, 3), (RN, 1)]);
+    let at = |address: u64, monitor: ExclusiveMonitor| {
+        let mut before = to_state(store, READ_WRITE, READ_WRITE);
+        before.processor.general_purpose_registers[1] = address;
+        before.processor.general_purpose_registers[3] = 0x1122_3344_5566_7788;
+        before.processor.exclusive_monitor = monitor;
+        run(to_load_store(Instruction::Stxr64, choices), before)
+    };
+    // In the marked 64 bytes the store happens and gives status 0; outside them, or with the monitor open, it fails.
+    let (stored, made) = at(DATA + 0x38, loaded.exclusive_monitor);
+    assert_eq!(stored.general_purpose_registers[2], 0);
+    assert_eq!(stored.exclusive_monitor, ExclusiveMonitor::Open);
+    assert!(
+        made == [MemoryDelta::ValueAssignment {
+            start: DATA + 0x38,
+            bytes: Cow::Owned(0x1122_3344_5566_7788_u64.to_le_bytes().to_vec()),
+        }]
+    );
+    for (address, monitor) in [
+        (DATA + 0x40, loaded.exclusive_monitor),
+        (DATA + 8, ExclusiveMonitor::Open),
+    ] {
+        let (failed, made) = at(address, monitor);
+        assert_eq!(failed.general_purpose_registers[2], 1);
+        assert_eq!(failed.exclusive_monitor, ExclusiveMonitor::Open);
+        assert!(made.is_empty());
+    }
+    let mut before = to_state(encode(Instruction::Clrex, &[]), READ_WRITE, READ_WRITE);
+    before.processor.exclusive_monitor = loaded.exclusive_monitor;
+    let (cleared, _) = run(to_documented(Instruction::Clrex), before);
+    assert_eq!(cleared.exclusive_monitor, ExclusiveMonitor::Open);
+}
+
+#[test]
+fn a_random_number_read_leaves_its_register_and_nzcv_undecided() {
+    let rndr = system_register::SystemRegisterEncoding::new(3, 3, 2, 4, 0).to_field();
+    let word = encode(
+        Instruction::Mrs,
+        &[(RT, 5), (system_register::SYSTEM_REGISTER, rndr)],
+    );
+    for (choices, undecided) in [
+        (system_register::NEOVERSE_V2_SYSTEM_REGISTERS, true),
+        (system_register::OTHER_SYSTEM_REGISTERS, false),
+    ] {
+        let read = PreciseInstruction::<Infallible>::SystemRegisterMove {
+            direction: AccessDirection::Read,
+            choices,
+        };
+        let Ok(after) = read.simulate_state(to_state(word, READ_WRITE, READ_WRITE));
+        let expected = &after.processor;
+        assert_eq!(
+            expected.general_purpose_registers[5] == RegisterValueExpectation::NonDeterministic,
+            undecided
+        );
+        assert_eq!(
+            expected.condition_flags == RegisterValueExpectation::NonDeterministic,
+            undecided
+        );
+        assert_eq!(
+            expected.processor.exception,
+            (!undecided).then_some(Exception::UndefinedInstruction)
+        );
+        let mut observed = expected.processor.clone();
+        observed.general_purpose_registers[5] = 0x1234;
+        observed.condition_flags = ConditionFlags::ZERO;
+        assert_eq!(
+            Arm64::<User>::meets_expectations(&observed, expected),
+            undecided
+        );
+    }
+}
+
+#[test]
+fn an_optional_instruction_has_the_behavior_of_a_chip_without_its_feature() {
+    let behaviors = |instruction| -> Vec<PreciseInstruction<Infallible>> {
+        Arm64::<User>::list_known_behaviors(instruction).collect()
+    };
+    let unimplemented = |instruction| PreciseInstruction::Unimplemented(instruction);
+    // Mandatory and modeled, optional and modeled, optional and unmodeled, the LS64 family, and a mandatory one no
+    // behavior models yet.
+    assert!(
+        !behaviors(Instruction::AddShiftedRegister64)
+            .contains(&unimplemented(Instruction::AddShiftedRegister64))
+    );
+    assert!(behaviors(Instruction::Ldadd64).contains(&unimplemented(Instruction::Ldadd64)));
+    assert_eq!(
+        behaviors(Instruction::Pacm),
+        [unimplemented(Instruction::Pacm)]
+    );
+    assert_eq!(
+        behaviors(Instruction::St64bv),
+        [unimplemented(Instruction::St64bv)]
+    );
+    // A modeled hint that changes nothing already is what a chip without it does.
+    assert!(!behaviors(Instruction::Bti).contains(&unimplemented(Instruction::Bti)));
+    let hint = to_state(encode(Instruction::Pacm, &[]), READ_WRITE, READ_WRITE);
+    let (after, _) = run(unimplemented(Instruction::Pacm), hint);
+    assert_eq!(after.exception, None);
+    let other = to_state(encode(Instruction::St64bv, &[]), READ_WRITE, READ_WRITE);
+    let (after, _) = run(unimplemented(Instruction::St64bv), other);
+    assert_eq!(after.exception, Some(Exception::UndefinedInstruction));
 }

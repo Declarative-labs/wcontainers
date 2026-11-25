@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use core::array;
 use core::convert::Infallible;
 
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
@@ -36,9 +36,7 @@ use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
 use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
-use wcontainers_processor_architecture_arm64::system_register::{
-    SYSTEM_REGISTER, UNMODELED_SYSTEM_REGISTERS,
-};
+use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
     INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
@@ -209,6 +207,9 @@ pub enum OperandType {
         field: Field,
         bytes: u32,
     },
+    /// The whole word of an instruction whose operands no model reads: a word LLVM decodes as the instruction, or its
+    /// fixed bits where the list has none.
+    Word(u32),
 }
 
 /// What every byte of the data pages holds before the instruction.
@@ -307,33 +308,33 @@ impl Arm64InputDomain {
 impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
     type OperandType = OperandType;
     type OperandValue = OperandValue;
+    type OperandTypes<'domain> = vec::IntoIter<OperandType>;
+    type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
-    /// The operands of the assembly syntax in its order, then the state the instruction reads besides them.
+    /// The operands of the assembly syntax in its order, then the state the instruction reads besides them; for an
+    /// instruction whose operands no model reads, its whole word.
     fn list_operand_types(
         &self,
         instruction: Instruction<Infallible>,
-    ) -> impl Iterator<Item = OperandType> {
+    ) -> vec::IntoIter<OperandType> {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
         {
-            return Either::Left(to_listed_operand_types(instruction).into_iter());
+            return to_listed_operand_types(instruction).into_iter();
         }
-        let operand_types: &[OperandType] = match instruction {
-            Instruction::Mrs => &SYSTEM_REGISTER_READ,
-            Instruction::MsrRegister => &SYSTEM_REGISTER_WRITE,
-            Instruction::Brk => &[UnsignedImmediate(IMM16)],
-            Instruction::Rdvl => &[RegisterNumber(RD), SignedImmediate(RDVL_IMM6)],
-            Instruction::MrsCtrEl0 => &[RegisterNumber(RT)],
-            _ => &[],
+        let operand_types = match instruction {
+            Instruction::Mrs => SYSTEM_REGISTER_READ.to_vec(),
+            Instruction::MsrRegister => SYSTEM_REGISTER_WRITE.to_vec(),
+            Instruction::Brk => vec![UnsignedImmediate(IMM16)],
+            Instruction::Rdvl => vec![RegisterNumber(RD), SignedImmediate(RDVL_IMM6)],
+            Instruction::MrsCtrEl0 => vec![RegisterNumber(RT)],
+            _ => vec![OperandType::Word(to_example_word(instruction))],
         };
-        Either::Right(operand_types.iter().copied())
+        operand_types.into_iter()
     }
 
-    fn generate_critical_values(
-        &self,
-        operand_type: OperandType,
-    ) -> impl Iterator<Item = OperandValue> {
+    fn generate_critical_values(&self, operand_type: OperandType) -> vec::IntoIter<OperandValue> {
         let values: Vec<OperandValue> = match operand_type {
             // Two ordinary registers, so that one can appear twice, the second also the link register; and the
             // zero register or stack pointer.
@@ -359,16 +360,11 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             OperandType::ConvertedFloatingPoint {
                 precision, width, ..
             } => to_converted_floating_point_values(precision, width),
-            // Every encoding the field can hold, each op0, op1, CRn, CRm and op2 with every other, but the two random
-            // number registers, which no model can hold.
+            // Every encoding the field can hold, each op0, op1, CRn, CRm and op2 with every other.
             OperandType::SystemRegister(field) => (0..1_u32 << field.width)
-                .filter(|encoding| {
-                    !UNMODELED_SYSTEM_REGISTERS
-                        .iter()
-                        .any(|unmodeled| unmodeled.to_field() == *encoding)
-                })
                 .map(|encoding| OperandValue::Bits(u64::from(encoding)))
                 .collect(),
+            OperandType::Word(word) => [OperandValue::Bits(u64::from(word))].to_vec(),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
             OperandType::VectorValue { bytes, .. } => to_vector_values(bytes),
             OperandType::WrittenConditionFlags => [ConditionFlags::empty(), ConditionFlags::all()]
@@ -615,7 +611,8 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 | OperandType::BitmaskImmediate(_)
                 | OperandType::ProgramCounterOffset(_)
                 | OperandType::SplitImmediate(_)
-                | OperandType::SystemRegister(_) => {}
+                | OperandType::SystemRegister(_)
+                | OperandType::Word(_) => {}
                 OperandType::RegisterValue {
                     field, thirty_one, ..
                 }
@@ -813,6 +810,7 @@ pub fn encode_word(
                 | OperandType::SystemRegister(field),
                 OperandValue::Bits(bits),
             ) => word |= field.to_bits(bits as u32),
+            (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
             (
                 OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
                 OperandValue::Bits(bits),
@@ -832,13 +830,22 @@ pub fn encode_word(
                 | OperandType::BitmaskImmediate(_)
                 | OperandType::ProgramCounterOffset(_)
                 | OperandType::SplitImmediate(_)
-                | OperandType::SystemRegister(_),
+                | OperandType::SystemRegister(_)
+                | OperandType::Word(_),
                 _,
             ) => reject_mismatch(operand_type, operand),
             _ => {}
         }
     }
     word
+}
+
+/// A word LLVM decodes as the instruction, or its fixed and should-be bits where the list has none.
+fn to_example_word(instruction: Instruction<Infallible>) -> u32 {
+    let record = instruction.to_record();
+    record.and_then(|record| record.example).unwrap_or_else(|| {
+        instruction.to_fixed_bits().value | record.map_or(0, |record| record.should_be.value)
+    })
 }
 
 /// The byte a data page holds at the address.

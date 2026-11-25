@@ -223,7 +223,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ShiftAmount { .. }
         | OperandType::BitmaskImmediate(_)
         | OperandType::ProgramCounterOffset(_)
-        | OperandType::SplitImmediate(_) => Group::Field,
+        | OperandType::SplitImmediate(_)
+        | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
         | OperandType::Address { .. }
@@ -572,7 +573,8 @@ impl Cut {
                             SystemRegisterAccess::Undefined | SystemRegisterAccess::Trapped => true,
                             SystemRegisterAccess::Fixed(_)
                             | SystemRegisterAccess::ReadOnlyZero
-                            | SystemRegisterAccess::ReadTrapped => write,
+                            | SystemRegisterAccess::ReadTrapped
+                            | SystemRegisterAccess::RandomNumber => write,
                             SystemRegisterAccess::Held(_) | SystemRegisterAccess::ReadsZero => {
                                 false
                             }

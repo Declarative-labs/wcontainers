@@ -5,7 +5,10 @@ use core::convert::Infallible;
 
 use crate::load_store::{LoadStoreChoices, LoadStoreInstruction};
 use crate::system_register::{NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS};
-use crate::{AccessDirection, DocumentedInstruction, Instruction, PreciseInstruction, SmeTrapCode};
+use crate::{
+    AccessDirection, DocumentedInstruction, DocumentedOperation, Instruction, PreciseInstruction,
+    SmeTrapCode, to_documented_operation,
+};
 
 /// What a load or store does when its base is the stack pointer and that is not a multiple of 16.
 ///
@@ -140,6 +143,7 @@ impl PreciseInstruction<Infallible> {
                 PreciseInstruction::SystemRegisterMove { direction, choices }
             }
             Self::MrsCtrEl0 { cache_type } => PreciseInstruction::MrsCtrEl0 { cache_type },
+            Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
     }
@@ -160,13 +164,15 @@ impl PreciseInstruction<Infallible> {
                 ..
             } => Instruction::MsrRegister,
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
+            Self::Unimplemented(instruction) => instruction,
         }
     }
 }
 
 /// Returns every behavior a chip is known to show for the instruction, each cache type one that a chip was seen to read.
 ///
-/// An instruction that no behavior models yet has none.
+/// An optional instruction also has the behavior of a chip without its feature, an instruction that takes input from
+/// outside memory and the processor has only that one, and a mandatory instruction that no behavior models yet has none.
 pub(crate) fn list_known_behaviors<LevelInstruction, LevelPrecise>(
     instruction: Instruction<LevelInstruction>,
 ) -> Vec<PreciseInstruction<LevelPrecise>> {
@@ -182,6 +188,55 @@ pub(crate) fn list_known_behaviors<LevelInstruction, LevelPrecise>(
 
 /// The behaviors of an instruction every privilege level has.
 fn list_every_level_behaviors(
+    instruction: Instruction<Infallible>,
+) -> Vec<PreciseInstruction<Infallible>> {
+    if is_forbidden(instruction) {
+        return [PreciseInstruction::Unimplemented(instruction)].to_vec();
+    }
+    let mut behaviors = list_modeled_behaviors(instruction);
+    if instruction.is_optional() && !is_modeled_as_unimplemented(instruction) {
+        behaviors.push(PreciseInstruction::Unimplemented(instruction));
+    }
+    behaviors
+}
+
+/// Whether the instruction takes input from outside memory and the processor, so that no state decides what it does:
+/// the [LS64](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-7-architecture-extension#:~:text=FEAT_LS64) family, whose
+/// accesses go to a device.
+const fn is_forbidden(instruction: Instruction<Infallible>) -> bool {
+    use Instruction as I;
+    matches!(
+        instruction,
+        I::Ld64b
+            | I::St64b
+            | I::St64bv
+            | I::St64bv0
+            | I::Lda64b64lMemop
+            | I::Stl64b64lMemop
+            | I::Stl64bv64Memop
+            | I::Stl64bv064Memop
+    )
+}
+
+/// Whether a modeled behavior of the instruction already does what a chip without its feature does, on every state: an
+/// instruction undefined at EL0, a hint that changes nothing a state shows, or RDVL, which lists that behavior itself.
+fn is_modeled_as_unimplemented(instruction: Instruction<Infallible>) -> bool {
+    use crate::pointer_authentication::PointerAuthenticationOperation as P;
+    match to_documented_operation(instruction) {
+        Some(
+            DocumentedOperation::Undefined
+            | DocumentedOperation::PointerAuthentication(P::Undefined),
+        ) => true,
+        Some(
+            DocumentedOperation::NoOperation
+            | DocumentedOperation::PointerAuthentication(P::KeyDisabled),
+        ) => instruction.is_executed_as_hint_without_feature(),
+        _ => instruction == Instruction::Rdvl,
+    }
+}
+
+/// The behaviors of the models of an instruction every privilege level has.
+fn list_modeled_behaviors(
     instruction: Instruction<Infallible>,
 ) -> Vec<PreciseInstruction<Infallible>> {
     const LENGTHS: [VectorLength; 5] = [

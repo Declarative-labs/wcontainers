@@ -1,7 +1,8 @@
-//! DEFAULT BEHAVIORS: measures every modeled instruction on this host's chip with the provided `measure_instruction`
-//! over every state the ARM64 state generator makes, timing it; then runs every state again, timing each part of it
-//! (making the state, simulating each known behavior, running it on the chip, comparing) and counting the states each
-//! behavior disagrees on; then runs a word of each listed instruction that has no model once.
+//! DEFAULT BEHAVIORS: measures every modeled instruction (one with a behavior besides that of a chip without its
+//! feature) on this host's chip with the provided `measure_instruction` over every state the ARM64 state generator
+//! makes, timing it; then runs every state again, timing each part of it (making the state, simulating each known
+//! behavior, running it on the chip, comparing) and counting the states each behavior disagrees on; then runs a word
+//! of each listed instruction that has no model once.
 //!
 //! `cargo run --release -p wcontainers-precise-instruction-set-measured --example default_behaviors [-- [--probe]
 //! <name>...]` limits the run to the instructions and classes named; `--probe` runs only the measuring loop. The chip
@@ -25,7 +26,7 @@ fn main() {
     };
     use wcontainers_processor_architecture_arm64::{
         Arm64, DataAccess, Exception, Instruction, InstructionClass, InstructionFetch,
-        PagePermission, Processor, User, ZERO_PROCESSOR,
+        PagePermission, PreciseInstruction, Processor, User, ZERO_PROCESSOR,
     };
 
     /// Disagreeing states printed whole for each instruction.
@@ -66,8 +67,20 @@ fn main() {
         instruction.to_record().map(|record| record.class)
     }
 
+    fn is_modeled(instruction: Instruction<Infallible>) -> bool {
+        Arm64::<User>::list_known_behaviors(instruction)
+            .any(|precise| !matches!(precise, PreciseInstruction::Unimplemented(_)))
+    }
+
     fn describe(state: &ExecutionState<'_, Arm64<User>>, start: usize) -> String {
-        let changes: Vec<String> = state.memory_mutations[start..]
+        describe_parts(&state.processor, &state.memory_mutations[start..])
+    }
+
+    fn describe_parts(
+        processor: &impl std::fmt::Debug,
+        mutations: &[MemoryDelta<'_, Arm64<User>>],
+    ) -> String {
+        let changes: Vec<String> = mutations
             .iter()
             .map(|change| match change {
                 MemoryDelta::ValueAssignment { start, bytes } => {
@@ -79,7 +92,7 @@ fn main() {
                 } => format!("{addresses:#x?} becomes {permission:?}"),
             })
             .collect();
-        format!("{:x?} changes {changes:?}", state.processor)
+        format!("{processor:x?} changes {changes:?}")
     }
 
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -97,11 +110,7 @@ fn main() {
     let modeled: Vec<Instruction<Infallible>> = listed
         .iter()
         .copied()
-        .filter(|instruction| {
-            Arm64::<User>::list_known_behaviors(*instruction)
-                .next()
-                .is_some()
-        })
+        .filter(|instruction| is_modeled(*instruction))
         .filter(is_named)
         .collect();
     let mut chip = match KvmSingleStepMachine::new() {
@@ -186,7 +195,7 @@ fn main() {
             let simulated: Vec<_> = behaviors
                 .iter()
                 .map(|precise| {
-                    let Ok(after) = precise.simulate(before.clone());
+                    let Ok(after) = precise.simulate_state(before.clone());
                     after
                 })
                 .collect();
@@ -197,7 +206,10 @@ fn main() {
             };
             split.chip += chip_started.elapsed();
             let compare_started = Instant::now();
-            let agree: Vec<bool> = simulated.iter().map(|after| *after == observed).collect();
+            let agree: Vec<bool> = simulated
+                .iter()
+                .map(|after| observed.meets_expectations(after))
+                .collect();
             split.compare += compare_started.elapsed();
             for (index, agrees) in agree.into_iter().enumerate() {
                 if agrees {
@@ -209,7 +221,10 @@ fn main() {
                     printed[index].push(format!(
                         "    before    {}\n    simulated {}\n    chip      {}",
                         describe(&before, start),
-                        describe(&simulated[index], start),
+                        describe_parts(
+                            &simulated[index].processor,
+                            &simulated[index].memory_mutations[start..]
+                        ),
                         describe(&observed, start)
                     ));
                 }
@@ -249,10 +264,7 @@ fn main() {
     for instruction in listed.iter().copied().filter(is_named) {
         let row = rows.entry(to_class(instruction)).or_default();
         row.listed += 1;
-        if Arm64::<User>::list_known_behaviors(instruction)
-            .next()
-            .is_some()
-        {
+        if is_modeled(instruction) {
             continue;
         }
         let Some(record) = instruction.to_record() else {

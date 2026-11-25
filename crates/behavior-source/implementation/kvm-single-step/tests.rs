@@ -10,8 +10,8 @@ use wcontainers_abi::PAGE_SIZE;
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, FaultStatus, InstructionFetch,
-    PagePermission, User, ZERO_PROCESSOR,
+    AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
+    InstructionFetch, PagePermission, User, ZERO_PROCESSOR,
 };
 
 use crate::guest_layout::{HANDLER_HALF, linear};
@@ -293,11 +293,9 @@ fn to_error(
     break_machine(&mut chip);
     let mut processor = state.processor.clone();
     let mut mutations: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
-    let Err(refusal) = chip.execute_single_instruction_in_place(
-        &mut processor,
-        &state.memory_mutations,
-        &mut mutations,
-    ) else {
+    let Err(refusal) =
+        chip.execute_single_instruction_in_place(&mut processor, state.memory(), &mut mutations)
+    else {
         panic!("{loading:?}: the chip ran a state it cannot");
     };
     assert!(
@@ -333,10 +331,17 @@ fn a_state_the_chip_cannot_run_is_refused_before_anything_is_written() {
             vec![to_permission(0..Arm64::<User>::ADDRESSABLE.end, READ_WRITE)],
         ),
     ];
+    let mut monitor_held = to_store(DATA, Vec::new());
+    monitor_held.processor.exclusive_monitor = ExclusiveMonitor::Exclusive { address: DATA };
     for loading in LOADINGS {
         let refusal = to_error(loading, |_| {}, &within_a_page);
         assert!(
             matches!(refusal, Refusal::PermissionWithinAPage(_)),
+            "{loading:?}: {refusal:?}"
+        );
+        let refusal = to_error(loading, |_| {}, &monitor_held);
+        assert!(
+            matches!(refusal, Refusal::ExclusiveMonitorHeld(_)),
             "{loading:?}: {refusal:?}"
         );
         for state in &large {

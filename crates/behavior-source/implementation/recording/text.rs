@@ -159,6 +159,8 @@ fn to_differing_fields(earlier: Option<&Processor<()>>, processor: &Processor<()
     written.join(" ")
 }
 
+/// Leaves out the exclusive monitor, which is open in every recorded state: a chip source refuses a state that holds
+/// it, and a single step opens it.
 fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
     let Processor {
         general_purpose_registers,
@@ -169,6 +171,7 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
         floating_point_control,
         floating_point_status,
         software_thread_id,
+        exclusive_monitor: _,
         exception,
         level_specific: (),
     } = processor;

@@ -13,7 +13,7 @@ use crate::pointer_authentication::{
     to_pointer_authentication_operation,
 };
 use crate::simd::{VectorOperation, simulate_vector, to_vector_operation};
-use crate::{Exception, Instruction, Processor};
+use crate::{Exception, ExclusiveMonitor, Instruction, Processor};
 
 /// An instruction whose manual leaves no choice, so its documented behavior is its only one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,8 +35,8 @@ pub enum DocumentedOperation {
     SupervisorCall,
 }
 
-/// The hints and barriers whose effect a single instruction's state does not show, and the instructions undefined at
-/// EL0, none for every other instruction.
+/// The hints and barriers whose effect a single instruction's state does not show, CLREX, which only opens the exclusive
+/// monitor, and the instructions undefined at EL0, none for every other instruction.
 const fn to_system_operation(instruction: Instruction<Infallible>) -> Option<DocumentedOperation> {
     use Instruction as I;
     Some(match instruction {
@@ -211,6 +211,9 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::NoOperation => {
                 const X16: usize = 16;
+                if self.0 == Instruction::Clrex {
+                    processor.exclusive_monitor = ExclusiveMonitor::Open;
+                }
                 if crate::planted::is(32) && self.0 == Instruction::Chkfeat {
                     processor.general_purpose_registers[X16] &= !1;
                 }

@@ -7,13 +7,15 @@ use core::convert::Infallible;
 
 use crate::Instruction;
 
-/// Which check planted a bug: the first and second passes' checks, the check of the cut and the fourth check.
+/// Which check planted a bug: the first and second passes' checks, the check of the cut, the fourth check and the sync
+/// with the expectations, which added the random number registers and the behavior of a chip without a feature.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum PlantedBy {
     First,
     Second,
     CutCheck,
     FourthCheck,
+    Sync,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
@@ -55,7 +57,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 376] = [
+pub const PLANTED_BUGS: [PlantedBug; 381] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2311,5 +2313,35 @@ pub const PLANTED_BUGS: [PlantedBug; 376] = [
         instruction: Instruction::Mrs,
         planted_by: PlantedBy::FourthCheck,
         what: "the ID space traps CRm 8 to 15 too, as the model did before the fourth check",
+    },
+    PlantedBug {
+        number: 508,
+        instruction: Instruction::Pacm,
+        planted_by: PlantedBy::Sync,
+        what: "a hint a chip lacks is undefined, not NOP",
+    },
+    PlantedBug {
+        number: 509,
+        instruction: Instruction::Mrs,
+        planted_by: PlantedBy::Sync,
+        what: "a read of RNDR or RNDRRS is undefined on a Neoverse V2",
+    },
+    PlantedBug {
+        number: 510,
+        instruction: Instruction::MsrRegister,
+        planted_by: PlantedBy::Sync,
+        what: "a write of RNDR or RNDRRS changes nothing instead of being undefined",
+    },
+    PlantedBug {
+        number: 511,
+        instruction: Instruction::Mrs,
+        planted_by: PlantedBy::Sync,
+        what: "a read of RNDR or RNDRRS is expected to give zero",
+    },
+    PlantedBug {
+        number: 512,
+        instruction: Instruction::Ld64b,
+        planted_by: PlantedBy::Sync,
+        what: "an instruction a chip lacks completes as NOP, not undefined",
     },
 ];

@@ -96,6 +96,9 @@ pub enum SystemRegisterAccess {
     ReadsZero,
     /// Reads zero; a write is undefined.
     ReadOnlyZero,
+    /// Reads a random number where the chip has the random number registers, and sets NZCV to say whether it gave one;
+    /// a write is undefined.
+    RandomNumber,
     /// EL1 traps it.
     Trapped,
     /// EL1 traps a read; a write is undefined.
@@ -198,8 +201,8 @@ pub const SYSTEM_REGISTERS: [(&str, SystemRegisterEncoding, SystemRegisterAccess
     ]
 };
 
-/// Registers EL0 reads that no model can hold: [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number) and RNDRRS give a new random number each read.
-pub const UNMODELED_SYSTEM_REGISTERS: [SystemRegisterEncoding; 2] = [
+/// The registers that give a new random number each read: [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number) and [RNDRRS](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDRRS--Reseeded-Random-Number).
+pub const RANDOM_NUMBER_REGISTERS: [SystemRegisterEncoding; 2] = [
     SystemRegisterEncoding::new(3, 3, 2, 4, 0),
     SystemRegisterEncoding::new(3, 3, 2, 4, 1),
 ];
@@ -230,6 +233,9 @@ pub fn to_system_register_access(field: u32) -> SystemRegisterAccess {
     {
         return *access;
     }
+    if RANDOM_NUMBER_REGISTERS.contains(&encoding) {
+        return SystemRegisterAccess::RandomNumber;
+    }
     if is_identification_register(encoding) {
         SystemRegisterAccess::ReadTrapped
     } else {
@@ -246,17 +252,20 @@ pub struct SystemRegisterChoices {
     /// The bits of FPCR and FPSR the chip holds; a write leaves the others zero.
     pub floating_point_control_bits: u64,
     pub floating_point_status_bits: u64,
+    /// Whether the chip has the random number registers, [FEAT_RNG](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-5-architecture-extension#:~:text=FEAT_RNG); without them an access is undefined.
+    pub random_number_registers: bool,
 }
 
 /// What a Neoverse V2 under KVM shows, MEASURED by the measured set's `system_registers` survey on a Graviton4: its
 /// cache type and zero block size, the TPIDRRO_EL0 its guest holds, and FPCR's AHP, DN, FZ, RMode and FZ16 and FPSR's
-/// N, Z, C, V, QC and cumulative flags.
+/// N, Z, C, V, QC and cumulative flags; and the random number registers, MEASURED by the whole-set run.
 pub const NEOVERSE_V2_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices {
     cache_type: 0xB444_C004,
     zero_block_size: 0x4,
     read_only_thread_id: 0x1DE7_EC7E_DBAD_C0DE,
     floating_point_control_bits: 0x07C8_0000,
     floating_point_status_bits: 0xF800_009F,
+    random_number_registers: true,
 };
 
 /// Another chip's choices, every value different, so that each is told apart.
@@ -266,6 +275,7 @@ pub const OTHER_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices 
     read_only_thread_id: 0,
     floating_point_control_bits: u64::MAX,
     floating_point_status_bits: u64::MAX,
+    random_number_registers: false,
 };
 
 /// [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-)
@@ -293,9 +303,23 @@ pub fn simulate_system_register_move<LevelSpecific>(
     };
     let access = to_system_register_access(field);
     let read = match (access, direction) {
+        (A::RandomNumber, AccessDirection::Write) if crate::planted::is(510) => return Ok(()),
         (A::Undefined, _)
-        | (A::Fixed(_) | A::ReadOnlyZero | A::ReadTrapped, AccessDirection::Write) => {
+        | (
+            A::Fixed(_) | A::ReadOnlyZero | A::ReadTrapped | A::RandomNumber,
+            AccessDirection::Write,
+        ) => {
             return Err(Exception::UndefinedInstruction);
+        }
+        (A::RandomNumber, AccessDirection::Read)
+            if !choices.random_number_registers || crate::planted::is(509) =>
+        {
+            return Err(Exception::UndefinedInstruction);
+        }
+        // The value and NZCV are undecided; the expectation compares neither.
+        (A::RandomNumber, AccessDirection::Read) => {
+            processor.condition_flags = ConditionFlags::empty();
+            0
         }
         (A::Trapped, _) | (A::ReadTrapped, AccessDirection::Read) => return Err(trapped()),
         (A::ReadsZero | A::ReadOnlyZero, AccessDirection::Read) => 0,
@@ -340,4 +364,18 @@ pub fn simulate_system_register_move<LevelSpecific>(
     };
     write_register(processor, number, read, RegisterThirtyOne::ZeroRegister);
     Ok(())
+}
+
+/// The register a completed MRS or MSR leaves undecided, and whether it leaves NZCV undecided: a read of a random number
+/// register gives either a random value and NZCV clear, or zero and Z set where no random number came in time.
+pub fn to_undecided_registers(
+    word: u32,
+    direction: AccessDirection,
+    choices: SystemRegisterChoices,
+) -> Option<(u32, bool)> {
+    let random = direction == AccessDirection::Read
+        && choices.random_number_registers
+        && to_system_register_access(SYSTEM_REGISTER.read(word))
+            == SystemRegisterAccess::RandomNumber;
+    (random && !crate::planted::is(511)).then(|| (RT.read(word), true))
 }

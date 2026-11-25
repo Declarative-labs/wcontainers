@@ -4,7 +4,7 @@ use core::convert::Infallible;
 
 use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::{
-    MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator,
 };
 
 use crate::branch::is_outside_lower_addresses;
@@ -12,11 +12,11 @@ use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
 use crate::memory::{read_bytes, read_permission};
 use crate::operand::RegisterThirtyOne;
 use crate::registers::write_register;
-use crate::system_register::simulate_system_register_move;
+use crate::system_register::{simulate_system_register_move, to_undecided_registers};
 use crate::{
     AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
-    InstructionFetch, PagePermission, PreciseInstruction, Processor, User, VectorLengthReading,
-    WaitForInterruptBehavior, WaitInstruction,
+    InstructionFetch, PagePermission, PreciseInstruction, Processor, ProcessorExpectation,
+    RegisterValueExpectation, User, VectorLengthReading, WaitForInterruptBehavior, WaitInstruction,
 };
 
 impl<Level: PrivilegeLevel> Simulator<Arm64<Level>>
@@ -27,14 +27,44 @@ where
     type Error = Infallible;
 
     /// Fetches the word at the program counter and applies this behavior to it, reading its operands from it.
-    fn simulate_in_place(
+    fn simulate(
         &self,
-        processor: &mut Processor<Level::PrivilegedProcessorSubset>,
-        memory: &[MemoryDelta<'_, Arm64<Level>>],
+        processor: &Processor<Level::PrivilegedProcessorSubset>,
+        memory: MemorySnapshot<'_, '_, Arm64<Level>>,
         mutation_hook: &mut impl MemorySink<Arm64<Level>>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<ProcessorExpectation<Level::PrivilegedProcessorSubset>, Infallible> {
+        if let Self::LevelSpecific(precise) = self {
+            return precise.simulate(processor, memory, mutation_hook);
+        }
+        let mut after = processor.clone();
+        let undecided = self.apply(&mut after, memory.mutations, mutation_hook);
+        let mut expectation = ProcessorExpectation::new(after);
+        if let Some((register, condition_flags)) = undecided {
+            if let Some(expected) = expectation
+                .general_purpose_registers
+                .get_mut(register as usize)
+            {
+                *expected = RegisterValueExpectation::NonDeterministic;
+            }
+            if condition_flags {
+                expectation.condition_flags = RegisterValueExpectation::NonDeterministic;
+            }
+        }
+        Ok(expectation)
+    }
+}
+
+impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
+    /// Applies this behavior to the processor in place, the level's own instructions aside; gives the register the
+    /// state before does not decide, and whether NZCV is undecided too, where the instruction completes so.
+    fn apply<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+        &self,
+        processor: &mut Processor<impl Sized>,
+        memory: &[MemoryDelta<'_, Architecture>],
+        mutation_hook: &mut impl MemorySink<Architecture>,
+    ) -> Option<(u32, bool)> {
         let mut branch_target = None;
-        // Not `and_then`: the level's own instructions run whole, so their arm returns from here.
+        let mut undecided = None;
         let outcome = match fetch(memory, processor.program_counter) {
             Err(exception) => Err(exception),
             Ok(word) if self.is_reserved(word) => Err(Exception::UndefinedInstruction),
@@ -58,7 +88,9 @@ where
                 }
                 Self::WaitForInterrupt(WaitForInterruptBehavior::Completes) => Ok(()),
                 Self::SystemRegisterMove { direction, choices } => {
-                    simulate_system_register_move(processor, word, direction, choices)
+                    simulate_system_register_move(processor, word, direction, choices).map(|()| {
+                        undecided = to_undecided_registers(word, direction, choices);
+                    })
                 }
                 Self::Rdvl(VectorLengthReading::Undefined) => Err(Exception::UndefinedInstruction),
                 Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception::SmeTrap(code)),
@@ -81,8 +113,16 @@ where
                     );
                     Ok(())
                 }
-                Self::LevelSpecific(precise) => {
-                    return precise.simulate_in_place(processor, memory, mutation_hook);
+                Self::Unimplemented(instruction)
+                    if instruction.is_executed_as_hint_without_feature()
+                        && !crate::planted::is(508) =>
+                {
+                    Ok(())
+                }
+                Self::Unimplemented(_) if crate::planted::is(512) => Ok(()),
+                Self::Unimplemented(_) => Err(Exception::UndefinedInstruction),
+                Self::LevelSpecific(_) => {
+                    unreachable!("`simulate` runs the level's own instructions")
                 }
             },
         };
@@ -101,13 +141,12 @@ where
                         processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
                 }
                 processor.exception = Some(exception);
+                undecided = None;
             }
         }
-        Ok(())
+        undecided
     }
-}
 
-impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
     /// Whether the word holds an operand value the list marks unallocated for this instruction.
     fn is_reserved(&self, word: u32) -> bool {
         let instruction = match *self {
@@ -121,6 +160,7 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                 ..
             } => Instruction::Mrs,
             Self::SystemRegisterMove { .. } => Instruction::MsrRegister,
+            Self::Unimplemented(instruction) => instruction,
             Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
         instruction.to_record().is_some_and(|record| {
@@ -136,12 +176,12 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
 impl Simulator<Arm64<User>> for Infallible {
     type Error = Infallible;
 
-    fn simulate_in_place(
+    fn simulate(
         &self,
-        _: &mut Processor<()>,
-        _: &[MemoryDelta<'_, Arm64<User>>],
+        _: &Processor<()>,
+        _: MemorySnapshot<'_, '_, Arm64<User>>,
         _: &mut impl MemorySink<Arm64<User>>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<ProcessorExpectation<()>, Infallible> {
         match *self {}
     }
 }

@@ -66,6 +66,15 @@ impl<LevelSpecific> Instruction<LevelSpecific> {
     }
 }
 
+/// What the list's feature column holds for an instruction every chip has.
+const MANDATORY_FEATURE: &str = "base";
+
+/// The [hint space](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/HINT--Hint-instruction-), whose encodings a chip without their feature executes as NOP.
+const HINT_SPACE: FixedBits = FixedBits {
+    mask: 0xFFFF_F01F,
+    value: 0xD503_201F,
+};
+
 impl Instruction<Infallible> {
     /// None for the variants the list does not hold.
     pub const fn to_record(self) -> Option<&'static InstructionRecord> {
@@ -73,5 +82,22 @@ impl Instruction<Infallible> {
             Some(index) => Some(&RECORDS[index]),
             None => None,
         }
+    }
+
+    /// Whether a chip has the instruction only with a feature; MRS of CTR_EL0 is mandatory.
+    pub fn is_optional(self) -> bool {
+        self.to_record()
+            .is_some_and(|record| record.feature != MANDATORY_FEATURE)
+    }
+
+    /// Whether a chip without the instruction's feature executes its word as NOP: a hint, or
+    /// [RPRFM](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RPRFM--Range-prefetch-memory-), whose
+    /// encoding is otherwise a PRFM of an unallocated operation, which is a hint.
+    pub fn is_executed_as_hint_without_feature(self) -> bool {
+        self == Self::Rprfm
+            || self.to_record().is_some_and(|record| {
+                record.fixed_bits.mask & HINT_SPACE.mask == HINT_SPACE.mask
+                    && HINT_SPACE.is_matching(record.fixed_bits.value)
+            })
     }
 }

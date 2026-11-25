@@ -1,6 +1,8 @@
-//! STATE COUNTS: for each class of modeled instructions, the states of the full product of every operand's values
-//! (register numbers with the distinct ones the generator adds) and the states the generator makes, counted without a
-//! chip; then one hash of every generated state of every modeled instruction in the order a run takes them.
+//! STATE COUNTS: for each class of modeled instructions (those with a behavior besides that of a chip without their
+//! feature), the states of the full product of every operand's values (register numbers with the distinct ones the
+//! generator adds) and the states the generator makes, counted without a chip; then one hash of every generated state
+//! of every modeled instruction in the order a run takes them, and how many hold the exclusive monitor, which the hash
+//! leaves out.
 //!
 //! `cargo run --release -p wcontainers-precise-instruction-set-measured --example state_counts`
 
@@ -11,7 +13,9 @@ use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_instruction_input_domain_arm64::{Arm64InputDomain, OperandValue};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
+use wcontainers_processor_architecture_arm64::{
+    Arm64, ExclusiveMonitor, Instruction, PreciseInstruction, User,
+};
 
 /// [FNV-1a](https://datatracker.ietf.org/doc/html/draft-eastlake-fnv-21#section-6.1.2), 64 bits: its offset basis and prime.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -74,13 +78,13 @@ fn main() {
     let modeled: Vec<Instruction<Infallible>> = Arm64::<User>::list_instructions()
         .filter(|instruction| {
             Arm64::<User>::list_known_behaviors(*instruction)
-                .next()
-                .is_some()
+                .any(|precise| !matches!(precise, PreciseInstruction::Unimplemented(_)))
         })
         .collect();
     let mut by_class: BTreeMap<String, (u128, u64, usize)> = BTreeMap::new();
     let mut hash = Hash(FNV_OFFSET);
     let mut states = 0_u64;
+    let mut monitor_held = 0_u64;
     for &instruction in &modeled {
         let product: u128 = domain
             .list_operand_types(instruction)
@@ -99,6 +103,7 @@ fn main() {
         let mut cut = 0_u64;
         for (_, state) in generator.generate_states_with_operands(instruction) {
             hash.add_state(&state);
+            monitor_held += u64::from(state.processor.exclusive_monitor != ExclusiveMonitor::Open);
             cut += 1;
         }
         states += cut;
@@ -119,4 +124,5 @@ fn main() {
         modeled.len(),
         hash.0
     );
+    println!("states that hold the exclusive monitor: {monitor_held}");
 }

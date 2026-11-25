@@ -18,7 +18,8 @@ use crate::memory::{read_bytes_into, read_permission};
 use crate::operand::{Indexing, Operand, RegisterThirtyOne, RegisterWidth, Signedness};
 use crate::registers::{is_general_purpose, read_register, write_register};
 use crate::{
-    AccessDirection, DataAccess, Exception, FaultStatus, Instruction, PagePermission, Processor,
+    AccessDirection, DataAccess, Exception, ExclusiveMonitor, FaultStatus, Instruction,
+    PagePermission, Processor,
 };
 
 /// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires, a check Linux turns on at every level.
@@ -33,6 +34,9 @@ const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
 const UNKNOWN_TAG_BITS_SHIFT: u32 = u64::BITS - u8::BITS / 2;
 /// What a failed store exclusive writes to its status register.
 const STORE_EXCLUSIVE_FAILED: u64 = 1;
+/// The bytes of the reservation granule a load exclusive marks: CTR_EL0.ERG is 4 on a Neoverse V2, and a store
+/// exclusive anywhere in the 64 bytes stores (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 5).
+const RESERVATION_GRANULE_BYTES: u64 = 64;
 
 /// The bytes of each access size.
 const BYTE: u32 = size_of::<u8>() as u32;
@@ -1134,6 +1138,29 @@ where
                     RegisterThirtyOne::ZeroRegister,
                 );
             }
+            let (status, width) = registers[0];
+            if let ExclusiveMonitor::Exclusive { address: marked } = processor.exclusive_monitor
+                && marked / RESERVATION_GRANULE_BYTES == location / RESERVATION_GRANULE_BYTES
+            {
+                let mut data = [0; MAXIMUM_BYTES];
+                for (index, (number, _)) in registers[1..].iter().enumerate() {
+                    let value = read_register(processor, *number, RegisterThirtyOne::ZeroRegister);
+                    data[index * bytes..(index + 1) * bytes]
+                        .copy_from_slice(&value.to_le_bytes()[..bytes]);
+                }
+                store(
+                    memory,
+                    address,
+                    location,
+                    tag,
+                    &data[..total],
+                    StoreAcrossFault::WritesNothing,
+                    mutation_hook,
+                )?;
+                write_register(processor, status, 0, RegisterThirtyOne::ZeroRegister);
+                processor.exclusive_monitor = ExclusiveMonitor::Open;
+                return Ok(());
+            }
             if choices.failed_store_exclusive == Some(FailedStoreExclusive::ChecksAccess)
                 && let Some((fault_address, status)) =
                     find_fault(memory, location, total as u64, access)
@@ -1144,7 +1171,7 @@ where
                     address: to_fault_address(address, fault_address, tag),
                 });
             }
-            let (status, width) = registers[0];
+            processor.exclusive_monitor = ExclusiveMonitor::Open;
             write_register(
                 processor,
                 status,
@@ -1487,6 +1514,9 @@ where
                         & !width.to_mask();
                 }
                 write_register(processor, number, value, RegisterThirtyOne::ZeroRegister);
+            }
+            if operation.alignment == Alignment::Exclusive {
+                processor.exclusive_monitor = ExclusiveMonitor::Exclusive { address: location };
             }
         }
     }

@@ -171,7 +171,7 @@ fn recording_plays_only_its_states() {
     let played = recording.execute_single_instruction(cases[0].clone());
     let refused = recording.execute_single_instruction_in_place(
         &mut processor,
-        &unrecorded.memory_mutations,
+        unrecorded.memory(),
         &mut mutations,
     );
     assert!(matches!(refused, Err(NotRecorded)));

@@ -2,13 +2,9 @@
 
 #![no_std]
 
-extern crate alloc;
-
-use alloc::boxed::Box;
-
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
-use wcontainers_instruction_input_domain::InstructionInputDomain;
-use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
+use wcontainers_instruction_input_domain::{CriticalStates, InstructionInputDomain};
+use wcontainers_processor_architecture::ProcessorArchitecture;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct CriticalValueProduct<Domain> {
@@ -27,13 +23,12 @@ where
     Architecture: ProcessorArchitecture + 'static,
     Domain: InstructionInputDomain<Architecture>,
 {
-    // The domain's states come from a method that returns `impl Iterator`, a type no name reaches, so they are boxed.
     type States<'generator>
-        = Box<dyn Iterator<Item = ExecutionState<'static, Architecture>> + 'generator>
+        = CriticalStates<'generator, Domain, Architecture>
     where
         Self: 'generator;
 
     fn generate_states(&self, instruction: Architecture::Instruction) -> Self::States<'_> {
-        Box::new(self.domain.generate_critical_states(instruction))
+        self.domain.generate_critical_states(instruction)
     }
 }
