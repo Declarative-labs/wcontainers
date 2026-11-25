@@ -254,6 +254,7 @@ impl<M: Metal> MetalGpu<M> {
             None
         };
         self.flush_blits();
+        self.encodes += 1;
         if let Some(command_buffer) = self.command_buffer()
             && let Err(error) = self
                 .metal

@@ -344,7 +344,7 @@ pub(crate) fn address(
             (SamplerAddressMode::ClampToZero, none)
         }
         (AddressMode::Border, _) => return Err(GpuError::Absent(Features::BORDER_COLOR)),
-        (AddressMode::MirrorOnce, _) => return Err(GpuError::Absent(Features::MIRROR_ONCE)),
+        (AddressMode::MirrorOnce, _) => (SamplerAddressMode::MirrorClampToEdge, none),
     })
 }
 

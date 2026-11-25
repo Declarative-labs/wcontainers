@@ -6,7 +6,7 @@ use wcontainers_gpu::{
     TextureRegion, TextureViewDesc, Topology, ViewDimension,
 };
 use wcontainers_metal::{
-    Blending, ColorWriteMask, DepthClipMode, FunctionSource, IndexType, LoadAction,
+    Blending, BlitCommand, ColorWriteMask, DepthClipMode, FunctionSource, IndexType, LoadAction,
     MAX_COLOR_ATTACHMENTS, Metal, PrimitiveTopologyClass, PrimitiveType, RenderCommand,
     RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
@@ -73,6 +73,10 @@ pub(crate) struct OpenPass<M: Metal> {
     depth: Option<OpenDepth<M>>,
     empty: Option<EmptyPass>,
     occlusion: Option<Shared<QueryObj<M>>>,
+    /// The query begun and not yet ended, which a resumed pass goes on counting.
+    active_query: Option<u32>,
+    /// The queries begun in this pass, whose counts are zeroed before it runs.
+    begun: Vec<u32>,
     commands: Vec<RenderCommand<M>>,
     targets: TargetLayout,
     width: u32,
@@ -125,6 +129,8 @@ impl<M: Metal> OpenPass<M> {
             depth,
             empty: pass.empty,
             occlusion: pass.occlusion.cloned(),
+            active_query: None,
+            begun: Vec::new(),
             commands: Vec::new(),
             width,
             height,
@@ -160,7 +166,15 @@ impl<M: Metal> OpenPass<M> {
             }),
             empty: self.empty,
             occlusion: self.occlusion.clone(),
-            commands: Vec::new(),
+            active_query: self.active_query,
+            begun: Vec::new(),
+            commands: match (&self.occlusion, self.active_query) {
+                (Some(set), Some(index)) => vec![RenderCommand::SetVisibilityResultMode {
+                    mode: query_mode(set),
+                    offset: u64::from(index) * QUERY_BYTES,
+                }],
+                _ => Vec::new(),
+            },
             targets: self.targets,
             width: self.width,
             height: self.height,
@@ -254,6 +268,15 @@ fn clear_color(format: Format, bits: [u32; 4]) -> [f64; 4] {
         FormatKind::Uint => bits.map(f64::from),
         FormatKind::Sint => bits.map(|b| f64::from(b as i32)),
         _ => bits.map(|b| f64::from(f32::from_bits(b))),
+    }
+}
+
+/// Returns the visibility mode a query set's queries count in.
+fn query_mode<M: Metal>(set: &QueryObj<M>) -> VisibilityResultMode {
+    if set.counting {
+        VisibilityResultMode::Counting
+    } else {
+        VisibilityResultMode::Boolean
     }
 }
 
@@ -910,7 +933,7 @@ impl<M: Metal> MetalGpu<M> {
         };
         let command = match index {
             Some(index) if index < set.count => RenderCommand::SetVisibilityResultMode {
-                mode: VisibilityResultMode::Boolean,
+                mode: query_mode(set),
                 offset: u64::from(index) * QUERY_BYTES,
             },
             Some(_) => {
@@ -919,9 +942,13 @@ impl<M: Metal> MetalGpu<M> {
             }
             None => RenderCommand::SetVisibilityResultMode {
                 mode: VisibilityResultMode::Disabled,
-                offset: 0,
+                offset: u64::from(pass.active_query.unwrap_or(0)) * QUERY_BYTES,
             },
         };
+        pass.active_query = index;
+        if let Some(index) = index {
+            pass.begun.push(index);
+        }
         pass.commands.push(command);
     }
 
@@ -929,8 +956,20 @@ impl<M: Metal> MetalGpu<M> {
     pub(crate) fn end_open_pass(&mut self) -> Option<OpenPass<M>> {
         let pass = self.pass.take()?;
         let resumed = pass.resumed();
+        // A query begun in the pass counts from zero; Metal adds counts into its buffer.
+        if let Some(set) = &pass.occlusion {
+            for index in &pass.begun {
+                self.blits.push(BlitCommand::FillBuffer {
+                    buffer: set.buffer.clone(),
+                    offset: u64::from(*index) * QUERY_BYTES,
+                    length: QUERY_BYTES,
+                    value: 0,
+                });
+            }
+        }
         self.flush_blits();
         let command_buffer = self.command_buffer()?;
+        self.encodes += 1;
         if let Err(error) =
             self.metal
                 .encode_render_commands(&command_buffer, &pass.descriptor(), &pass.commands)

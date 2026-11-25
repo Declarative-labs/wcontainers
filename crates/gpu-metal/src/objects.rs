@@ -131,6 +131,8 @@ pub struct SetObj<M: Metal> {
 pub struct QueryObj<M: Metal> {
     pub(crate) count: u32,
     pub(crate) buffer: M::Buffer,
+    /// Its queries count samples, not only whether any passed.
+    pub(crate) counting: bool,
 }
 
 /// How the bytes of a read back become what the caller reads.

@@ -8,6 +8,7 @@ mod bytes;
 mod convert;
 mod objects;
 mod record;
+mod ring;
 mod vertex;
 
 use std::collections::{HashMap, VecDeque};
@@ -116,6 +117,10 @@ pub struct MetalGpu<M: Metal> {
     present: Option<record::PresentDraw<M>>,
     /// The programs that copy and fill bytes where Metal's blits take only multiples of four.
     byte_programs: bytes::BytePrograms<M>,
+    /// How many times work was encoded into a command buffer, which ends a ring chunk's writes.
+    encodes: u64,
+    /// The rings of indices and of other per-draw data.
+    rings: [ring::Ring<M>; 2],
 }
 
 impl<M: Metal> MetalGpu<M> {
@@ -144,7 +149,13 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::POLYGON_MODE
                 | Features::BLOCK_COMPRESSION
                 | Features::BLEND_CONSTANT_ALPHA
-                | Features::DEPTH_BIAS_CLAMP,
+                | Features::DEPTH_BIAS_CLAMP
+                | Features::READ_BACK_NOW
+                | Features::FORMAT_REINTERPRET
+                | Features::MIRROR_ONCE
+                | Features::STENCIL_PER_FACE
+                | Features::FRACTIONAL_DEPTH_BIAS
+                | Features::OCCLUSION_COUNT,
             limits: Limits {
                 max_texture_2d: 16384,
                 max_texture_cube: 16384,
@@ -202,6 +213,8 @@ impl<M: Metal> MetalGpu<M> {
             widened_layouts: HashMap::new(),
             present: None,
             byte_programs: bytes::BytePrograms::default(),
+            encodes: 0,
+            rings: Default::default(),
         }
     }
 
@@ -253,6 +266,7 @@ impl<M: Metal> MetalGpu<M> {
         let Some(command_buffer) = self.command_buffer() else {
             return;
         };
+        self.encodes += 1;
         if let Err(error) = self.metal.encode_blit_commands(&command_buffer, &blits) {
             self.fail(&format!("copies refused: {error:?}"));
         }
@@ -813,10 +827,6 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             ),
             (desc.depth_minus_one, Features::CLIP_DEPTH_MINUS_ONE),
             (f32::from_bits(desc.line_width) != 1.0, Features::WIDE_LINES),
-            (
-                f32::from_bits(desc.depth_bias).fract() != 0.0,
-                Features::FRACTIONAL_DEPTH_BIAS,
-            ),
             (desc.sample_mask != !0, Features::SAMPLE_MASK),
         ];
         if let Some((_, feature)) = absent.iter().find(|(missing, _)| *missing) {
@@ -898,16 +908,20 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         kind: QueryKind,
         count: u32,
     ) -> Result<Self::QuerySet, GpuError> {
-        match kind {
-            QueryKind::OcclusionAny => {}
-            QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
+        let counting = match kind {
+            QueryKind::OcclusionAny => false,
+            QueryKind::Occlusion => true,
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
-        }
+        };
         let buffer = self
             .metal
             .make_buffer(u64::from(count.max(1)) * QUERY_BYTES)
             .map_err(|_| GpuError::OutOfMemory)?;
-        Ok(Shared(Rc::new(QueryObj { count, buffer })))
+        Ok(Shared(Rc::new(QueryObj {
+            count,
+            buffer,
+            counting,
+        })))
     }
 
     fn destroy(&mut self, object: Object<Self>) {
@@ -1424,6 +1438,85 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         Ok(())
     }
 
+    fn read_back_now(
+        &mut self,
+        src: &ReadSource<'_, Self>,
+        dst: &mut [u8],
+    ) -> Result<(), GpuError> {
+        // A buffer is read straight from the memory the CPU shares with the GPU once the work that uses it is done.
+        if let ReadSource::Buffer {
+            buffer,
+            offset,
+            size,
+        } = src
+        {
+            if offset
+                .checked_add(*size)
+                .is_none_or(|end| end > buffer.size)
+            {
+                return Err(GpuError::Invalid("a read past its buffer's end"));
+            }
+            if self.busy(buffer) {
+                self.record_slow_path(wcontainers_gpu::SlowPath::ReadBackWait);
+                self.wait_serial(buffer.last_use.get());
+            }
+            let raw = buffer.raw.borrow().clone();
+            let length = (*size as usize).min(dst.len());
+            if let Err(error) = self.metal.read_contents(&raw, *offset, &mut dst[..length]) {
+                self.fail(&format!("read refused: {error:?}"));
+            }
+            return Ok(());
+        }
+        let readback = self.read_back(src)?;
+        if self.read_state(&readback) == ReadState::Pending {
+            self.record_slow_path(wcontainers_gpu::SlowPath::ReadBackWait);
+            self.wait_read(&readback);
+        }
+        self.finish_read(readback, dst);
+        Ok(())
+    }
+
+    fn write_buffer_ring(
+        &mut self,
+        kind: wcontainers_gpu::RingKind,
+        parts: &[&[u8]],
+        align: u32,
+        offsets: &mut [u64],
+    ) -> Result<Self::Buffer, GpuError> {
+        self.write_ring(kind, parts, align, offsets)
+    }
+
+    fn resolve_queries(
+        &mut self,
+        set: &Self::QuerySet,
+        first: u32,
+        count: u32,
+        dst: &Self::Buffer,
+        dst_offset: u64,
+    ) -> Result<(), GpuError> {
+        if !dst_offset.is_multiple_of(QUERY_BYTES) {
+            return Err(GpuError::Invalid(
+                "query results go to multiples of 8 bytes",
+            ));
+        }
+        if first.checked_add(count).is_none_or(|end| end > set.count) {
+            return Err(GpuError::Invalid("queries past the set's end"));
+        }
+        // The results are copied on the GPU, in order with the work around them, and never wait.
+        self.mark_used(dst);
+        let source = ByteRange {
+            buffer: set.buffer.clone(),
+            length: u64::from(set.count.max(1)) * QUERY_BYTES,
+            offset: u64::from(first) * QUERY_BYTES,
+        };
+        self.copy_bytes(
+            source,
+            Self::range(dst, dst_offset),
+            u64::from(count) * QUERY_BYTES,
+        );
+        Ok(())
+    }
+
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
         let DispatchGroups::Direct(groups) = call.groups else {
             return Err(GpuError::Absent(Features::INDIRECT));
@@ -1495,6 +1588,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         }));
         self.flush_blits();
         let command_buffer = self.command_buffer().ok_or(GpuError::DeviceLost)?;
+        self.encodes += 1;
         self.metal
             .encode_compute_commands(&command_buffer, &commands)
             .map_err(|error| {
