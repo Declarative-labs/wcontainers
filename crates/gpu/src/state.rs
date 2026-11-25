@@ -321,8 +321,8 @@ pub struct TargetLayout {
     pub samples: u32,
 }
 
-/// Primitive topology. Fans and loops go through [`crate::Backend::draw_fan_or_loop`], never
-/// [`crate::Backend::draw`]. Adjacency topologies (Direct3D 10 and 11, OpenGL) are not here: with a
+/// Primitive topology. Fans and loops go through [`crate::Gpu::draw_fan_or_loop`], never
+/// [`crate::Gpu::draw`]. Adjacency topologies (Direct3D 10 and 11, OpenGL) are not here: with a
 /// geometry shader the stage helper reads them; without one, as OpenGL allows, the front draws the list
 /// or strip from indices that leave out the adjacent vertices (slow path
 /// [`crate::SlowPath::AdjacencyDropped`]).

@@ -6,7 +6,7 @@
 //!
 //! The shape, in brief (the plan, `docs/phase-2-graphics.md`, has the reasons):
 //!
-//! - [`Backend`] holds the **base**: what every back end provides. Create and destroy buffers, textures,
+//! - [`Gpu`] holds the **base**: what every back end provides. Create and destroy buffers, textures,
 //!   views and samplers; write bytes into them straight from guest memory; take a shader in the common form
 //!   ([`ShaderModule`]); record passes of draws, each draw naming immutable state blocks, a binding set and
 //!   a range; copy and clear; read back later; present a frame.
@@ -19,10 +19,10 @@
 //!   declares them in its [`Caps`]. Fronts read [`Caps`] once and choose their route.
 //! - Drawing state is a handful of immutable blocks ([`BlendDesc`], [`DepthStencilDesc`], [`RasterDesc`],
 //!   [`VertexLayoutDesc`], a [`Program`]) plus binding sets
-//!   ([`Backend::create_binding_set`]). Every block becomes a back-end handle once; a draw names one of
+//!   ([`Gpu::create_binding_set`]). Every block becomes a back-end handle once; a draw names one of
 //!   each. A back end consumes them its own way (WebGPU: a cached pipeline per combination; WebGL 2: apply
 //!   only the blocks that changed).
-//! - Everything is generic: a front is written as `Front<B: Backend>` and each call is one ordinary
+//! - Everything is generic: a front is written as `Front<B: Gpu>` and each call is one ordinary
 //!   function call, resolved when the front is compiled for a back end.
 //! - One thread owns a back end. Nothing here is `Send`; guest threads reach it through the call channel.
 
@@ -45,9 +45,10 @@ mod slow;
 mod state;
 
 pub use backend::{
-    Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind,
-    generate_mips_by_draws,
+    ClearValue, FanOrLoop, Gpu, IndexSource, Object, PrepareDesc, RingKind, generate_mips_by_draws,
 };
+/// The trait's old name, kept only until every crate names it [`Gpu`].
+pub use backend::Gpu as Backend;
 pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
 pub use draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,

@@ -2,10 +2,10 @@
 //! the ring for per-draw data. Each built-in program is its own module, holding only the bindings and
 //! types its entry points use, and is made only when a default first draws with it, so a back end never
 //! meets one it cannot run (WebGL 2 never meets a cube-array texture). Each back end holds one
-//! [`Helpers`] and hands it out through [`crate::Backend::helpers`]; a back end that overrides every fast
+//! [`Helpers`] and hands it out through [`crate::Gpu::helpers`]; a back end that overrides every fast
 //! path never fills it.
 
-use crate::backend::Backend;
+use crate::backend::Gpu;
 use crate::error::GpuError;
 use crate::format::FormatKind;
 use crate::resource::{AddressMode, BorderColor, Filter, SamplerDesc, ViewDimension};
@@ -261,7 +261,7 @@ pub(crate) const PARAMS_SIZE: usize = 32;
 
 /// Blocks the defaults draw with, made once.
 #[derive(Debug)]
-pub(crate) struct Builtins<B: Backend> {
+pub(crate) struct Builtins<B: Gpu> {
     pub blend: B::Blend,
     pub raster: B::Raster,
     pub vertex_layout: B::VertexLayout,
@@ -272,7 +272,7 @@ pub(crate) struct Builtins<B: Backend> {
     pub nearest: B::Sampler,
 }
 
-impl<B: Backend> Clone for Builtins<B> {
+impl<B: Gpu> Clone for Builtins<B> {
     fn clone(&self) -> Self {
         Builtins {
             blend: self.blend.clone(),
@@ -286,9 +286,9 @@ impl<B: Backend> Clone for Builtins<B> {
     }
 }
 
-/// One ring [`crate::Backend::write_buffer_ring`] writes into.
+/// One ring [`crate::Gpu::write_buffer_ring`] writes into.
 #[derive(Debug)]
-pub(crate) struct Ring<B: Backend> {
+pub(crate) struct Ring<B: Gpu> {
     pub buffer: B::Buffer,
     pub size: u64,
     pub head: u64,
@@ -296,7 +296,7 @@ pub(crate) struct Ring<B: Backend> {
 
 /// State the fast-path defaults keep. Back ends make it with `Helpers::default()` and never look inside.
 #[derive(Debug)]
-pub struct Helpers<B: Backend> {
+pub struct Helpers<B: Gpu> {
     pub(crate) builtins: Option<Builtins<B>>,
     /// Built-in programs made so far.
     pub(crate) programs: Vec<(Builtin, B::Program)>,
@@ -307,7 +307,7 @@ pub struct Helpers<B: Backend> {
     pub(crate) scratch: Vec<u8>,
 }
 
-impl<B: Backend> Default for Helpers<B> {
+impl<B: Gpu> Default for Helpers<B> {
     fn default() -> Self {
         Helpers {
             builtins: None,
@@ -350,7 +350,7 @@ pub(crate) fn module(which: Builtin) -> Result<(naga::Module, naga::valid::Modul
 }
 
 /// The built-in program `which` on `backend`, made the first time a default draws with it.
-pub(crate) fn program<B: Backend>(backend: &mut B, which: Builtin) -> Result<B::Program, GpuError> {
+pub(crate) fn program<B: Gpu>(backend: &mut B, which: Builtin) -> Result<B::Program, GpuError> {
     if let Some((_, p)) = backend.helpers().programs.iter().find(|(w, _)| *w == which) {
         return Ok(p.clone());
     }
@@ -391,7 +391,7 @@ pub(crate) fn program<B: Backend>(backend: &mut B, which: Builtin) -> Result<B::
 }
 
 /// Makes the built-in blocks on `backend` the first time a default needs them.
-pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuError> {
+pub(crate) fn builtins<B: Gpu>(backend: &mut B) -> Result<Builtins<B>, GpuError> {
     if let Some(b) = &backend.helpers().builtins {
         return Ok(b.clone());
     }

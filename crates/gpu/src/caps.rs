@@ -11,7 +11,7 @@ bitflags! {
     /// shared helper as a counted slow path, or reported absent to the program.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct Features: u64 {
-        /// Compute programs and [`crate::Backend::dispatch`]. Also what geometry, hull and domain stages,
+        /// Compute programs and [`crate::Gpu::dispatch`]. Also what geometry, hull and domain stages,
         /// stream output and unusual vertex fetch are emulated with.
         const COMPUTE = 1 << 0;
         /// Vertex programs may read storage buffers (the pass-through vertex stage of emulated geometry).
@@ -20,11 +20,11 @@ bitflags! {
         const VERTEX_STORAGE_WRITE = 1 << 2;
         /// Fragment programs may write storage buffers and textures (pixel shader UAVs).
         const FRAGMENT_STORAGE_WRITE = 1 << 3;
-        /// [`crate::Backend::capture_vertices`]: vertex results written to buffers by fixed hardware.
+        /// [`crate::Gpu::capture_vertices`]: vertex results written to buffers by fixed hardware.
         const TRANSFORM_FEEDBACK = 1 << 4;
-        /// [`crate::Backend::read_back_now`] answers without leaving the current task.
+        /// [`crate::Gpu::read_back_now`] answers without leaving the current task.
         const READ_BACK_NOW = 1 << 5;
-        /// Triangle fans and line loops are drawn natively by [`crate::Backend::draw_fan_or_loop`].
+        /// Triangle fans and line loops are drawn natively by [`crate::Gpu::draw_fan_or_loop`].
         const FAN_AND_LOOP = 1 << 6;
         /// [`crate::FillMode::Line`].
         const POLYGON_MODE = 1 << 7;
@@ -67,7 +67,7 @@ bitflags! {
         /// Query sets of [`crate::QueryKind::Occlusion`]: exact sample counts. Every back end has
         /// [`crate::QueryKind::OcclusionAny`].
         const OCCLUSION_COUNT = 1 << 21;
-        /// GPU timestamps, written between passes ([`crate::Backend::write_timestamp`]).
+        /// GPU timestamps, written between passes ([`crate::Gpu::write_timestamp`]).
         const TIMESTAMPS = 1 << 22;
         /// Draw and dispatch arguments read from a buffer.
         const INDIRECT = 1 << 23;
@@ -96,7 +96,7 @@ bitflags! {
         const SHADER_I64 = 1 << 34;
         /// 64-bit floats in programs.
         const SHADER_F64 = 1 << 35;
-        /// Large tables of resources indexed in programs ([`crate::Backend::create_resource_table`]).
+        /// Large tables of resources indexed in programs ([`crate::Gpu::create_resource_table`]).
         const RESOURCE_TABLES = 1 << 36;
         /// Buffers stay mapped and coherent while the GPU uses them.
         const PERSISTENT_MAPPING = 1 << 37;
@@ -104,7 +104,7 @@ bitflags! {
         const BORDER_COLOR = 1 << 38;
         /// Tiled (sparse) resources.
         const SPARSE = 1 << 39;
-        /// [`crate::Backend::prepare`] builds a state combination in the background.
+        /// [`crate::Gpu::prepare`] builds a state combination in the background.
         const BACKGROUND_PREPARE = 1 << 40;
         /// The depth bounds test of [`crate::DepthStencilDesc::depth_bounds`].
         const DEPTH_BOUNDS = 1 << 41;
@@ -222,7 +222,7 @@ pub struct Limits {
     pub max_line_width: f32,
     /// Largest anisotropy a sampler may ask for.
     pub max_anisotropy: u16,
-    /// Targets of one [`crate::Backend::capture_vertices`] (and outputs it may write to separate
+    /// Targets of one [`crate::Gpu::capture_vertices`] (and outputs it may write to separate
     /// targets), when [`Features::TRANSFORM_FEEDBACK`] is set.
     pub capture_buffers: u32,
     /// 32-bit components a capture writes per vertex into one target holding every output (WebGL 2's
@@ -256,7 +256,7 @@ bitflags! {
         /// and exchange on `R32_FLOAT`, from 11_0). Without it a front reads and writes such a view
         /// through a buffer holding its texels (slow path [`crate::SlowPath::AtomicsThroughBuffer`]).
         const STORAGE_ATOMIC = 1 << 11;
-        /// Can be a surface's format in [`crate::Backend::configure_surface`]. Every back end takes
+        /// Can be a surface's format in [`crate::Gpu::configure_surface`]. Every back end takes
         /// [`Format::Rgba8Unorm`].
         const PRESENT = 1 << 12;
     }

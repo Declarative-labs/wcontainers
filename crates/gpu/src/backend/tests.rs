@@ -88,7 +88,7 @@ impl Recorder {
     }
 }
 
-impl Backend for Recorder {
+impl Gpu for Recorder {
     type Buffer = Id;
     type Texture = Id;
     type TextureView = Id;

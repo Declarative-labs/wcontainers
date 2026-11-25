@@ -9,7 +9,7 @@
 //! exact bound, otherwise read back and summed here.
 
 use crate::MAX_BINDING_SETS;
-use crate::backend::Backend;
+use crate::backend::Gpu;
 use crate::draw::{
     AspectOps, ColorAttachment, DepthAttachment, DrawCall, DrawRange, IndexBinding, LoadOp,
     PassDesc, ScissorRect, StoreOp, VertexBinding, Viewport,
@@ -37,7 +37,7 @@ use alloc::vec::Vec;
 
 /// What a kept draw covers.
 #[derive(Debug)]
-enum Range<B: Backend> {
+enum Range<B: Gpu> {
     Vertices {
         first: u32,
         count: u32,
@@ -56,7 +56,7 @@ enum Range<B: Backend> {
 
 /// One draw of a counted query, kept to be drawn again with its counting program.
 #[derive(Debug)]
-struct Kept<B: Backend> {
+struct Kept<B: Gpu> {
     program: B::Program,
     alpha_to_coverage: bool,
     depth_stencil: B::DepthStencil,
@@ -78,7 +78,7 @@ struct Kept<B: Backend> {
 /// What the occlusion counter needs of a counted draw that its call does not say; the front, which
 /// made the draw's blocks, knows it.
 #[derive(Debug)]
-pub struct CountedDraw<'a, B: Backend> {
+pub struct CountedDraw<'a, B: Gpu> {
     /// The draw's counting program.
     pub counting: &'a B::Program,
     /// The blend block's alpha to coverage.
@@ -92,7 +92,7 @@ pub struct CountedDraw<'a, B: Backend> {
     pub instances_step_by_one: bool,
 }
 
-impl<B: Backend> Clone for Range<B> {
+impl<B: Gpu> Clone for Range<B> {
     fn clone(&self) -> Self {
         match self {
             Range::Vertices {
@@ -126,7 +126,7 @@ impl<B: Backend> Clone for Range<B> {
     }
 }
 
-impl<B: Backend> Clone for Kept<B> {
+impl<B: Gpu> Clone for Kept<B> {
     fn clone(&self) -> Self {
         Kept {
             program: self.program.clone(),
@@ -151,14 +151,14 @@ impl<B: Backend> Clone for Kept<B> {
 
 /// A pooled texture and its view, by size, format and sample count.
 #[derive(Debug)]
-struct Pooled<B: Backend> {
+struct Pooled<B: Gpu> {
     key: (u32, u32, Format, u32),
     texture: B::Texture,
     view: B::TextureView,
 }
 
 #[derive(Debug)]
-pub struct OcclusionCounter<B: Backend> {
+pub struct OcclusionCounter<B: Gpu> {
     /// The draws kept since the last count.
     draws: Vec<Kept<B>>,
     running: bool,
@@ -222,7 +222,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_
     )
 }
 
-impl<B: Backend> Default for OcclusionCounter<B> {
+impl<B: Gpu> Default for OcclusionCounter<B> {
     fn default() -> Self {
         OcclusionCounter {
             draws: Vec::new(),
@@ -241,7 +241,7 @@ impl<B: Backend> Default for OcclusionCounter<B> {
     }
 }
 
-impl<B: Backend> OcclusionCounter<B> {
+impl<B: Gpu> OcclusionCounter<B> {
     /// Begins a counted query: the open pass ends, so the count starts from the targets as they are.
     pub fn begin(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<(), GpuError> {
         if self.running {
@@ -812,7 +812,7 @@ impl<B: Backend> OcclusionCounter<B> {
 }
 
 /// Copies one pooled texture into another of the same key, whole.
-fn whole_copy<B: Backend>(b: &mut B, from: &Pooled<B>, to: &Pooled<B>) {
+fn whole_copy<B: Gpu>(b: &mut B, from: &Pooled<B>, to: &Pooled<B>) {
     let at = |texture| TextureRegion {
         texture,
         mip: 0,
@@ -833,7 +833,7 @@ fn whole_copy<B: Backend>(b: &mut B, from: &Pooled<B>, to: &Pooled<B>) {
 
 /// How many primitives the draws draw at most, which bounds how many fragments pass at one sample;
 /// an indirect draw's is unknown.
-fn primitives<B: Backend>(draws: &[Kept<B>]) -> u64 {
+fn primitives<B: Gpu>(draws: &[Kept<B>]) -> u64 {
     draws
         .iter()
         .map(|k| {
@@ -861,7 +861,7 @@ fn primitives<B: Backend>(draws: &[Kept<B>]) -> u64 {
 /// The draws split into two halves; one draw into its halves of instances where the first instance
 /// can be raised without changing what any instance reads (`bases` is [`Features::BASE_VERTEX_INSTANCE`]),
 /// otherwise into its halves of primitives, each drawn for every instance.
-fn halves<B: Backend>(draws: &[Kept<B>], bases: bool) -> Option<[Vec<Kept<B>>; 2]> {
+fn halves<B: Gpu>(draws: &[Kept<B>], bases: bool) -> Option<[Vec<Kept<B>>; 2]> {
     if draws.len() > 1 {
         let (a, c) = draws.split_at(draws.len() / 2);
         return Some([a.to_vec(), c.to_vec()]);
@@ -940,7 +940,7 @@ fn halves<B: Backend>(draws: &[Kept<B>], bases: bool) -> Option<[Vec<Kept<B>>; 2
     Some([vec![a], vec![c]])
 }
 
-fn pooled<B: Backend>(
+fn pooled<B: Gpu>(
     b: &mut B,
     key: (u32, u32, Format, u32),
     usage: TextureUsage,

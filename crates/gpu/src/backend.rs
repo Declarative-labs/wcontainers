@@ -1,4 +1,4 @@
-//! The [`Backend`] trait: the base every back end provides, and the fast paths with their defaults.
+//! The [`Gpu`] trait: the base every back end provides, and the fast paths with their defaults.
 
 use crate::caps::{Caps, Features, FormatUse};
 use crate::draw::{
@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::Range;
 
-/// Bytes of the ring [`Backend::write_buffer_ring`] starts with; it grows to fit larger writes.
+/// Bytes of the ring [`Gpu::write_buffer_ring`] starts with; it grows to fit larger writes.
 const RING_SIZE: u64 = 1 << 22;
 
 /// Where the vertices of a fan or loop come from.
@@ -40,7 +40,7 @@ pub enum IndexSource<'a> {
     },
 }
 
-/// Which ring [`Backend::write_buffer_ring`] writes into. Indices have a ring of their own because WebGL 2
+/// Which ring [`Gpu::write_buffer_ring`] writes into. Indices have a ring of their own because WebGL 2
 /// never lets one buffer hold both indices and other data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RingKind {
@@ -50,14 +50,14 @@ pub enum RingKind {
     Data,
 }
 
-/// The primitive kinds [`Backend::draw_fan_or_loop`] draws.
+/// The primitive kinds [`Gpu::draw_fan_or_loop`] draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FanOrLoop {
     TriangleFan,
     LineLoop,
 }
 
-/// A clear value for [`Backend::clear_texture`].
+/// A clear value for [`Gpu::clear_texture`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClearValue {
     /// Raw bits: f32 for float formats, the integer for integer formats.
@@ -71,7 +71,7 @@ pub enum ClearValue {
 
 /// One combination of state blocks to build ahead of drawing with it.
 #[derive(Debug)]
-pub struct PrepareDesc<'a, B: Backend> {
+pub struct PrepareDesc<'a, B: Gpu> {
     pub program: &'a B::Program,
     pub blend: &'a B::Blend,
     pub depth_stencil: &'a B::DepthStencil,
@@ -79,14 +79,14 @@ pub struct PrepareDesc<'a, B: Backend> {
     pub vertex_layout: &'a B::VertexLayout,
     pub targets: TargetLayout,
     pub topology: Topology,
-    /// The layout keys of the binding sets the draws will bind, as [`Backend::binding_layout_key`] gave
+    /// The layout keys of the binding sets the draws will bind, as [`Gpu::binding_layout_key`] gave
     /// them or a cache recorded them; the zero key means every texture can be filtered.
     pub layouts: [BindingLayoutKey; crate::MAX_BINDING_SETS],
 }
 
-/// Any object a back end made, for [`Backend::destroy`].
+/// Any object a back end made, for [`Gpu::destroy`].
 #[derive(Debug)]
-pub enum Object<B: Backend> {
+pub enum Object<B: Gpu> {
     Buffer(B::Buffer),
     Texture(B::Texture),
     TextureView(B::TextureView),
@@ -111,7 +111,7 @@ pub enum Object<B: Backend> {
 ///
 /// Objects are named by handles. A handle is cheap to clone and a clone names the same object, which is
 /// destroyed once, through any of its handles.
-pub trait Backend: Sized {
+pub trait Gpu: Sized {
     type Buffer: Clone + Debug;
     type Texture: Clone + Debug;
     type TextureView: Clone + Debug;
@@ -190,7 +190,7 @@ pub trait Backend: Sized {
     /// already there.
     fn write_buffer(&mut self, buffer: &Self::Buffer, offset: u64, data: &[u8], mode: WriteMode);
     /// Writes texels into one region of a texture, read during the call as for
-    /// [`Backend::write_buffer`]. `row_pitch` is the bytes between rows of blocks in `data`.
+    /// [`Gpu::write_buffer`]. `row_pitch` is the bytes between rows of blocks in `data`.
     /// [`WriteMode::Discard`] drops the whole texture's old contents (Direct3D's dynamic textures), so a
     /// back end may rename it instead of ordering the write.
     fn write_texture(
@@ -289,7 +289,7 @@ pub trait Backend: Sized {
 
     // ---- Bytes out ----
 
-    /// Starts reading data back. The copy is recorded now and finishes after a later [`Backend::submit`].
+    /// Starts reading data back. The copy is recorded now and finishes after a later [`Gpu::submit`].
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError>;
     /// Starts reading query results back to the host, one u64 per query.
     fn read_queries(
@@ -344,7 +344,7 @@ pub trait Backend: Sized {
     /// Draws a triangle fan or a line loop. `call.topology`, `call.index` and `call.range` are ignored:
     /// the vertices come from `source`, and instances from `instances`. `provoking` is the convention
     /// of the front's API, so flat-shaded values come from the vertex it names. The default builds a
-    /// triangle list or a line list in the ring ([`Backend::write_buffer_ring`]) and draws that. WebGL 2
+    /// triangle list or a line list in the ring ([`Gpu::write_buffer_ring`]) and draws that. WebGL 2
     /// overrides it.
     fn draw_fan_or_loop(
         &mut self,
@@ -816,8 +816,8 @@ pub trait Backend: Sized {
     }
 }
 
-/// The default of [`Backend::generate_mips`], for a back end whose override takes only some cases.
-pub fn generate_mips_by_draws<B: Backend>(
+/// The default of [`Gpu::generate_mips`], for a back end whose override takes only some cases.
+pub fn generate_mips_by_draws<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     desc: &TextureDesc,
@@ -1069,7 +1069,7 @@ pub(crate) fn full_viewport(width: u32, height: u32) -> Viewport {
 }
 
 /// A draw of the built-in full-screen triangle with `program`, no bindings and no depth test.
-pub(crate) fn builtin_draw<'a, B: Backend>(
+pub(crate) fn builtin_draw<'a, B: Gpu>(
     b: &'a helpers::Builtins<B>,
     program: &'a B::Program,
     viewports: &'a [Viewport],

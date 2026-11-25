@@ -1,6 +1,6 @@
 //! Buffers, textures, views, samplers, binding sets, queries, and how bytes move in and out of them.
 
-use crate::backend::Backend;
+use crate::backend::Gpu;
 use crate::format::Format;
 use crate::shader::StageSet;
 use bitflags::bitflags;
@@ -13,11 +13,11 @@ bitflags! {
     /// GPU write to the one it can reach (slow paths [`crate::SlowPath::IndexBufferTwin`],
     /// [`crate::SlowPath::IndexTwinReadBack`]; plan section 4.6).
     ///
-    /// What each use needs: `COPY_DST` to be written ([`crate::Backend::write_buffer`], a copy's
-    /// destination, [`crate::Backend::clear_buffer`], [`crate::Backend::resolve_queries`]); `COPY_SRC` to
-    /// be read (a copy's source, [`crate::Backend::read_back`]); `VERTEX`, `INDEX` and `INDIRECT` for a
+    /// What each use needs: `COPY_DST` to be written ([`crate::Gpu::write_buffer`], a copy's
+    /// destination, [`crate::Gpu::clear_buffer`], [`crate::Gpu::resolve_queries`]); `COPY_SRC` to
+    /// be read (a copy's source, [`crate::Gpu::read_back`]); `VERTEX`, `INDEX` and `INDIRECT` for a
     /// draw's streams, indices and arguments; `UNIFORM` and `STORAGE` for those bindings; `CAPTURE` for
-    /// [`crate::Backend::capture_vertices`].
+    /// [`crate::Gpu::capture_vertices`].
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
     pub struct BufferUsage: u16 {
         const VERTEX = 1 << 0;
@@ -27,7 +27,7 @@ bitflags! {
         const INDIRECT = 1 << 4;
         const COPY_SRC = 1 << 5;
         const COPY_DST = 1 << 6;
-        /// The buffer is a target of [`crate::Backend::capture_vertices`].
+        /// The buffer is a target of [`crate::Gpu::capture_vertices`].
         const CAPTURE = 1 << 7;
         /// Results are read back to guest memory.
         const READ_BACK = 1 << 8;
@@ -55,7 +55,7 @@ pub struct BufferDesc {
 
 /// What a write promises about the bytes already in the buffer. This is how the mapping rules of
 /// Direct3D, OpenGL and Vulkan reach a back end without any buffer being mapped across the boundary.
-/// A texture write ([`crate::Backend::write_texture`]) takes the same modes: the whole texture for the
+/// A texture write ([`crate::Gpu::write_texture`]) takes the same modes: the whole texture for the
 /// whole buffer (every level and layer), its texels for bytes (both aspects of a depth and stencil
 /// format).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -78,11 +78,11 @@ pub enum WriteMode {
 
 bitflags! {
     /// How a texture will be used. What each use needs: `COPY_DST` to be written
-    /// ([`crate::Backend::write_texture`], a copy's destination); `COPY_SRC` to be read (a copy's
-    /// source, [`crate::Backend::read_back`]); `SAMPLE` and `STORAGE` for those bindings; `RENDER` for
-    /// an attachment or resolve target, and so for both sides of [`crate::Backend::resolve`],
-    /// [`crate::Backend::clear_texture`],
-    /// [`crate::Backend::clear_rects`] and [`crate::Backend::generate_mips`] (which also samples);
+    /// ([`crate::Gpu::write_texture`], a copy's destination); `COPY_SRC` to be read (a copy's
+    /// source, [`crate::Gpu::read_back`]); `SAMPLE` and `STORAGE` for those bindings; `RENDER` for
+    /// an attachment or resolve target, and so for both sides of [`crate::Gpu::resolve`],
+    /// [`crate::Gpu::clear_texture`],
+    /// [`crate::Gpu::clear_rects`] and [`crate::Gpu::generate_mips`] (which also samples);
     /// `PRESENT` for a surface's texture.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
     pub struct TextureUsage: u16 {
@@ -91,7 +91,7 @@ bitflags! {
         const STORAGE = 1 << 2;
         const COPY_SRC = 1 << 3;
         const COPY_DST = 1 << 4;
-        /// Shown on screen through [`crate::Backend::present`].
+        /// Shown on screen through [`crate::Gpu::present`].
         const PRESENT = 1 << 5;
     }
 }
@@ -281,7 +281,7 @@ pub struct BufferRange<H> {
 /// device's buffers in one API buffer, so such an access may reach theirs. A front whose API defines the result binds a program that checks its own
 /// accesses against the range it is given.
 #[derive(Debug)]
-pub enum BindingResource<'a, B: Backend> {
+pub enum BindingResource<'a, B: Gpu> {
     /// The offset is a multiple of [`crate::Limits::min_uniform_offset_alignment`] and the size at most
     /// [`crate::Limits::max_uniform_buffer_size`]; a buffer range in a binding lies inside its buffer.
     /// A draw binds at least the size of the block the program declares at that binding (WebGPU's
@@ -346,7 +346,7 @@ pub struct BindingLayoutKey {
 /// stencil as unsigned integers); a uniform buffer for a uniform block; a storage buffer writable
 /// exactly where the program's block is.
 #[derive(Debug)]
-pub struct BindingEntry<'a, B: Backend> {
+pub struct BindingEntry<'a, B: Gpu> {
     /// The binding number the shader converter gave this slot (see the plan, section 6). A texture the
     /// program pairs with a sampler lies in [`crate::SlotKind::Texture`]'s range, 32 to 159, so that
     /// [`BindingLayoutKey`] has its bit; the other kinds' ranges are the fronts' numbering, which no
@@ -378,7 +378,7 @@ pub struct Extent {
 
 /// One subresource region of a texture.
 #[derive(Debug)]
-pub struct TextureRegion<'a, B: Backend> {
+pub struct TextureRegion<'a, B: Gpu> {
     pub texture: &'a B::Texture,
     pub mip: u32,
     /// First layer for array textures, ignored for 3D (use `origin.z`).
@@ -393,7 +393,7 @@ pub struct TextureRegion<'a, B: Backend> {
 /// The buffer side of a copy between a buffer and a texture. A block's size here is that of the
 /// aspect moved for a format with depth and stencil (one byte of stencil, four of depth).
 #[derive(Debug)]
-pub struct CopyBufferTexture<'a, B: Backend> {
+pub struct CopyBufferTexture<'a, B: Gpu> {
     pub buffer: &'a B::Buffer,
     /// Where the first block is, any multiple of the block size (as Vulkan and WebGPU require). A
     /// back end whose API needs more (WebGPU: multiples of 4 for depth and stencil) copies the rows
@@ -409,7 +409,7 @@ pub struct CopyBufferTexture<'a, B: Backend> {
 
 /// What a read back reads.
 #[derive(Debug)]
-pub enum ReadSource<'a, B: Backend> {
+pub enum ReadSource<'a, B: Gpu> {
     Buffer {
         buffer: &'a B::Buffer,
         offset: u64,
@@ -439,6 +439,6 @@ pub enum QueryKind {
     /// a counting target (plan section 4.12, slow path [`crate::SlowPath::OcclusionCountReplay`]).
     Occlusion,
     /// GPU time in nanoseconds, where [`crate::Features::TIMESTAMPS`] is present;
-    /// [`crate::Backend::timestamps_disjoint`] says when a stretch of them is meaningless.
+    /// [`crate::Gpu::timestamps_disjoint`] says when a stretch of them is meaningless.
     Timestamp,
 }
