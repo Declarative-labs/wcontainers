@@ -6,9 +6,10 @@ use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
-    Backend, BindingLayoutKey, Combination, CombinationTracker, Format, MAX_BINDING_SETS,
-    PrepareDesc, ScalarKind, SlowPath, SystemValue, TargetLayout, Topology,
+    Backend, BindingLayoutKey, Format, MAX_BINDING_SETS, PrepareDesc, ScalarKind, SlowPath,
+    SystemValue, TargetLayout, Topology,
 };
+use wcontainers_shaders::front::{Combination, CombinationTracker};
 
 use crate::cache::Record;
 use crate::context::VERTEX_SLOTS;

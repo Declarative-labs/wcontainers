@@ -752,28 +752,3 @@ impl<B: Backend> Temporary<B> {
         }
     }
 }
-
-/// Cuts `scissors` to `area` (from [`PassTracker::before_draw`]), or gives `area` itself for a draw
-/// without scissors.
-pub fn cut_scissors(scissors: &[ScissorRect], area: ScissorRect, out: &mut Vec<ScissorRect>) {
-    out.clear();
-    if scissors.is_empty() {
-        out.push(area);
-        return;
-    }
-    for s in scissors {
-        let x = s.x.max(area.x);
-        let y = s.y.max(area.y);
-        let right = s.x.saturating_add(s.width).min(area.x + area.width).max(x);
-        let bottom =
-            s.y.saturating_add(s.height)
-                .min(area.y + area.height)
-                .max(y);
-        out.push(ScissorRect {
-            x,
-            y,
-            width: right - x,
-            height: bottom - y,
-        });
-    }
-}

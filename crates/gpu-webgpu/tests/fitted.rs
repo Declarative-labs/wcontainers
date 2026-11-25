@@ -18,9 +18,10 @@ use wcontainers_gpu::{
     DrawCall, DrawRange, Extent, Features, Format, MAX_COLOR_TARGETS, Origin, PassTargets,
     PassTracker, Program, ReadSource, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet,
     Target, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    ViewDimension, Viewport, WriteMode, cut_scissors,
+    ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_shaders::front::cut_scissors;
 
 type B = WebGpu;
 

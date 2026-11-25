@@ -34,6 +34,8 @@ wcontainers-gpu-test = { path = "../gpu-test" }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 libtest-mimic = "0.8.1"
 pollster = "1.0.1"
+# The fronts' scissor cutting (tests/fitted.rs).
+wcontainers-shaders = { path = "../shaders" }
 
 # The suite's window, and reading what it shows: on macOS made on the main thread (tests/present.rs).
 [target.'cfg(target_os = "macos")'.dev-dependencies]

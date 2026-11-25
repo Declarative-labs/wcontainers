@@ -3,6 +3,7 @@
 
 use wcontainers_gpu::*;
 use wcontainers_gpu_test::{Call, Id, Recorder};
+use wcontainers_shaders::front::cut_scissors;
 
 const PROGRAMS: &str = "
 struct Params { color: vec4<f32>, depth: f32 }
@@ -355,33 +356,6 @@ fn colors(t: Target<Recorder>) -> PassTargets<Recorder> {
 
 fn f32s(v: [f32; 4]) -> [u32; 4] {
     v.map(f32::to_bits)
-}
-
-#[test]
-fn scissors_reaching_past_the_largest_offset_are_cut_to_the_area() {
-    let area = ScissorRect {
-        x: 0,
-        y: 0,
-        width: 4,
-        height: 4,
-    };
-    let wide = ScissorRect {
-        x: 1,
-        y: 1,
-        width: u32::MAX,
-        height: u32::MAX,
-    };
-    let mut out = Vec::new();
-    cut_scissors(&[wide], area, &mut out);
-    assert_eq!(
-        out,
-        [ScissorRect {
-            x: 1,
-            y: 1,
-            width: 3,
-            height: 3
-        }]
-    );
 }
 
 #[test]
@@ -1778,65 +1752,4 @@ fn the_occlusion_counter_counts_the_samples_of_multisampled_targets() {
     }
     assert_eq!(k.calls("resolve"), 2);
     k.healthy();
-}
-
-#[test]
-fn the_combination_tracker_picks_the_tuples_drawn() {
-    // Vertex shaders are letters, programs pairs, tuples numbers; tuple 30 has a vertex layout the
-    // shader "c" cannot take.
-    let mut t = CombinationTracker::<char, (char, char), u32>::default();
-    for (vertex, program, tuple, draws) in [
-        ('a', ('a', 'x'), 10, 3),
-        ('a', ('a', 'x'), 20, 1),
-        ('b', ('b', 'y'), 30, 5),
-        ('b', ('b', 'y'), 20, 1),
-    ] {
-        let c = t.combination(&vertex, &program, &tuple);
-        for _ in 0..draws {
-            t.drawn(c);
-        }
-    }
-    // A new pairing of a drawn vertex shader takes every tuple it was drawn with.
-    assert_eq!(t.pick(&'a', &('a', 'z'), |_| true), [10, 20]);
-    // An undrawn one takes the most drawn tuple that fits: 30 (5 draws) does not, 10 (3) does.
-    assert_eq!(t.pick(&'c', &('c', 'z'), |&tuple| tuple != 30), [10]);
-    // Equal counts pick the smaller tuple.
-    t.record(&'d', &40, 3);
-    assert_eq!(t.pick(&'e', &('e', 'z'), |&tuple| tuple != 30), [10]);
-    // The cache's record counts as drawn for its vertex shader.
-    assert_eq!(t.pick(&'d', &('d', 'z'), |_| true), [40]);
-    // Of the five prepared combinations, two are drawn later.
-    let az20 = t.combination(&'a', &('a', 'z'), &20);
-    let cz10 = t.combination(&'c', &('c', 'z'), &10);
-    t.drawn(az20);
-    t.drawn(cz10);
-    t.drawn(cz10);
-    assert_eq!(t.prepared_use(), (2, 3));
-    // Preparing a combination again counts it once.
-    t.pick(&'a', &('a', 'z'), |_| true);
-    assert_eq!(t.prepared_use(), (2, 3));
-    // A pairing drawn before it is prepared counts as drawn only once a draw follows.
-    assert_eq!(t.pick(&'a', &('a', 'x'), |_| true), [10, 20]);
-    assert_eq!(t.prepared_use(), (2, 5));
-    let ax10 = t.combination(&'a', &('a', 'x'), &10);
-    t.drawn(ax10);
-    assert_eq!(t.prepared_use(), (3, 4));
-    // The record to write back: this run's draws per vertex shader and tuple, with the record's.
-    // Two programs of vertex shader 'a' drew tuple 10 (3 and 1) and 20 (1 and 1).
-    let totals: Vec<_> = t
-        .totals()
-        .into_iter()
-        .map(|((&v, &tuple), n)| (v, tuple, n))
-        .collect();
-    assert_eq!(
-        totals,
-        [
-            ('a', 10, 4),
-            ('a', 20, 2),
-            ('b', 20, 1),
-            ('b', 30, 5),
-            ('c', 10, 2),
-            ('d', 40, 3),
-        ]
-    );
 }

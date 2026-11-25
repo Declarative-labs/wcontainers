@@ -11,6 +11,7 @@ pub mod container;
 mod converters;
 mod dxbc;
 mod dxil;
+pub mod front;
 mod ir;
 mod lower;
 pub mod refusal;

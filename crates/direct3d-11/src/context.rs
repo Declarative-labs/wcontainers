@@ -5275,7 +5275,7 @@ impl<B: Backend> Device<B> {
                 let mut covered = Vec::new();
                 let scissors: &[ScissorRect] = match &shader_viewport {
                     Some(a) => {
-                        wcontainers_gpu::cut_scissors(scissors, a.pixels, &mut covered);
+                        wcontainers_shaders::front::cut_scissors(scissors, a.pixels, &mut covered);
                         &covered
                     }
                     None => scissors,
@@ -5284,7 +5284,7 @@ impl<B: Backend> Device<B> {
                 let mut cut = Vec::new();
                 let scissors: &[ScissorRect] = match ctx.fitted {
                     Some(area) => {
-                        wcontainers_gpu::cut_scissors(scissors, area, &mut cut);
+                        wcontainers_shaders::front::cut_scissors(scissors, area, &mut cut);
                         &cut
                     }
                     None => scissors,

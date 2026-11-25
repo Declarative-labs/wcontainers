@@ -15,14 +15,14 @@ use wcontainers_gpu::{
     Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
     STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
     SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
-    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, cut_scissors,
-    helper_binding,
+    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{
     Assembled, NearestSampler, Nir, PositionTransform, TextureSwizzle, Wrap,
 };
 use wcontainers_shaders::Converted;
+use wcontainers_shaders::front::cut_scissors;
 use wcontainers_shaders::stage::{
     DomainSets, FinalDraw, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
     STREAM_BUFFERS, StageDraw, StageError, StageIndex, Stages, StreamOutput,

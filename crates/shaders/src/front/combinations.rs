@@ -1,6 +1,6 @@
 //! The combination tracker (plan 4.4): which state tuples each vertex shader is drawn with, so an
 //! implicit front can build a new program's pipelines ahead of its first draw with
-//! [`crate::Backend::prepare`], and how many of the combinations it prepared were drawn.
+//! [`wcontainers_gpu::Backend::prepare`], and how many of the combinations it prepared were drawn.
 //!
 //! The front names things by keys of its own: `V` a vertex shader, `P` a program (the pair it
 //! prepares), `T` a state tuple (blend, depth-stencil, raster, vertex layout, target layout, topology
@@ -138,5 +138,71 @@ impl<V: Ord + Clone, P: Ord + Clone, T: Ord + Clone> CombinationTracker<V, P, T>
             }
         }
         counts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_combination_tracker_picks_the_tuples_drawn() {
+        // Vertex shaders are letters, programs pairs, tuples numbers; tuple 30 has a vertex layout the
+        // shader "c" cannot take.
+        let mut t = CombinationTracker::<char, (char, char), u32>::default();
+        for (vertex, program, tuple, draws) in [
+            ('a', ('a', 'x'), 10, 3),
+            ('a', ('a', 'x'), 20, 1),
+            ('b', ('b', 'y'), 30, 5),
+            ('b', ('b', 'y'), 20, 1),
+        ] {
+            let c = t.combination(&vertex, &program, &tuple);
+            for _ in 0..draws {
+                t.drawn(c);
+            }
+        }
+        // A new pairing of a drawn vertex shader takes every tuple it was drawn with.
+        assert_eq!(t.pick(&'a', &('a', 'z'), |_| true), [10, 20]);
+        // An undrawn one takes the most drawn tuple that fits: 30 (5 draws) does not, 10 (3) does.
+        assert_eq!(t.pick(&'c', &('c', 'z'), |&tuple| tuple != 30), [10]);
+        // Equal counts pick the smaller tuple.
+        t.record(&'d', &40, 3);
+        assert_eq!(t.pick(&'e', &('e', 'z'), |&tuple| tuple != 30), [10]);
+        // The cache's record counts as drawn for its vertex shader.
+        assert_eq!(t.pick(&'d', &('d', 'z'), |_| true), [40]);
+        // Of the five prepared combinations, two are drawn later.
+        let az20 = t.combination(&'a', &('a', 'z'), &20);
+        let cz10 = t.combination(&'c', &('c', 'z'), &10);
+        t.drawn(az20);
+        t.drawn(cz10);
+        t.drawn(cz10);
+        assert_eq!(t.prepared_use(), (2, 3));
+        // Preparing a combination again counts it once.
+        t.pick(&'a', &('a', 'z'), |_| true);
+        assert_eq!(t.prepared_use(), (2, 3));
+        // A pairing drawn before it is prepared counts as drawn only once a draw follows.
+        assert_eq!(t.pick(&'a', &('a', 'x'), |_| true), [10, 20]);
+        assert_eq!(t.prepared_use(), (2, 5));
+        let ax10 = t.combination(&'a', &('a', 'x'), &10);
+        t.drawn(ax10);
+        assert_eq!(t.prepared_use(), (3, 4));
+        // The record to write back: this run's draws per vertex shader and tuple, with the record's.
+        // Two programs of vertex shader 'a' drew tuple 10 (3 and 1) and 20 (1 and 1).
+        let totals: Vec<_> = t
+            .totals()
+            .into_iter()
+            .map(|((&v, &tuple), n)| (v, tuple, n))
+            .collect();
+        assert_eq!(
+            totals,
+            [
+                ('a', 10, 4),
+                ('a', 20, 2),
+                ('b', 20, 1),
+                ('b', 30, 5),
+                ('c', 10, 2),
+                ('d', 40, 3),
+            ]
+        );
     }
 }

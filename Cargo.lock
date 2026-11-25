@@ -5351,6 +5351,7 @@ dependencies = [
  "naga",
  "proptest",
  "wcontainers-gpu",
+ "wcontainers-shaders",
 ]
 
 [[package]]
@@ -5406,6 +5407,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-graphics-test",
+ "wcontainers-shaders",
  "wcontainers-test-window",
  "wcontainers-test-window-appkit",
  "wcontainers-test-window-win32",
