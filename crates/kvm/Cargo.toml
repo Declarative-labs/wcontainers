@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-kvm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+# KVM's calls, nearly all of them safe.
+kvm-ioctls = "0.25.1"
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true
