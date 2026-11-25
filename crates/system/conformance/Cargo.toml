@@ -14,6 +14,8 @@ wcontainers-kernel = { path = "../../kernel" }
 wcontainers-byte-sink = { path = "../../byte-sink" }
 wcontainers-byte-source = { path = "../../byte-source" }
 wcontainers-readiness = { path = "../../readiness" }
+wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
+wcontainers-abi.workspace = true
 wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 
 [lints]
