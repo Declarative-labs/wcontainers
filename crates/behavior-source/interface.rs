@@ -16,7 +16,8 @@ use wcontainers_processor_architecture::{
     Assignment, Memory, memory_of, receives, simulated_after, state_after,
 };
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    ExecutionState, ExecutionStateExpectation, MemorySink, MemorySnapshot, ProcessorArchitecture,
+    Simulator,
 };
 
 // VERUS: no proof apart from the code it proves, so the lemmas the measurement names are a file of their own, public
@@ -24,7 +25,7 @@ use wcontainers_processor_architecture::{
 pub mod measurement;
 
 #[cfg(verus_keep_ghost)]
-use measurement::agrees_on_first;
+use measurement::{agrees_on_first, expects};
 
 verus! {
 
@@ -53,13 +54,13 @@ pub trait BehaviorSource {
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
-        memory: &[MemoryDelta<'_, Self::Architecture>],
+        memory: MemorySnapshot<'_, '_, Self::Architecture>,
         mutation_hook: &mut impl MemorySink<Self::Architecture>,
     ) -> (result: Result<(), Self::Error>)
         ensures
-            forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
+            result is Ok ==> forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
             result is Ok ==> ({
-                let (after, changes) = old(self).shown(*old(processor), memory_of(memory@));
+                let (after, changes) = old(self).shown(*old(processor), memory_of(memory.mutations@));
                 &&& *final(processor) == after
                 &&& receives(*old(mutation_hook), *final(mutation_hook), changes)
             }),
@@ -71,14 +72,16 @@ pub trait BehaviorSource {
         mut before: ExecutionState<'memory, Self::Architecture>,
     ) -> (after: Result<ExecutionState<'memory, Self::Architecture>, Self::Error>)
         ensures
-            forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
+            after is Ok ==> forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
             after matches Ok(after) ==> (after.processor, memory_of(after.memory_mutations@))
                 == state_after(before, old(self).shown(before.processor, memory_of(before.memory_mutations@))),
     {
         let mut mutations = Vec::new();
         self.execute_single_instruction_in_place(
             &mut before.processor,
-            &before.memory_mutations,
+            MemorySnapshot {
+                mutations: &before.memory_mutations,
+            },
             &mut mutations,
         )?;
         // VERUS: no fact about the memory of a joined list without its proof, so the proof is named.
@@ -99,29 +102,17 @@ pub trait BehaviorSource {
         MeasureInstructionError<Self::Architecture, Self::Error>,
     >)
     where
-        Self::Architecture: Clone,
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
         ensures
-            forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
-            ({
-                let known = <Self::Architecture as ProcessorArchitecture>::known_behaviors(instruction);
-                let states = generator.states(instruction);
-                let shown = |processor, memory| old(self).shown(processor, memory);
-                match result {
-                    Ok(precise) => alone_agrees(precise, known, shown, states),
-                    Err(MeasureInstructionError::NoKnownBehavior { .. }) => known.len() == 0 && states.len() == 0,
-                    // The source failed: nothing more is promised.
-                    Err(MeasureInstructionError::ExecutionFailed { .. }) => true,
-                    Err(MeasureInstructionError::NoBehaviorAgrees { .. }) => states.len() > 0
-                        && forall|behavior| #[trigger] known.contains(behavior) ==> !agrees_on_every_state(behavior, shown, states),
-                    Err(MeasureInstructionError::IndistinguishableBehaviors { .. }) => exists|first, second|
-                        #![trigger known.contains(first), known.contains(second)]
-                        known.contains(first) && known.contains(second) && first != second
-                            && agrees_on_every_state(first, shown, states) && agrees_on_every_state(second, shown, states),
-                }
-            }),
+            result is Ok ==> forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
+            result matches Ok(precise) ==> alone_agrees(
+                precise,
+                <Self::Architecture as ProcessorArchitecture>::known_behaviors(instruction),
+                |processor, memory| old(self).shown(processor, memory),
+                generator.states(instruction),
+            ),
     {
         // VERUS: no function outside the trait can run a source's method, so the loops carry their invariants here; the
         // lemmas they name are in measurement.rs.
@@ -131,8 +122,8 @@ pub trait BehaviorSource {
         let mut candidates: Vec<_> =
             <Self::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
                 .collect();
-        proof {
-            measurement::lemma_listed_candidates(known, candidates@);
+        if candidates.is_empty() {
+            return Err(MeasureInstructionError::NoKnownBehavior { instruction });
         }
         for before in iterator: generator.generate_states(instruction)
             invariant
@@ -143,7 +134,6 @@ pub trait BehaviorSource {
                 shown == (|processor, memory| old(self).shown(processor, memory)),
                 forall|processor, memory| #[trigger] self.shown(processor, memory) == old(self).shown(processor, memory),
                 candidates@.no_duplicates(),
-                iterator.index() > 0 ==> candidates@.len() > 0,
                 // Each candidate is a known behavior that agreed with the source on every state so far, and each
                 // known behavior that did is a candidate.
                 forall|at: int| 0 <= at < candidates@.len() ==> known.contains(#[trigger] candidates@[at])
@@ -158,7 +148,7 @@ pub trait BehaviorSource {
             }
             // VERUS: no proof through a `map` and `collect` chain here, so the behaviors are simulated by index into a list
             // sized as `collect` sizes it, whose type is named since the loop's invariant reads it first.
-            let mut simulated_results: Vec<(_, ExecutionState<'static, Self::Architecture>)> =
+            let mut simulated_results: Vec<(_, ExecutionStateExpectation<'static, Self::Architecture>)> =
                 Vec::with_capacity(candidates.len());
             let mut index = 0;
             while index < candidates.len()
@@ -172,7 +162,7 @@ pub trait BehaviorSource {
             {
                 let precise = candidates[index];
                 // VERUS: no value of type `Infallible` it can rule out, so the success is taken out by a trusted function.
-                let after = measurement::infallible_ok(precise.simulate(before.clone()));
+                let after = measurement::infallible_ok(precise.simulate_state(before.clone()));
                 simulated_results.push((precise, after));
                 index += 1;
             }
@@ -203,16 +193,14 @@ pub trait BehaviorSource {
                     forall|first: int, second: int| 0 <= first < second < sources.len() ==> #[trigger] sources[first] < #[trigger] sources[second],
                     forall|at: int| 0 <= at < agreeing@.len() ==> 0 <= #[trigger] sources[at] < index
                         && agreeing@[at] == simulated_results@[sources[at]].0
-                        && simulated_results@[sources[at]].1.processor == observed_result.processor
-                        && memory_of(simulated_results@[sources[at]].1.memory_mutations@) == memory_of(observed_result.memory_mutations@),
-                    forall|from: int| 0 <= from < index && #[trigger] simulated_results@[from].1.processor == observed_result.processor
-                        && memory_of(simulated_results@[from].1.memory_mutations@) == memory_of(observed_result.memory_mutations@)
+                        && expects(observed_result, simulated_results@[sources[at]].1),
+                    forall|from: int| 0 <= from < index && #[trigger] expects(observed_result, simulated_results@[from].1)
                         ==> agreeing@.contains(simulated_results@[from].0),
                 decreases simulated_results@.len() - index,
             {
                 let ghost agreeing_before = agreeing@;
                 let ghost sources_before = sources;
-                if simulated_results[index].1 == observed_result {
+                if observed_result.meets_expectations(&simulated_results[index].1) {
                     agreeing.push(simulated_results[index].0);
                     proof {
                         sources = sources.push(index as int);
@@ -230,9 +218,6 @@ pub trait BehaviorSource {
             }
             candidates = agreeing;
             if candidates.is_empty() {
-                proof {
-                    measurement::lemma_none_agrees(known, shown, states, done + 1, candidates@);
-                }
                 return Err(MeasureInstructionError::NoBehaviorAgrees {
                     instruction,
                     before,
@@ -241,13 +226,13 @@ pub trait BehaviorSource {
                 });
             }
         }
-        proof {
-            measurement::lemma_candidates_at_end(known, shown, states, candidates@);
-        }
-        // VERUS: no slice pattern with `..`, so the last arm is a wildcard.
         match candidates.as_slice() {
-            [] => Err(MeasureInstructionError::NoKnownBehavior { instruction }),
-            [precise] => Ok(*precise),
+            [precise] => {
+                proof {
+                    measurement::lemma_candidates_at_end(known, shown, states, candidates@);
+                }
+                Ok(*precise)
+            }
             // No generated state tells these candidates apart, so two known behaviors are the same or our generator lacks a state that separates them.
             _ => Err(MeasureInstructionError::IndistinguishableBehaviors {
                 instruction,
@@ -268,12 +253,11 @@ pub trait BehaviorSource {
         MeasureInstructionError<Self::Architecture, Self::Error>,
     >)
     where
-        Self::Architecture: Clone,
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
         ensures
-            forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
+            result is Ok ==> forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
             result matches Ok(measurements) ==> measured_alone(
                 measurements@,
                 <Self::Architecture as ProcessorArchitecture>::instructions().len() as int,
@@ -325,7 +309,23 @@ pub type Shown<Architecture> = spec_fn(
     Seq<Assignment<<Architecture as ProcessorArchitecture>::PagePermission>>,
 );
 
-/// The behavior leaves the processor and memory the source shows from every one of the states.
+/// The behavior expects what the source shows from the state: the same memory, and a processor with every value the
+/// behavior expects.
+pub open spec fn agrees_on<Architecture, Behavior>(
+    behavior: Behavior,
+    shown: Shown<Architecture>,
+    state: ExecutionState<'static, Architecture>,
+) -> bool
+    where
+        Architecture: ProcessorArchitecture,
+        Behavior: Simulator<Architecture, Error = Infallible>,
+{
+    let (expected, memory) = simulated_after(behavior, state);
+    let (observed, observed_memory) = state_after(state, shown(state.processor, memory_of(state.memory_mutations@)));
+    observed_memory == memory && Architecture::meets(observed, expected)
+}
+
+/// The behavior expects what the source shows from every one of the states.
 pub open spec fn agrees_on_every_state<Architecture, Behavior>(
     behavior: Behavior,
     shown: Shown<Architecture>,
@@ -335,8 +335,7 @@ pub open spec fn agrees_on_every_state<Architecture, Behavior>(
         Architecture: ProcessorArchitecture,
         Behavior: Simulator<Architecture, Error = Infallible>,
 {
-    forall|index: int| 0 <= index < states.len() ==> #[trigger] simulated_after(behavior, states[index])
-        == state_after(states[index], shown(states[index].processor, memory_of(states[index].memory_mutations@)))
+    forall|index: int| 0 <= index < states.len() ==> #[trigger] agrees_on(behavior, shown, states[index])
 }
 
 /// Of the known behaviors, this one and no other leaves what the source shows on every one of the states.
@@ -384,10 +383,10 @@ pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionE
     NoBehaviorAgrees {
         instruction: Architecture::Instruction,
         before: ExecutionState<'static, Architecture>,
-        /// Each behavior with the state after it simulates.
+        /// Each behavior with what it expects after.
         behaviors: Vec<(
             Architecture::PreciseInstruction,
-            ExecutionState<'static, Architecture>,
+            ExecutionStateExpectation<'static, Architecture>,
         )>,
         observed: ExecutionState<'static, Architecture>,
     },

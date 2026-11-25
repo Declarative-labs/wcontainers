@@ -2,7 +2,6 @@
 
 use rangemap::RangeMap;
 use vstd::prelude::*;
-use vstd::std_specs::cmp::PartialEqSpec;
 use vstd::std_specs::slice::{cmp_le, sorted_by_le};
 
 use crate::trusted::*;
@@ -86,19 +85,14 @@ pub proof fn lemma_execution_state_clone<'memory, Architecture: ProcessorArchite
     }
 }
 
-/// `==` on processors is equality, and changes a list sink that stays empty received leave a memory as it was.
-pub proof fn lemma_state_equality<'memory, Architecture: ProcessorArchitecture>()
+/// Changes a list sink that stays empty received leave a memory as it was.
+pub proof fn lemma_empty_diff<'memory, Architecture: ProcessorArchitecture>()
     ensures
-        <Architecture::ProcessorState as PartialEqSpec>::obeys_eq_spec(),
-        forall|first: Architecture::ProcessorState, second: Architecture::ProcessorState|
-            #[trigger] first.eq_spec(&second) <==> first == second,
         forall|memory: Memory<Architecture::PagePermission>, before: Vec<MemoryDelta<'memory, Architecture>>,
             after: Vec<MemoryDelta<'memory, Architecture>>, changes: Seq<Assignment<Architecture::PagePermission>>|
             #![trigger receives(before, after, changes), apply_all(memory, changes)]
             before@.len() == 0 && after@.len() == 0 && receives(before, after, changes) ==> apply_all(memory, changes) == memory,
 {
-    Architecture::equality_is_identity();
-    reveal(vstd::laws_eq::obeys_concrete_eq);
     assert forall|memory: Memory<Architecture::PagePermission>, before: Vec<MemoryDelta<'memory, Architecture>>,
         after: Vec<MemoryDelta<'memory, Architecture>>, changes: Seq<Assignment<Architecture::PagePermission>>|
         #![trigger receives(before, after, changes), apply_all(memory, changes)]

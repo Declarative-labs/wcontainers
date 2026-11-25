@@ -10,3 +10,6 @@ path = "interface.rs"
 bitflags.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-executor = { path = "../executor" }
+
+[lints]
+workspace = true

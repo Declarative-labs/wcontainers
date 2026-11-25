@@ -5,7 +5,7 @@ use core::convert::Infallible;
 
 use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::{
-    MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator,
 };
 
 use crate::encoding::{
@@ -132,104 +132,124 @@ where
 {
     type Error = Infallible;
 
-    /// Fetches the word at the program counter and applies this behavior to it, reading its operands from it.
-    fn simulate_in_place(
+    /// Expects the processor this behavior leaves; the whole processor is expected.
+    fn simulate(
         &self,
-        processor: &mut Processor<Level::PrivilegedProcessorSubset>,
-        memory: &[MemoryDelta<'_, Arm64<Level>>],
+        processor: &Processor<Level::PrivilegedProcessorSubset>,
+        memory: MemorySnapshot<'_, '_, Arm64<Level>>,
         mutation_hook: &mut impl MemorySink<Arm64<Level>>,
-    ) -> Result<(), Infallible> {
-        // Not `and_then`: the level's own instructions run whole, so their arm returns from here.
-        let outcome = match fetch(memory, processor.program_counter) {
-            Err(exception) => Err(exception),
-            Ok(word) => match *self {
-                Self::AddShiftedRegister64 => {
-                    add_shifted_register(processor, word, FlagSetting::Preserves)
-                }
-                Self::AddsShiftedRegister64 => {
-                    add_shifted_register(processor, word, FlagSetting::Sets)
-                }
-                Self::Csel64 => select_conditionally(processor, word),
-                Self::LdrImmediateUnsignedOffset64 {
-                    misaligned_stack_pointer,
-                } => load_unsigned_offset(processor, memory, word, misaligned_stack_pointer),
-                Self::StrImmediateUnsignedOffset64 {
-                    misaligned_stack_pointer,
-                    across_fault,
-                } => store_unsigned_offset(
-                    processor,
-                    memory,
-                    word,
-                    misaligned_stack_pointer,
-                    across_fault,
-                    mutation_hook,
-                ),
-                Self::StpSignedOffset64 {
-                    misaligned_stack_pointer,
-                    across_fault,
-                } => store_pair(
-                    processor,
-                    memory,
-                    word,
-                    misaligned_stack_pointer,
-                    across_fault,
-                    mutation_hook,
-                ),
-                Self::LdrImmediatePostIndex64 {
-                    misaligned_stack_pointer,
-                    into_base,
-                } => load_post_index(processor, memory, word, misaligned_stack_pointer, into_base),
-                Self::Brk => Err(Exception::Breakpoint {
-                    comment: IMM16.read(word) as u16,
-                }),
-                Self::Rdvl(VectorLengthReading::Undefined) => Err(Exception::UndefinedInstruction),
-                Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception::SmeTrap(code)),
-                Self::Rdvl(VectorLengthReading::Reads(length)) => {
-                    let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
-                    write_register(
-                        processor,
-                        RD.read(word),
-                        value as u64,
-                        RegisterThirtyOne::ZeroRegister,
-                    );
-                    Ok(())
-                }
-                Self::MrsCtrEl0 { cache_type } => {
-                    write_register(
-                        processor,
-                        RT.read(word),
-                        cache_type,
-                        RegisterThirtyOne::ZeroRegister,
-                    );
-                    Ok(())
-                }
-                Self::LevelSpecific(precise) => {
-                    return precise.simulate_in_place(processor, memory, mutation_hook);
-                }
-            },
-        };
-        match outcome {
-            Ok(()) => {
-                processor.program_counter =
-                    processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
-                processor.exception = None;
-            }
-            Err(exception) => processor.exception = Some(exception),
-        }
-        Ok(())
+    ) -> Result<Processor<Level::PrivilegedProcessorSubset>, Infallible> {
+        let mut after = processor.clone();
+        apply::<Level>(self, &mut after, memory.mutations, mutation_hook)?;
+        Ok(after)
     }
+}
+
+/// Fetches the word at the program counter and applies the behavior to it, reading its operands from it.
+fn apply<Level: PrivilegeLevel>(
+    precise_instruction: &PreciseInstruction<Level::PrecisePrivilegedInstruction>,
+    processor: &mut Processor<Level::PrivilegedProcessorSubset>,
+    memory: &[MemoryDelta<'_, Arm64<Level>>],
+    mutation_hook: &mut impl MemorySink<Arm64<Level>>,
+) -> Result<(), Infallible>
+where
+    Level::PrecisePrivilegedInstruction: Simulator<Arm64<Level>, Error = Infallible>,
+{
+    // Not `and_then`: the level's own instructions run whole, so their arm returns from here.
+    let outcome = match fetch(memory, processor.program_counter) {
+        Err(exception) => Err(exception),
+        Ok(word) => match *precise_instruction {
+            PreciseInstruction::AddShiftedRegister64 => {
+                add_shifted_register(processor, word, FlagSetting::Preserves)
+            }
+            PreciseInstruction::AddsShiftedRegister64 => {
+                add_shifted_register(processor, word, FlagSetting::Sets)
+            }
+            PreciseInstruction::Csel64 => select_conditionally(processor, word),
+            PreciseInstruction::LdrImmediateUnsignedOffset64 {
+                misaligned_stack_pointer,
+            } => load_unsigned_offset(processor, memory, word, misaligned_stack_pointer),
+            PreciseInstruction::StrImmediateUnsignedOffset64 {
+                misaligned_stack_pointer,
+                across_fault,
+            } => store_unsigned_offset(
+                processor,
+                memory,
+                word,
+                misaligned_stack_pointer,
+                across_fault,
+                mutation_hook,
+            ),
+            PreciseInstruction::StpSignedOffset64 {
+                misaligned_stack_pointer,
+                across_fault,
+            } => store_pair(
+                processor,
+                memory,
+                word,
+                misaligned_stack_pointer,
+                across_fault,
+                mutation_hook,
+            ),
+            PreciseInstruction::LdrImmediatePostIndex64 {
+                misaligned_stack_pointer,
+                into_base,
+            } => load_post_index(processor, memory, word, misaligned_stack_pointer, into_base),
+            PreciseInstruction::Brk => Err(Exception::Breakpoint {
+                comment: IMM16.read(word) as u16,
+            }),
+            PreciseInstruction::Rdvl(VectorLengthReading::Undefined) => Err(Exception::UndefinedInstruction),
+            PreciseInstruction::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception::SmeTrap(code)),
+            PreciseInstruction::Rdvl(VectorLengthReading::Reads(length)) => {
+                let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
+                write_register(
+                    processor,
+                    RD.read(word),
+                    value as u64,
+                    RegisterThirtyOne::ZeroRegister,
+                );
+                Ok(())
+            }
+            PreciseInstruction::MrsCtrEl0 { cache_type } => {
+                write_register(
+                    processor,
+                    RT.read(word),
+                    cache_type,
+                    RegisterThirtyOne::ZeroRegister,
+                );
+                Ok(())
+            }
+            PreciseInstruction::LevelSpecific(precise) => {
+                *processor = precise.simulate(
+                    processor,
+                    MemorySnapshot { mutations: memory },
+                    mutation_hook,
+                )?;
+                return Ok(());
+            }
+        },
+    };
+    match outcome {
+        Ok(()) => {
+            processor.program_counter =
+                processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
+            processor.exception = None;
+        }
+        Err(exception) => processor.exception = Some(exception),
+    }
+    Ok(())
 }
 
 /// The user level adds no instruction, so it has none to simulate.
 impl Simulator<Arm64<User>> for Infallible {
     type Error = Infallible;
 
-    fn simulate_in_place(
+    fn simulate(
         &self,
-        _: &mut Processor<()>,
-        _: &[MemoryDelta<'_, Arm64<User>>],
+        _: &Processor<()>,
+        _: MemorySnapshot<'_, '_, Arm64<User>>,
         _: &mut impl MemorySink<Arm64<User>>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<Processor<()>, Infallible> {
         match *self {}
     }
 }

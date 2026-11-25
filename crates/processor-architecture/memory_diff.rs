@@ -1,4 +1,4 @@
-//! The body of `MemoryDelta::diff_snapshots` with its proof: the owner's code, changed only where a `// VERUS:` line says why.
+//! `MemorySnapshot::diff` with its proof: the owner's code, changed only where a `// VERUS:` line says why.
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -16,55 +16,53 @@ use crate::*;
 
 verus! {
 
-/// Calls the hook with each mutation that turns the old memory snapshot into the new one, bytes before permissions.
-// VERUS: no `old(..)` of the hook where a parameter is named `old`, so these specifications name `old` by its path.
-#[verifier::spinoff_prover]
-pub fn diff_snapshots<Architecture: ProcessorArchitecture>(
-    old: &[MemoryDelta<'_, Architecture>],
-    new: &[MemoryDelta<'_, Architecture>],
-    mutation_hook: &mut impl MemorySink<Architecture>,
-)
-    ensures
-        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(old@), changes)]
-            receives(*vstd::prelude::old(mutation_hook), *final(mutation_hook), changes)
-                && apply_all(memory_of(old@), changes) == memory_of(new@),
-        memory_of(old@) == memory_of(new@) ==> *final(mutation_hook) == *vstd::prelude::old(mutation_hook),
-{
-    let ghost hook_before = *mutation_hook;
-    // Mutations both lists make in the same order leave the same memory wherever no other mutation reaches, so only
-    // what the unpaired mutations reach can differ.
-    // VERUS: a function this long is more than the verifier checks at once, so each step is a function of its own.
-    let (mut written, has_unpaired_permission) = record_unpaired_reach(old, new);
-    let ghost unsorted = written@;
-    proof {
-        broadcast use vstd::laws_cmp::group_laws_cmp;
-    }
-    // VERUS: no sort by a key a specification can read, so the ranges are (start, end) pairs, which sort by start first.
-    written.as_mut_slice().sort_unstable();
-    proof {
-        lemma_sorted_ranges(unsorted, written@);
-    }
-    let ghost sorted = written@;
-    // Overlapping and touching ranges become one, so that each address is compared once.
-    // VERUS: no `dedup_by` with a closure, so touching ranges are merged by index.
-    merge_ranges(&mut written);
-    proof {
-        assert forall|address: u64| !in_ranges(written@, address)
-            implies #[trigger] memory_of(old@)(address).0 == memory_of(new@)(address).0 by {
-            assert(in_ranges(sorted, address) == in_ranges(unsorted, address));
-        }
-    }
-    send_changed_bytes(old, new, written.as_slice(), mutation_hook);
-    if !has_unpaired_permission {
+impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
+    /// Calls the hook with each mutation that turns this snapshot into the new one, bytes before permissions.
+    #[verifier::spinoff_prover]
+    pub fn diff(&self, new: &Self, mutation_hook: &mut impl MemorySink<Architecture>)
+        ensures
+            exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(self.mutations@), changes)]
+                receives(*old(mutation_hook), *final(mutation_hook), changes)
+                    && apply_all(memory_of(self.mutations@), changes) == memory_of(new.mutations@),
+            memory_of(self.mutations@) == memory_of(new.mutations@) ==> *final(mutation_hook) == *old(mutation_hook),
+    {
+        let (old, new) = (self.mutations, new.mutations);
+        let ghost hook_before = *mutation_hook;
+        // Mutations both lists make in the same order leave the same memory wherever no other mutation reaches, so only
+        // what the unpaired mutations reach can differ.
+        // VERUS: a function this long is more than the verifier checks at once, so each step is a function of its own.
+        let (mut written, has_unpaired_permission) = record_unpaired_reach(old, new);
+        let ghost unsorted = written@;
         proof {
-            lemma_bytes_were_all(memory_of(old@), memory_of(new@), hook_before, *mutation_hook);
+            broadcast use vstd::laws_cmp::group_laws_cmp;
         }
-        return;
-    }
-    let ghost hook_after_bytes = *mutation_hook;
-    send_changed_permissions(old, new, mutation_hook);
-    proof {
-        lemma_bytes_then_permissions(memory_of(old@), memory_of(new@), hook_before, hook_after_bytes, *mutation_hook);
+        // VERUS: no sort by a key a specification can read, so the ranges are (start, end) pairs, which sort by start first.
+        written.as_mut_slice().sort_unstable();
+        proof {
+            lemma_sorted_ranges(unsorted, written@);
+        }
+        let ghost sorted = written@;
+        // Overlapping and touching ranges become one, so that each address is compared once.
+        // VERUS: no `dedup_by` with a closure, so touching ranges are merged by index.
+        merge_ranges(&mut written);
+        proof {
+            assert forall|address: u64| !in_ranges(written@, address)
+                implies #[trigger] memory_of(old@)(address).0 == memory_of(new@)(address).0 by {
+                assert(in_ranges(sorted, address) == in_ranges(unsorted, address));
+            }
+        }
+        send_changed_bytes(old, new, written.as_slice(), mutation_hook);
+        if !has_unpaired_permission {
+            proof {
+                lemma_bytes_were_all(memory_of(old@), memory_of(new@), hook_before, *mutation_hook);
+            }
+            return;
+        }
+        let ghost hook_after_bytes = *mutation_hook;
+        send_changed_permissions(old, new, mutation_hook);
+        proof {
+            lemma_bytes_then_permissions(memory_of(old@), memory_of(new@), hook_before, hook_after_bytes, *mutation_hook);
+        }
     }
 }
 

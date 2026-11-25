@@ -21,8 +21,8 @@ where
             for (second_index, second) in behaviors.iter().enumerate().skip(first_index + 1) {
                 let distinguished = first == second
                     || states.iter().any(|before| {
-                        let Ok(after_first) = first.simulate(before.clone());
-                        let Ok(after_second) = second.simulate(before.clone());
+                        let Ok(after_first) = first.simulate_state(before.clone());
+                        let Ok(after_second) = second.simulate_state(before.clone());
                         after_first != after_second
                     });
                 assert!(

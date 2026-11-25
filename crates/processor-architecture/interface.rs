@@ -2,6 +2,11 @@
 
 extern crate alloc;
 
+mod foreign_implementation {
+    #[path = "vector/implementation.rs"]
+    mod vector;
+}
+
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 #[cfg(verus_keep_ghost)]
@@ -14,11 +19,6 @@ use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::iter::IteratorSpec;
 
-mod foreign_implementation {
-    #[path = "vector/implementation.rs"]
-    mod vector;
-}
-
 // VERUS: no proof apart from the code it proves, so the proofs, and the memory diff with its proof, are files of their own.
 mod memory_diff;
 #[cfg(verus_keep_ghost)]
@@ -28,14 +28,16 @@ mod trusted;
 mod trusted_tests;
 
 #[cfg(verus_keep_ghost)]
-use memory_proof::{lemma_appended_memory, lemma_execution_state_clone, lemma_state_equality};
+use memory_proof::{lemma_appended_memory, lemma_empty_diff, lemma_execution_state_clone};
 
 verus! {
 
 /// One processor architecture, as a program running on it sees it.
-pub trait ProcessorArchitecture: Sized {
+pub trait ProcessorArchitecture: Sized + Clone {
     /// All stateful components of the processor.
     type ProcessorState: Clone + Eq;
+    /// What a behavior expects the processor to hold after an instruction.
+    type ProcessorStateExpectation: Clone + Eq;
     /// What a program may do with a page of memory.
     type PagePermission: Copy + Eq;
     /// An instruction at its most granular division.
@@ -90,6 +92,18 @@ pub trait ProcessorArchitecture: Sized {
             behaviors.decrease() is Some,
             Self::known_behaviors(instruction).no_duplicates(),
     ;
+
+    /// The observed processor has every value the expectation holds.
+    spec fn meets(observed: Self::ProcessorState, expectation: Self::ProcessorStateExpectation) -> bool;
+
+    /// Returns whether the observed processor has every value the expectation holds.
+    fn meets_expectations(
+        observed: &Self::ProcessorState,
+        expectation: &Self::ProcessorStateExpectation,
+    ) -> (meets: bool)
+        ensures
+            meets == Self::meets(*observed, *expectation),
+    ;
 }
 
 /// One memory change as the specification reads it: a `MemoryDelta` with its bytes as a sequence.
@@ -139,11 +153,11 @@ pub open spec fn assignments<'memory, Architecture: ProcessorArchitecture>(
     mutations.map_values(|mutation: MemoryDelta<'memory, Architecture>| mutation@)
 }
 
-/// The processor and memory a behavior that cannot fail leaves from the state.
+/// The processor a behavior that cannot fail expects and the memory it leaves from the state.
 pub open spec fn simulated_after<'memory, Architecture, Behavior>(
     behavior: Behavior,
     before: ExecutionState<'memory, Architecture>,
-) -> (Architecture::ProcessorState, Memory<Architecture::PagePermission>)
+) -> (Architecture::ProcessorStateExpectation, Memory<Architecture::PagePermission>)
     where
         Architecture: ProcessorArchitecture,
         Behavior: Simulator<Architecture, Error = Infallible>,
@@ -152,7 +166,7 @@ pub open spec fn simulated_after<'memory, Architecture, Behavior>(
     match behavior.simulation(before.processor, memory) {
         Ok((processor, changes)) => (processor, apply_all(memory, changes)),
         // Never: the error is `Infallible`.
-        Err(_) => (before.processor, memory),
+        Err(_) => arbitrary(),
     }
 }
 
@@ -177,51 +191,50 @@ pub open spec fn receives<Architecture: ProcessorArchitecture, Sink: MemorySink<
 pub trait Simulator<Architecture: ProcessorArchitecture> {
     #[allow(
         reviewable::explicit_shared_error,
-        reason = "simulate only runs simulate_in_place and passes its error on unchanged"
+        reason = "simulate_state only runs simulate and passes its error on unchanged"
     )]
     type Error;
 
-    /// The processor this instruction leaves and the changes it makes to memory, or its error, from the processor and memory before.
+    /// The processor this instruction expects and the changes it makes to memory, or its error, from the processor and memory before.
     spec fn simulation(
         &self,
         processor: Architecture::ProcessorState,
         memory: Memory<Architecture::PagePermission>,
-    ) -> Result<(Architecture::ProcessorState, Seq<Assignment<Architecture::PagePermission>>), Self::Error>;
+    ) -> Result<(Architecture::ProcessorStateExpectation, Seq<Assignment<Architecture::PagePermission>>), Self::Error>;
 
     /// Simulates applying this instruction to the given processor + memory.
     ///
-    /// Processor changes are written in place, memory changes are written through the hook.
-    fn simulate_in_place(
+    /// The processor expected afterwards is returned, memory changes are written through the hook.
+    fn simulate(
         &self,
-        processor: &mut Architecture::ProcessorState,
-        memory: &[MemoryDelta<'_, Architecture>],
+        processor: &Architecture::ProcessorState,
+        memory: MemorySnapshot<'_, '_, Architecture>,
         mutation_hook: &mut impl MemorySink<Architecture>,
-    ) -> (result: Result<(), Self::Error>)
+    ) -> (result: Result<Architecture::ProcessorStateExpectation, Self::Error>)
         ensures
-            result is Ok ==> (self.simulation(*old(processor), memory_of(memory@)) matches Ok((after, changes))
-                && *final(processor) == after && receives(*old(mutation_hook), *final(mutation_hook), changes)),
+            result matches Ok(expected) ==> (self.simulation(*processor, memory_of(memory.mutations@)) matches Ok((after, changes))
+                && expected == after && receives(*old(mutation_hook), *final(mutation_hook), changes)),
     ;
 
     /// Simulates applying this instruction to the before state.
-    fn simulate<'memory>(
+    fn simulate_state<'memory>(
         &self,
         mut before: ExecutionState<'memory, Architecture>,
-    ) -> (after: Result<ExecutionState<'memory, Architecture>, Self::Error>)
+    ) -> (after: Result<ExecutionStateExpectation<'memory, Architecture>, Self::Error>)
         ensures
             after matches Ok(after) ==> (self.simulation(before.processor, memory_of(before.memory_mutations@))
                 matches Ok((processor, changes)) && after.processor == processor
                 && memory_of(after.memory_mutations@) == apply_all(memory_of(before.memory_mutations@), changes)),
     {
         let mut mutations = Vec::new();
-        self.simulate_in_place(
-            &mut before.processor,
-            &before.memory_mutations,
-            &mut mutations,
-        )?;
+        let processor = self.simulate(&before.processor, before.memory(), &mut mutations)?;
         // VERUS: no fact about the memory of a joined list without its proof, so the proof is named.
         proof { lemma_appended_memory(before.memory_mutations@, mutations); }
         before.memory_mutations.append(&mut mutations);
-        Ok(before)
+        Ok(ExecutionStateExpectation {
+            processor,
+            memory_mutations: before.memory_mutations,
+        })
     }
 }
 
@@ -241,6 +254,14 @@ pub trait MemorySink<Architecture: ProcessorArchitecture> {
 pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
     pub processor: Architecture::ProcessorState,
     /// The changes that have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
+    pub memory_mutations: Vec<MemoryDelta<'memory, Architecture>>,
+}
+
+/// What a behavior expects an instruction to leave behind.
+#[derive(Clone)]
+pub struct ExecutionStateExpectation<'memory, Architecture: ProcessorArchitecture> {
+    pub processor: Architecture::ProcessorStateExpectation,
+    /// The changes expected to have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
     pub memory_mutations: Vec<MemoryDelta<'memory, Architecture>>,
 }
 
@@ -336,57 +357,120 @@ impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
             },
         }
     }
+}
 
-    /// Calls the hook with each mutation that turns the old memory snapshot into the new one, bytes before permissions.
-    // VERUS: no `old(..)` of the hook where a parameter is named `old`, so its specification names `old` by its path.
-    pub fn diff_snapshots(
-        old: &[Self],
-        new: &[Self],
-        mutation_hook: &mut impl MemorySink<Architecture>,
-    )
-        ensures
-            exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(old@), changes)]
-                receives(*vstd::prelude::old(mutation_hook), *final(mutation_hook), changes)
-                    && apply_all(memory_of(old@), changes) == memory_of(new@),
-            memory_of(old@) == memory_of(new@) ==> *final(mutation_hook) == *vstd::prelude::old(mutation_hook),
-    {
-        // VERUS: no proof apart from the code it proves, so the body is memory_diff.rs, proven there.
-        memory_diff::diff_snapshots(old, new, mutation_hook)
-    }
+/// Memory as the mutations applied to it from a fully zeroed out state, in chronological order.
+pub struct MemorySnapshot<'snapshot, 'memory, Architecture: ProcessorArchitecture> {
+    pub mutations: &'snapshot [MemoryDelta<'memory, Architecture>],
 }
 
 #[cfg(verus_keep_ghost)]
-impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionState<'_, Architecture> {
+impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for MemorySnapshot<'_, '_, Architecture> {
     open spec fn obeys_eq_spec() -> bool {
         true
     }
 
-    /// The same processor, and the same byte and permission at every address.
+    /// The same byte and permission at every address.
     open spec fn eq_spec(&self, other: &Self) -> bool {
-        &&& self.processor == other.processor
-        &&& memory_of(self.memory_mutations@) == memory_of(other.memory_mutations@)
+        memory_of(self.mutations@) == memory_of(other.mutations@)
     }
 }
 
-/// Two states are equal when they hold the same processor and the same memory, regardless of the order of changes.
-impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Architecture> {
+/// Two snapshots are equal when they hold the same memory, regardless of the order of mutations.
+impl<Architecture: ProcessorArchitecture> PartialEq for MemorySnapshot<'_, '_, Architecture> {
     fn eq(&self, other: &Self) -> bool {
-        // VERUS: no facts of `==` and of an empty diff without their proof, so the proof is named.
-        proof { lemma_state_equality::<Architecture>(); }
-        if self.processor != other.processor {
-            return false;
-        }
+        // VERUS: no fact that an empty diff leaves the same memory without its proof, so the proof is named.
+        proof { lemma_empty_diff::<Architecture>(); }
         // VERUS: no closure that captures a mutable reference, so the mutations are collected and counted.
         let mut mutations = Vec::new();
-        MemoryDelta::diff_snapshots(
-            &self.memory_mutations,
-            &other.memory_mutations,
-            &mut mutations,
-        );
+        self.diff(other, &mut mutations);
         mutations.is_empty()
     }
 }
 
+impl<Architecture: ProcessorArchitecture> Eq for MemorySnapshot<'_, '_, Architecture> {}
+
+// VERUS: no `==` without a statement of what it means, so this one states nothing.
+#[cfg(verus_keep_ghost)]
+impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionState<'_, Architecture> {
+    open spec fn obeys_eq_spec() -> bool {
+        false
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        false
+    }
+}
+
+/// Two states are equal when they hold the same processor and the same memory.
+impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Architecture> {
+    fn eq(&self, other: &Self) -> bool {
+        self.processor == other.processor && self.memory() == other.memory()
+    }
+}
+
 impl<Architecture: ProcessorArchitecture> Eq for ExecutionState<'_, Architecture> {}
+
+impl<'memory, Architecture: ProcessorArchitecture> ExecutionState<'memory, Architecture> {
+    /// Returns the memory of this state.
+    pub fn memory(&self) -> (memory: MemorySnapshot<'_, 'memory, Architecture>)
+        ensures
+            memory.mutations@ == self.memory_mutations@,
+    {
+        MemorySnapshot {
+            mutations: &self.memory_mutations,
+        }
+    }
+
+    /// Returns whether this observed state has the memory and every processor value the expectation holds.
+    pub fn meets_expectations(
+        &self,
+        expectation: &ExecutionStateExpectation<'_, Architecture>,
+    ) -> (meets: bool)
+        ensures
+            meets == (memory_of(self.memory_mutations@) == memory_of(expectation.memory_mutations@)
+                && Architecture::meets(self.processor, expectation.processor)),
+    {
+        self.memory() == expectation.memory()
+            && Architecture::meets_expectations(&self.processor, &expectation.processor)
+    }
+}
+
+// VERUS: no `==` without a statement of what it means, so this one states nothing.
+#[cfg(verus_keep_ghost)]
+impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionStateExpectation<'_, Architecture> {
+    open spec fn obeys_eq_spec() -> bool {
+        false
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        false
+    }
+}
+
+/// Two expectations are equal when they hold the same processor expectation and the same memory.
+impl<Architecture: ProcessorArchitecture> PartialEq
+    for ExecutionStateExpectation<'_, Architecture>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.processor == other.processor && self.memory() == other.memory()
+    }
+}
+
+impl<Architecture: ProcessorArchitecture> Eq for ExecutionStateExpectation<'_, Architecture> {}
+
+impl<'memory, Architecture: ProcessorArchitecture>
+    ExecutionStateExpectation<'memory, Architecture>
+{
+    /// Returns the memory this expectation holds.
+    pub fn memory(&self) -> (memory: MemorySnapshot<'_, 'memory, Architecture>)
+        ensures
+            memory.mutations@ == self.memory_mutations@,
+    {
+        MemorySnapshot {
+            mutations: &self.memory_mutations,
+        }
+    }
+}
 
 } // verus!

@@ -11,8 +11,8 @@ extern crate alloc;
 use alloc::borrow::Cow;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::array;
 use core::convert::Infallible;
+use core::{array, iter, slice};
 
 use itertools::Itertools;
 
@@ -94,12 +94,14 @@ pub enum OperandValue {
 impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
     type OperandType = OperandType;
     type OperandValue = OperandValue;
+    type OperandTypes<'domain> = iter::Copied<slice::Iter<'static, OperandType>>;
+    type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
     /// The operands of the assembly syntax in its order, then the state the instruction reads besides them.
     fn list_operand_types(
         &self,
         instruction: Instruction<Infallible>,
-    ) -> impl Iterator<Item = OperandType> {
+    ) -> Self::OperandTypes<'_> {
         use OperandType::{
             AccessPlacement, ConditionFlags, DataPagePermission, RegisterNumber, RegisterValue,
             SignedImmediate, UnsignedImmediate,
@@ -108,7 +110,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             DataPagePermission(DataPage::Lower),
             DataPagePermission(DataPage::Upper),
         ];
-        let operand_types: &[OperandType] = match instruction {
+        let operand_types: &'static [OperandType] = match instruction {
             Instruction::AddShiftedRegister64 | Instruction::AddsShiftedRegister64 => &[
                 RegisterNumber(RD),
                 RegisterNumber(RN),
@@ -161,7 +163,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
     fn generate_critical_values(
         &self,
         operand_type: OperandType,
-    ) -> impl Iterator<Item = OperandValue> {
+    ) -> Self::CriticalValues<'_> {
         let values: Vec<OperandValue> = match operand_type {
             // Two ordinary registers, so that one can appear twice, and the zero register or stack pointer.
             OperandType::RegisterNumber(_) => [0, 1, GENERAL_PURPOSE_REGISTERS as u32]

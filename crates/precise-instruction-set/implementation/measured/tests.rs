@@ -12,7 +12,7 @@ use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduc
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture,
+    ExecutionState, MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadIntoBaseWithWriteback, MisalignedStackPointer, PreciseInstruction,
@@ -126,7 +126,7 @@ impl BehaviorSource for ThreadIdChanged {
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
-        memory: &[MemoryDelta<'_, Arm64<User>>],
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), NotRecorded> {
         self.0
@@ -380,12 +380,12 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
     let mut level_0_faults = 0;
     for (instruction, before) in to_states_past_the_last_addressable_byte() {
         let precise = recorded.to_precise(instruction);
-        let Ok(simulated) = precise.simulate(before.clone());
+        let Ok(simulated) = precise.simulate_state(before.clone());
         let Ok(observed) = chip.execute_single_instruction(before) else {
             panic!("{instruction:?}: the chip refused a state it runs");
         };
         assert!(
-            observed == simulated,
+            observed.meets_expectations(&simulated),
             "{instruction:?}: the chip gives {:?}, {precise:?} simulates {:?}",
             observed.processor,
             simulated.processor

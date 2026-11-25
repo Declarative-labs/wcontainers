@@ -12,3 +12,6 @@ wcontainers-runtime = { path = ".." }
 wcontainers-executor = { path = "../../executor" }
 wcontainers-kernel = { path = "../../kernel" }
 wcontainers-system = { path = "../../system" }
+
+[lints]
+workspace = true

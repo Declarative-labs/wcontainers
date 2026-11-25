@@ -37,6 +37,9 @@ unsafe_op_in_unsafe_fn = "deny"
 # Verus builds the specifications under these flags, and a plain build leaves them out.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(verus_keep_ghost_body)", "cfg(verus_only)"] }
 
+[workspace.lints.clippy]
+type_complexity = "allow"
+
 # Tests run real programs through the translator and the kernel, so unoptimized builds are too slow to be useful.
 [profile.dev]
 opt-level = 1

@@ -120,7 +120,7 @@ fn run(
     before: ExecutionState<'static, Arm64<User>>,
 ) -> (Processor<()>, Vec<MemoryDelta<'static, Arm64<User>>>) {
     let given = before.memory_mutations.len();
-    let Ok(mut after) = precise.simulate(before);
+    let Ok(mut after) = precise.simulate_state(before);
     let made = after.memory_mutations.split_off(given);
     (after.processor, made)
 }

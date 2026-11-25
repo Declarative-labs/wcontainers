@@ -22,7 +22,7 @@ pub fn execute_agrees_with_execute_in_place<Source, Generator>(
             let mut mutated = Vec::new();
             let in_place = source.execute_single_instruction_in_place(
                 &mut processor,
-                &before.memory_mutations,
+                before.memory(),
                 &mut mutated,
             );
             let executed = source.execute_single_instruction(before.clone());
@@ -92,14 +92,14 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
             "measuring every instruction gives instruction {index} another behavior than measuring it alone"
         );
         for before in generator.generate_states(instruction) {
-            let Ok(simulated) = precise.simulate(before.clone());
+            let Ok(simulated) = precise.simulate_state(before.clone());
             let Ok(executed) = source.execute_single_instruction(before) else {
                 panic!(
                     "the source did not execute a state of instruction {index} it was measured on"
                 );
             };
             assert!(
-                simulated == executed,
+                executed.meets_expectations(&simulated),
                 "the behavior measured for instruction {index} disagrees with the source"
             );
         }

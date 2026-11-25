@@ -301,7 +301,7 @@ fn to_error(
     let mut mutations: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
     let Err(refusal) = chip.execute_single_instruction_in_place(
         &mut processor,
-        &state.memory_mutations,
+        state.memory(),
         &mut mutations,
     ) else {
         panic!("{loading:?}: the chip ran a state it cannot");

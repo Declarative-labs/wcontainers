@@ -8,7 +8,7 @@ use std::path::Path;
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture,
+    ExecutionState, MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
 use wcontainers_processor_architecture_arm64::{Arm64, Instruction, Processor, User};
 
@@ -49,7 +49,7 @@ impl Recording {
                         let mut after = before.clone();
                         source.execute_single_instruction_in_place(
                             &mut after.processor,
-                            &before.memory_mutations,
+                            before.memory(),
                             &mut after.memory_mutations,
                         )?;
                         Ok((before, after))
@@ -157,10 +157,12 @@ impl BehaviorSource for Recording {
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
-        memory: &[MemoryDelta<'_, Arm64<User>>],
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), NotRecorded> {
-        let (instruction, case) = self.find_case(processor, memory).ok_or(NotRecorded)?;
+        let (instruction, case) = self
+            .find_case(processor, memory.mutations)
+            .ok_or(NotRecorded)?;
         let cases = &self.instructions[instruction].1;
         let (before, after) = &cases[case];
         processor.clone_from(&after.processor);

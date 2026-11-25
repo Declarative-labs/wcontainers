@@ -70,6 +70,8 @@ impl<Level: PrivilegeLevel> Eq for Arm64<Level> {}
 
 impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
     type ProcessorState = Processor<Level::PrivilegedProcessorSubset>;
+    /// Every behavior expects the whole processor.
+    type ProcessorStateExpectation = Processor<Level::PrivilegedProcessorSubset>;
     type PagePermission = PagePermission;
     type Instruction = Instruction<Level::PrivilegedInstruction>;
     type PreciseInstruction = PreciseInstruction<Level::PrecisePrivilegedInstruction>;
@@ -102,6 +104,14 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
         instruction: Instruction<Level::PrivilegedInstruction>,
     ) -> vec::IntoIter<Self::PreciseInstruction> {
         list_known_behaviors(instruction).into_iter()
+    }
+
+    /// The observed processor meets the expectation when it is the expected processor.
+    fn meets_expectations(
+        observed: &Self::ProcessorState,
+        expectation: &Self::ProcessorStateExpectation,
+    ) -> bool {
+        observed == expectation
     }
 }
 

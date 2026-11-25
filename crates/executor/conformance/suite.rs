@@ -7,7 +7,7 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_executor::Executor;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
+    ExecutionState, ExecutionStateExpectation, MemoryDelta, ProcessorArchitecture, Simulator,
 };
 
 /// On every state the generator makes for every instruction, the executor ends where the precise instruction set
@@ -25,6 +25,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Chip::Architecture, Error = Infallible>,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::ProcessorStateExpectation: Debug,
     <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug,
     <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
     Set: PreciseInstructionSet<Chip::Architecture>,
@@ -38,7 +39,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
         let mut first = None;
         for before in generator.generate_states(instruction) {
             states += 1;
-            let Ok(simulated) = precise.simulate(before.clone());
+            let Ok(simulated) = precise.simulate_state(before.clone());
             let Ok(executed) = executor.execute_single_instruction(before.clone()) else {
                 disagreeing += 1;
                 first.get_or_insert_with(|| {
@@ -49,7 +50,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
                 });
                 continue;
             };
-            if simulated != executed {
+            if !executed.meets_expectations(&simulated) {
                 disagreeing += 1;
                 first.get_or_insert_with(|| describe(&before, &simulated, &executed));
             }
@@ -70,12 +71,13 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
 
 fn describe<Architecture>(
     before: &ExecutionState<'_, Architecture>,
-    simulated: &ExecutionState<'_, Architecture>,
+    simulated: &ExecutionStateExpectation<'_, Architecture>,
     executed: &ExecutionState<'_, Architecture>,
 ) -> String
 where
     Architecture: ProcessorArchitecture,
     Architecture::ProcessorState: Debug,
+    Architecture::ProcessorStateExpectation: Debug,
     Architecture::PagePermission: Debug,
 {
     let start = before.memory_mutations.len();

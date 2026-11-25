@@ -10,3 +10,6 @@ path = "interface.rs"
 wcontainers-abi.workspace = true
 wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel = { path = "../kernel" }
+
+[lints]
+workspace = true
