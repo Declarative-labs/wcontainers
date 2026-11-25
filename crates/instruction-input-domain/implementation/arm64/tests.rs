@@ -1,10 +1,11 @@
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use itertools::Itertools;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::encoding::RN;
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction};
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
 
 use crate::{
     AccessPlacement, Arm64InputDomain, DataPage, GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS,
@@ -18,7 +19,7 @@ const PLACEMENTS: [AccessPlacement; 4] = [
     AccessPlacement::UpperPageStart,
 ];
 
-fn read_word(state: &ExecutionState<'static, Arm64>) -> Option<u32> {
+fn read_word(state: &ExecutionState<'static, Arm64<User>>) -> Option<u32> {
     state
         .memory_mutations
         .iter()
@@ -35,8 +36,8 @@ fn read_word(state: &ExecutionState<'static, Arm64>) -> Option<u32> {
 
 /// Reads one operand back from a state; the zero register reads as zero.
 fn read_operand(
-    state: &ExecutionState<'static, Arm64>,
-    instruction: Instruction,
+    state: &ExecutionState<'static, Arm64<User>>,
+    instruction: Instruction<Infallible>,
     word: u32,
     operand_type: OperandType,
 ) -> Option<OperandValue> {
@@ -89,7 +90,7 @@ fn read_operand(
 
 #[test]
 fn states_per_instruction() {
-    let counts: Vec<(Instruction, usize)> = Arm64::list_instructions()
+    let counts: Vec<(Instruction<Infallible>, usize)> = Arm64::<User>::list_instructions()
         .map(|instruction| {
             let states = Arm64InputDomain.generate_critical_states(instruction);
             (instruction, states.count())
@@ -119,7 +120,7 @@ fn states_per_instruction() {
 #[test]
 fn every_state_decodes_to_its_instruction_and_operands() {
     let domain = Arm64InputDomain;
-    for instruction in Arm64::list_instructions() {
+    for instruction in Arm64::<User>::list_instructions() {
         let fixed = instruction.to_fixed_bits();
         let operand_types: Vec<OperandType> = domain.list_operand_types(instruction).collect();
         let combinations = operand_types

@@ -12,6 +12,7 @@ use alloc::borrow::Cow;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::array;
+use core::convert::Infallible;
 
 use itertools::Itertools;
 
@@ -22,7 +23,7 @@ use wcontainers_processor_architecture_arm64::encoding::{
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, GENERAL_PURPOSE_REGISTERS, Instruction, InstructionFetch,
-    PagePermission, Processor, ZERO_PROCESSOR,
+    PagePermission, Processor, User, ZERO_PROCESSOR,
 };
 
 #[cfg(test)]
@@ -35,6 +36,17 @@ const CODE_ADDRESS: u64 = PAGE_BYTES;
 const LOWER_DATA_ADDRESS: u64 = CODE_ADDRESS + PAGE_BYTES;
 const UPPER_DATA_ADDRESS: u64 = LOWER_DATA_ADDRESS + PAGE_BYTES;
 const REGISTER_BYTES: u64 = size_of::<u64>() as u64;
+const DATA_BYTES: usize = (UPPER_DATA_ADDRESS + PAGE_BYTES - LOWER_DATA_ADDRESS) as usize;
+/// The bytes of both data pages, which every state borrows instead of holding its own copy.
+static DATA: [u8; DATA_BYTES] = {
+    let mut data = [0; DATA_BYTES];
+    let mut index = 0;
+    while index < DATA_BYTES {
+        data[index] = !((LOWER_DATA_ADDRESS + index as u64) as u8);
+        index += 1;
+    }
+    data
+};
 /// A field this narrow gets every value it can hold.
 const EXHAUSTIVE_FIELD_BITS: u32 = 4;
 
@@ -79,12 +91,15 @@ pub enum OperandValue {
     PagePermission(PagePermission),
 }
 
-impl InstructionInputDomain<Arm64> for Arm64InputDomain {
+impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
     type OperandType = OperandType;
     type OperandValue = OperandValue;
 
     /// The operands of the assembly syntax in its order, then the state the instruction reads besides them.
-    fn list_operand_types(&self, instruction: Instruction) -> impl Iterator<Item = OperandType> {
+    fn list_operand_types(
+        &self,
+        instruction: Instruction<Infallible>,
+    ) -> impl Iterator<Item = OperandType> {
         use OperandType::{
             AccessPlacement, ConditionFlags, DataPagePermission, RegisterNumber, RegisterValue,
             SignedImmediate, UnsignedImmediate,
@@ -212,9 +227,9 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
     /// When the operands are not one value of each operand type the instruction lists, in its order.
     fn build_state(
         &self,
-        instruction: Instruction,
+        instruction: Instruction<Infallible>,
         operands: &[OperandValue],
-    ) -> ExecutionState<'static, Arm64> {
+    ) -> ExecutionState<'static, Arm64<User>> {
         let typed: Vec<(OperandType, OperandValue)> = self
             .list_operand_types(instruction)
             .zip(operands.iter().copied())
@@ -310,12 +325,10 @@ impl InstructionInputDomain<Arm64> for Arm64InputDomain {
                 Some(register) => *register = base,
                 None => processor.stack_pointer = base,
             }
-            let data = (LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES)
-                .map(|address| !(address as u8));
             memory_mutations.extend([
                 MemoryDelta::ValueAssignment {
                     start: LOWER_DATA_ADDRESS,
-                    bytes: Cow::Owned(data.collect()),
+                    bytes: Cow::Borrowed(&DATA),
                 },
                 MemoryDelta::PermissionAssignment {
                     addresses: LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS,
@@ -345,7 +358,7 @@ struct Addressing {
     offset: u64,
 }
 
-fn to_addressing(instruction: Instruction, word: u32) -> Option<Addressing> {
+fn to_addressing(instruction: Instruction<Infallible>, word: u32) -> Option<Addressing> {
     match instruction {
         Instruction::LdrImmediateUnsignedOffset64 | Instruction::StrImmediateUnsignedOffset64 => {
             Some(Addressing {
