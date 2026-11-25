@@ -51,3 +51,28 @@ summaries), which a run without the key cannot record. The other 19 each need a 
 - `conformance_not_run` (11): the suite takes a set and a generator besides the executor, and so does the behavior
   source's suite; the run file names the implementations that give them; `PerThreadWatch` has no group arms, since
   its tests wait on the thread-test review.
+
+## Level with the owner's main `95bceadf0` (2026-11-25, evening)
+
+`e60bcaec2` merges his main (the expectation type, `simulate` and `simulate_state`, the `MemorySnapshot` view, no
+closure `MemorySink`, `ProcessorArchitecture: Clone`, workspace lints everywhere). Conflicts were his `[lints]` lines
+against the port's manifests (kept the port's, which have them) and his `interface.rs` and vector sink (taken whole:
+every interface file on the branch is byte-identical to his main). `581bf41f5` and `b2a60a444`: the simulation passes
+the snapshot view and sets the processor to what `simulate` returns; the suite checks with `meets_expectations`.
+
+Blocked by other tracks' crates (MEASURED, `cargo check`, ARM64 machine): on this branch alone
+`processor-architecture-arm64` (6 errors: no `ProcessorStateExpectation`, `meets_expectations`, `simulate`) and
+`behavior-source-conformance` (3) do not compile, nor does `instruction-input-domain-arm64` (named iterator types).
+They are the instruction port's. The simulation assumes ARM64's expectation is its whole `Processor`.
+
+The bar, measured in a throwaway copy with the smallest follow of those three crates
+(`executor-restart/follow-main/foreign-standin-follow.patch`: expectation = `Processor`, `meets_expectations` = `==`):
+unit 8 of 8; executor suite 17 of 22 (the same 5); behavior source suite 4 of 4; the 5 broken copies each fail 1 to 3
+more tests; clippy `-D warnings` and rustfmt clean; 0 `unsafe` in both crates; `cargo reviewable check` 158 findings
+in the two crates (83 summaries and 55 names need the model; the 20 others are the rulings listed above, plus
+`DroppedChanges`' summary and the run file naming the arm64 crate, both from the level-port commit).
+
+X2's dependencies on this branch (MEASURED, `cargo check --lib`): `translator`, `guest-cpu`, `docker` compile;
+`runtime-single-kernel` fails in `kernel-linux` (346 errors: unsafe in net.rs, general.rs and others, `VolatileBytes`
+for `[u8]` in socket/outside.rs); `precise-instruction-set-translator` fails in `wcontainers-arm64` (thread_state.rs,
+an unsafe block).
