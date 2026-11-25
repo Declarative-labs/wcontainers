@@ -45,6 +45,14 @@ struct Color { value: vec4<f32> }
 @compute @workgroup_size(4) fn double(@builtin(global_invocation_id) id: vec3<u32>) {
     words[id.x] = words[id.x] * 2u;
 }
+var<workgroup> total: atomic<u32>;
+@compute @workgroup_size(4) fn sum(@builtin(local_invocation_index) i: u32) {
+    atomicAdd(&total, words[i]);
+    workgroupBarrier();
+    if i == 0u {
+        words[4] = atomicLoad(&total);
+    }
+}
 ";
 
 /// A triangle covering every pixel centre of the target.
@@ -447,6 +455,29 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
     assert_eq!(read, doubled);
 }
 
+/// Checks that a compute function sums words through a workgroup variable, whose memory the dispatch must be given.
+pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
+    let words: Vec<u32> = (1..=8).collect();
+    let buffer = filled(&mut subject, &words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
+    let compute = function(&mut subject, naga::ShaderStage::Compute, "sum");
+    let state = subject.make_compute_pipeline_state(&compute).expect("make_compute_pipeline_state");
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    subject
+        .encode_compute_commands(
+            &command_buffer,
+            &[
+                ComputeCommand::SetComputePipelineState(state),
+                ComputeCommand::SetBuffer { buffer: buffer.clone(), offset: 0, length: WORDS_BYTES, index: 1 },
+                ComputeCommand::DispatchThreadgroups(Size { width: 1, height: 1, depth: 1 }),
+            ],
+        )
+        .expect("encode_compute_commands");
+    finish(&mut subject, &command_buffer);
+    let mut read = [0; 4];
+    subject.read_contents(&buffer, 16, &mut read).expect("read_contents");
+    assert_eq!(u32::from_le_bytes(read), 1 + 2 + 3 + 4);
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -484,6 +515,11 @@ macro_rules! tests {
         #[test]
         fn dispatches_a_compute_function() {
             $crate::dispatches_a_compute_function($value);
+        }
+
+        #[test]
+        fn dispatches_with_workgroup_memory() {
+            $crate::dispatches_with_workgroup_memory($value);
         }
     };
 }

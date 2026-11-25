@@ -135,6 +135,8 @@ struct Reads {
     /// The immediates slot and the bytes it must hold.
     immediates: Option<(u32, u64)>,
     workgroup_size: [u32; 3],
+    /// The bytes of each workgroup variable a compute function reads, in naga's order of its threadgroup arguments.
+    threadgroup_lengths: Vec<u64>,
 }
 
 /// The texture a function reads at one slot.
@@ -722,6 +724,12 @@ impl Metal for DirectMetal {
                 "a workgroup larger than the pipeline runs".into(),
             ));
         }
+        let threadgroup: u64 = function.0.reads.threadgroup_lengths.iter().sum();
+        if threadgroup > self.device.maxThreadgroupMemoryLength() as u64 {
+            return Err(MakeComputePipelineStateError::Refused(
+                "workgroup variables larger than the device's threadgroup memory".into(),
+            ));
+        }
         Ok(DirectComputePipelineState(Rc::new(ComputePipelineState {
             raw,
             function: function.0.clone(),
@@ -856,6 +864,12 @@ impl Metal for DirectMetal {
                     if !sizes.is_empty() {
                         set_compute_bytes(&encoder, &sizes, function.reads.sizes_index);
                     }
+                    for (index, length) in function.reads.threadgroup_lengths.iter().enumerate() {
+                        #[expect(unsafe_code, reason = "the length of one workgroup variable's threadgroup memory")]
+                        // SAFETY: the length is the variable's size rounded up to 16 bytes, all of them together within the
+                        // device's threadgroup memory (make_compute_pipeline_state), at the index naga gives the variable.
+                        unsafe { encoder.setThreadgroupMemoryLength_atIndex(*length as NSUInteger, index as NSUInteger) };
+                    }
                     let [x, y, z] = function.reads.workgroup_size;
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(mtl_size(*groups), mtl_size(Size {
                         width: x,
@@ -896,6 +910,11 @@ impl Metal for DirectMetal {
         }
     }
 }
+
+/// The bytes threadgroup memory lengths are a multiple of.
+///
+/// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setthreadgroupmemorylength(_:index:)
+const THREADGROUP_GRANULE: u64 = 16;
 
 /// The faces of one cube.
 const CUBE_FACES: u32 = 6;
@@ -1819,7 +1838,12 @@ fn translation(
                 reads.immediates = Some((source.immediates_buffer_index, u64::from(ty.size(module.to_ctx()))));
                 continue;
             }
-            naga::AddressSpace::Private | naga::AddressSpace::Function | naga::AddressSpace::WorkGroup => continue,
+            naga::AddressSpace::WorkGroup => {
+                let length = u64::from(ty.size(module.to_ctx())).next_multiple_of(THREADGROUP_GRANULE);
+                reads.threadgroup_lengths.push(length);
+                continue;
+            }
+            naga::AddressSpace::Private | naga::AddressSpace::Function => continue,
             naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. } | naga::AddressSpace::Handle => {}
             _ => return Err(unchecked("a global in an address space this crate does not check")),
         }
