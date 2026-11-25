@@ -60,13 +60,16 @@ pub(crate) fn call<const BUFFERS: usize>(
 
 /// One conversion's run of calls, which may share the converters' state on the same shader until it
 /// is dropped (the module route's instance); calls outside one share nothing.
-pub(crate) struct Conversion(
-    #[expect(dead_code, reason = "held for its drop, which ends the conversion")] Route,
-);
+pub(crate) struct Conversion {
+    /// Held for its drop, which ends the conversion.
+    _converters: Route,
+}
 
 impl Conversion {
     pub(crate) fn begin() -> Conversion {
-        Conversion(Route::new(()))
+        Conversion {
+            _converters: Route::new(()),
+        }
     }
 }
 
