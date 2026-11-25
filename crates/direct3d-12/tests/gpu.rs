@@ -10,7 +10,7 @@ use wcontainers_direct3d_12::state::{
     CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{Backend, DeviceStatus, Features, SlowPath};
+use wcontainers_gpu::{Gpu, DeviceStatus, Features, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// The rig's shaders passing a three-component position and a colour.

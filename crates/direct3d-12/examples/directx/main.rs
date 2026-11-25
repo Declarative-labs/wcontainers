@@ -32,7 +32,7 @@ use wcontainers_direct3d_12::features;
 use wcontainers_direct3d_12::root::{
     DescriptorRange, RootParameter, RootParameterKind, RootSignatureDesc, StaticSampler, serialize,
 };
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::Gpu;
 use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,

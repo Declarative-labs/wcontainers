@@ -24,7 +24,7 @@ use wcontainers_shaders::ENTRY_POINT;
 const COUNTER_BYTES: u64 = size_of::<u64>() as u64;
 
 /// The helper set's entry binding the pixel counter `counter` for the counting draws.
-pub(super) fn counter_entry<B: Backend>(counter: &B::Buffer) -> BindingEntry<'_, B> {
+pub(super) fn counter_entry<B: Gpu>(counter: &B::Buffer) -> BindingEntry<'_, B> {
     BindingEntry {
         binding: COUNTER_BINDING,
         stages: StageSet::FRAGMENT,
@@ -59,17 +59,17 @@ var<storage, read_write> count: array<atomic<u32>, 2>;
 /// The counting draw's program, depth-stencil block (both tests off) and blend block (no
 /// colour written).
 pub(super) type PixelCounting<B> = (
-    <B as Backend>::Program,
-    <B as Backend>::DepthStencil,
-    <B as Backend>::Blend,
+    <B as Gpu>::Program,
+    <B as Gpu>::DepthStencil,
+    <B as Gpu>::Blend,
 );
 
 /// What every counting draw shares: the depth-stencil block with both tests off, the blend
 /// block writing no colour, and the counter buffer.
 pub(super) type Counting<B> = (
-    <B as Backend>::DepthStencil,
-    <B as Backend>::Blend,
-    <B as Backend>::Buffer,
+    <B as Gpu>::DepthStencil,
+    <B as Gpu>::Blend,
+    <B as Gpu>::Buffer,
 );
 
 /// A running pipeline statistics query: heap, index and the counts so far.
@@ -109,7 +109,7 @@ fn primitives(t: Topology, n: u64) -> u64 {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The program the pixel counter draws pipeline `pid`'s draws with, made once.
     fn pixel_counting(&mut self, pid: PipelineId) -> Result<B::Program, Error> {
         let r = self.pipelines[pid.0 as usize]
@@ -179,7 +179,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     /// `BeginQuery` of pipeline statistics: the counts and the counter start at zero.
     pub(super) fn begin_statistics(
         &mut self,

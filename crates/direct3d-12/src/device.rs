@@ -10,7 +10,7 @@ use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::stage_registers::OUTPUT_REGISTERS;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
-    AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
+    AspectOps, Gpu, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
     CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
     DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, FORMAT_FACTS, Features, Format,
     FormatKind, FormatUse, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
@@ -136,7 +136,7 @@ impl Host {
     }
 }
 
-enum Storage<B: Backend> {
+enum Storage<B: Gpu> {
     Buffer {
         buffer: B::Buffer,
         /// The bytes `Map` hands out, for upload, readback and shared heaps.
@@ -157,7 +157,7 @@ enum Storage<B: Backend> {
     },
 }
 
-impl<B: Backend> Storage<B> {
+impl<B: Gpu> Storage<B> {
     /// The back end's texture holding array layer `layer`, and the layer's index in it.
     fn layer(&self, layer: u32) -> Option<(&B::Texture, u32)> {
         match self {
@@ -175,7 +175,7 @@ impl<B: Backend> Storage<B> {
     }
 }
 
-struct Resource<B: Backend> {
+struct Resource<B: Gpu> {
     desc: ResourceDesc,
     heap: HeapType,
     storage: Storage<B>,
@@ -209,7 +209,7 @@ struct Memory {
 }
 
 /// What a pipeline state object holds.
-struct Pipeline<B: Backend> {
+struct Pipeline<B: Gpu> {
     program: B::Program,
     /// Graphics pipelines' fixed state; none for compute pipelines.
     render: Option<Render<B>>,
@@ -227,7 +227,7 @@ struct Pipeline<B: Backend> {
 }
 
 /// A graphics pipeline's fixed state.
-struct Render<B: Backend> {
+struct Render<B: Gpu> {
     /// The root signature, which sizes arrays its programs declare without a length.
     root: RootSignature,
     /// Depth clamped by the vertex program alone, the pipeline having no depth-stencil format.
@@ -325,7 +325,7 @@ pub struct GraphicsPipelineDesc<'a> {
     pub stream_output: Option<(wcontainers_shaders::stage::StreamOutput, u32)>,
 }
 
-struct Fence<B: Backend> {
+struct Fence<B: Gpu> {
     /// The value reached by work known to be done, or set by the CPU.
     value: u64,
     /// Values queue signals will reach, with the back-end fence of the work before each.
@@ -333,7 +333,7 @@ struct Fence<B: Backend> {
 }
 
 /// A read back into readback-heap memory, finished when its submission is done.
-struct PendingRead<B: Backend> {
+struct PendingRead<B: Gpu> {
     submission: Option<B::Fence>,
     readback: B::Readback,
     resource: ResourceId,
@@ -368,7 +368,7 @@ const NO_PIPELINE_SKIPPED: &str =
 type Waiter = (Vec<(FenceId, u64)>, bool, u64);
 
 /// The device: every object and the replay of command lists, on one back end owned by one thread.
-pub struct Device<B: Backend> {
+pub struct Device<B: Gpu> {
     backend: B,
     /// The bound targets as the occlusion counter reads them, and the counter.
     passes: PassTracker<B>,
@@ -443,14 +443,14 @@ pub struct Device<B: Backend> {
 }
 
 /// A swap chain and the resources standing for its back buffers.
-struct Chain<B: Backend> {
+struct Chain<B: Gpu> {
     chain: SwapChain<B>,
     buffers: Vec<ResourceId>,
     /// The token of the frame latency waitable object, and the retired frames it was released for.
     waitable: Option<(u64, u64)>,
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     pub fn new(backend: B) -> Self {
         Device {
             backend,
@@ -3001,7 +3001,7 @@ pub(super) fn restart_rewritten(format: IndexFormat, strip_cut: u32) -> bool {
     }
 }
 
-fn adopt_buffers<B: Backend>(
+fn adopt_buffers<B: Gpu>(
     resources: &mut Slab<Resource<B>>,
     chain: &SwapChain<B>,
 ) -> Vec<ResourceId> {
@@ -3106,7 +3106,7 @@ impl From<GpuError> for Error {
 
 /// The state a command list's replay carries from command to command. A list starts with none of
 /// the previous list's state, as Direct3D 12 defines.
-struct Replay<B: Backend> {
+struct Replay<B: Gpu> {
     pipeline: Option<PipelineId>,
     topology: Topology,
     /// `D3D_PRIMITIVE_TOPOLOGY` as set, adjacency included, which only a geometry stage takes.
@@ -3168,7 +3168,7 @@ struct Replay<B: Backend> {
 }
 
 /// A predicated draw's or dispatch's argument record: buffer and offset.
-type Record<B> = Option<(<B as Backend>::Buffer, u64)>;
+type Record<B> = Option<(<B as Gpu>::Buffer, u64)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueryState {
@@ -3177,7 +3177,7 @@ enum QueryState {
     Ended,
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     /// Gives the depth range a pixel program clamping depth reads (`DepthClampInShader`) to the
     /// pixel stage's bound helper values.
     fn bind_depth_range(&self, d: &mut Device<B>) {
@@ -4788,7 +4788,7 @@ impl<B: Backend> Replay<B> {
 }
 
 /// The same range again, for a second call.
-fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
+fn same_range<'a, B: Gpu>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
     match *r {
         DrawRange::Vertices {
             first,
@@ -4999,7 +4999,7 @@ fn clear_bits(format: wcontainers_gpu::Format, color: [f32; 4]) -> [u32; 4] {
 }
 
 /// `CopyTextureRegion` between a texture and a buffer footprint, or two textures.
-fn copy_texture<B: Backend>(
+fn copy_texture<B: Gpu>(
     d: &mut Device<B>,
     dst: &CopyLocation,
     at: [u32; 3],

@@ -108,7 +108,7 @@ fn storage_format(f: naga::StorageFormat) -> Option<Format> {
 }
 
 /// A null texture: its shape, whether it takes writes, and the texture with its one view.
-struct NullTexture<B: Backend> {
+struct NullTexture<B: Gpu> {
     shape: Shape,
     writable: bool,
     texture: B::Texture,
@@ -117,7 +117,7 @@ struct NullTexture<B: Backend> {
 }
 
 /// The null resources made so far.
-pub(super) struct Nulls<B: Backend> {
+pub(super) struct Nulls<B: Gpu> {
     /// Zeros read as a uniform block or read-only storage, and the buffer writes go to.
     buffers: Option<[B::Buffer; 2]>,
     textures: Vec<NullTexture<B>>,
@@ -125,7 +125,7 @@ pub(super) struct Nulls<B: Backend> {
     written: bool,
 }
 
-impl<B: Backend> Default for Nulls<B> {
+impl<B: Gpu> Default for Nulls<B> {
     fn default() -> Self {
         Nulls {
             buffers: None,
@@ -135,7 +135,7 @@ impl<B: Backend> Default for Nulls<B> {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Makes the null resources a pipeline's bindings may read, while no pass is open (depth and
     /// multisampled textures are zeroed by a clearing pass).
     pub(super) fn prepare_nulls(&mut self, shapes: &[(Shape, bool)]) -> Result<(), Error> {

@@ -329,12 +329,12 @@ impl RootState {
 /// A draw's or dispatch's binding sets, with the program made for what they bind where it is
 /// not the pipeline's own.
 pub(super) type BoundSets<B> = (
-    [Option<<B as Backend>::BindingSet>; MAX_BINDING_SETS],
+    [Option<<B as Gpu>::BindingSet>; MAX_BINDING_SETS],
     Option<super::formats::BoundProgram<B>>,
 );
 
 /// A resource of a binding set, held while the set is made.
-pub(super) enum Held<B: Backend> {
+pub(super) enum Held<B: Gpu> {
     Uniform(B::Buffer, u64, u64),
     Texture(B::TextureView),
     Sampler(B::Sampler),
@@ -347,7 +347,7 @@ pub(super) enum Held<B: Backend> {
     StorageTexture(B::TextureView, bool),
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The binding sets of a draw or dispatch with pipeline `pid` and root arguments `state`:
     /// of the API stages `only` (`D3D12_SHADER_VISIBILITY`s), or of every stage where it is
     /// empty. `extra` are

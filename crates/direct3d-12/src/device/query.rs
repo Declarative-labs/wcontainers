@@ -111,7 +111,7 @@ fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
 
 /// A query heap: its `D3D12_QUERY_HEAP_TYPE`, the interface query set of binary occlusion and
 /// timestamps, and the values the front writes as each query ends.
-pub(super) struct QueryHeap<B: Backend> {
+pub(super) struct QueryHeap<B: Gpu> {
     set: Option<B::QuerySet>,
     kind: u32,
     count: u32,
@@ -119,7 +119,7 @@ pub(super) struct QueryHeap<B: Backend> {
 }
 
 /// The predicate set by `SetPredication` while a list replays.
-pub(super) struct Predicate<B: Backend> {
+pub(super) struct Predicate<B: Gpu> {
     resource: ResourceId,
     offset: u64,
     /// `D3D12_PREDICATION_OP`: 0 skips when the value is zero, 1 when it is not.
@@ -131,7 +131,7 @@ pub(super) struct Predicate<B: Backend> {
     value: Option<u64>,
 }
 
-impl<B: Backend> Predicate<B> {
+impl<B: Gpu> Predicate<B> {
     /// Whether its value is still to be read back.
     pub(super) fn value_unknown(&self) -> bool {
         self.value.is_none()
@@ -193,7 +193,7 @@ impl Own {
 }
 
 /// The front's own compute programs, made at first use.
-pub(super) struct Programs<B: Backend>([Option<B::Program>; Own::ALL.len()]);
+pub(super) struct Programs<B: Gpu>([Option<B::Program>; Own::ALL.len()]);
 
 /// 32-bit indices of a strip from 16-bit (`wide` 0) or 32-bit ones, `cut` becoming the 32-bit
 /// restart value.
@@ -227,13 +227,13 @@ fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
     )
 }
 
-impl<B: Backend> Default for Programs<B> {
+impl<B: Gpu> Default for Programs<B> {
     fn default() -> Self {
         Programs(std::array::from_fn(|_| None))
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// `CreateQueryHeap`.
     pub fn create_query_heap(&mut self, kind: u32, count: u32) -> Result<QueryHeapId, Error> {
         self.live()?;

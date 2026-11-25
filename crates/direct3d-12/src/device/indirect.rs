@@ -40,7 +40,7 @@ fn read_at<T: bytemuck::Pod>(bytes: &[u8], at: usize) -> T {
     bytemuck::pod_read_unaligned(&bytes[at..at + size_of::<T>()])
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Writes the upload buffer at a GPU virtual address to the GPU, for vertex and index buffers
     /// that only arguments read back name.
     fn upload_at(&mut self, address: u64) -> Result<(), Error> {
@@ -103,7 +103,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     pub(super) fn execute_indirect(
         &mut self,
         d: &mut Device<B>,

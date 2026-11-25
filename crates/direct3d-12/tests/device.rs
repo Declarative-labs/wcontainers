@@ -15,7 +15,7 @@ use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_directx_graphics_infrastructure::stage_registers::TOO_MANY_VALUES;
-use wcontainers_gpu::{Backend, FORMAT_FACTS, Features};
+use wcontainers_gpu::{Gpu, FORMAT_FACTS, Features};
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {

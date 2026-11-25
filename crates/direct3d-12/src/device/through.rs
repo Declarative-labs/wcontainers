@@ -10,7 +10,7 @@ use crate::list::{ResourceView, UAV_DIMENSION_BUFFER};
 use bind::StageBinding;
 
 /// The copies a bound view read through a buffer needs around its draw or dispatch.
-pub(super) struct Through<B: Backend> {
+pub(super) struct Through<B: Gpu> {
     resource: ResourceId,
     mip: u32,
     /// First layer, or first depth slice of a 3D view.
@@ -24,7 +24,7 @@ pub(super) struct Through<B: Backend> {
     writable: bool,
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// An unordered access view of a texture bound for `b` as a storage buffer of its texels.
     pub(super) fn texels_through(
         &mut self,
@@ -183,7 +183,7 @@ impl<B: Backend> Device<B> {
 }
 
 /// The back end's texture of resource `id`.
-fn stored<B: Backend>(resources: &Slab<Resource<B>>, id: ResourceId) -> Result<&B::Texture, Error> {
+fn stored<B: Gpu>(resources: &Slab<Resource<B>>, id: ResourceId) -> Result<&B::Texture, Error> {
     match resources.get(id.0 as usize) {
         Some(Resource {
             storage: Storage::Texture { texture, .. },

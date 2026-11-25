@@ -9,7 +9,7 @@ use wcontainers_directx_graphics_infrastructure::{
     COLOR_SPACE_SRGB, DisplayMode, Model, OutputDesc, SwapChainDesc, SwapChainError, presents_in,
     sdr,
 };
-use wcontainers_gpu::{Backend, SlowPath, TextureUsage};
+use wcontainers_gpu::{Gpu, SlowPath, TextureUsage};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;

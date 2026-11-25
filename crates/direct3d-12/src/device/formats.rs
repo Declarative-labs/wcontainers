@@ -48,10 +48,10 @@ pub(super) struct Bound {
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
 /// failed.
-type Variant<B> = (Bound, Option<(<B as Backend>::Program, Helpers)>);
+type Variant<B> = (Bound, Option<(<B as Gpu>::Program, Helpers)>);
 
 /// A pipeline's stage whose program depends on what is bound.
-pub(super) struct Formats<B: Backend> {
+pub(super) struct Formats<B: Gpu> {
     /// The API stage (`D3D12_SHADER_VISIBILITY`, 0 for compute) and its bytecode.
     visibility: u32,
     code: Vec<u8>,
@@ -160,7 +160,7 @@ fn slots(key: &VariantKey) -> Vec<(Slot, Format)> {
     all
 }
 
-impl<B: Backend> Formats<B> {
+impl<B: Gpu> Formats<B> {
     /// The record of a stage converted with `key`, whose formats it made the program with.
     pub(super) fn of(
         visibility: u32,
@@ -207,7 +207,7 @@ pub(super) enum VertexKind {
 /// and where its vertex stage was converted for what is bound too, that stage's helper layout and
 /// pulled streams (binding, input location).
 pub(super) type BoundProgram<B> = (
-    <B as Backend>::Program,
+    <B as Gpu>::Program,
     Helpers,
     Option<(Helpers, Vec<(u32, u32)>)>,
 );
@@ -239,7 +239,7 @@ fn keyed(base: &VariantKey, made: &[(Slot, Format)], bound: Option<&Bound>) -> V
     key
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The program to draw or dispatch with for the typed views and samplers the last
     /// `binding_sets` bound: `None` for the program `vertex` names, else the one converted for
     /// them. Views bound with no format (null views) keep the program's. A vertex stage drawn

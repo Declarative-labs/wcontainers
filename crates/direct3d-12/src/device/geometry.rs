@@ -20,7 +20,7 @@ use pull::Bases;
 use wcontainers_directx_graphics_infrastructure::{d3d, dxgi};
 
 /// What a pipeline with a geometry shader, stream output or hull and domain shaders adds.
-pub(super) struct Geometry<B: Backend> {
+pub(super) struct Geometry<B: Gpu> {
     /// The stages' compute programs and buffers; out while a draw runs them.
     pub stages: Option<Stages<B>>,
     /// The vertex stage's helper block and its pulled streams' bindings (binding, location).
@@ -85,7 +85,7 @@ fn run_block_size(module: &ShaderModule) -> u32 {
 
 /// A pipeline's stages as made: what draws need, the converted stages whose bindings the
 /// pipeline binds, and the primitives the draw after them draws.
-pub(super) struct Made<B: Backend> {
+pub(super) struct Made<B: Gpu> {
     pub geometry: Geometry<B>,
     pub vertex: Converted,
     /// The geometry or hull stage.
@@ -111,7 +111,7 @@ pub(super) fn writes_cull_distances(c: &Converted) -> bool {
         .any(|v| v.system == Some(wcontainers_gpu::SystemValue::CullDistance))
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The last stage before the rasteriser, a geometry or domain shader `code` or the vertex
     /// shader the cull route runs, converted with `key`, and what it passes the pixel program:
     /// where it writes clip distances the back end lacks, it (or a geometry shader's pass-through)
@@ -443,13 +443,13 @@ const FILLED_BYTES: u64 = 32;
 
 /// A draw's stream output targets: each bound buffer (from its offset, with its size), the
 /// helper's filled sizes, and where each buffer's filled size lies (resource and offset).
-struct Targets<B: Backend> {
+struct Targets<B: Gpu> {
     buffers: [Option<(B::Buffer, u64, u64)>; 4],
     filled: B::Buffer,
     sizes: [Option<(ResourceId, u64)>; 4],
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     /// A draw of a pipeline with a geometry, hull or domain shader or stream output: the stage
     /// helper's dispatches outside the pass, then the draw of its output in it. Answers
     /// whether the draw is still to be drawn as usual (stream output without a geometry stage,

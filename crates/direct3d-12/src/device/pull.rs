@@ -57,7 +57,7 @@ impl Helpers {
 }
 
 /// A vertex program made with its pipeline's pixel program.
-pub(super) struct VertexProgram<B: Backend> {
+pub(super) struct VertexProgram<B: Gpu> {
     pub program: B::Program,
     pub helpers: Helpers,
     /// Each pulled input's stream binding (set 0): binding and input location.
@@ -99,7 +99,7 @@ pub(super) fn moved_module(
 pub(super) type PulledKey = (Vec<(u32, VertexFormat)>, bool);
 
 /// Where a draw's bases come from.
-pub(super) enum Bases<'a, B: Backend> {
+pub(super) enum Bases<'a, B: Gpu> {
     /// Base vertex (or first vertex) and first instance.
     Direct([u32; 2]),
     /// An indirect draw's arguments.
@@ -111,7 +111,7 @@ pub(super) enum Bases<'a, B: Backend> {
 }
 
 /// How a draw fetches its vertex inputs.
-pub(super) struct Fetch<B: Backend> {
+pub(super) struct Fetch<B: Gpu> {
     /// The layout of the streams fetched as laid out.
     pub layout: B::VertexLayout,
     /// The inputs fetched in the program: location, format and the words of
@@ -154,7 +154,7 @@ pub(super) fn pulled_streams(
     out
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Where the values between `last`, the vertex stage a pipeline draws, and pixel program `ps`
     /// move (`StageMoves`): every value the two pass, those the front links beside theirs too.
     pub(super) fn stage_moves(

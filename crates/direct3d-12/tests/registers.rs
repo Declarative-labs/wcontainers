@@ -26,7 +26,7 @@ use wcontainers_direct3d_12::state::{
 use wcontainers_direct3d_12::{Device, GraphicsPipelineDesc, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
 use wcontainers_directx_graphics_infrastructure::stage_registers::INPUT_SLOTS;
-use wcontainers_gpu::{Backend, ColorWrites, DeviceStatus, SlowPath};
+use wcontainers_gpu::{Gpu, ColorWrites, DeviceStatus, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 const VS: &[u8] = include_bytes!("registers/vs.dxbc");

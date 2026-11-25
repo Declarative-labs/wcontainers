@@ -9,7 +9,7 @@
 //! texture in that format, and the two inherit from each other the same way (`ReinterpretCopy`).
 
 use wcontainers_gpu::{
-    Backend, Extent, FORMAT_FACTS, Features, Format, FormatUse, Origin, SlowPath, TextureRegion,
+    Gpu, Extent, FORMAT_FACTS, Features, Format, FormatUse, Origin, SlowPath, TextureRegion,
     TextureUsage,
 };
 
@@ -18,7 +18,7 @@ use crate::Error;
 use crate::resource;
 use wcontainers_directx_graphics_infrastructure::{dxgi, typeless_group};
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Lists `id`, just placed, and the live resources it overlaps, `overlaps`, as inheriting from
     /// each other where Direct3D 12 says they do.
     pub(super) fn inherit(&mut self, id: ResourceId, overlaps: &[ResourceId]) {
