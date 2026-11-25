@@ -280,19 +280,22 @@ thread_local! {
 
 /// The converters run as their own module, one instance a conversion: while values live on a thread, its calls on
 /// the same shader share one instance, which goes back to the pool when the last of them is dropped.
-pub struct ContainedShaderConverters(());
+pub struct ContainedShaderConverters(Open);
 
 impl StandaloneShaderConverters for ContainedShaderConverters {
     type Config = ();
 
     fn new(_config: ()) -> ContainedShaderConverters {
         OPEN.set(OPEN.get() + 1);
-        ContainedShaderConverters(())
+        ContainedShaderConverters(Open)
     }
 }
 
+/// One open conversion on this thread, counted in `OPEN` while it lives.
+struct Open;
+
 /// Ends the outermost conversion's session, giving its instance back to the pool.
-impl Drop for ContainedShaderConverters {
+impl Drop for Open {
     fn drop(&mut self) {
         OPEN.set(OPEN.get() - 1);
         if OPEN.get() == 0 {
