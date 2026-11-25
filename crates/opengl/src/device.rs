@@ -49,28 +49,17 @@ pub fn webgpu() -> Option<(WebGpu, CString)> {
 impl HostWindows for WebGpu {
     #[cfg(windows)]
     fn add_window_of(&mut self, id: u32, device_context: *mut c_void) -> bool {
-        use std::num::NonZeroIsize;
-        use windows_sys::Win32::Graphics::Gdi::WindowFromDC;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GWLP_HINSTANCE, GetWindowLongPtrW};
+        use wcontainers_win32::{StandaloneWin32, Win32};
         let Some(instance) = INSTANCE.get() else {
             return false;
         };
-        // SAFETY: asks which window a device context the program passed draws into.
-        let window = unsafe { WindowFromDC(device_context) };
-        let Some(handle) = NonZeroIsize::new(window as isize) else {
+        // Asks which window a device context the program passed draws into.
+        let Some(window) = wcontainers_win32_windows::WindowsWin32::new(())
+            .window_of_device_context(device_context as isize)
+        else {
             return false;
         };
-        let mut handle = wgpu::rwh::Win32WindowHandle::new(handle);
-        // SAFETY: reads a field of the program's window.
-        handle.hinstance = NonZeroIsize::new(unsafe { GetWindowLongPtrW(window, GWLP_HINSTANCE) });
-        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: Some(wgpu::rwh::RawDisplayHandle::Windows(
-                wgpu::rwh::WindowsDisplayHandle::new(),
-            )),
-            raw_window_handle: wgpu::rwh::RawWindowHandle::Win32(handle),
-        };
-        // SAFETY: OpenGL's program keeps its window while it draws into it.
-        let Ok(surface) = (unsafe { instance.create_surface_unsafe(target) }) else {
+        let Ok(surface) = instance.create_surface(window) else {
             return false;
         };
         self.add_window(id, surface);

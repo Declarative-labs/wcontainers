@@ -81,18 +81,13 @@ pub const LIBRARIES: [&str; 3] = ["d3d11.dll", "d3d12.dll", "dxgi.dll"];
 /// loaded"), for showing which ones a program really runs through.
 #[cfg(windows)]
 pub fn library_paths() -> String {
-    use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+    use wcontainers_win32::{StandaloneWin32, Win32};
+    let win32 = wcontainers_win32_windows::WindowsWin32::new(());
     let mut paths = Vec::new();
     for name in LIBRARIES {
-        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
-        let path = match unsafe { GetModuleHandleW(windows::core::PCWSTR(wide.as_ptr())) } {
-            Ok(module) => {
-                let mut buffer = [0u16; 1024];
-                let len = unsafe { GetModuleFileNameW(Some(module), &mut buffer) } as usize;
-                String::from_utf16_lossy(&buffer[..len])
-            }
-            Err(_) => "not loaded".to_owned(),
-        };
+        let path = win32
+            .module_path(name)
+            .unwrap_or_else(|| "not loaded".to_owned());
         paths.push(format!("{name} from {path}"));
     }
     paths.join(", ")

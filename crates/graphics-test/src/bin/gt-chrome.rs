@@ -23,22 +23,11 @@ fn main() {
 
 #[cfg(windows)]
 mod chrome {
-    use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::path::Path;
 
-    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-    use windows::Win32::System::Environment::GetCommandLineW;
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_LIMIT_INFORMATION,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
-    };
-    use windows::Win32::System::Threading::{
-        CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, GetStartupInfoW, INFINITE,
-        PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, WaitForSingleObject,
-    };
-    use windows::core::{PCWSTR, PWSTR};
+    use wcontainers_win32::{ProcessRun, StandaloneWin32, StandardHandles, Win32};
 
     use super::{new_profile, program_end};
 
@@ -82,57 +71,25 @@ mod chrome {
     }
 
     /// Runs `real` with this process's command line after its program name; returns its exit code.
-    fn start(real: &Path) -> windows::core::Result<i32> {
-        // SAFETY: GetCommandLineW returns the process's nul-terminated command line, which lives as
-        // long as the process; the other calls get pointers to buffers that outlive them.
-        unsafe {
-            let raw = GetCommandLineW().as_wide().to_vec();
-            let mut line: Vec<u16> = Vec::with_capacity(raw.len() + 300);
-            line.push(b'"' as u16);
-            line.extend(real.as_os_str().encode_wide());
-            line.push(b'"' as u16);
-            line.extend_from_slice(&raw[program_end(&raw)..]);
-            line.push(0);
-            let application: Vec<u16> = real.as_os_str().encode_wide().chain([0]).collect();
-
-            let mut startup = STARTUPINFOW::default();
-            GetStartupInfoW(&mut startup);
-            let job = CreateJobObjectW(None, PCWSTR::null())?;
-            let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-                BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                    LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                (&raw const limits).cast(),
-                size_of_val(&limits) as u32,
-            )?;
-            let mut process = PROCESS_INFORMATION::default();
-            CreateProcessW(
-                PCWSTR(application.as_ptr()),
-                Some(PWSTR(line.as_mut_ptr())),
-                None,
-                None,
-                true,
-                CREATE_SUSPENDED,
-                None,
-                PCWSTR::null(),
-                &startup,
-                &mut process,
-            )?;
-            AssignProcessToJobObject(job, process.hProcess)?;
-            ResumeThread(process.hThread);
-            CloseHandle(process.hThread)?;
-            let mut code = 1u32;
-            if WaitForSingleObject(process.hProcess, INFINITE) == WAIT_OBJECT_0 {
-                GetExitCodeProcess(process.hProcess, &mut code)?;
-            }
-            Ok(code as i32)
-        }
+    fn start(real: &Path) -> std::io::Result<i32> {
+        let win32 = wcontainers_win32_windows::WindowsWin32::new(());
+        let raw: Vec<u16> = win32.command_line().encode_wide().collect();
+        let mut line: Vec<u16> = Vec::with_capacity(raw.len() + 300);
+        line.push(b'"' as u16);
+        line.extend(real.as_os_str().encode_wide());
+        line.push(b'"' as u16);
+        line.extend_from_slice(&raw[program_end(&raw)..]);
+        let code = win32.run_process(ProcessRun {
+            application: Some(real.to_path_buf()),
+            command_line: OsString::from_wide(&line),
+            directory: None,
+            environment: None,
+            standard_handles: StandardHandles::Inherited,
+            desktop: None,
+            without_window: false,
+            breakaway_allowed: true,
+        })?;
+        Ok(code.map_or(1, |code| code as i32))
     }
 }
 

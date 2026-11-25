@@ -22,7 +22,9 @@ zerocopy = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8.9"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+# The window a program's device context draws into.
+wcontainers-win32 = { path = "../win32" }
+wcontainers-win32-windows = { path = "../win32/implementation/windows" }
 
 [dev-dependencies]
 wcontainers-gpu-test = { path = "../gpu-test" }
@@ -34,6 +36,6 @@ cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# TODO: remove this crate's 356 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 352 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

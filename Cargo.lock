@@ -5427,6 +5427,8 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "serde_json",
+ "wcontainers-win32",
+ "wcontainers-win32-windows",
  "wgpu",
  "windows",
 ]
@@ -5674,8 +5676,9 @@ dependencies = [
  "wcontainers-gpu-webgpu",
  "wcontainers-nir",
  "wcontainers-shaders",
+ "wcontainers-win32",
+ "wcontainers-win32-windows",
  "wgpu",
- "windows-sys 0.61.2",
  "zerocopy",
 ]
 
@@ -6448,6 +6451,30 @@ dependencies = [
  "wasmtime",
  "wcontainers-webassembly-engine",
  "wcontainers-webassembly-engine-conformance",
+]
+
+[[package]]
+name = "wcontainers-win32"
+version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+]
+
+[[package]]
+name = "wcontainers-win32-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-win32",
+]
+
+[[package]]
+name = "wcontainers-win32-windows"
+version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+ "wcontainers-win32",
+ "wcontainers-win32-conformance",
+ "windows",
 ]
 
 [[package]]
