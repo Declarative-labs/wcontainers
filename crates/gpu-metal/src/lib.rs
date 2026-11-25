@@ -453,9 +453,10 @@ impl<M: Metal> MetalGpu<M> {
                     y: region.origin.y,
                     z: if three_d { region.origin.z } else { 0 },
                 };
+                let (width, height) = level_extent(region, extent);
                 let size = Size {
-                    width: extent.width,
-                    height: extent.height,
+                    width,
+                    height,
                     depth,
                 };
                 let at = u64::from(layer)
@@ -1017,9 +1018,14 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             QueryKind::Occlusion => true,
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
         };
+        // The results are one buffer, which `max_buffer_size` bounds as it bounds the caller's own.
+        let bytes = query_bytes(count.max(1));
+        if bytes > self.caps.limits.max_buffer_size {
+            return Err(GpuError::OutOfMemory);
+        }
         let buffer = self
             .metal
-            .make_buffer(query_bytes(count.max(1)))
+            .make_buffer(bytes)
             .map_err(|_| GpuError::OutOfMemory)?;
         Ok(Shared(Rc::new(QueryObj {
             count,
@@ -1159,6 +1165,12 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         }
         let layers = if s3 { 1 } else { extent.depth_or_layers };
+        let ((source_width, source_height), (destination_width, destination_height)) =
+            (level_extent(src, extent), level_extent(dst, extent));
+        let (width, height) = (
+            source_width.min(destination_width),
+            source_height.min(destination_height),
+        );
         for layer in 0..layers {
             let (Some(source_layer), Some(destination_layer)) =
                 (src.layer.checked_add(layer), dst.layer.checked_add(layer))
@@ -1176,8 +1188,8 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     z: if s3 { src.origin.z } else { 0 },
                 },
                 source_size: Size {
-                    width: extent.width,
-                    height: extent.height,
+                    width,
+                    height,
                     depth: if s3 { extent.depth_or_layers } else { 1 },
                 },
                 destination_texture: d.raw.clone(),
@@ -1826,6 +1838,21 @@ fn region_inside(
 }
 
 /// Returns whether a texture region of `extent` lies inside its texture.
+/// Returns the width and height of a region cut to its level's texels: a region of a compressed format may reach the
+/// level's last whole block, which Metal's copies refuse past the level's own size.
+fn level_extent<M: Metal>(region: &TextureRegion<'_, MetalGpu<M>>, extent: Extent) -> (u32, u32) {
+    let desc = &region.texture.desc;
+    let side = |n: u32| n.checked_shr(region.mip).unwrap_or(u32::MIN).max(1);
+    (
+        extent
+            .width
+            .min(side(desc.width).saturating_sub(region.origin.x)),
+        extent
+            .height
+            .min(side(desc.height).saturating_sub(region.origin.y)),
+    )
+}
+
 fn texture_region_inside<M: Metal>(
     region: &TextureRegion<'_, MetalGpu<M>>,
     extent: Extent,
