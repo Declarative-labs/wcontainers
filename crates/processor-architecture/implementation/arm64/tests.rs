@@ -728,3 +728,65 @@ fn an_instruction_above_the_addressable_addresses_faults_at_level_0_whatever_its
     );
     assert_eq!(after.program_counter, ADDRESSABLE_END);
 }
+
+/// The two laws a proof takes on trust for this architecture, `equality_is_identity` and `clone_is_identity`, on
+/// processors that differ from the zero processor in one field each and on every permission: `==` holds exactly when
+/// every field is the same, and a clone is equal to what it was cloned from.
+#[test]
+fn equality_and_clone_of_processors_and_permissions_are_identity() {
+    let mut processors = vec![ZERO_PROCESSOR];
+    for register in 0..GENERAL_PURPOSE_REGISTERS {
+        let mut processor = ZERO_PROCESSOR;
+        processor.general_purpose_registers[register] = u64::MAX;
+        processors.push(processor);
+    }
+    for register in 0..VECTOR_REGISTERS {
+        let mut processor = ZERO_PROCESSOR;
+        processor.vector_registers[register] = u128::MAX;
+        processors.push(processor);
+    }
+    let one_field: [fn(&mut Processor<()>); 7] = [
+        |processor| processor.stack_pointer = u64::MAX,
+        |processor| processor.program_counter = u64::MAX,
+        |processor| processor.condition_flags = ConditionFlags::all(),
+        |processor| processor.floating_point_control = u64::MAX,
+        |processor| processor.floating_point_status = u64::MAX,
+        |processor| processor.software_thread_id = u64::MAX,
+        |processor| processor.exception = Some(Exception::UndefinedInstruction),
+    ];
+    for change in one_field {
+        let mut processor = ZERO_PROCESSOR;
+        change(&mut processor);
+        processors.push(processor);
+    }
+    for first in &processors {
+        assert!(*first == first.clone());
+        for second in &processors {
+            assert_eq!(
+                *first == *second,
+                alloc::format!("{first:?}") == alloc::format!("{second:?}")
+            );
+        }
+    }
+    let mut permissions = vec![PagePermission::Unmapped];
+    for data_access in [
+        DataAccess::Forbidden,
+        DataAccess::ReadOnly,
+        DataAccess::ReadWrite,
+    ] {
+        for instruction_fetch in [InstructionFetch::Forbidden, InstructionFetch::Allowed] {
+            permissions.push(PagePermission::Mapped {
+                data_access,
+                instruction_fetch,
+            });
+        }
+    }
+    for first in &permissions {
+        for second in &permissions {
+            assert_eq!(
+                *first == *second,
+                alloc::format!("{first:?}") == alloc::format!("{second:?}")
+            );
+        }
+    }
+}
