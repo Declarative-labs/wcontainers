@@ -23,6 +23,16 @@ pub const UNORM24_MAX: u32 = (1 << UNORM24_BITS) - 1;
 /// Bits of a stencil value: the stencil draw's programs, one a bit.
 const STENCIL_BITS: usize = u8::BITS as usize;
 
+/// The bits of a 32-bit float without its sign: above infinity's, the float is a NaN.
+const FLOAT_MAGNITUDE_MASK: u32 = !(1 << (u32::BITS - 1));
+
+/// Returns WGSL for the depth a draw writes from the float whose bits `bits` gives: a NaN becomes zero, as
+/// plan 4.12 lists, whatever a device's depth clamp does with it (lavapipe makes it one).
+fn depth_of_float_bits(bits: &str) -> String {
+    let infinity = f32::INFINITY.to_bits();
+    format!("select(bitcast<f32>({bits}), 0.0, ({bits} & {FLOAT_MAGNITUDE_MASK}u) > {infinity}u)")
+}
+
 /// The name of the empty fragment stage.
 pub(crate) const NO_FRAGMENT: &str = "none";
 
@@ -978,13 +988,11 @@ impl WebGpu {
     fn depth_program(&mut self, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
         let cover = self.cover();
         let (texture, depth) = match how {
-            DepthSource::Float => ("texture_2d<f32>", "v.x".into()),
-            DepthSource::FloatBits | DepthSource::FloatBitsSigned => (
-                match how {
-                    DepthSource::FloatBitsSigned => SIGNED_BITS_TEXTURE,
-                    _ => "texture_2d<u32>",
-                },
-                "bitcast<f32>(v.x)".into(),
+            DepthSource::Float => ("texture_2d<f32>", depth_of_float_bits("bitcast<u32>(v.x)")),
+            DepthSource::FloatBits => ("texture_2d<u32>", depth_of_float_bits("v.x")),
+            DepthSource::FloatBitsSigned => (
+                SIGNED_BITS_TEXTURE,
+                depth_of_float_bits("bitcast<u32>(v.x)"),
             ),
             // x / (2^24 - 1) is x 2^-24 (1 + 2^-24 + ...): both products are exact and their sum
             // rounds once, nearest to the quotient, where WGSL's division may be 2.5 ulp off.
