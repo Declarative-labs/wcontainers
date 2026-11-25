@@ -28,6 +28,11 @@ wcontainers-test-window-appkit = { path = "../test-window/implementation/appkit"
 name = "present"
 harness = false
 
+# The fuzzer runs each batch in a process of its own, as the main thread, where its window is made.
+[[test]]
+name = "fuzz"
+harness = false
+
 # The workspace's lints, which a crate with a table of its own cannot inherit, and checked arithmetic: every size,
 # count, offset and length a caller gives passes through here to the Metal trait, so no operation on one may wrap.
 [lints.rust]
