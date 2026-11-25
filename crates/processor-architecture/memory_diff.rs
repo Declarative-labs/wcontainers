@@ -8,6 +8,8 @@ use rangemap::RangeMap;
 use vstd::laws_eq::obeys_concrete_eq;
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::slice::{cmp_le, sorted_by_le};
+#[cfg(verus_keep_ghost)]
+use vstd::std_specs::iter::IteratorSpec;
 
 use crate::trusted::*;
 use crate::*;
@@ -267,7 +269,6 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
 
         // Mutations both lists make in the same order leave the same memory wherever no other mutation reaches, so only
         // what the unpaired mutations reach can differ.
-        /// One past the last address, where a value assignment goes on from zero.
         // VERUS: no shift in a constant it evaluates, so the end is the last address plus one.
         const ADDRESSES_END: u128 = u64::MAX as u128 + 1;
         proof {
@@ -283,99 +284,107 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
             assert(memory_of(old@.take(0)) =~= memory_of(new@.take(0)));
         }
         let (mut written, mut has_unpaired_permission) = (Vec::new(), false);
-        // VERUS: no `position` with a closure, so both lists are walked by index.
-        let mut rest_start: usize = 0;
-        let mut index: usize = 0;
-        while index < old.len()
+        let mut rest = new;
+        // Where `rest` starts in the new list.
+        let ghost mut rest_start: int = 0;
+        for mutation in pairing: old
             invariant
-                index <= old@.len(),
-                rest_start <= new@.len(),
+                0 <= rest_start <= new@.len(),
+                rest@ == new@.skip(rest_start),
+                pairing.seq() == old@.as_ref(),
                 obeys_concrete_eq::<Architecture::PagePermission>(),
                 well_formed(written@),
-                same_outside(memory_of(old@.take(index as int)), memory_of(new@.take(rest_start as int)), written@, has_unpaired_permission),
-            decreases old@.len() - index,
+                same_outside(memory_of(old@.take(pairing.index())), memory_of(new@.take(rest_start)), written@, has_unpaired_permission),
         {
-            let mutation = &old[index];
-            let mut candidate = rest_start;
-            let mut found = false;
-            while !found && candidate < new.len()
-                invariant
-                    index < old@.len(),
-                        rest_start <= candidate <= new@.len(),
-                    *mutation == old@[index as int],
-                    found ==> candidate < new@.len() && old@[index as int]@ == new@[candidate as int]@,
-                    obeys_concrete_eq::<Architecture::PagePermission>(),
-                decreases new@.len() - candidate + if found { 0int } else { 1int },
+            proof {
+                assert(*mutation == old@[pairing.index()]);
+            }
+            match rest
+                .iter()
+                .position(|other| -> (same: bool)
+                    requires
+                        obeys_concrete_eq::<Architecture::PagePermission>(),
+                    ensures
+                        same ==> mutation@ == other@,
+                { is_same_mutation(mutation, other) })
             {
-                if is_same_mutation(mutation, &new[candidate]) {
-                    found = true;
-                } else {
-                    candidate += 1;
-                }
-            }
-            if found {
-                let ghost paired_written = written@;
-                let ghost paired_flag = has_unpaired_permission;
-                let mut skipped = rest_start;
-                while skipped < candidate
-                    invariant
-                                rest_start <= skipped <= candidate < new@.len(),
-                        well_formed(written@),
-                        paired_written.is_prefix_of(written@),
-                        paired_flag ==> has_unpaired_permission,
-                        same_outside(memory_of(new@.take(skipped as int)), memory_of(new@.take(rest_start as int)), written@,
-                            has_unpaired_permission),
-                    decreases candidate - skipped,
-                {
-                    let ghost skipped_written = written@;
-                    let ghost skipped_flag = has_unpaired_permission;
-                    add_unpaired(&new[skipped], &mut written, &mut has_unpaired_permission);
+                Some(index) => {
+                    let ghost candidate = rest_start + index;
+                    let ghost paired_written = written@;
+                    let ghost paired_flag = has_unpaired_permission;
                     proof {
-                        lemma_unpaired_change(new@, skipped as int, memory_of(new@.take(rest_start as int)), skipped_written,
-                            skipped_flag, written@, has_unpaired_permission);
-                        lemma_prefix_transitive(paired_written, skipped_written, written@);
+                        assert forall|at: int| 0 <= at < index implies #[trigger] rest@[at] == new@[rest_start + at] by {
+                            assert(rest@[at] == new@.skip(rest_start)[at]);
+                        }
                     }
-                    skipped += 1;
-                }
-                proof {
-                    if rest_start == candidate {
-                        assert(same_outside(memory_of(new@.take(skipped as int)), memory_of(new@.take(rest_start as int)), written@,
-                            has_unpaired_permission));
+                    for skipped in skipping: &rest[..index]
+                        invariant
+                            0 <= rest_start,
+                            rest_start + index < new@.len(),
+                            skipping.seq().len() == index,
+                            forall|at: int| 0 <= at < index ==> *#[trigger] skipping.seq()[at] == new@[rest_start + at],
+                            well_formed(written@),
+                            paired_written.is_prefix_of(written@),
+                            paired_flag ==> has_unpaired_permission,
+                            same_outside(memory_of(new@.take(rest_start + skipping.index())), memory_of(new@.take(rest_start)), written@,
+                                has_unpaired_permission),
+                    {
+                        let ghost skipped_written = written@;
+                        let ghost skipped_flag = has_unpaired_permission;
+                        let ghost at = rest_start + skipping.index();
+                        proof {
+                            assert(*skipped == new@[at]);
+                        }
+                        add_unpaired(skipped, &mut written, &mut has_unpaired_permission);
+                        proof {
+                            lemma_unpaired_change(new@, at, memory_of(new@.take(rest_start)), skipped_written,
+                                skipped_flag, written@, has_unpaired_permission);
+                            lemma_prefix_transitive(paired_written, skipped_written, written@);
+                        }
                     }
-                    lemma_paired_change(old@, new@, index as int, rest_start as int, candidate as int, paired_written, paired_flag,
-                        written@, has_unpaired_permission);
+                    proof {
+                        lemma_paired_change(old@, new@, pairing.index(), rest_start, candidate, paired_written, paired_flag,
+                            written@, has_unpaired_permission);
+                    }
+                    rest = &rest[index + 1..];
+                    proof {
+                        rest_start = candidate + 1;
+                        assert(rest@ =~= new@.skip(rest_start));
+                    }
                 }
-                rest_start = candidate + 1;
-            } else {
-                let ghost unpaired_written = written@;
-                let ghost unpaired_flag = has_unpaired_permission;
-                add_unpaired(mutation, &mut written, &mut has_unpaired_permission);
-                proof {
-                    lemma_unpaired_change(old@, index as int, memory_of(new@.take(rest_start as int)), unpaired_written,
-                        unpaired_flag, written@, has_unpaired_permission);
+                None => {
+                    let ghost unpaired_written = written@;
+                    let ghost unpaired_flag = has_unpaired_permission;
+                    add_unpaired(mutation, &mut written, &mut has_unpaired_permission);
+                    proof {
+                        lemma_unpaired_change(old@, pairing.index(), memory_of(new@.take(rest_start)), unpaired_written,
+                            unpaired_flag, written@, has_unpaired_permission);
+                    }
                 }
             }
-            index += 1;
         }
         proof {
             assert(old@.take(old@.len() as int) =~= old@);
-            lemma_same_outside_symmetric(memory_old, memory_of(new@.take(rest_start as int)), written@, has_unpaired_permission);
+            lemma_same_outside_symmetric(memory_old, memory_of(new@.take(rest_start)), written@, has_unpaired_permission);
         }
-        while rest_start < new.len()
+        for unpaired in remaining: rest
             invariant
-                rest_start <= new@.len(),
+                0 <= rest_start <= new@.len(),
+                remaining.seq() == new@.skip(rest_start).as_ref(),
                 well_formed(written@),
-                same_outside(memory_of(new@.take(rest_start as int)), memory_old, written@, has_unpaired_permission),
+                same_outside(memory_of(new@.take(rest_start + remaining.index())), memory_old, written@, has_unpaired_permission),
                 memory_old == memory_of(old@),
-            decreases new@.len() - rest_start,
         {
             let ghost rest_written = written@;
             let ghost rest_flag = has_unpaired_permission;
-            add_unpaired(&new[rest_start], &mut written, &mut has_unpaired_permission);
+            let ghost at = rest_start + remaining.index();
             proof {
-                lemma_unpaired_change(new@, rest_start as int, memory_old, rest_written, rest_flag, written@, has_unpaired_permission);
+                assert(*unpaired == new@[at]);
             }
-            rest_start += 1;
+            add_unpaired(unpaired, &mut written, &mut has_unpaired_permission);
+            proof {
+                lemma_unpaired_change(new@, at, memory_old, rest_written, rest_flag, written@, has_unpaired_permission);
+            }
         }
         proof {
             assert(new@.take(new@.len() as int) =~= new@);
@@ -484,10 +493,22 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                 let length = (piece_end - piece_start) as usize;
                 resolve_bytes(old, start, length, &mut old_bytes);
                 resolve_bytes(new, start, length, &mut new_bytes);
+                let is_same_at = |offset: &usize| -> (same: bool)
+                    requires
+                        *offset < old_bytes@.len(),
+                        *offset < new_bytes@.len(),
+                    ensures
+                        same == (old_bytes@[*offset as int] == new_bytes@[*offset as int]),
+                { old_bytes[*offset] == new_bytes[*offset] };
                 // Each run of bytes the two lists leave different is one mutation.
-                // VERUS: no `find` with a closure, so each run's start and end are found by index.
                 let mut run_end = usize::MIN;
-                while run_end < length
+                while let Some(run_start) = (run_end..length).find(|offset| -> (different: bool)
+                    requires
+                        *offset < old_bytes@.len(),
+                        *offset < new_bytes@.len(),
+                    ensures
+                        different == (old_bytes@[*offset as int] != new_bytes@[*offset as int]),
+                { !is_same_at(offset) })
                     invariant
                         run_end <= length,
                         start as int + length as int <= range_end as int,
@@ -503,59 +524,50 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                         values_up_to(memory_old, memory_new, apply_all(memory_old, changes), written@, start + run_end),
                         receives(hook_before, *mutation_hook, changes),
                         memory_old == memory_new ==> changes.len() == 0 && *mutation_hook == hook_before,
+                        forall|offset: &usize| *offset < length ==> #[trigger] is_same_at.requires((offset,)),
+                        forall|offset: &usize, same: bool| #[trigger] is_same_at.ensures((offset,), same)
+                            ==> same == (old_bytes@[*offset as int] == new_bytes@[*offset as int]),
+                    ensures
+                        forall|step: int| 0 <= step < length - run_end ==> #[trigger] IteratorSpec::remaining(&(run_end..length))[step]
+                            == run_end + step && old_bytes@[run_end + step] == new_bytes@[run_end + step],
                     decreases length - run_end,
                 {
-                    let mut run_start = run_end;
-                    while run_start < length && old_bytes[run_start] == new_bytes[run_start]
-                        invariant
-                            run_end <= run_start <= length,
-                            start as int + length as int <= range_end as int,
-                            range_end as int <= address_count(),
-                            range_start <= start,
-                            range_index < written@.len(),
-                            written@[range_index as int] == (range_start, range_end),
-                            old_bytes@.len() == length,
-                            new_bytes@.len() == length,
-                            bytes_resolved(memory_old, old_bytes@, start),
-                            bytes_resolved(memory_new, new_bytes@, start),
-                            values_up_to(memory_old, memory_new, apply_all(memory_old, changes), written@, start + run_start),
-                        decreases length - run_start,
-                    {
-                        proof {
-                            lemma_same_resolved_byte_passed(memory_old, memory_new, apply_all(memory_old, changes), written@,
-                                range_index as int, start, old_bytes@, new_bytes@, run_start as int);
+                    proof {
+                        assert forall|at: int| run_end <= at < run_start implies
+                            #[trigger] memory_old((start + at) as u64).0 == memory_new((start + at) as u64).0 by {
+                            let searched = IteratorSpec::remaining(&(run_end..length));
+                            assert(searched[at - run_end] == at);
+                            assert(old_bytes@[at] == new_bytes@[at]);
                         }
-                        run_start += 1;
+                        lemma_same_bytes_passed(memory_old, memory_new, apply_all(memory_old, changes), written@, range_index as int,
+                            start, run_end as int, run_start as int);
                     }
-                    run_end = run_start;
-                    if run_start < length {
-                        while run_end < length && old_bytes[run_end] != new_bytes[run_end]
-                            invariant
-                                run_start <= run_end <= length,
-                                old_bytes@.len() == length,
-                                new_bytes@.len() == length,
-                                run_start < length,
-                                old_bytes@[run_start as int] != new_bytes@[run_start as int],
-                            decreases length - run_end,
-                        {
-                            run_end += 1;
-                        }
-                        let ghost hook_now = *mutation_hook;
-                        let mutation = MemoryDelta::ValueAssignment {
-                            start: start + run_start as u64,
-                            // VERUS: no range index of a `Vec` it reads, so the run is cut from its slice.
-                            bytes: Cow::Borrowed(&new_bytes.as_slice()[run_start..run_end]),
-                        };
-                        let ghost change = mutation@;
-                        mutation_hook.on_memory_mutated(mutation);
-                        proof {
-                            lemma_run_sent(memory_old, memory_new, apply_all(memory_old, changes), written@, range_index as int,
-                                start, old_bytes@, new_bytes@, run_start as int, run_end as int, change);
-                            lemma_receives_one(hook_before, hook_now, *mutation_hook, changes, change);
-                            lemma_apply_all_push(memory_old, changes, change);
-                            changes = changes.push(change);
-                        }
+                    let ghost run_start_value = run_start;
+                    run_end = (run_start..length).find(is_same_at).unwrap_or(length);
+                    let ghost hook_now = *mutation_hook;
+                    let ghost change = Assignment::<Architecture::PagePermission>::ValueAssignment {
+                        start: (start + run_start) as u64,
+                        bytes: new_bytes@.subrange(run_start as int, run_end as int),
+                    };
+                    mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
+                        start: start + run_start as u64,
+                        bytes: Cow::Borrowed(&new_bytes[run_start..run_end]),
+                    });
+                    proof {
+                        lemma_run_sent(memory_old, memory_new, apply_all(memory_old, changes), written@, range_index as int,
+                            start, old_bytes@, new_bytes@, run_start as int, run_end as int, change);
+                        lemma_receives_one(hook_before, hook_now, *mutation_hook, changes, change);
+                        lemma_apply_all_push(memory_old, changes, change);
+                        changes = changes.push(change);
                     }
+                }
+                proof {
+                    assert forall|at: int| run_end <= at < length implies
+                        #[trigger] memory_old((start + at) as u64).0 == memory_new((start + at) as u64).0 by {
+                        assert(IteratorSpec::remaining(&(run_end..length))[at - run_end] == at);
+                    }
+                    lemma_same_bytes_passed(memory_old, memory_new, apply_all(memory_old, changes), written@, range_index as int,
+                        start, run_end as int, length as int);
                 }
                 piece_start = piece_end;
             }
