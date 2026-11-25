@@ -2430,3 +2430,472 @@ pub fn depth_bounds_keep_fragments_whose_stored_depth_lies_within<H: Host>() {
     assert_eq!(got, rows([r, r, r, r]), "no bounds after bounds");
     ok(&mut b);
 }
+
+/// Makes one entry point of `source`, validated with `capabilities` beyond what [`shader`] takes.
+fn shader_with<B: Gpu>(
+    b: &mut B,
+    source: &str,
+    entry: &str,
+    stage: ShaderStage,
+    capabilities: naga::valid::Capabilities,
+) -> B::Shader {
+    let module = naga::front::wgsl::parse_str(source).expect("test program parses");
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+        .validate(&module)
+        .expect("test program validates");
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(source.as_bytes());
+    hasher.update(entry.as_bytes());
+    b.create_shader(&ShaderModule {
+        module,
+        info,
+        entry_point: entry.into(),
+        stage,
+        key: *hasher.finalize().as_bytes(),
+    })
+    .expect("create_shader")
+}
+
+/// Makes a render program of two entry points of `source`, validated with `capabilities`.
+fn program_with<B: Gpu>(
+    b: &mut B,
+    source: &str,
+    vs: &str,
+    fs: &str,
+    capabilities: naga::valid::Capabilities,
+) -> B::Program {
+    let v = shader_with(b, source, vs, ShaderStage::Vertex, capabilities);
+    let f = shader_with(b, source, fs, ShaderStage::Fragment, capabilities);
+    b.create_program(&Program::Render {
+        vertex: &v,
+        fragment: Some(&f),
+    })
+    .expect("create_program")
+}
+
+/// The fixed states of these tests' draws into an `rgba8unorm` target: opaque or adding, no depth, no culling, and one
+/// stream of positions.
+struct Fixed<B: Gpu> {
+    blend: B::Blend,
+    depth: B::DepthStencil,
+    raster: B::Raster,
+    layout: B::VertexLayout,
+}
+
+fn fixed<B: Gpu>(b: &mut B, adding: bool) -> Fixed<B> {
+    let target = if adding {
+        let add = BlendComponent {
+            src: BlendFactor::One,
+            dst: BlendFactor::One,
+            op: BlendOp::Add,
+        };
+        RenderTargetBlend {
+            blend: Some((add, add)),
+            writes: ColorWrites::all(),
+        }
+    } else {
+        opaque()
+    };
+    Fixed {
+        blend: blend(b, target),
+        depth: depth_test(b, None, false),
+        raster: raster(b, CullMode::None),
+        layout: positions(b),
+    }
+}
+
+/// Draws `range` of the positions `points` as `topology` with `program` into a new `n` by `n` target cleared to zero,
+/// with `bindings` and `viewports`, and returns the target's texels.
+#[allow(clippy::too_many_arguments)]
+fn drawn<B: Gpu>(
+    b: &mut B,
+    n: u32,
+    program: &B::Program,
+    fixed: &Fixed<B>,
+    points: &[f32],
+    topology: Topology,
+    range: DrawRange<'_, B>,
+    bindings: Option<&B::BindingSet>,
+    viewports: &[Viewport],
+) -> Vec<u8> {
+    let (t, v) = rgba8_target(b, n);
+    let stream = vertex_buffer(b, points);
+    let streams = [Some(VertexBinding {
+        buffer: &stream,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [bindings, None, None, None],
+        ..call(
+            program,
+            &fixed.blend,
+            &fixed.depth,
+            &fixed.raster,
+            &fixed.layout,
+            &streams,
+            viewports,
+            topology,
+            range,
+        )
+    });
+    b.end_pass();
+    read_texture(b, region(&t, 0, 0, 0, 0), extent(n, n, 1), 4)
+}
+
+/// Returns `n` by `n` texels of which those `inside` hold `texel` and the others zero.
+fn texels_where(n: u32, texel: [u8; 4], inside: impl Fn(u32, u32) -> bool) -> Vec<u8> {
+    (0..n)
+        .flat_map(|y| (0..n).map(move |x| (x, y)))
+        .flat_map(|(x, y)| if inside(x, y) { texel } else { [0; 4] })
+        .collect()
+}
+
+/// Three triangles that each cover the whole target, as a list.
+const COVERING_THRICE: [f32; 18] = [
+    -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0,
+    -1.0, 3.0,
+];
+
+/// Writes the primitive's index plus one, in steps of 20/255 of red.
+const PRIMITIVE_NUMBERED: &str = "
+enable primitive_index;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(primitive_index) i: u32) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i + 1u) * 20.0 / 255.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Fragment programs read the index of their primitive within the draw, counted from zero whatever the draw's first
+/// vertex: of three triangles covering the target, the last drawn (index 2) is what an opaque draw leaves, the three
+/// add up to 1 + 2 + 3 steps, and a draw of the last two from its fourth vertex leaves index 1. Where
+/// `PRIMITIVE_INDEX` is declared.
+pub fn fragments_read_the_index_of_their_primitive<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::PRIMITIVE_INDEX) {
+        return;
+    }
+    const N: u32 = 4;
+    let capabilities = naga::valid::Capabilities::PRIMITIVE_INDEX;
+    let p = program_with(&mut b, PRIMITIVE_NUMBERED, "vs", "fs", capabilities);
+    let vp = viewport(N, N);
+    let red = |steps: u8| [steps * 20, 0, 0, 255];
+    for (adding, first, count, wanted) in [
+        (false, 0, 9, red(3)),
+        (true, 0, 9, [120, 0, 0, 255]),
+        (false, 3, 6, red(2)),
+    ] {
+        let states = fixed(&mut b, adding);
+        let got = drawn(
+            &mut b,
+            N,
+            &p,
+            &states,
+            &COVERING_THRICE,
+            Topology::TriangleList,
+            vertices(first, count),
+            None,
+            &vp,
+        );
+        // Adding three opaque alphas saturates alpha at one.
+        assert_close(
+            &got,
+            &texels_where(N, wanted, |_, _| true),
+            1,
+            4,
+            N as usize,
+        );
+    }
+    ok(&mut b);
+}
+
+/// Converts each word's float to a 16-bit float and back, and adds 1 to 2048 in 16-bit floats.
+const HALVES: &str = "
+enable f16;
+@group(0) @binding(160) var<storage, read_write> words: array<f32>;
+@compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
+    let h = f16(words[id.x]);
+    words[id.x] = f32(h);
+    if id.x == 0u {
+        let sum = f16(2048.0) + f16(words[4] * 0.0 + 1.0);
+        words[5] = f32(sum);
+    }
+}
+";
+
+/// Programs compute in 16-bit floats: a third, 2049 and 65504 converted to 16 bits and back are one of the two
+/// nearest 16-bit floats (and not the 32-bit value), the smallest 16-bit subnormal stays, and 2048 + 1 in 16 bits is
+/// 2048 or 2050. Where `SHADER_F16` and `COMPUTE` are declared.
+pub fn programs_compute_in_16_bit_floats<H: Host>() {
+    let mut b = H::make();
+    let has = b.caps().features;
+    if !has.contains(Features::SHADER_F16 | Features::COMPUTE) {
+        return;
+    }
+    let third = 1.0f32 / 3.0;
+    let smallest = 2.0f32.powi(-24);
+    let inputs = [third, 2049.0, 65504.0, smallest, 0.0, 0.0];
+    let size = (inputs.len() * 4) as u64;
+    let words = buffer(
+        &mut b,
+        size,
+        BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&words, 0, &floats(&inputs), WriteMode::Ordered);
+    let cs = shader_with(
+        &mut b,
+        HALVES,
+        "cs",
+        ShaderStage::Compute,
+        naga::valid::Capabilities::SHADER_FLOAT16,
+    );
+    let program = b
+        .create_program(&Program::Compute(&cs))
+        .expect("create_program");
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    b.dispatch(&DispatchCall {
+        program: &program,
+        bindings: [Some(&set), None, None, None],
+        immediates: &[],
+        groups: DispatchGroups::Direct([4, 1, 1]),
+    })
+    .expect("dispatch");
+    let got: Vec<f32> = read_buffer(&mut b, &words, 0, size)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| f32::from_le_bytes(*w))
+        .collect();
+    // The 16-bit floats either side of a third: 0x3555 and 0x3556.
+    let nearest_third = [0.333_251_95f32, 0.333_496_1];
+    assert!(
+        nearest_third.contains(&got[0]),
+        "a third in 16 bits: {}",
+        got[0]
+    );
+    assert!(
+        [2048.0, 2050.0].contains(&got[1]),
+        "2049 in 16 bits: {}",
+        got[1]
+    );
+    assert_eq!(got[2], 65504.0, "the largest 16-bit float");
+    assert_eq!(got[3], smallest, "the smallest 16-bit subnormal");
+    assert!(
+        [2048.0, 2050.0].contains(&got[5]),
+        "2048 + 1 in 16 bits: {}",
+        got[5]
+    );
+    ok(&mut b);
+}
+
+/// A vertex program that writes a word for each vertex it runs.
+const VERTEX_WRITES: &str = "
+@group(0) @binding(160) var<storage, read_write> words: array<u32>;
+@vertex fn vs(@builtin(vertex_index) i: u32, @location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    words[i] = i * 10u + 7u;
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";
+
+/// Vertex programs write storage buffers: each of a strip's four vertices writes its word, from the draw's first
+/// vertex on, leaving the words before it, and the strip still draws; bound to fewer words than the vertices write, no
+/// write lands past the bound range. Where `VERTEX_STORAGE_WRITE` is declared.
+pub fn vertex_programs_write_storage_buffers<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::VERTEX_STORAGE_WRITE) {
+        return;
+    }
+    const N: u32 = 4;
+    let size = 6 * 4;
+    let words = buffer(
+        &mut b,
+        size,
+        BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&words, 0, &[0xee; 24], WriteMode::Ordered);
+    let p = program_with(
+        &mut b,
+        VERTEX_WRITES,
+        "vs",
+        "fs",
+        naga::valid::Capabilities::empty(),
+    );
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    let states = fixed(&mut b, false);
+    let mut points = vec![0.0; 4];
+    points.extend(QUAD);
+    let got = drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &points,
+        Topology::TriangleStrip,
+        vertices(2, 4),
+        Some(&set),
+        &viewport(N, N),
+    );
+    assert_eq!(got, texels_where(N, [0, 255, 0, 255], |_, _| true));
+    let mut expected = vec![0xee; 8];
+    for i in 2..6u32 {
+        expected.extend((i * 10 + 7).to_le_bytes());
+    }
+    assert_eq!(read_buffer(&mut b, &words, 0, size), expected);
+    // Bound to its first four words only, the writes of vertices 4 and 5 stay inside those four.
+    b.write_buffer(&words, 0, &[0xee; 24], WriteMode::Ordered);
+    let short = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size: 16,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &points,
+        Topology::TriangleStrip,
+        vertices(2, 4),
+        Some(&short),
+        &viewport(N, N),
+    );
+    let got = read_buffer(&mut b, &words, 0, size);
+    assert_eq!(&got[..8], &[0xee; 8], "the words before the first vertex's");
+    assert_eq!(&got[8..12], &27u32.to_le_bytes(), "the first vertex's word");
+    assert_eq!(&got[16..], &[0xee; 8], "the words past the bound range");
+    ok(&mut b);
+}
+
+/// Clips the quad by two distances: its x, and minus its y.
+const CLIPPED: &str = "
+enable clip_distances;
+struct Out { @builtin(position) p: vec4<f32>, @builtin(clip_distances) d: array<f32, 2> }
+@vertex fn vs(@location(0) p: vec2<f32>) -> Out {
+    return Out(vec4<f32>(p, 0.5, 1.0), array<f32, 2>(p.x, -p.y));
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";
+
+/// The last vertex stage's clip distances clip what they make negative: with distances x and -y over the full quad,
+/// only the quarter of positive x and negative y (the right half's lower rows, y down) is drawn. Where
+/// `CLIP_DISTANCE` is declared.
+pub fn clip_distances_clip_where_they_are_negative<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::CLIP_DISTANCE) {
+        return;
+    }
+    const N: u32 = 4;
+    let p = program_with(
+        &mut b,
+        CLIPPED,
+        "vs",
+        "fs",
+        naga::valid::Capabilities::CLIP_DISTANCES,
+    );
+    let states = fixed(&mut b, false);
+    let got = drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &QUAD,
+        Topology::TriangleStrip,
+        vertices(0, 4),
+        None,
+        &viewport(N, N),
+    );
+    assert_eq!(
+        got,
+        texels_where(N, [0, 255, 0, 255], |x, y| x >= N / 2 && y >= N / 2)
+    );
+    ok(&mut b);
+}
+
+/// Viewports at fractions of a pixel map positions to sub-pixel precision: the full quad through a viewport from
+/// (0.75, 0.25), 1.5 wide and 2.5 high, covers the pixel centres within it, column 1 of rows 0 to 2; rounding the
+/// viewport to whole pixels covers others. Where `FRACTIONAL_VIEWPORT` is declared.
+pub fn fractional_viewports_cover_the_centres_within_them<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::FRACTIONAL_VIEWPORT) {
+        return;
+    }
+    const N: u32 = 4;
+    let p = program(&mut b, CONSTANT_GREEN, "vs", "fs");
+    let states = fixed(&mut b, false);
+    let viewports = [Viewport {
+        x: 0.75f32.to_bits(),
+        y: 0.25f32.to_bits(),
+        width: 1.5f32.to_bits(),
+        height: 2.5f32.to_bits(),
+        min_depth: 0.0f32.to_bits(),
+        max_depth: 1.0f32.to_bits(),
+    }];
+    let got = drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &QUAD,
+        Topology::TriangleStrip,
+        vertices(0, 4),
+        None,
+        &viewports,
+    );
+    assert_eq!(
+        got,
+        texels_where(N, [0, 255, 0, 255], |x, y| x == 1 && y <= 2)
+    );
+    ok(&mut b);
+}
+
+/// The full quad in green.
+const CONSTANT_GREEN: &str = "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";

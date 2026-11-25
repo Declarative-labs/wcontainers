@@ -179,6 +179,11 @@ suite!(
     depth_copies_through_buffers_keep_their_pitches_and_values,
     bgra4_texels_sample_and_copy_in_direct3d_bit_order,
     depth_bounds_keep_fragments_whose_stored_depth_lies_within,
+    fragments_read_the_index_of_their_primitive,
+    programs_compute_in_16_bit_floats,
+    vertex_programs_write_storage_buffers,
+    clip_distances_clip_where_they_are_negative,
+    fractional_viewports_cover_the_centres_within_them,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,

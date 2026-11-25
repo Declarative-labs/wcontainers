@@ -397,7 +397,12 @@ fn declares_the_metal_features_tested_here() {
         | Features::INDIRECT
         | Features::INDIRECT_FIRST_INSTANCE
         | Features::TIMESTAMPS
-        | Features::TEXTURE_LEVEL_QUERY;
+        | Features::TEXTURE_LEVEL_QUERY
+        | Features::PRIMITIVE_INDEX
+        | Features::SHADER_F16
+        | Features::VERTEX_STORAGE_WRITE
+        | Features::CLIP_DISTANCE
+        | Features::FRACTIONAL_VIEWPORT;
     assert!(device().caps().features.contains(wanted));
     // Depth bounds where Metal has them: macOS 26 on.
     assert_eq!(

@@ -202,7 +202,12 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::POINT_SIZE
                 | Features::INDIRECT
                 | Features::INDIRECT_FIRST_INSTANCE
-                | Features::TEXTURE_LEVEL_QUERY,
+                | Features::TEXTURE_LEVEL_QUERY
+                | Features::PRIMITIVE_INDEX
+                | Features::SHADER_F16
+                | Features::VERTEX_STORAGE_WRITE
+                | Features::CLIP_DISTANCE
+                | Features::FRACTIONAL_VIEWPORT,
             limits: LIMITS,
             formats: convert::format_caps(),
         };
