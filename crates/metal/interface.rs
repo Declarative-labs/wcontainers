@@ -24,6 +24,8 @@ pub trait Metal {
     type Layer: Clone + Debug;
     /// One picture of a layer: a texture to draw into, shown once presented.
     type Drawable: Clone + Debug;
+    /// Places the GPU writes its clock into, in nanoseconds.
+    type TimestampBuffer: Clone + Debug;
 
     /// Returns the GPU's name, as Metal gives it.
     fn name(&self) -> String;
@@ -126,6 +128,62 @@ pub trait Metal {
         command_buffer: &Self::CommandBuffer,
         drawable: &Self::Drawable,
     ) -> Result<(), PresentDrawableError>;
+    /// Makes `sample_count` places for timestamps.
+    fn make_timestamp_buffer(
+        &mut self,
+        sample_count: u32,
+    ) -> Result<Self::TimestampBuffer, MakeTimestampBufferError>;
+    /// Encodes a pass of its own that writes the GPU's clock into place `index` once the work encoded before it ends.
+    fn encode_timestamp(
+        &mut self,
+        command_buffer: &Self::CommandBuffer,
+        timestamps: &Self::TimestampBuffer,
+        index: u32,
+    ) -> Result<(), EncodeTimestampError>;
+    /// Copies the timestamps of places from `first` on into `into`, once every committed command buffer that writes them
+    /// has completed.
+    fn read_timestamps(
+        &mut self,
+        timestamps: &Self::TimestampBuffer,
+        first: u32,
+        into: &mut [u64],
+    ) -> Result<(), ReadTimestampsError>;
+}
+
+/// The most places of one timestamp buffer, WebGPU's most queries of a set.
+///
+/// https://www.w3.org/TR/webgpu/#dom-gpudevice-createqueryset
+pub const MAX_TIMESTAMPS: u32 = 4096;
+
+/// Why a timestamp buffer was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeTimestampBufferError {
+    /// No places, or more than `MAX_TIMESTAMPS`.
+    Count,
+    /// The GPU writes no timestamps where passes end.
+    Unsupported,
+}
+
+/// Why timestamps were not read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadTimestampsError {
+    /// Places past the buffer's last.
+    OutOfRange,
+    /// A command buffer not committed writes them, so they would never be written.
+    UsedByUncommittedWork,
+    /// Metal gave no values.
+    Refused,
+}
+
+/// Why a timestamp was not encoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeTimestampError {
+    /// The command buffer was already committed.
+    Committed,
+    /// A place past the buffer's last.
+    OutOfRange,
+    /// Metal made no pass for it.
+    Refused,
 }
 
 /// Why a buffer was not made.

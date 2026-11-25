@@ -2034,3 +2034,55 @@ pub fn indirect_draws_and_dispatches_read_their_arguments_when_they_run<H: Host>
     }
     ok(&mut b);
 }
+
+/// Returns the `u64`s of little-endian bytes.
+fn u64s(bytes: &[u8]) -> Vec<u64> {
+    bytes
+        .chunks(8)
+        .map(|c| u64::from_le_bytes(c.try_into().expect("eight bytes")))
+        .collect()
+}
+
+/// Timestamps written between passes and copies read back in the order they were written, through
+/// `read_queries` and through `resolve_queries` alike, and a second read of the same queries gives
+/// the same values; `timestamps_disjoint` answers. Where `TIMESTAMPS` is declared.
+pub fn timestamps_between_passes_read_back_in_order<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
+        return;
+    }
+    const N: u32 = 4;
+    let set = b
+        .create_query_set(QueryKind::Timestamp, 4)
+        .expect("create_query_set");
+    let (_t, v) = rgba8_target(&mut b, N);
+    let scratch = buffer(&mut b, 64, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.write_timestamp(&set, 0).expect("write_timestamp");
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.end_pass();
+    b.write_timestamp(&set, 1).expect("write_timestamp");
+    b.clear_buffer(&scratch, 0, 64, &[7]);
+    b.write_timestamp(&set, 2).expect("write_timestamp");
+    let rb = b.read_queries(&set, 0, 3).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut bytes = vec![0; 24];
+    b.finish_read(rb, &mut bytes);
+    let read = u64s(&bytes);
+    assert!(
+        read[0] <= read[1] && read[1] <= read[2],
+        "timestamps out of the order written: {read:?}"
+    );
+    let resolved = buffer(&mut b, 32, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.resolve_queries(&set, 0, 3, &resolved, 8)
+        .expect("resolve_queries");
+    assert_eq!(u64s(&read_buffer(&mut b, &resolved, 8, 24)), read);
+    let rb = b.read_queries(&set, 1, 2).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut again = vec![0; 16];
+    b.finish_read(rb, &mut again);
+    assert_eq!(u64s(&again), read[1..]);
+    b.timestamps_disjoint().expect("timestamps_disjoint");
+    ok(&mut b);
+}

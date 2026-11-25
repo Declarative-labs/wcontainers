@@ -2700,7 +2700,8 @@ impl World {
             47..=51 => self.precise_pipeline(random),
             52..=77 => self.precise_render(random),
             78..=89 => self.precise_compute(random),
-            90..=98 => self.precise_function(random),
+            90..=95 => self.precise_function(random),
+            96..=98 => self.precise_timestamps(random),
             _ if !self.layers.is_empty() && random.chance(70) => {
                 // A layer's drawables configured valid but for one field.
                 let Some(layer) = any(random, &self.layers) else {
@@ -5101,6 +5102,64 @@ impl World {
             refuse,
             &allowed,
             &format!("a precise dispatch, break {wrong:?}"),
+        );
+    }
+
+    /// Makes timestamp places, writes the GPU's clock into one and reads some back, valid but for at most one field.
+    fn precise_timestamps(&mut self, random: &mut Random) {
+        let wrong = random.broken(4);
+        let w = |k| wrong == Some(k);
+        let count = if w(0) {
+            random.pick(&[
+                0,
+                wcontainers_metal::MAX_TIMESTAMPS.saturating_add(1),
+                u32::MAX,
+            ])
+        } else {
+            1u32.saturating_add(random.below(8) as u32)
+        };
+        let made = self.metal.make_timestamp_buffer(count);
+        self.counts.call(made.is_err());
+        self.must(
+            made.is_err(),
+            w(0),
+            "timestamp places of no count or past the most",
+        );
+        let Ok(timestamps) = made else {
+            return;
+        };
+        let Some(command_buffer) = self.command_buffer(random) else {
+            return;
+        };
+        let index = if w(1) {
+            random.past(count.saturating_sub(1), 0)
+        } else {
+            random.below(u64::from(count)) as u32
+        };
+        let encoded = self
+            .metal
+            .encode_timestamp(&command_buffer, &timestamps, index);
+        self.counts.call(encoded.is_err());
+        self.must(encoded.is_err(), w(1), "a timestamp past its last place");
+        let (first, length) = if w(2) {
+            (
+                random.pick(&[count, u32::MAX, u32::MAX.saturating_sub(1)]),
+                2,
+            )
+        } else if w(3) {
+            (u32::MIN, u64::from(count).saturating_add(1))
+        } else {
+            let first = random.below(u64::from(count)) as u32;
+            let left = u64::from(count.saturating_sub(first));
+            (first, random.below(left.saturating_add(1)))
+        };
+        let mut into = vec![u64::MIN; length as usize];
+        let read = self.metal.read_timestamps(&timestamps, first, &mut into);
+        self.counts.call(read.is_err());
+        self.must(
+            read.is_err(),
+            w(2) || w(3),
+            "a read of timestamps past their last place",
         );
     }
 

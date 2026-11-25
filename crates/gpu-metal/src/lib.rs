@@ -162,7 +162,7 @@ pub struct MetalGpu<M: Metal> {
 
 impl<M: Metal> MetalGpu<M> {
     /// Makes the interface's device over a Metal device.
-    pub fn new(metal: M) -> MetalGpu<M> {
+    pub fn new(mut metal: M) -> MetalGpu<M> {
         let caps = Caps {
             adapter: AdapterInfo {
                 name: metal.name(),
@@ -198,6 +198,11 @@ impl<M: Metal> MetalGpu<M> {
             limits: LIMITS,
             formats: convert::format_caps(),
         };
+        // Timestamps where the GPU writes them where passes end, which making a buffer of their places tells.
+        let mut caps = caps;
+        if metal.make_timestamp_buffer(1).is_ok() {
+            caps.features |= Features::TIMESTAMPS;
+        }
         MetalGpu {
             metal,
             caps,
@@ -409,6 +414,7 @@ impl<M: Metal> MetalGpu<M> {
             buffer,
             length,
             layout,
+            timestamps: None,
         })))
     }
 
@@ -1038,10 +1044,21 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         kind: QueryKind,
         count: u32,
     ) -> Result<Self::QuerySet, GpuError> {
-        let counting = match kind {
-            QueryKind::OcclusionAny => false,
-            QueryKind::Occlusion => true,
-            QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
+        let (counting, timestamps) = match kind {
+            QueryKind::OcclusionAny => (false, None),
+            QueryKind::Occlusion => (true, None),
+            QueryKind::Timestamp if !self.caps.features.contains(Features::TIMESTAMPS) => {
+                return Err(GpuError::Absent(Features::TIMESTAMPS));
+            }
+            // The places' count is checked by Metal's trait; a set of none has one place no query reaches.
+            QueryKind::Timestamp => (
+                false,
+                Some(
+                    self.metal
+                        .make_timestamp_buffer(count.max(1))
+                        .map_err(|_| GpuError::OutOfMemory)?,
+                ),
+            ),
         };
         // The results are one buffer, which `max_buffer_size` bounds as it bounds the caller's own.
         let bytes = query_bytes(count.max(1));
@@ -1056,6 +1073,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             count,
             buffer,
             counting,
+            timestamps,
         })))
     }
 
@@ -1410,6 +1428,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     buffer: into,
                     length: *size,
                     layout: ReadLayout::Bytes,
+                    timestamps: None,
                 })))
             }
             ReadSource::Texture { region, extent } => {
@@ -1437,6 +1456,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     buffer,
                     length,
                     layout,
+                    timestamps: None,
                 })))
             }
         }
@@ -1451,8 +1471,19 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if first.checked_add(count).is_none_or(|end| end > set.count) {
             return Err(GpuError::Invalid("queries past the set's end"));
         }
-        let raw = set.buffer.clone();
         let length = query_bytes(count);
+        if let Some(timestamps) = &set.timestamps {
+            // Metal gives timestamps on the CPU once the work that wrote them completed, so the read waits for the work
+            // recorded so far and reads them when it finishes.
+            return Ok(Shared(Rc::new(ReadbackObj {
+                serial: self.serial,
+                buffer: set.buffer.clone(),
+                length,
+                layout: ReadLayout::Bytes,
+                timestamps: Some((timestamps.clone(), first)),
+            })));
+        }
+        let raw = set.buffer.clone();
         // No queries read nothing, with no copy, which Metal refuses of no bytes.
         self.read_into(length, ReadLayout::Bytes, |into| {
             if length == 0 {
@@ -1483,6 +1514,19 @@ impl<M: Metal> Gpu for MetalGpu<M> {
 
     fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]) {
         self.wait_serial(readback.serial);
+        if let Some((timestamps, first)) = &readback.timestamps {
+            // The length is the queries' bytes, checked against the set when the read began.
+            let count = usize::try_from(readback.length / QUERY_BYTES).unwrap_or(usize::MIN);
+            let mut values = vec![u64::MIN; count];
+            if let Err(error) = self.metal.read_timestamps(timestamps, *first, &mut values) {
+                self.fail(format_args!("timestamps not read: {error:?}"));
+                return;
+            }
+            for (into, value) in dst.as_chunks_mut::<8>().0.iter_mut().zip(values) {
+                *into = value.to_le_bytes();
+            }
+            return;
+        }
         // The length was checked against its buffer or texture when the read back began.
         let mut bytes = vec![0; usize::try_from(readback.length).unwrap_or(usize::MIN)];
         if let Err(error) = self.metal.read_contents(&readback.buffer, 0, &mut bytes) {
@@ -1705,6 +1749,18 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if first.checked_add(count).is_none_or(|end| end > set.count) {
             return Err(GpuError::Invalid("queries past the set's end"));
         }
+        if set.timestamps.is_some() {
+            // As the default: Metal gives timestamps on the CPU only, so they are read back and written in order.
+            let readback = self.read_queries(set, first, count)?;
+            if self.read_state(&readback) == ReadState::Pending {
+                self.record_slow_path(wcontainers_gpu::SlowPath::QueryResolveWait);
+                self.wait_read(&readback);
+            }
+            let mut bytes = vec![0; usize::try_from(query_bytes(count)).unwrap_or(usize::MIN)];
+            self.finish_read(readback, &mut bytes);
+            self.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
+            return Ok(());
+        }
         // As the default: no queries write nothing, wherever, and results past the buffer's end are the refusal its
         // `write_buffer` notes, with the call itself answered.
         let bytes = query_bytes(count);
@@ -1727,6 +1783,35 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         };
         self.copy_bytes(source, Self::range(dst, dst_offset), bytes);
         Ok(())
+    }
+
+    fn write_timestamp(&mut self, set: &Self::QuerySet, index: u32) -> Result<(), GpuError> {
+        let Some(timestamps) = &set.timestamps else {
+            return Err(GpuError::Invalid("a timestamp into a set of another kind"));
+        };
+        if index >= set.count {
+            return Err(GpuError::Invalid("a timestamp past the set's end"));
+        }
+        if self.pass.is_some() {
+            return Err(GpuError::Invalid("a timestamp inside a pass"));
+        }
+        self.flush_blits();
+        let command_buffer = self.command_buffer().ok_or(GpuError::DeviceLost)?;
+        count_up(&mut self.encodes);
+        self.metal
+            .encode_timestamp(&command_buffer, timestamps, index)
+            .map_err(|error| {
+                eprintln!("metal: timestamp refused: {error:?}");
+                GpuError::Invalid("a timestamp Metal's checks refuse")
+            })
+    }
+
+    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
+        if !self.caps.features.contains(Features::TIMESTAMPS) {
+            return Err(GpuError::Absent(Features::TIMESTAMPS));
+        }
+        // Metal's GPU clock runs as the CPU's and reports no break.
+        Ok(false)
     }
 
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {

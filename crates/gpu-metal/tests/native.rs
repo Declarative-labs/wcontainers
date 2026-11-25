@@ -393,7 +393,10 @@ fn declares_the_metal_features_tested_here() {
         | Features::BLEND_CONSTANT_ALPHA
         | Features::STENCIL_PER_FACE
         | Features::OCCLUSION_COUNT
-        | Features::POINT_SIZE;
+        | Features::POINT_SIZE
+        | Features::INDIRECT
+        | Features::INDIRECT_FIRST_INSTANCE
+        | Features::TIMESTAMPS;
     assert!(device().caps().features.contains(wanted));
     // Metal drops a constant bias's fraction, so a front adds the bias in the program.
     assert!(
@@ -1528,4 +1531,90 @@ fn a_widened_stream_is_converted_as_far_as_the_draw_reads_and_refused_past_its_b
     assert_ne!(long_stream_scene(true, 0), healthy);
     // So is a list whose elements before its first, which the copy also holds, pass the bound.
     assert_ne!(long_stream_scene(false, 1 << 22), healthy);
+}
+
+/// Steps a generator `words[1]` times in one thread, to keep the GPU busy for tens of milliseconds.
+const SPIN: &str = "
+@group(0) @binding(0) var<storage, read_write> words: array<u32>;
+@compute @workgroup_size(1) fn spin() {
+    var x = words[0];
+    for (var i = 0u; i < words[1]; i++) {
+        x = x * 1664525u + 1013904223u;
+    }
+    words[2] = x;
+}
+";
+
+/// The steps of `SPIN` that keep one GPU thread busy for tens of milliseconds.
+const SPIN_STEPS: u32 = 1 << 23;
+
+#[test]
+fn timestamps_are_nanoseconds_of_the_time_the_cpu_waits() {
+    use wcontainers_gpu::{BufferRange, DispatchCall, DispatchGroups};
+    let mut b = device();
+    let set = b
+        .create_query_set(QueryKind::Timestamp, 2)
+        .expect("create_query_set");
+    let words = b
+        .create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
+            intent: MapIntent::Rarely,
+        })
+        .expect("create_buffer");
+    let start: Vec<u8> = [1, SPIN_STEPS, 0, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    b.write_buffer(&words, 0, &start, WriteMode::Discard);
+    let shader = b
+        .create_shader(
+            &ShaderModule::from_wgsl(SPIN, "spin", ShaderStage::Compute).expect("a program"),
+        )
+        .expect("create_shader");
+    let spin = b
+        .create_program(&Program::Compute(&shader))
+        .expect("create_program");
+    let bound = b
+        .create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size: 16,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    b.write_timestamp(&set, 0).expect("write_timestamp");
+    b.dispatch(&DispatchCall {
+        program: &spin,
+        bindings: [Some(&bound), None, None, None],
+        immediates: &[],
+        groups: DispatchGroups::Direct([1, 1, 1]),
+    })
+    .expect("dispatch");
+    b.write_timestamp(&set, 1).expect("write_timestamp");
+    let readback = b.read_queries(&set, 0, 2).expect("read_queries");
+    let clock = std::time::Instant::now();
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    let waited = clock.elapsed().as_secs_f64() * 1e9;
+    let mut bytes = [0; 16];
+    b.finish_read(readback, &mut bytes);
+    let (first, second) = bytes.split_at(8);
+    let first = u64::from_le_bytes(first.try_into().expect("eight bytes"));
+    let second = u64::from_le_bytes(second.try_into().expect("eight bytes"));
+    let span = second.saturating_sub(first) as f64;
+    eprintln!("timestamps: {span} ns of GPU work in {waited} ns waited");
+    assert!(first <= second, "{first} then {second}");
+    assert!(
+        span <= waited * 1.05 && span >= waited * 0.25,
+        "{span} ns of GPU work in {waited} ns waited"
+    );
+    assert_eq!(b.timestamps_disjoint(), Ok(false));
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
 }

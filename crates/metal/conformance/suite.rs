@@ -63,6 +63,13 @@ struct Color { value: vec4<f32> }
 @compute @workgroup_size(4) fn double(@builtin(global_invocation_id) id: vec3<u32>) {
     words[id.x] = words[id.x] * 2u;
 }
+@compute @workgroup_size(1) fn spin() {
+    var x = words[0];
+    for (var i = 0u; i < words[1]; i++) {
+        x = x * 1664525u + 1013904223u;
+    }
+    words[2] = x;
+}
 var<workgroup> total: atomic<u32>;
 @compute @workgroup_size(4) fn sum(@builtin(local_invocation_index) i: u32) {
     atomicAdd(&total, words[i]);
@@ -2541,6 +2548,128 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
     ));
 }
 
+/// The compute function that steps a generator `words[1]` times, to keep the GPU busy for a while.
+const SPIN: &str = "spin";
+
+/// Encodes a dispatch of one thread of `SPIN` reading `words` into `command_buffer`.
+fn spin<M: Metal>(subject: &mut M, command_buffer: &M::CommandBuffer, words: &M::Buffer) {
+    let compute = function(subject, naga::ShaderStage::Compute, SPIN);
+    let state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("Metal answers make compute pipeline state");
+    subject
+        .encode_compute_commands(
+            command_buffer,
+            &[
+                ComputeCommand::SetComputePipelineState(state),
+                ComputeCommand::SetBuffer {
+                    buffer: words.clone(),
+                    offset: u64::MIN,
+                    length: WORDS_BYTES,
+                    index: WORDS_SLOT,
+                },
+                ComputeCommand::DispatchThreadgroups(Size {
+                    width: SINGLE,
+                    height: SINGLE,
+                    depth: SINGLE,
+                }),
+            ],
+        )
+        .expect("Metal answers encode compute commands");
+}
+
+/// The steps of `SPIN` that keep one GPU thread busy for tens of milliseconds.
+const SPIN_STEPS: u32 = 1 << 23;
+
+/// Checks that timestamps written around work hold the GPU's clock in nanoseconds: in order, and apart by about the
+/// time the CPU waited for the work, which runs for tens of milliseconds.
+pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
+    let Ok(timestamps) = subject.make_timestamp_buffer(3) else {
+        return;
+    };
+    let words = filled(
+        &mut subject,
+        &word_bytes(&[1, SPIN_STEPS, 0, 0, 0, 0, 0, 0]),
+    );
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 0)
+        .expect("Metal answers encode timestamp");
+    spin(&mut subject, &command_buffer, &words);
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 1)
+        .expect("Metal answers encode timestamp");
+    subject
+        .encode_timestamp(&command_buffer, &timestamps, 2)
+        .expect("Metal answers encode timestamp");
+    let mut read = [0; 3];
+    assert_eq!(
+        subject.read_timestamps(&timestamps, 0, &mut read),
+        Err(wcontainers_metal::ReadTimestampsError::UsedByUncommittedWork)
+    );
+    let start = std::time::Instant::now();
+    finish(&mut subject, &command_buffer);
+    let waited = start.elapsed().as_nanos() as f64;
+    subject
+        .read_timestamps(&timestamps, 0, &mut read)
+        .expect("Metal answers read timestamps");
+    let [t0, t1, t2] = read;
+    eprintln!("timestamps: {t0} {t1} {t2}, {waited} ns waited");
+    assert!(
+        t0 != u64::MAX && t0 != 0 && t0 <= t1 && t1 <= t2,
+        "{t0} {t1} {t2}"
+    );
+    let span = (t1 - t0) as f64;
+    assert!(
+        span <= waited * 1.05 && span >= waited * 0.25,
+        "{span} ns of GPU work in {waited} ns"
+    );
+}
+
+/// Checks that timestamp buffers of no places or past the most, and timestamps and reads past the last place, are
+/// refused.
+pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
+    for count in [0, wcontainers_metal::MAX_TIMESTAMPS + 1, u32::MAX] {
+        assert_eq!(
+            subject.make_timestamp_buffer(count).err(),
+            Some(wcontainers_metal::MakeTimestampBufferError::Count)
+        );
+    }
+    let Ok(timestamps) = subject.make_timestamp_buffer(4) else {
+        return;
+    };
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    for index in [4, 5, u32::MAX] {
+        assert_eq!(
+            subject.encode_timestamp(&command_buffer, &timestamps, index),
+            Err(wcontainers_metal::EncodeTimestampError::OutOfRange)
+        );
+    }
+    for (first, count) in [(0, 5), (4, 1), (3, 2), (5, 0), (u32::MAX, 2), (1, 4)] {
+        let mut into = vec![0; count];
+        assert_eq!(
+            subject.read_timestamps(&timestamps, first, &mut into),
+            Err(wcontainers_metal::ReadTimestampsError::OutOfRange),
+            "a read of {count} from {first}"
+        );
+    }
+    let mut none = [0; 0];
+    subject
+        .read_timestamps(&timestamps, 4, &mut none)
+        .expect("Metal answers read timestamps");
+    subject
+        .commit(&command_buffer)
+        .expect("Metal answers commit");
+    assert_eq!(
+        subject.encode_timestamp(&command_buffer, &timestamps, 0),
+        Err(wcontainers_metal::EncodeTimestampError::Committed)
+    );
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -2578,6 +2707,16 @@ macro_rules! tests {
         #[test]
         fn has_a_name() {
             $crate::has_a_name($value);
+        }
+
+        #[test]
+        fn writes_the_gpu_clock_in_nanoseconds() {
+            $crate::writes_the_gpu_clock_in_nanoseconds($value);
+        }
+
+        #[test]
+        fn refuses_timestamps_outside_their_buffers() {
+            $crate::refuses_timestamps_outside_their_buffers($value);
         }
 
         #[test]

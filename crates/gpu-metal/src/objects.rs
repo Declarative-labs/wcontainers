@@ -133,6 +133,8 @@ pub struct QueryObj<M: Metal> {
     pub(crate) buffer: M::Buffer,
     /// Its queries count samples, not only whether any passed.
     pub(crate) counting: bool,
+    /// The places of a set of timestamps, whose `buffer` is unused.
+    pub(crate) timestamps: Option<M::TimestampBuffer>,
 }
 
 /// How the bytes of a read back become what the caller reads.
@@ -150,6 +152,8 @@ pub struct ReadbackObj<M: Metal> {
     pub(crate) buffer: M::Buffer,
     pub(crate) length: u64,
     pub(crate) layout: ReadLayout,
+    /// For a read of timestamps, their places and the first, read when the read finishes; `buffer` is unused.
+    pub(crate) timestamps: Option<(M::TimestampBuffer, u32)>,
 }
 
 /// A point in the GPU's work: the serial of a submitted command buffer.

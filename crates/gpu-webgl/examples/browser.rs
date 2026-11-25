@@ -174,6 +174,7 @@ suite!(
     a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
     an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
     indirect_draws_and_dispatches_read_their_arguments_when_they_run,
+    timestamps_between_passes_read_back_in_order,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,

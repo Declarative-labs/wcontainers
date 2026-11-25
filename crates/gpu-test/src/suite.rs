@@ -74,6 +74,7 @@ macro_rules! suite {
             a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
             every_vertex_format_reads_its_element,
             indirect_draws_and_dispatches_read_their_arguments_when_they_run,
+            timestamps_between_passes_read_back_in_order,
             present_shows_the_frame,
         );
     };

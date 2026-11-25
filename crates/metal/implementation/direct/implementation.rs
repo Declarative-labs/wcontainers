@@ -18,19 +18,21 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSRange, NSString, NSUInteger};
 use objc2_metal::{
-    MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder, MTLBlitOption, MTLBuffer,
-    MTLClearColor, MTLColorWriteMask, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder,
-    MTLCommandQueue, MTLCompareFunction, MTLCompileOptions, MTLComputeCommandEncoder,
-    MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLCullMode, MTLDepthClipMode,
-    MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLFunction, MTLGPUFamily,
-    MTLIndexType, MTLLanguageVersion, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
-    MTLPrimitiveTopologyClass, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResourceOptions, MTLSamplerAddressMode,
-    MTLSamplerBorderColor, MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter,
-    MTLSamplerState, MTLScissorRect, MTLSize, MTLStencilDescriptor, MTLStencilOperation,
-    MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureType,
-    MTLTextureUsage, MTLTriangleFillMode, MTLViewport, MTLVisibilityResultMode,
-    MTLVisibilityResultType, MTLWinding,
+    MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder, MTLBlitOption, MTLBlitPassDescriptor,
+    MTLBuffer, MTLClearColor, MTLColorWriteMask, MTLCommandBuffer, MTLCommandBufferStatus,
+    MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction, MTLCompileOptions,
+    MTLComputeCommandEncoder, MTLComputePipelineState, MTLCounterDontSample,
+    MTLCounterSampleBuffer, MTLCounterSampleBufferDescriptor, MTLCounterSamplingPoint,
+    MTLCounterSet, MTLCreateSystemDefaultDevice, MTLCullMode, MTLDepthClipMode,
+    MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLEvent, MTLFunction,
+    MTLGPUFamily, MTLIndexType, MTLLanguageVersion, MTLLibrary, MTLLoadAction, MTLOrigin,
+    MTLPixelFormat, MTLPrimitiveTopologyClass, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
+    MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerBorderColor, MTLSamplerDescriptor,
+    MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLScissorRect, MTLSize,
+    MTLStencilDescriptor, MTLStencilOperation, MTLStorageMode, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage, MTLTriangleFillMode, MTLViewport,
+    MTLVisibilityResultMode, MTLVisibilityResultType, MTLWinding,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -38,14 +40,15 @@ use wcontainers_metal::{
     BlendFactor, BlendOperation, BlitCommand, BlitOption, CommandBufferStatus, CommitError,
     CompareFunction, ComputeCommand, ConfigureLayerError, CullMode, DISPATCH_ARGUMENTS_BYTES,
     DRAW_ARGUMENTS_BYTES, DRAW_INDEXED_ARGUMENTS_BYTES, DepthClipMode, DepthStencilDescriptor,
-    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    INDIRECT_ARGUMENTS_ALIGNMENT, IndexType, LayerDescriptor, LoadAction, MAX_ANISOTROPY,
-    MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SIDE,
-    MAX_TEXTURE_SLOTS, MAX_VERTEX_STRIDE, MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError,
-    MakeComputePipelineStateError, MakeDepthStencilStateError, MakeFunctionError, MakeLayerError,
-    MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, MakeTextureViewError,
-    Metal, NextDrawableError, Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass,
-    PrimitiveType, ReadContentsError, RenderCommand, RenderPassDescriptor,
+    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError,
+    EncodeTimestampError, FunctionSource, INDIRECT_ARGUMENTS_ALIGNMENT, IndexType, LayerDescriptor,
+    LoadAction, MAX_ANISOTROPY, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS,
+    MAX_TEXTURE_SIDE, MAX_TEXTURE_SLOTS, MAX_TIMESTAMPS, MAX_VERTEX_STRIDE, MAX_VIEWPORTS,
+    MakeBufferError, MakeCommandBufferError, MakeComputePipelineStateError,
+    MakeDepthStencilStateError, MakeFunctionError, MakeLayerError, MakeRenderPipelineStateError,
+    MakeSamplerStateError, MakeTextureError, MakeTextureViewError, MakeTimestampBufferError, Metal,
+    NextDrawableError, Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass,
+    PrimitiveType, ReadContentsError, ReadTimestampsError, RenderCommand, RenderPassDescriptor,
     RenderPipelineDescriptor, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
     SamplerMinMagFilter, SamplerMipFilter, Size, StandaloneMetal, StencilDescriptor,
     StencilOperation, StoreAction, TextureDescriptor, TextureType, TextureViewDescriptor,
@@ -202,6 +205,11 @@ pub struct DirectMetal {
     in_flight: Vec<DirectCommandBuffer>,
     /// The pipeline that checks indirect arguments, made at the first indirect command.
     argument_check: Option<Retained<ProtocolObject<dyn MTLComputePipelineState>>>,
+    /// A word only the GPU reaches, which a timestamp's pass fills so that Metal does not skip the pass.
+    timestamp_word: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// The event a timestamp's pass waits on, signalled once the work before it ends, and its last value.
+    timestamp_event: Retained<ProtocolObject<dyn MTLEvent>>,
+    timestamp_value: u64,
 }
 
 /// The sample counts a texture or a pass may have, which the device is asked about.
@@ -374,6 +382,17 @@ struct LayerState {
     configured: Cell<Option<LayerDescriptor>>,
 }
 
+/// Places for timestamps, and how many.
+#[derive(Clone)]
+pub struct DirectTimestampBuffer(Rc<TimestampBufferState>);
+
+struct TimestampBufferState {
+    raw: Retained<ProtocolObject<dyn MTLCounterSampleBuffer>>,
+    count: u32,
+    /// The command buffers that write into it, which a read waits for.
+    users: RefCell<Vec<Weak<CommandBufferState>>>,
+}
+
 /// A drawable of a layer, its texture, and whether it was presented.
 #[derive(Clone)]
 pub struct DirectDrawable(Rc<DrawableState>);
@@ -404,7 +423,8 @@ opaque_debug!(
     DirectComputePipelineState,
     DirectCommandBuffer,
     DirectLayer,
-    DirectDrawable
+    DirectDrawable,
+    DirectTimestampBuffer
 );
 
 impl DeviceLimits {
@@ -444,6 +464,13 @@ impl StandaloneMetal for DirectMetal {
         let empty = device
             .newBufferWithLength_options(EMPTY_BUFFER_BYTES, MTLResourceOptions::StorageModeShared)
             .expect("a buffer");
+        let timestamp_word = device
+            .newBufferWithLength_options(
+                ns_uinteger(BUFFER_COPY_GRANULE),
+                MTLResourceOptions::StorageModePrivate,
+            )
+            .expect("a buffer");
+        let timestamp_event = device.newEvent().expect("an event");
         DirectMetal {
             device,
             queue,
@@ -451,6 +478,9 @@ impl StandaloneMetal for DirectMetal {
             limits,
             in_flight: Vec::new(),
             argument_check: None,
+            timestamp_word,
+            timestamp_event,
+            timestamp_value: u64::MIN,
         }
     }
 }
@@ -458,29 +488,12 @@ impl StandaloneMetal for DirectMetal {
 impl DirectBuffer {
     /// Waits for the committed command buffers that use the buffer; refuses when one is not committed.
     fn settle(&self) -> Result<(), ()> {
-        let mut users = self.0.users.borrow_mut();
-        let live: Vec<Rc<CommandBufferState>> = users.iter().filter_map(Weak::upgrade).collect();
-        if live.iter().any(|user| !user.committed.get()) {
-            return Err(());
-        }
-        for user in live {
-            user.raw.waitUntilCompleted();
-        }
-        users.clear();
-        Ok(())
+        settle_users(&self.0.users)
     }
 
     /// Notes that a command buffer uses the buffer.
     fn used_by(&self, command_buffer: &DirectCommandBuffer) {
-        let mut users = self.0.users.borrow_mut();
-        users.retain(|user| {
-            user.upgrade()
-                .is_some_and(|user| user.raw.status() != MTLCommandBufferStatus::Completed)
-        });
-        let weak = Rc::downgrade(&command_buffer.0);
-        if !users.iter().any(|user| user.ptr_eq(&weak)) {
-            users.push(weak);
-        }
+        add_user(&self.0.users, command_buffer);
     }
 
     /// Returns whether `length` bytes at `offset` lie inside the buffer.
@@ -502,6 +515,7 @@ impl Metal for DirectMetal {
     type CommandBuffer = DirectCommandBuffer;
     type Layer = DirectLayer;
     type Drawable = DirectDrawable;
+    type TimestampBuffer = DirectTimestampBuffer;
 
     fn name(&self) -> String {
         self.device.name().to_string()
@@ -1685,7 +1699,196 @@ impl Metal for DirectMetal {
         command_buffer.0.raw.presentDrawable(&shown);
         Ok(())
     }
+
+    fn make_timestamp_buffer(
+        &mut self,
+        sample_count: u32,
+    ) -> Result<DirectTimestampBuffer, MakeTimestampBufferError> {
+        if refuses!(
+            "timestamps: no places or past the most",
+            sample_count == 0 || sample_count > MAX_TIMESTAMPS
+        ) {
+            return Err(MakeTimestampBufferError::Count);
+        }
+        if !self
+            .device
+            .supportsCounterSampling(MTLCounterSamplingPoint::AtStageBoundary)
+        {
+            return Err(MakeTimestampBufferError::Unsupported);
+        }
+        let name = NSString::from_str(TIMESTAMP_COUNTER_SET);
+        let set: Option<Retained<ProtocolObject<dyn MTLCounterSet>>> = self
+            .device
+            .counterSets()
+            .and_then(|sets| sets.iter().find(|set| *set.name() == *name));
+        let set = set.ok_or(MakeTimestampBufferError::Unsupported)?;
+        let descriptor = MTLCounterSampleBufferDescriptor::new();
+        descriptor.setCounterSet(Some(&set));
+        descriptor.setStorageMode(MTLStorageMode::Shared);
+        #[expect(unsafe_code, reason = "the place count of a timestamp buffer")]
+        // SAFETY: one to `MAX_TIMESTAMPS` places, checked above.
+        unsafe {
+            descriptor.setSampleCount(sample_count as NSUInteger)
+        };
+        let raw = self
+            .device
+            .newCounterSampleBufferWithDescriptor_error(&descriptor)
+            .map_err(|_| MakeTimestampBufferError::Unsupported)?;
+        Ok(DirectTimestampBuffer(Rc::new(TimestampBufferState {
+            raw,
+            count: sample_count,
+            users: RefCell::new(Vec::new()),
+        })))
+    }
+
+    fn encode_timestamp(
+        &mut self,
+        command_buffer: &DirectCommandBuffer,
+        timestamps: &DirectTimestampBuffer,
+        index: u32,
+    ) -> Result<(), EncodeTimestampError> {
+        if refuses!(
+            "timestamp: a committed command buffer",
+            command_buffer.0.committed.get()
+        ) {
+            return Err(EncodeTimestampError::Committed);
+        }
+        if refuses!(
+            "timestamp: a place past the last",
+            index >= timestamps.0.count
+        ) {
+            return Err(EncodeTimestampError::OutOfRange);
+        }
+        // The pass starts once all the work encoded before it has ended: Metal runs passes that share no resource side
+        // by side (MEASURED: a blit pass's timestamp 8 us after the one before, around 178 ms of compute between).
+        let value = self
+            .timestamp_value
+            .checked_add(1)
+            .ok_or(EncodeTimestampError::Refused)?;
+        self.timestamp_value = value;
+        let raw = &command_buffer.0.raw;
+        raw.encodeSignalEvent_value(&self.timestamp_event, value);
+        raw.encodeWaitForEvent_value(&self.timestamp_event, value);
+        let descriptor = MTLBlitPassDescriptor::new();
+        #[expect(
+            unsafe_code,
+            reason = "the read of a blit pass's first timestamp attachment"
+        )]
+        // SAFETY: index 0 is below the four attachments every blit pass has.
+        let attachment = unsafe {
+            descriptor
+                .sampleBufferAttachments()
+                .objectAtIndexedSubscript(NSUInteger::MIN)
+        };
+        attachment.setSampleBuffer(Some(&timestamps.0.raw));
+        let place = index as NSUInteger;
+        #[expect(unsafe_code, reason = "no timestamp where a blit pass begins")]
+        // SAFETY: Metal's value for no place.
+        unsafe {
+            attachment.setStartOfEncoderSampleIndex(MTLCounterDontSample)
+        };
+        #[expect(
+            unsafe_code,
+            reason = "the place a blit pass writes its timestamp into"
+        )]
+        // SAFETY: the place is below the buffer's count, checked above.
+        unsafe {
+            attachment.setEndOfEncoderSampleIndex(place)
+        };
+        // Released at once, as in `encode_render_commands`. Metal may write no timestamp of a blit pass that does nothing
+        // (wgpu-hal 30.0.2, src/metal/command.rs, `enter_blit`), so the pass fills direct's own word. A compute pass
+        // instead, one thread writing the word, failed its command buffer as out of memory beside other compute passes
+        // (MEASURED).
+        let encoder = autoreleasepool(|_| {
+            command_buffer
+                .0
+                .raw
+                .blitCommandEncoderWithDescriptor(&descriptor)
+        })
+        .ok_or(EncodeTimestampError::Refused)?;
+        encoder.fillBuffer_range_value(
+            &self.timestamp_word,
+            NSRange::new(NSUInteger::MIN, ns_uinteger(BUFFER_COPY_GRANULE)),
+            u8::MIN,
+        );
+        encoder.endEncoding();
+        add_user(&timestamps.0.users, command_buffer);
+        Ok(())
+    }
+
+    fn read_timestamps(
+        &mut self,
+        timestamps: &DirectTimestampBuffer,
+        first: u32,
+        into: &mut [u64],
+    ) -> Result<(), ReadTimestampsError> {
+        let count = u32::try_from(into.len()).ok();
+        if refuses!(
+            "read timestamps: places past the last",
+            count
+                .and_then(|count| first.checked_add(count))
+                .is_none_or(|end| end > timestamps.0.count)
+        ) {
+            return Err(ReadTimestampsError::OutOfRange);
+        }
+        if refuses!(
+            "read timestamps: uncommitted work writes them",
+            settle_users(&timestamps.0.users).is_err()
+        ) {
+            return Err(ReadTimestampsError::UsedByUncommittedWork);
+        }
+        if into.is_empty() {
+            return Ok(());
+        }
+        let places = NSRange::new(first as NSUInteger, into.len());
+        // Metal copies the places' values out on the CPU once the work that wrote them completed (MEASURED: a copy into a
+        // buffer by the GPU in the same command buffer reads zeros, and one at a pass's end fails it as out of memory).
+        #[expect(unsafe_code, reason = "the copy of timestamps out of their buffer")]
+        // SAFETY: the places lie inside the buffer, checked above, and no command buffer that writes them still runs.
+        let data = unsafe { timestamps.0.raw.resolveCounterRange(places) }
+            .ok_or(ReadTimestampsError::Refused)?;
+        let bytes = data.to_vec();
+        if bytes.len() != into.len().saturating_mul(size_of::<u64>()) {
+            return Err(ReadTimestampsError::Refused);
+        }
+        for (value, word) in into.iter_mut().zip(bytes.as_chunks::<8>().0) {
+            *value = u64::from_le_bytes(*word);
+        }
+        Ok(())
+    }
 }
+
+/// Notes that a command buffer uses what `users` lists the command buffers of, dropping those completed.
+fn add_user(users: &RefCell<Vec<Weak<CommandBufferState>>>, command_buffer: &DirectCommandBuffer) {
+    let mut users = users.borrow_mut();
+    users.retain(|user| {
+        user.upgrade()
+            .is_some_and(|user| user.raw.status() != MTLCommandBufferStatus::Completed)
+    });
+    let weak = Rc::downgrade(&command_buffer.0);
+    if !users.iter().any(|user| user.ptr_eq(&weak)) {
+        users.push(weak);
+    }
+}
+
+/// Waits for the committed command buffers of `users`; refuses when one is not committed.
+fn settle_users(users: &RefCell<Vec<Weak<CommandBufferState>>>) -> Result<(), ()> {
+    let mut users = users.borrow_mut();
+    let live: Vec<Rc<CommandBufferState>> = users.iter().filter_map(Weak::upgrade).collect();
+    if live.iter().any(|user| !user.committed.get()) {
+        return Err(());
+    }
+    for user in live {
+        user.raw.waitUntilCompleted();
+    }
+    users.clear();
+    Ok(())
+}
+
+/// The name of the counter set of the GPU's clock.
+///
+/// https://developer.apple.com/documentation/metal/mtlcommoncountersettimestamp
+const TIMESTAMP_COUNTER_SET: &str = "timestamp";
 
 /// The most bytes one command copies into a command buffer for a slot.
 ///
