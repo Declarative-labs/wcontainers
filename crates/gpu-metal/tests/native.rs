@@ -820,3 +820,134 @@ fn occlusion_counts_every_sample_across_a_split_pass() {
     assert_eq!(read, expected);
     assert_eq!(resolved, expected);
 }
+
+/// Draws red, built ahead by `prepare` or not, and returns the texels and the pipelines the draw had to build.
+fn prepared_scene(prepare: bool) -> (Vec<u8>, u64) {
+    let mut b = device();
+    let (drawn, drawn_view) = target(&mut b, Format::Rgba8Unorm, SIDE);
+    let red = program(&mut b, "covering", "red");
+    let states = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    if prepare {
+        b.prepare(&wcontainers_gpu::PrepareDesc {
+            program: &red,
+            blend: &states.blend,
+            depth_stencil: &states.depth_stencil,
+            raster: &states.raster,
+            vertex_layout: &states.layout,
+            targets: wcontainers_gpu::TargetLayout {
+                colors: {
+                    let mut colors = [None; MAX_COLOR_TARGETS];
+                    colors[0] = Some(Format::Rgba8Unorm);
+                    colors
+                },
+                depth_stencil: None,
+                samples: 1,
+            },
+            topology: Topology::TriangleList,
+            layouts: Default::default(),
+        });
+    }
+    let before = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
+    b.begin_pass(&color_pass(&drawn_view, [0; 4]));
+    draw(&mut b, &red, &states, None, SIDE, 3, [0; 2], [0.0; 4]);
+    b.end_pass();
+    let after = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
+    (
+        read_texture(&mut b, &drawn, SIDE, RGBA8_BYTES),
+        after - before,
+    )
+}
+
+#[test]
+fn prepare_builds_the_pipeline_so_the_draw_finds_it() {
+    let (prepared, misses) = prepared_scene(true);
+    let (built_at_draw, misses_at_draw) = prepared_scene(false);
+    assert_eq!(prepared, built_at_draw);
+    assert_eq!((misses, misses_at_draw), (0, 1));
+}
+
+/// Fills every level of a texture from level zero, by Metal's blit or by the default's draws, and returns every level.
+fn mips_scene(native: bool, width: u32, height: u32, levels: u32) -> Vec<u8> {
+    let mut b = device();
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8Unorm,
+        width,
+        height,
+        depth_or_layers: 1,
+        mip_levels: levels,
+        samples: 1,
+        usage: TextureUsage::RENDER
+            | TextureUsage::SAMPLE
+            | TextureUsage::COPY_SRC
+            | TextureUsage::COPY_DST,
+        cube: false,
+        reinterpret: false,
+    };
+    let texture = b.create_texture(&desc).expect("create_texture");
+    let texels: Vec<u8> = (0..width * height * RGBA8_BYTES as u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    b.write_texture(
+        &whole(&texture),
+        Extent {
+            width,
+            height,
+            depth_or_layers: 1,
+        },
+        &texels,
+        width * RGBA8_BYTES as u32,
+        height,
+        WriteMode::Ordered,
+    );
+    if native {
+        b.generate_mips(&texture, &desc, desc.format, 1..levels, 0..1)
+    } else {
+        wcontainers_gpu::generate_mips_by_draws(
+            &mut b,
+            &texture,
+            &desc,
+            desc.format,
+            1..levels,
+            0..1,
+        )
+    }
+    .expect("generate_mips");
+    b.submit();
+    let mut all = Vec::new();
+    for mip in 1..levels {
+        let (w, h) = ((width >> mip).max(1), (height >> mip).max(1));
+        let mut out = vec![0; (w * h) as usize * RGBA8_BYTES];
+        b.read_back_now(
+            &ReadSource::Texture {
+                region: TextureRegion {
+                    mip,
+                    ..whole(&texture)
+                },
+                extent: Extent {
+                    width: w,
+                    height: h,
+                    depth_or_layers: 1,
+                },
+            },
+            &mut out,
+        )
+        .expect("read_back_now");
+        all.extend(out);
+    }
+    all
+}
+
+#[test]
+fn mipmaps_by_metal_match_the_default() {
+    for (width, height, levels) in [(8, 8, 4), (6, 5, 3), (2, 2, 2)] {
+        let native = mips_scene(true, width, height, levels);
+        let drawn = mips_scene(false, width, height, levels);
+        assert!(native.iter().any(|&byte| byte != 0), "no level was filled");
+        let worst = native.iter().zip(&drawn).map(|(n, d)| n.abs_diff(*d)).max();
+        assert!(
+            worst <= Some(1),
+            "{width}x{height}: Metal's mipmaps differ from the default's by {worst:?}"
+        );
+    }
+}

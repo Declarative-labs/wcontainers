@@ -2,8 +2,8 @@
 
 use wcontainers_gpu::{
     AspectOps, DrawCall, DrawRange, EmptyPass, FORMAT_FACTS, Format, FormatKind, Gpu, IndexFormat,
-    LoadOp, MAX_COLOR_TARGETS, PassDesc, ScissorRect, ShaderStage, StepMode, StoreOp, TargetLayout,
-    TextureRegion, TextureViewDesc, Topology, ViewDimension,
+    LoadOp, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, ScissorRect, ShaderStage, StepMode, StoreOp,
+    TargetLayout, TextureRegion, TextureViewDesc, Topology, ViewDimension,
 };
 use wcontainers_metal::{
     Blending, BlitCommand, ColorWriteMask, DepthClipMode, FunctionSource, IndexType, LoadAction,
@@ -18,6 +18,15 @@ use crate::objects::{QueryObj, SetResource, ShaderObj, Shared, SlotKind, ViewObj
 use crate::{
     FIRST_STREAM_SLOT, IMMEDIATES_SLOT, MetalGpu, ProgramObj, QUERY_BYTES, SIZES_SLOT, convert,
 };
+
+/// The blocks, targets and primitive class one render pipeline is built for.
+struct Combination<'a> {
+    program: &'a Shared<ProgramObj>,
+    blend: &'a Shared<crate::BlendBlock>,
+    layout: &'a Shared<crate::VertexLayoutBlock>,
+    targets: TargetLayout,
+    class: PrimitiveTopologyClass,
+}
 
 /// What keys a render pipeline: the program, vertex layout and blend blocks, the targets, and the primitive class.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -394,33 +403,57 @@ impl<M: Metal> MetalGpu<M> {
             })
     }
 
-    /// Returns the render pipeline of a draw in the open pass, made at its first use.
+    /// Builds the render pipeline of a state combination ahead of its first draw.
+    pub(crate) fn prepare_pipeline(&mut self, desc: &PrepareDesc<'_, Self>) {
+        let Some((_, class)) = primitive(desc.topology) else {
+            return;
+        };
+        let combination = Combination {
+            program: desc.program,
+            blend: desc.blend,
+            layout: desc.vertex_layout,
+            targets: desc.targets,
+            class,
+        };
+        if let Err(why) = self.pipeline(&combination, false) {
+            eprintln!("metal: a pipeline not prepared: {why}");
+        }
+    }
+
+    /// Returns the render pipeline of a combination, made at its first use, a miss counted where a draw needs it.
     fn pipeline(
         &mut self,
-        call: &DrawCall<'_, Self>,
-        layout: &Shared<crate::VertexLayoutBlock>,
-        targets: TargetLayout,
-        class: PrimitiveTopologyClass,
+        combination: &Combination<'_>,
+        draw: bool,
     ) -> Result<M::RenderPipelineState, &'static str> {
+        let Combination {
+            program,
+            blend,
+            layout,
+            targets,
+            class,
+        } = *combination;
         let ProgramObj::Render {
             id,
             vertex,
             fragment,
-        } = &*call.program.0
+        } = &*program.0
         else {
             return Err("a draw of a compute program");
         };
         let key = PipelineKey {
             program: *id,
             vertex_layout: layout.id,
-            blend: call.blend.id,
+            blend: blend.id,
             targets,
             class: class as u8,
         };
         if let Some(pipeline) = self.render_pipelines.get(&key) {
             return Ok(pipeline.clone());
         }
-        self.record_slow_path(wcontainers_gpu::SlowPath::PipelineMiss);
+        if draw {
+            self.record_slow_path(wcontainers_gpu::SlowPath::PipelineMiss);
+        }
         let points = class == PrimitiveTopologyClass::Point;
         let vertex_key = (vertex.id, layout.id, points);
         let vertex_function = match self.vertex_functions.get(&vertex_key) {
@@ -443,7 +476,7 @@ impl<M: Metal> MetalGpu<M> {
                 }
             }),
         };
-        let blend = &call.blend.desc;
+        let blend = &blend.desc;
         let mut color_attachments = [None; MAX_COLOR_ATTACHMENTS];
         for (index, format) in targets.colors.iter().enumerate() {
             let Some(format) = format else {
@@ -567,7 +600,14 @@ impl<M: Metal> MetalGpu<M> {
         let layout = widened
             .as_ref()
             .map_or_else(|| call.vertex_layout.clone(), |w| w.layout.clone());
-        let pipeline = self.pipeline(call, &layout, targets, class)?;
+        let combination = Combination {
+            program: call.program,
+            blend: call.blend,
+            layout: &layout,
+            targets,
+            class,
+        };
+        let pipeline = self.pipeline(&combination, true)?;
         let depth_stencil = self
             .depth_stencil_states
             .get(&call.depth_stencil.id)

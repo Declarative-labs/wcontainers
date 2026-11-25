@@ -1438,6 +1438,34 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         Ok(())
     }
 
+    fn generate_mips(
+        &mut self,
+        texture: &Self::Texture,
+        desc: &TextureDesc,
+        values: Format,
+        mips: std::ops::Range<u32>,
+        layers: std::ops::Range<u32>,
+    ) -> Result<(), GpuError> {
+        // Metal fills every level of every layer at once, in the texture's own format.
+        let whole = mips == (1..desc.mip_levels) && layers == (0..desc.depth_or_layers);
+        let filtered = self.caps.formats.uses[values as usize]
+            .contains(wcontainers_gpu::FormatUse::RENDER | wcontainers_gpu::FormatUse::FILTER);
+        if !whole || values != desc.format || !filtered || desc.samples > 1 {
+            return wcontainers_gpu::generate_mips_by_draws(
+                self, texture, desc, values, mips, layers,
+            );
+        }
+        self.queue_blit(BlitCommand::GenerateMipmaps {
+            texture: texture.raw.clone(),
+        });
+        Ok(())
+    }
+
+    fn prepare(&mut self, desc: &wcontainers_gpu::PrepareDesc<'_, Self>) {
+        // Metal builds the pipeline now, so the first draw finds it.
+        self.prepare_pipeline(desc);
+    }
+
     fn read_back_now(
         &mut self,
         src: &ReadSource<'_, Self>,
