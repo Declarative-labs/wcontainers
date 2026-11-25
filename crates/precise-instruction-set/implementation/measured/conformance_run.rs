@@ -24,7 +24,7 @@ fn recording() -> Recording {
     }
 }
 
-/// Each instruction with the behavior the recording shows on every state the critical value product makes.
+/// Measures every instruction on the recording with the critical value product.
 fn measure_recording() -> Vec<(Instruction<Infallible>, PreciseInstruction<Infallible>)> {
     match recording().measure_instructions(&CriticalValueProduct::new(Arm64InputDomain)) {
         Ok(measurements) => measurements,

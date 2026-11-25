@@ -74,15 +74,17 @@ pub fn simulation_is_deterministic<Architecture, S>(
     }
 }
 
-/// Accepts every kind of mutation: value assignments empty, borrowed, and owned running past the last address, and
-/// permission assignments empty and over every address a program can use.
+/// Checks that the sink takes every kind of mutation.
+///
+/// Value assignments empty, borrowed, and owned running past the last address; permission assignments empty and over
+/// every address a program can use.
 pub fn accepts_every_kind_of_mutation<Architecture, Sink>(mut sink: Sink)
 where
     Architecture: ProcessorArchitecture,
     Sink: MemorySink<Architecture>,
 {
     let bytes = [u8::MAX; size_of::<u64>()];
-    let mutations: [MemoryDelta<'_, Architecture>; 5] = [
+    let mutations = [
         MemoryDelta::ValueAssignment {
             start: u64::MIN,
             bytes: Cow::Borrowed(&[]),
@@ -109,8 +111,7 @@ where
     }
 }
 
-/// Runs each suite function above as its own test: those of an architecture on it and on the cases, or that of a
-/// memory sink on the sink, each made anew for every test.
+/// Runs each suite function above as its own test on an architecture's cases or on a memory sink, each made anew.
 #[macro_export]
 macro_rules! tests {
     ($architecture:ty, $cases:expr) => {

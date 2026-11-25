@@ -94,8 +94,9 @@ const WINDOW_BYTES: u64 = 16 * PAGE_SIZE;
 const _: () = assert!(HANDLER.is_multiple_of(VECTOR_TABLE_BYTES));
 const _: () = assert!(HANDLER_ENTRY_OFFSET == VECTORS * VECTOR_BYTES);
 
-/// The most changes the memory the guest holds and the next state's may have together for `MemoryDelta::diff_snapshots`
-/// to pair them, whose time grows with the product of the two lengths; longer ones are written whole into emptied
+/// The most changes held and next memory may have together to be paired by `MemoryDelta::diff_snapshots`.
+///
+/// Pairing takes time that grows with the product of the two lengths; longer ones are written whole into emptied
 /// resident pages.
 const MOST_CHANGES_PAIRED: usize = 64;
 
@@ -1201,8 +1202,7 @@ impl MemorySink<Arm64<User>> for ResidentWriter<'_> {
     }
 }
 
-/// The hook of a run whose memory the guest keeps: passes each change on to the caller's hook and, while what the
-/// guest holds is known, adds it there too.
+/// The hook of a run whose memory the guest keeps, which passes each change on and records it as held.
 struct HeldRecorder<'run, Hook> {
     held: &'run mut Option<Vec<MemoryDelta<'static, Arm64<User>>>>,
     mutation_hook: &'run mut Hook,

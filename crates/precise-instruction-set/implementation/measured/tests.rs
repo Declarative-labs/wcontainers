@@ -176,7 +176,7 @@ impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {
     }
 }
 
-/// Two generators that each tell the behaviors apart measure one recording as the same set.
+/// Checks that two generators that each tell the behaviors apart measure one recording as the same set.
 #[test]
 fn either_generator_measures_the_recording_as_the_same_set() {
     let first = measure_set(

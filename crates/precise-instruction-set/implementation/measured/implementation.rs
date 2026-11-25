@@ -1,5 +1,4 @@
-//! The precise instruction set of a chip as measurements give it: the behavior measured for each instruction, as a
-//! source measured it or as a cache of such measurements holds it.
+//! A chip's precise instruction set as measurements give it, measured just now or read from a cache.
 
 #![no_std]
 

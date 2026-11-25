@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
-/// The set built from measurements gives each measured instruction the behavior measured for it.
+/// Checks that the set built from measurements gives each measured instruction the behavior measured for it.
 pub fn gives_each_instruction_its_measured_behavior<Architecture, Set>(
     measurements: Vec<(Architecture::Instruction, Architecture::PreciseInstruction)>,
 ) where
@@ -21,7 +21,7 @@ pub fn gives_each_instruction_its_measured_behavior<Architecture, Set>(
     }
 }
 
-/// Measurements given in any order build the same set.
+/// Checks that measurements given in any order build the same set.
 pub fn builds_one_set_from_measurements_in_any_order<Architecture, Set>(
     measurements: Vec<(Architecture::Instruction, Architecture::PreciseInstruction)>,
 ) where
@@ -39,7 +39,7 @@ pub fn builds_one_set_from_measurements_in_any_order<Architecture, Set>(
     }
 }
 
-/// The set built from measurements turns every recorded state into the state the chip gave after.
+/// Checks that the set built from measurements turns every recorded state into the state the chip gave after.
 ///
 /// The recordings are triples of an instruction, a state before and the chip's state after; they must cover every
 /// listed instruction, so that no behavior goes unchecked.
