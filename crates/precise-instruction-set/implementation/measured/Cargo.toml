@@ -15,6 +15,16 @@ path = "implementation.rs"
 name = "conformance"
 path = "conformance_run.rs"
 
+# DEFAULT BEHAVIORS: every modeled instruction measured on this host's chip, timed
+[[example]]
+name = "default_behaviors"
+path = "default_behaviors.rs"
+
+# STATE COUNTS: the full product and the cut of each class, and a hash of every generated state
+[[example]]
+name = "state_counts"
+path = "state_counts.rs"
+
 [dependencies]
 wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
