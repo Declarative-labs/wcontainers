@@ -9,6 +9,10 @@ path = "interface.rs"
 [dependencies]
 wcontainers-distinguishing-state-generator = { path = "../distinguishing-state-generator" }
 wcontainers-processor-architecture = { path = "../processor-architecture" }
+vstd.workspace = true
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

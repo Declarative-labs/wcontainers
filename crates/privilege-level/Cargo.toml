@@ -6,5 +6,11 @@ edition = "2024"
 [lib]
 path = "interface.rs"
 
+[dependencies]
+vstd.workspace = true
+
+[package.metadata.verus]
+verify = true
+
 [lints]
 workspace = true
