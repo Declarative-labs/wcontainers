@@ -397,10 +397,12 @@ pub fn list_operand_types(form: &IntegerForm) -> Vec<OperandType> {
         }
     }
     // The data register is the high half of a dividend, for which fewer values do; CMPXCHG's accumulator is equal
-    // to its destination or not.
+    // to its destination or not; an 8-bit division's dividend is AX, whose quotient's edges are its own.
+    let divides_bytes = matches!(form.operation, Operation::DivideWide { .. }) && widths.first() == Some(&1);
     for &number in form.operation.list_implicit_reads() {
         types.push(match (form.operation, number) {
             (Operation::CompareExchange, _) => OperandType::Comparison,
+            (_, 0) if divides_bytes => OperandType::RegisterValue(Role::Implicit(number), ValueSet::ByteDividend),
             (_, 0) => OperandType::RegisterValue(Role::Implicit(number), ValueSet::Arithmetic),
             _ => OperandType::RegisterValue(Role::Implicit(number), ValueSet::Few),
         });

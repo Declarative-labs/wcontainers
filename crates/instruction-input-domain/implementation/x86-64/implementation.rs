@@ -62,6 +62,8 @@ const DATA_PAGES_BYTES: usize = 2 * PAGE_BYTES as usize;
 const NIBBLE_EDGE: u64 = 1 << 4;
 /// What a register holds above the width a narrower form reads of it.
 const ABOVE_LOW_HALF: u64 = 0xA5A5_A5A5_0000_0000;
+/// RAX's bits above AX when AX is an 8-bit division's dividend.
+const BYTE_DIVIDEND_UPPER: u64 = 0xA5A5_A5A5_A5A5_0000;
 
 const GENERAL_64: [Register; 16] = [
     Register::RAX, Register::RCX, Register::RDX, Register::RBX, Register::RSP, Register::RBP,
@@ -188,6 +190,9 @@ pub enum ValueSet {
     Distinct,
     /// A bit offset: inside the operand, at each edge of it and past them both ways, and as far as it reaches.
     BitOffset,
+    /// AX as an 8-bit division's dividend: every edge of a 16-, 32- and 64-bit sum, and the dividends whose quotient
+    /// by 1 or by -1 is the least or the greatest signed byte, or one past it.
+    ByteDividend,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -335,6 +340,12 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                         .to_vec(),
                     ValueSet::Few => bits(&[0, 1, 0x8000_0000, u64::MAX]),
                     ValueSet::BitOffset => bits(&[0, 1, 15, 16, 31, 32, 63, 64, u64::MAX, -64i64 as u64, i64::MAX as u64]),
+                    ValueSet::ByteDividend => {
+                        let mut values = self.generate_critical_values(OperandType::MemoryValue(ValueSet::Arithmetic)).collect::<Vec<_>>();
+                        // -128, 128, -129 and 127 in AX, above bits a division of bytes keeps.
+                        values.extend(bits(&[0xFF80, 0x0080, 0xFF7F, 0x007F].map(|dividend| BYTE_DIVIDEND_UPPER | dividend)));
+                        values
+                    }
                     _ => bits(&[0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210]),
                 }
             }
