@@ -277,6 +277,9 @@ impl FloatOperation {
                 if operand.class == Class::Zero { operand.bits & precision.to_sign_bit() } else { operand.bits }
             };
             if first.is_nan() || second.is_nan() {
+                if is_active(Bug::MinimumDoubleNanGivesDestination) && self == Self::Minimum && !single {
+                    return done(as_read(first), INVALID);
+                }
                 if is_active(Bug::MaximumDoubleQuietNanNoInvalid) && self == Self::Maximum && !single && !signaling {
                     return done(as_read(second), 0);
                 }
@@ -367,6 +370,9 @@ impl FloatOperation {
             Self::Divide => {
                 let negative = first.negative != second.negative;
                 match (first.class, second.class) {
+                    (Class::Zero, Class::Zero) if is_active(Bug::DivideDoubleZeroByZeroReportsDivideByZero) && !single => {
+                        return done(default_nan, DIVIDE_BY_ZERO);
+                    }
                     (Class::Infinity, Class::Infinity) | (Class::Zero, Class::Zero) => return invalid,
                     (Class::Infinity, _) => return done(infinity(negative), denormal),
                     (_, Class::Infinity) => return done(sign_of(negative), denormal),
@@ -426,7 +432,10 @@ impl FloatOperation {
                 unreachable!("each lane is computed as an addition or a subtraction")
             }
         };
-        let (bits, after) = round(exact, precision, rounding, mxcsr);
+        let (bits, mut after) = round(exact, precision, rounding, mxcsr);
+        if is_active(Bug::SquareRootDoubleNeverInexact) && self == Self::SquareRoot && !single {
+            after &= !INEXACT;
+        }
         LaneOutcome { bits, before, after }
     }
 }
@@ -453,7 +462,8 @@ fn convert(conversion: Conversion, value: u64, precision: Precision, mxcsr: u32)
                 return done(0, 0);
             }
             let exact = Exact { negative: integer < 0, significand: u128::from(integer.unsigned_abs()), exponent: 0, sticky: false };
-            let (bits, after) = round(exact, precision, rounding, mxcsr);
+            let nearest = is_active(Bug::IntegerToSingleRoundsToNearest) && precision == Precision::Single;
+            let (bits, after) = round(exact, precision, if nearest { Rounding::Nearest } else { rounding }, mxcsr);
             LaneOutcome { bits, before: 0, after }
         }
         Conversion::SingleToDouble | Conversion::DoubleToSingle => {
@@ -473,12 +483,16 @@ fn convert(conversion: Conversion, value: u64, precision: Precision, mxcsr: u32)
                     } else {
                         fraction >> (from.to_significand_bits() - to.to_significand_bits())
                     };
-                    done(sign | to.to_infinity() | moved | to.to_quiet_bit(), if signaling { INVALID } else { 0 })
+                    let kept = is_active(Bug::SingleToDoubleKeepsSignaling) && from == Precision::Single;
+                    let quiet = if kept { 0 } else { to.to_quiet_bit() };
+                    done(sign | to.to_infinity() | moved | quiet, if signaling { INVALID } else { 0 })
                 }
                 Class::Finite { significand, exponent, denormal } => {
                     let exact = Exact { negative: operand.negative, significand, exponent, sticky: false };
-                    let (bits, after) = round(exact, to, rounding, mxcsr);
-                    LaneOutcome { bits, before: if denormal { DENORMAL } else { 0 }, after }
+                    let nearest = is_active(Bug::DoubleToSingleRoundsToNearest) && from == Precision::Double;
+                    let (bits, after) = round(exact, to, if nearest { Rounding::Nearest } else { rounding }, mxcsr);
+                    let unflagged = is_active(Bug::SingleToDoubleDenormalUnflagged) && from == Precision::Single;
+                    LaneOutcome { bits, before: if denormal && !unflagged { DENORMAL } else { 0 }, after }
                 }
             }
         }
@@ -490,7 +504,13 @@ fn convert(conversion: Conversion, value: u64, precision: Precision, mxcsr: u32)
                     _ => done(INTEGER_INDEFINITE, INVALID),
                 };
             };
-            let mode = if truncate && !is_active(Bug::TruncatingConversionRounds) { Rounding::TowardZero } else { rounding };
+            let mode = if (truncate && !is_active(Bug::TruncatingConversionRounds))
+                || (is_active(Bug::ConversionToIntegerTruncates) && precision == Precision::Single)
+            {
+                Rounding::TowardZero
+            } else {
+                rounding
+            };
             let (magnitude, inexact) = round_to_integer(significand, exponent, mode, operand.negative);
             let limit = if operand.negative { 1u128 << 31 } else { (1 << 31) - 1 };
             if magnitude > limit {
@@ -544,14 +564,18 @@ fn compare(
         FloatOperation::Compare => SIGNALING_PREDICATES.contains(&predicate),
         _ => is_active(Bug::UnorderedCompareSignalsQuiet),
     };
+    let unflagged = is_active(Bug::UnorderedCompareDoubleSignalingNoInvalid)
+        && operation == FloatOperation::OrderedCompare { signaling: false }
+        && precision == Precision::Double;
     let before = if unordered {
-        if signaling || signals { INVALID } else { 0 }
+        if (signaling && !unflagged) || signals { INVALID } else { 0 }
     } else {
         denormal
     };
     let bits = match operation {
         FloatOperation::OrderedCompare { .. } => match (unordered, less, equal) {
             (true, _, _) if is_active(Bug::OrderedCompareUnorderedWithoutParity) => ORDER_FLAGS & !(1 << 2),
+            (true, _, _) if is_active(Bug::OrderedCompareDoubleNanClearsZero) && precision == Precision::Double => ORDER_FLAGS & !(1 << 6),
             (true, _, _) => ORDER_FLAGS,
             (_, true, _) => 1,
             (_, _, true) => 1 << 6,
@@ -561,6 +585,7 @@ fn compare(
             let holds = match predicate {
                 0 => equal,
                 1 => less,
+                2 if is_active(Bug::CompareLessOrEqualExcludesEqual) && precision == Precision::Double => less,
                 2 => less || equal,
                 3 => unordered,
                 4 => !equal,
@@ -761,7 +786,7 @@ fn round(exact: Exact, precision: Precision, rounding: Rounding, mxcsr: u32) -> 
             flags = UNDERFLOW | unbounded_inexact;
         } else if mxcsr & FLUSH_TO_ZERO != 0 && !is_active(Bug::FlushToZeroIgnored) {
             return (sign, UNDERFLOW | INEXACT);
-        } else if inexact {
+        } else if inexact || (is_active(Bug::MaskedUnderflowOnExactTiny) && double) {
             flags |= UNDERFLOW;
         }
     }
@@ -804,7 +829,14 @@ impl FloatForm {
                         let pair = lane % half;
                         let value = if low { destination } else { source };
                         let operation = if self.operation == FloatOperation::HorizontalAdd { Add } else { Subtract };
-                        (read(value, 2 * pair), read(value, 2 * pair + 1), operation)
+                        let reversed = is_active(Bug::HorizontalSubtractDoubleReversed)
+                            && operation == Subtract
+                            && precision == Precision::Double;
+                        if reversed {
+                            (read(value, 2 * pair + 1), read(value, 2 * pair), operation)
+                        } else {
+                            (read(value, 2 * pair), read(value, 2 * pair + 1), operation)
+                        }
                     }
                     operation => (read(destination, lane), read(source, lane), operation),
                 };

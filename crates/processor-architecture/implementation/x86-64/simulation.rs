@@ -108,6 +108,14 @@ fn keep_planted_writes(behavior: PreciseInstruction, exception: Exception, proce
     {
         processor.general_purpose_registers = changed.general_purpose_registers;
     }
+    if is_active(Bug::ShiftStoreFlagsDespiteFault) {
+        processor.flags = changed.flags;
+    }
+    let exchange = matches!(behavior, PreciseInstruction::Integer { instruction, .. }
+        if find_integer_form(instruction).is_some_and(|form| form.operation == Operation::Exchange));
+    if is_active(Bug::ExchangeRegisterWrittenDespiteFault) && exchange {
+        processor.general_purpose_registers = changed.general_purpose_registers;
+    }
     if is_active(Bug::MultiplyPackedDoubleWritesDespiteFault)
         && behavior == PreciseInstruction::Float(Instruction::MulpdXmmpdXmmpd)
         && exception == Exception::SimdFloatingPoint
@@ -166,7 +174,11 @@ fn apply(
             if is_active(Bug::PrivilegedFormsComplete) {
                 return Ok(());
             }
-            if (is_active(Bug::SwapgsInvalidOpcode) && instruction == Instruction::Swapgs)
+            if is_active(Bug::ReadModelSpecificRegisterCompletes) && instruction == Instruction::Rdmsr {
+                return Ok(());
+            }
+            if (is_active(Bug::HaltInvalidOpcode) && instruction == Instruction::Hlt)
+                || (is_active(Bug::SwapgsInvalidOpcode) && instruction == Instruction::Swapgs)
                 || (is_active(Bug::ReadPerformanceCounterInvalidOpcode) && instruction == Instruction::Rdpmc)
             {
                 return Err(Exception::InvalidOpcode);
@@ -236,7 +248,7 @@ fn check_fetch(memory: Memory<'_, '_>, address: u64) -> Result<(), Exception> {
     match find_fault(memory, address, 1, Access::InstructionFetch) {
         None => Ok(()),
         Some((address, page_present)) => Err(Exception::PageFault {
-            access: Access::InstructionFetch,
+            access: if is_active(Bug::FetchFaultReportedAsRead) { Access::Read } else { Access::InstructionFetch },
             page_present,
             address,
         }),
@@ -362,7 +374,8 @@ fn locate_moved(processor: &Processor, decoded: &Decoded, bytes: u64) -> MemoryO
     }
     MemoryOperand {
         address,
-        stack: matches!(base.full_register(), Register::RSP | Register::RBP)
+        stack: (base.full_register() == Register::RSP
+            || (base.full_register() == Register::RBP && !is_active(Bug::StackSegmentOnlyForRsp)))
             && (is_active(Bug::StackSegmentDespiteFsOrGs) || !matches!(decoded.segment_prefix(), Register::FS | Register::GS)),
     }
 }
@@ -442,7 +455,7 @@ fn check_access(
         None => Ok(()),
         Some((address, page_present)) => Err(Exception::PageFault {
             access,
-            page_present,
+            page_present: page_present || (is_active(Bug::ReadNotPresentReportedPresent) && access == Access::Read),
             address: if is_active(Bug::ReadFaultAtAccessStart) && access == Access::Read { operand.address } else { address },
         }),
     }
@@ -468,7 +481,7 @@ fn check_alignment(flags: Flags, operand: MemoryOperand, length: u64) -> Result<
         && !is_active(Bug::AlignmentCheckNever)
         && length > smallest
         && length <= size_of::<u64>() as u64
-        && !operand.address.is_multiple_of(length)
+        && !operand.address.is_multiple_of(if is_active(Bug::AlignmentCheckEightBytesAtFour) && length == 8 { 4 } else { length })
     {
         return Err(Exception::AlignmentCheck);
     }
@@ -689,7 +702,11 @@ fn execute_integer(
                 } else {
                     behavior.across_fault
                 };
-                store(processor.flags, memory, operand, &result.to_le_bytes()[..stored], across_fault, on_memory_mutated)
+                let flags_before = processor.flags;
+                if is_active(Bug::ShiftStoreFlagsDespiteFault) && operation == Operation::ShiftLeft {
+                    processor.flags = outcome.flags;
+                }
+                store(flags_before, memory, operand, &result.to_le_bytes()[..stored], across_fault, on_memory_mutated)
                     .map_err(|exception| mutate_store_fault(exception, operation, form.place))?;
             }
             None => {
@@ -699,7 +716,15 @@ fn execute_integer(
                         || (is_active(Bug::NotWriteKeepsUpperHalf) && operation == Operation::Not)
                         || (is_active(Bug::MoveWriteKeepsUpperHalf) && operation == Operation::Move)
                         || (is_active(Bug::XorWriteKeepsUpperHalf) && operation == Operation::Xor));
-                if keeps_upper {
+                let keeps_upper = keeps_upper
+                    || (register.size() == 4
+                        && is_active(Bug::LoadEffectiveAddressWriteKeepsUpperHalf)
+                        && operation == Operation::LoadEffectiveAddress);
+                let high = matches!(register, Register::AH | Register::CH | Register::DH | Register::BH);
+                if is_active(Bug::SubtractHighByteWrittenLow) && operation == Operation::Subtract && high {
+                    let full = &mut processor.general_purpose_registers[register.full_register().number()];
+                    *full = (*full & !0xFF) | (result & 0xFF);
+                } else if keeps_upper {
                     write_low_half(processor, register, result);
                 } else if is_active(Bug::MoveWordWriteClearsUpperBits) && operation == Operation::Move && register.size() == 2 {
                     processor.general_purpose_registers[register.full_register().number()] = result & 0xFFFF;
@@ -783,8 +808,11 @@ fn execute_vector(
         _ => {
             let operand = locate(processor, decoded);
             let unaligned = (is_active(Bug::OrMisalignedNoFault) && instruction == Instruction::PorXmmdqMemdq)
-                || (!form.requires_alignment() && !(is_active(Bug::MoveUnalignedFaults) && instruction == Instruction::MovupsXmmpsMemps));
-            let length = if is_active(Bug::DuplicateLowDoubleReadsSixteenBytes) && instruction == Instruction::MovddupXmmdqMemq {
+                || (!form.requires_alignment() && !(is_active(Bug::MoveUnalignedFaults) && instruction == Instruction::MovupsXmmpsMemps))
+                || (is_active(Bug::MoveAlignedDoubleMisalignedNoFault) && instruction == Instruction::MovapdXmmpdMempd);
+            let length = if (is_active(Bug::DuplicateLowDoubleReadsSixteenBytes) && instruction == Instruction::MovddupXmmdqMemq)
+                || (is_active(Bug::MoveLowDoubleReadsSixteenBytes) && instruction == Instruction::MovlpdXmmsdMemq)
+            {
                 16
             } else {
                 length
@@ -837,6 +865,12 @@ fn execute_float(
                     size_of::<u128>()
                 }
                 _ if is_active(Bug::AddScalarSingleReadsEightBytes) && instruction == Instruction::AddssXmmssMemss => 8,
+                _ if is_active(Bug::FloatScalarMisalignedFaults)
+                    && instruction == Instruction::SubsdXmmsdMemsd
+                    && !operand.address.is_multiple_of(SSE_ALIGNMENT) =>
+                {
+                    return Err(Exception::GeneralProtection { error_code: 0 });
+                }
                 length => length,
             };
             check_access(processor.flags, memory, operand, length as u64, Access::Read)?;
@@ -882,19 +916,27 @@ fn execute_branch(instruction: Instruction, processor: &mut Processor, decoded: 
         Code::Jecxz_rel8_64 | Code::Loop_rel8_64_ECX | Code::Loope_rel8_64_ECX | Code::Loopne_rel8_64_ECX
     );
     let mask = if narrow { u64::from(u32::MAX) } else { u64::MAX };
-    let count = processor.general_purpose_registers[COUNT] & mask;
+    let count = processor.general_purpose_registers[COUNT]
+        & if is_active(Bug::JumpIfCountZeroTestsLowHalf) && matches!(form.decision, Decision::CountIsZero) { u64::from(u32::MAX) } else { mask };
     let zero = processor.flags.contains(Flags::ZERO);
     let less_one = count.wrapping_sub(1) & mask;
     let taken = match form.decision {
         Decision::Always => true,
         Decision::If(Condition::Less) if is_active(Bug::JumpIfLessIgnoresOverflow) => processor.flags.contains(Flags::SIGN),
+        Decision::If(Condition::BelowOrEqual) if is_active(Bug::JumpIfBelowOrEqualIgnoresZero) => processor.flags.contains(Flags::CARRY),
         Decision::If(condition) => condition.holds(processor.flags),
         Decision::CountIsZero => count == 0,
         Decision::Loop => less_one != 0,
-        Decision::LoopWhileZero => less_one != 0 && zero,
+        Decision::LoopWhileZero => less_one != 0 && (zero || is_active(Bug::LoopWhileZeroIgnoresZero)),
         Decision::LoopWhileNotZero => less_one != 0 && (zero == is_active(Bug::LoopWhileNotZeroReversed)),
     };
-    let target = if form.indirect { read_register(processor, decoded.op0_register()) } else { decoded.near_branch_target() };
+    let mut target = if form.indirect { read_register(processor, decoded.op0_register()) } else { decoded.near_branch_target() };
+    if is_active(Bug::JumpIndirectTruncated) && form.indirect {
+        target &= u64::from(u32::MAX);
+    }
+    if is_active(Bug::JumpRelativeByteZeroExtended) && decoded.code() == Code::Jmp_rel8_64 {
+        target = decoded.next_ip().wrapping_add(u64::from(target.wrapping_sub(decoded.next_ip()) as u8));
+    }
     if taken && !is_canonical(target) && !is_active(Bug::JumpToNonCanonical) {
         return Err(Exception::GeneralProtection { error_code: 0 });
     }

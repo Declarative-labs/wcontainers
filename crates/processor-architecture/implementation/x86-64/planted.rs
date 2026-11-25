@@ -24,6 +24,7 @@ pub enum Origin {
     FourthPass,
     FourthCheck,
     FifthPass,
+    FifthCheck,
 }
 
 /// The forms a bug shows on.
@@ -516,6 +517,157 @@ pub enum Bug {
     UnpackLowBytesSourceFirst,
     /// The default NaN is positive.
     DefaultNanPositive,
+    // Fifth check.
+    /// SUB takes AF from bit 4 of the result.
+    SubtractAuxiliaryFromResultBitFour,
+    /// CMP takes OF from the destination's and difference's signs alone.
+    CompareOverflowFromDestinationSign,
+    /// ADC takes ZF from the sum not truncated to the operand size.
+    AddWithCarryZeroFromUntruncatedSum,
+    /// SBB of 32 bits takes SF from bit 63 of the untruncated difference.
+    SubtractWithBorrowSignFromBitSixtyThree,
+    /// OR keeps CF.
+    OrCarryKept,
+    /// NEG takes SF from bit 63 at every size.
+    NegateSignFromBitSixtyThree,
+    /// INC clears CF.
+    IncrementClearsCarry,
+    /// DEC sets CF when it borrows.
+    DecrementSetsCarryAtZero,
+    /// SHR of 32 bits masks its count to 6 bits.
+    ShiftRightDoublewordCountSixBits,
+    /// SAR of 64 bits masks its count to 5 bits.
+    ShiftRightArithmeticQuadwordCountFiveBits,
+    /// RCR of 64 bits masks its count to 5 bits.
+    RotateRightThroughCarryQuadwordCountFiveBits,
+    /// ROL of 8 bits masks its count to 3 bits.
+    RotateLeftByteCountThreeBits,
+    /// SHL by one takes OF from the old CF.
+    ShiftLeftOneOverflowFromCarryIn,
+    /// MOVSX from 16 bits zero-extends.
+    SignExtendWordZeroExtends,
+    /// MOVZX from 8 bits sign-extends.
+    ZeroExtendByteSignExtends,
+    /// IMUL of 32 bits never sets CF or OF.
+    MultiplySignedDoublewordNeverOverflows,
+    /// MUL of 64 bits swaps RAX and RDX.
+    MultiplyWideQuadwordHalvesSwapped,
+    /// IDIV raises #DE for the most negative quotient.
+    DivideSignedMostNegativeQuotientFaults,
+    /// XADD takes OF from the destination's sign alone.
+    ExchangeAddOverflowIgnoresSourceSign,
+    /// CMOVBE ignores CF.
+    MoveIfBelowOrEqualIgnoresCarry,
+    /// SETNLE ignores ZF.
+    SetIfGreaterIgnoresZero,
+    /// BT of 16 bits masks its register offset to 3 bits.
+    BitTestWordOffsetThreeBits,
+    /// SHLD of 64 bits masks its count to 5 bits.
+    ShiftLeftDoubleQuadwordCountFiveBits,
+    /// BSR counts the index from the top.
+    BitScanReverseFromTop,
+    /// POPCNT of 64 bits counts the low 32 bits.
+    PopulationCountLowHalfOnly,
+    /// LEA's 32-bit write keeps the upper half.
+    LoadEffectiveAddressWriteKeepsUpperHalf,
+    /// SUB writes an AH to BH result into the low byte.
+    SubtractHighByteWrittenLow,
+    /// a read of an unmapped page is reported as a present page.
+    ReadNotPresentReportedPresent,
+    /// a fetch's page fault is reported as a read.
+    FetchFaultReportedAsRead,
+    /// SHL into memory writes RFLAGS despite the store's fault.
+    ShiftStoreFlagsDespiteFault,
+    /// XCHG with memory writes the register despite the store's fault.
+    ExchangeRegisterWrittenDespiteFault,
+    /// #AC checks an 8-byte access for 4-byte alignment.
+    AlignmentCheckEightBytesAtFour,
+    /// a non-canonical address based on RBP raises #GP, not #SS.
+    StackSegmentOnlyForRsp,
+    /// MOVAPD from misaligned memory does not fault.
+    MoveAlignedDoubleMisalignedNoFault,
+    /// MOVLPD from memory reads 16 bytes.
+    MoveLowDoubleReadsSixteenBytes,
+    /// SUBSD from memory not aligned to 16 raises #GP(0).
+    FloatScalarMisalignedFaults,
+    /// PSUBSW saturates unsigned.
+    SubtractSaturatingWordsUnsigned,
+    /// PMULLW gives the high halves.
+    MultiplyLowWordsGivesHigh,
+    /// PSRLW masks its count to 4 bits.
+    ShiftRightLogicalWordsCountFourBits,
+    /// PSRAD by 32 or more gives 0, not the sign.
+    ShiftRightArithmeticDoublewordsWideZero,
+    /// PACKSSDW saturates unsigned.
+    PackSignedDoublewordsSaturatesUnsigned,
+    /// PMINUW compares signed.
+    MinimumWordsUnsignedAsSigned,
+    /// PUNPCKLWD takes the high words.
+    UnpackLowWordsTakesHigh,
+    /// PSHUFLW shuffles the high words too.
+    ShuffleLowWordsShufflesHigh,
+    /// PMULUDQ multiplies the odd doublewords.
+    MultiplyUnsignedDoublewordsOddLanes,
+    /// PSLLDQ masks its count to 4 bits.
+    ShiftBytesLeftCountFourBits,
+    /// PABSD saturates the lowest value to 0x7FFF_FFFF.
+    AbsoluteDoublewordsSaturates,
+    /// PHADDD puts the source's sums low.
+    HorizontalAddDoublewordsSourceLow,
+    /// PMOVZXBD sign-extends.
+    ExtendBytesToDoublewordsZeroAsSigned,
+    /// PMINSD compares unsigned.
+    MinimumDoublewordsSignedAsUnsigned,
+    /// PBLENDW reads its immediate's bits from the top.
+    BlendWordsBitsReversed,
+    /// PCMPGTB compares unsigned.
+    CompareGreaterBytesUnsigned,
+    /// SHUFPS takes its low pair from the source.
+    ShuffleSinglesOperandsSwapped,
+    /// MOVLHPS takes the source's high quadword.
+    MoveLowToHighTakesHigh,
+    /// PANDN inverts the source.
+    AndNotReversed,
+    /// CVTPS2DQ truncates instead of rounding under MXCSR.
+    ConversionToIntegerTruncates,
+    /// CVTSD2SS rounds to nearest under every mode.
+    DoubleToSingleRoundsToNearest,
+    /// CVTDQ2PS rounds to nearest under every mode.
+    IntegerToSingleRoundsToNearest,
+    /// MINSD with a NaN gives the destination.
+    MinimumDoubleNanGivesDestination,
+    /// CMPLEPD is false for equal operands.
+    CompareLessOrEqualExcludesEqual,
+    /// COMISD of a NaN leaves ZF clear.
+    OrderedCompareDoubleNanClearsZero,
+    /// UCOMISD of a signaling NaN raises no invalid.
+    UnorderedCompareDoubleSignalingNoInvalid,
+    /// HSUBPD subtracts the low lane from the high one.
+    HorizontalSubtractDoubleReversed,
+    /// CVTSS2SD of a signaling NaN leaves it signaling.
+    SingleToDoubleKeepsSignaling,
+    /// double-precision masked underflow is flagged for an exact tiny result.
+    MaskedUnderflowOnExactTiny,
+    /// CVTPS2PD of a denormal raises no denormal.
+    SingleToDoubleDenormalUnflagged,
+    /// double-precision SQRT never sets PE.
+    SquareRootDoubleNeverInexact,
+    /// double-precision 0/0 reports divide-by-zero, not invalid.
+    DivideDoubleZeroByZeroReportsDivideByZero,
+    /// JMP rel8 zero-extends its displacement.
+    JumpRelativeByteZeroExtended,
+    /// JRCXZ tests ECX.
+    JumpIfCountZeroTestsLowHalf,
+    /// JBE ignores ZF.
+    JumpIfBelowOrEqualIgnoresZero,
+    /// LOOPE ignores ZF.
+    LoopWhileZeroIgnoresZero,
+    /// JMP r64 truncates its target to 32 bits.
+    JumpIndirectTruncated,
+    /// HLT raises #UD, not #GP(0).
+    HaltInvalidOpcode,
+    /// RDMSR completes at ring 3.
+    ReadModelSpecificRegisterCompletes,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -526,7 +678,7 @@ const fn integer(test: fn(Operation) -> bool) -> Family {
     Family::Integer(test)
 }
 
-use Origin::{FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, SecondCheck, SecondPass, ThirdCheck, ThirdPass};
+use Origin::{FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, SecondCheck, SecondPass, ThirdCheck, ThirdPass};
 
 /// Every planted bug of every pass and check, with its family.
 pub static PLANTED_BUGS: &[PlantedBug] = &[
@@ -745,6 +897,81 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::MinimumWordPositionLastIndex, "PHMINPOSUW", Family::Vector(|o| o == LaneOperation::MinimumWordPosition), FifthPass),
     row(Bug::InsertSingleIgnoresZeroMask, "INSERTPS", Family::Vector(|o| matches!(o, LaneOperation::InsertSingle { .. })), FifthPass),
     row(Bug::PackUnsignedDoublewordsReadsUnsigned, "PACKUSDW", Family::Vector(|o| o == LaneOperation::Pack(Lane::Doubleword, Signedness::Unsigned)), FifthPass),
+    row(Bug::SubtractAuxiliaryFromResultBitFour, "SubGprvGprv29", Family::Forms(&[Instruction::SubGprvGprv29]), FifthCheck),
+    row(Bug::CompareOverflowFromDestinationSign, "CmpGprvImmb", Family::Forms(&[Instruction::CmpGprvImmb]), FifthCheck),
+    row(Bug::AddWithCarryZeroFromUntruncatedSum, "AdcGpr8Gpr810", Family::Forms(&[Instruction::AdcGpr8Gpr810]), FifthCheck),
+    row(Bug::SubtractWithBorrowSignFromBitSixtyThree, "SbbGprvImmb", Family::Forms(&[Instruction::SbbGprvImmb]), FifthCheck),
+    row(Bug::OrCarryKept, "OrGprvMemv", Family::Forms(&[Instruction::OrGprvMemv]), FifthCheck),
+    row(Bug::NegateSignFromBitSixtyThree, "NegGpr8", Family::Forms(&[Instruction::NegGpr8]), FifthCheck),
+    row(Bug::IncrementClearsCarry, "IncMemv", Family::Forms(&[Instruction::IncMemv]), FifthCheck),
+    row(Bug::DecrementSetsCarryAtZero, "DecGprvFfr1", Family::Forms(&[Instruction::DecGprvFfr1]), FifthCheck),
+    row(Bug::ShiftRightDoublewordCountSixBits, "ShrGprvCl", Family::Forms(&[Instruction::ShrGprvCl]), FifthCheck),
+    row(Bug::ShiftRightArithmeticQuadwordCountFiveBits, "SarGprvImmb", Family::Forms(&[Instruction::SarGprvImmb]), FifthCheck),
+    row(Bug::RotateRightThroughCarryQuadwordCountFiveBits, "RcrGprvCl", Family::Forms(&[Instruction::RcrGprvCl]), FifthCheck),
+    row(Bug::RotateLeftByteCountThreeBits, "RolGpr8Cl", Family::Forms(&[Instruction::RolGpr8Cl]), FifthCheck),
+    row(Bug::ShiftLeftOneOverflowFromCarryIn, "ShlGprvOneD1r4", Family::Forms(&[Instruction::ShlGprvOneD1r4]), FifthCheck),
+    row(Bug::SignExtendWordZeroExtends, "MovsxGprvGpr16", Family::Forms(&[Instruction::MovsxGprvGpr16]), FifthCheck),
+    row(Bug::ZeroExtendByteSignExtends, "MovzxGprvMemb", Family::Forms(&[Instruction::MovzxGprvMemb]), FifthCheck),
+    row(Bug::MultiplySignedDoublewordNeverOverflows, "ImulGprvGprvImmz", Family::Forms(&[Instruction::ImulGprvGprvImmz]), FifthCheck),
+    row(Bug::MultiplyWideQuadwordHalvesSwapped, "MulGprv", Family::Forms(&[Instruction::MulGprv]), FifthCheck),
+    row(Bug::DivideSignedMostNegativeQuotientFaults, "IdivGpr8", Family::Forms(&[Instruction::IdivGpr8]), FifthCheck),
+    row(Bug::ExchangeAddOverflowIgnoresSourceSign, "XaddGpr8Gpr8", Family::Forms(&[Instruction::XaddGpr8Gpr8]), FifthCheck),
+    row(Bug::MoveIfBelowOrEqualIgnoresCarry, "CmovbeGprvMemv", Family::Forms(&[Instruction::CmovbeGprvMemv]), FifthCheck),
+    row(Bug::SetIfGreaterIgnoresZero, "SetnleGpr8", Family::Forms(&[Instruction::SetnleGpr8]), FifthCheck),
+    row(Bug::BitTestWordOffsetThreeBits, "BtGprvGprv", Family::Forms(&[Instruction::BtGprvGprv]), FifthCheck),
+    row(Bug::ShiftLeftDoubleQuadwordCountFiveBits, "ShldGprvGprvImmb", Family::Forms(&[Instruction::ShldGprvGprvImmb]), FifthCheck),
+    row(Bug::BitScanReverseFromTop, "BsrGprvMemv", Family::Forms(&[Instruction::BsrGprvMemv]), FifthCheck),
+    row(Bug::PopulationCountLowHalfOnly, "PopcntGprvGprv", Family::Forms(&[Instruction::PopcntGprvGprv]), FifthCheck),
+    row(Bug::LoadEffectiveAddressWriteKeepsUpperHalf, "LeaGprvAgen", Family::Forms(&[Instruction::LeaGprvAgen]), FifthCheck),
+    row(Bug::SubtractHighByteWrittenLow, "SubGpr8Gpr828", Family::Forms(&[Instruction::SubGpr8Gpr828]), FifthCheck),
+    row(Bug::ReadNotPresentReportedPresent, "AddGprvMemv", Family::Forms(&[Instruction::AddGprvMemv]), FifthCheck),
+    row(Bug::FetchFaultReportedAsRead, "AddGpr8Gpr800", Family::Forms(&[Instruction::AddGpr8Gpr800]), FifthCheck),
+    row(Bug::ShiftStoreFlagsDespiteFault, "ShlMemvClD3r4", Family::Forms(&[Instruction::ShlMemvClD3r4]), FifthCheck),
+    row(Bug::ExchangeRegisterWrittenDespiteFault, "XchgMemvGprv", Family::Forms(&[Instruction::XchgMemvGprv]), FifthCheck),
+    row(Bug::AlignmentCheckEightBytesAtFour, "MovGprvMemv", Family::Forms(&[Instruction::MovGprvMemv]), FifthCheck),
+    row(Bug::StackSegmentOnlyForRsp, "MovMemvGprv", Family::Forms(&[Instruction::MovMemvGprv]), FifthCheck),
+    row(Bug::MoveAlignedDoubleMisalignedNoFault, "MovapdXmmpdMempd", Family::Forms(&[Instruction::MovapdXmmpdMempd]), FifthCheck),
+    row(Bug::MoveLowDoubleReadsSixteenBytes, "MovlpdXmmsdMemq", Family::Forms(&[Instruction::MovlpdXmmsdMemq]), FifthCheck),
+    row(Bug::FloatScalarMisalignedFaults, "SubsdXmmsdMemsd", Family::Forms(&[Instruction::SubsdXmmsdMemsd]), FifthCheck),
+    row(Bug::SubtractSaturatingWordsUnsigned, "PsubswXmmdqXmmdq", Family::Forms(&[Instruction::PsubswXmmdqXmmdq]), FifthCheck),
+    row(Bug::MultiplyLowWordsGivesHigh, "PmullwXmmdqXmmdq", Family::Forms(&[Instruction::PmullwXmmdqXmmdq]), FifthCheck),
+    row(Bug::ShiftRightLogicalWordsCountFourBits, "PsrlwXmmdqXmmdq", Family::Forms(&[Instruction::PsrlwXmmdqXmmdq]), FifthCheck),
+    row(Bug::ShiftRightArithmeticDoublewordsWideZero, "PsradXmmdqImmb", Family::Forms(&[Instruction::PsradXmmdqImmb]), FifthCheck),
+    row(Bug::PackSignedDoublewordsSaturatesUnsigned, "PackssdwXmmdqXmmdq", Family::Forms(&[Instruction::PackssdwXmmdqXmmdq]), FifthCheck),
+    row(Bug::MinimumWordsUnsignedAsSigned, "PminuwXmmdqXmmdq", Family::Forms(&[Instruction::PminuwXmmdqXmmdq]), FifthCheck),
+    row(Bug::UnpackLowWordsTakesHigh, "PunpcklwdXmmdqXmmq", Family::Forms(&[Instruction::PunpcklwdXmmdqXmmq]), FifthCheck),
+    row(Bug::ShuffleLowWordsShufflesHigh, "PshuflwXmmdqXmmdqImmb", Family::Forms(&[Instruction::PshuflwXmmdqXmmdqImmb]), FifthCheck),
+    row(Bug::MultiplyUnsignedDoublewordsOddLanes, "PmuludqXmmdqXmmdq", Family::Forms(&[Instruction::PmuludqXmmdqXmmdq]), FifthCheck),
+    row(Bug::ShiftBytesLeftCountFourBits, "PslldqXmmdqImmb", Family::Forms(&[Instruction::PslldqXmmdqImmb]), FifthCheck),
+    row(Bug::AbsoluteDoublewordsSaturates, "PabsdXmmdqXmmdq", Family::Forms(&[Instruction::PabsdXmmdqXmmdq]), FifthCheck),
+    row(Bug::HorizontalAddDoublewordsSourceLow, "PhadddXmmdqXmmdq", Family::Forms(&[Instruction::PhadddXmmdqXmmdq]), FifthCheck),
+    row(Bug::ExtendBytesToDoublewordsZeroAsSigned, "PmovzxbdXmmdqXmmd", Family::Forms(&[Instruction::PmovzxbdXmmdqXmmd]), FifthCheck),
+    row(Bug::MinimumDoublewordsSignedAsUnsigned, "PminsdXmmdqXmmdq", Family::Forms(&[Instruction::PminsdXmmdqXmmdq]), FifthCheck),
+    row(Bug::BlendWordsBitsReversed, "PblendwXmmdqXmmdqImmb", Family::Forms(&[Instruction::PblendwXmmdqXmmdqImmb]), FifthCheck),
+    row(Bug::CompareGreaterBytesUnsigned, "PcmpgtbXmmdqXmmdq", Family::Forms(&[Instruction::PcmpgtbXmmdqXmmdq]), FifthCheck),
+    row(Bug::ShuffleSinglesOperandsSwapped, "ShufpsXmmpsXmmpsImmb", Family::Forms(&[Instruction::ShufpsXmmpsXmmpsImmb]), FifthCheck),
+    row(Bug::MoveLowToHighTakesHigh, "MovlhpsXmmqXmmq", Family::Forms(&[Instruction::MovlhpsXmmqXmmq]), FifthCheck),
+    row(Bug::AndNotReversed, "PandnXmmdqXmmdq", Family::Forms(&[Instruction::PandnXmmdqXmmdq]), FifthCheck),
+    row(Bug::ConversionToIntegerTruncates, "Cvtps2dqXmmdqXmmps", Family::Forms(&[Instruction::Cvtps2dqXmmdqXmmps]), FifthCheck),
+    row(Bug::DoubleToSingleRoundsToNearest, "Cvtsd2ssXmmssXmmsd", Family::Forms(&[Instruction::Cvtsd2ssXmmssXmmsd]), FifthCheck),
+    row(Bug::IntegerToSingleRoundsToNearest, "Cvtdq2psXmmpsXmmdq", Family::Forms(&[Instruction::Cvtdq2psXmmpsXmmdq]), FifthCheck),
+    row(Bug::MinimumDoubleNanGivesDestination, "MinsdXmmsdXmmsd", Family::Forms(&[Instruction::MinsdXmmsdXmmsd]), FifthCheck),
+    row(Bug::CompareLessOrEqualExcludesEqual, "CmppdXmmpdXmmpdImmb", Family::Forms(&[Instruction::CmppdXmmpdXmmpdImmb]), FifthCheck),
+    row(Bug::OrderedCompareDoubleNanClearsZero, "ComisdXmmsdMemsd", Family::Forms(&[Instruction::ComisdXmmsdMemsd]), FifthCheck),
+    row(Bug::UnorderedCompareDoubleSignalingNoInvalid, "UcomisdXmmsdXmmsd", Family::Forms(&[Instruction::UcomisdXmmsdXmmsd]), FifthCheck),
+    row(Bug::HorizontalSubtractDoubleReversed, "HsubpdXmmpdXmmpd", Family::Forms(&[Instruction::HsubpdXmmpdXmmpd]), FifthCheck),
+    row(Bug::SingleToDoubleKeepsSignaling, "Cvtss2sdXmmsdXmmss", Family::Forms(&[Instruction::Cvtss2sdXmmsdXmmss]), FifthCheck),
+    row(Bug::MaskedUnderflowOnExactTiny, "MulsdXmmsdXmmsd", Family::Forms(&[Instruction::MulsdXmmsdXmmsd]), FifthCheck),
+    row(Bug::SingleToDoubleDenormalUnflagged, "Cvtps2pdXmmpdXmmq", Family::Forms(&[Instruction::Cvtps2pdXmmpdXmmq]), FifthCheck),
+    row(Bug::SquareRootDoubleNeverInexact, "SqrtpdXmmpdXmmpd", Family::Forms(&[Instruction::SqrtpdXmmpdXmmpd]), FifthCheck),
+    row(Bug::DivideDoubleZeroByZeroReportsDivideByZero, "DivpdXmmpdXmmpd", Family::Forms(&[Instruction::DivpdXmmpdXmmpd]), FifthCheck),
+    row(Bug::JumpRelativeByteZeroExtended, "JmpRelbrb", Family::Forms(&[Instruction::JmpRelbrb]), FifthCheck),
+    row(Bug::JumpIfCountZeroTestsLowHalf, "JrcxzRelbrb", Family::Forms(&[Instruction::JrcxzRelbrb]), FifthCheck),
+    row(Bug::JumpIfBelowOrEqualIgnoresZero, "JbeRelbrd", Family::Forms(&[Instruction::JbeRelbrd]), FifthCheck),
+    row(Bug::LoopWhileZeroIgnoresZero, "LoopeRelbrb", Family::Forms(&[Instruction::LoopeRelbrb]), FifthCheck),
+    row(Bug::JumpIndirectTruncated, "JmpGprv", Family::Forms(&[Instruction::JmpGprv]), FifthCheck),
+    row(Bug::HaltInvalidOpcode, "Hlt", Family::Forms(&[Instruction::Hlt]), FifthCheck),
+    row(Bug::ReadModelSpecificRegisterCompletes, "Rdmsr", Family::Forms(&[Instruction::Rdmsr]), FifthCheck),
 ];
 
 #[cfg(feature = "planted-bugs")]
@@ -981,6 +1208,83 @@ pub(crate) fn mutate_integer(
         (Bug::ByteSwapQuadwordSwapsThirtyTwo, Operation::ByteSwap) if length == 8 => {
             outcome.result = Some(u64::from((d as u32).swap_bytes()));
         }
+        // Fifth check.
+        (Bug::SubtractAuxiliaryFromResultBitFour, Operation::Subtract) => {
+            outcome.flags.set(Flags::AUXILIARY_CARRY, result & 0x10 != 0);
+        }
+        (Bug::CompareOverflowFromDestinationSign, Operation::Compare) => {
+            let difference = d.wrapping_sub(s) & mask;
+            outcome.flags.set(Flags::OVERFLOW, (d ^ difference) & sign != 0);
+        }
+        (Bug::AddWithCarryZeroFromUntruncatedSum, Operation::AddWithCarry) => {
+            outcome.flags.set(Flags::ZERO, u128::from(d) + u128::from(s) + u128::from(carry) == 0);
+        }
+        (Bug::SubtractWithBorrowSignFromBitSixtyThree, Operation::SubtractWithBorrow) if length == 4 => {
+            outcome.flags.set(Flags::SIGN, d.wrapping_sub(s).wrapping_sub(u64::from(carry)) >> 63 != 0);
+        }
+        (Bug::OrCarryKept, Operation::Or) => outcome.flags.set(Flags::CARRY, carry),
+        (Bug::NegateSignFromBitSixtyThree, Operation::Negate) => outcome.flags.set(Flags::SIGN, d.wrapping_neg() >> 63 != 0),
+        (Bug::IncrementClearsCarry, Operation::Increment) => outcome.flags.remove(Flags::CARRY),
+        (Bug::DecrementSetsCarryAtZero, Operation::Decrement) => outcome.flags.set(Flags::CARRY, d == 0),
+        (Bug::ShiftRightDoublewordCountSixBits, Operation::ShiftRightLogical) if length == 4 && source & 0x3F >= 32 => {
+            outcome.result = Some(0);
+            outcome.flags = with_status(outcome.flags, to_result_flags(0, length), Flags::ZERO | Flags::SIGN | Flags::PARITY);
+            outcome.flags.set(Flags::CARRY, source & 0x3F == 32 && d >> 31 != 0);
+        }
+        (Bug::ShiftRightArithmeticQuadwordCountFiveBits, Operation::ShiftRightArithmetic)
+        | (Bug::RotateRightThroughCarryQuadwordCountFiveBits, Operation::RotateRightThroughCarry)
+            if length == 8 =>
+        {
+            outcome = operation.shift(destination, source & 0x1F, length, flags, undefined);
+        }
+        (Bug::RotateLeftByteCountThreeBits, Operation::RotateLeft) if length == 1 => {
+            outcome = operation.shift(destination, source & 0x7, length, flags, undefined);
+        }
+        (Bug::ShiftLeftOneOverflowFromCarryIn, Operation::ShiftLeft)
+            if source & if length == 8 { 0x3F } else { 0x1F } == 1 =>
+        {
+            outcome.flags.set(Flags::OVERFLOW, (result & sign != 0) != carry);
+        }
+        (Bug::SignExtendWordZeroExtends, Operation::SignExtend) if source_length == 2 => outcome.result = Some(source & 0xFFFF),
+        (Bug::ZeroExtendByteSignExtends, Operation::ZeroExtend) if source_length == 1 => {
+            outcome.result = Some(sign_extend(source & 0xFF, 1) & mask);
+        }
+        (Bug::MultiplySignedDoublewordNeverOverflows, Operation::MultiplySigned) if length == 4 => {
+            outcome.flags.remove(Flags::CARRY | Flags::OVERFLOW);
+        }
+        (Bug::MultiplyWideQuadwordHalvesSwapped, Operation::MultiplyWide { signed: false }) if length == 8 => {
+            if let [Some((low_register, low)), Some((high_register, high))] = outcome.implicit {
+                outcome.implicit = [Some((low_register, high)), Some((high_register, low))];
+            }
+        }
+        (Bug::DivideSignedMostNegativeQuotientFaults, Operation::DivideWide { signed: true }) if outcome.exception.is_none() => {
+            if outcome.implicit[0].is_some_and(|(_, quotient)| quotient & mask == sign) {
+                outcome.exception = Some(crate::Exception::DivideError);
+            }
+        }
+        (Bug::ExchangeAddOverflowIgnoresSourceSign, Operation::ExchangeAdd) => {
+            let sum = d.wrapping_add(s) & mask;
+            outcome.flags.set(Flags::OVERFLOW, (d ^ sum) & sign != 0);
+        }
+        (Bug::MoveIfBelowOrEqualIgnoresCarry, Operation::MoveIf(Condition::BelowOrEqual)) => {
+            outcome.result = Some(if flags.contains(Flags::ZERO) { source } else { destination } & mask);
+        }
+        (Bug::SetIfGreaterIgnoresZero, Operation::SetIf(Condition::NotLessOrEqual)) => {
+            outcome.result = Some(u64::from(flags.contains(Flags::SIGN) == flags.contains(Flags::OVERFLOW)));
+        }
+        (Bug::BitTestWordOffsetThreeBits, Operation::BitTest(BitChange::Keep)) if length == 2 => {
+            outcome = crate::integer::test_bit(BitChange::Keep, destination, source & 0x7, length, flags, undefined);
+        }
+        (Bug::ShiftLeftDoubleQuadwordCountFiveBits, Operation::ShiftLeftDouble) if length == 8 => {
+            outcome = operation.shift_double(destination, source, count & 0x1F, length, flags, undefined);
+        }
+        (Bug::BitScanReverseFromTop, Operation::BitScanReverse) if s != 0 => {
+            outcome.result = Some(u64::from(bits - 1 - (63 - s.leading_zeros())));
+        }
+        (Bug::PopulationCountLowHalfOnly, Operation::PopulationCount) if length == 8 => {
+            outcome.result = Some(u64::from((s as u32).count_ones()));
+            outcome.flags.set(Flags::ZERO, s as u32 == 0);
+        }
         _ => {}
     }
     outcome
@@ -1113,6 +1417,55 @@ pub(crate) fn mutate_lanes(operation: LaneOperation, destination: u128, source: 
             let sum: u64 = split(Byte, destination).iter().zip(split(Byte, source)).map(|(&a, b)| a.abs_diff(b)).sum();
             u128::from(sum)
         }
+        // Fifth check.
+        (Bug::SubtractSaturatingWordsUnsigned, LaneOperation::SubtractSaturating(Word, Signed)) => {
+            LaneOperation::SubtractSaturating(Word, Unsigned).compute(destination, source, immediate)
+        }
+        (Bug::MultiplyLowWordsGivesHigh, LaneOperation::MultiplyLow(Word)) => {
+            LaneOperation::MultiplyHighWords(Signed).compute(destination, source, immediate)
+        }
+        (Bug::ShiftRightLogicalWordsCountFourBits, LaneOperation::ShiftRightLogical(Word)) => {
+            operation.compute(destination, u128::from(source as u64 & 0xF), immediate)
+        }
+        (Bug::ShiftRightArithmeticDoublewordsWideZero, LaneOperation::ShiftRightArithmetic(Doubleword)) if source as u64 >= 32 => 0,
+        (Bug::PackSignedDoublewordsSaturatesUnsigned, LaneOperation::Pack(Doubleword, Signed)) => {
+            LaneOperation::Pack(Doubleword, Unsigned).compute(destination, source, immediate)
+        }
+        (Bug::MinimumWordsUnsignedAsSigned, LaneOperation::Minimum(Word, Unsigned)) => {
+            LaneOperation::Minimum(Word, Signed).compute(destination, source, immediate)
+        }
+        (Bug::UnpackLowWordsTakesHigh, LaneOperation::UnpackLow(Word)) => {
+            LaneOperation::UnpackHigh(Word).compute(destination, source, immediate)
+        }
+        (Bug::ShuffleLowWordsShufflesHigh, LaneOperation::ShuffleLowWords) => {
+            let low = u128::from(u64::MAX);
+            (result & low) | (LaneOperation::ShuffleHighWords.compute(destination, source, immediate) & !low)
+        }
+        (Bug::MultiplyUnsignedDoublewordsOddLanes, LaneOperation::MultiplyDoublewords(Unsigned)) => {
+            let even = 0x0000_0000_FFFF_FFFF_0000_0000_FFFF_FFFFu128;
+            operation.compute((destination >> 32) & even, (source >> 32) & even, immediate)
+        }
+        (Bug::ShiftBytesLeftCountFourBits, LaneOperation::ShiftBytesLeft) => operation.compute(destination, source & 0xF, immediate),
+        (Bug::AbsoluteDoublewordsSaturates, LaneOperation::Absolute(Doubleword)) => {
+            each(&|_, second| to_signed(second, 32).unsigned_abs().min(0x7FFF_FFFF))
+        }
+        (Bug::HorizontalAddDoublewordsSourceLow, LaneOperation::HorizontalAdd(Doubleword)) => result.rotate_left(64),
+        (Bug::ExtendBytesToDoublewordsZeroAsSigned, LaneOperation::Extend { from: Byte, to: Doubleword, signedness: Unsigned }) => {
+            LaneOperation::Extend { from: Byte, to: Doubleword, signedness: Signed }.compute(destination, source, immediate)
+        }
+        (Bug::MinimumDoublewordsSignedAsUnsigned, LaneOperation::Minimum(Doubleword, Signed)) => {
+            LaneOperation::Minimum(Doubleword, Unsigned).compute(destination, source, immediate)
+        }
+        (Bug::BlendWordsBitsReversed, LaneOperation::Blend(Word)) => operation.compute(destination, source, immediate.reverse_bits()),
+        (Bug::CompareGreaterBytesUnsigned, LaneOperation::CompareGreater(Byte)) => {
+            each(&|first, second| if first > second { mask } else { 0 })
+        }
+        (Bug::ShuffleSinglesOperandsSwapped, LaneOperation::ShuffleSingles) => operation.compute(source, destination, immediate),
+        (Bug::MoveLowToHighTakesHigh, LaneOperation::MoveLowToHigh) => {
+            let low = u128::from(u64::MAX);
+            (destination & low) | (source & !low)
+        }
+        (Bug::AndNotReversed, LaneOperation::AndNot) => destination & !source,
         _ => result,
     }
 }
