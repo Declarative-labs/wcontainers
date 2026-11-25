@@ -482,6 +482,11 @@ const fn to_plain_operation(instruction: Instruction<Infallible>) -> Option<(Tra
         | I::StpPreIndex64
         | I::StpPostIndex64
         | I::StnpSignedOffset64 => (Transfer::Store, DOUBLEWORD),
+        // [LDRAA](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDRAA--LDRAB--Load-register--with-pointer-authentication-)
+        // with the data keys off, so that AuthDA and AuthDB leave the base as it is.
+        I::LdraaIndexed64 | I::LdraaWriteback64 | I::LdrabIndexed64 | I::LdrabWriteback64 => {
+            (Transfer::Load(Unsigned), DOUBLEWORD)
+        }
         I::PrfmImmediateUnsignedOffset64 | I::PrfmRegister | I::PrfmLiteral | I::Prfum => {
             (Transfer::Prefetch, DOUBLEWORD)
         }
@@ -843,6 +848,19 @@ fn read_addressed<LevelSpecific>(
                     scale
                 };
                 addressed.offset = value << scale;
+            }
+            Operand::SplitAddressOffset { fields, scale } => {
+                let width: u32 = fields.iter().map(|field| field.width).sum();
+                let bits = fields.iter().fold(0_u64, |value, field| {
+                    (value << field.width) | u64::from(field.read(word))
+                });
+                let shift = u64::BITS - width;
+                let scale = if crate::planted::is(711) {
+                    scale - 1
+                } else {
+                    scale
+                };
+                addressed.offset = (((bits << shift) as i64 >> shift) as u64) << scale;
             }
             Operand::RegisterOffset {
                 number,

@@ -60,7 +60,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 391] = [
+pub const PLANTED_BUGS: [PlantedBug; 394] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2406,5 +2406,23 @@ pub const PLANTED_BUGS: [PlantedBug; 391] = [
         instruction: Instruction::BfcvtSingleToHalf,
         planted_by: PlantedBy::RestOfTheSet,
         what: "rounds toward zero whatever FPCR",
+    },
+    PlantedBug {
+        number: 711,
+        instruction: Instruction::LdraaWriteback64,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the offset counts words",
+    },
+    PlantedBug {
+        number: 712,
+        instruction: Instruction::Retaa,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "returns to zero, not X30",
+    },
+    PlantedBug {
+        number: 713,
+        instruction: Instruction::Xpaclri,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "X30 is not stripped",
     },
 ];

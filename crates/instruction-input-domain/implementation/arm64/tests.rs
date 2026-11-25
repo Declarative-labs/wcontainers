@@ -100,6 +100,9 @@ fn read_operand(
             Some(OperandValue::Bits(state.processor.software_thread_id))
         }
         OperandType::Word(_) => Some(OperandValue::Bits(u64::from(word))),
+        OperandType::ImplicitAddress(number) => {
+            Some(OperandValue::Bits(registers[number as usize]))
+        }
         OperandType::VectorValue { field, bytes } => Some(OperandValue::Vector(
             state.processor.vector_registers[field.read(word) as usize]
                 & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),

@@ -610,6 +610,15 @@ fn render_operand(members: &[&ListField]) -> String {
             Some(field) => format!("Operand::UnsignedImmediate({field})"),
             None => unmodeled,
         },
+        // LDRAA's offset, S:imm9 in doublewords.
+        (1, "simm10Scaled") => {
+            let fields: Vec<String> = first.runs.iter().map(Run::render).collect();
+            format!(
+                "Operand::SplitAddressOffset {{ fields: &[{}], scale: {} }}",
+                fields.join(", "),
+                u64::BITS.trailing_zeros() - u8::BITS.trailing_zeros()
+            )
+        }
         (1, "simm8_32b" | "simm8_64b") => match single_run(first) {
             Some(field) => format!("Operand::SignedImmediate({field})"),
             None => unmodeled,

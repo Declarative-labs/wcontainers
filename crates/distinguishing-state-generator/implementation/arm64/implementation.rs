@@ -228,6 +228,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
         | OperandType::Address { .. }
+        | OperandType::ImplicitAddress(_)
         | OperandType::FloatingPointValue { .. }
         | OperandType::ConvertedInteger { .. }
         | OperandType::ConvertedFloatingPoint { .. }
@@ -402,6 +403,7 @@ impl Cut {
                 .iter()
                 .flat_map(|operand| match *operand {
                     Operand::AddressOffset { field, .. } => vec![field],
+                    Operand::SplitAddressOffset { fields, .. } => fields.to_vec(),
                     Operand::RegisterOffset {
                         number,
                         signed,
@@ -856,6 +858,9 @@ impl Cut {
             OperandType::UnsignedImmediate(field)
             | OperandType::SignedImmediate(field)
             | OperandType::RegisterValue { field, .. } => self.addressing.contains(&field),
+            OperandType::ProgramCounterOffset(fields) => {
+                fields.iter().all(|field| self.addressing.contains(field))
+            }
             _ => false,
         }
     }

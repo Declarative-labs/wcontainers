@@ -574,6 +574,7 @@ pub(crate) fn read_source<LevelSpecific>(
         }),
         Operand::AddressBase { .. }
         | Operand::AddressOffset { .. }
+        | Operand::SplitAddressOffset { .. }
         | Operand::RegisterOffset { .. }
         | Operand::GeneralPurposeRegisterPair { .. }
         | Operand::FloatingPointRegister { .. }

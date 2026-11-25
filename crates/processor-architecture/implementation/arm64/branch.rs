@@ -65,9 +65,10 @@ pub const fn to_branch_operation(instruction: Instruction<Infallible>) -> Option
         I::Cbnz32 | I::Cbnz64 => O::CompareAndBranch(BranchWhen::NonZero),
         I::Tbz => O::TestBitAndBranch(BranchWhen::Zero),
         I::Tbnz => O::TestBitAndBranch(BranchWhen::NonZero),
-        I::Br => O::BranchToRegister,
-        I::Blr => O::BranchWithLinkToRegister,
-        I::Ret => O::Return,
+        // With the instruction keys off, AuthIA and AuthIB leave the target as it is, whatever the modifier.
+        I::Br | I::Braaz | I::Brabz | I::Braa | I::Brab => O::BranchToRegister,
+        I::Blr | I::Blraaz | I::Blrabz | I::Blraa | I::Blrab => O::BranchWithLinkToRegister,
+        I::Ret | I::Retaa | I::Retab => O::Return,
         _ => return None,
     })
 }
@@ -98,8 +99,19 @@ pub fn simulate_branch<LevelSpecific>(
         );
     }
     let read = read_operands(processor, word, operands)?;
+    // RETAA and RETAB name no register: they return to X30.
+    let link_target = [processor.general_purpose_registers[LINK_REGISTER as usize]];
+    let sources = match (operation, read.sources()) {
+        (O::Return, []) if !crate::planted::is(712) => &link_target[..],
+        (O::Return, []) => &[0][..],
+        // The modifier of BRAA and its family, which no key reads.
+        (O::BranchToRegister | O::BranchWithLinkToRegister, [target, _]) => {
+            core::slice::from_ref(target)
+        }
+        (_, sources) => sources,
+    };
     let when = |when: BranchWhen, value: u64| (value == 0) == (when == BranchWhen::Zero);
-    let (written, link, target) = match (operation, read.sources()) {
+    let (written, link, target) = match (operation, sources) {
         (O::FormAddress, &[offset]) => {
             let offset = if crate::planted::is(28) {
                 offset << 2
@@ -180,7 +192,7 @@ pub fn simulate_branch<LevelSpecific>(
         (O::BranchWithLinkToRegister, &[target]) => (None, Some(next), Some(target)),
         _ => panic!(
             "{operation:?} reads other operands than {} values",
-            read.sources().len()
+            sources.len()
         ),
     };
     if let (Some(value), Some((number, thirty_one))) = (written, read.destination) {

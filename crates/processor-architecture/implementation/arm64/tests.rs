@@ -844,6 +844,7 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
                 operand::Operand::ProgramCounterOffset { fields, .. } => fields.to_vec(),
                 operand::Operand::AddressBase { number, .. } => vec![number],
                 operand::Operand::AddressOffset { field, .. } => vec![field],
+                operand::Operand::SplitAddressOffset { fields, .. } => fields.to_vec(),
                 operand::Operand::RegisterOffset {
                     number,
                     signed,

@@ -36,6 +36,7 @@ use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Tran
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
+use wcontainers_processor_architecture_arm64::pointer_authentication::reads_link_register;
 use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
@@ -142,6 +143,8 @@ pub enum OperandType {
         field: Field,
         thirty_one: RegisterThirtyOne,
     },
+    /// The value of a register an instruction takes as an address without naming it: X30 of RETAA and XPACLRI.
+    ImplicitAddress(u32),
     UnsignedImmediate(Field),
     SignedImmediate(Field),
     /// The amount of a shifted register, which is unallocated from the register's width up.
@@ -343,7 +346,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .map(OperandValue::RegisterNumber)
                 .to_vec(),
             OperandType::RegisterValue { width, .. } => to_register_values(width),
-            OperandType::Address { .. } => {
+            OperandType::Address { .. } | OperandType::ImplicitAddress(_) => {
                 let mut values = to_register_values(RegisterWidth::Bits64);
                 // The lowest bit past the addressable ones alone, besides the high bits a data address takes.
                 let lowest_past = 1 << VIRTUAL_ADDRESS_BITS;
@@ -628,6 +631,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                         reject_mismatch(operand_type, operand)
                     };
                     register_values.push((field, RegisterThirtyOne::ZeroRegister, value));
+                }
+                OperandType::ImplicitAddress(number) => {
+                    let OperandValue::Bits(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    processor.general_purpose_registers[number as usize] = value;
                 }
                 OperandType::ConditionFlags | OperandType::WrittenConditionFlags => {
                     let OperandValue::ConditionFlags(flags) = operand else {
@@ -1161,6 +1170,9 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
                 // Only a modeled load or store places its access; a hint that names a base reads nothing there.
                 addresses_data = load_store.is_some();
             }
+            Operand::SplitAddressOffset { fields, .. } => {
+                operand_types.push(OperandType::ProgramCounterOffset(fields));
+            }
             Operand::AddressOffset {
                 field, signedness, ..
             } => operand_types.push(match signedness {
@@ -1271,6 +1283,9 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
     }
     if reads_own_address || implicit.program_counter {
         operand_types.push(OperandType::CodePlacement);
+    }
+    if reads_link_register(instruction) {
+        operand_types.push(OperandType::ImplicitAddress(LINK_REGISTER));
     }
     operand_types
 }
