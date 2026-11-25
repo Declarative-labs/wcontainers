@@ -4,6 +4,10 @@
 //! formula on every path.
 
 use crate::XMM_BYTES;
+use crate::answer::{
+    BIAS32, BIAS64, ESTIMATE_BITS, EXPONENT32, FRACTION32, FRACTION64, RCP_INDEX_BITS,
+    RSQRT_INDEX_BITS, SIGN32,
+};
 use crate::decode::Instruction;
 use crate::exact::{DOT_PRODUCT_SHIFT, Operation, ROUND_FROM_MXCSR, encode};
 use crate::flags::{Flag, Flags};
@@ -15,19 +19,7 @@ use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_guest_cpu::Emitter;
 
-/// The fraction bits of each format, and the exponent bias of single precision.
-const FRACTION32: u32 = f32::MANTISSA_DIGITS - 1;
-const FRACTION64: u32 = f64::MANTISSA_DIGITS - 1;
-const BIAS32: i32 = f32::MAX_EXP - 1;
-const BIAS64: i64 = f64::MAX_EXP as i64 - 1;
-const SIGN32: u32 = 1 << (u32::BITS - 1);
-const EXPONENT32: u32 = f32::INFINITY.to_bits();
 const EXPONENT64: u64 = f64::INFINITY.to_bits();
-/// The bits of Intel's approximations, and how many of the operand's top fraction bits choose the
-/// interval they are worked out at (Intel SDM Vol. 2 RCPPS, RSQRTPS: |relative error| <= 1.5 * 2^-12).
-const ESTIMATE_BITS: u32 = 12;
-const RCP_INDEX_BITS: u32 = 11;
-const RSQRT_INDEX_BITS: u32 = 10;
 /// `cmpps`'s predicates, the low three bits of the immediate, and `roundps`'s roundings, the low two (with
 /// bit 2 for MXCSR's).
 const PREDICATE_MASK: u8 = 7;

@@ -81,6 +81,7 @@ mod name {
     pub const LDADDB: &str = "LDADDB_32_memop";
     pub const CAS: &str = "CAS_C64_comswap";
     pub const BRK: &str = "BRK_EX_exception";
+    pub const SVC: &str = "SVC_EX_exception";
     pub const UDF: &str = "UDF_only_perm_undef";
     pub const ADD_EXTENDED: &str = "ADD_64_addsub_ext";
     pub const SUB_EXTENDED: &str = "SUB_64_addsub_ext";
@@ -109,6 +110,8 @@ mod name {
     pub const SYS: &str = "SYS_CR_systeminstrs";
     pub const ADRP: &str = "ADRP_only_pcreladdr";
     pub const ADR: &str = "ADR_only_pcreladdr";
+    pub const LDUR_32: &str = "LDUR_32_ldst_unscaled";
+    pub const LDR_64_REGISTER: &str = "LDR_64_ldst_regoff";
 }
 
 written_forms! {
@@ -135,6 +138,7 @@ written_forms! {
     LDADDB,
     CAS,
     BRK,
+    SVC,
     UDF,
     ADD_EXTENDED,
     SUB_EXTENDED,
@@ -163,6 +167,8 @@ written_forms! {
     SYS,
     ADRP,
     ADR,
+    LDUR_32,
+    LDR_64_REGISTER,
 }
 
 /// Arm's names of the fields the encoder and its callers name.
@@ -190,11 +196,16 @@ mod field_name {
     pub const OPTION: &str = "option";
     pub const IMM3: &str = "imm3";
     pub const IMM7: &str = "imm7";
+    pub const IMM9: &str = "imm9";
     pub const O0: &str = "o0";
     pub const OP1: &str = "op1";
     pub const CRN: &str = "CRn";
     pub const CRM: &str = "CRm";
     pub const OP2: &str = "op2";
+    pub const S: &str = "S";
+    pub const SIZE: &str = "size";
+    pub const VR: &str = "VR";
+    pub const OPC: &str = "opc";
     pub const REGISTER: &str = "R";
 }
 
@@ -247,12 +258,19 @@ written_fields! {
     OPTION,
     IMM3,
     IMM7,
+    IMM9,
     /// A system register move's register's low bit of op0.
     O0,
     OP1,
     CRN,
     CRM,
     OP2,
+    /// A register offset's shift bit: 1 shifts the index by the access's size.
+    S,
+    /// A load or store's size, which with `VR` and `opc` names the access whatever its addressing.
+    SIZE,
+    VR,
+    OPC,
 }
 
 /// A name Arm's table gives fields: its place among every such name, [`field`]'s first and then the others in
@@ -507,15 +525,25 @@ pub fn move_constant(rd: Register, value: u64) -> Vec<u32> {
 /// of the lowest half, then a `movk` for each half below the top. Any other value takes [`move_constant`]'s.
 pub fn move_address(rd: Register, value: u64) -> Vec<u32> {
     let halves = u64::BITS / MOVE_BITS;
-    let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
-    let first = match half(halves - 1) {
-        0 => movz(rd, half(0), 0),
-        u16::MAX => move_of(*MOVN, rd, !half(0), 0),
-        _ => return move_constant(rd, value),
-    };
-    std::iter::once(first)
-        .chain((1..halves - 1).map(|h| movk(rd, half(h), h)))
+    if !matches!((value >> ((halves - 1) * MOVE_BITS)) as u16, 0 | u16::MAX) {
+        return move_constant(rd, value);
+    }
+    (0..halves as usize - 1)
+        .map(|part| move_address_word(rd, value, part))
         .collect()
+}
+
+/// Word `part` of [`move_address`]'s moves, made alone: a loader writes one word of an address at a time.
+pub fn move_address_word(rd: Register, value: u64, part: usize) -> u32 {
+    let halves = u64::BITS / MOVE_BITS;
+    let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
+    let h = u32::try_from(part).expect("a value builds in few words");
+    match (half(halves - 1), h) {
+        (0, 0) => movz(rd, half(0), 0),
+        (u16::MAX, 0) => move_of(*MOVN, rd, !half(0), 0),
+        (0 | u16::MAX, h) if h < halves - 1 => movk(rd, half(h), h),
+        _ => move_constant(rd, value)[part],
+    }
 }
 
 /// How far a direct branch reaches either way, in bytes.
@@ -699,6 +727,83 @@ pub fn load_store(
     LOADS_AND_STORES.word(form, [rt.into(), rn.into(), scaled])
 }
 
+/// A copied load or store of one register by a register offset, made to address `[rn, wM, uxtw]` (the index not
+/// shifted), whichever of its register-offset forms it was: the shifted form's option is fixed, so the extended
+/// form's fields are set on it.
+pub fn register_offset_uxtw(word: u32, rn: Register, rm: Register) -> Result<u32, DoesNotFit> {
+    let extended = form::LDR_64_REGISTER;
+    let option = Field::written(extended, field::OPTION);
+    let shift = Field::written(extended, field::S);
+    let word = shift.set(option.set(word, self::option(false, u32::BITS))?, 0)?;
+    let word = replace(word, field::RN, rn.into())?;
+    replace(word, field::RM, rm.into())
+}
+
+/// The fields that name a load or store of one register whatever its addressing.
+const ACCESS_KIND: [FieldName; 3] = [field::SIZE, field::VR, field::OPC];
+
+/// The groups of Arm's table whose loads and stores of one register address their base plus an immediate.
+const IMMEDIATE_OFFSET_GROUPS: [&str; 2] = ["ldst/ldst_pos", "ldst/ldst_unscaled"];
+
+/// The group of Arm's table whose loads and stores of one register address their base plus a register.
+const REGISTER_OFFSET_GROUP: &str = "ldst/ldst_regoff";
+
+/// A form's values of [`ACCESS_KIND`] in `word`.
+fn access_kind(form: &forms::Form, word: u32) -> [Option<u32>; ACCESS_KIND.len()] {
+    ACCESS_KIND.map(|name| Field::of(form, name).map(|f| (word >> f.low) & ((1 << f.width) - 1)))
+}
+
+/// The register-offset form that takes an index extended from 32 bits, by the access it makes.
+static EXTENDED_BY_KIND: LazyLock<HashMap<[Option<u32>; ACCESS_KIND.len()], &'static forms::Form>> =
+    LazyLock::new(|| {
+        let uxtw = option(false, u32::BITS);
+        (forms::all().iter())
+            .filter(|f| f.group == REGISTER_OFFSET_GROUP)
+            .filter(|f| {
+                let option = Field::of(f, field::OPTION).and_then(|o| o.set(fixed(f), uxtw).ok());
+                option
+                    .and_then(forms::form)
+                    .is_some_and(|g| std::ptr::eq(g, *f))
+            })
+            .map(|f| (access_kind(f, fixed(f)), f))
+            .collect()
+    });
+
+/// A copied load or store of one register at its base with no offset (an immediate of zero), made to address
+/// `[rn, wM, uxtw]` by the register-offset form of the same access; a word of no such form does not fit.
+pub fn register_offset_at_base(word: u32, rn: Register, rm: Register) -> Result<u32, DoesNotFit> {
+    let source = forms::form(word).ok_or(DoesNotFit)?;
+    if !IMMEDIATE_OFFSET_GROUPS.contains(&source.group.as_str()) {
+        return Err(DoesNotFit);
+    }
+    let immediate = [field::IMM12, field::IMM9]
+        .into_iter()
+        .find_map(|name| Field::of(source, name))
+        .ok_or(DoesNotFit)?;
+    if immediate.set(word, 0)? != word {
+        return Err(DoesNotFit);
+    }
+    let made = *EXTENDED_BY_KIND
+        .get(&access_kind(source, word))
+        .ok_or(DoesNotFit)?;
+    let rt = Field::of(source, field::RT).ok_or(DoesNotFit)?;
+    let values = [
+        (field::RT, (word >> rt.low) & ((1 << rt.width) - 1)),
+        (field::RN, rn.into()),
+        (field::RM, rm.into()),
+        (field::OPTION, option(false, u32::BITS)),
+        (field::S, 0),
+    ];
+    let word = (values.into_iter()).try_fold(fixed(made), |w, (name, value)| {
+        Field::of(made, name).ok_or(DoesNotFit)?.set(w, value)
+    })?;
+    // A prefetch whose operation the register-offset form gives to another instruction is refused.
+    match forms::form(word) {
+        Some(form) if std::ptr::eq(form, made) => Ok(word),
+        _ => Err(DoesNotFit),
+    }
+}
+
 /// The field `field` of a word of any form Arm's table has, set to `value`: a copied instruction with a register
 /// changed.
 pub fn replace(word: u32, field: FieldName, value: u32) -> Result<u32, DoesNotFit> {
@@ -805,6 +910,15 @@ pub fn bfi(rd: Register, rn: Register, lsb: u32, bits: u32) -> u32 {
 static LOAD_PAIRS: LazyLock<Kind<4>> =
     LazyLock::new(|| Kind::of([field::RT, field::RT2, field::RN, field::IMM7]));
 
+static LDUR_32: LazyLock<Shape<3>> =
+    LazyLock::new(|| Shape::written(form::LDUR_32, [field::RT, field::RN, field::IMM9]));
+
+/// `ldur wt, [rn, #offset]`, the offset in bytes either way.
+pub fn load_unscaled_32(rt: Register, rn: Register, offset: i64) -> Result<u32, DoesNotFit> {
+    let [.., imm9] = LDUR_32.fields;
+    LDUR_32.word([rt.into(), rn.into(), signed(offset, 1, imm9.width)?])
+}
+
 /// `ldp rt, rt2, [rn]` of 32-bit or 64-bit registers, by form.
 pub fn load_pair(form: Form, rt: Register, rt2: Register, rn: Register) -> u32 {
     LOAD_PAIRS
@@ -906,7 +1020,7 @@ fn moves_of_x0() -> FloatStatusMoves {
     } = *MSR_RT;
     let routed = |word| {
         let instruction = crate::decode_forms::decode(word, msr)?;
-        (<Arm64 as Native>::route(&instruction) == Route::FloatStatus)
+        (<Arm64 as Native>::route(&crate::Way::Machine, &instruction, &()) == Route::FloatStatus)
             .then(|| <Arm64 as Native>::stopping(&instruction, 0) == Stopping::FloatStatusWrite)
     };
     let (mut status, mut control) = (Vec::new(), Vec::new());
@@ -933,8 +1047,9 @@ fn moves_of_x0() -> FloatStatusMoves {
         mrs.presented(read_fpsr) && mrs.presented(read_fpcr),
         "the reads of the registers the writes name are presented"
     );
-    let read_routed = crate::decode_forms::decode(read_fpsr, mrs)
-        .is_some_and(|i| <Arm64 as Native>::route(&i) == Route::FloatStatus);
+    let read_routed = crate::decode_forms::decode(read_fpsr, mrs).is_some_and(|i| {
+        <Arm64 as Native>::route(&crate::Way::Machine, &i, &()) == Route::FloatStatus
+    });
     assert!(read_routed, "the read of the status register is routed");
     FloatStatusMoves {
         read_fpsr,
@@ -1375,6 +1490,96 @@ mod tests {
 
     /// A builder given a form of another kind places the values it can in order, so a value that does not fit
     /// before the missing field is refused, and the missing field is a fault of the caller.
+    #[test]
+    fn a_register_offset_access_is_made_unshifted_uxtw_from_either_form() {
+        // `ldrb w0, [x1, x2]` (the shifted form, its option fixed) and `ldr x3, [x4, w5, sxtw #3]` (the extended).
+        for word in [0x3862_6820, 0xf865_d883] {
+            let made = super::register_offset_uxtw(word, 24, 23).expect("a register-offset access");
+            let access = crate::decode(made).memory_access().expect("an access");
+            let unshifted_uxtw = crate::Address::Indexed {
+                base: crate::Reg::X(24),
+                index: crate::Reg::X(23),
+                extend: crate::Extend {
+                    signed: false,
+                    from_bits: 32,
+                },
+                shift: 0,
+            };
+            assert_eq!(access.address, unshifted_uxtw, "{word:#x} made {made:#x}");
+            assert_eq!(
+                crate::decode(made).memory_access().map(|m| m.bytes),
+                crate::decode(word).memory_access().map(|m| m.bytes),
+                "{word:#x}"
+            );
+        }
+    }
+
+    /// Every presented load or store of one register at a base plus an immediate, with the immediate zero, is made
+    /// the same access at `[x24, w23, uxtw]`; with any other immediate it is refused.
+    #[test]
+    fn an_access_at_its_base_is_made_register_offset_uxtw() {
+        let seed = knob(SEED, DEFAULT_SEED);
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let groups = super::IMMEDIATE_OFFSET_GROUPS;
+        let (mut made_count, mut refused) = (0, 0);
+        for source in forms::all()
+            .iter()
+            .filter(|f| groups.contains(&f.group.as_str()))
+        {
+            let immediate = [field::IMM12, field::IMM9]
+                .into_iter()
+                .find_map(|name| super::Field::of(source, name))
+                .expect("an immediate offset");
+            for _ in 0..16 {
+                let drawn = source.word(rng.u32(..));
+                let word = immediate.set(drawn, 0).expect("zero fits");
+                if !forms::form(word).is_some_and(|f| std::ptr::eq(f, source)) {
+                    continue;
+                }
+                let Ok(made) = super::register_offset_at_base(word, 24, 23) else {
+                    // Only a prefetch, which reaches no memory the guest sees, may have none.
+                    let access = crate::decode(word).memory_access();
+                    assert!(access.is_none(), "{} {word:#x} is refused", source.name);
+                    refused += 1;
+                    continue;
+                };
+                let form = forms::form(made).expect("a presented word");
+                assert_eq!(
+                    form.group,
+                    super::REGISTER_OFFSET_GROUP,
+                    "{word:#x} made {made:#x}"
+                );
+                assert_eq!(
+                    super::access_kind(form, made),
+                    super::access_kind(source, word)
+                );
+                assert_eq!(form.field(made, "Rt"), source.field(word, "Rt"));
+                if let Some(access) = crate::decode(word).memory_access() {
+                    let cut = crate::decode(made).memory_access().expect("an access");
+                    let unshifted_uxtw = crate::Address::Indexed {
+                        base: crate::Reg::X(24),
+                        index: crate::Reg::X(23),
+                        extend: crate::Extend {
+                            signed: false,
+                            from_bits: 32,
+                        },
+                        shift: 0,
+                    };
+                    assert_eq!(cut.address, unshifted_uxtw, "{word:#x} made {made:#x}");
+                    assert_eq!((cut.bytes, cut.write), (access.bytes, access.write));
+                }
+                made_count += 1;
+                let other = immediate.set(word, 1).expect("one fits");
+                assert_eq!(
+                    super::register_offset_at_base(other, 24, 23),
+                    Err(DoesNotFit)
+                );
+            }
+        }
+        assert!(made_count > 0);
+        println!("seed {seed}, {made_count} accesses made, {refused} prefetches refused");
+    }
+
     #[test]
     fn a_form_of_another_kind_is_refused_or_missing_in_field_order() {
         assert_eq!(

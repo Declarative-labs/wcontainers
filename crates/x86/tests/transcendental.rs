@@ -3,6 +3,7 @@
 //! control, ST(0), ST(1), the result, its C1 and precision flags, and for `fsincos` the sine, in hex), the
 //! trigonometric ones with the argument reduced by Intel's 66-bit π.
 
+use astro_float_num::Consts;
 use iced_x86::Mnemonic;
 use wcontainers_x86::Fxsave;
 use wcontainers_x86::x87::{
@@ -22,6 +23,7 @@ fn hex(s: &str) -> Extended {
 fn transcendental_results_are_correctly_rounded() {
     let mut failures = Vec::new();
     let mut count = 0;
+    let mut constants = Consts::new().expect("the constants cache");
     for line in CASES.lines() {
         let fields = line.split(' ').collect::<Vec<_>>();
         let [name, mode, x, y, want, flags, ..] = fields[..] else {
@@ -42,7 +44,7 @@ fn transcendental_results_are_correctly_rounded() {
         let mut area = vec![0u8; size_of::<Fxsave>()];
         let mut code = Code::new(operation);
         code.pops = u8::from(two);
-        let mut unit = Unit::new(&mut area, code, 0);
+        let mut unit = Unit::new(&mut area, code, 0, &mut constants);
         unit.area.fcw = CONTROL_AT_START & !(FIELD << ROUNDING_SHIFT) | rounding << ROUNDING_SHIFT;
         // ST(0) in R7, so that a push lands in R6.
         unit.area.fsw =
@@ -89,6 +91,7 @@ fyl2x 20008000000000000000 bffec256ef63c5e51f00 400bc250dcac4ac6efd7 below
 fyl2x 00028000000000000000 bffec256ef63c5e51f00 400cc24dd3508d37d843 above
 fyl2xp1 bffefff8000000000000 bfccd91ce50a1e25ab34 3fd0b0677a18387e9b1a below
 fyl2x 3ffe8000000000000000 bffec256ef63c5e51f01 3ffec256ef63c5e51f01 ruled";
+    let mut constants = Consts::new().expect("the constants cache");
     for line in CASES.lines() {
         let [name, x, y, want, side] = line.split(' ').collect::<Vec<_>>()[..] else {
             panic!("a case: {line}");
@@ -110,7 +113,7 @@ fyl2x 3ffe8000000000000000 bffec256ef63c5e51f01 3ffec256ef63c5e51f01 ruled";
         let mut area = vec![0u8; size_of::<Fxsave>()];
         let mut code = Code::new(operation);
         code.pops = 1;
-        let mut unit = Unit::new(&mut area, code, 0);
+        let mut unit = Unit::new(&mut area, code, 0, &mut constants);
         unit.area.fcw = CONTROL_AT_START;
         unit.area.fsw =
             (wcontainers_x86::x87::REGISTERS as u16 - 1) << wcontainers_x86::x87::TOP_SHIFT;

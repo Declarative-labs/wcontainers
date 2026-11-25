@@ -97,6 +97,36 @@ fn stop_flag_raised_while_running<G: GuestTest>() {
     }
 }
 
+/// Checks that a stop raised by another thread with the progress count kept is seen in the loop, as the flag is.
+fn stop_raised_while_running_with_the_count_kept<G: GuestTest>() {
+    let smoke = G::smoke();
+    for look_ahead in [LookAhead::None, LookAhead::Full] {
+        let mut machine =
+            Machine::<G>::new(1 << 20, LOAD, (PAGE / G::ALIGN) as u32, Syscalls::StandIn);
+        machine.keep_progress_count();
+        machine.set_permissions(LOAD..LOAD + PAGE, Permissions::READ | Permissions::EXECUTE);
+        machine.set_permissions(LOAD - PAGE..LOAD, Permissions::READ | Permissions::WRITE);
+        let code = &smoke.long_loop;
+        machine.load(code, 0..code.len() as u64, (LOAD, None), &[0], look_ahead);
+        machine.set_registers(&G::initial_block(LOAD, LOAD));
+        let raise = machine.stop_flag_raiser();
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            raise();
+        });
+        let (stopped, registers) = machine.run();
+        raiser.join().unwrap();
+        assert_eq!(stopped, Stopped::Finished(0), "{look_ahead:?}");
+        assert_eq!(machine.count(Reason::StoppedByFlag), 1, "{look_ahead:?}");
+        let seen_at = machine.warnings()[0].detail - LOAD;
+        assert!(
+            smoke.long_loop_body.contains(&seen_at),
+            "{look_ahead:?}: {seen_at:#x}"
+        );
+        assert_eq!(fields::<G>(&registers).0[smoke.long_loop_counter], 0);
+    }
+}
+
 /// An instruction of a feature we do not offer raises illegal instruction, at the instruction, and is
 /// counted as unsupported; bytes in no form raise it uncounted, as on any CPU.
 fn instructions_not_offered_are_illegal_and_counted<G: GuestTest>() {
@@ -147,6 +177,11 @@ fn stop_flag_raised_while_running_arm64() {
 }
 
 #[test]
+fn stop_raised_while_running_with_the_count_kept_arm64() {
+    stop_raised_while_running_with_the_count_kept::<Arm64>();
+}
+
+#[test]
 fn instructions_not_offered_are_illegal_and_counted_arm64() {
     instructions_not_offered_are_illegal_and_counted::<Arm64>();
 }
@@ -174,6 +209,11 @@ fn slow_paths_are_counted_and_warned_once_per_place_x86_64() {
 #[test]
 fn stop_flag_raised_while_running_x86_64() {
     stop_flag_raised_while_running::<X86_64>();
+}
+
+#[test]
+fn stop_raised_while_running_with_the_count_kept_x86_64() {
+    stop_raised_while_running_with_the_count_kept::<X86_64>();
 }
 
 #[test]

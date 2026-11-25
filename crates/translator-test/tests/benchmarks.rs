@@ -289,6 +289,101 @@ fn measure_benchmarks_x86_64() {
     measure_benchmarks::<wcontainers_x86::X86_64>();
 }
 
+/// The benchmark set built for x86-64, run on this machine plainly and through the x86-64 native output
+/// (docs/x86-native-output.md section 8), its pieces at full look-ahead linked in a blob of their own, without and
+/// with the count, for a host process and in process with each checked form; best of `WC_BENCH_RUNS` (default 5)
+/// each, with the geometric mean of the ratios to the host's run and, in process, to the host process's run (the
+/// unchecked form). Linux x86-64 only, where the reference is this machine. `WC_BENCH_WORKLOADS` as above;
+/// `WC_BENCH_WAYS` names some of `process`, `wrapping` and `exact` (default all).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore]
+fn measure_benchmarks_natively_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::native_programs::run_timed;
+    use wcontainers_translator_test::reference::with_reference;
+    use wcontainers_x86::native::{Check, Way};
+    let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(5, |v| v.parse().unwrap());
+    let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS").map_or((1..=8).collect(), |v| {
+        v.split(',').map(|n| n.parse().unwrap()).collect()
+    });
+    let named = std::env::var("WC_BENCH_WAYS").ok();
+    let ways: Vec<(&str, Way)> = [
+        ("process", Way::Process),
+        ("wrapping", Way::InProcess(Check::Wrapping)),
+        ("exact", Way::InProcess(Check::Exact)),
+    ]
+    .into_iter()
+    .filter(|(name, _)| {
+        named
+            .as_deref()
+            .is_none_or(|n| n.split(',').any(|n| n == *name))
+    })
+    .collect();
+    // By way and count: the ratios to the host's run, and to the host process's.
+    let mut ratios = vec![[(Vec::new(), Vec::new()), (Vec::new(), Vec::new())]; ways.len()];
+    for k in chosen {
+        let name = WORKLOADS[k - 1];
+        let workload = format!("WORKLOAD={k}");
+        let blob = build_with::<X86_64>(
+            "bench",
+            "-O2",
+            Library::None,
+            &["SCALE=1", &workload],
+            Position::Fixed,
+        );
+        let expected = native::<X86_64>(&blob);
+        let plain = native_seconds::<X86_64>(&blob, runs);
+        eprintln!("{name}: on the host {plain:.3} s (load {})", load());
+        let mut unchecked = [None, None];
+        for ((way_name, way), ratios) in ways.iter().zip(&mut ratios) {
+            for ((to_host, to_unchecked), counted) in ratios.iter_mut().zip([false, true]) {
+                let (ours, seconds) = with_reference(&X86_64::REFERENCE, |reference| {
+                    run_timed(reference, &blob, (*way, LookAhead::Full), counted, runs)
+                })
+                .unwrap_or_else(|e| panic!("{name} {way_name}: {e}"));
+                assert_eq!(ours.ran, expected, "{name} {way_name}, counted {counted}");
+                let ratio = seconds / plain;
+                to_host.push(ratio);
+                let against = match (way, unchecked[usize::from(counted)]) {
+                    (Way::Process, _) => {
+                        unchecked[usize::from(counted)] = Some(seconds);
+                        String::new()
+                    }
+                    (_, Some(p)) => {
+                        to_unchecked.push(seconds / p);
+                        format!(", {:.3} times the unchecked form's", seconds / p)
+                    }
+                    (_, None) => String::new(),
+                };
+                eprintln!(
+                    "{name}: native output {way_name} at full, counted {counted}: {seconds:.3} s, {ratio:.3} times the host's{against} ({} pieces, made in {} runs; load {})",
+                    ours.pieces,
+                    ours.runs,
+                    load()
+                );
+            }
+        }
+    }
+    let mean = |r: &[f64]| (r.iter().map(|r| r.ln()).sum::<f64>() / r.len() as f64).exp();
+    let most = |r: &[f64]| r.iter().copied().fold(0.0, f64::max);
+    for ((way_name, _), ratios) in ways.iter().zip(&ratios) {
+        for ((to_host, to_unchecked), counted) in ratios.iter().zip([false, true]) {
+            eprintln!(
+                "native output {way_name} at full, counted {counted}: geometric mean {:.3} times the host's, the most {:.3}",
+                mean(to_host),
+                most(to_host)
+            );
+            if !to_unchecked.is_empty() {
+                eprintln!(
+                    "native output {way_name} at full, counted {counted}: geometric mean {:.3} times the unchecked form's, the most {:.3}",
+                    mean(to_unchecked),
+                    most(to_unchecked)
+                );
+            }
+        }
+    }
+}
+
 /// x86-64's 128-by-64 long division (`programs/x86_64/divide.c`) against the CPU's own `div`: each with a
 /// high half (the long path) and with none (the fast path), natively on the reference and at look-ahead none
 /// in wasmtime here; their difference is the long path's own cost a division.

@@ -17,7 +17,7 @@ wcontainers-kernel = { path = "../kernel" }
 bitflags.workspace = true
 # x86-64's forms, cases and disassembly, from iced's own tables, and layer 2's assembler (MIT).
 iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "encoder", "code_asm", "op_code_info", "instr_info", "intel"] }
-wcontainers-translator = { path = "../translator", features = ["measure"] }
+wcontainers-translator = { path = "../translator", features = ["measure", "native"] }
 wcontainers-docker = { path = "../docker" }
 wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
 wasm-encoder = "0.263.0"
@@ -25,7 +25,7 @@ proptest = "1.12.0"
 dynasmrt = "5.1.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
-object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }
+object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "archive", "std"] }
 gimli = { version = "0.34.0", default-features = false, features = ["read", "std"] }
 zerocopy.workspace = true
 rayon = "1.12.0"
@@ -42,9 +42,20 @@ rustc-hash = "2.1.3"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "general", "no_std"] }
 # Bounds each zig build (src/programs.rs).
 wait-timeout = "0.2.1"
+# Names the browser translator's wasm-bindgen exports, as its command-line tool does; the same version as
+# browser/Cargo.toml's wasm-bindgen (MIT OR Apache-2.0).
+wasm-bindgen-cli-support = "=0.2.130"
+
+# The stop frame's layout and the system calls of the native output's layer 1 blob (MIT OR Apache-2.0).
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = "0.2.191"
 
 [dev-dependencies]
 flate2 = "1.1"
+
+# The CPU's own reciprocal estimates for tests/reciprocals.rs, through safe calls (Zlib OR Apache-2.0 OR MIT).
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
+safe_arch = "1.2.0"
 
 [lints]
 workspace = true
