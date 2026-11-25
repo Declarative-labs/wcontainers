@@ -23,7 +23,7 @@ use wcontainers_directx_graphics_infrastructure::d3d::{
     PipelineStatistics, StreamOutputStatistics,
 };
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
+    Gpu, BufferDesc, BufferUsage, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
 };
 use wcontainers_shaders::stage::STREAMS;
 
@@ -128,7 +128,7 @@ fn stream_of(kind: u32) -> Option<usize> {
 /// Primitives written and needed, per geometry stream.
 pub(crate) type Streamed = [[u64; 2]; STREAMS];
 
-impl<B: Backend> Queries<B> {
+impl<B: Gpu> Queries<B> {
     /// Whether any query counting draws runs.
     pub(crate) fn running_any(&self) -> bool {
         !(self.running.is_empty()
@@ -165,19 +165,19 @@ fn answered_at_end(kind: u32) -> bool {
 }
 
 /// An occlusion set, shared by the stretches counted into it.
-type Set<B> = Rc<Kept<B, <B as Backend>::QuerySet>>;
+type Set<B> = Rc<Kept<B, <B as Gpu>::QuerySet>>;
 
 /// A buffer of counted stretches' sums, shared by the stretches written into it.
-type Sums<B> = Rc<Kept<B, <B as Backend>::Buffer>>;
+type Sums<B> = Rc<Kept<B, <B as Gpu>::Buffer>>;
 
 /// A stretch of an occlusion query: a slot of a set (predicates), or the place in a buffer the
 /// occlusion counter wrote a counted query's stretch into.
-enum Part<B: Backend> {
+enum Part<B: Gpu> {
     Slot { set: Set<B>, slot: u32 },
     Sum { sums: Sums<B>, offset: u64 },
 }
 
-enum State<B: Backend> {
+enum State<B: Gpu> {
     /// Never ended.
     Fresh,
     /// An occlusion query begun and not yet ended: the stretches it ran in so far.
@@ -194,7 +194,7 @@ enum State<B: Backend> {
     Done(Answer),
 }
 
-pub struct Query<B: Backend> {
+pub struct Query<B: Gpu> {
     /// `D3D11_QUERY_DESC`'s query and misc flags.
     pub kind: u32,
     pub misc: u32,
@@ -217,7 +217,7 @@ const NOT_A_QUERY: &str = "not a query Direct3D 11 has";
 const STREAM_QUERIES_BELOW_11_0: &str = "per-stream stream output queries need feature level 11_0";
 
 /// The device's occlusion sets and the predicates running.
-pub(crate) struct Queries<B: Backend> {
+pub(crate) struct Queries<B: Gpu> {
     /// Occlusion predicates begun and not ended.
     running: Vec<Rc<Query<B>>>,
     /// Counted occlusion queries begun and not ended.
@@ -243,7 +243,7 @@ pub(crate) struct Queries<B: Backend> {
     pub(crate) fence: Option<B::Fence>,
 }
 
-impl<B: Backend> Queries<B> {
+impl<B: Gpu> Queries<B> {
     pub fn new() -> Self {
         Queries {
             running: Vec::new(),
@@ -262,7 +262,7 @@ impl<B: Backend> Queries<B> {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     pub fn create_query(&mut self, kind: u32, misc: u32) -> Result<Rc<Query<B>>> {
         if data_size(kind).is_none() || misc & !1 != 0 {
             return Err(Error::InvalidArg(NOT_A_QUERY));

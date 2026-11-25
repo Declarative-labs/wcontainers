@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
+    AddressMode, Gpu, BlendComponent, BlendFactor, BlendOp, BorderColor,
     BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode,
     Filter, Format, FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS,
@@ -26,7 +26,7 @@ use wcontainers_directx_graphics_infrastructure::dxgi;
 
 /// The helper constants of both draw stages as written into the back end's data ring, the indirect
 /// arguments buffer bound beside them (by id, 0 for none), and the set binding them.
-pub(crate) struct HelperBlocks<B: Backend> {
+pub(crate) struct HelperBlocks<B: Gpu> {
     pub blocks: [Vec<u8>; 2],
     pub arguments: u64,
     /// The ids of the merged samplers bound beside the blocks.
@@ -41,18 +41,18 @@ pub(crate) struct HelperBlocks<B: Backend> {
 /// (0 for none) and variant.
 /// A compute helper block as written and its binding set.
 /// A compute program's helper block, the merged samplers' identities and the binding set of both.
-pub(crate) type ComputeHelpers<B> = (Vec<u8>, Vec<u64>, Kept<B, <B as Backend>::BindingSet>);
+pub(crate) type ComputeHelpers<B> = (Vec<u8>, Vec<u64>, Kept<B, <B as Gpu>::BindingSet>);
 
 pub(crate) type ProgramKey = (u64, StageVariant, u64, StageVariant);
 
 /// A linked program and where its two stages read their helper constants.
-pub(crate) struct Linked<B: Backend> {
+pub(crate) struct Linked<B: Gpu> {
     pub program: Kept<B, B::Program>,
     pub helpers: [Rc<Helpers>; 2],
 }
 
 /// A shader converted again as a variant, and where it reads its helper constants.
-pub(crate) struct Variant<B: Backend> {
+pub(crate) struct Variant<B: Gpu> {
     pub shader: Kept<B, B::Shader>,
     /// The content key of its module.
     pub key: [u8; 32],
@@ -69,7 +69,7 @@ pub(crate) type LayoutKey = (u64, [u32; 32], u64);
 pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64, Option<u32>);
 
 /// A Direct3D 11 device and its immediate context on back end `B`.
-pub struct Device<B: Backend> {
+pub struct Device<B: Gpu> {
     pub backend: B,
     pub(crate) graveyard: SharedGraveyard<B>,
     next_id: u64,
@@ -140,7 +140,7 @@ pub struct Device<B: Backend> {
 
 /// What empty slots read, made at their first use: Direct3D reads zeros from an empty vertex,
 /// constant or texture slot, and samples with its default sampler state through an empty sampler slot.
-pub(crate) struct Zeros<B: Backend> {
+pub(crate) struct Zeros<B: Gpu> {
     /// The largest constant buffer's bytes of zeros, also past any vertex element's offset.
     pub buffer: Option<Kept<B, B::Buffer>>,
     /// The same bytes for empty structured and raw buffer slots.
@@ -153,7 +153,7 @@ pub(crate) struct Zeros<B: Backend> {
 }
 
 /// A texture of zeros and its view.
-pub(crate) struct ZeroView<B: Backend> {
+pub(crate) struct ZeroView<B: Gpu> {
     _texture: Kept<B, B::Texture>,
     view: Kept<B, B::TextureView>,
 }
@@ -188,7 +188,7 @@ fn gpu_error(e: GpuError) -> Error {
 }
 
 /// The blocks a `None` state stands for.
-pub(crate) struct Defaults<B: Backend> {
+pub(crate) struct Defaults<B: Gpu> {
     pub blend: Rc<Blend<B>>,
     pub depth_stencil: Rc<DepthStencil<B>>,
     pub raster: Rc<Rasterizer<B>>,
@@ -374,7 +374,7 @@ pub use wcontainers_gpu::CUBE_FACES;
 
 /// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
 /// two cubes of one texel, made and destroyed.
-fn makes_cube_arrays<B: Backend>(backend: &mut B) -> bool {
+fn makes_cube_arrays<B: Gpu>(backend: &mut B) -> bool {
     let made = backend.create_texture(&GpuTexture {
         dimension: TextureDimension::D2,
         format: Format::Rgba8Unorm,
@@ -390,7 +390,7 @@ fn makes_cube_arrays<B: Backend>(backend: &mut B) -> bool {
     made.map(|t| backend.destroy(Object::Texture(t))).is_ok()
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves
     /// with every format requirement of Microsoft's tables met.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
@@ -3353,7 +3353,7 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
 /// The sampler's state as programs that filter or address in the program read it
 /// (`HelperValue::SamplerState`): filters and address modes as codes in the order of the interface's
 /// enums, the anisotropy, then the level range.
-pub(crate) fn sampler_state(s: &Sampler<impl Backend>) -> [u32; 9] {
+pub(crate) fn sampler_state(s: &Sampler<impl Gpu>) -> [u32; 9] {
     let m = &s.made;
     let mut words = [0; 9];
     for (w, f) in words.iter_mut().zip([m.min, m.mag, m.mip]) {

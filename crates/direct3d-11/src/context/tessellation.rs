@@ -24,7 +24,7 @@ pub(super) const THROUGH_BEHIND_HULL: &str =
     "storage textures read through buffers behind a hull shader";
 
 /// The stage helper of one vertex shader, input layout, hull, domain and pixel shader.
-pub(crate) struct TessRun<B: Backend> {
+pub(crate) struct TessRun<B: Gpu> {
     /// Out while a draw runs it.
     stages: Option<Stages<B>>,
     /// Where the vertex stage's compute form reads its helper constants and fetched streams.
@@ -35,7 +35,7 @@ pub(crate) struct TessRun<B: Backend> {
 /// The draw of tessellated points: the domain program converted for the pixel shader's
 /// interpolation, the id programs of it are cached by, and the layout of a draw without vertex
 /// streams.
-pub(crate) struct DomainDraw<B: Backend> {
+pub(crate) struct DomainDraw<B: Gpu> {
     pub(super) shader: Kept<B, B::Shader>,
     pub(super) id: u64,
     no_streams: Kept<B, B::VertexLayout>,
@@ -49,7 +49,7 @@ pub(super) fn patch_points(t: u32) -> Option<u8> {
 }
 
 /// A buffer range the domain program reads.
-fn read_only<B: Backend>(binding: u32, range: &BufferRange<B::Buffer>) -> BindingEntry<'_, B> {
+fn read_only<B: Gpu>(binding: u32, range: &BufferRange<B::Buffer>) -> BindingEntry<'_, B> {
     BindingEntry {
         binding,
         stages: StageSet::VERTEX,
@@ -64,7 +64,7 @@ fn read_only<B: Backend>(binding: u32, range: &BufferRange<B::Buffer>) -> Bindin
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The stage helper of the bound shaders, made at their first draw together.
     fn make_tessellated(
         &mut self,

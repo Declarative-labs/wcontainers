@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH,
+    AspectOps, Gpu, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH,
     ClearValue, ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
     DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
     EmptyPass, Extent, FORMAT_FACTS, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET,
@@ -65,7 +65,7 @@ const STREAM_OUTPUT_SLOTS: usize = 4;
 /// The binding set a stage's program reads its slots from.
 /// The bytes a constant buffer window of `(first, count)` 16-byte constants covers: offset and
 /// length, cut at the buffer's end.
-fn window_of<B: Backend>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64) {
+fn window_of<B: Gpu>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64) {
     let offset = u64::from(first) * 16;
     let length = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
     (offset, length)
@@ -97,7 +97,7 @@ pub(crate) fn set_of(stage: usize) -> u32 {
 
 /// The interpolation the pixel shader `ps` reads its inputs with where it is not the default, by
 /// location: the stage before it writes its outputs so.
-fn interpolation<B: Backend>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {
+fn interpolation<B: Gpu>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {
     let mut interpolation: Vec<(u32, Interpolation)> = ps
         .iter()
         .flat_map(|p| &p.reflection.inputs)
@@ -117,7 +117,7 @@ pub(crate) const VERTEX_SLOTS: usize = 32;
 const VIEWPORTS: usize = 16;
 
 /// A clear recorded but not yet run: it becomes the next pass's load, or a `clear_texture`.
-struct PendingClear<B: Backend> {
+struct PendingClear<B: Gpu> {
     view: Rc<View<B>>,
     value: ClearValue,
 }
@@ -129,7 +129,7 @@ pub struct Mapped {
     pub depth_pitch: u32,
 }
 
-pub struct ContextState<B: Backend> {
+pub struct ContextState<B: Gpu> {
     vs: Option<Rc<Shader<B>>>,
     ps: Option<Rc<Shader<B>>>,
     cs: Option<Rc<Shader<B>>>,
@@ -218,7 +218,7 @@ pub struct ContextState<B: Backend> {
     predication: Option<(Rc<crate::query::Query<B>>, bool)>,
 }
 
-impl<B: Backend> ContextState<B> {
+impl<B: Gpu> ContextState<B> {
     pub fn new() -> Self {
         ContextState {
             vs: None,
@@ -280,7 +280,7 @@ impl<B: Backend> ContextState<B> {
     }
 }
 
-impl<B: Backend> Default for ContextState<B> {
+impl<B: Gpu> Default for ContextState<B> {
     fn default() -> Self {
         Self::new()
     }
@@ -520,7 +520,7 @@ fn half(e: Extent) -> Extent {
 }
 
 /// The back end's object a draw binds for an empty slot.
-enum Zero<B: Backend> {
+enum Zero<B: Gpu> {
     /// A buffer of zeros, bound for this many bytes.
     Buffer(B::Buffer, u64),
     View(B::TextureView),
@@ -647,7 +647,7 @@ fn argument_words<const N: usize>(bytes: &[u8]) -> [u32; N] {
     std::array::from_fn(|i| words.get(i).copied().map_or(0, u32::from_le_bytes))
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     pub fn vs_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
         if !same(&self.ctx.vs, &shader) {
             self.ctx.vs = shader;
@@ -6174,7 +6174,7 @@ impl<B: Backend> Device<B> {
 }
 
 /// The same range again, for a draw's call built twice.
-fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
+fn same_range<'a, B: Gpu>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
     match *r {
         DrawRange::Vertices {
             first,
@@ -6312,7 +6312,7 @@ fn pixel_rect([l, t, r, b]: Rect) -> ScissorRect {
 
 /// A target view's clear value of `color`: integer formats take each value as a target clear
 /// converts it.
-fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
+fn color_value<B: Gpu>(view: &View<B>, color: Color) -> ClearValue {
     ClearValue::Color(if let Some(f) = view.decoded {
         color.map(|c| format::encode_norm(f, c))
     } else if integer_format(view.format) {

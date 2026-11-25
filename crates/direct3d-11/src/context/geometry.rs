@@ -18,7 +18,7 @@ use wcontainers_shaders::stage::{
 
 /// The stage helper of one vertex shader, input layout, hull and domain shader where bound,
 /// geometry shader object and pixel shader.
-pub(crate) struct StageRun<B: Backend> {
+pub(crate) struct StageRun<B: Gpu> {
     /// Out while a draw runs it.
     stages: Option<Stages<B>>,
     /// On a back end without compute programs, the geometry stage's replay in place of `stages`.
@@ -114,7 +114,7 @@ fn stage_error(e: StageError) -> Error {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     fn staged_error(&mut self, e: StageError) -> Error {
         match e {
             StageError::Gpu(e) => self.gpu::<()>(Err(e)).unwrap_err(),

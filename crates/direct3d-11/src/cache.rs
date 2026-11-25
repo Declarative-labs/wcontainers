@@ -8,7 +8,7 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{
-    Backend, BindingLayoutKey, BlendDesc, DepthStencilDesc, MAX_BINDING_SETS, PrepareDesc,
+    Gpu, BindingLayoutKey, BlendDesc, DepthStencilDesc, MAX_BINDING_SETS, PrepareDesc,
     RasterDesc, TargetLayout, Topology, VariantKey, VertexLayoutDesc,
 };
 use wcontainers_shaders::cache::{self as file, Cache, Kind};
@@ -130,7 +130,7 @@ pub(crate) fn record(r: &Record) {
 /// What the program's start built from the record, held until the program makes the same
 /// shaders: back-end pipelines are keyed by their objects, so a program built here is the one
 /// the first draw of its pair takes.
-pub(crate) struct Warm<B: Backend> {
+pub(crate) struct Warm<B: Gpu> {
     /// Programs by their modules' content keys.
     pub programs: HashMap<ModuleKeys, Kept<B, B::Program>>,
     /// Each combination built, and whether it was drawn since.
@@ -141,14 +141,14 @@ pub(crate) struct Warm<B: Backend> {
     pub unbuilt: u64,
 }
 
-struct WarmBlocks<B: Backend> {
+struct WarmBlocks<B: Gpu> {
     _blend: Kept<B, B::Blend>,
     _depth_stencil: Kept<B, B::DepthStencil>,
     _raster: Kept<B, B::Raster>,
     _vertex_layout: Kept<B, B::VertexLayout>,
 }
 
-impl<B: Backend> Default for Warm<B> {
+impl<B: Gpu> Default for Warm<B> {
     fn default() -> Self {
         Warm {
             programs: HashMap::new(),
@@ -159,7 +159,7 @@ impl<B: Backend> Default for Warm<B> {
     }
 }
 
-impl<B: Backend> Warm<B> {
+impl<B: Gpu> Warm<B> {
     /// Builds every recorded combination at the program's first device; later devices of the
     /// process build nothing. `id` numbers the objects made.
     pub fn start(

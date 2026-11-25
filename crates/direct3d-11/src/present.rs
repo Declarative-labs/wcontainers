@@ -8,14 +8,14 @@ use std::rc::Rc;
 use wcontainers_directx_graphics_infrastructure::{
     Model, SwapChain, SwapChainDesc, SwapChainError,
 };
-use wcontainers_gpu::{Backend, GpuError};
+use wcontainers_gpu::{Gpu, GpuError};
 
 use crate::desc::{TexDim, TextureDesc, bind};
 use crate::object::{ChainBuffer, Kept, Texture};
 use crate::{Device, Error, Result};
 
 /// A swap chain and the textures standing for its back buffers.
-pub struct Chain<B: Backend> {
+pub struct Chain<B: Gpu> {
     chain: SwapChain<B>,
     buffers: Vec<Rc<Texture<B>>>,
     /// Bind flags of the back buffers (render target, and shader resource or unordered access as
@@ -26,7 +26,7 @@ pub struct Chain<B: Backend> {
     unretired: Option<VecDeque<B::Fence>>,
 }
 
-impl<B: Backend> Chain<B> {
+impl<B: Gpu> Chain<B> {
     pub fn desc(&self) -> &SwapChainDesc {
         self.chain.desc()
     }
@@ -65,7 +65,7 @@ fn chain_error(e: SwapChainError) -> Error {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// A swap chain on host window `window`, its back buffers bound as `bind` says; `waitable`
     /// makes it count its frames retired for a frame latency waitable object.
     pub fn create_swap_chain(

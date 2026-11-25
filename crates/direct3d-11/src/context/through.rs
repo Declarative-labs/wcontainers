@@ -16,7 +16,7 @@ const COMPARED_FORMAT_UNCLAIMED: &str =
 const COMPARED_VIEW_INVALID: &str = "a comparison through a multisampled or 3D view";
 
 /// A storage view of a stage read through a buffer, and the copies around its uses.
-pub(crate) struct Through<B: Backend> {
+pub(crate) struct Through<B: Gpu> {
     register: u32,
     texture: Rc<Texture<B>>,
     mip: u32,
@@ -31,7 +31,7 @@ pub(crate) struct Through<B: Backend> {
     why: SlowPath,
 }
 
-impl<B: Backend> Through<B> {
+impl<B: Gpu> Through<B> {
     pub(super) fn register(&self) -> u32 {
         self.register
     }
@@ -48,7 +48,7 @@ impl<B: Backend> Through<B> {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Why `stage`'s shader reads its storage view at `register` through a buffer, where it does.
     pub(super) fn reads_through(&self, stage: usize, register: u32) -> Option<SlowPath> {
         let s = self.stage_shader(stage).as_ref()?;
@@ -185,7 +185,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-fn region<'a, B: Backend>(t: &Through<B>, texture: &'a B::Texture) -> TextureRegion<'a, B> {
+fn region<'a, B: Gpu>(t: &Through<B>, texture: &'a B::Texture) -> TextureRegion<'a, B> {
     TextureRegion {
         texture,
         mip: t.mip,
@@ -199,7 +199,7 @@ fn region<'a, B: Backend>(t: &Through<B>, texture: &'a B::Texture) -> TextureReg
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Copies the levels and layers view `v` sees between its texture and its twin: into the twin
     /// before a use, out of it after a write.
     pub(super) fn copy_twin(&mut self, v: &View<B>, into: bool) {

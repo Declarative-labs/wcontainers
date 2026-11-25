@@ -16,7 +16,7 @@ use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, Vie
 use wcontainers_direct3d_11::{
     DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
-use wcontainers_gpu::{Backend, LossReason, SLOW_PATH_REASONS, SlowPath, SourceStage};
+use wcontainers_gpu::{Gpu, LossReason, SLOW_PATH_REASONS, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
 
