@@ -38,7 +38,7 @@ rustix = { version = "1.1.6", default-features = false, features = ["std", "fs",
 [dev-dependencies]
 wcontainers-kvm-conformance = { path = "../../conformance" }
 
-# The bindings of an outside API: it denies unsafe code, so that each of its 9 uses is marked.
+# The bindings of an outside API: it denies unsafe code, so that each of its 20 uses is marked.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
