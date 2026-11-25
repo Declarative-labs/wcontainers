@@ -15,6 +15,16 @@ path = "implementation.rs"
 name = "conformance"
 path = "conformance_run.rs"
 
+# DEFAULT BEHAVIORS: every modeled instruction measured on this host's chip, timed
+[[example]]
+name = "default_behaviors"
+path = "default_behaviors.rs"
+
+# STATE COUNTS: the full product and the cut of each class, and a hash of every generated state
+[[example]]
+name = "state_counts"
+path = "state_counts.rs"
+
 [dependencies]
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
@@ -23,7 +33,8 @@ wcontainers-processor-architecture = { path = "../../../processor-architecture" 
 wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+wcontainers-instruction-input-domain = { path = "../../../instruction-input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }

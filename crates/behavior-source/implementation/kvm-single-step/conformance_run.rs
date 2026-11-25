@@ -4,11 +4,11 @@
 
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_behavior_source_kvm_single_step::KvmSingleStepMachine;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
+use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, DataAccess, InstructionFetch, PagePermission, User, ZERO_PROCESSOR,
+    Arm64, DataAccess, ExclusiveMonitor, InstructionFetch, PagePermission, Processor, User,
+    ZERO_PROCESSOR,
 };
 
 fn chip() -> KvmSingleStepMachine {
@@ -18,7 +18,8 @@ fn chip() -> KvmSingleStepMachine {
     }
 }
 
-/// States the chip cannot run: a permission that starts inside a page, and more mapped pages than the guest has.
+/// States the chip cannot run: a permission that starts inside a page, more mapped pages than the guest has, and an
+/// exclusive monitor that holds an address.
 fn to_unexecutable() -> Vec<ExecutionState<'static, Arm64<User>>> {
     let read_write = PagePermission::Mapped {
         data_access: DataAccess::ReadWrite,
@@ -36,11 +37,18 @@ fn to_unexecutable() -> Vec<ExecutionState<'static, Arm64<User>>> {
             permission: read_write,
         }],
     })
+    .chain([ExecutionState {
+        processor: Processor {
+            exclusive_monitor: ExclusiveMonitor::Exclusive { address: PAGE_SIZE },
+            ..ZERO_PROCESSOR
+        },
+        memory_mutations: Vec::new(),
+    }])
     .collect()
 }
 
 wcontainers_behavior_source_conformance::tests!(
     chip(),
-    CriticalValueProduct::new(Arm64InputDomain),
+    CriticalValueCut::default(),
     to_unexecutable()
 );

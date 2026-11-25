@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+build = "build.rs"
 
 [lib]
 path = "implementation.rs"
@@ -15,6 +16,16 @@ path = "implementation.rs"
 name = "conformance"
 path = "conformance_run.rs"
 
+# PLANTED BUGS: every bug the checks planted, one at a time, against the chip
+[[example]]
+name = "planted_bugs"
+path = "planted_bugs.rs"
+required-features = ["planted"]
+
+[features]
+# Lets a check turn on one planted bug of `planted::PLANTED_BUGS`; nothing else turns it on.
+planted = []
+
 [dependencies]
 wcontainers-processor-architecture = { path = "../.." }
 wcontainers-privilege-level = { path = "../../../privilege-level" }
@@ -22,10 +33,14 @@ wcontainers-privilege-level-arm64-user = { path = "../../../privilege-level/impl
 bitflags.workspace = true
 
 [dev-dependencies]
+wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-processor-architecture-conformance = { path = "../../conformance" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
-wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+
+# The chip the planted bugs are measured on.
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
+wcontainers-behavior-source-kvm-single-step = { path = "../../../behavior-source/implementation/kvm-single-step" }
 
 [lints]
 workspace = true

@@ -3,8 +3,7 @@ use std::path::Path;
 
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
+use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, User};
@@ -24,9 +23,9 @@ fn recording() -> Recording {
     }
 }
 
-/// Measures every instruction on the recording with the critical value product.
+/// Measures every instruction on the recording with the ARM64 state generator.
 fn measure_recording() -> Vec<(Instruction<Infallible>, PreciseInstruction<Infallible>)> {
-    match recording().measure_instructions(&CriticalValueProduct::new(Arm64InputDomain)) {
+    match recording().measure_instructions(&CriticalValueCut::default()) {
         Ok(measurements) => measurements,
         Err(_) => panic!("the recording shows one known behavior of every instruction"),
     }

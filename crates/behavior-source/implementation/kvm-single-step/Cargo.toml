@@ -50,8 +50,7 @@ object = { version = "0.37.3", default-features = false, features = ["read_core"
 
 [dev-dependencies]
 wcontainers-behavior-source-conformance = { path = "../../conformance" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
-wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
 
 [lints]
 workspace = true

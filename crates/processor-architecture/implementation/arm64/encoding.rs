@@ -1,4 +1,4 @@
-//! Where the operands of the ten instructions sit in their encodings.
+//! Where operands sit in an instruction's encoding.
 
 use core::convert::Infallible;
 
@@ -12,6 +12,10 @@ pub struct Field {
 }
 
 impl Field {
+    pub const fn new(lowest_bit: u32, width: u32) -> Self {
+        Self { lowest_bit, width }
+    }
+
     pub const fn to_mask(self) -> u32 {
         (((1_u64 << self.width) - 1) as u32) << self.lowest_bit
     }
@@ -37,6 +41,12 @@ impl Field {
 pub struct FixedBits {
     pub mask: u32,
     pub value: u32,
+}
+
+impl FixedBits {
+    pub const fn is_matching(self, word: u32) -> bool {
+        word & self.mask == self.value
+    }
 }
 
 pub const RD: Field = Field {
@@ -101,28 +111,13 @@ pub const RDVL_IMM6: Field = Field {
 
 impl Instruction<Infallible> {
     pub const fn to_fixed_bits(self) -> FixedBits {
-        let (mask, value) = match self {
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--shifted-register---Add-optionally-shifted-register-
-            Self::AddShiftedRegister64 => (0xFF20_0000, 0x8B00_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--shifted-register---Add-optionally-shifted-register--setting-flags-
-            Self::AddsShiftedRegister64 => (0xFF20_0000, 0xAB00_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select-
-            Self::Csel64 => (0xFFE0_0C00, 0x9A80_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--#:~:text=Unsigned%20offset
-            Self::LdrImmediateUnsignedOffset64 => (0xFFC0_0000, 0xF940_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--#:~:text=Unsigned%20offset
-            Self::StrImmediateUnsignedOffset64 => (0xFFC0_0000, 0xF900_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STP--Store-pair-of-registers-#:~:text=Signed%20offset
-            Self::StpSignedOffset64 => (0xFFC0_0000, 0xA900_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--#:~:text=Post%2Dindex
-            Self::LdrImmediatePostIndex64 => (0xFFE0_0C00, 0xF840_0400),
-            // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BRK--Breakpoint-instruction-
-            Self::Brk => (0xFFE0_001F, 0xD420_0000),
-            // https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/RDVL--Read-multiple-of-vector-register-size-to-scalar-register-
-            Self::Rdvl => (0xFFFF_F800, 0x04BF_5000),
+        match self.to_record() {
+            Some(record) => record.fixed_bits,
             // MRS with op0 3, op1 3, CRn 0, CRm 0, op2 1: https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register#:~:text=Accessing%20CTR_EL0
-            Self::MrsCtrEl0 => (0xFFFF_FFE0, 0xD53B_0020),
-        };
-        FixedBits { mask, value }
+            None => FixedBits {
+                mask: 0xFFFF_FFE0,
+                value: 0xD53B_0020,
+            },
+        }
     }
 }

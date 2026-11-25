@@ -17,6 +17,9 @@ const RECORDINGS: [&str; 2] = [
     concat!(env!("CARGO_MANIFEST_DIR"), "/recordings/apple-m5"),
 ];
 
+/// The instructions each committed recording holds: the ten of the first slice.
+const RECORDED_INSTRUCTIONS: usize = 10;
+
 const READ_WRITE: PagePermission = PagePermission::Mapped {
     data_access: DataAccess::ReadWrite,
     instruction_fetch: InstructionFetch::Forbidden,
@@ -45,7 +48,11 @@ fn to_state<'memory>(
 #[test]
 fn every_committed_recording_reads_and_writes_back_byte_for_byte() {
     for folder in RECORDINGS {
-        for instruction in Arm64::<User>::list_instructions() {
+        let Ok(recording) = Recording::read(Path::new(folder)) else {
+            panic!("reading {folder}");
+        };
+        assert_eq!(recording.instructions().count(), RECORDED_INSTRUCTIONS);
+        for instruction in recording.instructions() {
             let path = Path::new(folder).join(to_file_name(instruction));
             let Ok(committed) = std::fs::read_to_string(&path) else {
                 panic!("reading {}", path.display());
@@ -164,7 +171,7 @@ fn recording_plays_only_its_states() {
     let played = recording.execute_single_instruction(cases[0].clone());
     let refused = recording.execute_single_instruction_in_place(
         &mut processor,
-        &unrecorded.memory_mutations,
+        unrecorded.memory(),
         &mut mutations,
     );
     assert!(matches!(refused, Err(NotRecorded)));

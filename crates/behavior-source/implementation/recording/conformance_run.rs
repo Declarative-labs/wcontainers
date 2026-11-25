@@ -1,8 +1,7 @@
 use std::path::Path;
 
 use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
+use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_arm64::{Arm64, User};
 
@@ -31,6 +30,6 @@ fn to_unrecorded() -> Vec<ExecutionState<'static, Arm64<User>>> {
 
 wcontainers_behavior_source_conformance::tests!(
     recording(),
-    CriticalValueProduct::new(Arm64InputDomain),
+    CriticalValueCut::default(),
     to_unrecorded()
 );
