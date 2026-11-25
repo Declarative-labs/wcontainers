@@ -8,4 +8,5 @@ path = "interface.rs"
 
 [dependencies]
 wcontainers-behavior-source = { path = "../behavior-source" }
+wcontainers-distinguishing-state-generator = { path = "../distinguishing-state-generator" }
 wcontainers-processor-architecture = { path = "../processor-architecture" }

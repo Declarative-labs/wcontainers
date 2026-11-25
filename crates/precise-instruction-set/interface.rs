@@ -1,6 +1,7 @@
 #![no_std]
 
 use wcontainers_behavior_source::BehaviorSource;
+use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 /// One choice of behavior for every instruction of an architecture.
@@ -10,7 +11,10 @@ pub trait PreciseInstructionSet<Architecture: ProcessorArchitecture>: Sized {
     type MeasureError;
 
     /// Measures which behavior each instruction shows.
-    fn measure(source: Self::Source) -> Result<Self, Self::MeasureError>;
+    fn measure(
+        source: Self::Source,
+        generator: &impl DistinguishingStateGenerator<Architecture>,
+    ) -> Result<Self, Self::MeasureError>;
 
     /// Returns the instruction with the behavior this set gives it.
     fn to_precise(
