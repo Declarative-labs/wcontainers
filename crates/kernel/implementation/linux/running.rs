@@ -13,7 +13,9 @@ use wcontainers_executor::{
     Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
     TrapHandler,
 };
-use wcontainers_processor_architecture_arm64::{ConditionFlags, Exception, INSTRUCTION_SIZE};
+use wcontainers_processor_architecture_arm64::{
+    ConditionFlags, Exception, ExclusiveMonitor, INSTRUCTION_SIZE,
+};
 
 /// The register a system call's value is returned in on arm64, x0
 /// (<https://man7.org/linux/man-pages/man2/syscall.2.html#:~:text=arm64%20%20%20%20%20%20%20%20%20%20svc%20%230>).
@@ -128,7 +130,13 @@ fn exit_of(exception: Option<Exception>, registers: &RegisterBlock) -> Exit {
             syndrome,
             fault_address,
         } => exit_of_syndrome(syndrome, fault_address, registers),
-        exception @ (Exception::InstructionAbort { .. } | Exception::SmeTrap(_)) => {
+        // A supervisor call goes to the hook first, and Linux lets EL0 wait untrapped. A trapped
+        // system access names no exit yet, as when the processor kept it as its syndrome.
+        exception @ (Exception::InstructionAbort { .. }
+        | Exception::SmeTrap(_)
+        | Exception::SupervisorCall { .. }
+        | Exception::WaitTrapped(_)
+        | Exception::SystemAccessTrapped(_)) => {
             panic!("an execution ended on an exception no exit names: {exception:?}")
         }
     }
@@ -163,6 +171,9 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
 }
 
 /// The processor's state of a thread whose registers are `registers`, with no exception.
+///
+/// Its exclusive monitor is open: the registers keep no monitor, so a turn begins as a return to
+/// EL0 that cleared it.
 fn to_processor(registers: &RegisterBlock) -> Processor {
     Processor {
         general_purpose_registers: registers.x,
@@ -178,6 +189,7 @@ fn to_processor(registers: &RegisterBlock) -> Processor {
         floating_point_control: u64::from(registers.fpcr),
         floating_point_status: u64::from(registers.fpsr),
         software_thread_id: registers.tpidr_el0,
+        exclusive_monitor: ExclusiveMonitor::Open,
         exception: None,
         level_specific: (),
     }
