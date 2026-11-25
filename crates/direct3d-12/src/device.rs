@@ -10,10 +10,10 @@ use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::stage_registers::OUTPUT_REGISTERS;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
-    AspectOps, Gpu, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
+    AspectOps, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
     CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
     DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, FORMAT_FACTS, Features, Format,
-    FormatKind, FormatUse, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
+    FormatKind, FormatUse, Gpu, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
     IndexFormat, Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS,
     MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc,
     Program, ReadSource, ReadState, SLOW_PATH_REASONS, STORAGE_WORD, SamplerDesc, ScissorRect,

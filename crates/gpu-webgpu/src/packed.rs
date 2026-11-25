@@ -12,7 +12,7 @@
 //! the GPU, by a draw.
 
 use wcontainers_gpu::{
-    Gpu, CopyBufferTexture, Extent, FORMAT_FACTS, Format, Origin, SlowPath, TextureDesc,
+    CopyBufferTexture, Extent, FORMAT_FACTS, Format, Gpu, Origin, SlowPath, TextureDesc,
     TextureDimension, TextureRegion, TextureUsage, WriteMode,
 };
 

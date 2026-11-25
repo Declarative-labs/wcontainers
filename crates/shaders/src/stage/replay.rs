@@ -25,13 +25,13 @@ use crate::build::{VEC4, WORD};
 use crate::{ConvertError, Converted};
 use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
+    BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
     CopyBufferTexture, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, Features, FillMode,
-    Format, FrontFace, GpuError, IndexBinding, IndexFormat, MAX_BINDING_SETS, MAX_COLOR_TARGETS,
-    Object, Origin, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, RingKind,
-    ShaderModule, ShaderStage, SlowPath, StageExtras, StageSet, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexBinding,
-    VertexLayoutDesc, ViewDimension, Viewport, WriteMode,
+    Format, FrontFace, Gpu, GpuError, IndexBinding, IndexFormat, MAX_BINDING_SETS,
+    MAX_COLOR_TARGETS, Object, Origin, Program, ProvokingVertex, RasterDesc, ReadSource,
+    RenderTargetBlend, RingKind, ShaderModule, ShaderStage, SlowPath, StageExtras, StageSet,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    VariantKey, VertexBinding, VertexLayoutDesc, ViewDimension, Viewport, WriteMode,
 };
 
 /// A strip with adjacency, which the capture cannot list.
@@ -1328,10 +1328,7 @@ fn words_of(bytes: &[u8]) -> Vec<u32> {
 }
 
 /// A program of `module`'s vertex program alone.
-fn render_program<B: Gpu>(
-    backend: &mut B,
-    module: &ShaderModule,
-) -> Result<B::Program, GpuError> {
+fn render_program<B: Gpu>(backend: &mut B, module: &ShaderModule) -> Result<B::Program, GpuError> {
     let shader = backend.create_shader(module)?;
     let program = backend.create_program(&Program::Render {
         vertex: &shader,

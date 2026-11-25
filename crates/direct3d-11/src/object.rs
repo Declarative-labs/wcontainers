@@ -7,7 +7,7 @@ use std::rc::Rc;
 use zerocopy::IntoBytes;
 
 use wcontainers_gpu::{
-    Gpu, Extent, FORMAT_FACTS, Format, FormatKind, Object, Origin, Reflection,
+    Extent, FORMAT_FACTS, Format, FormatKind, Gpu, Object, Origin, Reflection,
     SamplerDesc as GpuSampler, TextureDesc as GpuTexture, TextureRegion, VertexFormat,
     ViewDimension,
 };

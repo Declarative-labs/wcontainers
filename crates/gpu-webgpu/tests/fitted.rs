@@ -14,10 +14,10 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorTarget, DeviceStatus,
-    DrawCall, DrawRange, Extent, Features, Format, MAX_COLOR_TARGETS, Origin, PassTargets,
-    PassTracker, Program, ReadSource, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet,
-    Target, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorTarget, DeviceStatus, DrawCall,
+    DrawRange, Extent, Features, Format, Gpu, MAX_COLOR_TARGETS, Origin, PassTargets, PassTracker,
+    Program, ReadSource, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, Target,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
     ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
@@ -273,8 +273,14 @@ fn multisampled_targets_of_different_sizes_are_fitted() {
         [Some(&params), None, None, None],
     );
     passes.close(&mut b).unwrap();
-    assert_eq!(b.slow_paths().counts[SlowPath::AttachmentsFitted as usize], 1);
-    assert_eq!(b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize], 0);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::AttachmentsFitted as usize],
+        1
+    );
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize],
+        0
+    );
 
     let check = target(&mut b, 3, 3, 1);
     let read = b

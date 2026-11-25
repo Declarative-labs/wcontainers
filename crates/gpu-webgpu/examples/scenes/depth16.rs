@@ -2,8 +2,8 @@
 //! by tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
-    Gpu, DeviceStatus, Extent, Format, FormatUse, Origin, ReadSource, TextureRegion,
-    TextureUsage, WriteMode,
+    DeviceStatus, Extent, Format, FormatUse, Gpu, Origin, ReadSource, TextureRegion, TextureUsage,
+    WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

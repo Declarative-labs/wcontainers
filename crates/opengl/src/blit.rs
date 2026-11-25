@@ -4,7 +4,7 @@
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Gpu, Extent, FORMAT_FACTS, Format, FormatKind, FormatUse, Origin, SlowPath, TextureDesc,
+    Extent, FORMAT_FACTS, Format, FormatKind, FormatUse, Gpu, Origin, SlowPath, TextureDesc,
     TextureDimension, TextureRegion,
 };
 

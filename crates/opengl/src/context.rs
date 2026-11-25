@@ -5,9 +5,9 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Gpu, ClearValue, ColorTarget, DeviceStatus, EmptyPass, FORMAT_FACTS, MAX_COLOR_TARGETS,
-    Object, PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension,
-    TextureViewDesc, ViewDimension,
+    ClearValue, ColorTarget, DeviceStatus, EmptyPass, FORMAT_FACTS, Gpu, MAX_COLOR_TARGETS, Object,
+    PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension, TextureViewDesc,
+    ViewDimension,
 };
 
 use crate::draw::Programs;
@@ -572,11 +572,7 @@ pub fn surface_view<B: Gpu>(
 
 /// Whether a colour target in `format` of a texture `desc` describes is drawn into through a twin:
 /// the host views a texture only in its own format or its sRGB twin unless it reinterprets.
-fn through_twin<B: Gpu>(
-    backend: &B,
-    format: wcontainers_gpu::Format,
-    desc: &TextureDesc,
-) -> bool {
+fn through_twin<B: Gpu>(backend: &B, format: wcontainers_gpu::Format, desc: &TextureDesc) -> bool {
     let reinterprets = desc.reinterpret
         && backend
             .caps()

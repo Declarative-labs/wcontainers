@@ -10,10 +10,10 @@
 use std::collections::VecDeque;
 
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
+    BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
     DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, FillMode, Format,
-    FrontFace, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin, PassDesc,
-    Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule,
+    FrontFace, Gpu, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin,
+    PassDesc, Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule,
     ShaderStage, SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension,
     TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };

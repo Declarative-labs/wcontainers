@@ -7,7 +7,7 @@ use super::{RECORD_SLOT_BYTES, WORKGROUP, tess};
 use crate::build::WORD;
 use core::mem::size_of;
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Gpu,
     MAX_BINDING_SETS, Program, RingKind, StageSet,
 };
 

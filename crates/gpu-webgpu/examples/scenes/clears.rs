@@ -3,7 +3,7 @@
 //! and the browser page.
 
 use wcontainers_gpu::{
-    Gpu, ClearValue, DeviceStatus, Extent, FORMAT_FACTS, Format, Origin, ReadSource, SlowPath,
+    ClearValue, DeviceStatus, Extent, FORMAT_FACTS, Format, Gpu, Origin, ReadSource, SlowPath,
     TextureDesc, TextureDimension, TextureRegion, TextureUsage,
 };
 use wcontainers_gpu_webgpu::WebGpu;

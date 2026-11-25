@@ -1004,7 +1004,10 @@ fn resolve_queries_reads_them_back_and_writes_them_in_order() {
     let Some(Call::WriteBuffer(_, 8, _, WriteMode::Ordered)) = r.calls.last() else {
         panic!("the results are not an ordered write at the offset")
     };
-    assert_eq!(r.slow_paths().counts[SlowPath::QueryResolveWait as usize], 1);
+    assert_eq!(
+        r.slow_paths().counts[SlowPath::QueryResolveWait as usize],
+        1
+    );
     let mut got = [0u8; 16];
     r.read_back_now(
         &ReadSource::Buffer {

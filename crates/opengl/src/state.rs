@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    AddressMode, Gpu, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor,
-    ColorWrites, CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace,
-    LogicOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute,
-    VertexFormat, VertexLayoutDesc, VertexStream,
+    AddressMode, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor, ColorWrites,
+    CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace, Gpu, LogicOp,
+    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc, RenderTargetBlend,
+    SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute, VertexFormat,
+    VertexLayoutDesc, VertexStream,
 };
 use wcontainers_nir::mesa::{Assembled, NearestSampler, Nir, Wrap};
 use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
@@ -839,20 +839,14 @@ unsafe extern "C" fn create_rasterizer_state<B: Gpu>(
     })
 }
 
-unsafe extern "C" fn bind_rasterizer_state<B: Gpu>(
-    pipe: *mut pipe_context,
-    state: *mut c_void,
-) {
+unsafe extern "C" fn bind_rasterizer_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }.bound.raster = state.cast();
     })
 }
 
-unsafe extern "C" fn delete_rasterizer_state<B: Gpu>(
-    pipe: *mut pipe_context,
-    state: *mut c_void,
-) {
+unsafe extern "C" fn delete_rasterizer_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: made by create_rasterizer_state, deleted once, on this driver's context.
         let (context, state) = unsafe { (Context::<B>::of(pipe), drop_object::<Raster<B>>(state)) };

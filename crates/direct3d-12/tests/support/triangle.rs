@@ -11,12 +11,10 @@ use wcontainers_direct3d_12::root::{
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{Gpu, ColorWrites};
+use wcontainers_gpu::{ColorWrites, Gpu};
 
-pub const VS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
-pub const PS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");
+pub const VS: &[u8] = include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
+pub const PS: &[u8] = include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");
 pub const RGBA8: u32 = dxgi::R8G8B8A8_UNORM;
 pub const SIZE: u32 = 256;
 /// The scene's clear colour and vertices (crates/graphics-test/src/scene.rs).

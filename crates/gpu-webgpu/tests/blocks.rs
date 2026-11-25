@@ -17,11 +17,11 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
-    CopyBufferTexture, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format,
-    FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    ViewDimension, WriteMode,
+    BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture,
+    DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, Gpu,
+    LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, ViewDimension,
+    WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -347,7 +347,10 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
     }
     assert!(beyond.is_empty(), "beyond the tolerance: {beyond:?}");
     assert!(decoded.slow_paths().counts[SlowPath::BlockDecoded as usize] > 0);
-    assert_eq!(native.slow_paths().counts[SlowPath::BlockDecoded as usize], 0);
+    assert_eq!(
+        native.slow_paths().counts[SlowPath::BlockDecoded as usize],
+        0
+    );
 }
 
 #[test]

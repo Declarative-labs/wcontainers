@@ -1198,10 +1198,7 @@ fn depth_target<B: Gpu>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
     (t, v)
 }
 
-fn with_depth<'a, B: Gpu>(
-    mut pass: PassDesc<'a, B>,
-    depth: &'a B::TextureView,
-) -> PassDesc<'a, B> {
+fn with_depth<'a, B: Gpu>(mut pass: PassDesc<'a, B>, depth: &'a B::TextureView) -> PassDesc<'a, B> {
     pass.depth = Some(DepthAttachment {
         view: depth,
         depth: Some(AspectOps {

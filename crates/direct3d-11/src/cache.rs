@@ -8,8 +8,8 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{
-    Gpu, BindingLayoutKey, BlendDesc, DepthStencilDesc, MAX_BINDING_SETS, PrepareDesc,
-    RasterDesc, TargetLayout, Topology, VariantKey, VertexLayoutDesc,
+    BindingLayoutKey, BlendDesc, DepthStencilDesc, Gpu, MAX_BINDING_SETS, PrepareDesc, RasterDesc,
+    TargetLayout, Topology, VariantKey, VertexLayoutDesc,
 };
 use wcontainers_shaders::cache::{self as file, Cache, Kind};
 use wcontainers_shaders::{ConvertError, Converted, Source};

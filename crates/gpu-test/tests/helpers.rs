@@ -444,7 +444,10 @@ fn a_larger_depth_buffer_is_fitted() {
             assert_eq!(z, want, "depth at ({x}, {y})");
         }
     }
-    assert_eq!(k.r.slow_paths().counts[SlowPath::AttachmentsFitted as usize], 1);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::AttachmentsFitted as usize],
+        1
+    );
 
     // The next pass loads the colour target: its common area is copied in, and the pooled
     // temporary is used again.
@@ -552,7 +555,10 @@ fn multisampled_targets_fitted(direct: bool) {
     k.draw((2, 1), area, &two, &none, [Some(&set), None, None, None]);
     passes.close(&mut k.r).unwrap();
     assert_eq!(k.calls("copy_texture"), 0);
-    assert_eq!(k.r.slow_paths().counts[SlowPath::AttachmentsFitted as usize], 1);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::AttachmentsFitted as usize],
+        1
+    );
     let resolved = k.r.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize];
     assert_eq!(resolved, if direct { 0 } else { 2 });
 
@@ -712,7 +718,10 @@ fn a_split_explicit_pass_keeps_its_depth_and_ops_between_parts() {
         read_only: false,
     });
     assert!(answer.is_ok());
-    assert_eq!(k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize], 1);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize],
+        1
+    );
     let mut want = Vec::new();
     for _y in 0..2 {
         for x in 0..2 {
@@ -759,7 +768,10 @@ fn a_split_of_a_pass_that_discards_is_refused() {
         read_only: false,
     });
     assert!(matches!(answer, Err(GpuError::Invalid(_))));
-    assert_eq!(k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize], 0);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize],
+        0
+    );
     k.healthy();
 }
 
@@ -836,7 +848,10 @@ fn a_pass_is_split_where_a_draw_reads_what_one_wrote_as_storage() {
             );
             assert_eq!(passes.end_query(&mut k.r).unwrap(), 0..2);
             passes.close(&mut k.r).unwrap();
-            assert_eq!(k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize], 1);
+            assert_eq!(
+                k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize],
+                1
+            );
             assert_eq!(k.calls("begin_pass"), 2);
             assert_eq!(k.read(&t, 4), [7, 0, 0, 255].repeat(4));
             k.healthy();
@@ -968,7 +983,10 @@ fn the_occlusion_counter_counts_exactly() {
     assert_eq!(k.calls("copy_texture"), 1);
     // The depth is now 0.5: nothing passes.
     assert_eq!(counted(&mut k, &[(&tests, &far)]), 0);
-    assert_eq!(k.r.slow_paths().counts[SlowPath::OcclusionCountReplay as usize], 3);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::OcclusionCountReplay as usize],
+        3
+    );
     k.healthy();
 }
 
@@ -1525,7 +1543,10 @@ fn the_occlusion_counter_counts_across_writes_and_target_changes() {
     )
     .unwrap();
     assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 32);
-    assert_eq!(k.r.slow_paths().counts[SlowPath::OcclusionCountReplay as usize], 5);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::OcclusionCountReplay as usize],
+        5
+    );
 
     // The targets changed without a flush.
     counter.begin(&mut k.r, &mut passes).unwrap();

@@ -11,7 +11,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Gpu,
     Program, ReadSource, SlotKind, StageSet, VariantKey,
 };
 use wcontainers_graphics_test::{Driver, d3d12};

@@ -1,6 +1,6 @@
 //! Dispatches: the compute program converted by the NIR route, its resources bound as a draw's.
 
-use wcontainers_gpu::{Gpu, DispatchCall, DispatchGroups, Object, Program, SlowPath, StageSet};
+use wcontainers_gpu::{DispatchCall, DispatchGroups, Gpu, Object, Program, SlowPath, StageSet};
 
 use crate::context::{Context, end_if_lost};
 use crate::draw::{self, Variant};
@@ -10,10 +10,7 @@ use crate::state::{Stage, refuse, refused};
 use crate::view::Images;
 
 /// `pipe_context::launch_grid`.
-pub unsafe extern "C" fn launch_grid<B: Gpu>(
-    pipe: *mut pipe_context,
-    info: *const pipe_grid_info,
-) {
+pub unsafe extern "C" fn launch_grid<B: Gpu>(pipe: *mut pipe_context, info: *const pipe_grid_info) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context and the grid.
         let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };

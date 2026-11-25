@@ -1249,9 +1249,7 @@ mod record {
     const NO_TABLES: GpuError =
         GpuError::Invalid("trace: a traced device keeps no resource tables");
 
-    fn entries_of(
-        entries: &[BindingEntry<'_, Traced<impl Gpu>>],
-    ) -> Result<Vec<Entry>, GpuError> {
+    fn entries_of(entries: &[BindingEntry<'_, Traced<impl Gpu>>]) -> Result<Vec<Entry>, GpuError> {
         entries
             .iter()
             .map(|e| {

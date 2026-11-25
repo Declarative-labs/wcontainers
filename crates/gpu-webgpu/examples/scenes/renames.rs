@@ -4,9 +4,9 @@
 
 use crate::draw;
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BlendDesc, ColorAttachment, DeviceStatus, DrawCall,
-    DrawRange, Extent, Format, LoadOp, Object, Origin, PassDesc, ReadSource, SlowPath, StageSet,
-    StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
+    BindingEntry, BindingResource, BlendDesc, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
+    Extent, Format, Gpu, LoadOp, Object, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp,
+    TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

@@ -11,8 +11,8 @@ use std::fmt::Write;
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment,
-    DeviceStatus, DrawCall, DrawRange, Extent, Format, LoadOp, Object, Origin, PassDesc, QueryKind,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment, DeviceStatus,
+    DrawCall, DrawRange, Extent, Format, Gpu, LoadOp, Object, Origin, PassDesc, QueryKind,
     ReadSource, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding,
     VertexFormat, Viewport,
 };

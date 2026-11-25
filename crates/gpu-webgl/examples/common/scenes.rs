@@ -317,11 +317,7 @@ fn texture<B: Gpu>(
     .map_err(|e| format!("{e:?}"))
 }
 
-fn whole_view<B: Gpu>(
-    b: &mut B,
-    t: &B::Texture,
-    format: Format,
-) -> Result<B::TextureView, String> {
+fn whole_view<B: Gpu>(b: &mut B, t: &B::Texture, format: Format) -> Result<B::TextureView, String> {
     b.create_view(
         t,
         &TextureViewDesc {

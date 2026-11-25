@@ -14,8 +14,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
-    DispatchGroups, DrawRange, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
+    BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
+    DispatchGroups, DrawRange, Gpu, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
     ProvokingVertex, RingKind, ShaderModule, SlowPath, StageExtras, StageSet, StageValue, StepMode,
     SystemValue, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
 };

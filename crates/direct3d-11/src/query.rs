@@ -23,7 +23,7 @@ use wcontainers_directx_graphics_infrastructure::d3d::{
     PipelineStatistics, StreamOutputStatistics,
 };
 use wcontainers_gpu::{
-    Gpu, BufferDesc, BufferUsage, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
+    BufferDesc, BufferUsage, Gpu, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
 };
 use wcontainers_shaders::stage::STREAMS;
 

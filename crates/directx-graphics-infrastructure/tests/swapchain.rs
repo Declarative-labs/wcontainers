@@ -7,7 +7,7 @@ mod support {
 
 use support::record::Recorder;
 use wcontainers_directx_graphics_infrastructure::*;
-use wcontainers_gpu::{Gpu, Format, TextureUsage};
+use wcontainers_gpu::{Format, Gpu, TextureUsage};
 
 fn desc(format: u32, buffers: u32, model: Model) -> SwapChainDesc {
     SwapChainDesc {
@@ -107,8 +107,7 @@ fn sequential_blit_buffers_move_down_at_each_present() {
     let at = |k: &str| calls.iter().position(|c| c.starts_with(k)).unwrap();
     assert!(at("end_pass") < at("copy_texture") && at("copy_texture") < at("submit"));
     assert_eq!(
-        b.slow_paths()
-            .counts[wcontainers_gpu::SlowPath::SequentialBuffersCopied as usize],
+        b.slow_paths().counts[wcontainers_gpu::SlowPath::SequentialBuffersCopied as usize],
         1
     );
     // One buffer moves nowhere.

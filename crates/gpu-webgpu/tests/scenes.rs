@@ -15,7 +15,7 @@ mod allowance;
 
 use draw::Twist;
 use scene::Scene;
-use wcontainers_gpu::{Gpu, DeviceStatus, FORMAT_FACTS};
+use wcontainers_gpu::{DeviceStatus, FORMAT_FACTS, Gpu};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn device() -> WebGpu {
@@ -176,8 +176,7 @@ fn pipelines_and_bind_groups_are_cached() {
         "setPipeline only when it changes"
     );
     assert_eq!(
-        b.slow_paths()
-            .counts[wcontainers_gpu::SlowPath::PipelineMiss as usize],
+        b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize],
         2
     );
 }

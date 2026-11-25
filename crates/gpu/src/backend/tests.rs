@@ -985,7 +985,10 @@ fn resolve_queries_default_reads_back_and_writes_in_order() {
     );
     assert_eq!(&r.buffers[dst as usize][16..24], 7u64.to_le_bytes());
     assert_eq!(&r.buffers[dst as usize][32..40], (1u64 << 40).to_le_bytes());
-    assert_eq!(r.slow_paths().counts[SlowPath::QueryResolveWait as usize], 1);
+    assert_eq!(
+        r.slow_paths().counts[SlowPath::QueryResolveWait as usize],
+        1
+    );
 }
 
 #[test]

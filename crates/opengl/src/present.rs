@@ -4,8 +4,8 @@
 use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, LoadOp,
+    BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
+    DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, Gpu, LoadOp,
     MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex, RasterDesc,
     RenderTargetBlend, SLOT_KINDS, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet,
     StoreOp, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,

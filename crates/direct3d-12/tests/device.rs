@@ -15,7 +15,7 @@ use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_directx_graphics_infrastructure::stage_registers::TOO_MANY_VALUES;
-use wcontainers_gpu::{Gpu, FORMAT_FACTS, Features};
+use wcontainers_gpu::{FORMAT_FACTS, Features, Gpu};
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {
@@ -246,10 +246,7 @@ fn the_triangle_scene_replays() {
     );
     assert_eq!(calls.iter().filter(|c| c.starts_with("draw")).count(), 1);
     assert_eq!(
-        device
-            .backend()
-            .slow_paths()
-            .counts[wcontainers_gpu::SlowPath::MappedUploadWhole as usize],
+        device.backend().slow_paths().counts[wcontainers_gpu::SlowPath::MappedUploadWhole as usize],
         1
     );
 }

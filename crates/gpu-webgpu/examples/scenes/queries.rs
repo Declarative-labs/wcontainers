@@ -3,7 +3,7 @@
 
 use crate::{draw, scene};
 use wcontainers_gpu::{
-    Gpu, BufferUsage, ColorAttachment, DeviceStatus, Features, LoadOp, PassDesc, QueryKind,
+    BufferUsage, ColorAttachment, DeviceStatus, Features, Gpu, LoadOp, PassDesc, QueryKind,
     SlowPath, StoreOp, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
@@ -29,10 +29,7 @@ fn words(b: &mut WebGpu, rb: <WebGpu as Gpu>::Readback, count: usize) -> Vec<u64
         .collect()
 }
 
-fn pass_with<'a>(
-    t: &'a draw::Targets,
-    set: &'a <WebGpu as Gpu>::QuerySet,
-) -> PassDesc<'a, WebGpu> {
+fn pass_with<'a>(t: &'a draw::Targets, set: &'a <WebGpu as Gpu>::QuerySet) -> PassDesc<'a, WebGpu> {
     let mut pass = PassDesc {
         colors: Default::default(),
         depth: None,

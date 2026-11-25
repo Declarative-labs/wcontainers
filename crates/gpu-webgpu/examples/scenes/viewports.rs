@@ -5,7 +5,7 @@
 //! tests/raster.rs and in Chrome by web/check.
 
 use wcontainers_gpu::{
-    Gpu, BufferUsage, ColorAttachment, DrawCall, DrawRange, Extent, Format, LoadOp, Origin,
+    BufferUsage, ColorAttachment, DrawCall, DrawRange, Extent, Format, Gpu, LoadOp, Origin,
     PassDesc, RasterDesc, ReadSource, ScissorRect, StepMode, StoreOp, TextureRegion, TextureUsage,
     Topology, VertexBinding, VertexFormat, Viewport,
 };

@@ -5,8 +5,8 @@ use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    Gpu, Caps, DeviceStatus, Features, Format, FormatUse, Object, SLOT_KINDS,
-    SLOW_PATH_REASONS, SLOW_PATHS, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
+    Caps, DeviceStatus, Features, Format, FormatUse, Gpu, Object, SLOT_KINDS, SLOW_PATH_REASONS,
+    SLOW_PATHS, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
@@ -118,7 +118,12 @@ fn slow_path_counts<B: Gpu>(backend: &mut B) -> Vec<(&'static str, u64)> {
     let paths = backend.slow_paths();
     SLOW_PATHS
         .iter()
-        .map(|&path| (SLOW_PATH_REASONS[path as usize], paths.counts[path as usize]))
+        .map(|&path| {
+            (
+                SLOW_PATH_REASONS[path as usize],
+                paths.counts[path as usize],
+            )
+        })
         .filter(|&(_, count)| count > 0)
         .collect()
 }

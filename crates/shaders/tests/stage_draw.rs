@@ -15,9 +15,9 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    Gpu as Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
-    BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc,
-    DrawBaseSource, DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace,
+    BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp, BufferRange,
+    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource,
+    DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace, Gpu as Backend,
     HelperValue, IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program,
     ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderModule, ShaderStage,
     SlotKind, SlowPath, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, VariantFlags,
@@ -1610,7 +1610,10 @@ fn ours_stored<B: Backend>(
         b.slow_paths().counts[SlowPath::VertexStorageAsCompute as usize],
         before + 1
     );
-    assert_eq!(b.slow_paths().counts[SlowPath::CullDistanceAsGeometry as usize], 0);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CullDistanceAsGeometry as usize],
+        0
+    );
     let layout = stages.vertex_layout().unwrap();
     let picture = drawn(
         b,

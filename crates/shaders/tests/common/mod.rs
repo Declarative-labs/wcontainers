@@ -6,11 +6,11 @@
 use std::path::Path;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddedBinding, Gpu as Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
-    BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall,
-    DrawRange, Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, GpuError, HelperValue,
-    Interpolation, MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
-    RenderTargetBlend, SamplerDesc, SlotKind, StageSet, StepMode, StoreOp,
+    AddedBinding, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc, BufferRange,
+    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
+    Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, Gpu as Backend, GpuError,
+    HelperValue, Interpolation, MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
+    ReadSource, RenderTargetBlend, SamplerDesc, SlotKind, StageSet, StepMode, StoreOp,
     TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
     TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
     VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,

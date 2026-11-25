@@ -536,12 +536,7 @@ fn region_of(desc: &TextureDesc, at: &[u8]) -> (u32, u32, Origin, Extent) {
     )
 }
 
-fn region<B: Gpu>(
-    t: &B::Texture,
-    mip: u32,
-    layer: u32,
-    origin: Origin,
-) -> TextureRegion<'_, B> {
+fn region<B: Gpu>(t: &B::Texture, mip: u32, layer: u32, origin: Origin) -> TextureRegion<'_, B> {
     TextureRegion {
         texture: t,
         mip,

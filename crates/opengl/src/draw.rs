@@ -6,16 +6,16 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    AddedBinding, AddressMode, Gpu, BindingEntry, BindingResource, BlendDesc, BlendFactor,
-    BorderColor, BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode,
-    DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FORMAT_FACTS, FanOrLoop,
-    Features, FillMode, Filter, Format, FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot,
-    HelperValue, INDEX_FORMATS, IndexBinding, IndexFormat, IndexSource, Interpolation,
-    LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter,
-    PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
-    RingKind, SLOT_KINDS, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage,
-    SlotKind, SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags,
-    VariantKey, VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
+    AddedBinding, AddressMode, BindingEntry, BindingResource, BlendDesc, BlendFactor, BorderColor,
+    BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode, DOMAIN_PATCHES_BINDING,
+    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FORMAT_FACTS, FanOrLoop, Features, FillMode,
+    Filter, Format, FormatKind, FormatUse, FrontFace, Gpu, HELPER_SET, HelperSlot, HelperValue,
+    INDEX_FORMATS, IndexBinding, IndexFormat, IndexSource, Interpolation, LinkedValues,
+    MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, PassTracker,
+    Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
+    SLOT_KINDS, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
+    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{
@@ -3132,12 +3132,7 @@ struct LayeredHelpers {
 impl LayeredHelpers {
     /// The helper set of run `run` of a framebuffer of `count` layers (zero where it is not
     /// layered: every primitive is then drawn in the one run, as OpenGL draws it).
-    fn set<B: Gpu>(
-        &self,
-        backend: &mut B,
-        run: u32,
-        count: u32,
-    ) -> Result<B::BindingSet, String> {
+    fn set<B: Gpu>(&self, backend: &mut B, run: u32, count: u32) -> Result<B::BindingSet, String> {
         let mut block = vec![0; self.size as usize];
         for slot in PASSTHROUGH_HELPERS.iter().chain([&PASSTHROUGH_LAYER_COUNT]) {
             let word: u32 = match slot.value {

@@ -15,7 +15,7 @@ use common::*;
 use std::path::Path;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    Gpu as Backend, FORMAT_FACTS, Features, Format, ProvokingVertex, VariantKey, VertexFormat,
+    FORMAT_FACTS, Features, Format, Gpu as Backend, ProvokingVertex, VariantKey, VertexFormat,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};

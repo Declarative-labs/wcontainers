@@ -21,10 +21,10 @@ mod views;
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
 
 use wcontainers_gpu::{
-    AddressMode, AspectOps, Gpu, BindingEntry, BindingResource, BlendComponent, BlendFactor,
-    BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn,
-    DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Features, Filter,
-    Format, FormatUse, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program,
+    AddressMode, AspectOps, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
+    BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn, DepthAttachment,
+    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Features, Filter, Format,
+    FormatUse, Gpu, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program,
     ReadSource, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode, StoreOp, TextureRegion,
     TextureUsage, TextureViewDesc, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc,
     VertexStream, ViewDimension, Viewport, WriteMode,

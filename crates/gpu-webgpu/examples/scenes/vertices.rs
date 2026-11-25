@@ -6,8 +6,8 @@
 use crate::draw;
 use half::f16;
 use wcontainers_gpu::{
-    Gpu, BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format,
-    LoadOp, Origin, PassDesc, ReadSource, SlowPath, StepMode, StoreOp, TextureRegion, TextureUsage,
+    BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format, Gpu, LoadOp,
+    Origin, PassDesc, ReadSource, SlowPath, StepMode, StoreOp, TextureRegion, TextureUsage,
     Topology, VertexBinding, VertexFormat, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;

@@ -9,9 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use wcontainers_gpu::{
-    Gpu, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind, GpuError, Origin,
-    QueryKind, ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    WriteMode,
+    CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind, Gpu, GpuError, Origin, QueryKind,
+    ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage, WriteMode,
 };
 
 use crate::fill::{AspectRead, DepthSource};

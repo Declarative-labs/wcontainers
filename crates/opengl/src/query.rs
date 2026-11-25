@@ -8,8 +8,8 @@ use std::ffi::c_uint;
 use std::ops::Range;
 
 use wcontainers_gpu::{
-    Gpu, BufferDesc, BufferUsage, MapIntent, Object, PassTracker, QueryKind, ReadSource,
-    ReadState, STORAGE_WORD, SlowPath,
+    BufferDesc, BufferUsage, Gpu, MapIntent, Object, PassTracker, QueryKind, ReadSource, ReadState,
+    STORAGE_WORD, SlowPath,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
@@ -451,10 +451,7 @@ unsafe fn of<'a, B: Gpu>(query: *mut pipe_query) -> &'a mut Query<B> {
     unsafe { &mut *query.cast::<Query<B>>() }
 }
 
-pub unsafe extern "C" fn destroy_query<B: Gpu>(
-    pipe: *mut pipe_context,
-    query: *mut pipe_query,
-) {
+pub unsafe extern "C" fn destroy_query<B: Gpu>(pipe: *mut pipe_context, query: *mut pipe_query) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         let context = unsafe { Context::<B>::of(pipe) };

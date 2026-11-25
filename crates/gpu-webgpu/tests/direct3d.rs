@@ -37,11 +37,11 @@ mod vertices;
 mod renames;
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment,
-    DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, LoadOp,
-    Origin, PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding,
-    VertexFormat, ViewDimension, WriteMode,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment, DeviceStatus,
+    DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, LoadOp, Origin,
+    PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexFormat,
+    ViewDimension, WriteMode,
 };
 // The trait's methods, by a path: graphics-test's Direct3D 11 device is named `Gpu` here.
 use wcontainers_gpu::Gpu as _;
@@ -150,7 +150,12 @@ fn d3d_mips(format: DXGI_FORMAT, texel: usize, level0: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Reads one level of a texture back through the back end.
-fn read(b: &mut B, texture: &<B as wcontainers_gpu::Gpu>::Texture, mip: u32, len: usize) -> Vec<u8> {
+fn read(
+    b: &mut B,
+    texture: &<B as wcontainers_gpu::Gpu>::Texture,
+    mip: u32,
+    len: usize,
+) -> Vec<u8> {
     let size = |n: u32| (n >> mip).max(1);
     let rb = b
         .read_back(&ReadSource::Texture {

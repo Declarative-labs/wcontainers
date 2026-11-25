@@ -5,14 +5,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AddressMode, Gpu, BlendComponent, BlendFactor, BlendOp, BorderColor,
-    BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
-    DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode,
-    Filter, Format, FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS,
-    MapIntent, Object, Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SLOW_PATH_REASONS,
-    SamplerDesc as GpuSampler, ScalarKind, SlowPath, StencilFace, StencilOp,
-    TextureDesc as GpuTexture, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    ViewDimension, WriteMode,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, BorderColor, BufferDesc as GpuBuffer,
+    BufferUsage, Caps, ColorWrites, CompareFn, CullMode, DepthStencilDesc as GpuDepthStencil,
+    DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode, Filter, Format, FormatKind, FormatUse,
+    FrontFace, Gpu, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object, Origin,
+    ProvokingVertex, RasterDesc, RenderTargetBlend, SLOW_PATH_REASONS, SamplerDesc as GpuSampler,
+    ScalarKind, SlowPath, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 
 use crate::context::ContextState;

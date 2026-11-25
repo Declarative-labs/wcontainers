@@ -2730,12 +2730,7 @@ const PACKED_LOAD: &str = "
 
 /// Reads a 10-10-10-2 2D array texture, which GL does not read back, by loading each layer in a
 /// program and packing the fields into the format's words again.
-fn read_packed<B: Gpu>(
-    b: &mut B,
-    texture: &B::Texture,
-    format: Format,
-    size: [u32; 3],
-) -> Vec<u8> {
+fn read_packed<B: Gpu>(b: &mut B, texture: &B::Texture, format: Format, size: [u32; 3]) -> Vec<u8> {
     use crate::kit::{self, Kit};
     let k = Kit::new(b);
     let (fs, binding) = match format {
@@ -4170,7 +4165,10 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                     .expect("generate_mips");
                 generate_mips_by_draws(&mut b, &drawn, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips_by_draws");
-                assert_eq!(b.slow_paths().counts[SlowPath::FilterInShader as usize], before);
+                assert_eq!(
+                    b.slow_paths().counts[SlowPath::FilterInShader as usize],
+                    before
+                );
                 let what =
                     format!("{format:?} {dimension:?} {size:?} cube {cube}, from level {first}");
                 for mip in 0..levels {

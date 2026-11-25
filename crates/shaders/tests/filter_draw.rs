@@ -27,12 +27,12 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, Gpu as Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
-    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, HelperValue, Origin, PassDesc,
-    Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind,
-    StageSet, StoreOp, TextureRegion, TextureUsage, Topology, VariantKey, VertexLayoutDesc,
-    Viewport, WriteMode,
+    AddressMode, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange, BufferUsage,
+    ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent,
+    FORMAT_FACTS, FillMode, Filter, Format, FrontFace, Gpu as Backend, HelperValue, Origin,
+    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
+    SlotKind, StageSet, StoreOp, TextureRegion, TextureUsage, Topology, VariantKey,
+    VertexLayoutDesc, Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};

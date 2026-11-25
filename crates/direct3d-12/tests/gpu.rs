@@ -10,7 +10,7 @@ use wcontainers_direct3d_12::state::{
     CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{Gpu, DeviceStatus, Features, SlowPath};
+use wcontainers_gpu::{DeviceStatus, Features, Gpu, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// The rig's shaders passing a three-component position and a colour.
@@ -207,10 +207,8 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
         .unwrap();
         let scene = triangle::record_with(&mut device, pso, &data, stride, data.len() as u64);
         let picture = picture(&mut device, &scene);
-        let in_programs = device
-            .backend()
-            .slow_paths()
-            .counts[SlowPath::DepthClampInShader as usize];
+        let in_programs =
+            device.backend().slow_paths().counts[SlowPath::DepthClampInShader as usize];
         assert_eq!(in_programs > 0, !hidden.is_empty(), "the slow path's count");
         eprintln!("warnings: {:?}", device.take_warnings());
         picture
@@ -580,20 +578,14 @@ fn clamp_scene(
         total,
     };
     let picture = picture(&mut device, &scene);
-    let in_programs = device
-        .backend()
-        .slow_paths()
-        .counts[SlowPath::DepthClampInShader as usize];
+    let in_programs = device.backend().slow_paths().counts[SlowPath::DepthClampInShader as usize];
     assert_eq!(
         in_programs > 0,
         !hidden.is_empty(),
         "{}: the slow path's count",
         route.name
     );
-    let clipped = device
-        .backend()
-        .slow_paths()
-        .counts[SlowPath::ClipDistanceInShader as usize];
+    let clipped = device.backend().slow_paths().counts[SlowPath::ClipDistanceInShader as usize];
     assert_eq!(
         clipped > 0,
         route.clipped && !hidden.is_empty(),

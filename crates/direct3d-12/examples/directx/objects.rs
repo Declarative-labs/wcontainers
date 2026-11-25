@@ -22,7 +22,7 @@ use wcontainers_direct3d_12::{
     ResourceId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, dxgi_format, plane_count};
-use wcontainers_gpu::{Gpu, Extent, FORMAT_FACTS, Origin};
+use wcontainers_gpu::{Extent, FORMAT_FACTS, Gpu, Origin};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;

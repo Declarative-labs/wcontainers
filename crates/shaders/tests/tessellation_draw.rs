@@ -14,7 +14,7 @@ mod forms;
 
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
-use wcontainers_gpu::{Gpu as Backend, BufferRange, BufferUsage, ReadSource, RingKind};
+use wcontainers_gpu::{BufferRange, BufferUsage, Gpu as Backend, ReadSource, RingKind};
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{Tessellation, Tessellator, tess};
 use windows::Win32::Graphics::Direct3D::*;
@@ -857,8 +857,8 @@ const MAX_BLEND: wcontainers_gpu::BlendComponent = wcontainers_gpu::BlendCompone
 /// The rig's tessellation scene by real Direct3D 11, every patch drawn solid or, as the scene draws
 /// it, all but the last as lines; with `max`, blended as [`scene_ours`] blends.
 fn direct3d_scene(gpu: &Gpu, all_solid: bool, max: bool) -> Vec<u8> {
-    let rig = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../graphics-test/shaders/dxbc");
+    let rig =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxbc");
     let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.dxbc"))).unwrap();
     let factors: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
     let draws: Vec<PatchDraw> = scene_patches()
@@ -1335,7 +1335,10 @@ fn ours_staged<B: Backend>(
         SlowPath::TessellationAsCompute,
         SlowPath::StreamOutAsCompute,
     ] {
-        assert!(b.slow_paths().counts[path as usize] > 0, "{path:?} is counted");
+        assert!(
+            b.slow_paths().counts[path as usize] > 0,
+            "{path:?} is counted"
+        );
     }
     stages.destroy(b);
     let vertices = words.chunks(4).map(|v| [v[0], v[1], v[2], v[3]]).collect();

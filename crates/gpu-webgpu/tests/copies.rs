@@ -20,9 +20,9 @@ mod depth16;
 mod gaps;
 
 use wcontainers_gpu::{
-    AspectOps, Gpu, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
+    AspectOps, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
     CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS,
-    Format, FormatKind, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath,
+    Format, FormatKind, FormatUse, Gpu, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath,
     StageSet, StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
@@ -815,10 +815,16 @@ fn copies_within_one_subresource_go_through_a_buffer() {
         ..region(&t, 0, 0)
     };
     b.copy_texture(&region(&t, 2, 1), &level1, extent(4, 2));
-    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinTexture as usize], 0);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CopyWithinTexture as usize],
+        0
+    );
     // Mip 0 at (0, 0) into mip 0 at (4, 2), 3 by 2: one subresource.
     b.copy_texture(&region(&t, 0, 0), &region(&t, 4, 2), extent(3, 2));
-    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinTexture as usize], 1);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CopyWithinTexture as usize],
+        1
+    );
     let mut want = texels.clone();
     for y in 0..2 {
         for x in 0..3 {
@@ -891,7 +897,10 @@ fn depth_copies_within_one_subresource_go_through_a_texture() {
             ..extent(3, 2)
         },
     );
-    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinTexture as usize], 1);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CopyWithinTexture as usize],
+        1
+    );
     for layer in 0..2 {
         let mut want = bytes[(layer * W * H * 4) as usize..][..(W * H * 4) as usize].to_vec();
         let from = want.clone();

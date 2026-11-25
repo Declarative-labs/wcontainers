@@ -7,11 +7,11 @@
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    AddressMode, Gpu, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
-    BorderColor, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus,
-    DrawCall, DrawRange, Extent, FORMAT_FACTS, Filter, Format, FormatUse, LoadOp, MapIntent,
-    Origin, PassDesc, ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, Topology, WriteMode,
+    AddressMode, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp, BorderColor,
+    BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus, DrawCall, DrawRange,
+    Extent, FORMAT_FACTS, Filter, Format, FormatUse, Gpu, LoadOp, MapIntent, Origin, PassDesc,
+    ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, Topology, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -621,11 +621,7 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
 
 /// Every texel of `view`, of a three-channel format, loaded in a program: the bits of its four
 /// channels, rows packed.
-pub fn loaded_bits(
-    b: &mut B,
-    format: Format,
-    view: &<B as Gpu>::TextureView,
-) -> Result<Vec<u8>> {
+pub fn loaded_bits(b: &mut B, format: Format, view: &<B as Gpu>::TextureView) -> Result<Vec<u8>> {
     let (t, bits) = match format {
         Format::Rgb32Uint => ("u32", ""),
         Format::Rgb32Sint => ("i32", "bitcast<vec4u>"),

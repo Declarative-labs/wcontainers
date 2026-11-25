@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
-    Gpu, BindingLayoutKey, FORMAT_FACTS, Format, MAX_BINDING_SETS, PrepareDesc, ScalarKind,
+    BindingLayoutKey, FORMAT_FACTS, Format, Gpu, MAX_BINDING_SETS, PrepareDesc, ScalarKind,
     SlowPath, SystemValue, TargetLayout, Topology,
 };
 use wcontainers_shaders::front::{Combination, CombinationTracker};

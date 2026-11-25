@@ -4,17 +4,17 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AspectOps, Gpu, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH,
-    ClearValue, ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
+    AspectOps, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH, ClearValue,
+    ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
     DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
-    EmptyPass, Extent, FORMAT_FACTS, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET,
-    HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object,
-    Origin, PassDesc, PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SLOT_KINDS,
-    SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
-    SourceStage, StageSet, StencilOp, StepMode, StoreOp, SystemValue, TEXEL_BUFFER_TEXTURE_WIDTH,
-    Target, TargetInShader, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey,
-    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension,
-    Viewport as GpuViewport, WriteMode, helper_binding,
+    EmptyPass, Extent, FORMAT_FACTS, Features, Filter, Format, FormatKind, FormatUse, Gpu,
+    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS,
+    Object, Origin, PassDesc, PassOps, PassTargets, Program, ReadSource, ReadState, RingKind,
+    SLOT_KINDS, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageSet, StencilOp, StepMode, StoreOp, SystemValue,
+    TEXEL_BUFFER_TEXTURE_WIDTH, Target, TargetInShader, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{

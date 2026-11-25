@@ -1263,9 +1263,7 @@ fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_as_
             assert!(draws[0].contains("LineList"), "{}", draws[0]);
         }
         assert_eq!(
-            dev.backend
-                .slow_paths()
-                .counts[SlowPath::AntialiasedLinesAsQuads as usize],
+            dev.backend.slow_paths().counts[SlowPath::AntialiasedLinesAsQuads as usize],
             u64::from(rectangles)
         );
     }
@@ -1694,9 +1692,7 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
     );
     assert_eq!(log.iter().filter(|l| l.starts_with("draw ")).count(), 2);
     assert_eq!(
-        dev.backend
-            .slow_paths()
-            .counts[SlowPath::ConstantBufferGrown as usize],
+        dev.backend.slow_paths().counts[SlowPath::ConstantBufferGrown as usize],
         1
     );
     // Its whole writes cover the grown bytes, so those past the program's stay zero.
@@ -2042,7 +2038,10 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
             .iter()
             .any(|l| l.starts_with("read_back"))
     );
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize], 0);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize],
+        0
+    );
 
     // A write-only map reads back only what the GPU wrote since the shadow was filled.
     let writable = staging(&mut dev, cpu::WRITE);
@@ -2067,7 +2066,10 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
         dev.backend.slow_paths().counts[SlowPath::StagingRefreshed as usize],
         1
     );
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize], 1);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize],
+        1
+    );
 }
 
 #[test]
@@ -2599,7 +2601,10 @@ fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     dev.draw(3, 0);
     assert!(dev.removed.is_none());
     assert_eq!(draws(&dev), 1);
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::FilterInShader as usize], 0);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::FilterInShader as usize],
+        0
+    );
     // An empty slot reads Direct3D's default sampler, which filters linearly: the program
     // filters from loads, reading the default sampler's state.
     dev.set_samplers(PIXEL, 0, &[None]).unwrap();
@@ -2612,7 +2617,10 @@ fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     let words = helper_words(&dev, &log, fragment);
     let state = [1, 1, 1, 2, 2, 2, 1, 0, 32f32.to_bits()];
     assert!(words.windows(9).any(|w| w == state), "{words:?}");
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::FilterInShader as usize], 1);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::FilterInShader as usize],
+        1
+    );
 }
 
 #[test]
@@ -2899,9 +2907,7 @@ fn a_shader_reading_more_textures_than_the_back_end_has_is_refused_at_creation()
         Err(Error::InvalidArg(_))
     ));
     assert_eq!(
-        dev.backend
-            .slow_paths()
-            .counts[SlowPath::BindingsBeyondLimit as usize],
+        dev.backend.slow_paths().counts[SlowPath::BindingsBeyondLimit as usize],
         1
     );
     assert_eq!(
@@ -3197,9 +3203,7 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
     );
     assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
     assert_eq!(
-        dev.backend
-            .slow_paths()
-            .counts[SlowPath::TessellationAsCompute as usize],
+        dev.backend.slow_paths().counts[SlowPath::TessellationAsCompute as usize],
         1
     );
     // Stream output of the domain stage (a geometry shader object made from its bytecode): the
@@ -3327,7 +3331,10 @@ fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
     dev.draw_auto();
     assert!(dev.removed.is_none());
     assert!(!log_from(&dev, from).iter().any(|l| l.starts_with("draw ")));
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize], 1);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::ReadBackWait as usize],
+        1
+    );
 }
 
 #[test]
@@ -3378,7 +3385,10 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
             "{log:#?}"
         );
     }
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::ReinterpretCopy as usize], 2);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::ReinterpretCopy as usize],
+        2
+    );
     assert!(dev.removed.is_none());
 }
 
@@ -3467,7 +3477,10 @@ fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_sa
         .collect();
     assert_eq!(copies.len(), 2, "{log:#?}");
     assert!(copies[0] < begins[0] && begins[0] < copies[1] && copies[1] < begins[1]);
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::TargetsSplit as usize], 1);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::TargetsSplit as usize],
+        1
+    );
 }
 
 #[test]
@@ -3545,7 +3558,10 @@ fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_view
         .flat_map(|l| (0..viewports.len() as u32).map(move |v| [l, v]))
         .collect();
     assert_eq!(runs, expected, "{log:#?}");
-    assert_eq!(dev.backend.slow_paths().counts[SlowPath::LayerSplit as usize], 1);
+    assert_eq!(
+        dev.backend.slow_paths().counts[SlowPath::LayerSplit as usize],
+        1
+    );
     assert_eq!(
         dev.backend.slow_paths().counts[SlowPath::MultiViewportSplit as usize],
         1

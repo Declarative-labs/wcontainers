@@ -9,7 +9,7 @@
 //! texture in that format, and the two inherit from each other the same way (`ReinterpretCopy`).
 
 use wcontainers_gpu::{
-    Gpu, Extent, FORMAT_FACTS, Features, Format, FormatUse, Origin, SlowPath, TextureRegion,
+    Extent, FORMAT_FACTS, Features, Format, FormatUse, Gpu, Origin, SlowPath, TextureRegion,
     TextureUsage,
 };
 

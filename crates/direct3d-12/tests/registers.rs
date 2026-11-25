@@ -26,7 +26,7 @@ use wcontainers_direct3d_12::state::{
 use wcontainers_direct3d_12::{Device, GraphicsPipelineDesc, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
 use wcontainers_directx_graphics_infrastructure::stage_registers::INPUT_SLOTS;
-use wcontainers_gpu::{Gpu, ColorWrites, DeviceStatus, SlowPath};
+use wcontainers_gpu::{ColorWrites, DeviceStatus, Gpu, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 const VS: &[u8] = include_bytes!("registers/vs.dxbc");
@@ -317,10 +317,7 @@ fn thirty_two_input_slots_and_stage_registers_draw_as_direct3d_12() {
         assert_eq!(texel, DRAWN, "texel {i}");
     }
     // Slots past the back end's vertex buffers were fetched in the program.
-    let pulled = device
-        .backend()
-        .slow_paths()
-        .counts[SlowPath::VertexPulledInShader as usize];
+    let pulled = device.backend().slow_paths().counts[SlowPath::VertexPulledInShader as usize];
     assert_eq!(pulled > 0, caps.limits.vertex_streams < INPUT_SLOTS);
 }
 

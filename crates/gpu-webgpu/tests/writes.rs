@@ -17,7 +17,7 @@ mod allowance;
 mod clears;
 
 use wcontainers_gpu::{
-    Gpu, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, FORMAT_FACTS, Format,
+    BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, FORMAT_FACTS, Format, Gpu,
     LoadOp, MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp,
     TextureRegion, TextureUsage, WriteMode,
 };
@@ -262,7 +262,10 @@ fn clears_to_a_pattern_fill_exactly() {
     want.extend(pattern.iter().cycle().take(SIZE as usize));
     want.extend([0xee; 16]);
     assert!(got == want, "the pattern clear wrote the wrong bytes");
-    assert_eq!(b.slow_paths().counts[SlowPath::PatternClearCopied as usize], 1);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::PatternClearCopied as usize],
+        1
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
@@ -304,7 +307,10 @@ fn arena_buffers_keep_command_order() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     let k = b.counters();
     assert_eq!((k.renames, k.slices, k.staged_writes), (0, 1, 1), "{k:?}");
-    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize], 1);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize],
+        1
+    );
 }
 
 /// Seeded random buffer writes in every mode, copies between buffers and within one, and clears to
@@ -417,7 +423,10 @@ fn byte_granular_buffer_operations_match_a_model() {
         "{no_overwrites} no-overwrite writes, {demoted} made ordered, {within} copies within one buffer"
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize], within);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize],
+        within
+    );
 }
 
 /// Writes of any length after a submit, so that none meets a recorded command, take effect in the
@@ -615,7 +624,10 @@ fn copies_within_one_buffer_are_exact_and_counted() {
     assert_eq!(finish(&mut b, whole, 64), model);
     assert_eq!(finish(&mut b, copied, 16), words(7));
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert_eq!(b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize], 4);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CopyWithinBuffer as usize],
+        4
+    );
 }
 
 /// A scripted scene of four frames, each drawing the triangle four times with a `Discard` write of
@@ -728,7 +740,10 @@ fn queries_carry_across_splits_in_a_set_of_the_largest_size() {
     );
     assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
     assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 3);
-    assert_eq!(b.slow_paths().counts[SlowPath::QueriesSegmented as usize], 3);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::QueriesSegmented as usize],
+        3
+    );
     assert!(
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the picture changed"
@@ -785,7 +800,10 @@ fn queries_carry_across_pass_splits() {
     eprintln!("query results: {words:?}");
     assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
     assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 3);
-    assert_eq!(b.slow_paths().counts[SlowPath::QueriesSegmented as usize], 3);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::QueriesSegmented as usize],
+        3
+    );
     assert!(
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the picture changed"

@@ -46,7 +46,7 @@ use wcontainers_directx_graphics_infrastructure::required::MOST_SAMPLES;
 use wcontainers_directx_graphics_infrastructure::{
     dxgi, dxgi_format, support1, support2, typeless_group,
 };
-use wcontainers_gpu::{Gpu, CUBE_FACES, ColorWrites, DeviceStatus, FORMAT_FACTS, FormatKind};
+use wcontainers_gpu::{CUBE_FACES, ColorWrites, DeviceStatus, FORMAT_FACTS, FormatKind, Gpu};
 use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
 /// The DXGI format values up to `B4G4R4A4_UNORM`, the last Direct3D 12 defines below its video
