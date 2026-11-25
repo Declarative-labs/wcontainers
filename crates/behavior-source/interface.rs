@@ -22,7 +22,6 @@ pub trait BehaviorSource {
     /// Executes exactly one instruction on the given processor + memory.
     ///
     /// Processor changes are written in place, memory changes are written through the hook.
-    /// On error the processor is left as it was and the hook received nothing.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
@@ -113,7 +112,6 @@ pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionE
     NoKnownBehavior {
         instruction: Architecture::Instruction,
     },
-    /// The source could not execute the instruction from this state.
     ExecutionFailed {
         instruction: Architecture::Instruction,
         before: ExecutionState<'static, Architecture>,
