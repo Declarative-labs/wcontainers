@@ -618,7 +618,7 @@ fn string(form: Form, code: &mut HostCode, i: &Iced, resume: Option<Resume>) {
             k,
             OpKind::MemorySegSI | OpKind::MemorySegESI | OpKind::MemoryESDI | OpKind::MemoryESEDI
         )) && i.segment_prefix() == Register::None,
-        "a string the inside answers: {i}"
+        "a string the inside answers: {i:?}"
     );
     let source = kinds.contains(&OpKind::MemorySegRSI);
     let destination = kinds.contains(&OpKind::MemoryESRDI);

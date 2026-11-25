@@ -76,7 +76,7 @@ fn bytes_of(i: &Iced, at: u64) -> Vec<u8> {
     let mut encoder = Encoder::new(crate::MODE_BITS);
     encoder
         .encode(i, at)
-        .unwrap_or_else(|e| panic!("the carrying code's instructions encode: {e} in {i:?} {i}"));
+        .unwrap_or_else(|e| panic!("the carrying code's instructions encode: {e} in {i:?}"));
     encoder.take_buffer()
 }
 
