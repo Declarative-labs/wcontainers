@@ -763,6 +763,10 @@ pub enum Bug {
     DotProductSumsInOrder,
     /// DPPS's first sums take each lane's own product first.
     DotProductOwnLaneFirst,
+    /// MASKMOVDQU writes every byte.
+    MaskedStoreWritesEveryByte,
+    /// MASKMOVDQU checks its low quadword first.
+    MaskedStoreLowQuadwordFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1111,6 +1115,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::GaloisAffineRowsReversed, "GFNI", sse(|o| matches!(o, SseOperation::Combine(Combination::Galois(_)))), SseFamily),
     row(Bug::DotProductSumsInOrder, "DPPS", sse(|o| o == SseOperation::DotProduct(Precision::Single)), SseFamily),
     row(Bug::DotProductOwnLaneFirst, "DPPS", sse(|o| o == SseOperation::DotProduct(Precision::Single)), SseFamily),
+    row(Bug::MaskedStoreWritesEveryByte, "MASKMOVDQU", sse(|o| o == SseOperation::MaskedStore), SseFamily),
+    row(Bug::MaskedStoreLowQuadwordFirst, "MASKMOVDQU", sse(|o| o == SseOperation::MaskedStore), SseFamily),
 ];
 
 #[cfg(feature = "planted-bugs")]

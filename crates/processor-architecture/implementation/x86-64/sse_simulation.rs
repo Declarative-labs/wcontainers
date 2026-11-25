@@ -8,14 +8,17 @@
 use iced_x86::{Instruction as Decoded, OpKind, Register};
 use wcontainers_processor_architecture::MemoryDelta;
 
-use super::{Memory, MemoryOperand, SSE_ALIGNMENT, check_access, expect_code, locate, read_register, read_value, store, write_register};
+use super::{
+    Memory, MemoryOperand, SSE_ALIGNMENT, check_access, check_canonical, expect_code, find_fault, locate, read_register, read_value,
+    store, write_register,
+};
 use crate::behavior::StoreAcrossFault;
 use crate::float::sse_float::{ConvertedLane, compute_dot_product, convert_integer, convert_to_integer, resolve_flags, round_integral};
 use crate::float::{Arrangement, Precision};
 use crate::memory::read_bytes;
 use crate::planted::{Bug, is_active};
 use crate::sse::{
-    LaneSelect, SseForm, SseOperation, StringControl, StringLength, StringOutput, VECTOR_BYTES,
+    LaneSelect, MaskedStoreFaults, SseForm, SseOperation, StringControl, StringLength, StringOutput, VECTOR_BYTES,
     accumulate_crc32, compare_strings, find_implicit_length, find_sse_form, to_explicit_length,
 };
 use crate::vector::{Lane, join, split};
@@ -31,6 +34,7 @@ const SECOND_LENGTH: usize = 2;
 pub(super) fn execute_sse(
     instruction: Instruction,
     across_fault: StoreAcrossFault,
+    masked_faults: MaskedStoreFaults,
     processor: &mut Processor,
     memory: Memory<'_, '_>,
     decoded: &Decoded,
@@ -176,6 +180,7 @@ pub(super) fn execute_sse(
                 .collect();
             write_float_lanes(processor, decoded.op0_register().number(), precision, arrangement, &rounded)
         }
+        SseOperation::MaskedStore => store_masked(across_fault, masked_faults, processor, memory, decoded, on_memory_mutated),
         SseOperation::DotProduct(precision) => {
             let source = read_vector_source(form, processor, memory, decoded)?;
             let number = decoded.op0_register().number();
@@ -337,4 +342,73 @@ fn compare(
         }
     }
     Ok(())
+}
+
+/// The index of RDI, MASKMOVDQU's address, among the general registers.
+const DESTINATION_INDEX: usize = 7;
+
+/// MASKMOVDQU: the address is RDI, or EDI under the 0x67 prefix, plus the FS or GS base under those overrides. The
+/// chip stores it as two quadwords, the high one first, as it shows: each byte the checks reach must be canonical
+/// (else #GP(0)), the address aligned to 8 while AC is set (else #AC), and each byte writable, the high quadword's
+/// first (else #PF at the first that is not); then the selected bytes are written in runs, or, where a byte faults,
+/// those checked before it if `across_fault` says so.
+fn store_masked(
+    across_fault: StoreAcrossFault,
+    masked_faults: MaskedStoreFaults,
+    processor: &mut Processor,
+    memory: Memory<'_, '_>,
+    decoded: &Decoded,
+    mut on_memory_mutated: impl FnMut(MemoryDelta<'_, X86_64>),
+) -> Result<(), Exception> {
+    const HALF_BYTES: usize = size_of::<u64>();
+    let rdi = processor.general_purpose_registers[DESTINATION_INDEX];
+    let offset = if decoded.op0_kind() == OpKind::MemorySegEDI { rdi & u64::from(u32::MAX) } else { rdi };
+    let base = match decoded.memory_segment() {
+        Register::FS => processor.fs_base,
+        Register::GS => processor.gs_base,
+        _ => 0,
+    };
+    let address = offset.wrapping_add(base);
+    let data = read_xmm(processor, decoded.op1_register()).to_le_bytes();
+    let mask = read_xmm(processor, decoded.op2_register()).to_le_bytes();
+    let selected = |index: usize| mask[index] & 0x80 != 0 || is_active(Bug::MaskedStoreWritesEveryByte);
+    let high_first = !is_active(Bug::MaskedStoreLowQuadwordFirst);
+    let order: alloc::vec::Vec<usize> = if high_first {
+        (HALF_BYTES..VECTOR_BYTES as usize).chain(0..HALF_BYTES).collect()
+    } else {
+        (0..VECTOR_BYTES as usize).collect()
+    };
+    let checked: alloc::vec::Vec<usize> =
+        order.into_iter().filter(|&index| masked_faults == MaskedStoreFaults::EveryByte || selected(index)).collect();
+    if checked.is_empty() {
+        return Ok(());
+    }
+    let byte_address = |index: usize| address.wrapping_add(index as u64);
+    for &index in &checked {
+        check_canonical(MemoryOperand { address: byte_address(index), stack: false }, 1)?;
+    }
+    if processor.flags.contains(Flags::ALIGNMENT_CHECK) && !address.is_multiple_of(HALF_BYTES as u64) {
+        return Err(Exception::AlignmentCheck);
+    }
+    let fault = checked.iter().position(|&index| find_fault(memory, byte_address(index), 1, Access::Write).is_some());
+    let written: &[usize] = match fault {
+        None => &checked,
+        Some(position) if across_fault == StoreAcrossFault::WritesBytesBelowFault => &checked[..position],
+        Some(_) => &[],
+    };
+    let mut bytes: alloc::vec::Vec<usize> = written.iter().copied().filter(|&index| selected(index)).collect();
+    bytes.sort_unstable();
+    let mut runs = bytes.as_slice();
+    while let Some(&first) = runs.first() {
+        let length = runs.iter().enumerate().take_while(|(offset, index)| **index == first + offset).count();
+        on_memory_mutated(MemoryDelta::ValueAssignment {
+            start: byte_address(first),
+            bytes: alloc::borrow::Cow::Borrowed(&data[first..first + length]),
+        });
+        runs = &runs[length..];
+    }
+    match fault.and_then(|position| find_fault(memory, byte_address(checked[position]), 1, Access::Write)) {
+        Some((fault_address, page_present)) => Err(Exception::PageFault { access: Access::Write, page_present, address: fault_address }),
+        None => Ok(()),
+    }
 }

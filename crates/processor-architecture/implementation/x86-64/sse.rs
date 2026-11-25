@@ -100,6 +100,14 @@ pub enum Combination {
     Galois(GaloisStep),
 }
 
+/// Which of MASKMOVDQU's 16 bytes its canonical and page checks reach: the SDM leaves it to the chip whether a byte
+/// the mask leaves out can fault, and so whether a mask of zeros can.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MaskedStoreFaults {
+    EveryByte,
+    SelectedBytes,
+}
+
 /// What a form does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SseOperation {
@@ -130,6 +138,8 @@ pub enum SseOperation {
     /// DPPS, DPPD: the products of the lanes immediate bits 4 and up select, summed in pairs, into the lanes its
     /// low bits select.
     DotProduct(Precision),
+    /// MASKMOVDQU: the bytes of the first register whose byte in the second has its top bit set, to DS:RDI.
+    MaskedStore,
 }
 
 /// One form of this family.
@@ -166,7 +176,7 @@ impl SseForm {
         }
         let bytes = match self.operation {
             SseOperation::Extract { bytes, .. } | SseOperation::Insert { bytes, .. } => bytes,
-            SseOperation::MoveMask(_) | SseOperation::Fence => 0,
+            SseOperation::MoveMask(_) | SseOperation::Fence | SseOperation::MaskedStore => 0,
             SseOperation::StoreGeneral | SseOperation::Crc32 | SseOperation::IntegerToFloat(_) => {
                 to_memory_bits(self.codes[0]) / u8::BITS
             }
@@ -222,13 +232,18 @@ pub fn list_sse_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
     let Some(form) = find_sse_form(instruction) else {
         return Vec::new();
     };
-    let across_page = form.writes_memory() && form.memory_bytes() > 1 && !form.requires_alignment();
-    let choices: &[StoreAcrossFault] = if across_page {
-        &[StoreAcrossFault::WritesNothing, StoreAcrossFault::WritesBytesBelowFault]
-    } else {
-        &[StoreAcrossFault::WritesNothing]
-    };
-    choices.iter().map(|&across_fault| PreciseInstruction::Sse { instruction, across_fault }).collect()
+    let masked = form.operation == SseOperation::MaskedStore;
+    let across_page = masked || (form.writes_memory() && form.memory_bytes() > 1 && !form.requires_alignment());
+    let both = [StoreAcrossFault::WritesNothing, StoreAcrossFault::WritesBytesBelowFault];
+    let choices: &[StoreAcrossFault] = if across_page { &both } else { &both[..1] };
+    let checks = [MaskedStoreFaults::EveryByte, MaskedStoreFaults::SelectedBytes];
+    let checks: &[MaskedStoreFaults] = if masked { &checks } else { &checks[..1] };
+    checks
+        .iter()
+        .flat_map(|&masked_faults| {
+            choices.iter().map(move |&across_fault| PreciseInstruction::Sse { instruction, across_fault, masked_faults })
+        })
+        .collect()
 }
 
 impl Combination {
@@ -706,6 +721,7 @@ pub static SSE_FORMS: &[SseForm] = forms! {
     PinsrqXmmdqGpr64qImmb / PinsrqXmmdqMemqImmb, insert(QUADWORD, ByImmediate, false, false), [Pinsrq_xmm_rm64_imm8];
     / LddquXmmpdMemdq, insert(VECTOR, LOW, true, false), [Lddqu_xmm_m128];
     / MovntdqaXmmdqMemdq, insert(VECTOR, LOW, true, true), [Movntdqa_xmm_m128];
+    MaskmovdquXmmxubXmmxub, SseOperation::MaskedStore, [Maskmovdqu_rDI_xmm_xmm];
     MovmskpsGpr32Xmmps, SseOperation::MoveMask(Doubleword), [Movmskps_r32_xmm];
     MovmskpdGpr32Xmmpd, SseOperation::MoveMask(Quadword), [Movmskpd_r32_xmm];
     PmovmskbGpr32Xmmdq, SseOperation::MoveMask(Byte), [Pmovmskb_r32_xmm];

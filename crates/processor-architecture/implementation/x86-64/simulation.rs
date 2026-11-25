@@ -184,8 +184,8 @@ fn apply(
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
-        PreciseInstruction::Sse { instruction, across_fault } => {
-            sse_simulation::execute_sse(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        PreciseInstruction::Sse { instruction, across_fault, masked_faults } => {
+            sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS

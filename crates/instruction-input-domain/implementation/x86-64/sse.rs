@@ -29,7 +29,10 @@ use wcontainers_processor_architecture_x86_64::{
 use crate::float::MxcsrSet;
 use crate::integer::{CodeLayout, Encoding, LAYOUTS_BEYOND_START, encode_at_code_address, lay_out, place_memory_operand, to_padding};
 use crate::vector::{VectorValues, fill_lanes, generate_vectors, rotate_floats};
-use crate::{CODE_ADDRESS, FlagSet, OperandSize, OperandSizes, OperandType, OperandValue, Role, Splits, VECTOR};
+use crate::{
+    AccessPlacement, AddressSize, CODE_ADDRESS, FlagSet, NON_CANONICAL_ADDRESS, OperandSize, OperandSizes, OperandType,
+    OperandValue, Role, SegmentChoice, Splits, VECTOR, to_access_address, to_data_pages,
+};
 
 /// An operand of a form of this family.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,12 +46,14 @@ pub enum SseOperand {
     Immediate(ImmediateSet),
     /// The two strings of a string compare, and for an explicit-length form RAX and RDX.
     Strings { explicit: bool },
+    /// Where MASKMOVDQU's RDI points, and through which address size and segment.
+    MaskedDestination,
 }
 
 impl SseOperand {
     /// Whether the operand holds data the instruction computes with, rather than where things lie.
     pub const fn is_data(self) -> bool {
-        !matches!(self, Self::RegistersWithXmm0)
+        !matches!(self, Self::RegistersWithXmm0 | Self::MaskedDestination)
     }
 }
 
@@ -122,6 +127,7 @@ pub enum ImmediateSet {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SseValue {
     Strings { first: u128, second: u128, lengths: Option<[u64; 2]> },
+    MaskedDestination { placement: AccessPlacement, lower: PagePermission, upper: PagePermission, address_size: AddressSize, segment: SegmentChoice },
 }
 
 /// The register pairs of a form that reads XMM0: each operand XMM0, both, and the pairs without it.
@@ -201,6 +207,12 @@ pub fn list_operand_types(form: &SseForm) -> Vec<OperandType> {
             immediate(ImmediateSet::DotProductMasks),
             Some(arithmetic),
         ],
+        SseOperation::MaskedStore => vec![
+            Some(OperandType::Encoding(2)),
+            Some(Sse(SseOperand::MaskedDestination)),
+            Some(Sse(Vector(Role::Source, VectorSet::Distinct))),
+            Some(Sse(Vector(Role::Implicit(MASK_OPERAND), VectorSet::SignBits))),
+        ],
         SseOperation::Round { precision, arrangement } => vec![
             Some(place(false)),
             (arrangement == Arrangement::Scalar).then_some(Sse(Vector(Role::Destination, VectorSet::Distinct))),
@@ -239,6 +251,7 @@ pub fn generate_values(operand: SseOperand) -> Vec<OperandValue> {
         SseOperand::General(_, set) => generate_generals(set).into_iter().map(OperandValue::Bits).collect(),
         SseOperand::Immediate(set) => generate_immediates(set).into_iter().map(|value| OperandValue::Immediate(i64::from(value))).collect(),
         SseOperand::Strings { explicit } => generate_strings(explicit).into_iter().map(OperandValue::Sse).collect(),
+        SseOperand::MaskedDestination => generate_masked_destinations().into_iter().map(OperandValue::Sse).collect(),
     }
 }
 
@@ -565,8 +578,108 @@ impl Value {
     }
 }
 
+/// MASKMOVDQU's mask register, its operand after the data register.
+const MASK_OPERAND: usize = 2;
+/// An FS base MASKMOVDQU's RDI makes up for.
+const MASKED_FS_BASE: u64 = 0x0000_7000_0000_0000;
+/// What RDI holds above EDI when the 0x67 prefix makes MASKMOVDQU read EDI.
+const ABOVE_ADDRESS_HALF: u64 = 0xA5A5_A5A5_0000_0000;
+
+/// Every place MASKMOVDQU's 16 bytes can lie around the data pages' boundary with each permission of each page, a
+/// non-canonical address, and at the lower page's start through EDI and through FS.
+fn generate_masked_destinations() -> Vec<SseValue> {
+    let mapped = |data_access| PagePermission::Mapped { data_access, instruction_fetch: InstructionFetch::Forbidden };
+    let permissions = [PagePermission::Unmapped, mapped(DataAccess::ReadOnly), mapped(DataAccess::ReadWrite)];
+    let at = |placement, lower, upper, address_size, segment| SseValue::MaskedDestination { placement, lower, upper, address_size, segment };
+    let placements = [
+        AccessPlacement::LowerPageStart,
+        AccessPlacement::Misaligned,
+        AccessPlacement::EndsAtBoundary,
+        AccessPlacement::StraddlesBoundary,
+        AccessPlacement::UpperPageStart,
+    ];
+    let mut all = Vec::new();
+    for placement in placements {
+        for lower in permissions {
+            for upper in permissions {
+                all.push(at(placement, lower, upper, AddressSize::Bits64, SegmentChoice::Default));
+            }
+        }
+    }
+    let writable = permissions[2];
+    all.extend([
+        at(AccessPlacement::NonCanonical, writable, writable, AddressSize::Bits64, SegmentChoice::Default),
+        at(AccessPlacement::LowerPageStart, writable, writable, AddressSize::Bits32, SegmentChoice::Default),
+        at(AccessPlacement::LowerPageStart, writable, writable, AddressSize::Bits64, SegmentChoice::Fs),
+    ]);
+    all
+}
+
+/// Builds MASKMOVDQU's state: the data register and the mask register, the mask written last, RDI at the
+/// destination, the data pages' permissions.
+fn build_masked_store_state(form: &SseForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    let mut processor = Processor {
+        general_purpose_registers: array::from_fn(|number| !(number as u64)),
+        instruction_pointer: CODE_ADDRESS,
+        vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
+        ..ZERO_PROCESSOR
+    };
+    let (mut registers, mut layout, mut data, mut mask, mut destination) = ([0, 0], CodeLayout::PageStart, 0, 0, None);
+    for (operand_type, operand) in operands {
+        match (operand_type, *operand) {
+            (OperandType::Encoding(_), OperandValue::Encoding(encoding)) => (registers, layout) = (encoding.registers, encoding.layout),
+            (OperandType::Sse(SseOperand::MaskedDestination), OperandValue::Sse(value)) => destination = Some(value),
+            (OperandType::Sse(SseOperand::Vector(Role::Source, _)), OperandValue::Vector(value)) => data = value,
+            (OperandType::Sse(SseOperand::Vector(_, _)), OperandValue::Vector(value)) => mask = value,
+            (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
+        }
+    }
+    processor.vector_registers[registers[0]] = data;
+    processor.vector_registers[registers[1]] = mask;
+    let Some(SseValue::MaskedDestination { placement, lower, upper, address_size, segment }) = destination else {
+        panic!("{:?} has a destination", form.instruction);
+    };
+    let mut memory_mutations: Vec<MemoryDelta<'static, X86_64>> = to_data_pages(lower, upper).into();
+    let address = match placement {
+        AccessPlacement::NonCanonical => NON_CANONICAL_ADDRESS,
+        placement => to_access_address(placement, u64::from(VECTOR_BYTES)),
+    };
+    let (segment_prefix, base) = match segment {
+        SegmentChoice::Fs => (Register::FS, MASKED_FS_BASE),
+        _ => (Register::None, 0),
+    };
+    processor.fs_base = base;
+    let offset = address.wrapping_sub(base);
+    let (bits, rdi) = match address_size {
+        AddressSize::Bits64 => (u64::BITS, offset),
+        AddressSize::Bits32 => (u32::BITS, ABOVE_ADDRESS_HALF | offset),
+    };
+    processor.general_purpose_registers[MASKED_DESTINATION_REGISTER] = rdi;
+    let encoded = Encoded::with_maskmovdqu(bits, VECTOR[registers[0]], VECTOR[registers[1]], segment_prefix)
+        .unwrap_or_else(|error| panic!("MASKMOVDQU takes its operands: {error}"));
+    let mut padding_operand = MemoryOperand::with_base(Register::RDI);
+    padding_operand.segment_prefix = segment_prefix;
+    let (code_page, start, bytes) = lay_out(layout, &encode_at_code_address(&encoded), to_padding(Some(padding_operand)));
+    processor.instruction_pointer = start;
+    let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
+    let mut all = vec![
+        MemoryDelta::PermissionAssignment { addresses: code_page..code_page + PAGE_BYTES, permission: executable },
+        MemoryDelta::ValueAssignment { start, bytes: Cow::Owned(bytes) },
+    ];
+    all.append(&mut memory_mutations);
+    ExecutionState { processor, memory_mutations: all }
+}
+
+/// RDI's number among the general registers.
+const MASKED_DESTINATION_REGISTER: usize = 7;
+
 /// Builds the state of a form from one value of each of its operand types.
 pub fn build_state(form: &SseForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    if form.operation == SseOperation::MaskedStore {
+        return build_masked_store_state(form, operands);
+    }
     let mut processor = Processor {
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,

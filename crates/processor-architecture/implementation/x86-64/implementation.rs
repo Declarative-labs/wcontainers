@@ -308,10 +308,12 @@ pub enum PreciseInstruction {
         instruction: Instruction,
         behavior: IntegerBehavior,
     },
-    /// A form of [`sse::SSE_FORMS`], and what a store of it writes below a fault part-way.
+    /// A form of [`sse::SSE_FORMS`], what a store of it writes below a fault part-way, and which bytes MASKMOVDQU
+    /// checks.
     Sse {
         instruction: Instruction,
         across_fault: StoreAcrossFault,
+        masked_faults: sse::MaskedStoreFaults,
     },
     /// The form raises #UD once it is fetched: the chip lacks its feature, or the form is one of [`FORBIDDEN_FORMS`].
     Undefined(Instruction),
