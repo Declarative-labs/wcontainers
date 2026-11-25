@@ -1156,7 +1156,8 @@ fn fan_or_loop_indices(
             format,
             base_vertex,
         } => {
-            let restart_value = restart.then(|| format.restart_value());
+            let restart_value =
+                restart.then(|| crate::INDEX_FORMATS[format as usize].restart_value);
             match format {
                 IndexFormat::U8 => walk(
                     kind,

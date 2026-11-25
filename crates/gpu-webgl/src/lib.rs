@@ -2965,7 +2965,7 @@ const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
 
 /// The byte range of a buffer that a draw's indices `first..first + count` take.
 fn index_bytes(index: &IndexBinding<'_, Gl>, first: u32, count: u32) -> Range<u64> {
-    let size = u64::from(index.format.size());
+    let size = u64::from(wcontainers_gpu::INDEX_FORMATS[index.format as usize].size);
     let start = index.offset + u64::from(first) * size;
     start..start + u64::from(count) * size
 }
@@ -3325,7 +3325,9 @@ impl Gl {
                     IndexFormat::U16 => glow::UNSIGNED_SHORT,
                     IndexFormat::U32 => glow::UNSIGNED_INT,
                 };
-                let offset = index.offset + u64::from(first) * u64::from(index.format.size());
+                let offset = index.offset
+                    + u64::from(first)
+                        * u64::from(wcontainers_gpu::INDEX_FORMATS[index.format as usize].size);
                 // SAFETY: the draw's state and index buffer are applied.
                 unsafe {
                     gl.draw_elements_instanced(
@@ -5510,7 +5512,7 @@ impl Backend for Gl {
                 format,
                 base_vertex,
             } => {
-                let width = format.size() as usize;
+                let width = wcontainers_gpu::INDEX_FORMATS[format as usize].size as usize;
                 let count = indices.len() / width;
                 if count == 0 {
                     return Ok(());
@@ -5546,7 +5548,7 @@ impl Backend for Gl {
                 let ring = self.write_buffer_ring(
                     RingKind::Indices,
                     &[bytes],
-                    format.size(),
+                    wcontainers_gpu::INDEX_FORMATS[format as usize].size,
                     &mut offset,
                 )?;
                 self.draw(&DrawCall {
@@ -5653,10 +5655,12 @@ impl Backend for Gl {
                 let Some(index) = &call.index else {
                     return Err(GpuError::Invalid("an indexed draw with no index buffer"));
                 };
-                let size = index.format.size();
+                let size = wcontainers_gpu::INDEX_FORMATS[index.format as usize].size;
                 let raw = self.read_indices(index, *first, *count)?;
                 // Only strips that restart restart: GL's restart value is a vertex elsewhere.
-                let restart = call.restart.then(|| index.format.restart_value());
+                let restart = call
+                    .restart
+                    .then(|| wcontainers_gpu::INDEX_FORMATS[index.format as usize].restart_value);
                 let mut negative = false;
                 let numbers = raw.chunks_exact(size as usize).map(|c| {
                     let mut word = [0; 4];

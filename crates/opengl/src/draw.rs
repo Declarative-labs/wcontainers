@@ -10,11 +10,11 @@ use wcontainers_gpu::{
     BorderColor, BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode,
     DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features,
     FillMode, Filter, Format, FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot,
-    HelperValue, IndexBinding, IndexFormat, IndexSource, Interpolation, LinkedValues,
-    MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, PassTracker,
-    Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
-    STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
-    SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
+    HelperValue, INDEX_FORMATS, IndexBinding, IndexFormat, IndexSource, Interpolation,
+    LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter,
+    PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
+    RingKind, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
     VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
@@ -1232,8 +1232,8 @@ fn assembled(mode: mesa_prim) -> Option<Assembled> {
 
 fn index_format(size: u16) -> IndexFormat {
     match u32::from(size) {
-        s if s == IndexFormat::U8.size() => IndexFormat::U8,
-        s if s == IndexFormat::U16.size() => IndexFormat::U16,
+        s if s == INDEX_FORMATS[IndexFormat::U8 as usize].size => IndexFormat::U8,
+        s if s == INDEX_FORMATS[IndexFormat::U16 as usize].size => IndexFormat::U16,
         _ => IndexFormat::U32,
     }
 }
@@ -2915,7 +2915,8 @@ fn draw<B: Backend>(
     // Restart at an index other than the largest, where the host restarts.
     let other_restart = restart
         && info.index_size > 0
-        && info.restart_index != index_format(info.index_size).restart_value();
+        && info.restart_index
+            != INDEX_FORMATS[index_format(info.index_size) as usize].restart_value;
     // Indices in a buffer the host cannot draw as they are (a fan or loop, flat values from the
     // other vertex, restart in a list or at another index, 8-bit indices the back end lacks): read
     // back now (`ReadBackWait`), then converted as the program's own.
@@ -3346,8 +3347,8 @@ fn helper_indices<B: Backend>(
     let indexed = info.index_size > 0;
     let format = index_format(info.index_size);
     let restart = info.primitive_restart();
-    let restarts_as_helper =
-        restart == strip && (!restart || info.restart_index == format.restart_value());
+    let restarts_as_helper = restart == strip
+        && (!restart || info.restart_index == INDEX_FORMATS[format as usize].restart_value);
     // The helper reads 16- and 32-bit indices.
     let widened = indexed && format == IndexFormat::U8;
     // The helper gives an odd triangle of a strip its first vertex first, as Direct3D does;
@@ -4426,7 +4427,7 @@ struct Provoking {
 
 /// Whether `indices` hold the largest value of their format, at which the host's strips restart.
 fn holds_largest(indices: &[u8], format: IndexFormat) -> bool {
-    let largest = format.restart_value();
+    let largest = INDEX_FORMATS[format as usize].restart_value;
     match format {
         IndexFormat::U8 => indices.iter().any(|&i| u32::from(i) == largest),
         IndexFormat::U16 => indices
@@ -4456,7 +4457,7 @@ fn draw_rewritten<B: Backend>(
         .write_buffer_ring(
             RingKind::Indices,
             &[rewritten.indices()],
-            rewritten.format.size(),
+            INDEX_FORMATS[rewritten.format as usize].size,
             &mut offset,
         )
         .map_err(|e| format!("{e:?}"))?;
@@ -4591,7 +4592,8 @@ fn draw_ranges<B: Backend>(
             // restart there, and its strips always do at the largest value.
             // A rewritten draw is cut at every restart value: its primitives may become lists.
             // The host restarts only at the largest value.
-            let other_restart = restart && info.restart_index != format.restart_value();
+            let other_restart =
+                restart && info.restart_index != INDEX_FORMATS[format as usize].restart_value;
             let cut = indices::restarts_otherwise(mode, restart) || other_restart;
             let lists_only = (!restart || other_restart)
                 && strip
@@ -4643,7 +4645,12 @@ fn draw_ranges<B: Backend>(
             };
             let mut offset = [0];
             let ring = backend
-                .write_buffer_ring(RingKind::Indices, &[indices], format.size(), &mut offset)
+                .write_buffer_ring(
+                    RingKind::Indices,
+                    &[indices],
+                    INDEX_FORMATS[format as usize].size,
+                    &mut offset,
+                )
                 .map_err(|e| format!("{e:?}"))?;
             host_draw(
                 backend,
@@ -4958,7 +4965,9 @@ fn widen(indices: &[u8], restart: bool) -> Vec<u8> {
     indices
         .iter()
         .flat_map(|&i| {
-            let wide = if restart && u32::from(i) == IndexFormat::U8.restart_value() {
+            let wide = if restart
+                && u32::from(i) == INDEX_FORMATS[IndexFormat::U8 as usize].restart_value
+            {
                 u16::MAX
             } else {
                 u16::from(i)

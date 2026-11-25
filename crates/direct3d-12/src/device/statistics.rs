@@ -12,7 +12,8 @@
 
 use wcontainers_gpu::{
     BindingEntry, BindingResource, BlendDesc, BufferRange, COUNTER_BINDING, ColorWrites,
-    DepthStencilDesc, HELPER_SET, Reflection, RenderTargetBlend, StageExtras, SystemValue,
+    DepthStencilDesc, HELPER_SET, INDEX_FORMATS, Reflection, RenderTargetBlend, StageExtras,
+    SystemValue,
 };
 
 use super::*;
@@ -355,7 +356,7 @@ impl<B: Backend> Replay<B> {
             return Err(Error::Invalid("an indexed draw with no index buffer"));
         };
         let format = super::index_format(view.format).ok_or(Error::Invalid("index format"))?;
-        let size = u64::from(format.size());
+        let size = u64::from(INDEX_FORMATS[format as usize].size);
         let (id, offset) = d
             .addresses
             .find(view.address)
@@ -374,7 +375,7 @@ impl<B: Backend> Replay<B> {
             .chunks(size as usize)
             .map(|i| i.iter().rev().fold(0, |v, &b| v << u8::BITS | u32::from(b)))
             .collect();
-        for run in indices.split(|&i| i == format.restart_value()) {
+        for run in indices.split(|&i| i == INDEX_FORMATS[format as usize].restart_value) {
             let n = run.len() as u64;
             vertices += n;
             prims += n.saturating_sub(if line { 1 } else { 2 });

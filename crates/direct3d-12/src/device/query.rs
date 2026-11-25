@@ -5,7 +5,8 @@
 //! counts a small compute program zeroes when the predicate skips them, so nothing waits.
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, QueryKind, RingKind, ShaderModule, SlotKind,
+    BindingEntry, BindingResource, BufferRange, INDEX_FORMATS, MAX_BINDING_SETS, QueryKind,
+    RingKind, ShaderModule, SlotKind,
 };
 
 use super::bind::CONSTANT_REGISTER;
@@ -198,8 +199,11 @@ pub(super) struct Programs<B: Backend>([Option<B::Program>; Own::ALL.len()]);
 /// restart value.
 fn restart_source() -> String {
     let short = IndexFormat::U16;
-    let (bits, short_max) = (short.size() * u8::BITS, short.restart_value());
-    let restart = IndexFormat::U32.restart_value();
+    let (bits, short_max) = (
+        INDEX_FORMATS[short as usize].size * u8::BITS,
+        INDEX_FORMATS[short as usize].restart_value,
+    );
+    let restart = INDEX_FORMATS[IndexFormat::U32 as usize].restart_value;
     format!(
         "
 @group(0) @binding({OWN_SOURCE}) var<storage, read> src: array<u32>;
@@ -355,8 +359,7 @@ impl<B: Backend> Device<B> {
             });
         }
         let set = self.backend.create_binding_set(&entries)?;
-        let mut bindings: [Option<&B::BindingSet>; wcontainers_gpu::MAX_BINDING_SETS] =
-            Default::default();
+        let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = Default::default();
         bindings[0] = Some(&set);
         self.backend.dispatch(&DispatchCall {
             program: &program,

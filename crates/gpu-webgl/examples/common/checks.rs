@@ -3459,8 +3459,8 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
     };
     let rewrites = |b: &mut H::Backend| b.slow_paths().count(SlowPath::RestartRewrite);
     for format in formats {
-        let width = format.size() as usize;
-        let largest = format.restart_value();
+        let width = INDEX_FORMATS[format as usize].size as usize;
+        let largest = INDEX_FORMATS[format as usize].restart_value;
         let bytes = |values: &[u32]| {
             let mut out: Vec<u8> = values
                 .iter()

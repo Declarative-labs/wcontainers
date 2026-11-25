@@ -13,8 +13,8 @@ use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
     CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
     DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind,
-    FormatUse, GpuError, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation,
-    LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object,
+    FormatUse, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding, IndexFormat,
+    Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object,
     OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc, Program, ReadSource,
     ReadState, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlowPath,
     StageSet, StageValue, StepMode, StoreOp, SystemValue, Target, TargetInShader, TargetLayout,
@@ -4391,12 +4391,12 @@ impl<B: Backend> Replay<B> {
                 // largest 16-bit value.
                 let wide = format == IndexFormat::U32;
                 let cut = if wide {
-                    IndexFormat::U16.restart_value()
+                    INDEX_FORMATS[IndexFormat::U16 as usize].restart_value
                 } else {
                     0
                 };
-                let size = u64::from(format.size());
-                let out_index = u64::from(IndexFormat::U32.size());
+                let size = u64::from(INDEX_FORMATS[format as usize].size);
+                let out_index = u64::from(INDEX_FORMATS[IndexFormat::U32 as usize].size);
                 if !offset.is_multiple_of(size) {
                     return Err(Error::Invalid(
                         "an index buffer view not aligned to its format",

@@ -79,9 +79,9 @@ pub use shader::{Program, ShaderModule, ShaderStage, StageSet};
 pub use slow::{SlowPath, SlowPaths};
 pub use state::{
     BlendComponent, BlendDesc, BlendFactor, BlendOp, ColorWrites, CullMode, DepthStencilDesc,
-    FillMode, FrontFace, IndexFormat, LogicOp, ProvokingVertex, RasterDesc, RenderTargetBlend,
-    StencilFace, StencilOp, StepMode, TargetLayout, Topology, VertexAttribute, VertexFormat,
-    VertexLayoutDesc, VertexStream,
+    FillMode, FrontFace, INDEX_FORMATS, IndexFormat, IndexFormatFacts, LogicOp, ProvokingVertex,
+    RasterDesc, RenderTargetBlend, StencilFace, StencilOp, StepMode, TargetLayout, Topology,
+    VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream,
 };
 
 /// The most color targets any front can bind at once (Direct3D 10 and later, Vulkan's common limit).

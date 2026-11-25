@@ -9,9 +9,9 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, Features, FormatKind, FormatUse, GpuError, LoadOp,
-    MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, ScissorRect, SlowPath,
-    StepMode, TargetLayout, VertexLayoutDesc, Viewport,
+    DispatchGroups, DrawCall, DrawRange, Features, FormatKind, FormatUse, GpuError, INDEX_FORMATS,
+    LoadOp, MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, ScissorRect,
+    SlowPath, StepMode, TargetLayout, VertexLayoutDesc, Viewport,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
@@ -1375,7 +1375,7 @@ impl WebGpu {
         if let (true, true, Some(index)) = (strip, call.restart, &call.index)
             && count > 0
         {
-            let size = index.format.size() as u64;
+            let size = INDEX_FORMATS[index.format as usize].size as u64;
             let start = index.offset + u64::from(first) * size;
             let end = (start + u64::from(count) * size).min(index.buffer.0.desc.size);
             let bytes = match end > start {

@@ -6,7 +6,7 @@
 
 use std::ffi::{c_uint, c_void};
 
-use wcontainers_gpu::{IndexFormat, ProvokingVertex, Topology};
+use wcontainers_gpu::{INDEX_FORMATS, IndexFormat, ProvokingVertex, Topology};
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 use zerocopy::IntoBytes;
 
@@ -29,7 +29,7 @@ impl Rewritten {
     }
 
     pub fn count(&self) -> u32 {
-        (self.bytes / self.format.size() as usize) as u32
+        (self.bytes / INDEX_FORMATS[self.format as usize].size as usize) as u32
     }
 
     /// The host's topology of the indices, which have no adjacency.
@@ -105,7 +105,7 @@ pub fn without_adjacency(rewritten: Rewritten) -> Rewritten {
         MESA_PRIM_TRIANGLES_ADJACENCY => (MESA_PRIM_TRIANGLES, &TRIANGLE_IN_ADJACENCY),
         _ => return rewritten,
     };
-    let size = rewritten.format.size() as usize;
+    let size = INDEX_FORMATS[rewritten.format as usize].size as usize;
     let each = own.len() * WITH_ADJACENCY as usize * size;
     let mut kept = Vec::with_capacity(rewritten.bytes / WITH_ADJACENCY as usize);
     for vertices in rewritten.indices().chunks_exact(each) {
@@ -139,7 +139,7 @@ fn topology(primitive: mesa_prim) -> Result<Topology, String> {
 }
 
 fn format(bytes: c_uint) -> IndexFormat {
-    if bytes == IndexFormat::U32.size() {
+    if bytes == INDEX_FORMATS[IndexFormat::U32 as usize].size {
         IndexFormat::U32
     } else {
         IndexFormat::U16
