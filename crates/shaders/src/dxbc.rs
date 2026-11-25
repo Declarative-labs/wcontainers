@@ -1,4 +1,4 @@
-//! The call into dxbc-spirv (C++, built by `build.rs`).
+//! The call into dxbc-spirv (C++, through wcontainers-shader-converters).
 
 use crate::ConvertError;
 use crate::converters::{self, DXBC_TO_IR, Failure};

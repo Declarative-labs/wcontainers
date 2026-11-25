@@ -24,7 +24,7 @@ const LARGEST_HOLDING: usize = 1 << 30;
 #[global_allocator]
 static ALLOCATOR: Cap<System> = Cap::new(System, LARGEST_HOLDING);
 
-/// How a refusal says the converter's run ended rather than refused (`src/converters/module.rs`).
+/// How a refusal says the converter's run ended (`ended` in the contained converters).
 const ENDINGS: [&str; 2] = [" stopped: ", " ran past "];
 
 /// A case taking longer than this is named as slow.

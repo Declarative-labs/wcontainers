@@ -2,6 +2,8 @@
 name = "wcontainers-shader-converters-linked"
 version = "0.1.0"
 edition = "2024"
+# The build script gives the hash of the converters' sources to the crates that depend on this one.
+links = "wcs_linked"
 
 [lib]
 path = "implementation.rs"
@@ -11,6 +13,14 @@ name = "conformance"
 path = "conformance_run.rs"
 
 [dependencies]
+wcontainers-shader-converters = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-volatile-bytes-pointer = { path = "../../../volatile-bytes/implementation/pointer" }
+
+[build-dependencies]
+blake3 = "1"
+cc = { version = "1", features = ["parallel"] }
+diffy = "0.5"
 wcontainers-shader-converters = { path = "../.." }
 
 [dev-dependencies]

@@ -43,6 +43,9 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/executor/implementation/unicorn (13: 2 are text in strings, 1 is in its separate test backend, which denies it too)
 #   crates/executor/implementation/host-process (9)
 #   crates/executor/implementation/wasmtime (29)
+# Bindings crates of the graphics, each one outside API and nothing else, that deny it, every use marked, and export
+# only a safe facade:
+#   crates/shader-converters/implementation/linked (5)
 # TODO: not yet done; each inherits these lints once it is free of it:
 #   crates/directx (1042)
 #   crates/direct3d-12 (483)
@@ -52,7 +55,7 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/gpu-webgl (162)
 #   crates/nir (113)
 #   crates/translator-test (101)
-#   crates/shaders (75: 4 in its linked converters, the native default and its WebAssembly build, 71 in its Windows tests calling real Direct3D)
+#   crates/shaders (71, in its Windows tests calling real Direct3D)
 #   crates/gpu-webgpu (30)
 #   crates/internet-protocol/implementation/linux-socket-options (2)
 #   crates/route-resolver/conformance (2)

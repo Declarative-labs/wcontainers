@@ -6028,14 +6028,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-shader-converters"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-shader-converters-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-shader-converters",
+]
+
+[[package]]
+name = "wcontainers-shader-converters-contained"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "wasmtime",
+ "wcontainers-shader-converters",
+ "wcontainers-shader-converters-conformance",
+]
+
+[[package]]
+name = "wcontainers-shader-converters-linked"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cc",
+ "diffy",
+ "wcontainers-shader-converters",
+ "wcontainers-shader-converters-conformance",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-pointer",
+]
+
+[[package]]
 name = "wcontainers-shaders"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "cap",
- "cc",
  "crc32fast",
- "diffy",
  "fastrand",
  "md-5",
  "naga",
@@ -6044,11 +6076,13 @@ dependencies = [
  "rspirv",
  "serde",
  "spirv",
- "wasmtime",
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
  "wcontainers-graphics-test",
+ "wcontainers-shader-converters",
+ "wcontainers-shader-converters-contained",
+ "wcontainers-shader-converters-linked",
  "wgpu",
  "windows",
  "zerocopy",

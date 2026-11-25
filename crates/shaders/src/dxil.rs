@@ -1,4 +1,4 @@
-//! DXIL through dxil-spirv (C++, built by `build.rs`) to SPIR-V, read by naga's SPIR-V reader, then
+//! DXIL through dxil-spirv (C++, through wcontainers-shader-converters) to SPIR-V, read by naga's SPIR-V reader, then
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
 pub(crate) mod arrays;

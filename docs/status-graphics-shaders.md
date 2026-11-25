@@ -6526,7 +6526,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   nix develop /work/src/graphics-shaders -c cargo run -q -j 32 -p wcontainers-literals -- check' <
   <scratch>/tip.bundle`. A new machine needs the clone first (`git clone /work/shaders-lit.bundle
   /work/shaders-lit`, then `git submodule update --init` of both converters and
-  `git -C crates/shaders/dxil-spirv submodule update --init third_party/spirv-headers`:
+  `git -C crates/shader-converters/implementation/linked/dxil-spirv submodule update --init third_party/spirv-headers`:
   the baseline holds their scripts' lines).
 - The Direct3D 12 rig scenes through this branch's Direct3D 12 front: scratch
   `graphics-shaders/g6b2/scenes.sh <n> [scenes]` (log `scenes<n>.log`); `draw.sh <n>` runs
@@ -6577,12 +6577,12 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   independent checks' directories `~/wcontainers-graphics/check-g6a*` hold about 29 GB and were left
   alone.
 - Building on the desktop: the rig's `remote` does not fetch submodules, so a build command that
-  needs this crate starts with `git submodule update --init crates/shaders/dxbc-spirv
-  crates/shaders/dxil-spirv && git -C crates/shaders/dxil-spirv submodule
+  needs this crate starts with `git submodule update --init crates/shader-converters/implementation/linked/dxbc-spirv
+  crates/shader-converters/implementation/linked/dxil-spirv && git -C crates/shader-converters/implementation/linked/dxil-spirv submodule
   update --init third_party/spirv-headers && cargo build ...` (they stay checked out afterwards).
 - Drawing (Windows, needs the GPU and ANGLE at C:\wc\tools\angle-mozangle-0.7.1, which the WebGL
   track's `angle\build.cmd` makes; `WCONTAINERS_ANGLE` names another):
-  `S="git submodule update --init -q crates/shaders/dxbc-spirv crates/shaders/dxil-spirv && git -C crates/shaders/dxil-spirv submodule update --init -q third_party/spirv-headers"; tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test draw -- --nocapture --test-threads 1"`.
+  `S="git submodule update --init -q crates/shader-converters/implementation/linked/dxbc-spirv crates/shader-converters/implementation/linked/dxil-spirv && git -C crates/shader-converters/implementation/linked/dxil-spirv submodule update --init -q third_party/spirv-headers"; tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test draw -- --nocapture --test-threads 1"`.
   With `WCONTAINERS_SHADERS_OUT` set in the job the pictures are kept as raw texels under `draw`.
 - Windows lint (the draw test is Windows only): `tools/graphics-rig/remote "$S && cargo clippy -j 3
   -p wcontainers-shaders --all-targets -- -D warnings"`.
@@ -6680,8 +6680,8 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   --dir corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm --include-ignored`,
   where `$S` is the source copy (`~/wcontainers-graphics/src/phase-2-graphics-shaders`), which the
   tests read at their build path.
-- After cloning: `git submodule update --init crates/shaders/dxbc-spirv
-  crates/shaders/dxil-spirv` and `git -C crates/shaders/dxil-spirv submodule
+- After cloning: `git submodule update --init crates/shader-converters/implementation/linked/dxbc-spirv
+  crates/shader-converters/implementation/linked/dxil-spirv` and `git -C crates/shader-converters/implementation/linked/dxil-spirv submodule
   update --init third_party/spirv-headers`. dxbc-spirv's own SPIRV-Headers and dxil-spirv's other
   submodules (SPIRV-Tools, SPIRV-Cross, its copy of dxbc-spirv) are not needed. The rig's `remote`
   sends a git bundle, which carries no submodules: building this crate on the desktop needs the

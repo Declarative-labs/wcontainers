@@ -18,23 +18,23 @@ spirv = "0.4"
 rspirv = "0.13"
 md-5 = { version = "0.11", default-features = false }
 zerocopy.workspace = true
+# The C++ converters, linked in (src/converters.rs).
+wcontainers-shader-converters = { path = "../shader-converters" }
+wcontainers-shader-converters-linked = { path = "../shader-converters/implementation/linked" }
 
-# The converters' module, run under wasmtime's safe API natively with `contained-converters`
-# (src/converters/module.rs).
+# The converters' module, run under wasmtime natively with `contained-converters` (src/converters.rs).
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
-wasmtime = { version = "50.0.1", optional = true, default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "pooling-allocator"] }
+wcontainers-shader-converters-contained = { path = "../shader-converters/implementation/contained", optional = true }
 
 [features]
 # Natively, runs the converters as their own WebAssembly module under wasmtime instead of linking
 # their C++ into the process: what a shader makes them do ends in a trap or a bound of their instance,
 # refused by name, instead of ending, exhausting or stalling the host; at the cost measured in
 # docs/status-graphics-shaders.md. No effect in the crate's own WebAssembly build.
-contained-converters = ["dep:wasmtime"]
+contained-converters = ["dep:wcontainers-shader-converters-contained"]
 
 [build-dependencies]
 blake3 = "1"
-cc = { version = "1", features = ["parallel"] }
-diffy = "0.5"
 
 [dev-dependencies]
 cap = "0.1.2"
@@ -61,6 +61,6 @@ windows = { version = "0.62.2", features = [
 ] }
 
 
-# TODO: remove this crate's 75 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 71 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

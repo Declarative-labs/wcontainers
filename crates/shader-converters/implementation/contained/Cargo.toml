@@ -2,6 +2,8 @@
 name = "wcontainers-shader-converters-contained"
 version = "0.1.0"
 edition = "2024"
+# The build script gives the hash of the converters' sources to the crates that depend on this one.
+links = "wcs_contained"
 
 [lib]
 path = "implementation.rs"
@@ -12,6 +14,11 @@ path = "conformance_run.rs"
 
 [dependencies]
 wcontainers-shader-converters = { path = "../.." }
+# The converters' module, run under wasmtime's safe API.
+wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation", "pooling-allocator"] }
+
+[build-dependencies]
+blake3 = "1"
 
 [dev-dependencies]
 wcontainers-shader-converters-conformance = { path = "../../conformance" }
