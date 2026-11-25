@@ -1666,8 +1666,9 @@ fn check_pass(
     }
     match area {
         Some(area) => Ok(area),
-        None if pass.render_target_width > 0
-            && pass.render_target_height > 0
+        // An area past the longest side of a target ends the GPU's work in an error (MEASURED: a width of 2^32 - 4).
+        None if (1..=limits.max_side).contains(&pass.render_target_width)
+            && (1..=limits.max_side).contains(&pass.render_target_height)
             && limits.takes_samples(pass.default_raster_sample_count) =>
         {
             Ok((
@@ -1677,7 +1678,7 @@ fn check_pass(
             ))
         }
         None => Err(EncodeRenderCommandsError::Invalid(
-            "a pass with no attachment and no area",
+            "a pass with no attachment and no area, or one past the longest side",
         )),
     }
 }
