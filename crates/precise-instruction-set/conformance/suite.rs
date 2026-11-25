@@ -6,8 +6,7 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
-/// The set measured from the source with the generator turns every state a chip was recorded from into the state the
-/// chip gave after.
+/// The set measured from the source with the generator turns every recorded state into the state the chip gave after.
 ///
 /// The recordings are triples of an instruction, a state before and the chip's state after; they must cover every
 /// listed instruction, so that no behavior goes unchecked.
@@ -48,8 +47,7 @@ pub fn agrees_with_recordings<Architecture, Set>(
     }
 }
 
-/// The sets measured from one source with two different generators, each of which tells the behaviors apart, give
-/// every instruction the same behavior.
+/// Checks that two generators that each tell the behaviors apart measure one source as the same set.
 pub fn measures_the_same_set_with_either_generator<Architecture, Set>(
     first_source: Set::Source,
     second_source: Set::Source,
@@ -73,8 +71,7 @@ pub fn measures_the_same_set_with_either_generator<Architecture, Set>(
     }
 }
 
-/// Runs each suite function above as its own test on a source, two different generators and recordings made anew for
-/// every test.
+/// Runs each suite function above as its own test on a source, two generators and recordings, made anew each test.
 ///
 /// The set is named because measuring is how a set is made, so only the source and the generators are values.
 #[macro_export]

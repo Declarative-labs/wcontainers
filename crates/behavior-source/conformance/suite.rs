@@ -7,7 +7,7 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
 /// The provided `execute_single_instruction` gives what `execute_single_instruction_in_place` does: its processor,
-/// and its memory mutations appended, or an error where it gives one.
+/// and its memory mutations appended.
 pub fn execute_agrees_with_execute_in_place<Source, Generator>(
     mut source: Source,
     generator: Generator,
@@ -97,8 +97,9 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
     }
 }
 
-/// A state the source names as one it cannot execute is an error that leaves the processor as it was and the hook with
-/// nothing, and the first generated state of every instruction after it executes as on a source that met no error.
+/// Checks that a state the source cannot execute leaves the processor and the hook untouched.
+///
+/// The first generated state of every instruction after it executes as on a source that met no error.
 pub fn leaves_the_processor_and_the_hook_untouched_on_error<Source, Generator>(
     mut source: Source,
     mut unbroken: Source,
@@ -152,8 +153,9 @@ fn is_same_result<'memory, Architecture: ProcessorArchitecture, Error>(
     }
 }
 
-/// Runs each suite function above as its own test on a source and a generator made anew for every test, with the
-/// states the source names as ones it cannot execute (none for a source whose error is `Infallible`).
+/// Runs each suite function above as its own test on a source and a generator made anew for every test.
+///
+/// The third argument lists states the source cannot execute, none for a source whose error is `Infallible`.
 #[macro_export]
 macro_rules! tests {
     ($source:expr, $generator:expr, $unexecutable:expr) => {

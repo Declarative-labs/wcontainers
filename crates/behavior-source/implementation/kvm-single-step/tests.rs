@@ -1,6 +1,6 @@
 //! Every way a single step can end names its result: the decoder over every syndrome, words outside the ten
 //! instructions and addresses outside those a program can use on the live chip, and states the chip cannot run, which
-//! it refuses before it writes the processor or the hook.
+//! it refuses before it writes anything.
 
 use std::borrow::Cow;
 
@@ -271,7 +271,7 @@ fn addresses_a_program_cannot_use_fault_at_level_0() {
     }
 }
 
-/// The states the error tests run after each error, which must run as on a fresh machine.
+/// Returns the states the error tests run after each error, which must run as on a fresh machine.
 fn to_afterwards() -> [ExecutionState<'static, Arm64<User>>; 3] {
     [
         to_store(DATA + 8, Vec::new()),
@@ -280,8 +280,9 @@ fn to_afterwards() -> [ExecutionState<'static, Arm64<User>>; 3] {
     ]
 }
 
-/// Runs a state on a machine that ran a state before and was then changed by `break_machine`, and gives the error; it
-/// checks that the processor and the hook are untouched and that the states after it run as on a fresh machine.
+/// Runs a state on a machine changed by `break_machine` after one state, and returns the state's error.
+///
+/// It checks that the processor and the hook are untouched and that the states after it run as on a fresh machine.
 fn to_error(
     loading: MemoryLoading,
     break_machine: impl Fn(&mut KvmSingleStepMachine),
@@ -322,8 +323,8 @@ fn to_error(
     refusal
 }
 
-/// A state the chip cannot run is refused before anything is written, saying which rule it breaks, and the states
-/// after it run as on a fresh machine in every loading mode.
+/// A state the chip cannot run stops it before anything is written, saying which rule it breaks, and the states after
+/// it run as on a fresh machine in every loading mode.
 #[test]
 #[ignore = "needs KVM"]
 fn a_state_the_chip_cannot_run_is_refused_before_anything_is_written() {
@@ -357,11 +358,14 @@ fn a_state_the_chip_cannot_run_is_refused_before_anything_is_written() {
 /// PSTATE with EL2h, which KVM refuses for a CPU without nested virtualization.
 const EL2_PSTATE: u64 = 0b1001;
 
-/// [MOVZ X1, #0xFFFF, LSL #48](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-), the first address of the handler's half, then [STR XZR, \[X1\]](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--), a store to guest-physical 0, where no device is, then a branch to itself.
+/// Handler code that stores to guest-physical 0, where no device is: `movz x1, #0xffff, lsl #48; str xzr, [x1]; b .`.
+///
+/// [MOVZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-), [STR](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--).
 const DEVICE_STORE: [u32; 3] = [0xD2FF_FFE1, 0xF900_003F, 0x1400_0000];
 
-/// A KVM call that fails, and a slot the handler ends other than by an exception from EL0, are errors that leave the
-/// processor and the hook untouched, and the states after them run as on a fresh machine in every loading mode.
+/// Checks that a failed KVM call and an unexpected end of the slot leave the processor and the hook untouched.
+///
+/// The states after each run as on a fresh machine, in every loading mode.
 #[test]
 #[ignore = "needs KVM"]
 fn a_failed_run_is_an_error_and_the_next_state_runs_on_a_new_machine() {

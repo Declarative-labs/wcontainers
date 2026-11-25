@@ -142,8 +142,9 @@ fn permission_changed_inside_a_range_is_seen() {
     assert!(to_state(&memory, &whole_rewritten) != to_state(&memory, &upper_unmapped));
 }
 
-/// A state the recording holds no case of is an error that writes neither the processor nor the hook, and the states
-/// after it play as on a fresh recording.
+/// Checks that a state the recording holds no case of is an error that writes neither the processor nor the hook.
+///
+/// The states after it play as on a fresh recording.
 #[test]
 fn recording_plays_only_its_states() {
     let read = || match Recording::read(Path::new(RECORDINGS[0])) {

@@ -40,8 +40,7 @@ fn recorded_cases() -> Vec<RecordedCase> {
         .collect()
 }
 
-/// The critical value product's states of each instruction, last first: a second generator whose every state the
-/// recording holds.
+/// The critical value product's states of each instruction, last first, all of which the recording holds.
 struct LastFirst(CriticalValueProduct<Arm64InputDomain>);
 
 impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {

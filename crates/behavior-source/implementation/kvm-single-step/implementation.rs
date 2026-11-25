@@ -190,25 +190,24 @@ struct Resolved {
     open: BinaryHeap<(usize, u64)>,
 }
 
-/// Why this source did not run a state; it is found before the processor or the hook is written.
+/// Why this source did not run a state, found before the processor or the hook is written.
+///
+/// The first two are found before the guest is written; after any other, the next state runs on a new machine.
 #[derive(Debug)]
 pub enum Refusal {
-    /// A permission starts or ends inside a page a program can use, which no chip can give; found before the guest is
-    /// written.
+    /// A permission starts or ends inside a page a program can use, which no chip can give.
     PermissionWithinAPage(Range<u64>),
-    /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has; found
-    /// before the guest is written.
+    /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has.
     MorePagesThanTheGuestHas { pages: u64, room: u64 },
-    /// KVM failed a call that runs the state, in its words; the next state runs on a new machine.
+    /// A call to KVM that runs the state failed, in KVM's words.
     KvmFailed(String),
-    /// The handler took an exception other than one from EL0, with ESR_EL1, ELR_EL1 and SPSR_EL1 as it saved them; the
-    /// next state runs on a new machine.
+    /// An exception other than one from EL0 reached the handler, with ESR_EL1, ELR_EL1 and SPSR_EL1 as it saved them.
     UnexpectedException {
         syndrome: u64,
         return_address: u64,
         saved_program_status: u64,
     },
-    /// The guest rang the doorbell without the handler ending the state's slot; the next state runs on a new machine.
+    /// The guest rang the doorbell without the handler ending the state's slot.
     SlotNotRun,
 }
 
@@ -242,8 +241,7 @@ pub struct KvmSingleStepMachine {
     /// `None` when the CPU may be anywhere else.
     parked_at: Option<u64>,
     resident: Resident,
-    /// Set while a run is under way and after one failed, when the virtual CPU may be anywhere: the next state makes a
-    /// new machine first.
+    /// Set during a run and after a failed one, when the CPU may be anywhere: the next state makes a new machine.
     renew_machine: bool,
 }
 
@@ -912,31 +910,7 @@ impl KvmSingleStepMachine {
         );
         self.write_bytes(slot, contents.as_bytes());
     }
-}
 
-impl BehaviorSource for KvmSingleStepMachine {
-    type Architecture = Arm64<User>;
-    type Error = Refusal;
-
-    /// Reports each run of bytes whose value changed: a store of the bytes already there is not reported.
-    fn execute_single_instruction_in_place(
-        &mut self,
-        processor: &mut Processor<()>,
-        memory: &[MemoryDelta<'_, Arm64<User>>],
-        mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) -> Result<(), Refusal> {
-        if self.renew_machine {
-            self.renew()?;
-        }
-        let mut resolved = mem::take(&mut self.resolved);
-        let executed = self.execute_resolved(processor, memory, &mut resolved, mutation_hook);
-        release_excess_room(&mut resolved);
-        self.resolved = resolved;
-        executed
-    }
-}
-
-impl KvmSingleStepMachine {
     /// Runs one state with room for its resolved memory, writing the processor and the hook only once it has run.
     fn execute_resolved(
         &mut self,
@@ -995,6 +969,28 @@ impl KvmSingleStepMachine {
                 Ok(())
             }
         }
+    }
+}
+
+impl BehaviorSource for KvmSingleStepMachine {
+    type Architecture = Arm64<User>;
+    type Error = Refusal;
+
+    /// Reports each run of bytes whose value changed: a store of the bytes already there is not reported.
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut Processor<()>,
+        memory: &[MemoryDelta<'_, Arm64<User>>],
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), Refusal> {
+        if self.renew_machine {
+            self.renew()?;
+        }
+        let mut resolved = mem::take(&mut self.resolved);
+        let executed = self.execute_resolved(processor, memory, &mut resolved, mutation_hook);
+        release_excess_room(&mut resolved);
+        self.resolved = resolved;
+        executed
     }
 }
 

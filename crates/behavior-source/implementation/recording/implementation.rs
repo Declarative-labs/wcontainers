@@ -36,8 +36,7 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// Runs every listed instruction on the source from every state the generator gives for it, stopping at the first
-    /// state the source does not run.
+    /// Runs every listed instruction on the source from every state the generator gives for it, up to the first error.
     pub fn record<Source: BehaviorSource<Architecture = Arm64<User>>>(
         source: &mut Source,
         generator: &impl DistinguishingStateGenerator<Arm64<User>>,

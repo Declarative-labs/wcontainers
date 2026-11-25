@@ -16,7 +16,7 @@ fn recording() -> Recording {
     }
 }
 
-/// A state the recording holds no case of: its first state before, with another stack pointer.
+/// Returns a state the recording holds no case of: its first state before, with another stack pointer.
 fn to_unrecorded() -> Vec<ExecutionState<'static, Arm64<User>>> {
     recording()
         .cases()
