@@ -40,7 +40,7 @@ more of our code than it removes.
 Order, to collide least with the shaders and Direct3D 11 tracks: the shaders crate's container.rs
 in one small commit (made public, the shared pieces and `checksum`), then Direct3D 12 (dxbc.rs,
 root.rs, dxil.rs), then the fuzz test, then the Direct3D 11 reader last. Each step: format, clippy
-with warnings denied, the affected tests, the literal check, then commit.
+with warnings denied, the affected tests, then commit.
 
 Behaviour: same outputs for every well-formed container. Where the old readers disagreed on
 malformed bytes, the cases are listed in the status file with one example each, and a seeded
