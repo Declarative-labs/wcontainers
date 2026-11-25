@@ -9,7 +9,7 @@ the mapping and asks the base for the checked sub-range.
 
 ## The unsafe item (1)
 
-1. implementation.rs:103, in `new`, the one call to `PointerAndLength::new` with the map's address and length. Rests
+1. implementation.rs:110, in `new`, the one call to `PointerAndLength::new` with the map's address and length. Rests
    on: the `Arc` keeps the bytes mapped while any view lives; a `Mapped` is made only by `anonymous` or by `file`,
    both readable and writable, with a private field so no reference over it is formed; `file`'s checks run in this
    order: length and offset, the shrink seal, not huge pages, then the size.

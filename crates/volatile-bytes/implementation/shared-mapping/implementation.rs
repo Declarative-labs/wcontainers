@@ -84,6 +84,13 @@ impl SharedMapping {
     pub fn part(&self, offsets: Range<u64>) -> Option<SharedMapping> {
         Some(SharedMapping { bytes: self.bytes.part(offsets)?, map: Arc::clone(&self.map) })
     }
+
+    /// Returns the address of the view's first byte, for an outside API that is given memory by its address.
+    ///
+    /// PROVISIONAL: no interface declares how memory is given to an outside API; the KVM bindings are the one user.
+    pub fn address(&self) -> usize {
+        self.bytes.address()
+    }
 }
 
 impl StandaloneVolatileBytes for SharedMapping {
