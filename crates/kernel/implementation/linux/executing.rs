@@ -511,6 +511,7 @@ where
             } = &mut *inner;
             match kernel.next() {
                 Next::Run { thread, resume, .. } => {
+                    kernel.ready_turn(machine);
                     let (_, registers, memory) = machine.thread_parts(thread);
                     let exit = running::turn(executor, registers, memory, resume, |turn| {
                         self.shared.turn_started(turn);
@@ -689,13 +690,15 @@ where
         self.handle().watch_memory(range, watches);
     }
 
-    /// Not built: no executor can watch one thread and not its siblings yet.
+    /// Sets the watch in the kernel itself, which needs no executor's watch of one thread.
+    ///
+    /// The kernel runs one thread of a memory at a time, and before each turn its memory's pages
+    /// allow what that thread's watches leave.
     fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor)
     where
         C: PerThreadWatch,
     {
-        let _ = (thread, range, watches);
-        unimplemented!("a watch of one thread is not built")
+        self.handle().watch_thread_memory(thread, range, watches);
     }
 
     fn take_dirty_memory(&mut self) -> Vec<Range<u64>> {
@@ -758,7 +761,7 @@ mod tests {
     use wcontainers_executor::memory_space::{
         CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
     };
-    use wcontainers_processor_architecture::{MemoryDelta, MemorySink};
+    use wcontainers_processor_architecture::{MemorySink, MemorySnapshot};
     use wcontainers_processor_architecture_arm64::{Arm64, User};
     use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -861,7 +864,7 @@ mod tests {
         fn execute_single_instruction_in_place(
             &mut self,
             _processor: &mut Processor,
-            _memory: &[MemoryDelta<'_, Self::Architecture>],
+            _memory: MemorySnapshot<'_, '_, Self::Architecture>,
             _mutation_hook: &mut impl MemorySink<Self::Architecture>,
         ) -> Result<(), Self::Error> {
             unreachable!("the kernel's tests use Plain only for its translator settings")
