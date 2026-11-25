@@ -14,10 +14,8 @@ use wcontainers_gpu::{Backend, DeviceStatus, Features, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// The rig's shaders passing a three-component position and a colour.
-const COLOR_VS: &[u8] =
-    include_bytes!("../../graphics-test/shaders/dxil/common.vs_color.dxil");
-const COLOR_PS: &[u8] =
-    include_bytes!("../../graphics-test/shaders/dxil/common.ps_color.dxil");
+const COLOR_VS: &[u8] = include_bytes!("../../graphics-test/shaders/dxil/common.vs_color.dxil");
+const COLOR_PS: &[u8] = include_bytes!("../../graphics-test/shaders/dxil/common.ps_color.dxil");
 
 fn webgpu() -> WebGpu {
     webgpu_without(wgpu::Features::empty())
@@ -179,7 +177,11 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
     let pictures = [wgpu::Features::empty(), wgpu::Features::DEPTH_CLIP_CONTROL].map(|hidden| {
         let mut device = Device::new(webgpu_without(hidden));
         assert_eq!(
-            device.backend().caps().has(Features::DEPTH_CLAMP),
+            device
+                .backend()
+                .caps()
+                .features
+                .contains(Features::DEPTH_CLAMP),
             hidden.is_empty(),
             "the adapter's own depth clamping"
         );

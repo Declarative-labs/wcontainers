@@ -1479,7 +1479,8 @@ impl Device_Impl {
     /// The back end runs compute programs.
     fn compute(&self) -> bool {
         wcontainers_gpu::Backend::caps(&self.front.borrow().backend)
-            .has(wcontainers_gpu::Features::COMPUTE)
+            .features
+            .contains(wcontainers_gpu::Features::COMPUTE)
     }
 
     pub(super) fn get_feature_level(&self) -> D3D_FEATURE_LEVEL {

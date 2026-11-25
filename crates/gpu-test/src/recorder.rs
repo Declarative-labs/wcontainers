@@ -1433,7 +1433,7 @@ impl Backend for Recorder {
                         "view format neither the texture's nor one of its size it may take",
                     ));
                 }
-                if !self.caps.has(Features::FORMAT_REINTERPRET) {
+                if !self.caps.features.contains(Features::FORMAT_REINTERPRET) {
                     return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
                 }
             }
@@ -1559,7 +1559,7 @@ impl Backend for Recorder {
                     vertex: shader(self, vertex)?,
                     fragment: fragment.map(|f| shader(self, f)).transpose()?,
                 },
-                Program::Compute(_) if !self.caps.has(Features::COMPUTE) => {
+                Program::Compute(_) if !self.caps.features.contains(Features::COMPUTE) => {
                     return Err(GpuError::Absent(Features::COMPUTE));
                 }
                 Program::Compute(c) => {
@@ -1765,7 +1765,7 @@ impl Backend for Recorder {
             {
                 return Err(GpuError::Invalid("a vertex stride past the limit"));
             }
-            if !self.caps.has(Features::INSTANCE_STEP_RATE)
+            if !self.caps.features.contains(Features::INSTANCE_STEP_RATE)
                 && desc
                     .streams
                     .iter()
@@ -1969,7 +1969,7 @@ impl Backend for Recorder {
             match kind {
                 QueryKind::OcclusionAny => {}
                 QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
-                QueryKind::Timestamp if !self.caps.has(Features::TIMESTAMPS) => {
+                QueryKind::Timestamp if !self.caps.features.contains(Features::TIMESTAMPS) => {
                     return Err(GpuError::Absent(Features::TIMESTAMPS));
                 }
                 QueryKind::Timestamp => {}
@@ -2682,7 +2682,7 @@ impl Backend for Recorder {
 
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
         self.log(Call::TimestampsDisjoint);
-        if !self.caps.has(Features::TIMESTAMPS) {
+        if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
         Ok(false)

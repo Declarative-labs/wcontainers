@@ -948,8 +948,8 @@ fn programs_are_validated_with_webgpus_core_language() {
 #[test]
 fn step_rates_and_texel_buffers_are_reported_absent() {
     let mut b = device();
-    assert!(!b.caps().has(Features::INSTANCE_STEP_RATE));
-    assert!(!b.caps().has(Features::TEXEL_BUFFERS));
+    assert!(!b.caps().features.contains(Features::INSTANCE_STEP_RATE));
+    assert!(!b.caps().features.contains(Features::TEXEL_BUFFERS));
     let layout = |step| {
         let mut desc = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],

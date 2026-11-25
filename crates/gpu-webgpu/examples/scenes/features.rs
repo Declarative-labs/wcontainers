@@ -199,7 +199,7 @@ pub fn shader(
 /// Where the device declares `feature`, draws its program and requires every pixel as the
 /// feature defines it; one line saying what was found, or the failed check.
 pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
-    if !b.caps().has(feature.declared()) {
+    if !b.caps().features.contains(feature.declared()) {
         return Ok(format!("{}: absent", feature.name()));
     }
     let vs = shader(b, feature, ShaderStage::Vertex).map_err(|e| format!("{e:?}"))?;

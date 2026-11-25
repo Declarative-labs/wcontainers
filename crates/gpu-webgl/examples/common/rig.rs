@@ -159,7 +159,7 @@ struct Drawing<B: Backend> {
 
 impl<B: Backend> Drawing<B> {
     fn new(b: &mut B) -> Result<Drawing<B>, String> {
-        let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+        let minus_one = !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
         let source = if minus_one {
             // What a front does without CLIP_DEPTH_ZERO_ONE: clip z from zero rewritten as 2z - w.
             PROGRAM.replace("vec4<f32>(p, 1.0)", "vec4<f32>(p.xy, 2.0 * p.z - 1.0, 1.0)")
@@ -412,7 +412,7 @@ fn pass<'a, B: Backend>(
 /// Draws the scene of `output` and returns its bytes: RGBA8 rows top first, or for depth RGBA f32
 /// (depth, stencil 0, 0, 1). None where the back end lacks what the scene needs.
 pub fn draw<B: Backend>(b: &mut B, output: &Output) -> Result<Option<Vec<u8>>, String> {
-    if !b.caps().has(output.needs) {
+    if !b.caps().features.contains(output.needs) {
         return Ok(None);
     }
     let d = Drawing::new(b)?;

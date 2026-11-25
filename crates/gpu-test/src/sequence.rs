@@ -1385,7 +1385,7 @@ fn pass<B: Backend>(
         _ => None,
     };
     // Indices for each triangle, its corners in reverse, and the instances drawn.
-    let bases = b.caps().has(Features::BASE_VERTEX_INSTANCE);
+    let bases = b.caps().features.contains(Features::BASE_VERTEX_INSTANCE);
     let indexed = options.indexed.map(|n| {
         let wide = n & 1 == 1;
         let instances = 1 + u32::from(n >> 1 & 1);

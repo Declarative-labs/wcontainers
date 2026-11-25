@@ -1326,7 +1326,7 @@ fn second_source_alpha<B: Backend>(
         .flat_map(|(c, _)| [c.src, c.dst])
         .collect();
     let reads = |wanted: [BlendFactor; 2]| colour.iter().any(|f| wanted.contains(f));
-    let needed = !caps.has(Features::BLEND_CONSTANT_ALPHA)
+    let needed = !caps.features.contains(Features::BLEND_CONSTANT_ALPHA)
         && reads([
             BlendFactor::ConstantAlpha,
             BlendFactor::OneMinusConstantAlpha,
@@ -1349,7 +1349,8 @@ fn second_source_alpha<B: Backend>(
                     | BlendFactor::OneMinusSrc1Alpha
             )
         });
-    (needed && one_target && !own_second && caps.has(Features::DUAL_SOURCE_BLEND)).then_some(alpha)
+    (needed && one_target && !own_second && caps.features.contains(Features::DUAL_SOURCE_BLEND))
+        .then_some(alpha)
 }
 
 /// The blend block of `desc` for the framebuffer's formats (no blending on targets that cannot
@@ -1369,7 +1370,7 @@ fn blend_for<B: Backend>(
     let mut desc = *desc;
     let caps = backend.caps().clone();
     let mut alpha_constant = false;
-    if !caps.has(Features::BLEND_CONSTANT_ALPHA) {
+    if !caps.features.contains(Features::BLEND_CONSTANT_ALPHA) {
         let (colour, alpha) = factors(&mut desc);
         for f in alpha {
             *f = constant_of_alpha(*f);
@@ -2310,7 +2311,12 @@ fn draw<B: Backend>(
     // Points drawn as squares run the stage helper too (`PointsAsQuads`).
     let one_size = || {
         mesa_prim::from(info.mode) == MESA_PRIM_POINTS
-            && !context.screen().backend().caps().has(Features::POINT_SIZE)
+            && !context
+                .screen()
+                .backend()
+                .caps()
+                .features
+                .contains(Features::POINT_SIZE)
     };
     if (!gs.is_null() || tessellated || one_size()) && draws.len() > 1 {
         for d in draws {
@@ -2359,7 +2365,7 @@ fn draw<B: Backend>(
     let screen = context.screen();
     let mut backend = screen.backend();
     let backend = &mut *backend;
-    transform.fixed_point_size = !backend.caps().has(Features::POINT_SIZE);
+    transform.fixed_point_size = !backend.caps().features.contains(Features::POINT_SIZE);
     // The program whose points are rasterized: an evaluation program in point mode, or the
     // vertex program of a draw of points.
     let pointed = if !gs.is_null() {
@@ -3395,7 +3401,7 @@ fn squares_for<B: Backend>(
     fs: &Shader,
     raster: &state::Raster<B>,
 ) -> Result<Option<(*const Shader, *const Shader, u32)>, String> {
-    if backend.caps().has(Features::POINT_SIZE) {
+    if backend.caps().features.contains(Features::POINT_SIZE) {
         return Ok(None);
     }
     // After every generic location either program uses.
@@ -3483,7 +3489,7 @@ fn geometry_squares_for<B: Backend>(
     fs: &Shader,
     raster: &state::Raster<B>,
 ) -> Result<Option<(*const Shader, u32, u32)>, String> {
-    if backend.caps().has(Features::POINT_SIZE) {
+    if backend.caps().features.contains(Features::POINT_SIZE) {
         return Ok(None);
     }
     let at = gs.nir.generic_end().max(fs.nir.generic_end());
@@ -4267,7 +4273,7 @@ fn masked_blocks<B: Backend>(
             sample_mask: mask.unwrap_or(u32::MAX),
             ..raster.desc
         };
-        if mask.is_some() && !backend.caps().has(Features::SAMPLE_MASK) {
+        if mask.is_some() && !backend.caps().features.contains(Features::SAMPLE_MASK) {
             return refused(format_args!("a sample mask on a back end without one"));
         }
         let block = match programs.masked.get(&desc) {
@@ -4288,7 +4294,7 @@ fn masked_blocks<B: Backend>(
             faces: raster.faces.clone(),
         });
     };
-    if !backend.caps().has(Features::SAMPLE_MASK) {
+    if !backend.caps().features.contains(Features::SAMPLE_MASK) {
         return refused(format_args!("a sample mask on a back end without one"));
     }
     let mut made = |desc: RasterDesc| -> Result<B::Raster, String> {
@@ -4338,7 +4344,7 @@ fn face_passes<'a, B: Backend>(
     };
     let split = depth_stencil.stencil
         && (depth_stencil.faces.is_some() || reference[0] != reference[1])
-        && !backend.caps().has(Features::STENCIL_PER_FACE);
+        && !backend.caps().features.contains(Features::STENCIL_PER_FACE);
     if !split {
         // Without the stencil test the references read nothing; the back end takes one.
         let reference = if depth_stencil.stencil {
@@ -4506,7 +4512,7 @@ fn draw_ranges<B: Backend>(
     let format = index_format(index_size);
     let mode = mesa_prim::from(info.mode);
     let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
-    let restart_switch = backend.caps().has(Features::RESTART_SWITCH);
+    let restart_switch = backend.caps().features.contains(Features::RESTART_SWITCH);
     let same = Provoking {
         api: host_provoking,
         host: host_provoking,
@@ -4944,7 +4950,7 @@ fn fan_or_loop(topology: Topology) -> FanOrLoop {
 
 /// Whether the back end lacks indices of this width.
 fn needs_widening<B: Backend>(backend: &B, format: IndexFormat) -> bool {
-    format == IndexFormat::U8 && !backend.caps().has(Features::INDEX_U8)
+    format == IndexFormat::U8 && !backend.caps().features.contains(Features::INDEX_U8)
 }
 
 /// 8-bit indices as 16-bit ones, restart values kept as restart values.

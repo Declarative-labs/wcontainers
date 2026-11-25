@@ -88,7 +88,11 @@ impl<B: Backend> Device<B> {
         if view.linear() == stored.linear()
             || view.is_depth_stencil()
             || stored.is_depth_stencil()
-            || self.backend.caps().has(Features::FORMAT_REINTERPRET)
+            || self
+                .backend
+                .caps()
+                .features
+                .contains(Features::FORMAT_REINTERPRET)
         {
             return Ok(id);
         }

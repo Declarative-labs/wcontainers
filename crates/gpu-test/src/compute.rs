@@ -257,7 +257,7 @@ impl Recorder {
 
     /// Answers an absent feature as such.
     fn feature(&self, feature: Features) -> Result<(), Refusal> {
-        match self.caps().has(feature) {
+        match self.caps().features.contains(feature) {
             true => Ok(()),
             false => Err(Err(GpuError::Absent(feature))),
         }

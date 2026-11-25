@@ -167,7 +167,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
             fragment: Some(&fs),
         })
         .expect("create_program");
-    assert!(b.caps().has(Features::INSTANCE_STEP_RATE));
+    assert!(b.caps().features.contains(Features::INSTANCE_STEP_RATE));
     let layout_with_rate = |b: &mut H::Backend, rate| {
         let mut layout = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],
@@ -225,7 +225,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
             scissor: false,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::Last,
-            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
             sample_mask: u32::MAX,
         })
         .expect("create_raster");
@@ -2422,7 +2422,7 @@ pub fn programs_run_per_sample_and_write_the_sample_mask<H: Host>() {
     let mut b = H::make();
     let f = Format::Rgba8Unorm;
     let samples = 4;
-    if !b.caps().has(Features::SAMPLE_SHADING) {
+    if !b.caps().features.contains(Features::SAMPLE_SHADING) {
         not_run(Features::SAMPLE_SHADING);
         return;
     }
@@ -3443,7 +3443,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
     use crate::kit::{self, Kit};
     let mut formats = vec![IndexFormat::U16, IndexFormat::U32];
     let mut b = H::make();
-    if b.caps().has(Features::INDEX_U8) {
+    if b.caps().features.contains(Features::INDEX_U8) {
         formats.insert(0, IndexFormat::U8);
     }
     let k = Kit::new(&mut b);
@@ -3584,7 +3584,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
 pub fn fractional_viewports_are_refused<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if b.caps().has(Features::FRACTIONAL_VIEWPORT) {
+    if b.caps().features.contains(Features::FRACTIONAL_VIEWPORT) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -3686,7 +3686,7 @@ const TWO_LOADS: &str = "
 pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    assert!(!b.caps().has(Features::TEXTURE_VIEWS));
+    assert!(!b.caps().features.contains(Features::TEXTURE_VIEWS));
     let f = Format::Rgba8Uint;
     let usage = TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST;
     let array = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 3], 1, usage, false);
@@ -4269,7 +4269,7 @@ pub fn timestamps_and_their_disjoint_flag<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     let absent = Err(GpuError::Absent(Features::TIMESTAMPS));
-    if !b.caps().has(Features::TIMESTAMPS) {
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
         assert_eq!(
             b.create_query_set(QueryKind::Timestamp, 2).err(),
             absent.err()
@@ -4416,7 +4416,8 @@ pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
     assert!(partial > 0, "no pixel on the diagonal is partly covered");
     let reads = b
         .caps()
-        .has(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
+        .features
+        .contains(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
     assert_eq!(
         counted,
         u64::from(!reads),
@@ -4446,7 +4447,7 @@ fn at_depth(z: f64, minus_one: bool) -> String {
 pub fn fractional_depth_bias<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::FRACTIONAL_DEPTH_BIAS) {
+    if !b.caps().features.contains(Features::FRACTIONAL_DEPTH_BIAS) {
         let desc = RasterDesc {
             fill: FillMode::Solid,
             cull: CullMode::None,
@@ -4458,7 +4459,7 @@ pub fn fractional_depth_bias<H: Host>() {
             scissor: false,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::Last,
-            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
             sample_mask: u32::MAX,
         };
         assert_eq!(
@@ -4469,7 +4470,7 @@ pub fn fractional_depth_bias<H: Host>() {
         return;
     }
     let k = Kit::new(&mut b);
-    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+    let minus_one = !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
     let program = kit::program(&mut b, &at_depth(1000.45 / 65535.0, minus_one), "vs", "fs");
     let always = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
@@ -4514,7 +4515,7 @@ pub fn fractional_depth_bias<H: Host>() {
 pub fn constant_alpha_blends<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::BLEND_CONSTANT_ALPHA) {
+    if !b.caps().features.contains(Features::BLEND_CONSTANT_ALPHA) {
         not_run(Features::BLEND_CONSTANT_ALPHA);
         return;
     }
@@ -4674,7 +4675,7 @@ fn captured(v: u32) -> (Vec<u8>, Vec<u8>) {
 pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
@@ -4775,7 +4776,7 @@ pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
 pub fn captured_indices_drawn_both_ways<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
@@ -5204,7 +5205,7 @@ pub fn interpolated_bc4_and_bc5_values<H: Host>() {
         out[2..].copy_from_slice(&bits.to_le_bytes()[..6]);
         out
     };
-    let compressed = b.caps().has(Features::BLOCK_COMPRESSION);
+    let compressed = b.caps().features.contains(Features::BLOCK_COMPRESSION);
     for format in [F::Bc4RUnorm, F::Bc4RSnorm, F::Bc5RgUnorm, F::Bc5RgSnorm] {
         if !b.caps().formats.get(format).contains(FormatUse::SAMPLE) {
             continue;
@@ -5367,7 +5368,7 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
     let ds = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
     let whole = [kit::viewport(0.0, 0.0, 2.0, 2.0)];
     let mut conventions = vec![(true, 0.75f32)];
-    if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+    if b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE) {
         conventions.push((false, 0.5));
     }
     for (minus_one, want) in conventions {
@@ -5413,11 +5414,11 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
 pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
-    let first = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let first = b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST);
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, CAPTURED, "vs_numbers", "fs_numbers");
     let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
@@ -5770,7 +5771,7 @@ pub fn absent_features_are_refused<H: Host>() {
     };
     // Made where the feature is declared, refused as absent where not.
     let by_caps = |r: Result<(), GpuError>, f: Features, what: &str| {
-        if caps.has(f) {
+        if caps.features.contains(f) {
             r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
         } else {
             absent(r, f, what);
@@ -5848,7 +5849,7 @@ pub fn absent_features_are_refused<H: Host>() {
         scissor: false,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::Last,
-        depth_minus_one: !caps.has(Features::CLIP_DEPTH_ZERO_ONE),
+        depth_minus_one: !caps.features.contains(Features::CLIP_DEPTH_ZERO_ONE),
         sample_mask: u32::MAX,
     };
     b.create_raster(&raster_desc)
@@ -5857,7 +5858,7 @@ pub fn absent_features_are_refused<H: Host>() {
         let mut d = raster_desc;
         change(&mut d);
         let r = b.create_raster(&d).map(drop);
-        if caps.has(f) {
+        if caps.features.contains(f) {
             r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
         } else {
             absent(r, f, what);
@@ -6924,7 +6925,7 @@ pub fn bgrx_textures_hold_alpha_one<H: Host>() {
         let got = kit::read(&mut b, &t, 0, 0, [1, 1, 1], 4, false);
         assert_eq!(got, [255, 0, 0, 255], "{format:?} cleared blue");
         // With an RGBA target in one pass: its alpha drawn, the BGRX one left one.
-        if b.caps().has(Features::INDEPENDENT_BLEND) {
+        if b.caps().features.contains(Features::INDEPENDENT_BLEND) {
             let two = kit::program(&mut b, QUARTER_ALPHA, "vs", "fs_two");
             let colors = [&out_view, &target];
             b.begin_pass(&PassDesc {

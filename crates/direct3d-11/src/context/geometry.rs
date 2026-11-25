@@ -376,7 +376,7 @@ impl<B: Backend> Device<B> {
         let own_route = (vs.culled || pk.line_coverage) && gs.stage.is_none();
         let passed = (StageVariant { pulled: 0, ..vk }) == StageVariant::default()
             || (own_route && drawn_variant == StageVariant::default());
-        let replayed = !self.backend.caps().has(Features::COMPUTE);
+        let replayed = !self.backend.caps().features.contains(Features::COMPUTE);
         if !passed && !replayed {
             return not_implemented(VARIANT_BEHIND_GEOMETRY);
         }

@@ -117,7 +117,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
         "occlusion set of {QUERIES}: 4094 to 4097 {:?}, 4999 {l}",
         &a[1..5]
     );
-    if !b.caps().has(Features::TIMESTAMPS) {
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
         line += "; timestamps absent";
         return Ok(line);
     }

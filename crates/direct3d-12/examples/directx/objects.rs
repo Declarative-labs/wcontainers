@@ -1847,7 +1847,8 @@ impl Device {
                 let timestamps = gpu::call(|d| {
                     d.backend()
                         .caps()
-                        .has(wcontainers_gpu::Features::TIMESTAMPS)
+                        .features
+                        .contains(wcontainers_gpu::Features::TIMESTAMPS)
                 });
                 *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS3>(data, size)? } =
                     D3D12_FEATURE_DATA_D3D12_OPTIONS3 {
@@ -2163,7 +2164,8 @@ impl Queue {
         if gpu::call(|d| {
             d.backend()
                 .caps()
-                .has(wcontainers_gpu::Features::TIMESTAMPS)
+                .features
+                .contains(wcontainers_gpu::Features::TIMESTAMPS)
         }) {
             Ok(1_000_000_000)
         } else {
@@ -2181,7 +2183,8 @@ impl Queue {
             if !d
                 .backend()
                 .caps()
-                .has(wcontainers_gpu::Features::TIMESTAMPS)
+                .features
+                .contains(wcontainers_gpu::Features::TIMESTAMPS)
             {
                 return Ok(None);
             }

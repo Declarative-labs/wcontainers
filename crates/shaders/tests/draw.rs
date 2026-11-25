@@ -714,7 +714,11 @@ fn own_shaders_draw_as_direct3d_does() {
             texels
         });
         // Flat values come from the first vertex, as Direct3D's, where the back end offers it.
-        let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+        let provoking = if gl
+            .caps()
+            .features
+            .contains(Features::PROVOKING_VERTEX_FIRST)
+        {
             ProvokingVertex::First
         } else {
             ProvokingVertex::Last
@@ -869,7 +873,11 @@ fn native_16_bit_integers_draw_as_direct3d_12_does() {
     let code = [bytecode("vs_transform.dxil"), bytecode("ps_narrow16.dxil")];
     let grid = grid();
     let draw = Draw::own(&case, &code, true, &grid);
-    let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+    let provoking = if gl
+        .caps()
+        .features
+        .contains(Features::PROVOKING_VERTEX_FIRST)
+    {
         ProvokingVertex::First
     } else {
         ProvokingVertex::Last
@@ -937,7 +945,11 @@ fn narrower_targets_draw_as_direct3d_12_does() {
     let code = [bytecode("vs_transform.dxil"), bytecode("ps_two.dxil")];
     let grid = grid();
     let draw = Draw::own(&case, &code, true, &grid);
-    let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+    let provoking = if gl
+        .caps()
+        .features
+        .contains(Features::PROVOKING_VERTEX_FIRST)
+    {
         ProvokingVertex::First
     } else {
         ProvokingVertex::Last

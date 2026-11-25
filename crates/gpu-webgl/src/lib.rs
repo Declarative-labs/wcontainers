@@ -3573,7 +3573,7 @@ impl Backend for Gl {
             AddressMode::Mirror => Ok(glow::MIRRORED_REPEAT),
             AddressMode::Clamp => Ok(glow::CLAMP_TO_EDGE),
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
-            AddressMode::MirrorOnce if self.caps.has(Features::MIRROR_ONCE) => {
+            AddressMode::MirrorOnce if self.caps.features.contains(Features::MIRROR_ONCE) => {
                 Ok(glow::MIRROR_CLAMP_TO_EDGE)
             }
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
@@ -3708,7 +3708,7 @@ impl Backend for Gl {
         };
         if !desc.same_for_all
             && used.iter().any(|t| *t != used[0])
-            && !self.caps.has(Features::INDEPENDENT_BLEND)
+            && !self.caps.features.contains(Features::INDEPENDENT_BLEND)
         {
             return Err(GpuError::Absent(Features::INDEPENDENT_BLEND));
         }
@@ -3717,7 +3717,7 @@ impl Backend for Gl {
                 .into_iter()
                 .any(state::second_source)
         });
-        if second && !self.caps.has(Features::DUAL_SOURCE_BLEND) {
+        if second && !self.caps.features.contains(Features::DUAL_SOURCE_BLEND) {
             return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND));
         }
         // WebGL refuses the constant colour and the constant alpha as a colour blend's two factors.
@@ -3758,7 +3758,7 @@ impl Backend for Gl {
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Block<state::GlRaster>, GpuError> {
         self.platform.current();
-        let has = |f| self.caps.has(f);
+        let has = |f| self.caps.features.contains(f);
         let absent = [
             (
                 desc.fill == FillMode::Line && !has(Features::POLYGON_MODE),
@@ -3767,7 +3767,10 @@ impl Backend for Gl {
             (desc.fill == FillMode::Point, Features::POLYGON_MODE_POINT),
             (
                 desc.provoking == ProvokingVertex::First
-                    && !self.caps.has(Features::PROVOKING_VERTEX_FIRST),
+                    && !self
+                        .caps
+                        .features
+                        .contains(Features::PROVOKING_VERTEX_FIRST),
                 Features::PROVOKING_VERTEX_FIRST,
             ),
             (
@@ -3780,7 +3783,7 @@ impl Backend for Gl {
             ),
             (
                 f(desc.depth_bias).fract() != 0.0
-                    && !self.caps.has(Features::FRACTIONAL_DEPTH_BIAS),
+                    && !self.caps.features.contains(Features::FRACTIONAL_DEPTH_BIAS),
                 Features::FRACTIONAL_DEPTH_BIAS,
             ),
             (f(desc.line_width) != 1.0, Features::WIDE_LINES),
@@ -4197,7 +4200,7 @@ impl Backend for Gl {
         let first = colors.iter().flatten().next().map_or(0, |v| unwritten(v));
         let unwritten = if colors.iter().flatten().any(|v| unwritten(v) != 0) {
             if colors.iter().flatten().any(|v| unwritten(v) != first)
-                && !self.caps.has(Features::INDEPENDENT_BLEND)
+                && !self.caps.features.contains(Features::INDEPENDENT_BLEND)
             {
                 self.unbuilt(MIXED_CHANNELS);
                 return;

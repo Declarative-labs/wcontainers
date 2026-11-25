@@ -419,7 +419,12 @@ fn pulled_because<B: Backend>(backend: &B, element: &pipe_vertex_element) -> Opt
         || (stride != 0 && offset + bytes > stride);
     if unaligned {
         Some(SlowPath::VertexPulledInShader)
-    } else if element.instance_divisor > 1 && !backend.caps().has(Features::INSTANCE_STEP_RATE) {
+    } else if element.instance_divisor > 1
+        && !backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE)
+    {
         Some(SlowPath::InstanceRateInShader)
     } else {
         None
@@ -662,7 +667,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
         let [read, write] = [desc.stencil_read_mask, desc.stencil_write_mask];
         let split = stencil
             && (read[0] != read[1] || write[0] != write[1])
-            && !backend.caps().has(Features::STENCIL_PER_FACE);
+            && !backend.caps().features.contains(Features::STENCIL_PER_FACE);
         let mut create = |desc: &DepthStencilDesc| match backend.create_depth_stencil(desc) {
             Ok(block) => block,
             Err(error) => refuse(format!("a depth and stencil state: {error:?}")),
@@ -767,10 +772,10 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         // checked at the draw, where the fragment program is known.
         let caps = context.screen().backend().caps().clone();
         let host_provoking = match provoking {
-            ProvokingVertex::Last if !caps.has(Features::PROVOKING_VERTEX_LAST) => {
+            ProvokingVertex::Last if !caps.features.contains(Features::PROVOKING_VERTEX_LAST) => {
                 ProvokingVertex::First
             }
-            ProvokingVertex::First if !caps.has(Features::PROVOKING_VERTEX_FIRST) => {
+            ProvokingVertex::First if !caps.features.contains(Features::PROVOKING_VERTEX_FIRST) => {
                 ProvokingVertex::Last
             }
             wanted => wanted,
@@ -796,7 +801,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
             scissor: state.scissor() != 0,
             // Without wide lines the back end draws one width, to which the screen's range clamps
             // OpenGL's; Mesa's own states for drawing triangles leave the width zero.
-            line_width: if caps.has(Features::WIDE_LINES) {
+            line_width: if caps.features.contains(Features::WIDE_LINES) {
                 state.line_width
             } else {
                 caps.limits.max_line_width
@@ -812,10 +817,11 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
             Err(error) => refuse(format!("a rasterizer state: {error:?}")),
         };
         let block = create(&desc);
-        let faces =
-            (desc.cull == CullMode::None && !caps.has(Features::STENCIL_PER_FACE)).then(|| {
-                [CullMode::Back, CullMode::Front].map(|cull| create(&RasterDesc { cull, ..desc }))
-            });
+        let faces = (desc.cull == CullMode::None
+            && !caps.features.contains(Features::STENCIL_PER_FACE))
+        .then(|| {
+            [CullMode::Back, CullMode::Front].map(|cull| create(&RasterDesc { cull, ..desc }))
+        });
         object(Raster::<B> {
             block,
             desc,
@@ -957,7 +963,7 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
             });
         let mut backend = context.screen().backend();
         let border_in_program = (desc.address.contains(&AddressMode::Border)
-            && !backend.caps().has(Features::BORDER_COLOR))
+            && !backend.caps().features.contains(Features::BORDER_COLOR))
         .then_some(desc);
         let host = match border_in_program {
             Some(asked) => SamplerDesc {

@@ -1863,7 +1863,8 @@ impl<B: Backend> Device<B> {
             && self
                 .backend
                 .caps()
-                .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
+                .features
+                .contains(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
         {
             self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
         } else {
@@ -2164,8 +2165,9 @@ impl<B: Backend> Device<B> {
                 }
                 // The program filters through a border sampler, every address mode included, and
                 // mirrors once around plain samples.
-                let mirror = b.desc.address.contains(&5) && !caps.has(Features::MIRROR_ONCE);
-                if b.desc.address.contains(&4) && !caps.has(Features::BORDER_COLOR)
+                let mirror =
+                    b.desc.address.contains(&5) && !caps.features.contains(Features::MIRROR_ONCE);
+                if b.desc.address.contains(&4) && !caps.features.contains(Features::BORDER_COLOR)
                     || mirror && s.mirror_filtered & (1 << i) != 0
                 {
                     v.border_in_shader |= 1 << i;
@@ -2244,7 +2246,11 @@ impl<B: Backend> Device<B> {
     pub(crate) fn base_variant(&self) -> StageVariant {
         StageVariant {
             // Variants filtering in the program read level counts too.
-            texture_info: !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY),
+            texture_info: !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::TEXTURE_LEVEL_QUERY),
             ..StageVariant::default()
         }
     }
@@ -2521,8 +2527,10 @@ impl<B: Backend> Device<B> {
             depth.format,
             Format::Depth24Plus | Format::Depth24PlusStencil8
         );
-        let unclamped = r.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP);
-        let float_steps = r.depth_bias != 0 && d24 && !caps.has(Features::DEPTH24_UNORM);
+        let unclamped =
+            r.depth_bias_clamp != 0.0 && !caps.features.contains(Features::DEPTH_BIAS_CLAMP);
+        let float_steps =
+            r.depth_bias != 0 && d24 && !caps.features.contains(Features::DEPTH24_UNORM);
         if (!unclamped && !float_steps) || !self.draws_triangles() {
             return Ok(None);
         }
@@ -2542,7 +2550,11 @@ impl<B: Backend> Device<B> {
         let v = *self.ctx.viewports.first()?;
         let fractional = |f: f32| f.fract() != 0.0;
         let rounded = |o: f32| o < 0.0 && fractional(o);
-        let inexact = !self.backend.caps().has(Features::FRACTIONAL_VIEWPORT)
+        let inexact = !self
+            .backend
+            .caps()
+            .features
+            .contains(Features::FRACTIONAL_VIEWPORT)
             && [v.x, v.y, v.width, v.height].into_iter().any(fractional);
         if !inexact && (self.feature_level() >= level::L11_0 || !(rounded(v.x) || rounded(v.y))) {
             return None;
@@ -3617,7 +3629,9 @@ impl<B: Backend> Device<B> {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
             DOMAIN if !self.ctx.domain_compute => StageSet::VERTEX,
             // A geometry shader's replay form is a vertex program (`GeometryAsReplay`).
-            GEOMETRY if !self.backend.caps().has(Features::COMPUTE) => StageSet::VERTEX,
+            GEOMETRY if !self.backend.caps().features.contains(Features::COMPUTE) => {
+                StageSet::VERTEX
+            }
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -4762,7 +4776,7 @@ impl<B: Backend> Device<B> {
         // A mask leaving out samples of multisampled targets draws through a twin of the raster
         // block made with it.
         let masks = samples > 1 && mask != all;
-        if masks && !self.backend.caps().has(Features::SAMPLE_MASK) {
+        if masks && !self.backend.caps().features.contains(Features::SAMPLE_MASK) {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
         }
         let depth_bias = self.bias_step()?.is_some();
@@ -4820,7 +4834,13 @@ impl<B: Backend> Device<B> {
                 .blend
                 .as_ref()
                 .is_some_and(|b| b.desc.dual_source());
-        if dual_source && !self.backend.caps().has(Features::DUAL_SOURCE_BLEND) {
+        if dual_source
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::DUAL_SOURCE_BLEND)
+        {
             return not_implemented("dual-source blending without the back end's");
         }
         let target_samples = samples.min(u32::from(u8::MAX)) as u8;
@@ -4840,7 +4860,7 @@ impl<B: Backend> Device<B> {
             .unwrap_or(&self.defaults.raster)
             .desc
             .depth_clip
-            && !self.backend.caps().has(Features::DEPTH_CLAMP);
+            && !self.backend.caps().features.contains(Features::DEPTH_CLAMP);
         // Clip distances the back end lacks, applied by the pixel program
         // (`ClipDistanceInShader`), passed at the location the last stage before the rasteriser
         // (the vertex program, the domain program behind a hull shader, or a geometry stage's
@@ -4864,7 +4884,7 @@ impl<B: Backend> Device<B> {
             .as_ref()
             .is_some_and(|g| crate::shader::names_layer(&g.reflection.outputs));
         if aa_lines {
-            if !self.backend.caps().has(Features::COMPUTE) {
+            if !self.backend.caps().features.contains(Features::COMPUTE) {
                 return not_implemented(LINES_WITHOUT_COMPUTE);
             }
             match &ps {

@@ -311,13 +311,6 @@ pub struct Caps {
     pub formats: FormatCaps,
 }
 
-impl Caps {
-    /// Whether every feature in `f` is present.
-    pub fn has(&self, f: Features) -> bool {
-        self.features.contains(f)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

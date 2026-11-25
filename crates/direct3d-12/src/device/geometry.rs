@@ -141,7 +141,11 @@ impl<B: Backend> Device<B> {
                 .iter()
                 .any(|i| i.system == Some(value))
         };
-        let clip_distances = match self.backend.caps().has(Features::CLIP_DISTANCE)
+        let clip_distances = match self
+            .backend
+            .caps()
+            .features
+            .contains(Features::CLIP_DISTANCE)
             && !pixel_reads(SystemValue::ClipDistance)
         {
             true => 0,
@@ -207,7 +211,7 @@ impl<B: Backend> Device<B> {
         clamp: bool,
         root: &RootSignatureDesc,
     ) -> Result<Made<B>, Error> {
-        if !self.backend.caps().has(Features::COMPUTE) {
+        if !self.backend.caps().features.contains(Features::COMPUTE) {
             return Err(Error::NotImplemented(
                 "geometry shaders, stream output and tessellation on this back end",
             ));

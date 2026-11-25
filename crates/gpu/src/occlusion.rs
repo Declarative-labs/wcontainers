@@ -554,12 +554,12 @@ impl<B: Backend> OcclusionCounter<B> {
         // The summing program needs compute, 8 bytes of workgroup memory, 256 invocations a
         // workgroup and, for multisampled targets, reading them.
         let caps = b.caps();
-        let compute = caps.has(Features::COMPUTE)
+        let compute = caps.features.contains(Features::COMPUTE)
             && caps.limits.compute_workgroup_storage >= 8
             && caps.limits.compute_invocations >= 256
             && caps.limits.compute_size[0] >= 16
             && caps.limits.compute_size[1] >= 16
-            && (size.2 == 1 || caps.has(Features::MULTISAMPLE_READ));
+            && (size.2 == 1 || caps.features.contains(Features::MULTISAMPLE_READ));
         let on_gpu = compute && primitives(draws).saturating_mul(u64::from(size.2)) < bound as u64;
         let usage = match compute {
             true => TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::SAMPLE,
@@ -791,7 +791,7 @@ impl<B: Backend> OcclusionCounter<B> {
         if !full {
             return Ok(sum as u64);
         }
-        let bases = b.caps().has(Features::BASE_VERTEX_INSTANCE);
+        let bases = b.caps().features.contains(Features::BASE_VERTEX_INSTANCE);
         let [a, c] = halves(draws, bases).ok_or(GpuError::Invalid(
             "a draw reaching the counting format's bound at a pixel that cannot be split: a fan, a strip with restart, an indirect draw, or one primitive's instances where the first instance cannot be raised",
         ))?;

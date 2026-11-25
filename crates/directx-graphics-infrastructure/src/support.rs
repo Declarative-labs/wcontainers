@@ -162,8 +162,10 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         && (has(FormatUse::FILTER) || !OPTIONAL_SAMPLE.contains(&value));
     // A multisampled texture exists only as a target, so only formats that are targets load samples.
     let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
-    let multisample_load =
-        sample && target && caps.has(Features::MULTISAMPLE_READ) && multisampled(caps, format);
+    let multisample_load = sample
+        && target
+        && caps.features.contains(Features::MULTISAMPLE_READ)
+        && multisampled(caps, format);
     let mut bit = |on: bool, b: u32| {
         if on {
             s.support1 |= b;
@@ -260,7 +262,9 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     if has(FormatUse::STORAGE_ATOMIC) {
         s.support2 |= atomic_operations(value);
     }
-    if render && caps.has(Features::LOGIC_OP) && format.kind() == wcontainers_gpu::FormatKind::Uint
+    if render
+        && caps.features.contains(Features::LOGIC_OP)
+        && format.kind() == wcontainers_gpu::FormatKind::Uint
     {
         s.support2 |= OUTPUT_MERGER_LOGIC_OP;
     }

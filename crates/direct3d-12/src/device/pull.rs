@@ -130,7 +130,7 @@ pub(super) fn pulled_streams(
     strides: &[u32; MAX_VERTEX_STREAMS],
     caps: &Caps,
 ) -> [Option<SlowPath>; MAX_VERTEX_STREAMS] {
-    let rates = caps.has(Features::INSTANCE_STEP_RATE);
+    let rates = caps.features.contains(Features::INSTANCE_STEP_RATE);
     let (streams, attributes) = (caps.limits.vertex_streams, caps.limits.vertex_attributes);
     let mut out = [None; MAX_VERTEX_STREAMS];
     for (e, location) in inputs {

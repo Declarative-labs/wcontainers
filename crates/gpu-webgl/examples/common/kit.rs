@@ -80,7 +80,7 @@ pub fn raster<B: Backend>(
     bias: f32,
     slope: f32,
 ) -> B::Raster {
-    let provoking = if b.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+    let provoking = if b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST) {
         ProvokingVertex::First
     } else {
         ProvokingVertex::Last
@@ -96,7 +96,7 @@ pub fn raster<B: Backend>(
         scissor: false,
         line_width: 1.0f32.to_bits(),
         provoking,
-        depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+        depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
         sample_mask: u32::MAX,
     })
     .expect("create_raster")

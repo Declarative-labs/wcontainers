@@ -1206,12 +1206,17 @@ impl<B: Backend> Device<B> {
             .any(|i| i.system == Some(SystemValue::ClipDistance));
         let clipped_in_shader = clip_distances != 0
             && drawn_directly
-            && (!self.backend.caps().has(Features::CLIP_DISTANCE) || pixel_reads_clip);
+            && (!self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DISTANCE)
+                || pixel_reads_clip);
         // Depth clamping the back end lacks (`DepthClampInShader`): the vertex program keeps z
         // inside the clip volume; with a depth target it also passes z past both programs' values
         // and the pixel program writes it clamped to the viewport's depth range.
-        let clamped_in_shader =
-            !desc.raster.depth_clip && !self.backend.caps().has(Features::DEPTH_CLAMP);
+        let clamped_in_shader = !desc.raster.depth_clip
+            && !self.backend.caps().features.contains(Features::DEPTH_CLAMP);
         let clamped_in_pixels = clamped_in_shader && desc.dsv_format != 0;
         // Behind the stage helper the last vertex stage clamps: a geometry shader's pass-through,
         // the domain program, or the vertex program the cull route runs.
@@ -1499,7 +1504,11 @@ impl<B: Backend> Device<B> {
         let vs_shader = staged_last.as_ref().unwrap_or(&vs.modules[0]);
         if wcontainers_shaders::capabilities(&vs_shader.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DISTANCE)
         {
             return Err(Error::NotImplemented(
                 "clip distances from a geometry, domain, culling or antialiased line stage without \
@@ -1509,7 +1518,11 @@ impl<B: Backend> Device<B> {
         if ps.as_ref().is_some_and(|p| {
             wcontainers_shaders::capabilities(&p.modules[0].module)
                 .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
-        }) && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
+        }) && !self
+            .backend
+            .caps()
+            .features
+            .contains(Features::PRIMITIVE_INDEX)
         {
             return Err(Error::NotImplemented(
                 "the primitive index without the back end's (PrimitiveIdAsGeometry)",
@@ -1538,7 +1551,8 @@ impl<B: Backend> Device<B> {
         let program = program?;
         // Indirect draws of such a program read the bases from their arguments on the GPU.
         let fragment = ps.as_ref().map(|p| p.modules[0].clone());
-        let arguments = if reads_bases && self.backend.caps().has(Features::INDIRECT) {
+        let arguments = if reads_bases && self.backend.caps().features.contains(Features::INDIRECT)
+        {
             let key = VariantKey {
                 output_interpolation: interpolation.clone(),
                 draw_base: DrawBaseSource::Arguments,
@@ -1673,7 +1687,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<PipelineId, Error> {
         self.live()?;
         let root = self.pipeline_root(root, &[cs])?;
-        if !self.backend.caps().has(Features::COMPUTE) {
+        if !self.backend.caps().features.contains(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
         let (mut key, through) = formats::typed_key(cs, self.texel_route(), &root, bind::ALL);
@@ -1919,7 +1933,12 @@ impl<B: Backend> Device<B> {
 
     /// How programs read typed buffers on this back end.
     fn texel_route(&self) -> TexelBufferRoute {
-        match self.backend.caps().has(Features::TEXEL_BUFFERS) {
+        match self
+            .backend
+            .caps()
+            .features
+            .contains(Features::TEXEL_BUFFERS)
+        {
             true => TexelBufferRoute::Native,
             false => TexelBufferRoute::Storage,
         }
@@ -2027,7 +2046,11 @@ impl<B: Backend> Device<B> {
             streams: [None; MAX_VERTEX_STREAMS],
             attributes: [None; MAX_VERTEX_STREAMS],
         };
-        let rates = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let rates = self
+            .backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE);
         for (i, (e, location)) in inputs.iter().enumerate() {
             let slot = e.slot as usize;
             desc.streams[slot] = Some(match (e.per_instance, e.step_rate) {
@@ -2714,7 +2737,11 @@ impl<B: Backend> Device<B> {
         }
         if stored.linear() != desc.format.linear()
             && !stored.is_depth_stencil()
-            && !self.backend.caps().has(Features::FORMAT_REINTERPRET)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::FORMAT_REINTERPRET)
         {
             return Err(Error::NotImplemented(
                 "a view reinterpreting a texture's bits without its twin",
@@ -3448,7 +3475,11 @@ impl<B: Backend> Replay<B> {
                 if self.empty_pass {
                     self.end_pass(d)?;
                 }
-                let fractional = d.backend.caps().has(Features::FRACTIONAL_VIEWPORT);
+                let fractional = d
+                    .backend
+                    .caps()
+                    .features
+                    .contains(Features::FRACTIONAL_VIEWPORT);
                 self.viewports = v
                     .iter()
                     .map(|v| viewport(v, fractional))
@@ -4003,7 +4034,11 @@ impl<B: Backend> Replay<B> {
         if let (Some(_), DrawRange::Vertices { first_instance, .. })
         | (Some(_), DrawRange::Indexed { first_instance, .. }) = (record, &range)
             && *first_instance != 0
-            && !d.backend.caps().has(Features::INDIRECT_FIRST_INSTANCE)
+            && !d
+                .backend
+                .caps()
+                .features
+                .contains(Features::INDIRECT_FIRST_INSTANCE)
         {
             return Err(Error::NotImplemented(
                 "a predicated draw with a first instance on this back end",
@@ -4038,7 +4073,11 @@ impl<B: Backend> Replay<B> {
         let mut used = [false; MAX_VERTEX_STREAMS];
         // Streams that never step, bound at the first instance's element (see `vertex_layout`).
         let mut fixed = [false; MAX_VERTEX_STREAMS];
-        let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let rates = d
+            .backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE);
         // Each stream's elements this draw reads, and where in an element its inputs end.
         let mut reads = [None; MAX_VERTEX_STREAMS];
         let mut ends = [0u64; MAX_VERTEX_STREAMS];

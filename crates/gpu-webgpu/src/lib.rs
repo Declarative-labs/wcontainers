@@ -1465,7 +1465,7 @@ impl Backend for WebGpu {
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Raster, GpuError> {
-        let has = |f| self.caps.has(f);
+        let has = |f| self.caps.features.contains(f);
         let absent = [
             (
                 desc.fill == FillMode::Line && !has(Features::POLYGON_MODE),
@@ -1482,7 +1482,7 @@ impl Backend for WebGpu {
             (desc.depth_minus_one, Features::CLIP_DEPTH_MINUS_ONE),
             (f32::from_bits(desc.line_width) != 1.0, Features::WIDE_LINES),
             (
-                !desc.depth_clip && !self.caps.has(Features::DEPTH_CLAMP),
+                !desc.depth_clip && !self.caps.features.contains(Features::DEPTH_CLAMP),
                 Features::DEPTH_CLAMP,
             ),
             (
@@ -1544,7 +1544,7 @@ impl Backend for WebGpu {
         let ty = match kind {
             QueryKind::OcclusionAny => wgpu::QueryType::Occlusion,
             QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
-            QueryKind::Timestamp if self.caps.has(Features::TIMESTAMPS) => {
+            QueryKind::Timestamp if self.caps.features.contains(Features::TIMESTAMPS) => {
                 wgpu::QueryType::Timestamp
             }
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
@@ -2072,7 +2072,7 @@ impl Backend for WebGpu {
     }
 
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
-        if !self.caps.has(Features::TIMESTAMPS) {
+        if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
         if set.0.kind != QueryKind::Timestamp || index >= set.0.count {
@@ -2098,7 +2098,7 @@ impl Backend for WebGpu {
     }
 
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
-        if !self.caps.has(Features::TIMESTAMPS) {
+        if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
         // WebGPU reports no clock changes.

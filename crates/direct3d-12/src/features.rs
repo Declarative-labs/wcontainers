@@ -76,8 +76,10 @@ pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
         .contains(FormatUse::DEPTH_STENCIL);
     // 11_0 has compute shaders and unordered access views in pixel shaders, and the raster and
     // blend abilities this front serves only through the back end's own.
-    let stages = caps.has(Features::COMPUTE | Features::FRAGMENT_STORAGE_WRITE);
-    let fixed = caps.has(LEVEL_11_0_FIXED_FUNCTION);
+    let stages = caps
+        .features
+        .contains(Features::COMPUTE | Features::FRAGMENT_STORAGE_WRITE);
+    let fixed = caps.features.contains(LEVEL_11_0_FIXED_FUNCTION);
     // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`
     // capability promises.
     sizes && depth_stencil && stages && fixed && serves_stage_registers(l) && binds_tier_1(l)
@@ -137,7 +139,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         (Some((format, false)), Some((_, size))) => size == word * format.components().count_ones(),
         _ => false,
     };
-    if streamed && caps.has(Features::COMPUTE) {
+    if streamed && caps.features.contains(Features::COMPUTE) {
         s.support1 |= support1::SO_BUFFER;
     }
     // Of a format no multisampled texture is made of (`R32G32B32_*` and `B4G4R4A4_UNORM` on core
@@ -238,7 +240,7 @@ fn video_format_support(caps: &Caps, value: u32) -> Option<FormatSupport> {
 /// copied out and back whole.
 pub fn stored_through(caps: &Caps, value: u32) -> bool {
     storage_viewed(value)
-        && caps.has(Features::COMPUTE)
+        && caps.features.contains(Features::COMPUTE)
         && caps.limits.storage_buffers_per_stage > 0
         && dxgi_format(value).is_some_and(|(f, _)| {
             let uses = caps.formats.get(f);
@@ -249,7 +251,7 @@ pub fn stored_through(caps: &Caps, value: u32) -> bool {
 /// Typed buffer views of DXGI format `value` are read: through storage buffers, decoded in the
 /// program (`TexelBufferAsStorage`), for the formats that have a vertex fetch form.
 pub fn typed_buffer(caps: &Caps, value: u32) -> bool {
-    !caps.has(Features::TEXEL_BUFFERS)
+    !caps.features.contains(Features::TEXEL_BUFFERS)
         && caps.limits.storage_buffers_per_stage > 0
         && dxgi_vertex_format(value).is_some()
 }
@@ -308,12 +310,12 @@ const ADDITIONAL_UAV_LOADS: [Format; 15] = [
 
 pub fn options(caps: &Caps) -> Options {
     Options {
-        double_precision_float_shader_ops: caps.has(Features::SHADER_F64),
-        output_merger_logic_op: caps.has(Features::LOGIC_OP),
+        double_precision_float_shader_ops: caps.features.contains(Features::SHADER_F64),
+        output_merger_logic_op: caps.features.contains(Features::LOGIC_OP),
         // D3D12_SHADER_MIN_PRECISION_SUPPORT_NONE: minimum precision runs at full precision.
         min_precision_support: 0,
         tiled_resources_tier: 0,
-        resource_binding_tier: if caps.has(Features::RESOURCE_TABLES) {
+        resource_binding_tier: if caps.features.contains(Features::RESOURCE_TABLES) {
             3
         } else {
             1
@@ -347,7 +349,7 @@ pub struct Options1 {
 }
 
 pub fn options1(caps: &Caps) -> Options1 {
-    let waves = caps.has(Features::SUBGROUPS);
+    let waves = caps.features.contains(Features::SUBGROUPS);
     Options1 {
         wave_ops: waves,
         wave_lane_count_min: if waves { 4 } else { 0 },

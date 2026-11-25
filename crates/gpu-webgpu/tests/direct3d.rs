@@ -530,7 +530,7 @@ fn our_resolve(b: &mut B, format: Format) -> Vec<u8> {
 #[test]
 fn srgb_resolve_of_a_reinterpreted_texture_matches_direct3d() {
     let mut b = device_without(wgpu::Features::empty());
-    assert!(b.caps().has(Features::TEXTURE_VIEWS));
+    assert!(b.caps().features.contains(Features::TEXTURE_VIEWS));
     let reference = d3d_srgb_resolve();
     let differ = |ours: &[u8]| {
         let off = reference.iter().zip(ours).filter(|(a, b)| a != b).count();
@@ -816,8 +816,13 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     eprintln!("seed {seed}, {cases} textures per format");
     let mut native = device_without(wgpu::Features::empty());
     let mut decoded = device_without(wgpu::Features::TEXTURE_COMPRESSION_BC);
-    assert!(native.caps().has(Features::BLOCK_COMPRESSION));
-    assert!(!decoded.caps().has(Features::BLOCK_COMPRESSION));
+    assert!(native.caps().features.contains(Features::BLOCK_COMPRESSION));
+    assert!(
+        !decoded
+            .caps()
+            .features
+            .contains(Features::BLOCK_COMPRESSION)
+    );
     let hardware = direct3d();
     let warp = d3d11::create(Driver::Warp, false, &[D3D_FEATURE_LEVEL_11_0]).expect("WARP");
     let (vs, ps) = (

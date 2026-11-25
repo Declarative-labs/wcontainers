@@ -147,7 +147,7 @@ impl<B: Backend> Replay<B> {
         // Per-instance streams that never step are bound at the first instance's element, and
         // those stepping every n instances fetched in the program start from it: only the
         // arguments say where.
-        let rates = caps.has(Features::INSTANCE_STEP_RATE);
+        let rates = caps.features.contains(Features::INSTANCE_STEP_RATE);
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
             *s = v.stride;
@@ -185,11 +185,15 @@ impl<B: Backend> Replay<B> {
         let on_gpu = s.call_only()
             && self.statistics.is_none()
             && !staged
-            && caps.has(Features::INDIRECT)
-            && (count.is_none() || caps.has(Features::COMPUTE))
+            && caps.features.contains(Features::INDIRECT)
+            && (count.is_none() || caps.features.contains(Features::COMPUTE))
             && match call {
-                IndirectArgument::Dispatch => caps.has(Features::COMPUTE),
-                _ => caps.has(Features::INDIRECT_FIRST_INSTANCE) && !bases_unread && !rewritten,
+                IndirectArgument::Dispatch => caps.features.contains(Features::COMPUTE),
+                _ => {
+                    caps.features.contains(Features::INDIRECT_FIRST_INSTANCE)
+                        && !bases_unread
+                        && !rewritten
+                }
             };
         // Draws without indices fetching per-vertex streams, whose arguments lie in the program's
         // memory, are read from it with no wait and drawn directly, so a stream read past its end

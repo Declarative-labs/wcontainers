@@ -276,8 +276,13 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
     let (seed, cases) = seed_and_cases(0xbc);
     let mut native = device_without(wgpu::Features::empty());
     let mut decoded = device_without(wgpu::Features::TEXTURE_COMPRESSION_BC);
-    assert!(native.caps().has(Features::BLOCK_COMPRESSION));
-    assert!(!decoded.caps().has(Features::BLOCK_COMPRESSION));
+    assert!(native.caps().features.contains(Features::BLOCK_COMPRESSION));
+    assert!(
+        !decoded
+            .caps()
+            .features
+            .contains(Features::BLOCK_COMPRESSION)
+    );
     let mut rng = fastrand::Rng::with_seed(seed);
     let mut beyond = Vec::new();
     for format in FORMATS {

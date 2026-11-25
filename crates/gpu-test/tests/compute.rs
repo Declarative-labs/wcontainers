@@ -988,7 +988,7 @@ fn resource_tables_are_absent() {
         r.create_resource_table(16).err(),
         Some(GpuError::Absent(Features::RESOURCE_TABLES))
     );
-    assert!(!r.caps().has(Features::RESOURCE_TABLES));
+    assert!(!r.caps().features.contains(Features::RESOURCE_TABLES));
 }
 
 #[test]

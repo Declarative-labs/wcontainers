@@ -857,7 +857,7 @@ pub fn generate_mips_by_draws<B: Backend>(
     } else {
         own
     };
-    let copied = read_dim != own && !b.caps().has(Features::TEXTURE_VIEWS);
+    let copied = read_dim != own && !b.caps().features.contains(Features::TEXTURE_VIEWS);
     let which = Builtin::Mip(read_dim, read);
     let program = helpers::program(b, which)?;
     for mip in mips {

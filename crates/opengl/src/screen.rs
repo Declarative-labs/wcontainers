@@ -255,7 +255,7 @@ pub(crate) fn point_coordinate_passes(limits: &wcontainers_gpu::Limits, at: u32)
 /// Stream output's limits: the stage helper's (every vertex output written to its records, into
 /// its four buffers), on back ends with compute work; none without.
 fn stream_output(ours: &Caps) -> (c_uint, c_uint) {
-    if ours.has(Features::COMPUTE) {
+    if ours.features.contains(Features::COMPUTE) {
         (
             STREAM_BUFFERS as c_uint,
             ours.limits.inter_stage_slots * naga::VectorSize::Quad as c_uint,
@@ -269,7 +269,7 @@ fn stream_output(ours: &Caps) -> (c_uint, c_uint) {
 /// the largest target's side, as each point is then drawn as a square (`PointsAsQuads`), which
 /// covers any target whole at that size.
 pub(crate) fn largest_point_size(caps: &Caps) -> f32 {
-    if caps.has(Features::POINT_SIZE) {
+    if caps.features.contains(Features::POINT_SIZE) {
         caps.limits.max_point_size
     } else {
         caps.limits.max_texture_2d as f32
@@ -300,7 +300,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_line_width = limits.max_line_width;
     caps.max_line_width_aa = limits.max_line_width;
     // Without wide lines the back end draws one width, to which OpenGL clamps every width.
-    if !ours.has(Features::WIDE_LINES) {
+    if !ours.features.contains(Features::WIDE_LINES) {
         caps.min_line_width = limits.max_line_width;
         caps.min_line_width_aa = limits.max_line_width;
     }
@@ -325,10 +325,11 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.primitive_restart = true;
     // Views' swizzles are applied in the programs that read them (`SwizzleInShader`).
     caps.texture_swizzle = true;
-    caps.depth_clip_disable = ours.has(Features::DEPTH_CLAMP);
-    caps.polygon_offset_clamp = ours.has(Features::DEPTH_BIAS_CLAMP);
-    caps.max_dual_source_render_targets = c_uint::from(ours.has(Features::DUAL_SOURCE_BLEND));
-    let timestamps = ours.has(Features::TIMESTAMPS);
+    caps.depth_clip_disable = ours.features.contains(Features::DEPTH_CLAMP);
+    caps.polygon_offset_clamp = ours.features.contains(Features::DEPTH_BIAS_CLAMP);
+    caps.max_dual_source_render_targets =
+        c_uint::from(ours.features.contains(Features::DUAL_SOURCE_BLEND));
+    let timestamps = ours.features.contains(Features::TIMESTAMPS);
     caps.query_timestamp = timestamps;
     caps.query_time_elapsed = timestamps;
     // Texel buffers, read through 2D textures the views are copied into
@@ -341,7 +342,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
         caps.max_stream_output_interleaved_components,
     ) = stream_output(ours);
     // Geometry programs, run by the stage helper as compute work.
-    if ours.has(Features::COMPUTE) {
+    if ours.features.contains(Features::COMPUTE) {
         caps.max_geometry_output_vertices = GEOMETRY_EMITTED_VERTICES;
         caps.max_geometry_total_output_components = GEOMETRY_OUTPUT_COMPONENTS;
         caps.max_gs_invocations = GEOMETRY_INVOCATIONS;
@@ -352,7 +353,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // Compute work, storage buffers and images (in compute programs), indirect draws (their
     // arguments read back), multisampled textures, gathers, stencil texturing and framebuffers
     // without attachments: OpenGL ES 3.1's.
-    caps.compute = ours.has(Features::COMPUTE);
+    caps.compute = ours.features.contains(Features::COMPUTE);
     caps.shader_buffer_offset_alignment = limits.min_storage_offset_alignment;
     caps.max_shader_buffer_size =
         c_uint::try_from(limits.max_storage_buffer_size).unwrap_or(c_uint::MAX);
@@ -360,21 +361,21 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     // Stores to images declared without a format, in the bound image's format: a program is
     // converted for the formats of the images bound where it declares none (`image_formats`).
     caps.image_store_formatted = true;
-    caps.texture_multisample =
-        ours.has(Features::MULTISAMPLE_READ) && ours.has(Features::SAMPLE_MASK);
+    caps.texture_multisample = ours.features.contains(Features::MULTISAMPLE_READ)
+        && ours.features.contains(Features::SAMPLE_MASK);
     // Programs run per sample: st/mesa makes the per-sample variant of a fragment program itself,
     // and the NIR route takes inputs at an offset or a sample and the sample positions from the
     // values the host interpolates (`interpolate_elsewhere`).
-    caps.sample_shading = ours.has(Features::SAMPLE_SHADING);
+    caps.sample_shading = ours.features.contains(Features::SAMPLE_SHADING);
     // The first target's texels read in fragment programs, from a copy of it each draw bound at
     // `FETCHED_UNIT` (multisampled where the target is), as st/mesa makes advanced blending:
     // `KHR_blend_equation_advanced`, not its coherent form.
-    caps.fbfetch = c_uint::from(ours.has(Features::MULTISAMPLE_READ));
+    caps.fbfetch = c_uint::from(ours.features.contains(Features::MULTISAMPLE_READ));
     caps.max_texture_gather_components = naga::VectorSize::Quad as c_uint;
     caps.framebuffer_no_attachment = true;
     caps.npot_textures = true;
     caps.blend_equation_separate = true;
-    let independent = ours.has(Features::INDEPENDENT_BLEND);
+    let independent = ours.features.contains(Features::INDEPENDENT_BLEND);
     caps.indep_blend_enable = independent;
     caps.indep_blend_func = independent;
     // Attachments of different sizes are fitted by the pass tracker.
@@ -491,7 +492,7 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     // `TessellationAsCompute`), which reads and writes storage as compute programs do; a vertex
     // or evaluation program using storage too, before a pass-through geometry program
     // (`VertexStorageAsCompute`), where the back end runs compute work.
-    let staged = ours.has(Features::COMPUTE);
+    let staged = ours.features.contains(Features::COMPUTE);
     if matches!(
         stage,
         MESA_SHADER_COMPUTE | MESA_SHADER_GEOMETRY | MESA_SHADER_TESS_CTRL | MESA_SHADER_TESS_EVAL
@@ -502,7 +503,7 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     }
     if stage == MESA_SHADER_FRAGMENT {
         caps.max_shader_buffers = buffers;
-        if ours.has(Features::FRAGMENT_STORAGE_WRITE) {
+        if ours.features.contains(Features::FRAGMENT_STORAGE_WRITE) {
             caps.max_shader_images = images;
         }
     }
@@ -569,11 +570,11 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
     // st/mesa hands shaders over in the NIR route's shape.
     base.nir_options
         .fill(wcontainers_nir::mesa::compiler_options().cast());
-    let staged = ours.has(Features::COMPUTE);
+    let staged = ours.features.contains(Features::COMPUTE);
     for &stage in STAGES.iter().filter(|&&s| staged || !STAGED.contains(&s)) {
         fill_shader_caps(&mut base.shader_caps[stage as usize], stage, &ours);
     }
-    if ours.has(Features::COMPUTE) {
+    if ours.features.contains(Features::COMPUTE) {
         fill_compute_caps(&mut base.compute_caps, &ours);
     }
     Box::into_raw(screen).cast()

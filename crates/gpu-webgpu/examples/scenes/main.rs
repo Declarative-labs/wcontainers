@@ -249,7 +249,7 @@ mod web {
             let offers = f
                 .web_name()
                 .is_none_or(|name| offered.iter().any(|o| o == name));
-            if offers && !b.caps().has(f.declared()) {
+            if offers && !b.caps().features.contains(f.declared()) {
                 return Err(js(format!(
                     "the adapter offers {}, the device does not declare it",
                     f.name()

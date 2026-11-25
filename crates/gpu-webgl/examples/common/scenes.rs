@@ -180,7 +180,7 @@ fn module(source: &str, entry: &str, stage: ShaderStage) -> Result<ShaderModule,
 
 fn program<B: Backend>(b: &mut B, source: &str) -> Result<B::Program, String> {
     let rewritten;
-    let source = if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+    let source = if b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE) {
         source
     } else {
         b.slow_paths().hit(SlowPath::ClipDepthRewrite);
@@ -380,8 +380,8 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     )?;
     let target_view = whole_view(b, &target, Format::Rgba8Unorm)?;
-    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
-    let first_provokes = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let minus_one = !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
+    let first_provokes = b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST);
     let mut raster_desc = solid(minus_one);
     if change == Change::FlatRed && first_provokes {
         raster_desc.provoking = ProvokingVertex::First;
@@ -763,7 +763,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         _ => b.draw(&call),
     }
     b.end_pass();
-    if b.caps().has(Features::FAN_AND_LOOP) && converted(b) != before {
+    if b.caps().features.contains(Features::FAN_AND_LOOP) && converted(b) != before {
         return Err("a fan or loop was converted although FAN_AND_LOOP is present".into());
     }
     if change == Change::ClearRects {

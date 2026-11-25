@@ -241,7 +241,7 @@ impl<B: Backend> Device<B> {
             // Every queue's work runs in one submission order, so copy queues write timestamps
             // as direct ones do.
             HEAP_TIMESTAMP | HEAP_COPY_QUEUE_TIMESTAMP
-                if self.backend.caps().has(Features::TIMESTAMPS) =>
+                if self.backend.caps().features.contains(Features::TIMESTAMPS) =>
             {
                 Some(self.backend.create_query_set(QueryKind::Timestamp, count)?)
             }
@@ -594,7 +594,10 @@ impl<B: Backend> Device<B> {
             return Ok(predicate);
         }
         let caps = self.backend.caps();
-        if !caps.has(Features::COMPUTE | Features::INDIRECT) {
+        if !caps
+            .features
+            .contains(Features::COMPUTE | Features::INDIRECT)
+        {
             return Ok(predicate);
         }
         self.backend.slow_paths().hit(SlowPath::PredicationIndirect);

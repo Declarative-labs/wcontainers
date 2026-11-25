@@ -292,8 +292,8 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
         && limits.max_texture_layers >= layers
         && limits.color_targets >= level_targets(level);
     let renders = |f: Format, u: FormatUse| caps.formats.get(f).contains(u);
-    let staged = caps.has(Features::COMPUTE)
-        || (level < level::L11_0 && caps.has(Features::TRANSFORM_FEEDBACK));
+    let staged = caps.features.contains(Features::COMPUTE)
+        || (level < level::L11_0 && caps.features.contains(Features::TRANSFORM_FEEDBACK));
     sized
         && stage_values_served(limits, level)
         && slots_served(limits, level)
@@ -705,7 +705,7 @@ impl<B: Backend> Device<B> {
         }
         // Atomics on storage textures the back end lacks go through a buffer of their texels
         // (`AtomicsThroughBuffer`).
-        if caps.has(Features::COMPUTE) {
+        if caps.features.contains(Features::COMPUTE) {
             s.support2 |= match dxgi {
                 format::R32_UINT | format::R32_SINT => {
                     UAV_ATOMIC_ADD
@@ -732,7 +732,7 @@ impl<B: Backend> Device<B> {
         // A partial sample mask has no route without the back end's mask (`SampleMaskInShader`
         // is not built), so no multisampling is reported there (plan section 9).
         remove(
-            !caps.has(Features::SAMPLE_MASK),
+            !caps.features.contains(Features::SAMPLE_MASK),
             MULTISAMPLE_RENDERTARGET | MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE,
         );
         // Multisampled depth is read from 10_1.
@@ -768,8 +768,8 @@ impl<B: Backend> Device<B> {
         // resolves Microsoft's tables require of it apply to no texture, so they are reported as
         // Direct3D's drivers report them (the RTX 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`; the
         // 10_0 table requires resolves without requiring a sample count).
-        let no_samples =
-            !caps.has(Features::SAMPLE_MASK) || s.support1 & MULTISAMPLE_RENDERTARGET == 0;
+        let no_samples = !caps.features.contains(Features::SAMPLE_MASK)
+            || s.support1 & MULTISAMPLE_RENDERTARGET == 0;
         if s.support1 != 0
             && no_samples
             && let Some((_, row)) =
@@ -856,7 +856,7 @@ impl<B: Backend> Device<B> {
                     || self.format_support(dxgi).support1 & crate::desc::support::TEXTURE2D != 0,
             );
         }
-        if !self.backend.caps().has(Features::SAMPLE_MASK) {
+        if !self.backend.caps().features.contains(Features::SAMPLE_MASK) {
             return 0;
         }
         let format = format::texture_format(dxgi).or_else(|| {
@@ -1139,7 +1139,7 @@ impl<B: Backend> Device<B> {
         let caps = self.backend.caps();
         caps.formats.get(format).contains(FormatUse::COPY_OUT)
             && format.block().0 == 1
-            && caps.has(Features::COMPUTE)
+            && caps.features.contains(Features::COMPUTE)
             && caps.limits.storage_buffers_per_stage > 0
     }
 
@@ -1229,8 +1229,9 @@ impl<B: Backend> Device<B> {
         // helper's compute programs read vertices and indices and write stream output.
         let caps = self.backend.caps();
         let staged = bind::VERTEX_BUFFER | bind::INDEX_BUFFER | bind::STREAM_OUTPUT;
-        if d.bind_flags & bind::VERTEX_BUFFER != 0 && !caps.has(Features::INSTANCE_STEP_RATE)
-            || d.bind_flags & staged != 0 && caps.has(Features::COMPUTE)
+        if d.bind_flags & bind::VERTEX_BUFFER != 0
+            && !caps.features.contains(Features::INSTANCE_STEP_RATE)
+            || d.bind_flags & staged != 0 && caps.features.contains(Features::COMPUTE)
         {
             desc.usage |= BufferUsage::STORAGE;
         }
@@ -2399,7 +2400,13 @@ impl<B: Backend> Device<B> {
         // Without the back end's per-target blends, a block per group of targets that agree,
         // each drawn by a run of its own (`TargetsSplit`).
         let mut groups = Vec::new();
-        if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
+        if !block.same_for_all
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::INDEPENDENT_BLEND)
+        {
             let mut left = u8::MAX;
             while left != 0 {
                 let first = left.trailing_zeros() as usize;
@@ -2472,7 +2479,7 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("unknown fill or cull mode"));
         }
         let caps = self.backend.caps();
-        if d.fill == fill_mode::WIREFRAME && !caps.has(Features::POLYGON_MODE) {
+        if d.fill == fill_mode::WIREFRAME && !caps.features.contains(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
         self.live()?;
@@ -2515,7 +2522,11 @@ impl<B: Backend> Device<B> {
             }
         }
         let layered = shader::multisampled_arrays(bytecode)?;
-        let texture_info = !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY);
+        let texture_info = !self
+            .backend
+            .caps()
+            .features
+            .contains(Features::TEXTURE_LEVEL_QUERY);
         let (mut converted, reads_samples) =
             shader::convert(bytecode, stage, &mut typed, layered, texture_info)?;
         let samplers = shader::sampler_slots(&converted);
@@ -2570,7 +2581,11 @@ impl<B: Backend> Device<B> {
         let mut clip = None;
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DISTANCE)
         {
             let outputs = &converted.reflection.outputs;
             let at = (
@@ -2592,10 +2607,14 @@ impl<B: Backend> Device<B> {
         // helper, which drops the primitives they cull, and the back end holds its pass-through.
         let culled = wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CULL_DISTANCE)
-            && !self.backend.caps().has(Features::CULL_DISTANCE);
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CULL_DISTANCE);
         if culled {
             if stage != wcontainers_gpu::SourceStage::Vertex
-                || !self.backend.caps().has(Features::COMPUTE)
+                || !self.backend.caps().features.contains(Features::COMPUTE)
             {
                 return not_implemented(CULL_DISTANCES_UNSERVED);
             }
@@ -2612,7 +2631,11 @@ impl<B: Backend> Device<B> {
         }
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
-            && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::PRIMITIVE_INDEX)
         {
             return not_implemented(
                 "the primitive index without the back end's (PrimitiveIdAsGeometry)",
@@ -2683,8 +2706,8 @@ impl<B: Backend> Device<B> {
         // Without compute programs a geometry shader, or a vertex shader's stream output, is
         // replayed through transform feedback (`GeometryAsReplay`, `StreamOutAfterReplay`).
         let caps = self.backend.caps();
-        let replayed = !caps.has(Features::COMPUTE);
-        if replayed && !caps.has(Features::TRANSFORM_FEEDBACK) {
+        let replayed = !caps.features.contains(Features::COMPUTE);
+        if replayed && !caps.features.contains(Features::TRANSFORM_FEEDBACK) {
             return not_implemented(GEOMETRY_STAGE_UNSERVED);
         }
         let stage = if vertex {
@@ -2698,7 +2721,11 @@ impl<B: Backend> Device<B> {
             // pixel program to apply, at the location past the stage's outputs.
             let clip = (wcontainers_shaders::capabilities(&converted.modules[1].module)
                 .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-                && !self.backend.caps().has(Features::CLIP_DISTANCE))
+                && !self
+                    .backend
+                    .caps()
+                    .features
+                    .contains(Features::CLIP_DISTANCE))
             .then(|| {
                 let outputs = &converted.reflection.outputs;
                 (
@@ -2777,7 +2804,11 @@ impl<B: Backend> Device<B> {
         let mut resolved = Vec::new();
         let mut pulled = Vec::new();
         let mut pulled_paths = Vec::new();
-        let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let steps_natively = self
+            .backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE);
         // Direct3D's 32 slots and inputs where the back end fetches fewer: those past its streams
         // or attribute locations are fetched in the vertex program.
         let limits = &self.backend.caps().limits;
@@ -3212,7 +3243,7 @@ pub(crate) fn depth_stencil_block(d: &DepthStencilDesc) -> GpuDepthStencil {
 /// The back end's raster block for Direct3D's description. A bias clamp the back end lacks is left
 /// out: draws with depth to bias add the bias in the pixel program instead (`DepthBiasInShader`).
 pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
-    let clamp = if caps.has(Features::DEPTH_BIAS_CLAMP) {
+    let clamp = if caps.features.contains(Features::DEPTH_BIAS_CLAMP) {
         d.depth_bias_clamp
     } else {
         0.0
@@ -3237,7 +3268,7 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
         depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
         depth_bias_clamp: clamp.to_bits(),
         // Where the back end clips only, the programs clamp (`DepthClampInShader`).
-        depth_clip: d.depth_clip || !caps.has(Features::DEPTH_CLAMP),
+        depth_clip: d.depth_clip || !caps.features.contains(Features::DEPTH_CLAMP),
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::First,
@@ -3276,8 +3307,12 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
             address::WRAP => AddressMode::Repeat,
             address::MIRROR => AddressMode::Mirror,
             address::CLAMP => AddressMode::Clamp,
-            address::BORDER if caps.has(Features::BORDER_COLOR) => AddressMode::Border,
-            address::MIRROR_ONCE if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            address::BORDER if caps.features.contains(Features::BORDER_COLOR) => {
+                AddressMode::Border
+            }
+            address::MIRROR_ONCE if caps.features.contains(Features::MIRROR_ONCE) => {
+                AddressMode::MirrorOnce
+            }
             address::BORDER | address::MIRROR_ONCE => AddressMode::Clamp,
             _ => return Err(Error::InvalidArg("unknown address mode")),
         };

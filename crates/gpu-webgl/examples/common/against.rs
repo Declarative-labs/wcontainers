@@ -111,7 +111,7 @@ pub const COMPARISONS: [Comparison; 9] = [
         routes: BOTH_ORIGINS,
         scene: Scene::Fraction,
         expect: |webgpu, caps, _| {
-            if caps.has(Features::FRACTIONAL_VIEWPORT) == webgpu {
+            if caps.features.contains(Features::FRACTIONAL_VIEWPORT) == webgpu {
                 Ok(())
             } else {
                 Err(format!(
@@ -314,7 +314,7 @@ struct V {{
 fn fraction<B: Backend>(b: &mut B) -> Parts {
     let k = Kit::new(b);
     let (x, y, w, h) = (2.25f32, 1.25f32, 11.0f32, 12.5f32);
-    let native = b.caps().has(Features::FRACTIONAL_VIEWPORT);
+    let native = b.caps().features.contains(Features::FRACTIONAL_VIEWPORT);
     let (x0, y0) = (x.floor(), y.floor());
     let (ww, wh) = ((x + w).ceil() - x0, (y + h).ceil() - y0);
     let (program, vp) = if native {
@@ -349,12 +349,12 @@ fn fraction<B: Backend>(b: &mut B) -> Parts {
             depth_clip: true,
             scissor: true,
             line_width: 1.0f32.to_bits(),
-            provoking: if b.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+            provoking: if b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST) {
                 ProvokingVertex::First
             } else {
                 ProvokingVertex::Last
             },
-            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
             sample_mask: u32::MAX,
         })
         .expect("create_raster");
