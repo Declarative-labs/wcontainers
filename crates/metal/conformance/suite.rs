@@ -72,7 +72,47 @@ var<workgroup> total: atomic<u32>;
 }
 ";
 
-/// A triangle covering every pixel centre of the target.
+/// The count Metal gives a texture's depth, levels, samples and array length unless told otherwise, and so one of each.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor
+const SINGLE: u32 = 1;
+
+/// The buffer slot of the words the compute tests read, among a stage's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const WORDS_SLOT: u32 = 1;
+
+/// A byte the tests fill buffers with, which no zeroed buffer holds.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
+const FILL_BYTE: u8 = 1;
+
+/// The vertices of one triangle.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/triangle
+const TRIANGLE_VERTICES: u32 = 3;
+
+/// The tests' vertex function, which places the covering triangle.
+const VERTEX: &str = "vs";
+
+/// The fragment function that draws the uniform's color.
+const FLAT: &str = "flat";
+
+/// The fragment function that draws in whole numbers.
+const WHOLE: &str = "whole";
+
+/// The fragment function that samples the texture.
+const SAMPLED: &str = "sampled";
+
+/// The compute function that doubles each word.
+const DOUBLE: &str = "double";
+
+/// The compute function that sums words through workgroup memory.
+const SUM: &str = "sum";
+
+/// A triangle covering every pixel centre of the target: corners at x and y of -1 and 3 in clip space.
+///
+/// https://developer.apple.com/documentation/metal/mtlviewport
 const COVERING: &[f32] = &[-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
 
 /// The bytes of the covering triangle's positions.
@@ -93,26 +133,28 @@ const WORD_COUNT: usize = 8;
 type Color = [f32; 4];
 
 /// The slots of the tests' resources: the uniform, the sampler, the texture and the storage buffer.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-binding
 const SLOTS: &[ResourceSlot] = &[
     ResourceSlot {
-        group: 0,
-        binding: 0,
-        index: 0,
+        group: u32::MIN,
+        binding: u32::MIN,
+        index: u32::MIN,
     },
     ResourceSlot {
-        group: 0,
+        group: u32::MIN,
         binding: 16,
-        index: 0,
+        index: u32::MIN,
     },
     ResourceSlot {
-        group: 0,
+        group: u32::MIN,
         binding: 32,
-        index: 0,
+        index: u32::MIN,
     },
     ResourceSlot {
-        group: 0,
+        group: u32::MIN,
         binding: 48,
-        index: 1,
+        index: WORDS_SLOT,
     },
 ];
 
@@ -143,8 +185,8 @@ fn function<M: Metal>(subject: &mut M, stage: naga::ShaderStage, entry_point: &s
         stride: 8,
         step_function: VertexStepFunction::PerVertex,
         attributes: vec![VertexAttribute {
-            location: 0,
-            offset: 0,
+            location: u32::MIN,
+            offset: u32::MIN,
             format: VertexFormat::Float2,
         }],
     }];
@@ -160,7 +202,7 @@ fn function<M: Metal>(subject: &mut M, stage: naga::ShaderStage, entry_point: &s
             vertex_buffers: &vertex_buffers,
             point_size: false,
         })
-        .expect("make_function")
+        .expect("Metal answers make function")
 }
 
 /// Makes an `rgba8Unorm` texture of `TARGET_SIDE` by `TARGET_SIDE` the tests draw into, copy and sample.
@@ -171,10 +213,10 @@ fn target<M: Metal>(subject: &mut M) -> M::Texture {
             pixel_format: PixelFormat::Rgba8Unorm,
             width: TARGET_SIDE,
             height: TARGET_SIDE,
-            depth: 1,
-            mipmap_level_count: 1,
-            sample_count: 1,
-            array_length: 1,
+            depth: SINGLE,
+            mipmap_level_count: SINGLE,
+            sample_count: SINGLE,
+            array_length: SINGLE,
             usage: TextureUsage {
                 shader_read: true,
                 shader_write: false,
@@ -182,26 +224,28 @@ fn target<M: Metal>(subject: &mut M) -> M::Texture {
                 pixel_format_view: false,
             },
         })
-        .expect("make_texture")
+        .expect("Metal answers make texture")
 }
 
 /// Makes a buffer holding `bytes`.
 fn filled<M: Metal>(subject: &mut M, bytes: &[u8]) -> M::Buffer {
     let buffer = subject
         .make_buffer(bytes.len() as u64)
-        .expect("make_buffer");
+        .expect("Metal answers make buffer");
     subject
         .write_contents(&buffer, 0, bytes)
-        .expect("write_contents");
+        .expect("Metal answers write contents");
     buffer
 }
 
 /// Commits a command buffer, waits for it, and checks that it completed.
 fn finish<M: Metal>(subject: &mut M, command_buffer: &M::CommandBuffer) {
-    subject.commit(command_buffer).expect("commit");
+    subject
+        .commit(command_buffer)
+        .expect("Metal answers commit");
     subject
         .wait_until_completed(command_buffer)
-        .expect("wait_until_completed");
+        .expect("Metal answers wait until completed");
     assert_eq!(
         subject.status(command_buffer),
         CommandBufferStatus::Completed
@@ -213,40 +257,42 @@ fn read_texture<M: Metal>(subject: &mut M, texture: &M::Texture) -> Vec<u8> {
     let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
     let buffer = subject
         .make_buffer(row * u64::from(TARGET_SIDE))
-        .expect("make_buffer");
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        .expect("Metal answers make buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     subject
         .encode_blit_commands(
             &command_buffer,
             &[BlitCommand::CopyFromTextureToBuffer {
                 source_texture: texture.clone(),
-                source_slice: 0,
-                source_level: 0,
-                source_origin: Origin { x: 0, y: 0, z: 0 },
+                source_slice: u32::MIN,
+                source_level: u32::MIN,
+                source_origin: Origin::default(),
                 source_size: Size {
                     width: TARGET_SIDE,
                     height: TARGET_SIDE,
-                    depth: 1,
+                    depth: SINGLE,
                 },
                 destination_buffer: buffer.clone(),
-                destination_offset: 0,
+                destination_offset: u64::MIN,
                 destination_bytes_per_row: row,
                 destination_bytes_per_image: row * u64::from(TARGET_SIDE),
                 options: BlitOption::None,
             }],
         )
-        .expect("encode_blit_commands");
+        .expect("Metal answers encode blit commands");
     finish(subject, &command_buffer);
     let mut bytes = vec![0; (row * u64::from(TARGET_SIDE)) as usize];
     subject
         .read_contents(&buffer, 0, &mut bytes)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     bytes
 }
 
 /// Makes a pipeline drawing `fragment` into one `rgba8Unorm` target.
 fn pipeline<M: Metal>(subject: &mut M, fragment: &str) -> M::RenderPipelineState {
-    let vertex = function(subject, naga::ShaderStage::Vertex, "vs");
+    let vertex = function(subject, naga::ShaderStage::Vertex, VERTEX);
     let fragment = function(subject, naga::ShaderStage::Fragment, fragment);
     let mut color_attachments = [None; MAX_COLOR_ATTACHMENTS];
     color_attachments[0] = Some(RenderPipelineColorAttachmentDescriptor {
@@ -266,12 +312,12 @@ fn pipeline<M: Metal>(subject: &mut M, fragment: &str) -> M::RenderPipelineState
             color_attachments,
             depth_attachment_pixel_format: None,
             stencil_attachment_pixel_format: None,
-            raster_sample_count: 1,
+            raster_sample_count: SINGLE,
             alpha_to_coverage_enabled: false,
             rasterization_enabled: true,
             input_primitive_topology: PrimitiveTopologyClass::Triangle,
         })
-        .expect("make_render_pipeline_state")
+        .expect("Metal answers make render pipeline state")
 }
 
 /// Returns a pass drawing into `texture`, cleared to transparent black.
@@ -279,9 +325,9 @@ fn pass<M: Metal>(texture: &M::Texture) -> RenderPassDescriptor<'_, M> {
     let mut color_attachments = [const { None }; MAX_COLOR_ATTACHMENTS];
     color_attachments[0] = Some(RenderPassColorAttachment {
         texture,
-        level: 0,
-        slice: 0,
-        depth_plane: 0,
+        level: u32::MIN,
+        slice: u32::MIN,
+        depth_plane: u32::MIN,
         load_action: LoadAction::Clear,
         store_action: StoreAction::Store,
         clear_color: [0.0; 4],
@@ -294,7 +340,7 @@ fn pass<M: Metal>(texture: &M::Texture) -> RenderPassDescriptor<'_, M> {
         visibility_result_buffer: None,
         render_target_width: TARGET_SIDE,
         render_target_height: TARGET_SIDE,
-        default_raster_sample_count: 1,
+        default_raster_sample_count: SINGLE,
     }
 }
 
@@ -310,7 +356,7 @@ fn covering_draw<M: Metal>(
         RenderCommand::SetDepthStencilState(depth_stencil.clone()),
         RenderCommand::SetVertexBuffer {
             buffer: vertices.clone(),
-            offset: 0,
+            offset: u64::MIN,
             length: COVERING_BYTES,
             index: VERTICES,
         },
@@ -323,8 +369,8 @@ fn covering_draw<M: Metal>(
             zfar: 1.0,
         }]),
         RenderCommand::SetScissorRects(vec![ScissorRect {
-            x: 0,
-            y: 0,
+            x: u32::MIN,
+            y: u32::MIN,
             width: TARGET_SIDE,
             height: TARGET_SIDE,
         }]),
@@ -332,10 +378,10 @@ fn covering_draw<M: Metal>(
     commands.extend(bindings);
     commands.push(RenderCommand::DrawPrimitives {
         primitive_type: PrimitiveType::Triangle,
-        vertex_start: 0,
-        vertex_count: 3,
-        instance_count: 1,
-        base_instance: 0,
+        vertex_start: u32::MIN,
+        vertex_count: TRIANGLE_VERTICES,
+        instance_count: SINGLE,
+        base_instance: u32::MIN,
     });
     commands
 }
@@ -349,7 +395,7 @@ fn no_depth<M: Metal>(subject: &mut M) -> M::DepthStencilState {
             front_face_stencil: None,
             back_face_stencil: None,
         })
-        .expect("make_depth_stencil_state")
+        .expect("Metal answers make depth stencil state")
 }
 
 /// Checks that the device has a name.
@@ -363,13 +409,13 @@ pub fn writes_and_reads_buffer_contents<M: Metal>(mut subject: M) {
     let buffer = filled(&mut subject, &bytes);
     subject
         .write_contents(&buffer, 3, &[1, 2, 3])
-        .expect("write_contents");
+        .expect("Metal answers write contents");
     let mut expected = bytes.clone();
     expected[3..6].copy_from_slice(&[1, 2, 3]);
     let mut read = vec![0; 64];
     subject
         .read_contents(&buffer, 0, &mut read)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     assert_eq!(read, expected);
     assert_eq!(
         subject.write_contents(&buffer, 62, &[0; 3]),
@@ -384,7 +430,9 @@ pub fn writes_and_reads_buffer_contents<M: Metal>(mut subject: M) {
 /// Checks that a buffer an uncommitted command buffer uses is refused to the CPU, and a command buffer committed twice.
 pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut subject: M) {
     let buffer = filled(&mut subject, &pattern(16));
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     assert_eq!(
         subject.wait_until_completed(&command_buffer),
         Err(WaitUntilCompletedError::NotCommitted)
@@ -394,12 +442,12 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
             &command_buffer,
             &[BlitCommand::FillBuffer {
                 buffer: buffer.clone(),
-                offset: 0,
+                offset: u64::MIN,
                 length: 4,
                 value: 9,
             }],
         )
-        .expect("encode_blit_commands");
+        .expect("Metal answers encode blit commands");
     assert_eq!(
         subject.write_contents(&buffer, 0, &[0]),
         Err(WriteContentsError::UsedByUncommittedWork)
@@ -412,29 +460,31 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
     let mut read = [0; 4];
     subject
         .read_contents(&buffer, 0, &mut read)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     assert_eq!(read, [9; 4]);
 }
 
 /// Checks that a buffer whose only user was a command buffer dropped uncommitted is the CPU's again.
 pub fn frees_a_buffer_whose_command_buffer_was_dropped<M: Metal>(mut subject: M) {
     let buffer = filled(&mut subject, &pattern(COLOR_BYTES as usize));
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     subject
         .encode_blit_commands(
             &command_buffer,
             &[BlitCommand::FillBuffer {
                 buffer: buffer.clone(),
-                offset: 0,
+                offset: u64::MIN,
                 length: COLOR_BYTES,
-                value: 1,
+                value: FILL_BYTE,
             }],
         )
-        .expect("encode_blit_commands");
+        .expect("Metal answers encode blit commands");
     drop(command_buffer);
     subject
         .write_contents(&buffer, 0, &[0; COLOR_BYTES as usize])
-        .expect("write_contents");
+        .expect("Metal answers write contents");
 }
 
 /// Checks that copies between buffers and a texture, and a fill, move exactly the bytes they name.
@@ -444,25 +494,27 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
     let source = filled(&mut subject, &bytes);
     let texture = target(&mut subject);
     let copy = filled(&mut subject, &[0; 32]);
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     subject
         .encode_blit_commands(
             &command_buffer,
             &[
                 BlitCommand::CopyFromBufferToTexture {
                     source_buffer: source.clone(),
-                    source_offset: 0,
+                    source_offset: u64::MIN,
                     source_bytes_per_row: row,
                     source_bytes_per_image: row * u64::from(TARGET_SIDE),
                     source_size: Size {
                         width: TARGET_SIDE,
                         height: TARGET_SIDE,
-                        depth: 1,
+                        depth: SINGLE,
                     },
                     destination_texture: texture.clone(),
-                    destination_slice: 0,
-                    destination_level: 0,
-                    destination_origin: Origin { x: 0, y: 0, z: 0 },
+                    destination_slice: u32::MIN,
+                    destination_level: u32::MIN,
+                    destination_origin: Origin::default(),
                     options: BlitOption::None,
                 },
                 BlitCommand::CopyFromBufferToBuffer {
@@ -480,7 +532,7 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
                 },
             ],
         )
-        .expect("encode_blit_commands");
+        .expect("Metal answers encode blit commands");
     finish(&mut subject, &command_buffer);
     assert_eq!(read_texture(&mut subject, &texture), bytes);
     let mut expected = vec![0; 32];
@@ -489,13 +541,13 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
     let mut read = vec![0; 32];
     subject
         .read_contents(&copy, 0, &mut read)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     assert_eq!(read, expected);
 }
 
 /// Checks that a triangle drawn in a uniform's color covers the target, and a draw missing its uniform is refused.
 pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let depth_stencil = no_depth(&mut subject);
     let vertices = filled(
         &mut subject,
@@ -512,7 +564,9 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
             .collect::<Vec<u8>>(),
     );
     let texture = target(&mut subject);
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     let missing = covering_draw(&state, &vertices, &depth_stencil, Vec::new());
     assert!(matches!(
         subject.encode_render_commands(&command_buffer, &pass(&texture), &missing),
@@ -520,14 +574,14 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
     ));
     let bound = vec![RenderCommand::SetFragmentBuffer {
         buffer: color,
-        offset: 0,
+        offset: u64::MIN,
         length: COLOR_BYTES,
-        index: 0,
+        index: u32::MIN,
     }];
     let commands = covering_draw(&state, &vertices, &depth_stencil, bound);
     subject
         .encode_render_commands(&command_buffer, &pass(&texture), &commands)
-        .expect("encode_render_commands");
+        .expect("Metal answers encode render commands");
     finish(&mut subject, &command_buffer);
     assert_eq!(
         read_texture(&mut subject, &texture),
@@ -547,13 +601,13 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
             &TextureViewDescriptor {
                 pixel_format: PixelFormat::Rgba8Unorm,
                 texture_type: TextureType::Type2D,
-                first_level: 0,
-                level_count: 1,
-                first_slice: 0,
-                slice_count: 1,
+                first_level: u32::MIN,
+                level_count: SINGLE,
+                first_slice: u32::MIN,
+                slice_count: SINGLE,
             },
         )
-        .expect("make_texture_view");
+        .expect("Metal answers make texture view");
     let sampler = subject
         .make_sampler_state(&SamplerDescriptor {
             min_filter: SamplerMinMagFilter::Nearest,
@@ -565,11 +619,11 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
             border_color: SamplerBorderColor::TransparentBlack,
             lod_min_clamp: 0.0,
             lod_max_clamp: 0.0,
-            max_anisotropy: 1,
+            max_anisotropy: SINGLE,
             compare_function: None,
         })
-        .expect("make_sampler_state");
-    let state = pipeline(&mut subject, "sampled");
+        .expect("Metal answers make sampler state");
+    let state = pipeline(&mut subject, SAMPLED);
     let depth_stencil = no_depth(&mut subject);
     let vertices = filled(
         &mut subject,
@@ -579,39 +633,44 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
             .collect::<Vec<u8>>(),
     );
     let drawn = target(&mut subject);
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     subject
         .encode_blit_commands(
             &command_buffer,
             &[BlitCommand::CopyFromBufferToTexture {
                 source_buffer: source,
-                source_offset: 0,
+                source_offset: u64::MIN,
                 source_bytes_per_row: row,
                 source_bytes_per_image: row * u64::from(TARGET_SIDE),
                 source_size: Size {
                     width: TARGET_SIDE,
                     height: TARGET_SIDE,
-                    depth: 1,
+                    depth: SINGLE,
                 },
                 destination_texture: texture,
-                destination_slice: 0,
-                destination_level: 0,
-                destination_origin: Origin { x: 0, y: 0, z: 0 },
+                destination_slice: u32::MIN,
+                destination_level: u32::MIN,
+                destination_origin: Origin::default(),
                 options: BlitOption::None,
             }],
         )
-        .expect("encode_blit_commands");
+        .expect("Metal answers encode blit commands");
     let bound = vec![
         RenderCommand::SetFragmentTexture {
             texture: view,
-            index: 0,
+            index: u32::MIN,
         },
-        RenderCommand::SetFragmentSamplerState { sampler, index: 0 },
+        RenderCommand::SetFragmentSamplerState {
+            sampler,
+            index: u32::MIN,
+        },
     ];
     let commands = covering_draw(&state, &vertices, &depth_stencil, bound);
     subject
         .encode_render_commands(&command_buffer, &pass(&drawn), &commands)
-        .expect("encode_render_commands");
+        .expect("Metal answers encode render commands");
     finish(&mut subject, &command_buffer);
     assert_eq!(read_texture(&mut subject, &drawn), bytes);
 }
@@ -626,11 +685,13 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
             .flat_map(|w| w.to_le_bytes())
             .collect::<Vec<u8>>(),
     );
-    let compute = function(&mut subject, naga::ShaderStage::Compute, "double");
+    let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
     let state = subject
         .make_compute_pipeline_state(&compute)
-        .expect("make_compute_pipeline_state");
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        .expect("Metal answers make compute pipeline state");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     subject
         .encode_compute_commands(
             &command_buffer,
@@ -638,23 +699,23 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
                 ComputeCommand::SetComputePipelineState(state),
                 ComputeCommand::SetBuffer {
                     buffer: buffer.clone(),
-                    offset: 0,
+                    offset: u64::MIN,
                     length: WORDS_BYTES,
-                    index: 1,
+                    index: WORDS_SLOT,
                 },
                 ComputeCommand::DispatchThreadgroups(Size {
                     width: 2,
-                    height: 1,
-                    depth: 1,
+                    height: SINGLE,
+                    depth: SINGLE,
                 }),
             ],
         )
-        .expect("encode_compute_commands");
+        .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
     let mut read = vec![0; 32];
     subject
         .read_contents(&buffer, 0, &mut read)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     let doubled: Vec<u8> = words.iter().flat_map(|w| (w * 2).to_le_bytes()).collect();
     assert_eq!(read, doubled);
 }
@@ -669,11 +730,13 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
             .flat_map(|w| w.to_le_bytes())
             .collect::<Vec<u8>>(),
     );
-    let compute = function(&mut subject, naga::ShaderStage::Compute, "sum");
+    let compute = function(&mut subject, naga::ShaderStage::Compute, SUM);
     let state = subject
         .make_compute_pipeline_state(&compute)
-        .expect("make_compute_pipeline_state");
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        .expect("Metal answers make compute pipeline state");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     subject
         .encode_compute_commands(
             &command_buffer,
@@ -681,23 +744,23 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
                 ComputeCommand::SetComputePipelineState(state),
                 ComputeCommand::SetBuffer {
                     buffer: buffer.clone(),
-                    offset: 0,
+                    offset: u64::MIN,
                     length: WORDS_BYTES,
-                    index: 1,
+                    index: WORDS_SLOT,
                 },
                 ComputeCommand::DispatchThreadgroups(Size {
-                    width: 1,
-                    height: 1,
-                    depth: 1,
+                    width: SINGLE,
+                    height: SINGLE,
+                    depth: SINGLE,
                 }),
             ],
         )
-        .expect("encode_compute_commands");
+        .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
     let mut read = [0; 4];
     subject
         .read_contents(&buffer, 16, &mut read)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     assert_eq!(u32::from_le_bytes(read), 1 + 2 + 3 + 4);
 }
 
@@ -749,10 +812,10 @@ fn described(texture_type: TextureType, pixel_format: PixelFormat) -> TextureDes
         pixel_format,
         width: TARGET_SIDE,
         height: TARGET_SIDE,
-        depth: 1,
-        mipmap_level_count: 1,
+        depth: SINGLE,
+        mipmap_level_count: SINGLE,
         sample_count: if multisampled { SAMPLES } else { 1 },
-        array_length: 1,
+        array_length: SINGLE,
         usage: TextureUsage {
             shader_read: true,
             shader_write: false,
@@ -772,7 +835,9 @@ fn refuses_texture<M: Metal>(subject: &mut M, descriptor: TextureDescriptor) {
 
 /// Makes a texture of `descriptor`.
 fn made<M: Metal>(subject: &mut M, descriptor: TextureDescriptor) -> M::Texture {
-    subject.make_texture(&descriptor).expect("make_texture")
+    subject
+        .make_texture(&descriptor)
+        .expect("Metal answers make texture")
 }
 
 /// Returns a pipeline descriptor drawing `fragment` into a color of `format`, blended or not, with depth and stencil.
@@ -803,7 +868,7 @@ fn pipeline_descriptor<'a, M: Metal>(
         color_attachments,
         depth_attachment_pixel_format: depth,
         stencil_attachment_pixel_format: stencil,
-        raster_sample_count: 1,
+        raster_sample_count: SINGLE,
         alpha_to_coverage_enabled: false,
         rasterization_enabled: true,
         input_primitive_topology: PrimitiveTopologyClass::Triangle,
@@ -818,7 +883,7 @@ fn refuses_pipeline<M: Metal>(
     depth: Option<PixelFormat>,
     stencil: Option<PixelFormat>,
 ) {
-    let vertex = function(subject, naga::ShaderStage::Vertex, "vs");
+    let vertex = function(subject, naga::ShaderStage::Vertex, VERTEX);
     let fragment = function(subject, naga::ShaderStage::Fragment, fragment);
     let descriptor = pipeline_descriptor::<M>(&vertex, &fragment, color, depth, stencil);
     assert!(matches!(
@@ -845,13 +910,15 @@ fn refuses_draw<M: Metal>(
     let color = filled(subject, &[0; COLOR_BYTES as usize]);
     let mut bindings = vec![RenderCommand::SetFragmentBuffer {
         buffer: color,
-        offset: 0,
+        offset: u64::MIN,
         length: COLOR_BYTES,
-        index: 0,
+        index: u32::MIN,
     }];
     bindings.extend(commands);
     let commands = covering_draw(state, &vertices, &depth_stencil, bindings);
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     assert!(
         subject
             .encode_render_commands(&command_buffer, pass, &commands)
@@ -873,7 +940,9 @@ fn counting_stencil() -> StencilDescriptor {
 
 /// Checks that one copy or fill is refused.
 fn refuses_blit<M: Metal>(subject: &mut M, command: BlitCommand<M>) {
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     assert!(matches!(
         subject.encode_blit_commands(&command_buffer, &[command]),
         Err(EncodeBlitCommandsError::Invalid(_))
@@ -929,10 +998,10 @@ pub fn refuses_a_stencil_view_of_a_texture_not_made_for_views<M: Metal>(mut subj
                 &TextureViewDescriptor {
                     pixel_format: PixelFormat::X32Stencil8,
                     texture_type: TextureType::Type2D,
-                    first_level: 0,
-                    level_count: 1,
-                    first_slice: 0,
-                    slice_count: 1,
+                    first_level: u32::MIN,
+                    level_count: SINGLE,
+                    first_slice: u32::MIN,
+                    slice_count: SINGLE,
                 },
             )
             .is_err()
@@ -943,7 +1012,7 @@ pub fn refuses_a_stencil_view_of_a_texture_not_made_for_views<M: Metal>(mut subj
 pub fn refuses_a_pipeline_drawing_into_a_compressed_format<M: Metal>(mut subject: M) {
     refuses_pipeline(
         &mut subject,
-        "flat",
+        FLAT,
         Some((PixelFormat::Bc1Rgba, None)),
         None,
         None,
@@ -962,7 +1031,7 @@ pub fn refuses_a_pipeline_blending_an_integer_format<M: Metal>(mut subject: M) {
     };
     refuses_pipeline(
         &mut subject,
-        "whole",
+        WHOLE,
         Some((PixelFormat::Rgba8Uint, Some(blending))),
         None,
         None,
@@ -973,7 +1042,7 @@ pub fn refuses_a_pipeline_blending_an_integer_format<M: Metal>(mut subject: M) {
 pub fn refuses_a_pipeline_of_mismatched_depth_and_stencil<M: Metal>(mut subject: M) {
     refuses_pipeline(
         &mut subject,
-        "flat",
+        FLAT,
         Some((PixelFormat::Rgba8Unorm, None)),
         Some(PixelFormat::Depth32FloatStencil8),
         Some(PixelFormat::Stencil8),
@@ -986,7 +1055,9 @@ pub fn refuses_a_pass_drawing_into_a_compressed_texture<M: Metal>(mut subject: M
         &mut subject,
         described(TextureType::Type2D, PixelFormat::Bc1Rgba),
     );
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     assert!(
         subject
             .encode_render_commands(&command_buffer, &pass(&texture), &[])
@@ -1004,13 +1075,15 @@ pub fn refuses_a_depth_clear_outside_zero_to_one<M: Metal>(mut subject: M) {
     let mut descriptor = pass(&color);
     descriptor.depth_attachment = Some(RenderPassDepthStencilAttachment {
         texture: &depth,
-        level: 0,
-        slice: 0,
+        level: u32::MIN,
+        slice: u32::MIN,
         load_action: LoadAction::Clear,
         store_action: StoreAction::Store,
         clear_value: 2.0,
     });
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     assert!(
         subject
             .encode_render_commands(&command_buffer, &descriptor, &[])
@@ -1033,13 +1106,15 @@ pub fn refuses_a_resolve_metal_does_not_make<M: Metal>(mut subject: M) {
         if let Some(attachment) = descriptor.color_attachments[0].as_mut() {
             attachment.resolve = Some(ResolveTarget {
                 texture: &resolved,
-                level: 0,
-                slice: 0,
-                depth_plane: 0,
+                level: u32::MIN,
+                slice: u32::MIN,
+                depth_plane: u32::MIN,
             });
         }
         descriptor.default_raster_sample_count = SAMPLES;
-        let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
         assert!(
             subject
                 .encode_render_commands(&command_buffer, &descriptor, &[])
@@ -1050,7 +1125,7 @@ pub fn refuses_a_resolve_metal_does_not_make<M: Metal>(mut subject: M) {
 
 /// Checks that a viewport that is not finite is refused, which Metal's validation stops.
 pub fn refuses_a_viewport_that_is_not_finite<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     let viewport = Viewport {
         origin_x: f64::NAN,
@@ -1070,40 +1145,40 @@ pub fn refuses_a_viewport_that_is_not_finite<M: Metal>(mut subject: M) {
 
 /// Checks that a uniform at an offset not a multiple of its alignment is refused, which Metal's validation stops.
 pub fn refuses_a_uniform_at_a_misaligned_offset<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     let color = filled(&mut subject, &[0; (COLOR_BYTES * 2) as usize]);
     let bound = RenderCommand::SetFragmentBuffer {
         buffer: color,
         offset: MISALIGNED_UNIFORM,
         length: COLOR_BYTES,
-        index: 0,
+        index: u32::MIN,
     };
     refuses_draw(&mut subject, &pass(&texture), &state, vec![bound]);
 }
 
 /// Checks that draws of no instances and of no indices are refused, which Metal's validation stops.
 pub fn refuses_draws_of_no_instances_or_indices<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     let indices = filled(&mut subject, &[0; COVERING_BYTES as usize]);
     for draw in [
         RenderCommand::DrawPrimitives {
             primitive_type: PrimitiveType::Triangle,
-            vertex_start: 0,
-            vertex_count: 3,
-            instance_count: 0,
-            base_instance: 0,
+            vertex_start: u32::MIN,
+            vertex_count: TRIANGLE_VERTICES,
+            instance_count: u32::MIN,
+            base_instance: u32::MIN,
         },
         RenderCommand::DrawIndexedPrimitives {
             primitive_type: PrimitiveType::Triangle,
-            index_count: 0,
+            index_count: u32::MIN,
             index_type: IndexType::UInt16,
             index_buffer: indices,
-            index_buffer_offset: 0,
-            instance_count: 1,
-            base_vertex: 0,
-            base_instance: 0,
+            index_buffer_offset: u64::MIN,
+            instance_count: SINGLE,
+            base_vertex: i32::default(),
+            base_instance: u32::MIN,
         },
     ] {
         refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
@@ -1112,7 +1187,7 @@ pub fn refuses_draws_of_no_instances_or_indices<M: Metal>(mut subject: M) {
 
 /// Checks that a texture not made to be read by functions is refused to one, which Metal's validation stops.
 pub fn refuses_a_texture_not_made_to_be_read<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "sampled");
+    let state = pipeline(&mut subject, SAMPLED);
     let drawn = target(&mut subject);
     let mut descriptor = described(TextureType::Type2D, PixelFormat::Rgba8Unorm);
     descriptor.usage.shader_read = false;
@@ -1128,27 +1203,30 @@ pub fn refuses_a_texture_not_made_to_be_read<M: Metal>(mut subject: M) {
             border_color: SamplerBorderColor::TransparentBlack,
             lod_min_clamp: 0.0,
             lod_max_clamp: 0.0,
-            max_anisotropy: 1,
+            max_anisotropy: SINGLE,
             compare_function: None,
         })
-        .expect("make_sampler_state");
+        .expect("Metal answers make sampler state");
     let bound = vec![
         RenderCommand::SetFragmentTexture {
             texture: unread,
-            index: 0,
+            index: u32::MIN,
         },
-        RenderCommand::SetFragmentSamplerState { sampler, index: 0 },
+        RenderCommand::SetFragmentSamplerState {
+            sampler,
+            index: u32::MIN,
+        },
     ];
     refuses_draw(&mut subject, &pass(&drawn), &state, bound);
 }
 
 /// Checks that counting past the visibility result buffer's span is refused, which Metal's validation stops.
 pub fn refuses_a_visibility_offset_past_the_span<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     let results = subject
         .make_buffer(BEYOND_VISIBILITY_SPAN * 2)
-        .expect("make_buffer");
+        .expect("Metal answers make buffer");
     let mut descriptor = pass(&texture);
     descriptor.visibility_result_buffer = Some(&results);
     let counting = RenderCommand::SetVisibilityResultMode {
@@ -1160,7 +1238,7 @@ pub fn refuses_a_visibility_offset_past_the_span<M: Metal>(mut subject: M) {
 
 /// Checks that depth and stencil tests in a pass without those attachments are refused, which Metal's validation stops.
 pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     for descriptor in [
         DepthStencilDescriptor {
@@ -1178,7 +1256,7 @@ pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject
     ] {
         let tests = subject
             .make_depth_stencil_state(&descriptor)
-            .expect("make_depth_stencil_state");
+            .expect("Metal answers make depth stencil state");
         refuses_draw(
             &mut subject,
             &pass(&texture),
@@ -1191,25 +1269,30 @@ pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject
 /// Checks that an empty dispatch and words at a misaligned offset are refused, which Metal's validation stops.
 pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
     let words = filled(&mut subject, &[0; (WORDS_BYTES * 2) as usize]);
-    let compute = function(&mut subject, naga::ShaderStage::Compute, "double");
+    let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
     let state = subject
         .make_compute_pipeline_state(&compute)
-        .expect("make_compute_pipeline_state");
+        .expect("Metal answers make compute pipeline state");
     let one = Size {
-        width: 1,
-        height: 1,
-        depth: 1,
+        width: SINGLE,
+        height: SINGLE,
+        depth: SINGLE,
     };
-    let none = Size { width: 0, ..one };
+    let none = Size {
+        width: u32::MIN,
+        ..one
+    };
     for (offset, groups) in [(0, none), (MISALIGNED_WORDS, one)] {
-        let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
         let commands = [
             ComputeCommand::SetComputePipelineState(state.clone()),
             ComputeCommand::SetBuffer {
                 buffer: words.clone(),
                 offset,
                 length: WORDS_BYTES,
-                index: 1,
+                index: WORDS_SLOT,
             },
             ComputeCommand::DispatchThreadgroups(groups),
         ];
@@ -1234,13 +1317,13 @@ pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject
         buffer: buffer.clone(),
         offset,
         length,
-        value: 1,
+        value: FILL_BYTE,
     };
     for command in [
-        copy(0, RGBA8_BYTES * 2, 0),
+        copy(u64::MIN, RGBA8_BYTES * 2, u64::MIN),
         copy(1, RGBA8_BYTES * 2, RGBA8_BYTES),
         copy(0, RGBA8_BYTES * 2, 3),
-        fill(0, 0),
+        fill(u64::MIN, u64::MIN),
         fill(1, RGBA8_BYTES),
         fill(0, 3),
     ] {
@@ -1251,22 +1334,24 @@ pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject
 /// Checks that image pitches shorter than an image and row pitches past the longest row are refused, as Metal asks.
 pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
     let texture = target(&mut subject);
-    let buffer = subject.make_buffer(BEYOND_ROW * 2).expect("make_buffer");
+    let buffer = subject
+        .make_buffer(BEYOND_ROW * 2)
+        .expect("Metal answers make buffer");
     let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
     let copy = |bytes_per_row, bytes_per_image, height| BlitCommand::CopyFromBufferToTexture {
         source_buffer: buffer.clone(),
-        source_offset: 0,
+        source_offset: u64::MIN,
         source_bytes_per_row: bytes_per_row,
         source_bytes_per_image: bytes_per_image,
         source_size: Size {
             width: TARGET_SIDE,
             height,
-            depth: 1,
+            depth: SINGLE,
         },
         destination_texture: texture.clone(),
-        destination_slice: 0,
-        destination_level: 0,
-        destination_origin: Origin { x: 0, y: 0, z: 0 },
+        destination_slice: u32::MIN,
+        destination_level: u32::MIN,
+        destination_origin: Origin::default(),
         options: BlitOption::None,
     };
     refuses_blit(&mut subject, copy(row, RGBA8_BYTES, TARGET_SIDE));
@@ -1284,32 +1369,35 @@ pub fn refuses_a_copy_between_texture_formats_that_differ<M: Metal>(mut subject:
         &mut subject,
         BlitCommand::CopyFromTextureToTexture {
             source_texture: linear,
-            source_slice: 0,
-            source_level: 0,
-            source_origin: Origin { x: 0, y: 0, z: 0 },
+            source_slice: u32::MIN,
+            source_level: u32::MIN,
+            source_origin: Origin::default(),
             source_size: Size {
                 width: TARGET_SIDE,
                 height: TARGET_SIDE,
-                depth: 1,
+                depth: SINGLE,
             },
             destination_texture: srgb,
-            destination_slice: 0,
-            destination_level: 0,
-            destination_origin: Origin { x: 0, y: 0, z: 0 },
+            destination_slice: u32::MIN,
+            destination_level: u32::MIN,
+            destination_origin: Origin::default(),
         },
     );
 }
 
 /// Checks that counting twice at one offset in a pass is refused, which Metal's validation stops.
 pub fn refuses_counting_twice_at_one_offset<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     let results = subject
         .make_buffer(VISIBILITY_RESULT_BYTES)
-        .expect("make_buffer");
+        .expect("Metal answers make buffer");
     let mut descriptor = pass(&texture);
     descriptor.visibility_result_buffer = Some(&results);
-    let count = |mode| RenderCommand::SetVisibilityResultMode { mode, offset: 0 };
+    let count = |mode| RenderCommand::SetVisibilityResultMode {
+        mode,
+        offset: u64::MIN,
+    };
     let commands = vec![
         count(VisibilityResultMode::Counting),
         count(VisibilityResultMode::Disabled),
@@ -1320,7 +1408,7 @@ pub fn refuses_counting_twice_at_one_offset<M: Metal>(mut subject: M) {
 
 /// Checks that occlusion counts add up across passes: one sample for each covered pixel in each.
 pub fn adds_occlusion_counts_across_passes<M: Metal>(mut subject: M) {
-    let state = pipeline(&mut subject, "flat");
+    let state = pipeline(&mut subject, FLAT);
     let depth_stencil = no_depth(&mut subject);
     let vertices = covering(&mut subject);
     let color = filled(&mut subject, &[0; COLOR_BYTES as usize]);
@@ -1331,27 +1419,29 @@ pub fn adds_occlusion_counts_across_passes<M: Metal>(mut subject: M) {
     let bindings = vec![
         RenderCommand::SetFragmentBuffer {
             buffer: color,
-            offset: 0,
+            offset: u64::MIN,
             length: COLOR_BYTES,
-            index: 0,
+            index: u32::MIN,
         },
         RenderCommand::SetVisibilityResultMode {
             mode: VisibilityResultMode::Counting,
-            offset: 0,
+            offset: u64::MIN,
         },
     ];
     let commands = covering_draw(&state, &vertices, &depth_stencil, bindings);
-    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
     for _ in 0..2 {
         subject
             .encode_render_commands(&command_buffer, &descriptor, &commands)
-            .expect("encode_render_commands");
+            .expect("Metal answers encode render commands");
     }
     finish(&mut subject, &command_buffer);
     let mut read = [0; VISIBILITY_RESULT_BYTES as usize];
     subject
         .read_contents(&results, 0, &mut read)
-        .expect("read_contents");
+        .expect("Metal answers read contents");
     assert_eq!(
         u64::from_le_bytes(read),
         u64::from(2 * TARGET_SIDE * TARGET_SIDE)

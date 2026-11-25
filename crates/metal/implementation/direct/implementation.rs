@@ -669,11 +669,8 @@ impl Metal for DirectMetal {
             pixel_format: d.pixel_format,
             width: size(t.width),
             height: size(t.height),
-            depth: if t.texture_type == TextureType::Type3D {
-                size(t.depth)
-            } else {
-                1
-            },
+            // Only a 3D texture is deeper than one, and only its levels halve the depth.
+            depth: size(t.depth),
             levels: d.level_count,
             slices: d.slice_count,
             sample_count: t.sample_count,
@@ -2235,14 +2232,11 @@ fn check_region(
     if level >= t.levels || slice >= t.slices {
         return Err("a level or slice outside the texture");
     }
+    // Only a 3D texture is deeper than one.
     let (w, h, d) = (
         (t.width >> level).max(1),
         (t.height >> level).max(1),
-        if t.texture_type == TextureType::Type3D {
-            (t.depth >> level).max(1)
-        } else {
-            1
-        },
+        (t.depth >> level).max(1),
     );
     let fits = |at: u32, n: u32, most: u32| at.checked_add(n).is_some_and(|end| end <= most);
     // A region may end at the level's edge inside a block, which counts as whole.

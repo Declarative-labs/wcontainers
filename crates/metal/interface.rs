@@ -656,7 +656,7 @@ pub struct RenderPassColorAttachment<'a, M: Metal + ?Sized> {
     pub load_action: LoadAction,
     pub store_action: StoreAction,
     /// The color `LoadAction::Clear` writes, converted to the attachment's format.
-    pub clear_color: [f64; 4],
+    pub clear_color: [f64; CHANNELS],
     pub resolve: Option<ResolveTarget<'a, M>>,
 }
 
@@ -674,6 +674,11 @@ pub enum StoreAction {
     DontCare,
     Store,
 }
+
+/// The channels of a clear color and a blend color: red, green, blue and alpha.
+///
+/// https://developer.apple.com/documentation/metal/mtlclearcolor
+pub const CHANNELS: usize = 4;
 
 /// The texture a multisampled attachment is resolved into when its pass ends.
 #[derive(Debug)]
@@ -750,7 +755,7 @@ pub enum RenderCommand<M: Metal + ?Sized> {
         slope_scale: f32,
         clamp: f32,
     },
-    SetBlendColor([f32; 4]),
+    SetBlendColor([f32; CHANNELS]),
     SetStencilReferenceValues {
         front: u32,
         back: u32,
@@ -1087,6 +1092,11 @@ pub const MAX_BUFFER_SLOTS: u32 = 31;
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 pub const MAX_SAMPLER_SLOTS: u32 = 16;
 
+/// The longest side of a 2D, cube or multisampled texture on the GPUs that make the longest, those of the Apple10 family.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_TEXTURE_SIDE: u32 = 32_768;
+
 /// The most texture slots one stage reads.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
@@ -1096,11 +1106,6 @@ pub const MAX_TEXTURE_SLOTS: u32 = 128;
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 pub const MAX_VIEWPORTS: usize = 16;
-
-/// The longest side of a 2D, cube or multisampled texture on the GPUs that make the longest, those of the Apple10 family.
-///
-/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-pub const MAX_TEXTURE_SIDE: u32 = 32_768;
 
 /// The bytes of one occlusion count in a visibility result buffer.
 ///
