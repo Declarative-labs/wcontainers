@@ -800,7 +800,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             .map_err(|_| {
                 GpuError::Invalid("a view this implementation does not make of its texture")
             })?;
-        let size = |n: u32| (n >> desc.base_mip).max(1);
+        let size = |n: u32| n.checked_shr(desc.base_mip).unwrap_or(u32::MIN).max(1);
         Ok(Shared(Rc::new(ViewObj {
             raw,
             format: desc.format,
