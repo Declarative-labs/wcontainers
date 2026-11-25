@@ -159,7 +159,7 @@ kept, carry, lib tests pass.
   does. So the kernel test's count of memory faults differs there (8 against 10). Which one the defined machine does
   is yours: routing `dc cvau` (decision 14's way) would make the native output the WebAssembly output's on every host.
   That change is not this track's: the guest crate routes every cache clean as a copy (`I::CleanCache` gives
-  `Route::Copy` in crates/wcontainers-arm64/src/native.rs). The test is left failing on that machine.
+  `Route::Copy` in crates/arm64/src/native.rs). The test is left failing on that machine.
 - The speed bar's compute part fails on the Neoverse V2, +24.12% [+23.75 .. +24.47] against +21.2% (the Mac's last
   bar +20.09%). It is the translated code on that core, not KVM: the untranslated run in the same machine costs about
   1% (matrix 7.8%), and the workloads that cost more there are others than on the M5 (interpret +36.8% against

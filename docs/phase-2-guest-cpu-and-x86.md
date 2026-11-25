@@ -967,7 +967,7 @@ stack fault exit (section 6) and the tests into `Stop::StackFault` (section 7.2)
 
 ### 3.3 The Emitter
 
-Today's `Emitter` (crates/wcontainers-arm64/src/meaning.rs) becomes `Emitter<G: Guest>`, with the same methods
+Today's `Emitter` (crates/arm64/src/meaning.rs) becomes `Emitter<G: Guest>`, with the same methods
 over the guest's types: `get(G::Reg)`, `set(G::Reg)`, `get_vector(G::Vector)`, `set_vector`,
 `set_flags(G::Flags)`, `flag(G::Flag)`, `get_control(G::Control)`, `set_control`, `hook(G::Hook)`, `host() ->
 G::Host`, `offer() -> G::Offer` (new: the meanings of CPUID, `xgetbv` and every instruction of the AVX setting
@@ -1622,7 +1622,7 @@ Tests (section 7 gives the detail):
   it, where iced counts one), and counts other makers' instructions by Intel's map (3DNow's `0F 0F` counts
   nothing after it, XOP's `8F` a ModRM, SSE4a's `66 0F 78` a ModRM and no immediates; seen at X3). The table
   was made at X3 from a sweep on the reference (`x86-lengths` in the test crate, its output
-  `crates/wcontainers-x86/tests/lengths.txt`): every opcode of the one-byte, 0F, 0F38 and 0F3A maps, alone
+  `crates/x86/tests/lengths.txt`): every opcode of the one-byte, 0F, 0F38 and 0F3A maps, alone
   and after 66, REX.W, 67, F2 and F3; every opcode after a two-byte VEX prefix, a three-byte one with each
   of the 32 values of its map field (W and pp varied for the first four), an EVEX one with each of the 8
   values of its map bits (W, pp, the bits that must be 1 and 0, and R and X varied for the first four), XOP's
@@ -2842,7 +2842,7 @@ signal section 6 gives it (128 + 8 for SIGFPE); a breakpoint's `si_code` comes f
 its detail. A memory fault maps through `G::memory_fault`: `Page` to `MemoryFault(address)`,
 `GeneralProtection` to `GeneralProtection` (128 + 11) and `Stack` to `StackFault` (128 + 7, SIGBUS).
 
-The reference runner (crates/wcontainers-translator-test/reference) is one program built for
+The reference runner (crates/translator-test/reference) is one program built for
 `G::RUST_TARGET`; its per-CPU part is a module chosen by `cfg(target_arch)` (`reference/src/aarch64.rs`,
 `reference/src/x86_64.rs`) implementing:
 
@@ -3203,7 +3203,7 @@ Measured throughout, recorded with machine and load: translation speed, output s
   benchmark set (the whole program and each workload) and all nine real binaries of M5, in both settings,
   at every look-ahead (none, bounded 1, 17, 64, 256 and 4096, full; a binary also from each kind of start
   alone at full and bounded 256), and the thread module too, by one command kept in the repository:
-  `crates/wcontainers-translator-test/same-output.sh <commit>`, which builds the earlier commit from its own
+  `crates/translator-test/same-output.sh <commit>`, which builds the earlier commit from its own
   copy and has `tests/output.rs` on both sides write every module's length and BLAKE3 hash, then compares
   the lists with `cmp` (added as its own commit before any interface change, so the "before" exists; both
   sides run the current tree's `tests/output.rs`); the whole test suite of the interface, ARM64, translator

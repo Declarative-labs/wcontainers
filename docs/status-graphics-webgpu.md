@@ -1,7 +1,7 @@
 # Graphics: the WebGPU back end (G2, G2b, G2c)
 
 Branch phase-2-graphics-webgpu. The plan is docs/phase-2-graphics.md (sections 4, 5.7 and 12, G2).
-Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
+Crate: crates/gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
@@ -1371,7 +1371,7 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 
 ## How another track builds and uses the back end
 
-- Depend on it: `wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }` (and `wgpu =
+- Depend on it: `wcontainers-gpu-webgpu = { path = "../gpu-webgpu" }` (and `wgpu =
   "30.0.2"` to make the device). It builds natively (Windows: Direct3D 12 and Vulkan; Mac: Metal)
   and for `wasm32-unknown-unknown` (the browser's WebGPU).
 - Make the wgpu instance with `desc.flags |= WebGpu::INSTANCE_FLAGS` (wgpu's
@@ -1388,7 +1388,7 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   features the back end uses where present, and the adapter's highest limits), then
   `WebGpu::new(&adapter, device, queue)`. `WebGpu` is the `B` of `Device<B: Backend>`. The whole
   pattern, with an adapter that must be a GPU, is `device()` in
-  crates/wcontainers-gpu-webgpu/examples/scenes/draw.rs, which also shows a draw end to end
+  crates/gpu-webgpu/examples/scenes/draw.rs, which also shows a draw end to end
   (shaders from WGSL through naga, blocks, a binding set, a pass, a draw, a read back).
 - Views of `depth24plus-stencil8` and `depth32float-stencil8` work both as depth attachments and
   as bindings; `stencil: true` reads the stencil as unsigned integers (`texture_2d<u32>`), the
@@ -1492,8 +1492,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   submodules the other tracks' baselines do not scan): `tools/graphics-rig/remote "cd /d
   C:\wc\src\phase-2-graphics-webgpu-lf && git -c core.autocrlf=false checkout -q -f --detach
   <commit> && git -c core.autocrlf=false submodule update --init -q
-  crates/wcontainers-shaders/dxbc-spirv crates/wcontainers-shaders/dxil-spirv && git -C
-  crates/wcontainers-shaders/dxil-spirv -c core.autocrlf=false submodule update --init -q
+  crates/shaders/dxbc-spirv crates/shaders/dxil-spirv && git -C
+  crates/shaders/dxil-spirv -c core.autocrlf=false submodule update --init -q
   third_party/spirv-headers && set GIT_CONFIG_COUNT=1&& set GIT_CONFIG_KEY_0=core.autocrlf&& set
   GIT_CONFIG_VALUE_0=false&& set RAYON_NUM_THREADS=3&& cargo run -j 3 -q -p wcontainers-literals
   -- check"` (scratch lit-check.sh does exactly this at HEAD). It must print no `+`, `-`, `~`,
@@ -1502,7 +1502,7 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 - Lint: `tools/graphics-rig/remote cargo clippy --locked -j 3 -p wcontainers-gpu-webgpu
   --all-targets -- -D warnings`, and the same with `--target wasm32-unknown-unknown --examples` for
   the WebAssembly build.
-- Both ways against Direct3D, one command: `crates/wcontainers-gpu-webgpu/web/check [dir]`. One
+- Both ways against Direct3D, one command: `crates/gpu-webgpu/web/check [dir]`. One
   GPU job builds the scenes example natively and for WebAssembly, gt-compare and the rig's page
   driver packages, then (web/check.cmd) runs wasm-bindgen, draws the three scenes and the quads on
   `depth24plus-stencil8` with wgpu on Direct3D 12 and on Vulkan, draws them in Chrome
@@ -1527,7 +1527,7 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   and is launched again, up to `LAUNCHES` (3) times. Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
-- Where real programs' frame time goes: `crates/wcontainers-gpu-webgpu/frames/run [--real]
+- Where real programs' frame time goes: `crates/gpu-webgpu/frames/run [--real]
   [--short n] [--long n] <program>...` (programs as the rig names them; `--real` draws through
   real Direct3D for comparison). It needs samply 0.13.1 in C:\wc\tools and an SSH session that
   may profile the system (the queue's desktop session may not: wpr "Failed to enable the policy").
@@ -1538,15 +1538,15 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   counts a frame from the long run's log (`FRAME_REPORT` lines, frames 128 to 256 of a 360-frame
   run).
 - Where this back end's time goes in Chrome on a real program's frames: build the WebGL track's
-  replay page (`crates\wcontainers-gpu-webgl\browser\build.cmd`, its How to run), then a GPU
-  job `node crates\wcontainers-gpu-webgpu\web\replay-profile.mjs
+  replay page (`crates\gpu-webgl\browser\build.cmd`, its How to run), then a GPU
+  job `node crates\gpu-webgpu\web\replay-profile.mjs
   %CARGO_TARGET_DIR%\webgl-replay-pkg C:\wc\out\webgl\trace\<program>.bin.1 <out-file>`: the
   replay page's lines, then V8's samples taken inside this back end by interface call and by
   function.
 - Divisions in a program against Direct3D 11's: `--test direct3d divisions -- --nocapture`
   (`WEBGPU_SEED`, `WEBGPU_CASES` draws of 64 pairs, default 1 and 4).
 - Timestamps in Chrome as users have it, alone: after web/check has built the page, a GPU job
-  `node crates\wcontainers-gpu-webgpu\web\plain.mjs C:\wc\out\phase-2-graphics-webgpu-webgpu\pkg`
+  `node crates\gpu-webgpu\web\plain.mjs C:\wc\out\phase-2-graphics-webgpu-webgpu\pkg`
   (web/check runs it too).
 - The old one-step BC comparison (ignored): add `--ignored` to the test command (`--test blocks --
   --ignored --nocapture`); it prints each format's largest difference and the texel.
@@ -1752,7 +1752,7 @@ Counts a frame are from the long run's log, frames 128 to 256 (`FRAME_REPORT`).
 Run 19 (G2c), where a real program's frame time goes on our side. Desktop (i9-9900K, RTX 3080,
 driver 621.01), shared with the other tracks: each program ran alone in the GPU queue (hazard
 group), but builds and other tracks' remote commands ran beside; load not measured further.
-Method (crates/wcontainers-gpu-webgpu/frames/run and examples/frames.rs): the fronts' libraries
+Method (crates/gpu-webgpu/frames/run and examples/frames.rs): the fronts' libraries
 built in release with line tables; each program run once unrecorded, then to frame 60 and to
 frame 360 under Windows' recorder (wpr's CPU profile, a sample with stacks every millisecond on
 every thread of the process), converted by samply; a frame's share is the difference of the two
@@ -2327,7 +2327,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   (run 18). The G2b check asked for the field under section 12's rule; not made (run 19): a field
   in `PrepareDesc` breaks the four places in other tracks' crates that build it
   (wcontainers-direct3d-11 cache.rs and ahead.rs, wcontainers-direct3d-12 device.rs,
-  wcontainers-gpu-test fast_paths.rs), which a commit touching only crates/wcontainers-gpu cannot
+  wcontainers-gpu-test fast_paths.rs), which a commit touching only crates/gpu cannot
   carry, and every branch merging this one would stop building. The interface track has since
   ruled (G1c, `Backend::prepare`'s doc and plan 4.3): no index format in `PrepareDesc`, and a
   back end like this one prepares strips for both, so this is now the plan, not a departure.

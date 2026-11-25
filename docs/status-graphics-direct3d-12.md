@@ -1,8 +1,8 @@
 # Direct3D 12 and DXGI infrastructure status (G5)
 
 Branch: phase-2-graphics-direct3d-12. Plan: docs/phase-2-graphics.md, sections 4.9, 5.2, 9, 10 and
-G5 in 12. This track owns crates/wcontainers-directx-graphics-infrastructure and
-crates/wcontainers-direct3d-12. This file holds the current state only; the full record of runs 1
+G5 in 12. This track owns crates/directx-graphics-infrastructure and
+crates/direct3d-12. This file holds the current state only; the full record of runs 1
 to 47 (what the front does subject by subject, every run's numbers, older scripts) is this file at
 commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
@@ -560,7 +560,7 @@ and 120 compared with real Direct3D 12's at 8 of 255.
    run36/dx12-path.patch, measured equal in the three scenes above; it broke three things, each
    another track's: the culling stage's clip distances, the two wgpu-hal items above, and the
    rig's forwarder wrapping wgpu's own device).
-4. Plan section 10's one library (`crates/wcontainers-directx`): by the orchestrator's ruling of
+4. Plan section 10's one library (`crates/directx`): by the orchestrator's ruling of
    2026-11-20, joining this track's COM objects with the Direct3D 11 track's is one joint step
    after both G4 and G5 have passed their checks, not part of G5; it also lets Wine's other 18
    dxgi tests be counted. Plan 4.8's call buffer comes with it.
@@ -601,10 +601,10 @@ in scratch run52/.
   ($known.ContainsKey($name) -and $known[$name].Contains($_)) })`); `git checkout` the file
   afterwards and before any merge; never commit it.
 - Own program: `tools/graphics-rig/gpu-job --desktop --build "cargo build -j 3 -p
-  wcontainers-direct3d-12 --examples" -- "crates\wcontainers-direct3d-12\examples\check_d3d12.cmd"`
+  wcontainers-direct3d-12 --examples" -- "crates\direct3d-12\examples\check_d3d12.cmd"`
   (`draw`, `features`, `outputs`, `answers`, `cases`, `fence-wait 2000`, real and ours, then the
   comparisons; `--desktop` because real DXGI refuses outputs in session 0). One case:
-  `crates\wcontainers-direct3d-12\examples\check_case.cmd <name>`. Cases compile HLSL with the
+  `crates\direct3d-12\examples\check_case.cmd <name>`. Cases compile HLSL with the
   system's `D3DCompile`.
 - Scenes: `tools/graphics-rig/scenes --build "cargo build -j 3 -p wcontainers-direct3d-12
   --examples" --dll ... (all three) --api d3d12 [scenes]`.
@@ -809,7 +809,7 @@ merges.
 
 Nothing of this track beyond the rig's setup:
 - The shaders crate's submodules in this branch's source directory
-  (C:\wc\src\phase-2-graphics-direct3d-12\crates\wcontainers-shaders, 68,417,586 bytes with git's
+  (C:\wc\src\phase-2-graphics-direct3d-12\crates\shaders, 68,417,586 bytes with git's
   files).
 - C:\wc\out\phase-2-graphics-direct3d-12: bgfx-run.ps1, bgfx-capture.ps1, bgfx-compare.ps1 (1 to 2
   KB each), bgfx's captured frames and logs (about 12 MB, evidence), the rig's outputs, which each

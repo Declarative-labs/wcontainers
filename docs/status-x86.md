@@ -790,7 +790,7 @@ Verdicts:
   `cpuid.rs` among them), the test crate's library, the told features and hand cases: pass.
 - The literal check (the Mac): no finding in this track's files (one, `QWORD` defined twice, fixed before the
   commit). Baseline lines: x86 117, guest-cpu 26, the test crate 1,745, the translator 8.
-- While this run went on, another track's uncommitted edits in `crates/wcontainers-arm64` (`carry.rs`,
+- While this run went on, another track's uncommitted edits in `crates/arm64` (`carry.rs`,
   `encode.rs`) did not compile, so the test crate (which builds ARM64 too) could not build in the shared tree;
   the xstate run and its lint came from a clone of main with my files (`x8r3/clone`), as X8 run 1 did.
 
@@ -936,7 +936,7 @@ The bar so far (a whole-suite run before pushing):
   suffix among them, and `csmith_programs_count_the_same_everywhere`, which builds ARM64 programs), and the
   x86 layer 1 tests whose verdict is the laptop's (5-level paging), with `the_x86_64_reference_refuses_what_
   linux_refuses`. The pieces progress_count, reciprocals, reference_x86_64, seeded, smoke, test_guest and valid
-  could not build in the shared tree (another track's uncommitted `crates/wcontainers-arm64/build.rs` imports
+  could not build in the shared tree (another track's uncommitted `crates/arm64/build.rs` imports
   `build_rs`, not a dependency), so they ran from a clone of main at 31080b61 (`x8r1/clone`, `x8r1/rerun.sh`):
   all pass but `csmith_programs_count_the_same_everywhere` and the refusal test, as above.
 - The i7-8750H, from that clone (`x8r1/laptop-verdict.log`, `laptop-chrome2.log`): the 111 hand cases, 64
@@ -1911,7 +1911,7 @@ and the probe in its Chrome. Logs in scratch `x5/run5/`. The session restarted o
 committed 9014abe3 and 066d7c8c without recording them here, so this section records both parts.
 
 Written:
-- The segment register and far-transfer group (9014abe3, `crates/wcontainers-x86/src/segments.rs`): the 38
+- The segment register and far-transfer group (9014abe3, `crates/x86/src/segments.rs`): the 38
   forms of `mov` to and from segment registers, `push`/`pop` `fs`/`gs`, `lfs`/`lgs`/`lss`, far `call`/`jmp`,
   `retf` and `iret` of every operand size, with ds, es, fs and gs selectors as thread state (the block's
   `reserved1` became `selectors`, no offset moved), the reference runner loading and reading them, and the
@@ -2030,7 +2030,7 @@ verdicts, built and run there (`x5/run4/laptop-bg.sh`); the Mac only for git, `c
 check. Logs in scratch `x5/run4/`.
 
 Written (commit 63fa3b23), each against the i7-8750H:
-- `pcmpestri`, `pcmpestrm`, `pcmpistri`, `pcmpistrm` and the REX.W forms (`crates/wcontainers-x86/src/text.rs`):
+- `pcmpestri`, `pcmpestrm`, `pcmpistri`, `pcmpistrm` and the REX.W forms (`crates/x86/src/text.rs`):
   specialised on the immediate at translate time; each aggregation is a WebAssembly vector compare per
   element of the first operand (equal any, ranges, equal each, equal ordered with shifted copies of the
   second), the polarity on the lane mask, then the flags (CF, ZF and SF from the lengths, OF the first
@@ -2126,7 +2126,7 @@ Written (commit 2c315d46):
   four prefetches; list in scratch `x5/run3/float-forms.txt`): add, sub, mul, div, sqrt, min, max of every
   size and kind, `cmpps`/`cmpss`/`cmppd`/`cmpsd`, `comis`/`ucomis`, `addsub`, `hadd`, `hsub`, `round`,
   `dpps`, `dppd`, and every conversion between the float sizes, from and to 32- and 64-bit integers.
-  `crates/wcontainers-x86/src/float.rs` is the meanings, `exact.rs` the exact path, `host.rs` the probe.
+  `crates/x86/src/float.rs` is the meanings, `exact.rs` the exact path, `host.rs` the probe.
 - MXCSR (plan 5.8): controls `Mxcsr`, `MxcsrTracking` (a private word after the block) and
   `FloatException`. The fast path runs when MXCSR's mode is 0x1F80's and tracking is off: WebAssembly vector
   operations, min and max as `pmin`/`pmax` with the operands swapped, x86's integer indefinite where
@@ -2214,13 +2214,13 @@ What was written, each checked in layer 1 against the i7-8750H (all 0 failing):
   as the plan says (`l1-popf-1000.log`).
 - `rdtsc` and `rdtscp`: the clock hook's nanoseconds as a 1 GHz counter, ecx 0 for `rdtscp`. Answered by
   design, so excluded from layer 1.
-- `cpuid` (plan 5.10): `crates/wcontainers-x86/src/cpuid.rs` is the table, one `answer(avx, leaf,
+- `cpuid` (plan 5.10): `crates/x86/src/cpuid.rs` is the table, one `answer(avx, leaf,
   sub_leaf)`; the meaning emits a test per leaf and sub-leaf from it. Vendor GenuineIntel, the reference's
   family 6, model 0x9E, stepping 10, the brand "wcontainers x86-64", the default claims or with the AVX
   setting the v3 level and its XSAVE leaf, caches and topology of our own (see "Departures"), leaf 0x15's
   1 GHz counter, invariant TSC, 48-bit linear addresses, leaves past the highest as the highest basic one.
   "a program asked whether AVX is available and was told no" is counted for leaf 1 and leaf 7 sub-leaf 0
-  when the setting is off. Checked by `crates/wcontainers-x86/tests/cpuid.rs`, which reads the table back
+  when the setting is off. Checked by `crates/x86/tests/cpuid.rs`, which reads the table back
   through the raw-cpuid crate, and by 59 designed cases in layer 1 (every leaf with each sub-leaf, the next
   and the last, leaves past the highest) that the translated `cpuid` gives the table's answer with the upper
   halves cleared.
@@ -3062,7 +3062,7 @@ What was done:
   comes from a table (`decode.rs`, `ONE_BYTE` and `TWO_BYTE`, plus the rules for the 0F38 and 0F3A maps, VEX
   and EVEX map fields, and 66, 67 and REX.W). The table comes from a sweep on the i7-8750H made by
   `x86-lengths` in the test crate: 300 lines (escape and filler) of 256 opcodes, 76,100 lengths, kept as
-  `crates/wcontainers-x86/tests/lengths.txt`. It was run twice: the second run added XOP's `8F` and the 3DNow
+  `crates/x86/tests/lengths.txt`. It was run twice: the second run added XOP's `8F` and the 3DNow
   suffixes, and its 294 shared lines were the same as the first run's. `tests/lengths.rs` checks every recorded
   length against `decode`, and checks the table against iced's lengths of valid instructions where the
   sweep cannot measure (an instruction that faults however short it is). What the sweep found is in plan 5.2.
@@ -3965,7 +3965,7 @@ Proof after run 2 (machine: the Mac, Apple M5; loads as given):
 
 Done:
 - Merged origin/phase-1-translator (22 commits) first.
-- `crates/wcontainers-translator-test/same-output.sh <commit>` with `tests/output.rs`: one command that
+- `crates/translator-test/same-output.sh <commit>` with `tests/output.rs`: one command that
   builds the earlier commit from its own copy (scratch), writes every module's length and BLAKE3 hash on
   both sides (benchmark set: whole program and the 8 workloads; the 9 M5 binaries; full and bounded
   look-ahead 256; speed and size; the thread module) and compares the lists with `cmp`. Committed before
@@ -3976,7 +3976,7 @@ Done:
   layer 1 (5.2, 7.4); `int 4` a trap with rip after (5.2, 6); segment loads write the FS/GS base (5.5,
   3.4); `sgdt`, `sidt`, `lsl 0x7b` designed answers and excluded (5.10, 7.4); the recorder runs with the
   translation's host and offer (3.1, built so); X1's dependency check (valid.rs moved, 9).
-- `crates/wcontainers-guest-cpu`: core (`Personality`, `Registers`, `Bit`, `TrapKind`, `MemoryFault`)
+- `crates/guest-cpu`: core (`Personality`, `Registers`, `Bit`, `TrapKind`, `MemoryFault`)
   `no_std`; `Guest`, `Emitter`, the plain types, `Reason` and the generic effects recorder behind the
   `translate` feature (default on).
 - `wcontainers-arm64`: `Arm64` with its `Personality` in a `no_std` core; `Guest` in `src/guest.rs`
@@ -4548,14 +4548,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   sample_matches_the_cpu_in_chrome_x86_64` and `--test browser hello_matches_linux_in_chrome_at_none_x86_64`.
   The length sweep (about 25 minutes, 6 connections): `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c
   cargo run -p wcontainers-translator-test --bin x86-lengths -- <output> [connections]`, then copy the output
-  over `crates/wcontainers-x86/tests/lengths.txt`. The long division: `--test benchmarks
+  over `crates/x86/tests/lengths.txt`. The long division: `--test benchmarks
   measure_long_division_x86_64 -- --ignored --nocapture` (`WC_BENCH_RUNS`, default 3), only while the x86
   machine's load is below 2. The scratch tools of run 1 (shift
   sweeps, a hello debugger, a module dump) are in scratch `x3/run1/scratch_*.rs`: copy one into the test
   crate's `tests/` to run it.
 
 - X2's proofs: same cases, `WC_OUTPUT_ROOT=<scratch>/x2/same nix develop -c
-  crates/wcontainers-translator-test/same-cases.sh d27cd70 1 2 3` (knobs `WC_CASES_LAYER1`, `WC_CASES_LAYER2`;
+  crates/translator-test/same-cases.sh d27cd70 1 2 3` (knobs `WC_CASES_LAYER1`, `WC_CASES_LAYER2`;
   layer 1's no-form and hand-made lists are compared only against commits from 995e949 on, which write them;
   against d27cd70 the no-form words by `<scratch>/x2/run5/compare-no-form.sh` after drawing them as its
   header says);
@@ -4568,14 +4568,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   benchmarks`), `measure_binaries_arm64` (`--test binaries`), `write_output_arm64` (`--test output`); the
   decoder's and validity tests are ARM64's own (`..._arm64`).
 - Long runs of one guest: `WC_LONG_DIR=<dir> WC_LONG_GUEST=arm64 nohup nix develop -c
-  crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &` (ledger `<dir>/arm64/ledger.txt`).
+  crates/translator-test/long-runs.sh > <log> 2>&1 &` (ledger `<dir>/arm64/ledger.txt`).
 - M5's real binaries are now under `target/binaries/arm64`.
-- Lint the runner for both CPUs: from `crates/wcontainers-translator-test/reference`, `nix develop ../../.. -c
+- Lint the runner for both CPUs: from `crates/translator-test/reference`, `nix develop ../../.. -c
   cargo clippy --release --target <aarch64|x86_64>-unknown-linux-musl --target-dir ../../../target/reference
   -- -D warnings`.
 
 - X1's byte-for-byte proof: `WC_OUTPUT_ROOT=<scratch>/x1/same nix develop -c
-  crates/wcontainers-translator-test/same-output.sh 2274314 bench,busybox,musl,python,rg,git,java,go`, then
+  crates/translator-test/same-output.sh 2274314 bench,busybox,musl,python,rg,git,java,go`, then
   the same with `node` and with `bun`, each alone (many GB). The earlier commit's lists are kept under
   `<root>/lists/<commit>`, so later runs only translate the current tree; delete them when
   `tests/output.rs` changes. `WC_OUTPUT_LOOK_AHEADS=full,bounded` (labels of `LOOK_AHEADS`) limits the

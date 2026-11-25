@@ -328,7 +328,7 @@ The second check's findings, each against the tip:
 
 The NIR track's ask (brief, 2026-11-19 night): the public entry point for the 15.4 rewrites is
 `wcontainers_shaders::rewrite` (since run 57; "New for the owner"), which that track calls
-(crates/wcontainers-nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point, its
+(crates/nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point, its
 G9 run 12) is new work, after this milestone's check.
 
 ## G6a again, run 1 (run 70): the carried findings at the tip of main
@@ -427,7 +427,7 @@ The first check's findings, each against the tip:
 
 The NIR track's ask (brief, 2026-11-19 night): the public entry point for the 15.4 rewrites is
 `wcontainers_shaders::rewrite` (since run 57; "New for the owner"), which that track calls
-(crates/wcontainers-nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point,
+(crates/nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point,
 its G9 run 12) is new work, after this milestone's check.
 
 ## G6a run 5 (run 63): the fifth check's findings at the pushed tip
@@ -464,7 +464,7 @@ Runs at the tip:
   40 fail, and each of the 40 is a shader whose record names the need (`MULTISAMPLE_READ` 22,
   `SAMPLE_SHADING|MULTISAMPLE_READ` 1, `PRIMITIVE_INDEX` 8, `CLIP_DISTANCE|CULL_DISTANCE` 9).
 - Formatting: `cargo fmt -p wcontainers-shaders -- --check` clean (on the Mac). `cargo fmt --all
-  -- --check` finds only `crates/wcontainers-direct3d-11/tests/front.rs`, the Direct3D 11
+  -- --check` finds only `crates/direct3d-11/tests/front.rs`, the Direct3D 11
   track's file as merged, which this branch leaves alone.
 - Literal check on the desktop (check.txt): it named one line to delete (the barrier's workgroup
   scope, now `ir::scope::WORKGROUP`), deleted in 211e0656; the MD5 test's float went with
@@ -920,7 +920,7 @@ the same three slow paths in two orders, ours kept).
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
   merging this branch: the workspace `Cargo.toml` patches `naga` to `third_party/naga`.
-- dxbc-spirv built into `crates/wcontainers-shaders` (git submodule, upstream, pinned) natively and
+- dxbc-spirv built into `crates/shaders` (git submodule, upstream, pinned) natively and
   for WebAssembly (`wasm32-wasip1`, wasi-sdk 25).
 - `convert` (6.4) for DXBC by the direct route: dxbc-spirv's legalised IR, serialised, read in Rust
   (`src/ir.rs`) and lowered straight into naga (`src/lower.rs`). Vertex, pixel and compute shaders.
@@ -928,7 +928,7 @@ Done:
   verdict against the one recorded in `tests/expected/<corpus>.txt` (written WGSL read back and
   validated by naga with WebGPU's core capabilities; GLSL ES 3.00 written and compiled by
   glslangValidator when `GLSLANG` is set), so any change either way fails until the record changes.
-- Chrome's own compile of every written file (run 2): `crates/wcontainers-shaders/web/check <out-dir>`
+- Chrome's own compile of every written file (run 2): `crates/shaders/web/check <out-dir>`
   compiles each WGSL file with Chrome's WebGPU and each GLSL file with its WebGL 2 on the desktop's
   RTX 3080 (one GPU job, counts below). Every converted shader's WGSL compiles in Chrome (run 3:
   corpus 127, rig DXBC 56, rig DXIL 24, own 6). The GLSL is written with the WebGL 2 back end's options
@@ -956,7 +956,7 @@ Done:
   after the constant buffer fix; the other 141 are missing outputs or failures of the front (it
   refuses what it does not serve yet, for example depth-stencil views, 1D and 3D textures, queries).
   Through the direct3d-12 track's d3d12.dll only the triangle passed in run 3, when that front did
-  not call `convert` yet; it does now (merged in run 6, `wcontainers-direct3d-12/src/device.rs`,
+  not call `convert` yet; it does now (merged in run 6, `direct3d-12/src/device.rs`,
   `convert` with `VariantKey::default()`), not re-run here. DXIL is proven by `tests/draw.rs`.
 - dxil-spirv built in too (submodule, pinned), and `convert` for DXIL: dxil-spirv's SPIR-V, read by
   naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. The rig now has 72 DXIL
@@ -3856,7 +3856,7 @@ Runs at the tip:
   record names the need (`MULTISAMPLE_READ` 22, `SAMPLE_SHADING|MULTISAMPLE_READ` 1,
   `PRIMITIVE_INDEX` 8, `CLIP_DISTANCE|CULL_DISTANCE` 9).
 - Formatting: `cargo fmt -p wcontainers-shaders -- --check` clean (on the Mac). `cargo fmt --all
-  -- --check` finds only `crates/wcontainers-direct3d-11/tests/front.rs`, the Direct3D 11
+  -- --check` finds only `crates/direct3d-11/tests/front.rs`, the Direct3D 11
   track's file as merged, which this branch leaves alone.
 - Literal check on the desktop (check.txt): passes, nothing to delete; this crate's lines in
   `literals.baseline` (src, build.rs, tests, examples): 586, as at G6a run 5.
@@ -4449,7 +4449,7 @@ Runs at the tip:
 
 The NIR track's ask (brief, 2026-11-19 night): the public entry point for the 15.4 rewrites is
 `wcontainers_shaders::rewrite` (since run 57; "New for the owner"), which that track calls
-(crates/wcontainers-nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point, its
+(crates/nir/src/direct.rs). Its newer ask (a geometry and tessellation entry point, its
 G9 run 12) is new work, after this milestone's check.
 
 ## G6b run 7 (run 74): the tessellation scene's order, measured

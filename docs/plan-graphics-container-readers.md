@@ -7,14 +7,14 @@ the shaders crate, and points the others at it. Status: docs/status-graphics-con
 ## C1: one DXBC container reader
 
 Today:
-- crates/wcontainers-shaders/src/container.rs: chunk lookup, signatures of every form, shader model,
+- crates/shaders/src/container.rs: chunk lookup, signatures of every form, shader model,
   program type, the hull and domain control point scan, the DXIL PSV0 fields. Private to its crate.
-- crates/wcontainers-direct3d-11/src/shader.rs: its own chunk walk, signature reader and declaration
+- crates/direct3d-11/src/shader.rs: its own chunk walk, signature reader and declaration
   scan (typed views, multisampled arrays, indexed constant buffers).
-- crates/wcontainers-direct3d-12/src/dxbc.rs: its own chunk lookup and declaration scan (typed views
+- crates/direct3d-12/src/dxbc.rs: its own chunk lookup and declaration scan (typed views
   and multisampled arrays placed by space through the root signature, unbounded arrays).
-- crates/wcontainers-direct3d-12/src/root.rs: its own RTS0 lookup and the checksum.
-- crates/wcontainers-shaders/tests/fuzz.rs: the checksum again.
+- crates/direct3d-12/src/root.rs: its own RTS0 lookup and the checksum.
+- crates/shaders/tests/fuzz.rs: the checksum again.
 
 The one reader, in container.rs, made public:
 - the chunk list: each chunk's tag, size and contents, with what is cut short reported, so each
@@ -40,7 +40,7 @@ more of our code than it removes.
 Order, to collide least with the shaders and Direct3D 11 tracks: the shaders crate's container.rs
 in one small commit (made public, the shared pieces and `checksum`), then Direct3D 12 (dxbc.rs,
 root.rs, dxil.rs), then the fuzz test, then the Direct3D 11 reader last. Each step: format, clippy
-with warnings denied, the affected tests, the literal check, then commit.
+with warnings denied, the affected tests, then commit.
 
 Behaviour: same outputs for every well-formed container. Where the old readers disagreed on
 malformed bytes, the cases are listed in the status file with one example each, and a seeded
@@ -52,7 +52,7 @@ that ran before passes; the fuzz test passes with the shared checksum.
 
 ## C2: one DXIL resource-list reader
 
-Today crates/wcontainers-direct3d-12/src/dxil.rs reads the DXIL module's resource list itself, on the
+Today crates/direct3d-12/src/dxil.rs reads the DXIL module's resource list itself, on the
 llvm-bitcode crate, two or three times per pipeline stage (typed views and multisampled arrays for
 the stage's key, typed views again for a pixel or compute stage). The shaders crate reads the same
 list through dxil-spirv's module reader (cpp/dxil.cpp, `each_resource`).

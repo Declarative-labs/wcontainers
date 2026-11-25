@@ -17,7 +17,7 @@ const [sceneFile, out] = process.argv.slice(2);
 if (!out) throw new Error('usage: node draw.mjs <scene.json> <out-dir>');
 const files = {
   '/triangle.html': [join(here, 'triangle.html'), 'text/html'],
-  '/triangle.wgsl': [join(here, '../../../crates/wcontainers-graphics-test/src/triangle.wgsl'), 'text/plain'],
+  '/triangle.wgsl': [join(here, '../../../crates/graphics-test/src/triangle.wgsl'), 'text/plain'],
   '/scene.json': [sceneFile, 'application/json'],
 };
 await mkdir(out, { recursive: true });

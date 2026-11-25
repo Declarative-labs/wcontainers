@@ -25,7 +25,7 @@ wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }
-wcontainers-docker = { path = "../../../wcontainers-docker" }
+wcontainers-docker = { path = "../../../docker" }
 # The seeded choices of a run, shared with the native back end's inside.
 wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
 wcontainers-system = { path = "../../../system" }
@@ -42,7 +42,7 @@ wcontainers-processor-architecture = { path = "../../../processor-architecture" 
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
 wcontainers-executor-wasmtime = { path = "../wasmtime" }
-wcontainers-arm64 = { path = "../../../wcontainers-arm64", optional = true }
+wcontainers-arm64 = { path = "../../../arm64", optional = true }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "elf_uapi", "no_std"] }

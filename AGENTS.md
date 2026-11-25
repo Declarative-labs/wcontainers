@@ -14,7 +14,6 @@ Set by the owner on 2026-11-18. They apply to every crate, test and document in 
 - Comments are few: types and names carry the meaning. A doc comment is one sentence, and only where the
   name cannot say it.
 - No magic numbers or literals: every number, and every string a program interprets, is derived from what
-  it describes, imported from the crate that defines it, or one named constant defined once. The
-  automatic check enforces it.
+  it describes, imported from the crate that defines it, or one named constant defined once.
 - Standard-library and established-crate types come before our own (`std::ops::Range<u64>`, not a range
   struct).
