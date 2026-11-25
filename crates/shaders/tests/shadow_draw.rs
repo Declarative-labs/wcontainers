@@ -15,7 +15,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
+    AddressMode, Gpu, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
     BufferUsage, ColorAttachment, ColorWrites, CompareFn, CullMode, DepthStencilDesc, DrawCall,
     DrawRange, Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, HELPER_SET, HelperValue,
     Interpolation, LoadOp, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
@@ -410,7 +410,7 @@ fn direct3d12(
 /// The same through the WebGPU back end, the shadow map a 16-bit depth texture written from the CPU
 /// and read through a view with the component mapping `mapping` where there is one, compared by
 /// `compare`.
-fn ours<B: Backend>(
+fn ours<B: Gpu>(
     b: &mut B,
     shader: &str,
     filters: Filters,

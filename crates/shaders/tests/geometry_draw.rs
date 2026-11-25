@@ -10,7 +10,7 @@ mod forms;
 
 use common::*;
 use wcontainers_gpu::{
-    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
+    AddedBinding, Gpu, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
     ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource, DrawCall, DrawRange,
     Extent, FillMode, Format, FrontFace, HelperValue, IndexBinding, IndexFormat, Interpolation,
     LinkedValues, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
@@ -1232,7 +1232,7 @@ fn linked(
     (vs, gs, ps)
 }
 
-fn ours<B: Backend>(
+fn ours<B: Gpu>(
     b: &mut B,
     case: &Case,
     vertices: &[f32],
@@ -1256,7 +1256,7 @@ struct Making {
 }
 
 /// [`ours`] made and drawn as `how` says.
-fn ours_made<B: Backend>(
+fn ours_made<B: Gpu>(
     b: &mut B,
     case: &Case,
     how: Making,
@@ -1460,7 +1460,7 @@ fn ours_made<B: Backend>(
 }
 
 /// The draw after the stages, `passthrough` with the pixel program, into a cleared target: its texels.
-fn picture<B: Backend>(
+fn picture<B: Gpu>(
     b: &mut B,
     passthrough: &ShaderModule,
     layout: &VertexLayoutDesc,
@@ -1659,7 +1659,7 @@ fn replayed(case: &Case) -> bool {
 /// `case` through the replay route (`GeometryReplay`), as a front on a back end without compute
 /// draws it: the vertex shader's inputs as drawn, its draw bases from its helper block. With
 /// `stream`, what stream output wrote and the filled block; without, the picture.
-fn ours_replayed<B: Backend>(
+fn ours_replayed<B: Gpu>(
     b: &mut B,
     case: &Case,
     vertices: &[f32],

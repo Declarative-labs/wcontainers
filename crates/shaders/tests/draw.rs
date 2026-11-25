@@ -14,7 +14,7 @@ mod common;
 use common::*;
 use std::path::Path;
 use wcontainers_gpu::{
-    Backend, FORMAT_FACTS, Features, Format, ProvokingVertex, VariantKey, VertexFormat,
+    Gpu, FORMAT_FACTS, Features, Format, ProvokingVertex, VariantKey, VertexFormat,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};

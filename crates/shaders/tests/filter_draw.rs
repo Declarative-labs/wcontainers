@@ -26,7 +26,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
+    AddressMode, Gpu, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
     BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
     Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, HelperValue, Origin, PassDesc,
     Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind,
@@ -275,7 +275,7 @@ fn source(c: &[u8], dxil: bool) -> Source<'_> {
 /// Draws pixel program `pixel` through a back end: with `key` the variant (its helper values from `case`), without it the
 /// plain program through the back end's own sampler.
 #[allow(clippy::too_many_arguments)]
-fn ours<B: Backend>(
+fn ours<B: Gpu>(
     b: &mut B,
     pixel: &str,
     route: &str,

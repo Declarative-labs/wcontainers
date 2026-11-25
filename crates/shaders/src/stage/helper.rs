@@ -14,7 +14,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
+    Gpu, BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
     DispatchGroups, DrawRange, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
     ProvokingVertex, RingKind, ShaderModule, SlowPath, StageExtras, StageSet, StageValue, StepMode,
     SystemValue, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
@@ -95,7 +95,7 @@ pub struct StreamOutput {
 /// [`Stages`], and with [`BufferUsage::COPY_SRC`] and [`BufferUsage::COPY_DST`] for
 /// [`super::GeometryReplay`].
 #[derive(Debug)]
-pub struct StreamTargets<'a, B: Backend> {
+pub struct StreamTargets<'a, B: Gpu> {
     /// The bound buffers, each written from its range's offset (aligned as storage bindings are)
     /// plus its filled size.
     pub buffers: [Option<BufferRange<&'a B::Buffer>>; STREAM_BUFFERS],
@@ -111,7 +111,7 @@ pub struct StreamTargets<'a, B: Backend> {
 /// The draw's index buffer, which the vertex stage's compute form reads as storage: made with
 /// [`BufferUsage::STORAGE`] as well as [`BufferUsage::INDEX`].
 #[derive(Debug)]
-pub struct StageIndex<'a, B: Backend> {
+pub struct StageIndex<'a, B: Gpu> {
     pub buffer: &'a B::Buffer,
     /// The buffer's size in bytes, a multiple of 4.
     pub size: u64,
@@ -121,7 +121,7 @@ pub struct StageIndex<'a, B: Backend> {
 
 /// One API draw through the stage helper.
 #[derive(Debug)]
-pub struct StageDraw<'a, B: Backend> {
+pub struct StageDraw<'a, B: Gpu> {
     /// The vertex stage's sets, as for a draw (its slots and pulled streams in set 0, its helper
     /// constants in set 3), made visible to compute. Set 1 is the helper's own.
     pub vertex_sets: [Option<&'a B::BindingSet>; MAX_BINDING_SETS],
@@ -137,7 +137,7 @@ pub struct StageDraw<'a, B: Backend> {
 
 /// The sets of the stages after a domain stage, for [`Stages::run_after_domain`].
 #[derive(Debug)]
-pub struct DomainSets<'a, B: Backend> {
+pub struct DomainSets<'a, B: Gpu> {
     /// The domain stage's sets, as for its draw (its slots in set 0, its helper constants in set 3),
     /// made visible to compute, without the patches and points: the helper binds those itself.
     pub domain_sets: [Option<&'a B::BindingSet>; MAX_BINDING_SETS],
@@ -152,7 +152,7 @@ pub struct DomainSets<'a, B: Backend> {
 /// says how it differs. A geometry shader writing several streams (of points) has each stream's
 /// points after the stream's before it: stream `k`'s are vertices `k * count` to `(k + 1) * count`.
 #[derive(Debug)]
-pub struct FinalDraw<B: Backend> {
+pub struct FinalDraw<B: Gpu> {
     pub buffer: B::Buffer,
     pub index_offset: Option<u64>,
     pub topology: Topology,
@@ -168,20 +168,20 @@ pub struct FinalDraw<B: Backend> {
 /// [`wcontainers_gpu::DOMAIN_PATCHES_BINDING`] and [`wcontainers_gpu::DOMAIN_POINTS_BINDING`] in its
 /// helper set.
 #[derive(Debug)]
-pub struct TessellatedDraw<B: Backend> {
+pub struct TessellatedDraw<B: Gpu> {
     pub arguments: B::Buffer,
     pub patches: BufferRange<B::Buffer>,
     pub points: BufferRange<B::Buffer>,
 }
 
 /// Buffers the helper owns, grown as draws need.
-pub(super) struct Owned<B: Backend> {
+pub(super) struct Owned<B: Gpu> {
     pub(super) buffer: B::Buffer,
     pub(super) size: u64,
 }
 
 /// The geometry stage's compute program and what its output is.
-struct Geometry<B: Backend> {
+struct Geometry<B: Gpu> {
     program: B::Program,
     passthrough: ShaderModule,
     input_vertices: u32,
@@ -204,7 +204,7 @@ struct Geometry<B: Backend> {
 }
 
 /// The geometry cull program, and where the geometry output's records hold the cull distances.
-struct GeometryCull<B: Backend> {
+struct GeometryCull<B: Gpu> {
     program: B::Program,
     cull_word: u32,
     distances: u32,
@@ -229,7 +229,7 @@ struct GeometryCullValues {
 }
 
 /// The hull stage's compute program, the tessellator, and the patch records between them.
-struct Hull<B: Backend> {
+struct Hull<B: Gpu> {
     program: B::Program,
     tessellator: Tessellator<B>,
     tessellation: Tessellation,
@@ -240,7 +240,7 @@ struct Hull<B: Backend> {
 }
 
 /// The domain stage's compute form, which runs when a geometry stage or stream output follows it.
-struct Domain<B: Backend> {
+struct Domain<B: Gpu> {
     program: B::Program,
     /// Words per record it writes.
     words: u32,
@@ -248,7 +248,7 @@ struct Domain<B: Backend> {
 }
 
 /// The cull program and where the records hold what it reads.
-struct Cull<B: Backend> {
+struct Cull<B: Gpu> {
     program: B::Program,
     passthrough: ShaderModule,
     /// Slots the pass-through reads after the position: the locations and the clip distances.
@@ -260,7 +260,7 @@ struct Cull<B: Backend> {
     distances: u32,
 }
 
-impl<B: Backend> Cull<B> {
+impl<B: Gpu> Cull<B> {
     /// The cull program for records `programs` writes and its pass-through draws.
     fn new(backend: &mut B, programs: super::CullPrograms) -> Result<Self, StageError> {
         let shader = backend.create_shader(&super::cull_program()?)?;
@@ -299,7 +299,7 @@ struct CullValues {
 }
 
 /// The line program and what its corners hold.
-struct Lines<B: Backend> {
+struct Lines<B: Gpu> {
     program: B::Program,
     passthrough: ShaderModule,
     /// Slots the pass-through reads after the position: the locations, the clip distances and the
@@ -363,7 +363,7 @@ pub(super) fn sized(width: f32, height: f32) -> Viewport {
 pub(super) const LINE_ORIGIN: &str = "the aliased line route run without the viewport's place";
 
 /// The primitive program and what its copies hold.
-struct Numbered<B: Backend> {
+struct Numbered<B: Gpu> {
     program: B::Program,
     passthrough: ShaderModule,
     /// Slots the pass-through reads after the position: the locations, the clip distances and the
@@ -393,7 +393,7 @@ const PRIMITIVE_COPIES_BINDING: u32 = 2;
 pub(super) const PRIMITIVE_ID_ADJACENCY: &str = "PrimitiveIdAdjacency";
 
 /// The strip program, and the list it writes ([`tess::INDEX_HEADER`] words, then the indices).
-struct Strips<B: Backend> {
+struct Strips<B: Gpu> {
     program: B::Program,
     list: Option<Owned<B>>,
 }
@@ -458,7 +458,7 @@ const ROTATE_LAST_FIRST: u32 = 1;
 const ROTATE_FIRST_LAST: u32 = 2;
 
 /// The stream output program and its declaration's elements.
-struct Stream<B: Backend> {
+struct Stream<B: Gpu> {
     program: B::Program,
     entries: Vec<(u8, [u32; ENTRY_WORDS])>,
     strides: [u32; STREAM_BUFFERS],
@@ -565,7 +565,7 @@ const UNUSED_RANGE_BYTES: u64 = super::RECORD_SLOT_BYTES as u64;
 /// tessellator (then the domain shader too, when a geometry shader or stream output follows it), run
 /// as compute work before the draw ([`SlowPath::GeometryAsCompute`],
 /// [`SlowPath::StreamOutAsCompute`], [`SlowPath::TessellationAsCompute`]).
-pub struct Stages<B: Backend> {
+pub struct Stages<B: Gpu> {
     vertex: B::Program,
     /// The vertex program writes storage ([`SlowPath::VertexStorageAsCompute`]).
     stores: bool,
@@ -590,7 +590,7 @@ pub struct Stages<B: Backend> {
     rotate: u32,
 }
 
-impl<B: Backend> Stages<B> {
+impl<B: Gpu> Stages<B> {
     /// Makes the compute programs of `vertex` (converted with every input pulled), of `geometry` if
     /// given, and of stream output from the last of them if declared. Without a geometry shader, a
     /// vertex program writing storage is made as [`Self::stored`] makes it.
@@ -2206,7 +2206,7 @@ impl<B: Backend> Stages<B> {
 }
 
 /// The geometry stage's compute program and its output's shape.
-fn geometry_parts<B: Backend>(
+fn geometry_parts<B: Gpu>(
     backend: &mut B,
     geometry: &Converted,
 ) -> Result<Geometry<B>, StageError> {
@@ -2259,7 +2259,7 @@ fn geometry_parts<B: Backend>(
 
 /// The stream output program, and the declaration's elements located in the records of the stage
 /// whose `outputs` are streamed.
-fn stream_parts<B: Backend>(
+fn stream_parts<B: Gpu>(
     backend: &mut B,
     so: &StreamOutput,
     outputs: &[StageValue],
@@ -2347,7 +2347,7 @@ pub(super) fn stream_declaration(
 /// The list of primitives of `n` vertices.
 /// The draw's index buffer as the storage words a compute program reads: bytes per index, bytes from
 /// the bound words' start to the API's offset, and the bound range.
-fn index_words<'a, B: Backend>(
+fn index_words<'a, B: Gpu>(
     index: &StageIndex<'a, B>,
     alignment: u32,
 ) -> Result<(u32, u32, BufferRange<&'a B::Buffer>), StageError> {
@@ -2402,7 +2402,7 @@ pub(super) fn words_as_bytes(words: &[u32]) -> Vec<u8> {
 }
 
 /// Writes a stage's values into the data ring, for a set made before the ring's next write.
-fn ring_values<B: Backend>(backend: &mut B, bytes: &[u8]) -> Result<(B::Buffer, u64), GpuError> {
+fn ring_values<B: Gpu>(backend: &mut B, bytes: &[u8]) -> Result<(B::Buffer, u64), GpuError> {
     let align = backend.caps().limits.min_uniform_offset_alignment;
     let mut offsets = [0u64];
     let ring = backend.write_buffer_ring(RingKind::Data, &[bytes], align, &mut offsets)?;
@@ -2410,7 +2410,7 @@ fn ring_values<B: Backend>(backend: &mut B, bytes: &[u8]) -> Result<(B::Buffer, 
 }
 
 /// The binding of values [`ring_values`] wrote at `at`.
-fn values_entry<'a, B: Backend>(at: &'a (B::Buffer, u64), bytes: &[u8]) -> BindingEntry<'a, B> {
+fn values_entry<'a, B: Gpu>(at: &'a (B::Buffer, u64), bytes: &[u8]) -> BindingEntry<'a, B> {
     BindingEntry {
         binding: VALUES_BINDING,
         stages: StageSet::COMPUTE,
@@ -2423,7 +2423,7 @@ fn values_entry<'a, B: Backend>(at: &'a (B::Buffer, u64), bytes: &[u8]) -> Bindi
 }
 
 /// A storage binding of the first `size` bytes of `buffer`, for the helper's compute programs.
-fn storage<B: Backend>(
+fn storage<B: Gpu>(
     binding: u32,
     buffer: &B::Buffer,
     size: u64,
@@ -2444,7 +2444,7 @@ fn storage<B: Backend>(
 }
 
 /// Makes `owned` a buffer of at least `size` bytes.
-pub(super) fn grow<B: Backend>(
+pub(super) fn grow<B: Gpu>(
     backend: &mut B,
     owned: &mut Option<Owned<B>>,
     size: u64,

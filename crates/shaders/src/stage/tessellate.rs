@@ -7,7 +7,7 @@ use super::{RECORD_SLOT_BYTES, WORKGROUP, tess};
 use crate::build::WORD;
 use core::mem::size_of;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
+    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
     MAX_BINDING_SETS, Program, RingKind, StageSet,
 };
 
@@ -26,7 +26,7 @@ pub struct Tessellation {
 }
 
 /// The tessellator program and its output buffers, grown as draws need.
-pub struct Tessellator<B: Backend> {
+pub struct Tessellator<B: Gpu> {
     program: B::Program,
     counts: Option<Owned<B>>,
     points: Option<Owned<B>>,
@@ -60,7 +60,7 @@ const TESSELLATOR_COUNTS_BINDING: u32 = 2;
 const TESSELLATOR_POINTS_BINDING: u32 = 3;
 const TESSELLATOR_INDICES_BINDING: u32 = 4;
 
-impl<B: Backend> Tessellator<B> {
+impl<B: Gpu> Tessellator<B> {
     pub fn new(backend: &mut B) -> Result<Self, StageError> {
         let shader = backend.create_shader(&super::tessellator_program()?)?;
         Ok(Tessellator {
@@ -223,7 +223,7 @@ impl<B: Backend> Tessellator<B> {
     }
 }
 
-fn storage<B: Backend>(binding: u32, buffer: &B::Buffer, size: u64) -> BindingEntry<'_, B> {
+fn storage<B: Gpu>(binding: u32, buffer: &B::Buffer, size: u64) -> BindingEntry<'_, B> {
     BindingEntry {
         binding,
         stages: StageSet::COMPUTE,

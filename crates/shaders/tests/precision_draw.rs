@@ -11,7 +11,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
+    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
     Program, ReadSource, SlotKind, StageSet, VariantKey,
 };
 use wcontainers_graphics_test::{Driver, d3d12};
@@ -126,7 +126,7 @@ fn direct3d12(gpu: &d3d12::Gpu, shader: &Shader, code: &[u8], constants: &Consta
 }
 
 /// The same through `b`, the build converted with the default key.
-fn ours<B: Backend>(b: &mut B, shader: &Shader, source: Source, constants: &Constants) -> Vec<u32> {
+fn ours<B: Gpu>(b: &mut B, shader: &Shader, source: Source, constants: &Constants) -> Vec<u32> {
     let bytes = (shader.words * size_of::<u32>()) as u64;
     let c = convert(source, &VariantKey::default(), None).unwrap();
     assert!(

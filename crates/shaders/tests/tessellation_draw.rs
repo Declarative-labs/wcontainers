@@ -13,7 +13,7 @@ mod common;
 mod forms;
 
 use common::*;
-use wcontainers_gpu::{Backend, BufferRange, BufferUsage, ReadSource, RingKind};
+use wcontainers_gpu::{Gpu, BufferRange, BufferUsage, ReadSource, RingKind};
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{Tessellation, Tessellator, tess};
 use windows::Win32::Graphics::Direct3D::*;
@@ -198,7 +198,7 @@ fn direct3d(
 
 /// Our tessellator's points and indices for the same patches, as the vertices a draw of them makes,
 /// each primitive turned by `rotate` (`Tessellator::run`'s).
-fn ours<B: Backend>(
+fn ours<B: Gpu>(
     b: &mut B,
     tessellator: &mut Tessellator<B>,
     t: &Tessellation,
@@ -498,7 +498,7 @@ const SCENE_WIDTH: u32 = 256;
 const SCENE_HEIGHT: u32 = 128;
 
 /// One set per number from `bindings`' entries.
-fn sets<B: Backend>(
+fn sets<B: Gpu>(
     b: &mut B,
     entries: Vec<(u32, wcontainers_gpu::BindingEntry<'_, B>)>,
 ) -> [Option<B::BindingSet>; 4] {
@@ -513,7 +513,7 @@ fn sets<B: Backend>(
 /// then the domain program's indexed indirect draw of its points.
 /// With `max`, each texel keeps the largest value drawn there in each channel, so the picture does not
 /// depend on the order its triangles are drawn in.
-fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -> Vec<u8> {
+fn scene_ours<B: Gpu>(b: &mut B, all_solid: bool, route: Route, max: bool) -> Vec<u8> {
     use wcontainers_gpu::*;
     use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
@@ -730,7 +730,7 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -
             "{:?}",
             ds.reflection.helpers
         );
-        fn read_only<B: Backend>(
+        fn read_only<B: Gpu>(
             binding: u32,
             range: &BufferRange<B::Buffer>,
         ) -> BindingEntry<'_, B> {
@@ -1168,7 +1168,7 @@ struct Staged<'a> {
 /// tessellator, the domain stage as compute and geometry shader `gs` if given, then stream output of
 /// the location and the patch's number; the vertices written and the primitives the helper counted.
 /// With `ring_room`, the data ring is placed first to wrap after that many parts (`place_data_ring`).
-fn ours_staged<B: Backend>(
+fn ours_staged<B: Gpu>(
     b: &mut B,
     programs: &Staged<'_>,
     points: u32,
@@ -1627,7 +1627,7 @@ const RING_PLACES: u64 = 12;
 /// Leaves the data ring `parts` parts short of its end, so that the next writes into it wrap at
 /// the `parts`th part: one write fills a ring of [`PLACED_RING_BYTES`], the next refills it from
 /// the start.
-fn place_data_ring<B: Backend>(b: &mut B, parts: u64) {
+fn place_data_ring<B: Gpu>(b: &mut B, parts: u64) {
     let align = b.caps().limits.min_uniform_offset_alignment;
     let mut offsets = [0u64];
     let full = vec![0u8; PLACED_RING_BYTES as usize];
@@ -1718,7 +1718,7 @@ fn stage_values_hold_wherever_the_data_ring_wraps() {
 /// shader `ds`, which writes cull distances, drawn solid with `ps_cull` through the stage helper as a
 /// front draws them: the vertex, hull and domain stages as compute, the tessellator, the cull program,
 /// then the primitives kept through the pass-through. Each texel keeps the largest value drawn there.
-fn culled_ours<B: Backend>(
+fn culled_ours<B: Gpu>(
     b: &mut B,
     route: Route,
     (hs, ds): (&str, &str),

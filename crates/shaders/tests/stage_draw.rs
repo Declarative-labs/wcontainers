@@ -14,7 +14,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
+    Gpu, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
     BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc,
     DrawBaseSource, DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace,
     HelperValue, IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program,
@@ -381,7 +381,7 @@ fn linked(dxil: bool, route: Route, vs_key: &VariantKey) -> (Converted, Converte
     (vs, ps, ps_key)
 }
 
-fn ours<B: Backend>(
+fn ours<B: Gpu>(
     b: &mut B,
     case: &Case,
     (vertices, indices): (&[f32], &[u8]),
@@ -511,7 +511,7 @@ fn ours<B: Backend>(
 /// [`GeometryReplay::primitive_numbered`]), as a front on a back end without compute draws it: the
 /// vertex shader's inputs as drawn, its clip depth rewritten where the back end lacks clip depth from
 /// zero.
-fn ours_replayed<B: Backend>(
+fn ours_replayed<B: Gpu>(
     b: &mut B,
     case: &Case,
     (vertices, indices): (&[f32], &[u8]),
@@ -631,7 +631,7 @@ fn ours_replayed<B: Backend>(
 /// `last` drawn through `passthrough` (its records laid out as `layout`) and the pixel program `ps`
 /// into a cleared target, blended by alpha with `blending`; returns the target's texels. With
 /// `aliased`, into [`ALIASED_SAMPLES`] samples through [`ALIASED_VIEWPORT`], resolved.
-fn drawn<B: Backend>(
+fn drawn<B: Gpu>(
     b: &mut B,
     passthrough: &ShaderModule,
     layout: &VertexLayoutDesc,
@@ -1462,7 +1462,7 @@ fn direct3d_stored(gpu: &Gpu, case: &Case, (vertices, indices): (&[f32], &[u8]))
 
 /// The same through the stage helper's storage route ([`Stages::stored`]) on the WebGPU back end, from
 /// the fxc or the dxc build; asserts the route counts its slow path once.
-fn ours_stored<B: Backend>(
+fn ours_stored<B: Gpu>(
     b: &mut B,
     case: &Case,
     (vertices, indices): (&[f32], &[u8]),
@@ -1908,7 +1908,7 @@ fn direct3d_geometry(
 
 /// The same through the stage helper on the WebGPU back end, a typed buffer read through a storage
 /// buffer (`TexelBufferRoute::Storage`), from the fxc or the dxc build.
-fn ours_geometry<B: Backend>(
+fn ours_geometry<B: Gpu>(
     b: &mut B,
     geometry: &str,
     case: &Case,

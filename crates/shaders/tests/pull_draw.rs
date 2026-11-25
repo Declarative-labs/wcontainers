@@ -17,7 +17,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
+    Gpu, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
     ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, FillMode, Format,
     FrontFace, HelperValue, Interpolation, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
     ReadSource, RenderTargetBlend, StageSet, StoreOp, TextureRegion, TextureUsage, Topology,
@@ -243,7 +243,7 @@ fn source(c: &[u8], dxil: bool) -> Source<'_> {
     }
 }
 
-fn ours<B: Backend>(
+fn ours<B: Gpu>(
     b: &mut B,
     code: &[Vec<u8>; 2],
     dxil: bool,

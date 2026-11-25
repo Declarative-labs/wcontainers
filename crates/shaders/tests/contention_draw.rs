@@ -11,7 +11,7 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
+    Gpu, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
     ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, FillMode, Format,
     FrontFace, HELPER_SET, LoadOp, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
     ReadSource, RenderTargetBlend, ShaderStage, SlotKind, SlowPath, StageSet, StoreOp,
@@ -142,7 +142,7 @@ fn converted(name: &str, dxil: bool) -> Converted {
 }
 
 /// The same through the WebGPU back end.
-fn ours<B: Backend>(b: &mut B, corners: &[[f32; 4]; 3], dxil: bool) -> (Vec<u8>, Vec<u8>) {
+fn ours<B: Gpu>(b: &mut B, corners: &[[f32; 4]; 3], dxil: bool) -> (Vec<u8>, Vec<u8>) {
     let vs = converted("vs_early", dxil);
     let ps = converted("ps_contend", dxil);
     assert_eq!(ps.reflection.slow_paths, [SlowPath::AtomicExchangeLoop]);

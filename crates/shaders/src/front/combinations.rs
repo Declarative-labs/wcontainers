@@ -1,6 +1,6 @@
 //! The combination tracker (plan 4.4): which state tuples each vertex shader is drawn with, so an
 //! implicit front can build a new program's pipelines ahead of its first draw with
-//! [`wcontainers_gpu::Backend::prepare`], and how many of the combinations it prepared were drawn.
+//! [`wcontainers_gpu::Gpu::prepare`], and how many of the combinations it prepared were drawn.
 //!
 //! The front names things by keys of its own: `V` a vertex shader, `P` a program (the pair it
 //! prepares), `T` a state tuple (blend, depth-stencil, raster, vertex layout, target layout, topology

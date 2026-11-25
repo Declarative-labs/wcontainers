@@ -25,7 +25,7 @@ use crate::build::{VEC4, WORD};
 use crate::{ConvertError, Converted};
 use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
+    Gpu, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
     CopyBufferTexture, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, Features, FillMode,
     Format, FrontFace, GpuError, IndexBinding, IndexFormat, MAX_BINDING_SETS, MAX_COLOR_TARGETS,
     Object, Origin, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, RingKind,
@@ -87,7 +87,7 @@ struct PrimitiveReplayValues {
 
 /// One API draw through [`GeometryReplay`].
 #[derive(Debug)]
-pub struct ReplayDraw<'a, B: Backend> {
+pub struct ReplayDraw<'a, B: Gpu> {
     /// The vertex stage's sets, layout, streams, indices and immediates, as for the API draw.
     pub vertex_sets: [Option<&'a B::BindingSet>; MAX_BINDING_SETS],
     pub vertex_layout: &'a B::VertexLayout,
@@ -105,7 +105,7 @@ pub struct ReplayDraw<'a, B: Backend> {
 }
 
 /// The records' texture, `width` texels a row.
-struct Records<B: Backend> {
+struct Records<B: Gpu> {
     texture: B::Texture,
     view: B::TextureView,
     width: u32,
@@ -116,7 +116,7 @@ struct Records<B: Backend> {
 /// captures the vertex stage, then the geometry shader's replay form, and the front draws the second
 /// capture through [`Self::passthrough`]. Made by [`Self::streamed`], the vertex stage alone, whose
 /// stream output is written from its capture, which the front draws the same way.
-pub struct GeometryReplay<B: Backend> {
+pub struct GeometryReplay<B: Gpu> {
     capture: B::Program,
     /// The geometry shader's replay; `None` for a vertex stage alone.
     geometry: Option<Replayed<B>>,
@@ -136,7 +136,7 @@ pub struct GeometryReplay<B: Backend> {
 }
 
 /// The geometry shader's replay form and the shape of what it captures.
-struct Replayed<B: Backend> {
+struct Replayed<B: Gpu> {
     program: B::Program,
     no_streams: B::VertexLayout,
     input_vertices: u32,
@@ -156,7 +156,7 @@ struct Replayed<B: Backend> {
 
 /// The line replay program and which record slots it takes along the line
 /// ([`super::LinePrograms`]).
-struct ReplayedLines<B: Backend> {
+struct ReplayedLines<B: Gpu> {
     program: B::Program,
     no_streams: B::VertexLayout,
     interpolated: u32,
@@ -166,7 +166,7 @@ struct ReplayedLines<B: Backend> {
 }
 
 /// The primitive replay program and the shape of what it captures.
-struct ReplayedPrimitives<B: Backend> {
+struct ReplayedPrimitives<B: Gpu> {
     program: B::Program,
     no_streams: B::VertexLayout,
     /// Four-word slots per record it writes, which the pass-through draws.
@@ -177,13 +177,13 @@ struct ReplayedPrimitives<B: Backend> {
 
 /// The states of a captured draw, which draws nothing: no colour writes, no depth test, no culling,
 /// the first vertex provoking (the order the replay and stream output read strips in).
-struct CaptureStates<B: Backend> {
+struct CaptureStates<B: Gpu> {
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
     raster: B::Raster,
 }
 
-fn capture_states<B: Backend>(backend: &mut B) -> Result<CaptureStates<B>, GpuError> {
+fn capture_states<B: Gpu>(backend: &mut B) -> Result<CaptureStates<B>, GpuError> {
     let blend = backend.create_blend(&BlendDesc {
         targets: [RenderTargetBlend {
             blend: None,
@@ -226,7 +226,7 @@ fn capture_states<B: Backend>(backend: &mut B) -> Result<CaptureStates<B>, GpuEr
     })
 }
 
-impl<B: Backend> GeometryReplay<B> {
+impl<B: Gpu> GeometryReplay<B> {
     /// Makes the capture program of `vertex` (converted, its inputs as drawn) whose output
     /// `stream_output` declares, with no geometry shader: each draw captures the vertex stage, writes
     /// its stream output on the host ([`SlowPath::StreamOutAfterReplay`]), and the front draws the
@@ -1045,7 +1045,7 @@ impl<B: Backend> GeometryReplay<B> {
 
 /// Captures `count` vertices of a replay `program` (with its empty vertex layout), which reads
 /// `values` and `records`, into `out`.
-fn replay_capture<B: Backend>(
+fn replay_capture<B: Gpu>(
     backend: &mut B,
     states: &CaptureStates<B>,
     (program, no_streams): (&B::Program, &B::VertexLayout),
@@ -1108,7 +1108,7 @@ fn replay_capture<B: Backend>(
 
 /// Copies `rows` rows of `width` record slots from the vertex stage's capture into the records'
 /// texture.
-fn copy_records<B: Backend>(
+fn copy_records<B: Gpu>(
     backend: &mut B,
     captured: &B::Buffer,
     records: &Records<B>,
@@ -1150,7 +1150,7 @@ struct Record {
 /// shader writes, as Direct3D's stream output stage: the whole primitives in order, each written only
 /// while every bound buffer of the stream holds it, and the filled sizes and the stream's counts
 /// advanced.
-fn stream_out<B: Backend>(
+fn stream_out<B: Gpu>(
     backend: &mut B,
     declared: &StreamDeclaration,
     targets: &StreamTargets<'_, B>,
@@ -1263,7 +1263,7 @@ fn stream_out<B: Backend>(
 /// `vertices` each the strip makes, in the order the stage helper's strip program lists them
 /// (`strips.wgsl`): a restart index ends a strip, and odd triangles take their last two vertices
 /// swapped. The read covers whole words, as buffer copies do.
-fn listed_indices<B: Backend>(
+fn listed_indices<B: Gpu>(
     backend: &mut B,
     index: &IndexBinding<'_, B>,
     (first, count): (u32, u32),
@@ -1328,7 +1328,7 @@ fn words_of(bytes: &[u8]) -> Vec<u32> {
 }
 
 /// A program of `module`'s vertex program alone.
-fn render_program<B: Backend>(
+fn render_program<B: Gpu>(
     backend: &mut B,
     module: &ShaderModule,
 ) -> Result<B::Program, GpuError> {
