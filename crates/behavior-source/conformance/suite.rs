@@ -7,12 +7,14 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
 /// The provided `execute_single_instruction` gives what `execute_single_instruction_in_place` does: its processor,
-/// and its memory mutations appended.
+/// and its memory mutations appended, but in what a known behavior leaves undecided.
 pub fn execute_agrees_with_execute_in_place<Source, Generator>(
     mut source: Source,
     generator: Generator,
 ) where
     Source: BehaviorSource,
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for instruction in Source::Architecture::list_instructions() {
@@ -27,14 +29,19 @@ pub fn execute_agrees_with_execute_in_place<Source, Generator>(
             let executed = source.execute_single_instruction(before.clone());
             match (in_place, executed) {
                 (Ok(()), Ok(executed)) => {
-                    let mut memory_mutations = before.memory_mutations;
+                    let mut memory_mutations = before.memory_mutations.clone();
                     memory_mutations.append(&mut mutated);
+                    let in_place = ExecutionState {
+                        processor,
+                        memory_mutations,
+                    };
                     assert!(
-                        executed
-                            == ExecutionState {
-                                processor,
-                                memory_mutations
-                            },
+                        is_same_outcome::<_, Infallible>(
+                            instruction,
+                            &before,
+                            Ok(executed),
+                            Ok(in_place)
+                        ),
                         "execute and execute in place disagree"
                     );
                 }
