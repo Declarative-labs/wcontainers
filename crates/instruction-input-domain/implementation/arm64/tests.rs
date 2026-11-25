@@ -6,11 +6,13 @@ use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
 use wcontainers_processor_architecture_arm64::operand::{Operand, RegisterThirtyOne};
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, LoadStoreInstruction, User};
+use wcontainers_processor_architecture_arm64::{
+    Arm64, Instruction, LoadStoreInstruction, User, VIRTUAL_ADDRESS_BITS,
+};
 
 use crate::{
-    ADDRESS_TAG_SHIFT, AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison,
-    DataPage, GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
+    AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison, DataPage,
+    GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
     UPPER_DATA_ADDRESS, to_access_address,
 };
 
@@ -108,7 +110,8 @@ fn read_operand(
         }
         OperandType::RegisterValue {
             field, thirty_one, ..
-        } => Some(OperandValue::Bits(
+        }
+        | OperandType::Address { field, thirty_one } => Some(OperandValue::Bits(
             registers
                 .get(field.read(word) as usize)
                 .copied()
@@ -186,7 +189,7 @@ fn read_operand(
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             Some(OperandValue::Bits(
-                base.wrapping_add(layout.offset) >> ADDRESS_TAG_SHIFT,
+                base.wrapping_add(layout.offset) & (u64::MAX << VIRTUAL_ADDRESS_BITS),
             ))
         }
         OperandType::CodePlacement => Some(OperandValue::CodePlacement(
@@ -216,9 +219,9 @@ fn read_operand(
     }
 }
 
-/// The address without its tag.
+/// The address without the bits above the 48 a program can use.
 fn untag(address: u64) -> u64 {
-    address & (u64::MAX >> (u64::BITS - ADDRESS_TAG_SHIFT))
+    address & !(u64::MAX << VIRTUAL_ADDRESS_BITS)
 }
 
 /// Whether the instruction adds a register to its base that is its base.
@@ -366,6 +369,7 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 }
                 let Some(
                     OperandType::RegisterValue { field, .. }
+                    | OperandType::Address { field, .. }
                     | OperandType::ConvertedInteger { field, .. },
                 ) = operand_types.get(index)
                 else {
@@ -377,7 +381,7 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 let shared = operand_types.iter().enumerate().any(|(other, operand_type)| {
                     matches!(operand_type, OperandType::Comparand { field: later, .. } if names(later))
                         || other > index
-                            && matches!(operand_type, OperandType::RegisterValue { field: later, .. } if names(later))
+                            && matches!(operand_type, OperandType::RegisterValue { field: later, .. } | OperandType::Address { field: later, .. } if names(later))
                 });
                 // A placed access's base holds the address that places it.
                 let based = placed && number == RN.read(word);

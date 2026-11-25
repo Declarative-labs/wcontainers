@@ -204,17 +204,21 @@ pub const UNMODELED_SYSTEM_REGISTERS: [SystemRegisterEncoding; 2] = [
     SystemRegisterEncoding::new(3, 3, 2, 4, 1),
 ];
 
-/// The ID registers' space, op0 3, op1 0, 1 or 3, CRn 0: [FEAT_IDST](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_IDST) traps a read
-/// at EL0 where it reaches no register EL0 may read, and a write there is undefined.
+/// The ID registers' space, op0 3, op1 0, 1 or 3, CRn 0, CRm 0 to 7: [FEAT_IDST](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_IDST) traps a
+/// read at EL0 where it reaches no register EL0 may read, and a write there is undefined; with CRm 8 to 15 an access
+/// is undefined, as a Neoverse V2 shows on each of them.
 fn is_identification_register(encoding: SystemRegisterEncoding) -> bool {
     const ID_OP0: u32 = 3;
     const ID_OP1: [u32; 3] = [0, 1, 3];
+    /// The first CRm past the ID space.
+    const ID_CRM_END: u32 = 8;
     encoding.op0 == ID_OP0
         && (encoding.op1 == ID_OP1[0]
             || encoding.op1 == ID_OP1[1]
             || encoding.op1 == ID_OP1[2]
             || (crate::planted::is(429) && encoding.op1 == 2))
         && encoding.crn == 0
+        && (encoding.crm < ID_CRM_END || crate::planted::is(507))
 }
 
 /// What an access to the register of the 15-bit field does.

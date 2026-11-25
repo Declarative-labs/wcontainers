@@ -83,6 +83,9 @@ const fn is_possible<LevelSpecific>(processor: &Processor<LevelSpecific>) -> boo
     processor.floating_point_control & !FLOATING_POINT_CONTROL_BITS == 0
 }
 
+/// Where the top byte of an address starts, which TBI0 leaves out of translation.
+const ADDRESS_TAG_BITS_SHIFT: u32 = u64::BITS - u8::BITS;
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct CriticalValueCut {
     domain: Arm64InputDomain,
@@ -223,6 +226,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::SplitImmediate(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
+        | OperandType::Address { .. }
         | OperandType::FloatingPointValue { .. }
         | OperandType::ConvertedInteger { .. }
         | OperandType::ConvertedFloatingPoint { .. }
@@ -371,6 +375,7 @@ impl Cut {
                 let source = matches!(
                     operand_type,
                     OperandType::RegisterValue { .. }
+                        | OperandType::Address { .. }
                         | OperandType::FloatingPointValue { .. }
                         | OperandType::UnsignedImmediate(_)
                         | OperandType::SignedImmediate(_)
@@ -551,12 +556,29 @@ impl Cut {
                             })
                             .map(|index| (self.types[index], self.values[index][chosen[index]])),
                     );
-                    facts.undefined = self
+                    facts.undefined |= self
                         .reserved
                         .iter()
                         .any(|pattern| pattern.is_matching(facts.word));
                 }
-                Group::Condition | Group::Selector => {}
+                Group::Condition => {}
+                // An encoding that is undefined or that EL1 traps decides the outcome whatever the state holds.
+                Group::Selector => {
+                    if let Some(OperandValue::Bits(field)) = self.find(chosen, |operand_type| {
+                        matches!(operand_type, OperandType::SystemRegister(_))
+                    }) {
+                        let write = self.instruction == Instruction::MsrRegister;
+                        facts.undefined |= match to_system_register_access(field as u32) {
+                            SystemRegisterAccess::Undefined | SystemRegisterAccess::Trapped => true,
+                            SystemRegisterAccess::Fixed(_)
+                            | SystemRegisterAccess::ReadOnlyZero
+                            | SystemRegisterAccess::ReadTrapped => write,
+                            SystemRegisterAccess::Held(_) | SystemRegisterAccess::ReadsZero => {
+                                false
+                            }
+                        };
+                    }
+                }
                 Group::Flags => {
                     let flags = self.find(chosen, |operand_type| {
                         operand_type == OperandType::ConditionFlags
@@ -677,6 +699,9 @@ impl Cut {
                 return Allowed::Every(every);
             };
             let reached = to_system_register_access(field as u32);
+            if facts.undefined {
+                return Allowed::Every(vec![to_representative(self.types[index], every.len())]);
+            }
             if reached != SystemRegisterAccess::Held(held) {
                 return Allowed::EachOnce(every);
             }
@@ -745,7 +770,13 @@ impl Cut {
                     != Some(OperandValue::AccessPlacement(
                         AccessPlacement::UpperPageStart,
                     ));
+                // An address above those a program can use, but for its tag, faults at level 0 whatever its pages allow.
+                let past_addressable = matches!(
+                    self.find(chosen, |operand_type| operand_type == OperandType::AddressTag),
+                    Some(OperandValue::Bits(high)) if high & !(u64::MAX << ADDRESS_TAG_BITS_SHIFT) != 0
+                );
                 match operand_type {
+                    OperandType::DataPagePermission(_) if past_addressable => one,
                     OperandType::DataPagePermission(DataPage::Lower) if !reaches_lower => one,
                     OperandType::DataPagePermission(DataPage::Upper) if !reaches_upper => one,
                     _ => all,

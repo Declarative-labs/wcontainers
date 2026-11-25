@@ -55,7 +55,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 375] = [
+pub const PLANTED_BUGS: [PlantedBug; 376] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2305,5 +2305,11 @@ pub const PLANTED_BUGS: [PlantedBug; 375] = [
         instruction: Instruction::FmsubHalf,
         planted_by: PlantedBy::FourthCheck,
         what: "a tiny result not flushed under FZ16",
+    },
+    PlantedBug {
+        number: 507,
+        instruction: Instruction::Mrs,
+        planted_by: PlantedBy::FourthCheck,
+        what: "the ID space traps CRm 8 to 15 too, as the model did before the fourth check",
     },
 ];

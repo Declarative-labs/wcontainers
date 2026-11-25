@@ -24,6 +24,7 @@ use itertools::{Either, Itertools};
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
+use wcontainers_processor_architecture_arm64::branch::{BranchOperation, to_branch_operation};
 use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RD, RDVL_IMM6, RN, RT};
 use wcontainers_processor_architecture_arm64::floating_point::{
     ALTERNATIVE_HALF, DEFAULT_NAN, DIVIDE_BY_ZERO, FLUSH_HALF_TO_ZERO, FLUSH_TO_ZERO,
@@ -35,12 +36,13 @@ use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
 use wcontainers_processor_architecture_arm64::system_register::{
-    SYSTEM_REGISTER, SYSTEM_REGISTERS,
+    SYSTEM_REGISTER, UNMODELED_SYSTEM_REGISTERS,
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
-    INSTRUCTION_SIZE, Instruction, InstructionFetch, LoadStoreInstruction, PagePermission,
-    Processor, User, ZERO_PROCESSOR, to_implicit_inputs, writes_condition_flags,
+    INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
+    PagePermission, Processor, User, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR, to_implicit_inputs,
+    writes_condition_flags,
 };
 
 #[cfg(test)]
@@ -64,8 +66,14 @@ const BIT_NUMBER_FIELD_BITS: u32 = 6;
 const ELEMENT_TOP_BITS: [u32; 4] = [u8::BITS - 1, u16::BITS - 1, u32::BITS - 1, u64::BITS - 1];
 /// The second ordinary register beside X0, which is also the link register a branch with link writes.
 const LINK_REGISTER: u32 = 30;
-/// The top byte of a tagged address: both nibbles set and different, so a fault address shows which it keeps.
-const ADDRESS_TAG: u64 = 0xA5;
+/// What an address may hold above the 48 bits a program can use: nothing; a tag in the top byte, both nibbles set and
+/// different, so that a fault address shows which it keeps; bits 48 to 55; and the upper half's bits.
+const ADDRESS_HIGH_BITS: [u64; 4] = [
+    0,
+    0xA5 << ADDRESS_TAG_SHIFT,
+    0xFF << VIRTUAL_ADDRESS_BITS,
+    u64::MAX << VIRTUAL_ADDRESS_BITS,
+];
 /// Where an address's tag starts, the top byte that TBI0 leaves out.
 const ADDRESS_TAG_SHIFT: u32 = u64::BITS - u8::BITS;
 /// FPSR's cumulative saturation flag, which no scalar floating-point instruction sets: every state that gives FPSR no
@@ -126,6 +134,12 @@ pub enum OperandType {
     RegisterValue {
         field: Field,
         width: RegisterWidth,
+        thirty_one: RegisterThirtyOne,
+    },
+    /// The value of a 64-bit register an instruction takes as an address, a branch target or a pointer: also with bits
+    /// 48 to 55 set, in the upper half and tagged.
+    Address {
+        field: Field,
         thirty_one: RegisterThirtyOne,
     },
     UnsignedImmediate(Field),
@@ -326,16 +340,33 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .map(OperandValue::RegisterNumber)
                 .to_vec(),
             OperandType::RegisterValue { width, .. } => to_register_values(width),
+            OperandType::Address { .. } => {
+                let mut values = to_register_values(RegisterWidth::Bits64);
+                // The lowest bit past the addressable ones alone, besides the high bits a data address takes.
+                let lowest_past = 1 << VIRTUAL_ADDRESS_BITS;
+                values.extend(
+                    ADDRESS_HIGH_BITS[1..]
+                        .iter()
+                        .chain([&lowest_past])
+                        .map(|high| OperandValue::Bits(high | CODE_ADDRESS)),
+                );
+                values
+            }
             OperandType::ConvertedInteger {
                 width, precision, ..
             } => to_converted_integer_values(width, precision),
             OperandType::ConvertedFloatingPoint {
                 precision, width, ..
             } => to_converted_floating_point_values(precision, width),
-            // Each register the table names; every encoding it leaves out behaves as one of them.
-            OperandType::SystemRegister(_) => SYSTEM_REGISTERS
-                .iter()
-                .map(|(_, encoding, _)| OperandValue::Bits(u64::from(encoding.to_field())))
+            // Every encoding the field can hold, each op0, op1, CRn, CRm and op2 with every other, but the two random
+            // number registers, which no model can hold.
+            OperandType::SystemRegister(field) => (0..1_u32 << field.width)
+                .filter(|encoding| {
+                    !UNMODELED_SYSTEM_REGISTERS
+                        .iter()
+                        .any(|unmodeled| unmodeled.to_field() == *encoding)
+                })
+                .map(|encoding| OperandValue::Bits(u64::from(encoding)))
                 .collect(),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
             OperandType::VectorValue { bytes, .. } => to_vector_values(bytes),
@@ -458,7 +489,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .map(OperandValue::Comparison)
                 .collect()
             }
-            OperandType::AddressTag => [0, ADDRESS_TAG].map(OperandValue::Bits).to_vec(),
+            OperandType::AddressTag => ADDRESS_HIGH_BITS.map(OperandValue::Bits).to_vec(),
             OperandType::CodePlacement => [CodePlacement::PageStart, CodePlacement::PageEnd]
                 .map(OperandValue::CodePlacement)
                 .to_vec(),
@@ -586,7 +617,8 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 | OperandType::SystemRegister(_) => {}
                 OperandType::RegisterValue {
                     field, thirty_one, ..
-                } => {
+                }
+                | OperandType::Address { field, thirty_one } => {
                     let OperandValue::Bits(value) = operand else {
                         reject_mismatch(operand_type, operand)
                     };
@@ -679,9 +711,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             .and_then(|load_store| load_store.to_access_layout(word, &processor));
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
-            let base = address
-                .wrapping_sub(layout.offset)
-                .wrapping_add(tag << ADDRESS_TAG_SHIFT);
+            let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
             match processor
                 .general_purpose_registers
                 .get_mut(RN.read(word) as usize)
@@ -846,7 +876,7 @@ fn to_vector_values(bytes: u32) -> Vec<OperandValue> {
     });
     let top_bits = u128::from_le_bytes([1 << (u8::BITS - 1); size_of::<u128>()]);
     let largest_positive = !top_bits;
-    [
+    let mut values = [
         0,
         mask,
         counted,
@@ -854,8 +884,44 @@ fn to_vector_values(bytes: u32) -> Vec<OperandValue> {
         largest_positive & mask,
         top_bits & mask,
     ]
-    .map(OperandValue::Vector)
-    .to_vec()
+    .to_vec();
+    // A whole register's lanes of each element size: each the most negative, each the largest positive, and the two
+    // alternating, so that every lane holds each end of the signed range beside one of the other sign.
+    if bytes == size_of::<u128>() as u32 {
+        for element_bits in ELEMENT_TOP_BITS.map(|top| top + 1) {
+            let lanes = u128::BITS / element_bits;
+            let fill = |lane: &dyn Fn(u32) -> u128| {
+                (0..lanes).fold(0, |value, place| {
+                    value | (lane(place) << (place * element_bits))
+                })
+            };
+            let most_negative = 1_u128 << (element_bits - 1);
+            let largest = most_negative - 1;
+            for pattern in [
+                fill(&|_| most_negative),
+                fill(&|_| largest),
+                fill(&|place| {
+                    if place % 2 == 0 {
+                        largest
+                    } else {
+                        most_negative
+                    }
+                }),
+                fill(&|place| {
+                    if place % 2 == 0 {
+                        most_negative
+                    } else {
+                        largest
+                    }
+                }),
+            ] {
+                if !values.contains(&pattern) {
+                    values.push(pattern);
+                }
+            }
+        }
+    }
+    values.into_iter().map(OperandValue::Vector).collect()
 }
 
 /// Zero, one and the highest bit of each element size, for a field this wide that can name a bit; in a field of six
@@ -950,6 +1016,16 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
         Operand::GeneralPurposeRegister { width, .. } => Some(width),
         _ => None,
     });
+    // A branch to a register's value, and pointer authentication, take a register as an address.
+    let takes_address = record.class == InstructionClass::PointerAuthentication
+        || matches!(
+            to_branch_operation(instruction),
+            Some(
+                BranchOperation::BranchToRegister
+                    | BranchOperation::BranchWithLinkToRegister
+                    | BranchOperation::Return
+            )
+        );
     let (from_integer, to_integer) = match to_floating_point_operation(instruction) {
         Some(FloatingPointOperation::ConvertFromInteger { .. }) => (converted_precision, None),
         Some(FloatingPointOperation::ConvertToInteger { .. }) => (None, converted_width),
@@ -976,6 +1052,11 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
                         field: number,
                         width,
                         precision,
+                    }
+                } else if takes_address && width == RegisterWidth::Bits64 {
+                    OperandType::Address {
+                        field: number,
+                        thirty_one,
                     }
                 } else {
                     OperandType::RegisterValue {
