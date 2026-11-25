@@ -10,6 +10,8 @@ use crate::integer::{
     to_accumulator, to_data, to_mask, to_result_flags, with_status,
 };
 use crate::vector::{Lane, LaneOperation, Signedness, VectorEncoding, find_vector_form, join, saturate, split, to_signed};
+use crate::sse::{Combination, LaneSelect, SseOperation};
+use crate::float::Arrangement;
 use crate::{Flags, Instruction};
 
 /// Who planted a bug first.
@@ -29,6 +31,8 @@ pub enum Origin {
     Port,
     /// The sync that lists every form, for the behavior that raises #UD.
     WholeList,
+    /// The pass that models the rest of SSE to SSE4.2, AES, PCLMULQDQ, SHA and GFNI.
+    SseFamily,
 }
 
 /// The forms a bug shows on.
@@ -50,6 +54,8 @@ pub enum Family {
     VexVector,
     /// Every form a chip may lack.
     Optional,
+    /// The forms of [`crate::sse::SSE_FORMS`] whose operation the test accepts.
+    Sse(fn(SseOperation) -> bool),
     Every,
 }
 
@@ -75,11 +81,13 @@ impl PlantedBug {
                     || find_integer_form(instruction).is_some_and(|form| form.place != OperandPlace::Register)
                     || find_vector_form(instruction).is_some_and(|form| form.place != OperandPlace::Register)
                     || find_float_form(instruction).is_some_and(|form| form.place != OperandPlace::Register)
+                    || crate::sse::find_sse_form(instruction).is_some_and(|form| form.place != OperandPlace::Register)
             }
             Family::Branch => crate::branch::find_branch_form(instruction).is_some(),
             Family::Forms(forms) => forms.contains(&instruction),
             Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
             Family::Optional => crate::is_optional(instruction),
+            Family::Sse(test) => crate::sse::find_sse_form(instruction).is_some_and(|form| test(form.operation)),
             Family::Every => true,
         }
     }
@@ -692,6 +700,69 @@ pub enum Bug {
     HaltInvalidOpcode,
     /// RDMSR completes at ring 3.
     ReadModelSpecificRegisterCompletes,
+    // The SSE family's pass.
+    /// PEXTRB to PINSRQ and EXTRACTPS take lane 0 for an immediate beyond the lanes.
+    LaneSelectorUnmasked,
+    /// MOVHPS and MOVHPD store the low quadword.
+    HighQuadwordStoreReadsLow,
+    /// A lane moved to a 32-bit register keeps the upper half.
+    ExtractKeepsUpperHalf,
+    /// MOVD, MOVQ, LDDQU and MOVNTDQA into an XMM register keep the lanes above.
+    InsertZeroingKeepsUpperLanes,
+    /// MOVMSKPS, MOVMSKPD and PMOVMSKB take each lane's lowest bit.
+    MoveMaskFromLowBits,
+    /// MOVAPS to memory does not fault when misaligned.
+    AlignedStoreMisalignedNoFault,
+    /// MOVNTDQA does not fault when misaligned.
+    NonTemporalLoadUnaligned,
+    /// LDMXCSR clears reserved bits instead of raising #GP(0).
+    LoadMxcsrReservedNoFault,
+    /// PREFETCHh faults as a load does.
+    PrefetchFaults,
+    /// CVTSI2SS and CVTSI2SD round to nearest whatever MXCSR says.
+    IntegerToFloatRoundsToNearest,
+    /// A conversion to 64 bits writes the 32-bit integer indefinite.
+    FloatToIntegerIndefiniteThirtyTwo,
+    /// CVTSI2SS, CVTSI2SD, ROUNDSS and ROUNDSD zero the lanes above the first.
+    ScalarConversionZeroesUpperLanes,
+    /// ROUND reports inexact under immediate bit 3.
+    RoundReportsSuppressedInexact,
+    /// ROUND takes its immediate's mode under immediate bit 2.
+    RoundIgnoresMxcsrSelect,
+    /// BLENDVPS, BLENDVPD and PBLENDVB select by each lane's lowest bit of XMM0.
+    VariableBlendFromLowBit,
+    /// MPSADBW always takes the source's first block.
+    MultipleSumSourceBlockIgnored,
+    /// CRC32 divides by the IEEE 802.3 polynomial.
+    Crc32EthernetPolynomial,
+    /// CRC32 into a 64-bit register keeps the upper half.
+    Crc32KeepsUpperHalf,
+    /// PCMPESTRI64 and PCMPESTRM64 read their lengths from EAX and EDX.
+    StringLengthReadsLowHalf,
+    /// A string compare's masked negation also negates past the second string's end.
+    StringMaskedNegationWhole,
+    /// A string compare's ZF reports the first string's end.
+    StringZeroFlagFromFirst,
+    /// PCMPESTRI and PCMPISTRI give the least significant index under immediate bit 6.
+    StringIndexMostSignificantIgnored,
+    /// AESENC skips MixColumns.
+    AesEncryptSkipsMixColumns,
+    /// AESKEYGENASSIST rotates its words left.
+    AesKeygenRotatesLeft,
+    /// PCLMULQDQ always takes the source's low quadword.
+    CarryLessMultiplySourceSelectIgnored,
+    /// SHA1RNDS4 takes the first round constant for every function.
+    Sha1RoundsFirstConstant,
+    /// SHA256RNDS2 does one round.
+    Sha256RoundsOneRound,
+    /// GF2P8MULB reduces by another polynomial.
+    GaloisMultiplyWrongPolynomial,
+    /// GF2P8AFFINEQB and GF2P8AFFINEINVQB take the matrix's rows in reverse.
+    GaloisAffineRowsReversed,
+    /// DPPS sums its products one after another.
+    DotProductSumsInOrder,
+    /// DPPS's first sums take each lane's own product first.
+    DotProductOwnLaneFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -702,9 +773,13 @@ const fn integer(test: fn(Operation) -> bool) -> Family {
     Family::Integer(test)
 }
 
+const fn sse(test: fn(SseOperation) -> bool) -> Family {
+    Family::Sse(test)
+}
+
 use Origin::{
     FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass,
-    WholeList,
+    WholeList, SseFamily,
 };
 
 /// Every planted bug of every pass and check, with its family.
@@ -1005,6 +1080,37 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
     row(Bug::UndefinedRaisesGeneralProtection, "forms a chip may lack", Family::Optional, WholeList),
+    row(Bug::LaneSelectorUnmasked, "lane moves by an immediate", sse(|o| matches!(o, SseOperation::Extract { select: LaneSelect::Immediate, .. } | SseOperation::Insert { select: LaneSelect::Immediate, .. })), SseFamily),
+    row(Bug::HighQuadwordStoreReadsLow, "MOVHPS, MOVHPD", Family::Forms(&[Instruction::MovhpsMemqXmmps, Instruction::MovhpdMemqXmmsd]), SseFamily),
+    row(Bug::ExtractKeepsUpperHalf, "lane moves to a general register", sse(|o| matches!(o, SseOperation::Extract { .. })), SseFamily),
+    row(Bug::InsertZeroingKeepsUpperLanes, "zeroing moves into XMM", sse(|o| matches!(o, SseOperation::Insert { zeroing: true, .. })), SseFamily),
+    row(Bug::MoveMaskFromLowBits, "MOVMSKPS, MOVMSKPD, PMOVMSKB", sse(|o| matches!(o, SseOperation::MoveMask(_))), SseFamily),
+    row(Bug::AlignedStoreMisalignedNoFault, "MovapsMempsXmmps", Family::Forms(&[Instruction::MovapsMempsXmmps]), SseFamily),
+    row(Bug::NonTemporalLoadUnaligned, "MovntdqaXmmdqMemdq", Family::Forms(&[Instruction::MovntdqaXmmdqMemdq]), SseFamily),
+    row(Bug::LoadMxcsrReservedNoFault, "LdmxcsrMemd", Family::Forms(&[Instruction::LdmxcsrMemd]), SseFamily),
+    row(Bug::PrefetchFaults, "PREFETCHh", sse(|o| o == SseOperation::Prefetch), SseFamily),
+    row(Bug::IntegerToFloatRoundsToNearest, "CVTSI2SS, CVTSI2SD", sse(|o| matches!(o, SseOperation::IntegerToFloat(_))), SseFamily),
+    row(Bug::FloatToIntegerIndefiniteThirtyTwo, "conversions to integers", sse(|o| matches!(o, SseOperation::FloatToInteger { .. })), SseFamily),
+    row(Bug::ScalarConversionZeroesUpperLanes, "scalar conversions and rounds", sse(|o| matches!(o, SseOperation::IntegerToFloat(_) | SseOperation::Round { arrangement: Arrangement::Scalar, .. })), SseFamily),
+    row(Bug::RoundReportsSuppressedInexact, "ROUND", sse(|o| matches!(o, SseOperation::Round { .. })), SseFamily),
+    row(Bug::RoundIgnoresMxcsrSelect, "ROUND", sse(|o| matches!(o, SseOperation::Round { .. })), SseFamily),
+    row(Bug::VariableBlendFromLowBit, "variable blends", sse(|o| matches!(o, SseOperation::Combine(Combination::VariableBlend(_)))), SseFamily),
+    row(Bug::MultipleSumSourceBlockIgnored, "MPSADBW", sse(|o| o == SseOperation::Combine(Combination::MultipleSumAbsoluteDifferences)), SseFamily),
+    row(Bug::Crc32EthernetPolynomial, "CRC32", sse(|o| o == SseOperation::Crc32), SseFamily),
+    row(Bug::Crc32KeepsUpperHalf, "CRC32", sse(|o| o == SseOperation::Crc32), SseFamily),
+    row(Bug::StringLengthReadsLowHalf, "string compares", sse(|o| matches!(o, SseOperation::CompareStrings { .. })), SseFamily),
+    row(Bug::StringMaskedNegationWhole, "string compares", sse(|o| matches!(o, SseOperation::CompareStrings { .. })), SseFamily),
+    row(Bug::StringZeroFlagFromFirst, "string compares", sse(|o| matches!(o, SseOperation::CompareStrings { .. })), SseFamily),
+    row(Bug::StringIndexMostSignificantIgnored, "string compares", sse(|o| matches!(o, SseOperation::CompareStrings { .. })), SseFamily),
+    row(Bug::AesEncryptSkipsMixColumns, "AES", sse(|o| matches!(o, SseOperation::Combine(Combination::Aes(_)))), SseFamily),
+    row(Bug::AesKeygenRotatesLeft, "AES", sse(|o| matches!(o, SseOperation::Combine(Combination::Aes(_)))), SseFamily),
+    row(Bug::CarryLessMultiplySourceSelectIgnored, "PCLMULQDQ", sse(|o| o == SseOperation::Combine(Combination::CarryLessMultiply)), SseFamily),
+    row(Bug::Sha1RoundsFirstConstant, "SHA", sse(|o| matches!(o, SseOperation::Combine(Combination::Sha(_)))), SseFamily),
+    row(Bug::Sha256RoundsOneRound, "SHA", sse(|o| matches!(o, SseOperation::Combine(Combination::Sha(_)))), SseFamily),
+    row(Bug::GaloisMultiplyWrongPolynomial, "GFNI", sse(|o| matches!(o, SseOperation::Combine(Combination::Galois(_)))), SseFamily),
+    row(Bug::GaloisAffineRowsReversed, "GFNI", sse(|o| matches!(o, SseOperation::Combine(Combination::Galois(_)))), SseFamily),
+    row(Bug::DotProductSumsInOrder, "DPPS", sse(|o| o == SseOperation::DotProduct(Precision::Single)), SseFamily),
+    row(Bug::DotProductOwnLaneFirst, "DPPS", sse(|o| o == SseOperation::DotProduct(Precision::Single)), SseFamily),
 ];
 
 #[cfg(feature = "planted-bugs")]

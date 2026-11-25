@@ -37,6 +37,7 @@ pub mod integer;
 pub mod memory;
 pub mod planted;
 mod simulation;
+pub mod sse;
 pub mod vector;
 #[cfg(test)]
 mod tests;
@@ -131,6 +132,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
         .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
         .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
+        .chain(sse::SSE_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -305,6 +307,11 @@ pub enum PreciseInstruction {
     Integer {
         instruction: Instruction,
         behavior: IntegerBehavior,
+    },
+    /// A form of [`sse::SSE_FORMS`], and what a store of it writes below a fault part-way.
+    Sse {
+        instruction: Instruction,
+        across_fault: StoreAcrossFault,
     },
     /// The form raises #UD once it is fetched: the chip lacks its feature, or the form is one of [`FORBIDDEN_FORMS`].
     Undefined(Instruction),

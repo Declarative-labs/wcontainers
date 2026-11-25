@@ -45,6 +45,7 @@ use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
+use wcontainers_processor_architecture_x86_64::sse::find_sse_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{DataAccess, Flags, Instruction, PagePermission, X86_64};
 
@@ -191,6 +192,7 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
         | OperandType::CpuidUpperHalves => true,
+        OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }
 }
@@ -208,6 +210,12 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
         return Some(AccessShape {
             write: in_destination && form.operation.writes_destination(),
             alignment: None,
+        });
+    }
+    if let Some(form) = find_sse_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape {
+            write: form.writes_memory(),
+            alignment: form.requires_alignment().then_some(SSE_ALIGNMENT),
         });
     }
     if let Some(form) = find_float_form(instruction) {
@@ -234,6 +242,9 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
         OperandValue::OperandSize(size) => Some(*size),
         _ => None,
     });
+    if let Some(form) = find_sse_form(instruction) {
+        return wcontainers_instruction_input_domain_x86_64::sse::to_access_bytes(form, size);
+    }
     match find_integer_form(instruction) {
         Some(form) => to_access_bytes(form, size),
         None => size.map_or(1, |size| size.to_bytes()),
