@@ -54,7 +54,7 @@ wcontainers-kvm = { path = "../../../kvm" }
 wcontainers-kvm-direct = { path = "../../../kvm/implementation/direct" }
 # The ring 0 handler, assembled at start-up, and the instruction a state starts with, decoded to refuse those it
 # cannot step (MIT).
-iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "code_asm", "decoder"] }
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "code_asm", "decoder", "instr_info"] }
 # The handler's slot and tables as bytes, copied to and from guest memory.
 zerocopy.workspace = true
 

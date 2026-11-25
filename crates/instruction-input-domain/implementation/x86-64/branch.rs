@@ -53,6 +53,7 @@ pub fn build_state(form: &BranchForm, operands: &[(OperandType, OperandValue)]) 
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,
         vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
         ..ZERO_PROCESSOR
     };
     let (mut code, mut layout, mut register, mut displacement) = (form.codes[0], CodeLayout::PageStart, 0, 0);

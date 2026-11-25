@@ -1,5 +1,5 @@
-//! x86-64 as Linux runs a 64-bit program at ring 3: IF set, IOPL 0, CR0.AM set, UMIP and FSGSBASE on, no XSAVE
-//! state beyond SSE yet.
+//! x86-64 as Linux runs a 64-bit program at ring 3: IF set, IOPL 0, CR0.AM set, UMIP, FSGSBASE, OSXSAVE and PKE
+//! on, and XCR0 enabling x87, SSE and AVX state, of which the state holds SSE's and AVX's.
 //!
 //! A program's addresses are [`ADDRESSABLE`](ProcessorArchitecture::ADDRESSABLE), the lower canonical half. Every
 //! canonical address above it is the kernel's: present to the chip and refused to ring 3, so an access there is a
@@ -129,9 +129,9 @@ impl ProcessorArchitecture for X86_64 {
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
 ///
 /// TODO: temporary placeholder until the rest of the state is designed: the x87 stack with its control, status and
-/// tag words and MMX; YMM and ZMM beyond 128 bits, XMM16 to XMM31 and the opmask registers; APX's R16 to R31; AMX's
-/// tile configuration and tiles; PKRU; CET's shadow stack pointer; the segment selectors; the trap flag. The chip
-/// source checks that an instruction leaves the x87 state and the selectors as they were.
+/// tag words and MMX; ZMM beyond 256 bits, XMM16 to XMM31 and the opmask registers; APX's R16 to R31; AMX's tile
+/// configuration and tiles; PKRU; CET's shadow stack pointer; the segment selectors; the trap flag. The chip source
+/// checks that an instruction leaves the x87 state and the selectors as they were.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor {
     /// In the order of their encodings, RSP at [`STACK_POINTER`].
@@ -148,6 +148,8 @@ pub struct Processor {
     pub mxcsr: u32,
     /// The low 128 bits of each vector register.
     pub vector_registers: [u128; VECTOR_REGISTERS],
+    /// Bits 128 to 255 of each vector register, the upper halves of YMM0 to YMM15, which XCR0's AVX bit enables.
+    pub upper_vector_halves: [u128; VECTOR_REGISTERS],
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
 }
@@ -161,6 +163,7 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     gs_base: 0,
     mxcsr: MXCSR_DEFAULT,
     vector_registers: [0; VECTOR_REGISTERS],
+    upper_vector_halves: [0; VECTOR_REGISTERS],
     exception: None,
 };
 

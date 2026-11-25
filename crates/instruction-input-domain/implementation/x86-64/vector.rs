@@ -221,6 +221,7 @@ pub fn build_xmm_state(
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,
         vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
         ..ZERO_PROCESSOR
     };
     let (mut registers, mut access, mut layout) = ([0, 0], None, CodeLayout::PageStart);

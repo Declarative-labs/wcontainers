@@ -721,6 +721,7 @@ pub fn build_state(form: &IntegerForm, operands: &[(OperandType, OperandValue)])
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,
         vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
         flags: choice.flags.unwrap_or(Flags::empty()),
         ..ZERO_PROCESSOR
     };

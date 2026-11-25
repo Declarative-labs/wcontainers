@@ -24,7 +24,7 @@ mod on_chip {
 
     use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
     use wcontainers_behavior_source_kvm_single_step_x86_64::{
-        EntryPath, MemoryLoading, Options, SingleStepMachine, Stepping,
+        EntryPath, MemoryLoading, Options, SingleStepMachine,
     };
     use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
     use wcontainers_distinguishing_state_generator_x86_64::CriticalValueCut;
@@ -40,7 +40,6 @@ mod on_chip {
     const PARKED: Options = Options {
         loading: MemoryLoading::Full,
         entry: EntryPath::Parked,
-        stepping: Stepping::TrapFlag,
     };
 
     type State = ExecutionState<'static, X86_64>;

@@ -8,11 +8,13 @@ use std::mem::offset_of;
 
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{
-    AsmRegister64, CodeAssembler, CodeLabel, cr2, cr3, dr6, eax, ptr, qword_ptr, r8, r9, r10, r11, r12, r13,
+    AsmRegister64, CodeAssembler, CodeLabel, cr2, cr3, dr6, eax, edx, ptr, qword_ptr, r8, r9, r10, r11, r12, r13,
     r14, r15, rax, rbp, rbx, rcx, rdi, rdx, rsi, rsp,
 };
 
-use crate::layout::{HANDLER, HANDLER_BYTES, Registers, SLOT, STACK_TOP, Slot, pushes_error_code, to_kernel};
+use crate::layout::{
+    HANDLER, HANDLER_BYTES, Registers, SAVED_COMPONENTS, SLOT, STACK_TOP, Slot, pushes_error_code, to_kernel,
+};
 
 /// The general registers but RSP, by their numbers.
 const LOADED: [(usize, AsmRegister64); 15] = [
@@ -79,7 +81,10 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.set_label(&mut entry)?;
     a.mov(rax, qword_ptr(to_slot(offset_of!(Slot, page_table))))?;
     a.mov(cr3, rax)?;
-    a.fxrstor64(ptr(to_slot(offset_of!(Slot, before_fx))))?;
+    // XRSTOR64 loads the components EDX:EAX names, which the general registers loaded after overwrite.
+    a.mov(eax, SAVED_COMPONENTS as u32)?;
+    a.xor(edx, edx)?;
+    a.xrstor64(ptr(to_slot(offset_of!(Slot, before_xsave))))?;
     a.mov(rax, qword_ptr(to_before(offset_of!(Registers, fs_base))))?;
     a.wrfsbase(rax)?;
     a.mov(rax, qword_ptr(to_before(offset_of!(Registers, gs_base))))?;
@@ -135,7 +140,9 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(qword_ptr(to_after(offset_of!(Registers, fs_base))), rax)?;
     a.rdgsbase(rax)?;
     a.mov(qword_ptr(to_after(offset_of!(Registers, gs_base))), rax)?;
-    a.fxsave64(ptr(to_slot(offset_of!(Slot, after_fx))))?;
+    a.mov(eax, SAVED_COMPONENTS as u32)?;
+    a.xor(edx, edx)?;
+    a.xsave64(ptr(to_slot(offset_of!(Slot, after_xsave))))?;
     a.hlt()?;
     a.jmp(entry)?;
     a.set_label(&mut floor)?;

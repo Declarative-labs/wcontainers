@@ -77,19 +77,19 @@ pub struct Registers {
     pub gs_base: u64,
 }
 
-/// The image FXSAVE64 writes and FXRSTOR64 reads.
-#[repr(C, align(16))]
+/// The image XSAVE64 writes and XRSTOR64 reads in the standard form, of the components [`SAVED_COMPONENTS`] names.
+#[repr(C, align(64))]
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
-pub struct FxImage {
-    pub bytes: [u8; 512],
+pub struct XsaveImage {
+    pub bytes: [u8; XSAVE_IMAGE_BYTES],
 }
 
 /// One state in guest memory, as the handler reads and writes it.
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct Slot {
-    pub before_fx: FxImage,
-    pub after_fx: FxImage,
+    pub before_xsave: XsaveImage,
+    pub after_xsave: XsaveImage,
     /// CR3 while the instruction runs.
     pub page_table: u64,
     /// The vector the handler was entered by, [`NOT_RUN`] before.
@@ -103,14 +103,32 @@ pub struct Slot {
     pub before: Registers,
     pub after: Registers,
     /// Fills the slot to a multiple of its alignment.
-    pub reserved: u64,
+    pub reserved: [u64; 7],
 }
 
-// Where the image keeps each part, in the order FXSAVE64 lays them out.
+// Where the image keeps each part: the legacy area as FXSAVE64 lays it out, then the header, then the AVX area of the
+// standard form, https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html (volume 1, 13.4).
 pub const FX_CONTROL_WORD: usize = 0;
 pub const FX_MXCSR: usize = 24;
 pub const FX_X87_REGISTERS: usize = 32;
 pub const FX_VECTOR_REGISTERS: usize = 160;
+/// XSTATE_BV: which components the image holds; the others are in their initial state.
+pub const XSAVE_HEADER: usize = 512;
+/// The upper halves of YMM0 to YMM15, at the offset CPUID leaf 0xD, subleaf 2 gives in EBX.
+pub const XSAVE_AVX: usize = 576;
+/// The legacy area, the header and the AVX area, rounded up to the image's alignment.
+pub const XSAVE_IMAGE_BYTES: usize = 832;
+/// XCR0's bits: x87, SSE, AVX, then the opmask, ZMM_Hi256 and Hi16_ZMM components of AVX-512, then PKRU.
+pub const X87_COMPONENT: u64 = 1 << 0;
+pub const SSE_COMPONENT: u64 = 1 << 1;
+pub const AVX_COMPONENT: u64 = 1 << 2;
+pub const AVX_512_COMPONENTS: u64 = 0b111 << 5;
+pub const PKRU_COMPONENT: u64 = 1 << 9;
+/// XCR0 as the source sets it: Linux's on this chip but for AMX's tile components, which KVM gives a guest only after
+/// a system call kvm-ioctls does not make.
+pub const EXTENDED_CONTROL_0: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
+/// The components the handler loads and saves: those the state holds, and x87's, which it checks is left alone.
+pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT;
 /// The x87 control word after FNINIT, as Linux starts a program.
 pub const X87_CONTROL_DEFAULT: u16 = 0x037F;
 

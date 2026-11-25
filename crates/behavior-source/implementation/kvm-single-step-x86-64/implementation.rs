@@ -23,11 +23,10 @@ use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
+use iced_x86::{Code, Decoder, DecoderOptions, EncodingKind, Mnemonic, OpKind, Register};
 
 use kvm_bindings::{
-    KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_MAX_CPUID_ENTRIES, kvm_fpu, kvm_guest_debug, kvm_regs,
-    kvm_segment, kvm_sregs,
+    KVM_MAX_CPUID_ENTRIES, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
 };
 use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
@@ -36,7 +35,7 @@ use wcontainers_kvm_direct::DirectKvm;
 use wcontainers_processor_architecture::{
     MemoryDelta, MemorySink, ProcessorArchitecture, diff_memory,
 };
-use wcontainers_processor_architecture_x86_64::memory::{read_bytes, report_changed_bytes};
+use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
     PagePermission, Processor, VECTOR_REGISTERS, X86_64,
@@ -46,9 +45,10 @@ use zerocopy::{FromZeros, IntoBytes};
 
 use crate::handler::{Handler, VECTORS};
 use crate::layout::{
-    ACCESSED, ADDRESS_MASK, ARENA, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES, FAULT_STACK_TOP,
-    FX_CONTROL_WORD, FX_MXCSR, FX_VECTOR_REGISTERS, FX_X87_REGISTERS, FxImage, GLOBAL, GLOBAL_DESCRIPTOR_TABLE,
-    HANDLER, HANDLER_BYTES, INTERRUPT_DESCRIPTOR_TABLE, KERNEL_BASE, KERNEL_CODE, KERNEL_DATA, KERNEL_DIRECTORY,
+    ACCESSED, ADDRESS_MASK, ARENA, AVX_COMPONENT, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES,
+    EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_CONTROL_WORD, FX_MXCSR, FX_VECTOR_REGISTERS, FX_X87_REGISTERS, GLOBAL,
+    GLOBAL_DESCRIPTOR_TABLE, SAVED_COMPONENTS, SSE_COMPONENT, XSAVE_AVX, XSAVE_HEADER, XSAVE_IMAGE_BYTES, XsaveImage,
+    HANDLER, HANDLER_BYTES, INTERRUPT_DESCRIPTOR_TABLE, KERNEL_CODE, KERNEL_DATA, KERNEL_DIRECTORY,
     KERNEL_DIRECTORY_POINTERS, KERNEL_ENTRY, KERNEL_PAGES, KERNEL_TABLE, LEVELS, MEMORY_BYTES, NO_EXECUTE,
     LARGE_PAGE, NOT_RUN, PAGE_BYTES, PRESENT, RESIDENT, Registers, SLOT, STACK_TOP, Slot, TASK_STATE,
     TASK_STATE_SEGMENT, TaskStateSegment, UPPER_HALF_DIRECTORY_POINTERS, USER, USER_CODE, USER_DATA, WRITABLE,
@@ -116,33 +116,21 @@ pub enum EntryPath {
     Parked,
 }
 
-/// What steps the instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stepping {
-    /// The trap flag, set in the state's RFLAGS: the chip raises #DB after the instruction into the guest's handler.
-    TrapFlag,
-    /// KVM's own single step: the host enters ring 3 with KVM_SET_SREGS, KVM_SET_REGS and KVM_SET_FPU, and KVM exits
-    /// on the #DB after the instruction; an exception of the instruction's own still goes to the handler.
-    Hypervisor,
-}
-
-/// The executor's choices; the first value of each is the reference.
+/// The source's choices; the first value of each is the reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     pub loading: MemoryLoading,
     pub entry: EntryPath,
-    pub stepping: Stepping,
 }
 
 impl Options {
     pub const PLAIN: Self = Self {
         loading: MemoryLoading::Full,
         entry: EntryPath::Plain,
-        stepping: Stepping::TrapFlag,
     };
 
-    /// The options `X86_SINGLE_STEP_LOADING` (`full`, `incremental`, `checked`), `X86_SINGLE_STEP_ENTRY` (`plain`,
-    /// `parked`) and `X86_SINGLE_STEP_STEPPING` (`trap-flag`, `hypervisor`) name, the reference where unset.
+    /// The options `X86_SINGLE_STEP_LOADING` (`full`, `incremental`, `checked`) and `X86_SINGLE_STEP_ENTRY` (`plain`,
+    /// `parked`) name, the reference where unset.
     pub fn from_environment() -> Self {
         let read = |name: &str| std::env::var(name).ok();
         let loading = match read("X86_SINGLE_STEP_LOADING").as_deref() {
@@ -156,15 +144,9 @@ impl Options {
             Some("parked") => EntryPath::Parked,
             Some(other) => panic!("X86_SINGLE_STEP_ENTRY is plain or parked, not {other}"),
         };
-        let stepping = match read("X86_SINGLE_STEP_STEPPING").as_deref() {
-            None | Some("trap-flag") => Stepping::TrapFlag,
-            Some("hypervisor") => Stepping::Hypervisor,
-            Some(other) => panic!("X86_SINGLE_STEP_STEPPING is trap-flag or hypervisor, not {other}"),
-        };
         Self {
             loading,
             entry,
-            stepping,
         }
     }
 }
@@ -195,10 +177,10 @@ const FAULT_USER: u32 = 1 << 2;
 const FAULT_INSTRUCTION_FETCH: u32 = 1 << 4;
 const PAGE_FAULT_VECTOR: u64 = 14;
 
-// Control registers: CR0's PE, MP, ET, NE, WP, AM and PG; CR4's PAE, PGE, OSFXSR, OSXMMEXCPT, UMIP and FSGSBASE;
-// EFER's SCE, LME, LMA and NXE.
+// Control registers: CR0's PE, MP, ET, NE, WP, AM and PG; CR4's PAE, PGE, OSFXSR, OSXMMEXCPT, UMIP, FSGSBASE, OSXSAVE
+// and PKE; EFER's SCE, LME, LMA and NXE.
 const CONTROL_0: u64 = 1 | 1 << 1 | 1 << 4 | 1 << 5 | 1 << 16 | 1 << 18 | 1 << 31;
-const CONTROL_4: u64 = 1 << 5 | 1 << 7 | 1 << 9 | 1 << 10 | 1 << 11 | 1 << 16;
+const CONTROL_4: u64 = 1 << 5 | 1 << 7 | 1 << 9 | 1 << 10 | 1 << 11 | 1 << 16 | 1 << 18 | 1 << 22;
 const EXTENDED_FEATURES: u64 = 1 | 1 << 8 | 1 << 10 | 1 << 11;
 
 /// A writable page of the state: where the guest keeps it, and its bytes before the instruction.
@@ -221,20 +203,12 @@ pub struct SingleStepMachine {
     options: Options,
     /// ENTRY PATH: whether the CPU is halted at the end of the save.
     parked: bool,
-    /// Whether the CPU is at ring 0 in the handler, as it is after every halt; KVM's single step leaves it at ring 3.
-    in_handler: bool,
-    /// HYPERVISOR STEPPING: whether KVM's single step is on.
-    hypervisor_stepping: bool,
-    /// HYPERVISOR STEPPING: whether the last entry at ring 3 set CR3's write-through bit, which alternates.
-    write_through: bool,
     next_free_page: u64,
     writable: Vec<WritablePage>,
     bytes_before: Vec<u8>,
     resident: Resident,
     /// The special registers of the handler.
     kernel_sregs: kvm_sregs,
-    /// The special registers every entry at ring 3 starts from.
-    user_sregs: kvm_sregs,
     pub time_loading: Duration,
     pub time_setting_registers: Duration,
     pub time_in_guest: Duration,
@@ -297,9 +271,6 @@ impl SingleStepMachine {
             handler: handler::assemble(),
             options,
             parked: false,
-            in_handler: true,
-            hypervisor_stepping: false,
-            write_through: false,
             next_free_page: ARENA.start,
             writable: Vec::new(),
             bytes_before: Vec::new(),
@@ -309,7 +280,6 @@ impl SingleStepMachine {
                 next_free_page: RESIDENT.start + PAGE_BYTES,
             },
             kernel_sregs: kvm_sregs::default(),
-            user_sregs: kvm_sregs::default(),
             time_loading: Duration::ZERO,
             time_setting_registers: Duration::ZERO,
             time_in_guest: Duration::ZERO,
@@ -434,12 +404,19 @@ impl SingleStepMachine {
         self.cpu
             .set_sregs(&sregs)
             .map_err(|error| refused("entering long mode", error))?;
-        self.kernel_sregs = sregs;
-        self.user_sregs = kvm_sregs {
-            cs: segment(USER_CODE, 0xB, 1, 3),
-            ss: segment(USER_DATA, 0x3, 0, 3),
-            ..sregs
+        let mut extended = kvm_xcrs {
+            nr_xcrs: 1,
+            ..kvm_xcrs::default()
         };
+        extended.xcrs[0] = kvm_xcr {
+            xcr: 0,
+            value: EXTENDED_CONTROL_0,
+            ..kvm_xcr::default()
+        };
+        self.cpu
+            .set_xcrs(&extended)
+            .map_err(|error| refused("setting XCR0", error))?;
+        self.kernel_sregs = sregs;
         Ok(())
     }
 
@@ -471,7 +448,7 @@ impl SingleStepMachine {
             }
             MemoryLoading::Incremental | MemoryLoading::Checked => Some(self.prepare(memory)),
         };
-        let slot = to_slot(processor, self.read_slot().page_table, self.options.stepping);
+        let slot = to_slot(processor, self.read_slot().page_table);
         self.write_bytes(SLOT, slot.as_bytes());
         self.time_loading += started.elapsed();
         held
@@ -665,63 +642,24 @@ impl SingleStepMachine {
     }
 
     /// Runs the loaded slot to the handler's halt.
-    fn run(&mut self, processor: &Processor) {
+    fn run(&mut self) {
         let setting = Instant::now();
-        match self.options.stepping {
-            Stepping::TrapFlag => {
-                self.set_hypervisor_stepping(false);
-                if !self.in_handler {
-                    self.cpu
-                        .set_sregs(&self.kernel_sregs)
-                        .unwrap_or_else(|error| panic!("KVM refused the handler's segments: {error}"));
-                }
-                if !(self.options.entry == EntryPath::Parked && self.parked) {
-                    self.enter_handler();
-                }
-            }
-            Stepping::Hypervisor => {
-                let page_table = self.read_slot().page_table;
-                self.enter_ring_3(processor, page_table);
-                // KVM sets the trap flag only while RIP is where it was when its single step was turned on.
-                self.hypervisor_stepping = false;
-                self.set_hypervisor_stepping(true);
-            }
+        if !(self.options.entry == EntryPath::Parked && self.parked) {
+            self.enter_handler();
         }
         self.parked = false;
         self.time_setting_registers += setting.elapsed();
         let started = Instant::now();
         self.runs += 1;
         loop {
-            let exit = match self.cpu.run() {
-                Ok(VcpuExit::Hlt) => Exit::Halted,
-                Ok(VcpuExit::Debug(debug)) if self.hypervisor_stepping => {
-                    if debug.pc >= KERNEL_BASE {
-                        Exit::SteppedIntoHandler
-                    } else {
-                        Exit::Stepped
-                    }
-                }
+            match self.cpu.run() {
+                Ok(VcpuExit::Hlt) => self.parked = true,
                 Ok(other) => panic!("the guest stopped other than at the handler's halt: {other:?}"),
                 // A signal ends a run too: then the CPU runs on.
                 Err(error) if io::Error::from_raw_os_error(error.errno()).kind() == io::ErrorKind::Interrupted => {
                     continue;
                 }
                 Err(error) => panic!("KVM_RUN failed: {error}"),
-            };
-            match exit {
-                Exit::Halted => {
-                    self.parked = true;
-                    self.in_handler = true;
-                }
-                Exit::Stepped => {
-                    self.in_handler = false;
-                    self.save_stepped();
-                }
-                // The instruction's own exception took the CPU into the handler, which runs to its halt unstepped.
-                Exit::SteppedIntoHandler => {
-                    self.set_hypervisor_stepping(false);
-                    continue;
-                }
             }
             break;
         }
@@ -730,7 +668,6 @@ impl SingleStepMachine {
 
     /// PROBE-COST TIMING: runs a bare halt at ring 0 `count` times, one KVM_RUN and exit each, and gives their time.
     pub fn time_bare_runs(&mut self, count: u32) -> Duration {
-        self.set_hypervisor_stepping(false);
         self.cpu
             .set_sregs(&self.kernel_sregs)
             .unwrap_or_else(|error| panic!("KVM refused the handler's segments: {error}"));
@@ -752,23 +689,7 @@ impl SingleStepMachine {
         }
         let elapsed = started.elapsed();
         self.parked = false;
-        self.in_handler = true;
         elapsed
-    }
-
-    fn set_hypervisor_stepping(&mut self, on: bool) {
-        if self.hypervisor_stepping == on {
-            return;
-        }
-        let control = if on { KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP } else { 0 };
-        let debug = kvm_guest_debug {
-            control,
-            ..kvm_guest_debug::default()
-        };
-        self.cpu
-            .set_guest_debug(&debug)
-            .unwrap_or_else(|error| panic!("KVM refused its single step: {error}"));
-        self.hypervisor_stepping = on;
     }
 
     fn enter_handler(&mut self) {
@@ -781,83 +702,6 @@ impl SingleStepMachine {
         self.cpu
             .set_regs(&regs)
             .unwrap_or_else(|error| panic!("KVM refused the handler's entry: {error}"));
-    }
-
-    /// HYPERVISOR STEPPING: puts the state's registers into the CPU at ring 3.
-    fn enter_ring_3(&mut self, processor: &Processor, page_table: u64) {
-        // KVM flushes the guest's translations on KVM_SET_SREGS only when CR3 changes, and the tables change in
-        // place, so CR3 alternates between two values that name the same table.
-        const WRITE_THROUGH: u64 = 1 << 3;
-        self.write_through = !self.write_through;
-        let mut sregs = self.user_sregs;
-        sregs.cr3 = page_table | if self.write_through { WRITE_THROUGH } else { 0 };
-        sregs.fs.base = processor.fs_base;
-        sregs.gs.base = processor.gs_base;
-        // The kernel's segments of the handler, which the next exception loads, stay unusable as KVM gives them.
-        let general = processor.general_purpose_registers;
-        let regs = kvm_regs {
-            rax: general[0],
-            rcx: general[1],
-            rdx: general[2],
-            rbx: general[3],
-            rsp: general[4],
-            rbp: general[5],
-            rsi: general[6],
-            rdi: general[7],
-            r8: general[8],
-            r9: general[9],
-            r10: general[10],
-            r11: general[11],
-            r12: general[12],
-            r13: general[13],
-            r14: general[14],
-            r15: general[15],
-            rip: processor.instruction_pointer,
-            rflags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE,
-        };
-        let mut fpu = kvm_fpu {
-            fcw: X87_CONTROL_DEFAULT,
-            mxcsr: processor.mxcsr,
-            ..kvm_fpu::default()
-        };
-        for (to, from) in fpu.xmm.iter_mut().zip(processor.vector_registers) {
-            *to = from.to_le_bytes();
-        }
-        for result in [self.cpu.set_sregs(&sregs), self.cpu.set_regs(&regs), self.cpu.set_fpu(&fpu)] {
-            result.unwrap_or_else(|error| panic!("KVM refused the state's registers: {error}"));
-        }
-    }
-
-    /// HYPERVISOR STEPPING: writes the registers KVM's step left into the slot, as the handler would.
-    fn save_stepped(&mut self) {
-        let regs = take_registers(self.cpu.get_regs());
-        let sregs = take_registers(self.cpu.get_sregs());
-        // KVM_GET_FPU gives MXCSR as 0 here, so the legacy area of the XSAVE image is read instead.
-        let xsave = take_registers(self.cpu.get_xsave());
-        let mut slot = self.read_slot();
-        slot.vector = DEBUG_VECTOR;
-        slot.error_code = 0;
-        slot.fault_address = sregs.cr2;
-        slot.debug_status = DEBUG_STATUS_RESET | SINGLE_STEP;
-        slot.after = Registers {
-            general: [
-                regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi, regs.r8, regs.r9,
-                regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
-            ],
-            instruction_pointer: regs.rip,
-            flags: regs.rflags,
-            code_segment: u64::from(sregs.cs.selector),
-            stack_segment: u64::from(sregs.ss.selector),
-            fs_base: sregs.fs.base,
-            gs_base: sregs.gs.base,
-        };
-        let mut image = slot.before_fx;
-        let legacy = &xsave.region.as_bytes()[..size_of::<FxImage>()];
-        image.bytes[FX_MXCSR..FX_MXCSR + 4].copy_from_slice(&legacy[FX_MXCSR..FX_MXCSR + 4]);
-        image.bytes[FX_VECTOR_REGISTERS..FX_VECTOR_REGISTERS + VECTOR_REGISTERS * 16]
-            .copy_from_slice(&legacy[FX_VECTOR_REGISTERS..FX_VECTOR_REGISTERS + VECTOR_REGISTERS * 16]);
-        slot.after_fx = image;
-        self.write_bytes(SLOT, slot.as_bytes());
     }
 
     /// Gives the processor after the run, and each run of bytes it changed.
@@ -938,16 +782,6 @@ impl SingleStepMachine {
     }
 }
 
-/// How a run came back.
-enum Exit {
-    /// The handler saved the slot and halted.
-    Halted,
-    /// HYPERVISOR STEPPING: KVM stepped the instruction and exited with the state still in the CPU.
-    Stepped,
-    /// HYPERVISOR STEPPING: KVM stepped into the handler, which an exception of the instruction's own entered.
-    SteppedIntoHandler,
-}
-
 impl BehaviorSource for SingleStepMachine {
     type Architecture = X86_64;
 
@@ -961,16 +795,15 @@ impl BehaviorSource for SingleStepMachine {
         check_holdable(processor, memory);
         check_steppable(processor, memory);
         let held = self.load(processor, memory);
-        let before = processor.clone();
         let Some(mut held) = held else {
-            self.run(&before);
+            self.run();
             self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation));
             return;
         };
         if self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
             self.check_mismatches += 1;
         }
-        self.run(&before);
+        self.run();
         self.read_back(processor, |mutation| {
             held.push(mutation.clone().into_owned());
             mutation_hook.on_memory_mutated(mutation);
@@ -980,30 +813,32 @@ impl BehaviorSource for SingleStepMachine {
 }
 
 /// The slot that loads the processor under the page table.
-fn to_slot(processor: &Processor, page_table: u64, stepping: Stepping) -> Slot {
-    let trap = match stepping {
-        Stepping::TrapFlag => TRAP,
-        Stepping::Hypervisor => 0,
-    };
+fn to_slot(processor: &Processor, page_table: u64) -> Slot {
     let registers = Registers {
         general: processor.general_purpose_registers,
         instruction_pointer: processor.instruction_pointer,
-        flags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE | trap,
+        flags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE | TRAP,
         code_segment: u64::from(USER_CODE),
         stack_segment: u64::from(USER_DATA),
         fs_base: processor.fs_base,
         gs_base: processor.gs_base,
     };
-    let mut image = FxImage { bytes: [0; 512] };
+    let mut image = XsaveImage { bytes: [0; XSAVE_IMAGE_BYTES] };
     image.bytes[FX_CONTROL_WORD..FX_CONTROL_WORD + 2].copy_from_slice(&X87_CONTROL_DEFAULT.to_le_bytes());
     image.bytes[FX_MXCSR..FX_MXCSR + 4].copy_from_slice(&processor.mxcsr.to_le_bytes());
     for (number, value) in processor.vector_registers.iter().enumerate() {
-        let at = FX_VECTOR_REGISTERS + number * 16;
-        image.bytes[at..at + 16].copy_from_slice(&value.to_le_bytes());
+        let at = FX_VECTOR_REGISTERS + number * VECTOR_HALF_BYTES;
+        image.bytes[at..at + VECTOR_HALF_BYTES].copy_from_slice(&value.to_le_bytes());
     }
+    for (number, value) in processor.upper_vector_halves.iter().enumerate() {
+        let at = XSAVE_AVX + number * VECTOR_HALF_BYTES;
+        image.bytes[at..at + VECTOR_HALF_BYTES].copy_from_slice(&value.to_le_bytes());
+    }
+    // Every saved component is loaded from the image rather than put in its initial state.
+    image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&SAVED_COMPONENTS.to_le_bytes());
     Slot {
-        before_fx: image,
-        after_fx: image,
+        before_xsave: image,
+        after_xsave: image,
         page_table,
         vector: NOT_RUN,
         error_code: 0,
@@ -1011,7 +846,7 @@ fn to_slot(processor: &Processor, page_table: u64, stepping: Stepping) -> Slot {
         debug_status: 0,
         before: registers,
         after: registers,
-        reserved: 0,
+        reserved: [0; 7],
     }
 }
 
@@ -1074,12 +909,23 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
 /// change TF), PUSHF (it pushes the source's TF), SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
 /// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
-/// not).
+/// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
+/// on the page says why: an EVEX one, RDTSC, RDTSCP, RDPID, UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
+/// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
     let address = processor.instruction_pointer;
     let bytes: [u8; 15] = read_bytes(memory, address);
     let decoded = Decoder::with_ip(64, &bytes, address, DecoderOptions::NONE).decode();
-    if decoded.is_invalid() {
+    // An instruction whose bytes cannot all be fetched faults before it runs, whatever it is.
+    let fetchable = (0..decoded.len() as u64).all(|offset| {
+        let at = address.wrapping_add(offset);
+        is_canonical(at)
+            && matches!(
+                read_permission(memory, at),
+                PagePermission::Mapped { instruction_fetch: InstructionFetch::Allowed, .. }
+            )
+    });
+    if decoded.is_invalid() || !fetchable {
         return;
     }
     let is_string = (0..decoded.op_count()).any(|operand| {
@@ -1119,6 +965,33 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
         Mnemonic::Lss | Mnemonic::Lfs | Mnemonic::Lgs => Some("it writes a selector, which is not modeled"),
         _ if writes_segment => Some("it writes a selector, which is not modeled"),
         Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
+        _ if decoded.encoding() == EncodingKind::EVEX => Some("AVX-512's state is not modeled"),
+        Mnemonic::Rdtsc | Mnemonic::Rdtscp | Mnemonic::Umwait | Mnemonic::Tpause => {
+            Some("its result depends on the time, which is not in the state")
+        }
+        Mnemonic::Rdpid => Some("it reads IA32_TSC_AUX, which Linux sets to the CPU's number and the source leaves 0"),
+        Mnemonic::Rdpkru | Mnemonic::Wrpkru => Some("PKRU is not modeled, and Linux starts it at 0x55555554"),
+        Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
+        Mnemonic::Xsave
+        | Mnemonic::Xsave64
+        | Mnemonic::Xsaveopt
+        | Mnemonic::Xsaveopt64
+        | Mnemonic::Xsavec
+        | Mnemonic::Xsavec64
+        | Mnemonic::Xrstor
+        | Mnemonic::Xrstor64 => Some("it reaches components the state does not hold, under an XCR0 that is not Linux's"),
+        Mnemonic::Lar | Mnemonic::Lsl | Mnemonic::Verr | Mnemonic::Verw => {
+            Some("it answers from the source's descriptor table, not Linux's")
+        }
+        Mnemonic::Sgdt | Mnemonic::Sidt | Mnemonic::Smsw => {
+            Some("Linux answers it after the chip's #GP with values of its own")
+        }
+        Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
+            Some("Linux takes it as a 32-bit system call")
+        }
+        _ if decoded.cpuid_features().iter().any(|feature| format!("{feature:?}").starts_with("AMX")) => {
+            Some("Linux traps its first use of the tiles with #NM, where the source's XCR0 gives #UD")
+        }
         _ => None,
     };
     if let Some(reason) = reason {
@@ -1126,9 +999,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
     }
 }
 
-fn take_registers<T>(result: Result<T, kvm_ioctls::Error>) -> T {
-    result.unwrap_or_else(|error| panic!("KVM refused to give the registers: {error}"))
-}
 
 /// The processor a run left in the slot.
 ///
@@ -1151,17 +1021,24 @@ fn to_processor(slot: &Slot) -> Processor {
         "RFLAGS {:#x} keeps IF set and IOPL and VM clear",
         after.flags
     );
-    let (before_x87, after_x87) = (&slot.before_fx.bytes, &slot.after_fx.bytes);
+    let (before_x87, after_x87) = (&slot.before_xsave.bytes, &slot.after_xsave.bytes);
     assert!(
         before_x87[..FX_MXCSR] == after_x87[..FX_MXCSR]
             && before_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS] == after_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS],
         "the instruction changed the x87 state, which is not modeled yet"
     );
     let mxcsr = u32::from_le_bytes(after_x87[FX_MXCSR..FX_MXCSR + 4].try_into().expect("four bytes"));
-    let vector_registers: [u128; VECTOR_REGISTERS] = std::array::from_fn(|number| {
-        let at = FX_VECTOR_REGISTERS + number * 16;
-        u128::from_le_bytes(after_x87[at..at + 16].try_into().expect("sixteen bytes"))
-    });
+    let saved = u64::from_le_bytes(after_x87[XSAVE_HEADER..XSAVE_HEADER + 8].try_into().expect("eight bytes"));
+    // A component XSAVE marks as in its initial state holds zeros, whatever its area of the image holds.
+    let read_halves = |component: u64, area: usize| -> [u128; VECTOR_REGISTERS] {
+        std::array::from_fn(|number| {
+            let at = area + number * VECTOR_HALF_BYTES;
+            let half = u128::from_le_bytes(after_x87[at..at + VECTOR_HALF_BYTES].try_into().expect("sixteen bytes"));
+            if saved & component == 0 { 0 } else { half }
+        })
+    };
+    let vector_registers = read_halves(SSE_COMPONENT, FX_VECTOR_REGISTERS);
+    let upper_vector_halves = read_halves(AVX_COMPONENT, XSAVE_AVX);
     let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
     let exception = if completed { None } else { Some(to_exception(slot)) };
     let general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
@@ -1173,9 +1050,13 @@ fn to_processor(slot: &Slot) -> Processor {
         gs_base: after.gs_base,
         mxcsr,
         vector_registers,
+        upper_vector_halves,
         exception,
     }
 }
+
+/// Bytes of a half of a YMM register, as the image holds each.
+const VECTOR_HALF_BYTES: usize = size_of::<u128>();
 
 fn to_exception(slot: &Slot) -> Exception {
     let error_code = slot.error_code as u32;
@@ -1222,6 +1103,9 @@ fn to_exception(slot: &Slot) -> Exception {
         vector => panic!("vector {vector} does not end an instruction at ring 3"),
     }
 }
+
+/// The vector Linux gives ring 3 for 32-bit system calls.
+const LINUX_SYSTEM_CALL_VECTOR: u8 = 0x80;
 
 const fn is_canonical(address: u64) -> bool {
     ((address << 16) as i64 >> 16) as u64 == address

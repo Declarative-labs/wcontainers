@@ -29,7 +29,7 @@ use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, STACK_POINTER,
-    X86_64, ZERO_PROCESSOR,
+    VECTOR_REGISTERS, X86_64, ZERO_PROCESSOR,
 };
 
 pub mod branch;
@@ -45,6 +45,12 @@ pub use integer::{
 };
 
 /// The first page above the page at zero, which stays unmapped as on Linux.
+/// Returns the upper halves every state's YMM registers start with: each register's complement, its halves swapped, so
+/// that a form that keeps them, and one that zeroes them, is seen to.
+pub(crate) fn fill_upper_vector_halves() -> [u128; VECTOR_REGISTERS] {
+    array::from_fn(|number| (!(number as u128)).rotate_left(u64::BITS))
+}
+
 pub const CODE_ADDRESS: u64 = PAGE_BYTES;
 pub const LOWER_DATA_ADDRESS: u64 = CODE_ADDRESS + PAGE_BYTES;
 pub const UPPER_DATA_ADDRESS: u64 = LOWER_DATA_ADDRESS + PAGE_BYTES;
@@ -464,6 +470,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             general_purpose_registers: array::from_fn(|number| !(number as u64)),
             instruction_pointer: CODE_ADDRESS,
             vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
             ..ZERO_PROCESSOR
         };
         processor.flags = choice.flags;

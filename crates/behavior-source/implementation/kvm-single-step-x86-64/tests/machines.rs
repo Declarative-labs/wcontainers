@@ -14,7 +14,10 @@ fn read_status(name: &str) -> String {
 
 #[test]
 fn dropping_machines_leaves_the_process_as_it_was() {
-    drop(SingleStepMachine::new().expect("a machine"));
+    // The first machine maps the memory, the second zeroes all of it; every later one takes it as the second did.
+    for _ in 0..2 {
+        drop(SingleStepMachine::new().expect("a machine"));
+    }
     let before = (read_status("VmSize:"), read_status("VmRSS:"));
     for _ in 0..MACHINES {
         drop(SingleStepMachine::new().expect("a machine"));

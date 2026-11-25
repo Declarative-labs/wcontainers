@@ -21,7 +21,7 @@ mod on_chip {
 
     use wcontainers_behavior_source::BehaviorSource;
     use wcontainers_behavior_source_kvm_single_step_x86_64::{
-        EntryPath, MemoryLoading, Options, SingleStepMachine, Stepping,
+        EntryPath, MemoryLoading, Options, SingleStepMachine,
     };
     use wcontainers_distinguishing_state_generator_x86_64::CriticalValueCut;
     use wcontainers_instruction_input_domain_x86_64::X86_64InputDomain;
@@ -42,9 +42,9 @@ mod on_chip {
         instruction_fetch: InstructionFetch::Forbidden,
     };
     const OPTION_SETS: [(&str, Options); 3] = [
-        ("full parked", Options { loading: MemoryLoading::Full, entry: EntryPath::Parked, stepping: Stepping::TrapFlag }),
-        ("incremental parked", Options { loading: MemoryLoading::Incremental, entry: EntryPath::Parked, stepping: Stepping::TrapFlag }),
-        ("checked parked", Options { loading: MemoryLoading::Checked, entry: EntryPath::Parked, stepping: Stepping::TrapFlag }),
+        ("full parked", Options { loading: MemoryLoading::Full, entry: EntryPath::Parked}),
+        ("incremental parked", Options { loading: MemoryLoading::Incremental, entry: EntryPath::Parked}),
+        ("checked parked", Options { loading: MemoryLoading::Checked, entry: EntryPath::Parked}),
     ];
 
     /// Code at `address` on an executable page, each listed page with its permission and a byte pattern.
@@ -129,6 +129,21 @@ mod on_chip {
             ("MOV FS, AX", make(0x1000, &[0x8E, 0xE0], &[], |_| {})),
             ("VMCALL", make(0x1000, &[0x0F, 0x01, 0xC1], &[], |_| {})),
             ("SYSENTER", make(0x1000, &[0x0F, 0x34], &[], |_| {})),
+            ("EVEX VPADDD", make(0x1000, &EVEX_ADD, &[], |_| {})),
+            ("15 bytes, DS 9 times then EVEX VPADDD", make(0x1000, &padded(0x3E, 9, &EVEX_ADD), &[], |_| {})),
+            ("RDTSC", make(0x1000, &[0x0F, 0x31], &[], |_| {})),
+            ("RDTSCP", make(0x1000, &[0x0F, 0x01, 0xF9], &[], |_| {})),
+            ("RDPID RAX", make(0x1000, &[0xF3, 0x0F, 0xC7, 0xF8], &[], |_| {})),
+            ("RDPKRU", make(0x1000, &[0x0F, 0x01, 0xEE], &[], |processor| processor.general_purpose_registers[1] = 0)),
+            ("XGETBV", make(0x1000, &[0x0F, 0x01, 0xD0], &[], |processor| processor.general_purpose_registers[1] = 0)),
+            ("XSAVE [RBX]", make(0x1000, &[0x0F, 0xAE, 0x23], &[(0x2000, WRITABLE)], |processor| processor.general_purpose_registers[3] = 0x2000)),
+            ("LAR EAX, EBX", make(0x1000, &[0x0F, 0x02, 0xC3], &[], |processor| processor.general_purpose_registers[3] = 0x33)),
+            ("LSL EAX, EBX", make(0x1000, &[0x0F, 0x03, 0xC3], &[], |processor| processor.general_purpose_registers[3] = 0x7B)),
+            ("VERR BX", make(0x1000, &[0x0F, 0x00, 0xE3], &[], |processor| processor.general_purpose_registers[3] = 0x2B)),
+            ("SGDT [RBX]", make(0x1000, &[0x0F, 0x01, 0x03], &[(0x2000, WRITABLE)], |processor| processor.general_purpose_registers[3] = 0x2000)),
+            ("SMSW EAX", make(0x1000, &[0x0F, 0x01, 0xE0], &[], |_| {})),
+            ("INT 0x80", make(0x1000, &[0xCD, 0x80], &[], |_| {})),
+            ("LDTILECFG [RBX]", make(0x1000, &[0xC4, 0xE2, 0x78, 0x49, 0x03], &[(0x2000, WRITABLE)], |processor| processor.general_purpose_registers[3] = 0x2000)),
             ("too many pages for the arena", {
                 let mut state = make(0x1000, &[0x48, 0x01, 0xD8], &[], |_| {});
                 state.memory_mutations.push(MemoryDelta::PermissionAssignment {
@@ -247,10 +262,7 @@ mod on_chip {
             ("16 bytes, DS 10 times then EVEX VPADDD", Instruction::AddGprvGprv01, make(0x1000, &padded(0x3E, 10, &EVEX_ADD), &[], |_| {})),
             ("16 bytes, DS 10 times then EVEX VPADDD, the 16th byte on an unmapped page", Instruction::AddGprvGprv01, make(0x1FF1, &padded(0x3E, 10, &EVEX_ADD), &[], |_| {})),
             // XCR0 has no AVX state and CR4.OSXSAVE is clear: #UD once measured, whatever form the behavior names.
-            ("15 bytes, DS 11 times then VEX VPADDD", Instruction::AddGprvGprv01, make(0x1000, &padded(0x3E, 11, &VEX_ADD), &[], |_| {})),
-            ("15 bytes, DS 9 times then EVEX VPADDD", Instruction::AddGprvGprv01, make(0x1000, &padded(0x3E, 9, &EVEX_ADD), &[], |_| {})),
             ("15 bytes, REX 11 times then VEX VPADDD", Instruction::AddGprvGprv01, make(0x1000, &padded(0x48, 11, &VEX_ADD), &[], |_| {})),
-            ("VEX VPADDD", Instruction::AddGprvGprv01, make(0x1000, &VEX_ADD, &[], |_| {})),
         ]
     }
 

@@ -233,8 +233,8 @@ fn fetch(memory: Memory<'_, '_>, address: u64) -> Result<Decoded, Exception> {
         return Err(Exception::GeneralProtection { error_code: 0 });
     }
     let decoded = Decoder::with_ip(BITNESS, &available[..needed], address, DecoderOptions::NONE).decode();
-    // CR4.OSXSAVE is clear, so every VEX, EVEX and XOP instruction raises #UD once it is measured.
-    if decoded.is_invalid() || matches!(decoded.encoding(), EncodingKind::VEX | EncodingKind::EVEX | EncodingKind::XOP) {
+    // XOP is AMD's encoding: on Intel its bytes raise #UD once they are measured.
+    if decoded.is_invalid() || decoded.encoding() == EncodingKind::XOP {
         return Err(Exception::InvalidOpcode);
     }
     Ok(decoded)
