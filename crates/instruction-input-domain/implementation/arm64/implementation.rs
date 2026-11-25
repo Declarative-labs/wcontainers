@@ -25,6 +25,7 @@ use itertools::Itertools;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::branch::{BranchOperation, to_branch_operation};
+use wcontainers_processor_architecture_arm64::cryptography::to_cryptography_operation;
 use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RD, RDVL_IMM6, RN, RT};
 use wcontainers_processor_architecture_arm64::floating_point::{
     ALTERNATIVE_HALF, DEFAULT_NAN, DIVIDE_BY_ZERO, FLUSH_HALF_TO_ZERO, FLUSH_TO_ZERO,
@@ -1197,7 +1198,9 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
                             width,
                         },
                         // An Advanced SIMD scalar takes the register's bits as an integer.
-                        None if to_vector_operation(instruction).is_some() => {
+                        None if to_vector_operation(instruction).is_some()
+                            || to_cryptography_operation(instruction).is_some() =>
+                        {
                             OperandType::VectorValue {
                                 field: number,
                                 bytes: precision.to_bits() / u8::BITS,

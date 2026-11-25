@@ -3,6 +3,9 @@
 use core::convert::Infallible;
 
 use crate::branch::{BranchOperation, simulate_branch, to_branch_operation};
+use crate::cryptography::{
+    CryptographyOperation, simulate_cryptography, to_cryptography_operation,
+};
 use crate::encoding::IMM16;
 use crate::floating_point::{
     FloatingPointOperation, simulate_floating_point, to_floating_point_operation,
@@ -27,6 +30,7 @@ pub enum DocumentedOperation {
     FloatingPoint(FloatingPointOperation),
     Vector(VectorOperation),
     PointerAuthentication(PointerAuthenticationOperation),
+    Cryptography(CryptographyOperation),
     /// A hint or barrier, which changes nothing a single instruction's state shows.
     NoOperation,
     /// Undefined at EL0 whatever its operands.
@@ -93,6 +97,9 @@ pub const fn to_documented_operation(
     if let Some(operation) = to_pointer_authentication_operation(instruction) {
         return Some(DocumentedOperation::PointerAuthentication(operation));
     }
+    if let Some(operation) = to_cryptography_operation(instruction) {
+        return Some(DocumentedOperation::Cryptography(operation));
+    }
     to_system_operation(instruction)
 }
 
@@ -121,6 +128,7 @@ pub const fn to_implicit_inputs(instruction: Instruction<Infallible>) -> Implici
         },
         Some(
             DocumentedOperation::Vector(_)
+            | DocumentedOperation::Cryptography(_)
             | DocumentedOperation::NoOperation
             | DocumentedOperation::Undefined
             | DocumentedOperation::SupervisorCall,
@@ -202,6 +210,9 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::PointerAuthentication(operation) => {
                 simulate_pointer_authentication(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::Cryptography(operation) => {
+                simulate_cryptography(processor, word, operation).map(|()| None)
             }
             DocumentedOperation::NoOperation if crate::planted::is(257) => {
                 Err(Exception::UndefinedInstruction)

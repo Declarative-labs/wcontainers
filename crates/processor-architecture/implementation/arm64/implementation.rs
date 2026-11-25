@@ -18,6 +18,7 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 mod behavior;
 pub mod branch;
 mod condition_flags;
+pub mod cryptography;
 mod documented;
 pub mod encoding;
 mod exception;

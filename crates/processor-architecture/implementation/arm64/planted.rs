@@ -16,6 +16,9 @@ pub enum PlantedBy {
     CutCheck,
     FourthCheck,
     Sync,
+    /// The modeling of the cryptography, pointer authentication, memory tagging, structure loads and stores and the
+    /// system instructions left after the sync.
+    RestOfTheSet,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
@@ -57,7 +60,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 381] = [
+pub const PLANTED_BUGS: [PlantedBug; 388] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2343,5 +2346,47 @@ pub const PLANTED_BUGS: [PlantedBug; 381] = [
         instruction: Instruction::Ld64b,
         planted_by: PlantedBy::Sync,
         what: "an instruction a chip lacks completes as NOP, not undefined",
+    },
+    PlantedBug {
+        number: 701,
+        instruction: Instruction::AeseVectorRr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the round key is not added",
+    },
+    PlantedBug {
+        number: 702,
+        instruction: Instruction::AeseVectorRr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the rows are not shifted",
+    },
+    PlantedBug {
+        number: 703,
+        instruction: Instruction::AesdVectorRr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the forward S-box",
+    },
+    PlantedBug {
+        number: 704,
+        instruction: Instruction::Sha1c,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "parity instead of choose",
+    },
+    PlantedBug {
+        number: 705,
+        instruction: Instruction::Sha512su1,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "sigma1 shifts by 7",
+    },
+    PlantedBug {
+        number: 706,
+        instruction: Instruction::Eor3Vector,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the third source is left out",
+    },
+    PlantedBug {
+        number: 707,
+        instruction: Instruction::XarVector,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "rotates left",
     },
 ];
