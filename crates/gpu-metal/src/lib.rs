@@ -10,6 +10,7 @@
 
 mod bytes;
 mod convert;
+mod depth;
 mod objects;
 mod record;
 mod ring;
@@ -158,6 +159,8 @@ pub struct MetalGpu<M: Metal> {
     present: Option<record::PresentDraw<M>>,
     /// The programs that copy and fill bytes where Metal's blits take only multiples of four.
     byte_programs: bytes::BytePrograms<M>,
+    /// The programs that convert 24-bit depth words and the floats Metal holds them as.
+    depth_programs: depth::DepthPrograms<M>,
     /// How many times work was encoded into a command buffer, which ends a ring chunk's writes.
     encodes: u64,
     /// The rings of indices and of other per-draw data.
@@ -230,6 +233,7 @@ impl<M: Metal> MetalGpu<M> {
             widened_layouts: HashMap::new(),
             present: None,
             byte_programs: bytes::BytePrograms::default(),
+            depth_programs: depth::DepthPrograms::default(),
             encodes: u64::MIN,
             rings: Default::default(),
         }
@@ -534,61 +538,6 @@ impl<M: Metal> MetalGpu<M> {
             .checked_mul(rows)?
             .checked_mul(u64::from(extent.depth_or_layers))?;
         Some((length, row, rows))
-    }
-
-    /// Reads the depth words of a buffer's region on the host, tightly packed; none when a place overflows.
-    fn depth_words_in(
-        &mut self,
-        src: &CopyBufferTexture<'_, Self>,
-        raw: &M::Buffer,
-        extent: Extent,
-        format: Format,
-    ) -> Option<Vec<u8>> {
-        let (row, rows) = self.tight_rows(format, false, extent)?;
-        let pitch = u64::from(src.row_pitch);
-        let layer_bytes = pitch.checked_mul(u64::from(src.rows_per_layer))?;
-        let mut packed = Vec::new();
-        for layer in 0..u64::from(extent.depth_or_layers) {
-            for y in 0..rows {
-                let at = layer
-                    .checked_mul(layer_bytes)?
-                    .checked_add(y.checked_mul(pitch)?)?
-                    .checked_add(src.offset)?;
-                packed.extend(self.read_buffer_now(raw, at, row));
-            }
-        }
-        Some(packed)
-    }
-
-    /// Copies tightly packed depth words into a buffer's region at its pitches; none when a place overflows.
-    fn depth_words_out(
-        &mut self,
-        words: &[u8],
-        dst: &CopyBufferTexture<'_, Self>,
-        extent: Extent,
-        format: Format,
-    ) -> Option<()> {
-        let (row, rows) = self.tight_rows(format, false, extent)?;
-        let pitch = u64::from(dst.row_pitch);
-        let layer_bytes = pitch.checked_mul(u64::from(dst.rows_per_layer))?;
-        let row_bytes = usize::try_from(row).ok()?;
-        for layer in 0..u64::from(extent.depth_or_layers) {
-            for y in 0..rows {
-                let from = layer.checked_mul(rows)?.checked_add(y)?.checked_mul(row)?;
-                let from = usize::try_from(from).ok()?;
-                let part = words.get(from..from.checked_add(row_bytes)?)?;
-                let at = layer
-                    .checked_mul(layer_bytes)?
-                    .checked_add(y.checked_mul(pitch)?)?
-                    .checked_add(dst.offset)?;
-                let Some(staging) = self.staging(part) else {
-                    self.fail(format_args!("no staging buffer"));
-                    return Some(());
-                };
-                self.copy_bytes(staging, Self::range(dst.buffer, at), row);
-            }
-        }
-        Some(())
     }
 
     /// Returns the bytes a host write or a buffer copy into a texture holds, as Metal's copy takes them.
@@ -1262,23 +1211,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         self.mark_used(src.buffer);
         let raw = src.buffer.raw.borrow().clone();
         if convert::depth_converted(texture.desc.format) && !dst.stencil {
-            // Metal holds this depth as float: the words are read on the host and converted.
-            if !texture_region_inside(dst, extent) {
-                self.fail(format_args!("a depth copy outside its texture"));
-                return;
+            // Metal holds this depth as float: the words are converted on the GPU into tight floats, which are blitted in.
+            if let Err(why) = self.depth_into_texture(src, dst, extent) {
+                self.fail(format_args!("{why}"));
             }
-            let Some(packed) = self.depth_words_in(src, &raw, extent, texture.desc.format) else {
-                self.fail(format_args!("a depth copy whose places overflow"));
-                return;
-            };
-            let rows = self.tight_rows(texture.desc.format, false, extent);
-            let Some((Ok(row), Ok(rows))) =
-                rows.map(|(row, rows)| (u32::try_from(row), u32::try_from(rows)))
-            else {
-                self.fail(format_args!("a depth copy whose rows overflow"));
-                return;
-            };
-            self.write_texture(dst, extent, &packed, row, rows, WriteMode::Ordered);
             return;
         }
         let copies = self.buffer_texture_copies(
@@ -1304,22 +1240,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         self.mark_used(dst.buffer);
         let raw = dst.buffer.raw.borrow().clone();
         if convert::depth_converted(texture.desc.format) && !src.stencil {
-            // `read_back` refuses a region outside the texture, so the words below are bounded by its bytes.
-            let Ok(readback) = self.read_back(&ReadSource::Texture {
-                region: TextureRegion { ..*src },
-                extent,
-            }) else {
-                self.fail(format_args!("no read back for a depth copy"));
-                return;
-            };
-            self.wait_read(&readback);
-            let mut words = vec![0; usize::try_from(readback.length).unwrap_or(usize::MIN)];
-            self.finish_read(readback, &mut words);
-            if self
-                .depth_words_out(&words, dst, extent, texture.desc.format)
-                .is_none()
-            {
-                self.fail(format_args!("a depth copy whose places overflow"));
+            // Metal holds this depth as float: the floats are blitted out tight, then converted on the GPU into the words.
+            if let Err(why) = self.depth_out_of_texture(src, dst, extent) {
+                self.fail(format_args!("{why}"));
             }
             return;
         }

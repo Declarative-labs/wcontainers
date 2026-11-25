@@ -76,6 +76,7 @@ macro_rules! suite {
             indirect_draws_and_dispatches_read_their_arguments_when_they_run,
             timestamps_between_passes_read_back_in_order,
             programs_ask_a_texture_its_levels_and_samples,
+            depth_copies_through_buffers_keep_their_pitches_and_values,
             present_shows_the_frame,
         );
     };

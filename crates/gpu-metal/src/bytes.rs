@@ -258,6 +258,17 @@ impl<M: Metal> MetalGpu<M> {
             height: 1,
             depth: 1,
         }));
+        if self.encode_own_compute(&commands).is_err() {
+            self.fail(format_args!("a byte program refused"));
+        }
+    }
+
+    /// Encodes a compute pass of this implementation's own after the copies queued so far, ending the open pass for it
+    /// and opening it again after.
+    pub(crate) fn encode_own_compute(
+        &mut self,
+        commands: &[ComputeCommand<M>],
+    ) -> Result<(), &'static str> {
         let resumed = if self.pass.is_some() {
             self.record_slow_path(SlowPath::WriteSplitPass);
             self.end_open_pass()
@@ -266,15 +277,18 @@ impl<M: Metal> MetalGpu<M> {
         };
         self.flush_blits();
         crate::count_up(&mut self.encodes);
+        let mut result = Ok(());
         if let Some(command_buffer) = self.command_buffer()
             && let Err(error) = self
                 .metal
-                .encode_compute_commands(&command_buffer, &commands)
+                .encode_compute_commands(&command_buffer, commands)
         {
-            self.fail(format_args!("a byte program refused: {error:?}"));
+            eprintln!("metal: a compute pass of this implementation's refused: {error:?}");
+            result = Err("a compute pass of this implementation's refused");
         }
         if resumed.is_some() {
             self.pass = resumed;
         }
+        result
     }
 }

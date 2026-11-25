@@ -988,6 +988,167 @@ fn copy_within_one_subresource<B: Gpu>(b: &mut B, format: Format, texel: u32, by
     ok(b);
 }
 
+/// The 24-bit depth words [`depth_copies_through_buffers_keep_their_pitches_and_values`] copies: the ends, the steps
+/// around one half, and others spread between.
+const DEPTH24_WORDS: [u32; 18] = [
+    0, 1, 2, 0x7f_fffe, 0x7f_ffff, 0x80_0000, 0x80_0001, 0xff_fffe, 0xff_ffff, 0x12_3456,
+    0xab_cdef, 0x55_5555, 0xaa_aaaa, 0x00_ff00, 0x3f_ffff, 0xc0_0000, 0x01_0000, 0x00_8001,
+];
+
+/// Copies 24-bit depth words from a buffer into a region of a two-layer texture and back out into another buffer,
+/// each at an offset and a row pitch past the region's rows, with rows between the layers: for `Depth24Plus` and for
+/// the depth of `Depth24PlusStencil8`, every word comes back within one step of 2^-24, the bytes between rows and
+/// layers are kept, the texels around the region keep their depth, and the stencil keeps its bytes. Where the format
+/// copies out.
+pub fn depth_copies_through_buffers_keep_their_pitches_and_values<H: Host>() {
+    let mut b = H::make();
+    for format in [Format::Depth24Plus, Format::Depth24PlusStencil8] {
+        if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
+            depth_copies_through_buffers(&mut b, format);
+        }
+    }
+}
+
+/// [`depth_copies_through_buffers_keep_their_pitches_and_values`] for one format.
+fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
+    let has_stencil = format == Format::Depth24PlusStencil8;
+    // A 5 by 4 texture of two layers; the region is 3 by 3 from (1, 1) in both.
+    let (width, height, layers) = (5u32, 4u32, 2u32);
+    let (rx, ry, rw, rh) = (1u32, 1u32, 3u32, 3u32);
+    let t = texture(
+        b,
+        format,
+        (width, height),
+        layers,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let whole = |layer, stencil| TextureRegion {
+        stencil,
+        ..region(&t, 0, layer, 0, 0)
+    };
+    let texels = (width * height) as usize;
+    // The background: depth one quarter everywhere, and a stencil pattern.
+    let quarter = 0x40_0000u32;
+    let background: Vec<u8> = (0..texels * layers as usize)
+        .flat_map(|_| quarter.to_le_bytes())
+        .collect();
+    b.write_texture(
+        &whole(0, false),
+        extent(width, height, layers),
+        &background,
+        width * 4,
+        height,
+        WriteMode::Ordered,
+    );
+    let stencil = pattern(texels * layers as usize, 9);
+    if has_stencil {
+        b.write_texture(
+            &whole(0, true),
+            extent(width, height, layers),
+            &stencil,
+            width,
+            height,
+            WriteMode::Ordered,
+        );
+    }
+    // The source: from byte 12, rows 20 bytes apart (12 of words, 8 between), layers 4 rows apart.
+    let (in_offset, in_pitch, in_rows) = (12u32, 20u32, 4u32);
+    let word_of = |layer: u32, y: u32, x: u32| {
+        DEPTH24_WORDS[((layer * rh + y) * rw + x) as usize % DEPTH24_WORDS.len()]
+    };
+    let in_size = in_offset + layers * in_rows * in_pitch;
+    let mut source = pattern(in_size as usize, 3);
+    for layer in 0..layers {
+        for y in 0..rh {
+            for x in 0..rw {
+                let at = (in_offset + (layer * in_rows + y) * in_pitch + x * 4) as usize;
+                source[at..at + 4].copy_from_slice(&word_of(layer, y, x).to_le_bytes());
+            }
+        }
+    }
+    let src = buffer(
+        b,
+        u64::from(in_size),
+        BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&src, 0, &source, WriteMode::Ordered);
+    b.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: &src,
+            offset: u64::from(in_offset),
+            row_pitch: in_pitch,
+            rows_per_layer: in_rows,
+        },
+        &region(&t, 0, 0, rx, ry),
+        extent(rw, rh, layers),
+    );
+    // The destination: from byte 8, rows 16 bytes apart (12 of words, 4 between), layers 3 rows apart.
+    let (out_offset, out_pitch, out_rows) = (8u32, 16u32, 3u32);
+    let out_size = out_offset + layers * out_rows * out_pitch + 4;
+    let before = pattern(out_size as usize, 7);
+    let dst = buffer(
+        b,
+        u64::from(out_size),
+        BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&dst, 0, &before, WriteMode::Ordered);
+    b.copy_texture_to_buffer(
+        &region(&t, 0, 0, rx, ry),
+        &CopyBufferTexture {
+            buffer: &dst,
+            offset: u64::from(out_offset),
+            row_pitch: out_pitch,
+            rows_per_layer: out_rows,
+        },
+        extent(rw, rh, layers),
+    );
+    let got = read_buffer(b, &dst, 0, u64::from(out_size));
+    let near = |got: u32, expected: u32| (got & 0xff_ffff).abs_diff(expected) <= 1;
+    let mut expected = before;
+    for layer in 0..layers {
+        for y in 0..rh {
+            for x in 0..rw {
+                let at = (out_offset + (layer * out_rows + y) * out_pitch + x * 4) as usize;
+                let word = u32::from_le_bytes(got[at..at + 4].try_into().expect("a word"));
+                let wanted = word_of(layer, y, x);
+                assert!(
+                    near(word, wanted),
+                    "{format:?} word of layer {layer} row {y} column {x}: {word:#x}, not {wanted:#x}"
+                );
+                // The word's own bytes are checked above; every other byte is as it was.
+                expected[at..at + 4].copy_from_slice(&got[at..at + 4]);
+            }
+        }
+    }
+    assert_eq!(got, expected, "{format:?}: bytes outside the words");
+    // The texture: the region holds the words, the texels around it a quarter.
+    let depth = read_texture(b, whole(0, false), extent(width, height, layers), 4);
+    for layer in 0..layers {
+        for y in 0..height {
+            for x in 0..width {
+                let at = (((layer * height + y) * width + x) * 4) as usize;
+                let word = u32::from_le_bytes(depth[at..at + 4].try_into().expect("a word"));
+                let inside = (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y);
+                let wanted = if inside {
+                    word_of(layer, y - ry, x - rx)
+                } else {
+                    quarter
+                };
+                assert!(
+                    near(word, wanted),
+                    "{format:?} texel of layer {layer} at ({x}, {y}): {word:#x}, not {wanted:#x}"
+                );
+            }
+        }
+    }
+    if has_stencil {
+        let got = read_texture(b, whole(0, true), extent(width, height, layers), 1);
+        assert_eq!(got, stencil, "{format:?} stencil");
+    }
+    ok(b);
+}
+
 /// A typed buffer read through a storage buffer (`TexelBufferRoute::Storage`): a read-only storage
 /// buffer of words at its texture slot's binding, bound from an aligned offset, read by a fragment
 /// program with the view's place in the bound range and its length from the fragment stage's

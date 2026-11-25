@@ -1619,3 +1619,402 @@ fn timestamps_are_nanoseconds_of_the_time_the_cpu_waits() {
     assert_eq!(b.timestamps_disjoint(), Ok(false));
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
 }
+
+/// The side of the depth textures the conversion tests fill: 2^12, so that one holds every 24-bit word.
+const DEPTH_SIDE: u32 = 1 << 12;
+
+/// The texels of one of those textures.
+const DEPTH_TEXELS: usize = (DEPTH_SIDE as usize) * (DEPTH_SIDE as usize);
+
+/// The conversion tests' programs: a covering triangle whose fragments write depths of the float bits their place
+/// numbers from a base, and a compute that writes the bits of every float a depth texture holds.
+const DEPTH_PROGRAMS: &str = "
+struct Base { value: vec4<u32> }
+@group(0) @binding(0) var depth: texture_depth_2d;
+@group(0) @binding(1) var<storage, read_write> bits: array<u32>;
+@group(0) @binding(2) var<uniform> base: Base;
+@vertex fn covering(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    var p = array(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    return vec4<f32>(p[i], 0.5, 1.0);
+}
+@fragment fn numbered(@builtin(position) at: vec4<f32>) -> @builtin(frag_depth) f32 {
+    return bitcast<f32>(base.value.x + u32(at.y) * 4096u + u32(at.x));
+}
+@compute @workgroup_size(64) fn bits_of(@builtin(global_invocation_id) id: vec3<u32>) {
+    bits[id.y * 4096u + id.x] = bitcast<u32>(textureLoad(depth, vec2<u32>(id.xy), 0));
+}
+";
+
+/// Returns a `DEPTH_SIDE` square texture of `format`, made to be drawn into, sampled and copied.
+fn depth_texture<B: Gpu>(b: &mut B, format: Format) -> (B::Texture, B::TextureView) {
+    let texture = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: DEPTH_SIDE,
+            height: DEPTH_SIDE,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER
+                | TextureUsage::SAMPLE
+                | TextureUsage::COPY_SRC
+                | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .expect("create_texture");
+    let view = view(b, &texture, format, false);
+    (texture, view)
+}
+
+/// Returns a buffer of `size` bytes that programs may write.
+fn storage<B: Gpu>(b: &mut B, size: u64) -> B::Buffer {
+    b.create_buffer(&BufferDesc {
+        size,
+        usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::STORAGE,
+        intent: MapIntent::Rarely,
+    })
+    .expect("create_buffer")
+}
+
+/// The whole of a `DEPTH_SIDE` square texture.
+fn depth_extent() -> Extent {
+    Extent {
+        width: DEPTH_SIDE,
+        height: DEPTH_SIDE,
+        depth_or_layers: 1,
+    }
+}
+
+/// The tight pitches of a `DEPTH_SIDE` square texture of words, from byte 0.
+fn depth_side<B: Gpu>(buffer: &B::Buffer) -> wcontainers_gpu::CopyBufferTexture<'_, B> {
+    wcontainers_gpu::CopyBufferTexture {
+        buffer,
+        offset: 0,
+        row_pitch: DEPTH_SIDE * 4,
+        rows_per_layer: DEPTH_SIDE,
+    }
+}
+
+/// Reads `size` bytes of a buffer, after the work so far.
+fn read_words<B: Gpu>(b: &mut B, buffer: &B::Buffer, size: u64) -> Vec<u32> {
+    let readback = b
+        .read_back(&ReadSource::Buffer {
+            buffer,
+            offset: 0,
+            size,
+        })
+        .expect("read_back");
+    b.submit();
+    let mut bytes = vec![0; usize::try_from(size).expect("a test's size fits")];
+    b.finish_read(readback, &mut bytes);
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect()
+}
+
+/// The float the host makes of a 24-bit depth word, as gpu-metal's writes from the host make it.
+fn host_float(word: u32) -> u32 {
+    ((f64::from(word & 0x00ff_ffff) / 16_777_215.0) as f32).to_bits()
+}
+
+#[test]
+fn depth_words_copied_in_become_the_floats_the_host_makes_of_them() {
+    use wcontainers_gpu::{DispatchCall, DispatchGroups};
+    let mut b = device();
+    let size = (DEPTH_TEXELS * 4) as u64;
+    // Every 24-bit word once, each with a high byte that the copy leaves out.
+    let words: Vec<u8> = (0..DEPTH_TEXELS as u32)
+        .flat_map(|n| (n | (n.wrapping_mul(0x9e37_79b9) & 0xff00_0000)).to_le_bytes())
+        .collect();
+    let source = storage(&mut b, size);
+    b.write_buffer(&source, 0, &words, WriteMode::Ordered);
+    for format in [Format::Depth24Plus, Format::Depth24PlusStencil8] {
+        let (texture, view) = depth_texture(&mut b, format);
+        b.copy_buffer_to_texture(&depth_side(&source), &whole(&texture), depth_extent());
+        let bits = storage(&mut b, size);
+        let module =
+            |entry, stage| ShaderModule::from_wgsl(DEPTH_PROGRAMS, entry, stage).expect("parses");
+        let compute = b
+            .create_shader(&module("bits_of", ShaderStage::Compute))
+            .expect("create_shader");
+        let program = b
+            .create_program(&Program::Compute(&compute))
+            .expect("create_program");
+        let set = b
+            .create_binding_set(&[
+                BindingEntry {
+                    binding: 0,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::Texture(&view),
+                },
+                BindingEntry {
+                    binding: 1,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageBuffer {
+                        range: wcontainers_gpu::BufferRange {
+                            buffer: &bits,
+                            offset: 0,
+                            size,
+                        },
+                        writable: true,
+                    },
+                },
+            ])
+            .expect("create_binding_set");
+        b.dispatch(&DispatchCall {
+            program: &program,
+            bindings: [Some(&set), None, None, None],
+            immediates: &[],
+            groups: DispatchGroups::Direct([DEPTH_SIDE / 64, DEPTH_SIDE, 1]),
+        })
+        .expect("dispatch");
+        let got = read_words(&mut b, &bits, size);
+        let mut wrong = 0usize;
+        for (n, got) in got.iter().enumerate() {
+            let wanted = host_float(n as u32);
+            if *got != wanted {
+                if wrong < 8 {
+                    eprintln!("{format:?}: word {n:#x} became {got:#x}, not {wanted:#x}");
+                }
+                wrong += 1;
+            }
+        }
+        assert_eq!(wrong, 0, "{format:?}: words whose float is not the host's");
+    }
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+}
+
+/// The 24-bit depth word the host makes of a float's bits, as gpu-metal's reads back make it.
+fn host_word(bits: u32) -> u32 {
+    let depth = f64::from(f32::from_bits(bits)).clamp(0.0, 1.0);
+    (depth * 16_777_215.0).round_ties_even() as u32
+}
+
+/// The bases of the float bits [`floats_copied_out_become_the_words_the_host_makes_of_them`] draws: every float from
+/// zero to two, a texture of them at a time.
+const FLOAT_CHUNKS: u32 = (1 << 30) / (DEPTH_TEXELS as u32);
+
+#[test]
+fn floats_copied_out_become_the_words_the_host_makes_of_them() {
+    let mut b = device();
+    let size = (DEPTH_TEXELS * 4) as u64;
+    let module =
+        |entry, stage| ShaderModule::from_wgsl(DEPTH_PROGRAMS, entry, stage).expect("parses");
+    let vertex = b
+        .create_shader(&module("covering", ShaderStage::Vertex))
+        .expect("create_shader");
+    let fragment = b
+        .create_shader(&module("numbered", ShaderStage::Fragment))
+        .expect("create_shader");
+    let numbered = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .expect("create_program");
+    let states = states(
+        &mut b,
+        writes_all(None),
+        &DepthStencilDesc {
+            depth_compare: Some(CompareFn::Always),
+            depth_write: true,
+            ..no_tests()
+        },
+        &plain_raster(0.0),
+    );
+    let base = buffer(&mut b, UNIFORM_BYTES);
+    let words = storage(&mut b, size);
+    let start = std::time::Instant::now();
+    let mut held = std::collections::BTreeSet::new();
+    let mut chunks_drawn = 0u32;
+    for format in [Format::Depth24Plus, Format::Depth24PlusStencil8] {
+        let (texture, view) = depth_texture(&mut b, format);
+        let chunks = if format == Format::Depth24Plus {
+            0..FLOAT_CHUNKS
+        } else {
+            // The depth of the combined format, at the floats from 2^-7 to two.
+            (0x3c00_0000 / DEPTH_TEXELS as u32)..FLOAT_CHUNKS
+        };
+        for chunk in chunks {
+            let first = chunk * DEPTH_TEXELS as u32;
+            b.write_buffer(
+                &base,
+                0,
+                &[first, 0, 0, 0]
+                    .iter()
+                    .flat_map(|w: &u32| w.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+                WriteMode::Ordered,
+            );
+            let set = b
+                .create_binding_set(&[BindingEntry {
+                    binding: 2,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::UniformBuffer(wcontainers_gpu::BufferRange {
+                        buffer: &base,
+                        offset: 0,
+                        size: UNIFORM_BYTES,
+                    }),
+                }])
+                .expect("create_binding_set");
+            b.begin_pass(&PassDesc {
+                colors: Default::default(),
+                depth: Some(DepthAttachment {
+                    view: &view,
+                    depth: Some(AspectOps {
+                        load: LoadOp::Clear(0.0f32.to_bits()),
+                        store: StoreOp::Store,
+                        read_only: false,
+                    }),
+                    stencil: (format == Format::Depth24PlusStencil8).then_some(AspectOps {
+                        load: LoadOp::Clear(0),
+                        store: StoreOp::Store,
+                        read_only: false,
+                    }),
+                }),
+                empty: None,
+                occlusion: None,
+            });
+            b.draw(&DrawCall {
+                program: &numbered,
+                blend: &states.blend,
+                depth_stencil: &states.depth_stencil,
+                raster: &states.raster,
+                vertex_layout: &states.layout,
+                bindings: [Some(&set), None, None, None],
+                vertex_buffers: &[],
+                index: None,
+                topology: Topology::TriangleList,
+                restart: false,
+                viewports: &[Viewport {
+                    x: 0,
+                    y: 0,
+                    width: (DEPTH_SIDE as f32).to_bits(),
+                    height: (DEPTH_SIDE as f32).to_bits(),
+                    min_depth: 0,
+                    max_depth: 1.0f32.to_bits(),
+                }],
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count: 3,
+                    first_instance: 0,
+                    instances: 1,
+                },
+            });
+            b.end_pass();
+            b.copy_texture_to_buffer(&whole(&texture), &depth_side(&words), depth_extent());
+            let by_gpu = read_words(&mut b, &words, size);
+            let mut by_host = vec![0; DEPTH_TEXELS * 4];
+            b.submit();
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: whole(&texture),
+                    extent: depth_extent(),
+                },
+                &mut by_host,
+            )
+            .expect("read_back_now");
+            let by_host: Vec<u32> = by_host
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w))
+                .collect();
+            let wrong = by_gpu.iter().zip(&by_host).filter(|(g, h)| g != h).count();
+            if wrong > 0 {
+                let (at, (g, h)) = by_gpu
+                    .iter()
+                    .zip(&by_host)
+                    .enumerate()
+                    .find(|(_, (g, h))| g != h)
+                    .expect("a difference");
+                panic!(
+                    "{format:?}, floats from {first:#x}: {wrong} words differ, the first at {at}: {g:#x}, not {h:#x}"
+                );
+            }
+            // The texture holds the floats drawn, so each word is the host's of the float its place numbers.
+            let unlike = (0..DEPTH_TEXELS)
+                .filter(|i| by_host[*i] != host_word(first + *i as u32))
+                .count();
+            assert_eq!(
+                unlike, 0,
+                "{format:?}, floats from {first:#x}: words not of the floats drawn"
+            );
+            held.insert(by_host[0]);
+            held.insert(by_host[DEPTH_TEXELS - 1]);
+            chunks_drawn += 1;
+        }
+    }
+    eprintln!(
+        "{chunks_drawn} textures of floats, {} distinct end words; {} s",
+        held.len(),
+        start.elapsed().as_secs()
+    );
+    assert_eq!(chunks_drawn, 68);
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+}
+
+#[test]
+fn a_depth_copy_past_its_buffer_or_off_its_words_is_refused_and_writes_nothing() {
+    // From byte 4, rows 20 bytes apart: a 4 by 4 copy ends at 4 + 3 * 20 + 16 = 80 bytes.
+    for (offset, row_pitch, size, refused) in [
+        (4u64, 20u32, 80u64, false),
+        (4, 20, 79, true),
+        (8, 20, 80, true),
+        (2, 20, 96, true),
+        (4, 18, 96, true),
+        (4, 12, 96, true),
+        (u64::MAX - 3, 20, 96, true),
+    ] {
+        let mut b = device();
+        let texture = texture(
+            &mut b,
+            Format::Depth24Plus,
+            DRAWN_SIDE,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            false,
+        );
+        let into = buffer(&mut b, 96);
+        let before = vec![0xa5; 96];
+        b.write_buffer(&into, 0, &before, WriteMode::Ordered);
+        let short = buffer(&mut b, size);
+        for copy_in in [false, true] {
+            let side = wcontainers_gpu::CopyBufferTexture {
+                buffer: &short,
+                offset,
+                row_pitch,
+                rows_per_layer: DRAWN_SIDE,
+            };
+            let extent = Extent {
+                width: DRAWN_SIDE,
+                height: DRAWN_SIDE,
+                depth_or_layers: 1,
+            };
+            if copy_in {
+                b.copy_buffer_to_texture(&side, &whole(&texture), extent);
+            } else {
+                b.copy_texture_to_buffer(&whole(&texture), &side, extent);
+            }
+            let lost = b.status() != wcontainers_gpu::DeviceStatus::Ok;
+            assert_eq!(
+                lost,
+                refused,
+                "a copy {} of {size} bytes from {offset} at {row_pitch} apart",
+                if copy_in { "in" } else { "out" }
+            );
+        }
+        if !refused {
+            // The other buffer is as it was.
+            assert_eq!(read_words(&mut b, &into, 96), vec![0xa5a5_a5a5; 24]);
+        }
+    }
+}
