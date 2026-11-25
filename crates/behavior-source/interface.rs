@@ -106,6 +106,33 @@ pub trait BehaviorSource {
             }),
         }
     }
+
+    /// Returns each instruction of the architecture with the one behavior this source shows for it.
+    fn measure_instructions(
+        &mut self,
+        generator: &impl DistinguishingStateGenerator<Self::Architecture>,
+    ) -> Result<
+        Vec<(
+            <Self::Architecture as ProcessorArchitecture>::Instruction,
+            <Self::Architecture as ProcessorArchitecture>::PreciseInstruction,
+        )>,
+        MeasureInstructionError<Self::Architecture, Self::Error>,
+    >
+    where
+        Self::Architecture: Clone,
+        // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
+        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
+            Simulator<Self::Architecture, Error = Infallible>,
+    {
+        let mut measurements = Vec::new();
+        for instruction in <Self::Architecture as ProcessorArchitecture>::list_instructions() {
+            measurements.push((
+                instruction,
+                self.measure_instruction(instruction, generator)?,
+            ));
+        }
+        Ok(measurements)
+    }
 }
 
 pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionError> {
