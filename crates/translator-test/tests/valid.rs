@@ -147,6 +147,91 @@ fn unordered_guest_accesses(wasm: &[u8]) -> Vec<String> {
     found
 }
 
+/// Locked instructions with a memory destination, each read, changed and written by one compare and exchange.
+const LOCKED: [&[u8]; 9] = [
+    // lock add [rax], rbx
+    &[0xf0, 0x48, 0x01, 0x18],
+    // lock add dword [rax], 1
+    &[0xf0, 0x83, 0x00, 0x01],
+    // lock inc qword [rax]
+    &[0xf0, 0x48, 0xff, 0x00],
+    // lock xadd [rax], rbx
+    &[0xf0, 0x48, 0x0f, 0xc1, 0x18],
+    // lock cmpxchg [rax], rbx
+    &[0xf0, 0x48, 0x0f, 0xb1, 0x18],
+    // xchg [rax], rbx, locked without a prefix
+    &[0x48, 0x87, 0x18],
+    // lock bts [rax], rbx
+    &[0xf0, 0x48, 0x0f, 0xab, 0x18],
+    // lock xor byte [rax], 1
+    &[0xf0, 0x80, 0x30, 0x01],
+    // lock neg word [rax]
+    &[0xf0, 0x66, 0xf7, 0x18],
+];
+
+/// How many compare and exchange operations on the guest's memory a module holds.
+fn compare_exchanges(wasm: &[u8]) -> usize {
+    let mut found = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        let Payload::CodeSectionEntry(body) = payload.expect("a module") else {
+            continue;
+        };
+        for operator in body.get_operators_reader().expect("a body") {
+            let memarg = match operator.expect("an operator") {
+                Operator::I64AtomicRmwCmpxchg { memarg }
+                | Operator::I64AtomicRmw32CmpxchgU { memarg }
+                | Operator::I64AtomicRmw16CmpxchgU { memarg }
+                | Operator::I64AtomicRmw8CmpxchgU { memarg } => memarg,
+                _ => continue,
+            };
+            if memarg.target == wasmparser::MemArgTarget::Memory(GUEST_MEMORY) {
+                found += 1;
+            }
+        }
+    }
+    found
+}
+
+/// In the ordered form a locked instruction is one compare and exchange; in the unordered form it has none.
+#[test]
+fn locked_instructions_compare_and_exchange_when_ordered_x86_64() {
+    for one in LOCKED {
+        let mut code = one.to_vec();
+        code.push(RETURN);
+        for look_ahead in [LookAhead::None, LookAhead::Full] {
+            for ordering in [AccessOrdering::Unordered, ORDERED] {
+                let translation = translate::<X86_64>(
+                    &code,
+                    0..code.len() as u64,
+                    None,
+                    &[0],
+                    look_ahead,
+                    Optimise::Speed,
+                    wcontainers_translator::ProgressCount::Absent,
+                    ordering,
+                    HOST_X86_64,
+                    Offer::default(),
+                )
+                .unwrap();
+                let found: usize = translation
+                    .modules
+                    .iter()
+                    .map(|module| {
+                        validate(&module.wasm);
+                        compare_exchanges(&module.wasm)
+                    })
+                    .sum();
+                let at = format!("{one:02x?} at {look_ahead:?} {ordering:?}");
+                if ordering == ORDERED {
+                    assert!(found > 0, "{at}: no compare and exchange");
+                } else {
+                    assert_eq!(found, 0, "{at}");
+                }
+            }
+        }
+    }
+}
+
 /// ARM64's meanings make no ordered accesses, so the ordered form is refused for it.
 #[test]
 fn the_ordered_form_is_refused_arm64() {

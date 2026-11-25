@@ -47,6 +47,13 @@ impl OrderedAccess {
             OrderedAccess::SequentiallyConsistent => None,
         }
     }
+
+    /// The ordering immediate of an atomic read-modify-write of this kind, as [`Self::memarg_ordering`].
+    pub fn read_modify_write_ordering(self) -> Option<MemArgOrdering> {
+        match self {
+            OrderedAccess::SequentiallyConsistent => None,
+        }
+    }
 }
 
 /// Byte sizes of the single and double precision float formats, as instructions give them.

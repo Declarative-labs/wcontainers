@@ -300,6 +300,63 @@ pub fn bulk_fence<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
     }
 }
 
+/// Whether, in the ordered form, the instruction's memory operand is read, changed and written as one atomic
+/// operation: a memory destination with the `lock` prefix, or `xchg` with memory, whose lock is implied (Intel SDM
+/// Vol. 2B, XCHG).
+pub fn locked<E: Emitter<X86_64> + ?Sized>(e: &E, i: &Instruction) -> bool {
+    let ins = &i.iced;
+    let memory = |n| ins.op_count() > n && ins.op_kind(n) == OpKind::Memory;
+    e.access_ordering() != AccessOrdering::Unordered
+        && match ins.mnemonic() {
+            Mnemonic::Xchg => memory(0) || memory(1),
+            _ => ins.has_lock_prefix() && memory(0),
+        }
+}
+
+/// Open the loop of a locked instruction: its read of the memory operand, its work and its [`locked_write`] run
+/// again until the write finds the operand as it was read.
+pub fn locked_start<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    e.sink().loop_(BlockType::Empty);
+}
+
+/// Write the low `bytes` bytes of the i64 local `new` at `at` when they still hold `old` (the value read after
+/// [`locked_start`]), as one atomic compare and exchange, else go round its loop again; then close the loop. An
+/// operand not aligned to its size cannot be one WebAssembly atomic operation: it is written by ordered accesses,
+/// counted and warned.
+pub fn locked_write<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    (at, bytes): (u32, u32),
+    old: u32,
+    new: u32,
+) {
+    let AccessOrdering::Ordered(kind) = e.access_ordering() else {
+        unreachable!("only the ordered form locks");
+    };
+    let m = MemArg {
+        offset: 0,
+        align: bytes.trailing_zeros(),
+        target: MemArgTarget::Memory(GUEST_MEMORY),
+        ordering: kind.read_modify_write_ordering(),
+    };
+    let mut s = e.sink();
+    aligned(&mut s, at, 0, bytes);
+    s.if_(BlockType::Result(ValType::I32))
+        .local_get(at)
+        .local_get(old)
+        .local_get(new);
+    match bytes {
+        BYTE => s.i64_atomic_rmw8_cmpxchg_u(m),
+        WORD => s.i64_atomic_rmw16_cmpxchg_u(m),
+        DWORD => s.i64_atomic_rmw32_cmpxchg_u(m),
+        _ => s.i64_atomic_rmw_cmpxchg(m),
+    };
+    s.local_get(old).i64_ne().else_();
+    e.warn(crate::guest::Reason::LockedAccessNotAligned);
+    let mut s = e.sink();
+    ordered_store(&mut s, kind, at, 0, bytes, new);
+    s.i32_const(0).end().br_if(0).end();
+}
+
 /// The memory argument of an ordered access of `bytes` bytes at `offset` past its address, naturally aligned
 /// as WebAssembly's atomic accesses must be.
 fn ordered_memory(kind: OrderedAccess, offset: u64, bytes: u32) -> MemArg {
