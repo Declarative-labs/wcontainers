@@ -1,5 +1,6 @@
-//! The shared suite of `wcontainers-gpu-test`, run on Metal; `present_shows_the_frame` runs in tests/present.rs on the
-//! main thread, which macOS windows need.
+//! The shared suite of `wcontainers-gpu-test`, run on Metal, but for `present_shows_the_frame`.
+//!
+//! That one runs in tests/present.rs, on the main thread, which macOS windows need.
 
 #![cfg(target_os = "macos")]
 

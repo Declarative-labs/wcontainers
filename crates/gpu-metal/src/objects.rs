@@ -6,12 +6,11 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    BlendDesc, DepthStencilDesc, Format, RasterDesc, ShaderStage, TextureDesc,
-    VertexLayoutDesc,
+    BlendDesc, DepthStencilDesc, Format, RasterDesc, ShaderStage, TextureDesc, VertexLayoutDesc,
 };
 use wcontainers_metal::{Metal, PixelFormat};
 
-/// A handle: a clone names the same object.
+/// A handle whose clones name the same object.
 pub struct Shared<T>(pub(crate) Rc<T>);
 
 impl<T> Clone for Shared<T> {
@@ -139,7 +138,7 @@ pub struct QueryObj<M: Metal> {
 pub(crate) enum ReadLayout {
     /// As they are.
     Bytes,
-    /// 32-bit float depth, read as 24-bit unorm in the low bits of each word.
+    /// Depth held as 32-bit float, read as 24-bit unorm in the low bits of each word.
     Depth24,
 }
 
@@ -173,8 +172,8 @@ pub(crate) struct Frame<M: Metal> {
 #[derive(Clone, Copy, Debug)]
 pub enum Never {}
 
-/// The Metal pixel format of a format's view, for an aspect.
-pub(crate) fn view_format(format: Format, stencil: bool) -> Option<PixelFormat> {
+/// Returns the Metal pixel format of a view of a format, for an aspect.
+pub(crate) fn choose_view_format(format: Format, stencil: bool) -> Option<PixelFormat> {
     match (format, stencil) {
         (Format::Depth24PlusStencil8 | Format::Depth32FloatStencil8, true) => {
             Some(PixelFormat::X32Stencil8)

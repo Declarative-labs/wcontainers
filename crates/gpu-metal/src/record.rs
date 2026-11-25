@@ -1,5 +1,4 @@
-//! A pass as it is recorded: its attachments, its draws as Metal's render commands, and the functions and pipelines those
-//! draws build.
+//! A pass as it is recorded: its attachments, its draws as Metal's render commands, and what those draws build.
 
 use wcontainers_gpu::{
     AspectOps, DrawCall, DrawRange, EmptyPass, FORMAT_FACTS, Format, FormatKind, Gpu, IndexFormat,
@@ -446,10 +445,10 @@ impl<M: Metal> MetalGpu<M> {
                     .map(|(color, alpha)| Blending {
                         rgb_blend_operation: convert::blend_op(color.op),
                         alpha_blend_operation: convert::blend_op(alpha.op),
-                        source_rgb_blend_factor: convert::blend_factor(color.src),
-                        destination_rgb_blend_factor: convert::blend_factor(color.dst),
-                        source_alpha_blend_factor: convert::blend_factor(alpha.src),
-                        destination_alpha_blend_factor: convert::blend_factor(alpha.dst),
+                        source_rgb_blend_factor: convert::map_blend_factor(color.src),
+                        destination_rgb_blend_factor: convert::map_blend_factor(color.dst),
+                        source_alpha_blend_factor: convert::map_blend_factor(alpha.src),
+                        destination_alpha_blend_factor: convert::map_blend_factor(alpha.dst),
                     }),
                 write_mask: ColorWriteMask {
                     red: target.writes.contains(wcontainers_gpu::ColorWrites::R),
@@ -623,7 +622,7 @@ impl<M: Metal> MetalGpu<M> {
                             SlotKind::Buffer,
                             _,
                         ) => {
-                            self.used(buffer);
+                            self.mark_used(buffer);
                             let (buffer, offset, length) =
                                 (buffer.raw.borrow().clone(), *offset, *size);
                             if vertex_stage {
@@ -678,7 +677,7 @@ impl<M: Metal> MetalGpu<M> {
                 .iter()
                 .map(|binding| {
                     binding.as_ref().map(|binding| {
-                        self.used(binding.buffer);
+                        self.mark_used(binding.buffer);
                         (
                             binding.buffer.raw.borrow().clone(),
                             binding.offset.min(binding.buffer.size),
@@ -743,7 +742,7 @@ impl<M: Metal> MetalGpu<M> {
                         return Err("8-bit indices, which this implementation does not declare");
                     }
                 };
-                self.used(index.buffer);
+                self.mark_used(index.buffer);
                 RenderCommand::DrawIndexedPrimitives {
                     primitive_type,
                     index_count: count,
@@ -772,17 +771,30 @@ impl<M: Metal> MetalGpu<M> {
         frame: &Shared<ViewObj<M>>,
     ) -> Result<(), wcontainers_gpu::GpuError> {
         use wcontainers_gpu::{
-            BindingEntry, BindingResource, BlendDesc, ColorWrites, CullMode, DepthStencilDesc, FillMode, FrontFace,
-            Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ShaderModule, StageSet, VertexLayoutDesc,
-            Viewport, MAX_VERTEX_STREAMS,
+            BindingEntry, BindingResource, BlendDesc, ColorWrites, CullMode, DepthStencilDesc,
+            FillMode, FrontFace, MAX_VERTEX_STREAMS, Program, ProvokingVertex, RasterDesc,
+            RenderTargetBlend, ShaderModule, StageSet, VertexLayoutDesc, Viewport,
         };
         if self.present.is_none() {
-            let vertex = self.create_shader(&ShaderModule::from_wgsl(PRESENT_PROGRAM, "vs", ShaderStage::Vertex)?)?;
-            let fragment =
-                self.create_shader(&ShaderModule::from_wgsl(PRESENT_PROGRAM, "fs", ShaderStage::Fragment)?)?;
-            let program = self.create_program(&Program::Render { vertex: &vertex, fragment: Some(&fragment) })?;
+            let vertex = self.create_shader(&ShaderModule::from_wgsl(
+                PRESENT_PROGRAM,
+                "vs",
+                ShaderStage::Vertex,
+            )?)?;
+            let fragment = self.create_shader(&ShaderModule::from_wgsl(
+                PRESENT_PROGRAM,
+                "fs",
+                ShaderStage::Fragment,
+            )?)?;
+            let program = self.create_program(&Program::Render {
+                vertex: &vertex,
+                fragment: Some(&fragment),
+            })?;
             let blend = self.create_blend(&BlendDesc {
-                targets: [RenderTargetBlend { blend: None, writes: ColorWrites::all() }; MAX_COLOR_TARGETS],
+                targets: [RenderTargetBlend {
+                    blend: None,
+                    writes: ColorWrites::all(),
+                }; MAX_COLOR_TARGETS],
                 same_for_all: true,
                 alpha_to_coverage: false,
                 logic_op: None,
@@ -837,7 +849,12 @@ impl<M: Metal> MetalGpu<M> {
             stages: StageSet::FRAGMENT,
             resource: BindingResource::Texture(frame),
         }])?;
-        let mut pass = PassDesc { colors: Default::default(), depth: None, empty: None, occlusion: None };
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
         pass.colors[0] = Some(wcontainers_gpu::ColorAttachment {
             view: drawable,
             depth_slice: 0,
@@ -870,7 +887,12 @@ impl<M: Metal> MetalGpu<M> {
             blend_constant: [0; 4],
             stencil_reference: [0; 2],
             immediates: &[],
-            range: DrawRange::Vertices { first: 0, count: 3, first_instance: 0, instances: 1 },
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 3,
+                first_instance: 0,
+                instances: 1,
+            },
         });
         self.end_pass();
         Ok(())

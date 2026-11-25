@@ -1,9 +1,8 @@
 //! The graphics interface drawn with Metal, through any implementation of the safe Metal trait.
 //!
-//! Work is recorded into one Metal command buffer at a time: copies are batched into blit passes, a pass's draws become one
-//! render pass encoded when it ends, and `submit` commits. Buffers live in memory the CPU shares, so a write that no
-//! recorded or running work can see lands in place; others go through a staging buffer copied in order. Functions are
-//! compiled per vertex layout, since each vertex function reads its own inputs, bounds-checked.
+//! Copies are batched into blit passes, a pass is one render pass, and `submit` commits the command buffer.
+//!
+//! A buffer write no work can see lands in place; others go through a staging copy.
 
 mod convert;
 mod objects;
@@ -28,54 +27,60 @@ use wcontainers_metal::{
 };
 
 pub use objects::{
-    SurfaceObj,
     BlendBlock, BufferObj, DepthStencilBlock, MetalFence, Never, ProgramObj, QueryObj, RasterBlock,
-    ReadbackObj, SamplerObj, SetObj, ShaderObj, Shared, TextureObj, VertexLayoutBlock, ViewObj,
+    ReadbackObj, SamplerObj, SetObj, ShaderObj, Shared, SurfaceObj, TextureObj, VertexLayoutBlock,
+    ViewObj,
 };
 use objects::{Frame, ReadLayout, SetResource, SlotKind};
-use std::cell::RefCell;
 use record::OpenPass;
+use std::cell::RefCell;
 
-/// The buffer slots each stage's resources take, from zero.
+/// The buffer slots each stage's resources take, from zero, of Metal's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const RESOURCE_BUFFER_SLOTS: u32 = 20;
 
 /// The first buffer slot of the vertex streams, stream n at this plus n.
 const FIRST_STREAM_SLOT: u32 = RESOURCE_BUFFER_SLOTS;
 
-/// The vertex streams a draw reads, each in a slot of its own.
-const VERTEX_STREAMS: u32 = 8;
-
-/// The buffer slot of a draw's immediates.
-const IMMEDIATES_SLOT: u32 = 29;
-
-/// The buffer slot of the lengths the bounds checks read.
-const SIZES_SLOT: u32 = 30;
-
-/// The texture slots each stage's resources take.
-const TEXTURE_SLOTS: u32 = 32;
-
-/// The sampler slots each stage's resources take.
+/// The vertex streams a draw reads, each in a buffer slot of its own after the resources'.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-const SAMPLER_SLOTS: u32 = 16;
+const VERTEX_STREAMS: u32 = 8;
+
+/// The buffer slot of a draw's immediates, the last but one of Metal's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const IMMEDIATES_SLOT: u32 = 29;
+
+/// The buffer slot of the lengths the bounds checks read, the last of Metal's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const SIZES_SLOT: u32 = 30;
+
+/// The texture slots each stage's resources take, of Metal's 128.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const TEXTURE_SLOTS: u32 = 32;
 
 /// The bytes of one query result.
-const QUERY_BYTES: u64 = 8;
-
-/// The largest anisotropy a sampler takes.
 ///
-/// https://developer.apple.com/documentation/metal/mtlsamplerdescriptor/maxanisotropy
-const MAX_ANISOTROPY: u16 = 16;
+/// https://developer.apple.com/documentation/metal/mtlvisibilityresultmode
+const QUERY_BYTES: u64 = 8;
 
 /// The largest level of detail Metal clamps to.
 ///
 /// https://developer.apple.com/documentation/metal/mtlsamplerdescriptor/lodmaxclamp
 const LOD_MAX: f32 = f32::MAX;
 
-/// The largest 24-bit unorm value.
+/// The largest 24-bit unorm value, which reads as one.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fixedconv
 const DEPTH24_MAX: f64 = 16_777_215.0;
 
 /// The low 24 bits of a word, where 24-bit depth sits in a buffer.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#copies-buffers-images-depth-stencil
 const DEPTH24_BITS: u32 = 0x00ff_ffff;
 
 /// The interface drawn with Metal.
@@ -146,7 +151,7 @@ impl<M: Metal> MetalGpu<M> {
                 max_storage_buffer_size: 1 << 30,
                 uniform_buffers_per_stage: 12,
                 textures_per_stage: 16,
-                samplers_per_stage: SAMPLER_SLOTS,
+                samplers_per_stage: wcontainers_metal::MAX_SAMPLER_SLOTS,
                 storage_buffers_per_stage: 8,
                 storage_textures_per_stage: 4,
                 vertex_streams: VERTEX_STREAMS,
@@ -165,7 +170,7 @@ impl<M: Metal> MetalGpu<M> {
                 max_dispatch: 65535,
                 max_point_size: 511.0,
                 max_line_width: 1.0,
-                max_anisotropy: MAX_ANISOTROPY,
+                max_anisotropy: wcontainers_metal::MAX_ANISOTROPY as u16,
                 capture_buffers: 0,
                 capture_components: 0,
             },
@@ -196,7 +201,11 @@ impl<M: Metal> MetalGpu<M> {
     }
 
     /// Adds a window the host shows, by the number its graphics hook names it by; called on the main thread.
-    pub fn add_window(&mut self, number: u32, window: &dyn raw_window_handle::HasWindowHandle) -> Result<(), GpuError> {
+    pub fn add_window(
+        &mut self,
+        number: u32,
+        window: &dyn raw_window_handle::HasWindowHandle,
+    ) -> Result<(), GpuError> {
         let layer = self
             .metal
             .make_layer(window)
@@ -245,7 +254,7 @@ impl<M: Metal> MetalGpu<M> {
     }
 
     /// Queues a copy, ending the open pass for it and opening it again after (`WriteSplitPass`).
-    fn blit(&mut self, command: BlitCommand<M>) {
+    fn queue_blit(&mut self, command: BlitCommand<M>) {
         if self.pass.is_some() {
             self.record_slow_path(wcontainers_gpu::SlowPath::WriteSplitPass);
             let resumed = self.end_open_pass();
@@ -258,7 +267,7 @@ impl<M: Metal> MetalGpu<M> {
     }
 
     /// Notes that the command buffer being recorded uses a buffer's current storage.
-    fn used(&self, buffer: &BufferObj<M>) {
+    fn mark_used(&self, buffer: &BufferObj<M>) {
         buffer.last_use.set(self.serial);
     }
 
@@ -338,7 +347,7 @@ impl<M: Metal> MetalGpu<M> {
             .make_buffer(length)
             .map_err(|_| GpuError::OutOfMemory)?;
         for command in copy(&buffer) {
-            self.blit(command);
+            self.queue_blit(command);
         }
         Ok(Shared(Rc::new(ReadbackObj {
             serial: self.serial,
@@ -465,9 +474,7 @@ impl<M: Metal> MetalGpu<M> {
     }
 
     /// Returns the Metal slots of every resource binding a shader's entry point reads.
-    fn slots(
-        module: &ShaderModule,
-    ) -> Result<objects::Slots, GpuError> {
+    fn slots(module: &ShaderModule) -> Result<objects::Slots, GpuError> {
         let stage = match module.stage {
             ShaderStage::Vertex => naga::ShaderStage::Vertex,
             ShaderStage::Fragment => naga::ShaderStage::Fragment,
@@ -504,7 +511,7 @@ impl<M: Metal> MetalGpu<M> {
             let (count, most) = match kind {
                 SlotKind::Buffer => (&mut next[0], RESOURCE_BUFFER_SLOTS),
                 SlotKind::Texture => (&mut next[1], TEXTURE_SLOTS),
-                SlotKind::Sampler => (&mut next[2], SAMPLER_SLOTS),
+                SlotKind::Sampler => (&mut next[2], wcontainers_metal::MAX_SAMPLER_SLOTS),
             };
             if *count >= most {
                 return Err(GpuError::Invalid(
@@ -632,7 +639,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         texture: &Self::Texture,
         desc: &TextureViewDesc,
     ) -> Result<Self::TextureView, GpuError> {
-        let pixel_format = objects::view_format(desc.format, desc.stencil).ok_or(
+        let pixel_format = objects::choose_view_format(desc.format, desc.stencil).ok_or(
             GpuError::Invalid("view format this implementation does not hold"),
         )?;
         let multisampled = texture.desc.samples > 1;
@@ -694,7 +701,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 lod_min_clamp: f32::from_bits(desc.lod_range[0]).max(0.0),
                 lod_max_clamp: f32::from_bits(desc.lod_range[1]).min(LOD_MAX),
                 max_anisotropy: if linear_only {
-                    u32::from(desc.anisotropy.clamp(1, MAX_ANISOTROPY))
+                    u32::from(
+                        desc.anisotropy
+                            .clamp(1, wcontainers_metal::MAX_ANISOTROPY as u16),
+                    )
                 } else {
                     1
                 },
@@ -920,9 +930,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             self.fail("no staging buffer");
             return;
         };
-        self.used(buffer);
+        self.mark_used(buffer);
         let raw = buffer.raw.borrow().clone();
-        self.blit(BlitCommand::CopyFromBufferToBuffer {
+        self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
             source_buffer: staging,
             source_offset: 0,
             destination_buffer: raw,
@@ -957,7 +967,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             true,
         );
         for copy in copies {
-            self.blit(copy);
+            self.queue_blit(copy);
         }
     }
 
@@ -992,10 +1002,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         dst_offset: u64,
         size: u64,
     ) {
-        self.used(src);
-        self.used(dst);
+        self.mark_used(src);
+        self.mark_used(dst);
         let (source, destination) = (src.raw.borrow().clone(), dst.raw.borrow().clone());
-        self.blit(BlitCommand::CopyFromBufferToBuffer {
+        self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
             source_buffer: source,
             source_offset: src_offset,
             destination_buffer: destination,
@@ -1017,7 +1027,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         );
         let layers = if s3 { 1 } else { extent.depth_or_layers };
         for layer in 0..layers {
-            self.blit(BlitCommand::CopyFromTextureToTexture {
+            self.queue_blit(BlitCommand::CopyFromTextureToTexture {
                 source_texture: s.raw.clone(),
                 source_slice: if s3 { 0 } else { src.layer + layer },
                 source_level: src.mip,
@@ -1050,7 +1060,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         extent: Extent,
     ) {
         let texture = dst.texture.clone();
-        self.used(src.buffer);
+        self.mark_used(src.buffer);
         let raw = src.buffer.raw.borrow().clone();
         if convert::depth_converted(texture.desc.format) && !dst.stencil {
             // Metal holds this depth as float: the words are read on the host and converted.
@@ -1085,7 +1095,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             true,
         );
         for copy in copies {
-            self.blit(copy);
+            self.queue_blit(copy);
         }
     }
 
@@ -1096,7 +1106,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         extent: Extent,
     ) {
         let texture = src.texture.clone();
-        self.used(dst.buffer);
+        self.mark_used(dst.buffer);
         let raw = dst.buffer.raw.borrow().clone();
         if convert::depth_converted(texture.desc.format) && !src.stencil {
             let (row, rows) = self.tight_rows(texture.desc.format, false, extent);
@@ -1121,7 +1131,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                         self.fail("no staging buffer");
                         return;
                     };
-                    self.blit(BlitCommand::CopyFromBufferToBuffer {
+                    self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
                         source_buffer: staging,
                         source_offset: 0,
                         destination_buffer: raw.clone(),
@@ -1143,7 +1153,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             false,
         );
         for copy in copies {
-            self.blit(copy);
+            self.queue_blit(copy);
         }
     }
 
@@ -1151,10 +1161,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if size == 0 {
             return;
         }
-        self.used(buffer);
+        self.mark_used(buffer);
         let raw = buffer.raw.borrow().clone();
         if pattern.iter().all(|b| *b == pattern[0]) {
-            self.blit(BlitCommand::FillBuffer {
+            self.queue_blit(BlitCommand::FillBuffer {
                 buffer: raw,
                 offset,
                 length: size,
@@ -1173,7 +1183,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             self.fail("no staging buffer");
             return;
         };
-        self.blit(BlitCommand::CopyFromBufferToBuffer {
+        self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
             source_buffer: staging,
             source_offset: 0,
             destination_buffer: raw,
@@ -1213,7 +1223,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 offset,
                 size,
             } => {
-                self.used(buffer);
+                self.mark_used(buffer);
                 let raw = buffer.raw.borrow().clone();
                 let (offset, size) = (*offset, *size);
                 self.read_into(size, ReadLayout::Bytes, |into| {
@@ -1242,7 +1252,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 let commands = self
                     .buffer_texture_copies(&texture, region, *extent, &buffer, 0, row, rows, false);
                 for command in commands {
-                    self.blit(command);
+                    self.queue_blit(command);
                 }
                 Ok(Shared(Rc::new(ReadbackObj {
                     serial: self.serial,
@@ -1364,7 +1374,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         };
         let drawn = self.create_view(&texture, &whole(format))?;
         let read = self.create_view(&texture, &whole(FORMAT_FACTS[format as usize].linear))?;
-        *surface.frame.borrow_mut() = Some(Frame { format, drawn, read });
+        *surface.frame.borrow_mut() = Some(Frame {
+            format,
+            drawn,
+            read,
+        });
         Ok(())
     }
 
@@ -1446,7 +1460,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                         offset,
                         size,
                     } => {
-                        self.used(buffer);
+                        self.mark_used(buffer);
                         ComputeCommand::SetBuffer {
                             buffer: buffer.raw.borrow().clone(),
                             offset: *offset,

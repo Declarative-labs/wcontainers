@@ -1,8 +1,7 @@
 //! Metal's own calls through objc2-metal, each checked against what it touches just before it is made.
 //!
-//! Functions are written by naga with every access bounds-checked and vertex inputs read by the function itself, so a
-//! draw is sound once every slot its functions read holds a resource of the right kind and size: each encode checks
-//! that, and passes the functions the lengths their bounds checks read.
+//! Functions are written by naga with every access bounds-checked, so a draw is sound once each slot it reads holds a
+//! resource of the right kind and size, which each encode checks.
 #![cfg(target_os = "macos")]
 
 use std::cell::{Cell, RefCell};
@@ -14,10 +13,8 @@ use std::rc::Rc;
 
 use objc2::MainThreadMarker;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2_core_foundation::CGSize;
-use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use objc2::runtime::ProtocolObject;
+use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSRange, NSString, NSUInteger};
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder, MTLBlitOption, MTLBuffer,
@@ -33,21 +30,23 @@ use objc2_metal::{
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureType,
     MTLTextureUsage, MTLTriangleFillMode, MTLViewport, MTLVisibilityResultMode, MTLWinding,
 };
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wcontainers_metal::{
-    ConfigureLayerError, LayerDescriptor, MakeLayerError, NextDrawableError, PresentDrawableError,
     BlendFactor, BlendOperation, BlitCommand, BlitOption, CommandBufferStatus, CommitError,
-    CompareFunction, ComputeCommand, CullMode, DepthClipMode, DepthStencilDescriptor,
-    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    IndexType, LoadAction, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS,
-    MAX_TEXTURE_SLOTS, MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError,
-    MakeComputePipelineStateError, MakeDepthStencilStateError, MakeFunctionError,
-    MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, MakeTextureViewError,
-    Metal, Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError,
-    RenderCommand, RenderPassDescriptor, RenderPipelineDescriptor, SamplerAddressMode,
-    SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter, SamplerMipFilter, Size,
-    StandaloneMetal, StencilDescriptor, StencilOperation, StoreAction, TextureDescriptor,
-    TextureType, TextureViewDescriptor, TriangleFillMode, VertexFormat, VertexStepFunction,
-    VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
+    CompareFunction, ComputeCommand, ConfigureLayerError, CullMode, DepthClipMode,
+    DepthStencilDescriptor, EncodeBlitCommandsError, EncodeComputeCommandsError,
+    EncodeRenderCommandsError, FunctionSource, IndexType, LayerDescriptor, LoadAction,
+    MAX_ANISOTROPY, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SLOTS,
+    MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError, MakeComputePipelineStateError,
+    MakeDepthStencilStateError, MakeFunctionError, MakeLayerError, MakeRenderPipelineStateError,
+    MakeSamplerStateError, MakeTextureError, MakeTextureViewError, Metal, NextDrawableError,
+    Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass, PrimitiveType,
+    ReadContentsError, RenderCommand, RenderPassDescriptor, RenderPipelineDescriptor,
+    SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
+    SamplerMipFilter, Size, StandaloneMetal, StencilDescriptor, StencilOperation, StoreAction,
+    TextureDescriptor, TextureType, TextureViewDescriptor, TriangleFillMode, VertexFormat,
+    VertexStepFunction, VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
 };
 
 /// The Metal Shading Language version functions are written in and compiled as.
@@ -61,12 +60,9 @@ const LANGUAGE_VERSION: (u8, u8) = (3, 1);
 const VISIBILITY_RESULT_BYTES: u64 = 8;
 
 /// The bytes of the buffer bound to vertex buffer slots no command filled, whose length the function reads as zero.
-const EMPTY_BUFFER_BYTES: usize = 16;
-
-/// The largest anisotropy a sampler takes.
 ///
-/// https://developer.apple.com/documentation/metal/mtlsamplerdescriptor/maxanisotropy
-const MAX_ANISOTROPY: u32 = 16;
+/// https://developer.apple.com/documentation/metal/mtldevice/makebuffer(length:options:)
+const EMPTY_BUFFER_BYTES: usize = 16;
 
 /// The system's default GPU and one command queue on it.
 pub struct DirectMetal {
@@ -742,12 +738,12 @@ impl Metal for DirectMetal {
                 raw.setBlendingEnabled(true);
                 raw.setRgbBlendOperation(blend_operation(blending.rgb_blend_operation));
                 raw.setAlphaBlendOperation(blend_operation(blending.alpha_blend_operation));
-                raw.setSourceRGBBlendFactor(blend_factor(blending.source_rgb_blend_factor));
-                raw.setDestinationRGBBlendFactor(blend_factor(
+                raw.setSourceRGBBlendFactor(map_blend_factor(blending.source_rgb_blend_factor));
+                raw.setDestinationRGBBlendFactor(map_blend_factor(
                     blending.destination_rgb_blend_factor,
                 ));
-                raw.setSourceAlphaBlendFactor(blend_factor(blending.source_alpha_blend_factor));
-                raw.setDestinationAlphaBlendFactor(blend_factor(
+                raw.setSourceAlphaBlendFactor(map_blend_factor(blending.source_alpha_blend_factor));
+                raw.setDestinationAlphaBlendFactor(map_blend_factor(
                     blending.destination_alpha_blend_factor,
                 ));
             }
@@ -1015,14 +1011,19 @@ impl Metal for DirectMetal {
         if MainThreadMarker::new().is_none() {
             return Err(MakeLayerError::NotMainThread);
         }
-        let handle = window.window_handle().map_err(|_| MakeLayerError::NotAppKit)?;
+        let handle = window
+            .window_handle()
+            .map_err(|_| MakeLayerError::NotAppKit)?;
         let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
             return Err(MakeLayerError::NotAppKit);
         };
         #[expect(unsafe_code, reason = "the layer of the view a window handle names")]
         // SAFETY: the handle borrows its view, so the pointer is a live NSView during the call, which is on the main thread.
         let layer = unsafe { raw_window_metal::Layer::from_ns_view(appkit.ns_view) };
-        #[expect(unsafe_code, reason = "the move of the layer's retain into a typed handle")]
+        #[expect(
+            unsafe_code,
+            reason = "the move of the layer's retain into a typed handle"
+        )]
         // SAFETY: `into_raw` gives a retained `CAMetalLayer`, whose one retain the handle takes over.
         let raw = unsafe { Retained::from_raw(layer.into_raw().cast::<CAMetalLayer>().as_ptr()) }
             .ok_or(MakeLayerError::NotAppKit)?;
@@ -1062,8 +1063,13 @@ impl Metal for DirectMetal {
     }
 
     fn next_drawable(&mut self, layer: &DirectLayer) -> Result<DirectDrawable, NextDrawableError> {
-        let descriptor = layer.0.configured.get().ok_or(NextDrawableError::NotConfigured)?;
-        let raw = autoreleasepool(|_| layer.0.raw.nextDrawable()).ok_or(NextDrawableError::TimedOut)?;
+        let descriptor = layer
+            .0
+            .configured
+            .get()
+            .ok_or(NextDrawableError::NotConfigured)?;
+        let raw =
+            autoreleasepool(|_| layer.0.raw.nextDrawable()).ok_or(NextDrawableError::TimedOut)?;
         let texture = raw.texture();
         let storage = Retained::as_ptr(&texture).cast::<c_void>() as usize;
         let state = TextureState {
@@ -1114,6 +1120,8 @@ impl Metal for DirectMetal {
 const THREADGROUP_GRANULE: u64 = 16;
 
 /// The faces of one cube.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturetype/typecube
 const CUBE_FACES: u32 = 6;
 
 /// Returns the levels of a full mipmap chain for a largest side.
@@ -2630,7 +2638,7 @@ fn vertex_format(format: VertexFormat) -> (naga_types::VertexFormat, u32) {
 /// What one pixel format is, for the checks.
 #[derive(Clone, Copy)]
 struct FormatFacts {
-    /// Bytes of one block, a texel for formats that are not compressed.
+    /// The size of one block in bytes, a texel for formats that are not compressed.
     bytes: u32,
     block: (u32, u32),
     depth: bool,
@@ -2854,7 +2862,7 @@ fn stencil_operation(operation: StencilOperation) -> MTLStencilOperation {
 }
 
 /// Returns Metal's blend factor of a blend factor.
-fn blend_factor(factor: BlendFactor) -> MTLBlendFactor {
+fn map_blend_factor(factor: BlendFactor) -> MTLBlendFactor {
     match factor {
         BlendFactor::Zero => MTLBlendFactor::Zero,
         BlendFactor::One => MTLBlendFactor::One,

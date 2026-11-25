@@ -1,17 +1,21 @@
-//! Vertex formats naga's vertex reads lack (slow path `VertexFormatConverted`): a stream holding one is read back, each of
-//! its attributes widened on the host into a format naga reads, and drawn from the widened copy.
+//! Streams of formats naga's vertex reads lack, widened on the host (slow path `VertexFormatConverted`).
+//!
+//! Such a stream is read back, each attribute widened into a format naga reads, and drawn from the copy.
 
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    DrawCall, Gpu, GpuError, SlowPath, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream,
+    DrawCall, Gpu, GpuError, SlowPath, VertexAttribute, VertexFormat, VertexLayoutDesc,
+    VertexStream,
 };
 use wcontainers_metal::Metal;
 
 use crate::objects::{Shared, VertexLayoutBlock};
 use crate::{MetalGpu, convert};
 
-/// The bytes widened attributes start at multiples of.
+/// The bytes widened attributes start at multiples of, the alignment of naga's vertex reads.
+///
+/// https://docs.rs/naga/30.0.2/naga/back/msl/struct.AttributeMapping.html
 const ATTRIBUTE_ALIGNMENT: u32 = 4;
 
 /// A draw's vertex layout and streams after widening: the layout, and each stream's buffer, offset and length.
@@ -105,9 +109,13 @@ fn half_one() -> u16 {
 }
 
 impl<M: Metal> MetalGpu<M> {
-    /// Returns the draw's layout and streams with every stream that holds a format naga lacks widened, or none if it holds
-    /// none; it ends the open pass, waits for the work before, and opens the pass again.
-    pub(crate) fn widen_streams(&mut self, call: &DrawCall<'_, Self>) -> Result<Option<Widened<M>>, GpuError> {
+    /// Returns the draw's layout and streams with each stream of a format naga lacks widened, or none if it has none.
+    ///
+    /// It ends the open pass, waits for the work before, and opens the pass again.
+    pub(crate) fn widen_streams(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+    ) -> Result<Option<Widened<M>>, GpuError> {
         let desc = &call.vertex_layout.desc;
         let lacking = |stream: usize| {
             desc.attributes
@@ -119,7 +127,10 @@ impl<M: Metal> MetalGpu<M> {
             return Ok(None);
         }
         self.record_slow_path(SlowPath::VertexFormatConverted);
-        let mut layout = VertexLayoutDesc { streams: desc.streams, attributes: desc.attributes };
+        let mut layout = VertexLayoutDesc {
+            streams: desc.streams,
+            attributes: desc.attributes,
+        };
         let mut streams = Vec::new();
         for (stream, s) in desc.streams.iter().enumerate() {
             let binding = call.vertex_buffers.get(stream).and_then(Option::as_ref);
@@ -144,11 +155,15 @@ impl<M: Metal> MetalGpu<M> {
             let mut stride = 0;
             for (i, a) in &places {
                 let format = widened(a.format).unwrap_or(a.format);
-                layout.attributes[*i] = Some(VertexAttribute { offset: stride, format, ..*a });
+                layout.attributes[*i] = Some(VertexAttribute {
+                    offset: stride,
+                    format,
+                    ..*a
+                });
                 stride += convert::vertex_bytes(format).next_multiple_of(ATTRIBUTE_ALIGNMENT);
             }
             let source_stride = u64::from(s.stride);
-            let elements = if source_stride == 0 { 1 } else { length / source_stride };
+            let elements = length.checked_div(source_stride).unwrap_or(1);
             let resumed = self.end_open_pass();
             let bytes = self.read_buffer_now(&raw, binding.offset, length);
             self.pass = resumed;
@@ -159,19 +174,30 @@ impl<M: Metal> MetalGpu<M> {
                     let start = at + a.offset as usize;
                     let end = start + convert::vertex_bytes(a.format) as usize;
                     let Some(src) = bytes.get(start..end) else {
-                        out.resize(out.len() + convert::vertex_bytes(widened(a.format).unwrap_or(a.format)) as usize, 0);
+                        out.resize(
+                            out.len()
+                                + convert::vertex_bytes(widened(a.format).unwrap_or(a.format))
+                                    as usize,
+                            0,
+                        );
                         continue;
                     };
                     widen(a.format, src, &mut out);
                     out.resize(out.len().next_multiple_of(ATTRIBUTE_ALIGNMENT as usize), 0);
                 }
             }
-            layout.streams[stream] = Some(VertexStream { stride: if s.stride == 0 { 0 } else { stride }, ..*s });
+            layout.streams[stream] = Some(VertexStream {
+                stride: if s.stride == 0 { 0 } else { stride },
+                ..*s
+            });
             let buffer = self.staging(&out).ok_or(GpuError::OutOfMemory)?;
             streams.push(Some((buffer, 0, out.len() as u64)));
         }
         let id = self.widened_layout(call.vertex_layout.id, layout);
-        Ok(Some(Widened { layout: id, streams }))
+        Ok(Some(Widened {
+            layout: id,
+            streams,
+        }))
     }
 
     /// Returns the block of a widened layout, one per layout it widens.
@@ -179,7 +205,10 @@ impl<M: Metal> MetalGpu<M> {
         if let Some(block) = self.widened_layouts.get(&of) {
             return block.clone();
         }
-        let block = Shared(Rc::new(VertexLayoutBlock { id: self.id(), desc }));
+        let block = Shared(Rc::new(VertexLayoutBlock {
+            id: self.id(),
+            desc,
+        }));
         self.widened_layouts.insert(of, block.clone());
         block
     }

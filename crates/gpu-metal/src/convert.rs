@@ -102,7 +102,9 @@ pub(crate) fn depth_converted(format: Format) -> bool {
     matches!(format, Format::Depth24Plus | Format::Depth24PlusStencil8)
 }
 
-/// The sample counts every format drawn into takes: one and four.
+/// The sample counts every format drawn into takes, a bit for each: one and four.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/supportstexturesamplecount(_:)
 const DRAWN_SAMPLES: u8 = 0b101;
 
 /// Returns what this implementation does with each format, on Apple's GPUs of macOS.
@@ -267,7 +269,7 @@ pub(crate) fn stencil(face: &StencilFace, read_mask: u8, write_mask: u8) -> Sten
 }
 
 /// Returns Metal's blend factor of an interface one.
-pub(crate) fn blend_factor(factor: GpuBlendFactor) -> BlendFactor {
+pub(crate) fn map_blend_factor(factor: GpuBlendFactor) -> BlendFactor {
     use GpuBlendFactor as G;
     match factor {
         G::Zero => BlendFactor::Zero,

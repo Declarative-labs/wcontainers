@@ -13,10 +13,10 @@ use wcontainers_metal::{
 };
 
 /// The side of the square textures the tests draw into and copy, in texels.
-const SIDE: u32 = 4;
+const TARGET_SIDE: u32 = 4;
 
 /// The bytes of one `rgba8Unorm` texel.
-const TEXEL: u64 = 4;
+const RGBA8_BYTES: u64 = 4;
 
 /// The buffer slot of the tests' immediates, which no test reads.
 const IMMEDIATES: u32 = 29;
@@ -139,14 +139,14 @@ fn function<M: Metal>(subject: &mut M, stage: naga::ShaderStage, entry_point: &s
         .expect("make_function")
 }
 
-/// Makes an `rgba8Unorm` texture of `SIDE` by `SIDE` the tests draw into, copy and sample.
+/// Makes an `rgba8Unorm` texture of `TARGET_SIDE` by `TARGET_SIDE` the tests draw into, copy and sample.
 fn target<M: Metal>(subject: &mut M) -> M::Texture {
     subject
         .make_texture(&TextureDescriptor {
             texture_type: TextureType::Type2D,
             pixel_format: PixelFormat::Rgba8Unorm,
-            width: SIDE,
-            height: SIDE,
+            width: TARGET_SIDE,
+            height: TARGET_SIDE,
             depth: 1,
             mipmap_level_count: 1,
             sample_count: 1,
@@ -184,11 +184,11 @@ fn finish<M: Metal>(subject: &mut M, command_buffer: &M::CommandBuffer) {
     );
 }
 
-/// Copies a `SIDE` by `SIDE` `rgba8Unorm` texture into a new buffer and returns its bytes.
+/// Copies a `TARGET_SIDE` by `TARGET_SIDE` `rgba8Unorm` texture into a new buffer and returns its bytes.
 fn read_texture<M: Metal>(subject: &mut M, texture: &M::Texture) -> Vec<u8> {
-    let row = u64::from(SIDE) * TEXEL;
+    let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
     let buffer = subject
-        .make_buffer(row * u64::from(SIDE))
+        .make_buffer(row * u64::from(TARGET_SIDE))
         .expect("make_buffer");
     let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
     subject
@@ -200,20 +200,20 @@ fn read_texture<M: Metal>(subject: &mut M, texture: &M::Texture) -> Vec<u8> {
                 source_level: 0,
                 source_origin: Origin { x: 0, y: 0, z: 0 },
                 source_size: Size {
-                    width: SIDE,
-                    height: SIDE,
+                    width: TARGET_SIDE,
+                    height: TARGET_SIDE,
                     depth: 1,
                 },
                 destination_buffer: buffer.clone(),
                 destination_offset: 0,
                 destination_bytes_per_row: row,
-                destination_bytes_per_image: row * u64::from(SIDE),
+                destination_bytes_per_image: row * u64::from(TARGET_SIDE),
                 options: BlitOption::None,
             }],
         )
         .expect("encode_blit_commands");
     finish(subject, &command_buffer);
-    let mut bytes = vec![0; (row * u64::from(SIDE)) as usize];
+    let mut bytes = vec![0; (row * u64::from(TARGET_SIDE)) as usize];
     subject
         .read_contents(&buffer, 0, &mut bytes)
         .expect("read_contents");
@@ -268,8 +268,8 @@ fn pass<M: Metal>(texture: &M::Texture) -> RenderPassDescriptor<'_, M> {
         depth_attachment: None,
         stencil_attachment: None,
         visibility_result_buffer: None,
-        render_target_width: SIDE,
-        render_target_height: SIDE,
+        render_target_width: TARGET_SIDE,
+        render_target_height: TARGET_SIDE,
         default_raster_sample_count: 1,
     }
 }
@@ -293,16 +293,16 @@ fn covering_draw<M: Metal>(
         RenderCommand::SetViewports(vec![Viewport {
             origin_x: 0.0,
             origin_y: 0.0,
-            width: f64::from(SIDE),
-            height: f64::from(SIDE),
+            width: f64::from(TARGET_SIDE),
+            height: f64::from(TARGET_SIDE),
             znear: 0.0,
             zfar: 1.0,
         }]),
         RenderCommand::SetScissorRects(vec![ScissorRect {
             x: 0,
             y: 0,
-            width: SIDE,
-            height: SIDE,
+            width: TARGET_SIDE,
+            height: TARGET_SIDE,
         }]),
     ];
     commands.extend(bindings);
@@ -394,8 +394,8 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
 
 /// Checks that copies between buffers and a texture, and a fill, move exactly the bytes they name.
 pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
-    let row = u64::from(SIDE) * TEXEL;
-    let bytes = pattern((row * u64::from(SIDE)) as usize);
+    let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
+    let bytes = pattern((row * u64::from(TARGET_SIDE)) as usize);
     let source = filled(&mut subject, &bytes);
     let texture = target(&mut subject);
     let copy = filled(&mut subject, &[0; 32]);
@@ -408,10 +408,10 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
                     source_buffer: source.clone(),
                     source_offset: 0,
                     source_bytes_per_row: row,
-                    source_bytes_per_image: row * u64::from(SIDE),
+                    source_bytes_per_image: row * u64::from(TARGET_SIDE),
                     source_size: Size {
-                        width: SIDE,
-                        height: SIDE,
+                        width: TARGET_SIDE,
+                        height: TARGET_SIDE,
                         depth: 1,
                     },
                     destination_texture: texture.clone(),
@@ -486,14 +486,14 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
     finish(&mut subject, &command_buffer);
     assert_eq!(
         read_texture(&mut subject, &texture),
-        [0, 255, 0, 255].repeat((SIDE * SIDE) as usize)
+        [0, 255, 0, 255].repeat((TARGET_SIDE * TARGET_SIDE) as usize)
     );
 }
 
 /// Checks that a draw sampling a view of a texture through a nearest sampler reads each texel.
 pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
-    let row = u64::from(SIDE) * TEXEL;
-    let bytes = pattern((row * u64::from(SIDE)) as usize);
+    let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
+    let bytes = pattern((row * u64::from(TARGET_SIDE)) as usize);
     let source = filled(&mut subject, &bytes);
     let texture = target(&mut subject);
     let view = subject
@@ -542,10 +542,10 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
                 source_buffer: source,
                 source_offset: 0,
                 source_bytes_per_row: row,
-                source_bytes_per_image: row * u64::from(SIDE),
+                source_bytes_per_image: row * u64::from(TARGET_SIDE),
                 source_size: Size {
-                    width: SIDE,
-                    height: SIDE,
+                    width: TARGET_SIDE,
+                    height: TARGET_SIDE,
                     depth: 1,
                 },
                 destination_texture: texture,
@@ -659,7 +659,37 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    (@StandaloneMetal yes ($value:expr)) => {
+        $crate::tests!(@StandaloneMetal yes ($value) ($value));
+    };
+    (@StandaloneMetal yes ($base:expr) ($value:expr)) => {
+        mod standalone_metal {}
+    };
+    (@StandaloneMetal no ($value:expr)) => {
+        mod standalone_metal {
+            #[test]
+            fn lacks_standalone_metal() {
+                struct Probe<T>(::core::marker::PhantomData<T>);
+                impl<T> ::core::clone::Clone for Probe<T> {
+                    fn clone(&self) -> Self {
+                        Probe(::core::marker::PhantomData)
+                    }
+                }
+                struct Implemented;
+                #[allow(dead_code)]
+                impl<T: ::wcontainers_metal::StandaloneMetal> Probe<T> {
+                    fn clone(&self) -> Implemented {
+                        Implemented
+                    }
+                }
+                fn probe_of<T>(_value: &T) -> Probe<T> {
+                    Probe(::core::marker::PhantomData)
+                }
+                let _: Probe<_> = probe_of(&$value).clone();
+            }
+        }
+    };
+    ($value:expr; StandaloneMetal: $standalone_metal:ident $(($standalone_metal_value:expr))?) => {
         #[test]
         fn has_a_name() {
             $crate::has_a_name($value);
@@ -699,5 +729,6 @@ macro_rules! tests {
         fn dispatches_with_workgroup_memory() {
             $crate::dispatches_with_workgroup_memory($value);
         }
+        $crate::tests!(@StandaloneMetal $standalone_metal ($value) $(($standalone_metal_value))?);
     };
 }

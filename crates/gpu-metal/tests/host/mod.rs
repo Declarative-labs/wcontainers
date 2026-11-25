@@ -1,5 +1,6 @@
-//! The host of the shared suite on Metal: a device made through the direct implementation of the Metal trait, and a
-//! window of the test-window crate whose shown texels the suite reads.
+//! The host of the shared suite on Metal, through the direct implementation of the Metal trait.
+//!
+//! Its window is the test-window crate's, whose shown texels the suite reads.
 
 use std::cell::RefCell;
 
@@ -30,7 +31,8 @@ impl wcontainers_gpu_test::Host for Native {
 
     fn window(b: &mut MetalGpu<DirectMetal>) -> u32 {
         let window = AppkitTestWindow::new(());
-        b.add_window(WINDOW_NUMBER, &window).expect("a layer of the window");
+        b.add_window(WINDOW_NUMBER, &window)
+            .expect("a layer of the window");
         WINDOW.with(|w| *w.borrow_mut() = Some(window));
         WINDOW_NUMBER
     }

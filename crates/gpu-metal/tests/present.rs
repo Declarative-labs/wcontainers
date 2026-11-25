@@ -1,5 +1,6 @@
-//! The shared suite's `present_shows_the_frame` on the main thread, which macOS windows need (the standard test harness
-//! runs every test on a thread of its own).
+//! The shared suite's `present_shows_the_frame`, run on the main thread, which macOS windows need.
+//!
+//! The standard test harness runs every test on a thread of its own.
 
 #[cfg(target_os = "macos")]
 mod host;
