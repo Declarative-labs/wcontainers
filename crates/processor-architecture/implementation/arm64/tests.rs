@@ -3,6 +3,7 @@
 use alloc::borrow::Cow;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
@@ -20,33 +21,24 @@ const DATA: u64 = 2 * PAGE;
 const UPPER_DATA: u64 = 3 * PAGE;
 const SIGN_BIT: u64 = 1 << 63;
 
-const UNDEFINED_INSTRUCTION: u64 = 0x0200_0000;
-const READ_TRANSLATION_FAULT: u64 = 0x9200_0007;
-const READ_PERMISSION_FAULT: u64 = 0x9200_000F;
-const WRITE_TRANSLATION_FAULT: u64 = 0x9200_0047;
-/// The value measured on both chips for a store to a read-only page.
-const WRITE_PERMISSION_FAULT: u64 = 0x9200_004F;
-const STACK_POINTER_ALIGNMENT_FAULT: u64 = 0x9A00_0000;
-/// Measured on the Apple M5 under Hypervisor.framework, whose EL1 sees no SME.
-const SME_DISABLED_BY_CPACR: u64 = 0x7600_0000;
-const FETCH_PERMISSION_FAULT: u64 = 0x8200_000F;
-
-const LOAD: PreciseInstruction = PreciseInstruction::LdrImmediateUnsignedOffset64 {
+const LOAD: PreciseInstruction<Infallible> = PreciseInstruction::LdrImmediateUnsignedOffset64 {
     misaligned_stack_pointer: MisalignedStackPointer::Faults,
 };
-const STORE: PreciseInstruction = PreciseInstruction::StrImmediateUnsignedOffset64 {
+const STORE: PreciseInstruction<Infallible> = PreciseInstruction::StrImmediateUnsignedOffset64 {
     misaligned_stack_pointer: MisalignedStackPointer::Faults,
     across_fault: StoreAcrossFault::WritesNothing,
 };
 
-const fn to_store_pair(across_fault: StoreAcrossFault) -> PreciseInstruction {
+const fn to_store_pair(across_fault: StoreAcrossFault) -> PreciseInstruction<Infallible> {
     PreciseInstruction::StpSignedOffset64 {
         misaligned_stack_pointer: MisalignedStackPointer::Faults,
         across_fault,
     }
 }
 
-const fn to_post_index_load(into_base: LoadIntoBaseWithWriteback) -> PreciseInstruction {
+const fn to_post_index_load(
+    into_base: LoadIntoBaseWithWriteback,
+) -> PreciseInstruction<Infallible> {
     PreciseInstruction::LdrImmediatePostIndex64 {
         misaligned_stack_pointer: MisalignedStackPointer::Faults,
         into_base,
@@ -66,7 +58,7 @@ const FORBIDDEN: PagePermission = PagePermission::Mapped {
     instruction_fetch: InstructionFetch::Forbidden,
 };
 
-fn encode(instruction: Instruction, fields: &[(Field, u32)]) -> u32 {
+fn encode(instruction: Instruction<Infallible>, fields: &[(Field, u32)]) -> u32 {
     fields
         .iter()
         .fold(instruction.to_fixed_bits().value, |word, (field, value)| {
@@ -79,7 +71,7 @@ fn to_state(
     word: u32,
     lower: PagePermission,
     upper: PagePermission,
-) -> ExecutionState<'static, Arm64> {
+) -> ExecutionState<'static, Arm64<User>> {
     let readable_and_executable = PagePermission::Mapped {
         data_access: DataAccess::ReadOnly,
         instruction_fetch: InstructionFetch::Allowed,
@@ -124,34 +116,36 @@ fn to_loaded(address: u64) -> u64 {
 
 /// Simulates and returns the state after and the memory mutations the instruction made.
 fn run(
-    precise: PreciseInstruction,
-    before: ExecutionState<'static, Arm64>,
-) -> (Processor, Vec<MemoryDelta<'static, Arm64>>) {
+    precise: PreciseInstruction<Infallible>,
+    before: ExecutionState<'static, Arm64<User>>,
+) -> (Processor<()>, Vec<MemoryDelta<'static, Arm64<User>>>) {
     let given = before.memory_mutations.len();
     let Ok(mut after) = precise.simulate(before);
     let made = after.memory_mutations.split_off(given);
     (after.processor, made)
 }
 
-fn assert_completed(before: &Processor, after: &Processor) {
+fn assert_completed(before: &Processor<()>, after: &Processor<()>) {
     assert_eq!(after.program_counter, before.program_counter + 4);
     assert_eq!(after.exception, None);
 }
 
-fn assert_raised(after: &Processor, syndrome: u64, fault_address: Option<u64>) {
+fn assert_raised(after: &Processor<()>, exception: Exception) {
     assert_eq!(after.program_counter, CODE);
-    assert_eq!(
-        after.exception,
-        Some(Exception {
-            syndrome,
-            fault_address
-        })
-    );
+    assert_eq!(after.exception, Some(exception));
+}
+
+const fn to_data_abort(status: FaultStatus, access: AccessDirection, address: u64) -> Exception {
+    Exception::DataAbort {
+        status,
+        access,
+        address,
+    }
 }
 
 #[test]
 fn every_encoding_is_its_fixed_bits_and_its_fields() {
-    let operands: [(Instruction, &[Field]); 10] = [
+    let operands: [(Instruction<Infallible>, &[Field]); 10] = [
         (
             Instruction::AddShiftedRegister64,
             &[RD, RN, RM, SHIFT, SHIFT_IMM6],
@@ -173,7 +167,7 @@ fn every_encoding_is_its_fixed_bits_and_its_fields() {
         operands
             .iter()
             .map(|(instruction, _)| *instruction)
-            .eq(Arm64::list_instructions())
+            .eq(Arm64::<User>::list_instructions())
     );
     for (instruction, fields) in operands {
         let fixed = instruction.to_fixed_bits();
@@ -232,7 +226,7 @@ fn add_with_the_reserved_shift_is_undefined() {
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.general_purpose_registers[1] = 1;
     let (after, _) = run(PreciseInstruction::AddShiftedRegister64, before);
-    assert_raised(&after, UNDEFINED_INSTRUCTION, None);
+    assert_raised(&after, Exception::UndefinedInstruction);
     assert_eq!(after.general_purpose_registers[0], 0);
 }
 
@@ -337,15 +331,21 @@ fn ldr_faults_on_an_unmapped_or_unreadable_page() {
         Instruction::LdrImmediateUnsignedOffset64,
         &[(RT, 0), (RN, 1), (IMM12, 1)],
     );
-    for (permission, syndrome) in [
-        (PagePermission::Unmapped, READ_TRANSLATION_FAULT),
-        (FORBIDDEN, READ_PERMISSION_FAULT),
+    for (permission, status) in [
+        (
+            PagePermission::Unmapped,
+            FaultStatus::TranslationFaultLevel3,
+        ),
+        (FORBIDDEN, FaultStatus::PermissionFaultLevel3),
     ] {
         let mut before = to_state(word, permission, READ_WRITE);
         before.processor.general_purpose_registers[1] = DATA;
         before.processor.general_purpose_registers[0] = 5;
         let (after, _) = run(LOAD, before);
-        assert_raised(&after, syndrome, Some(DATA + 8));
+        assert_raised(
+            &after,
+            to_data_abort(status, AccessDirection::Read, DATA + 8),
+        );
         assert_eq!(after.general_purpose_registers[0], 5);
     }
 }
@@ -359,7 +359,7 @@ fn ldr_from_a_misaligned_stack_pointer_faults() {
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.stack_pointer = DATA + 8;
     let (after, _) = run(LOAD, before);
-    assert_raised(&after, STACK_POINTER_ALIGNMENT_FAULT, None);
+    assert_raised(&after, Exception::StackPointerAlignmentFault);
 }
 
 #[test]
@@ -390,7 +390,14 @@ fn str_across_a_fault_writes_what_its_behavior_says() {
     before.processor.general_purpose_registers[1] = UPPER_DATA - 4;
     before.processor.general_purpose_registers[2] = u64::MAX;
     let (after, written) = run(STORE, before.clone());
-    assert_raised(&after, WRITE_PERMISSION_FAULT, Some(UPPER_DATA));
+    assert_raised(
+        &after,
+        to_data_abort(
+            FaultStatus::PermissionFaultLevel3,
+            AccessDirection::Write,
+            UPPER_DATA,
+        ),
+    );
     assert!(written.is_empty());
     let (after, written) = run(
         PreciseInstruction::StrImmediateUnsignedOffset64 {
@@ -399,7 +406,14 @@ fn str_across_a_fault_writes_what_its_behavior_says() {
         },
         before,
     );
-    assert_raised(&after, WRITE_PERMISSION_FAULT, Some(UPPER_DATA));
+    assert_raised(
+        &after,
+        to_data_abort(
+            FaultStatus::PermissionFaultLevel3,
+            AccessDirection::Write,
+            UPPER_DATA,
+        ),
+    );
     assert!(
         written
             == [MemoryDelta::ValueAssignment {
@@ -433,7 +447,14 @@ fn str_stores_and_faults_on_a_read_only_page() {
             permission: READ_ONLY,
         });
     let (after, written) = run(STORE, before);
-    assert_raised(&after, WRITE_PERMISSION_FAULT, Some(DATA + 8));
+    assert_raised(
+        &after,
+        to_data_abort(
+            FaultStatus::PermissionFaultLevel3,
+            AccessDirection::Write,
+            DATA + 8,
+        ),
+    );
     assert!(written.is_empty());
 }
 
@@ -452,13 +473,27 @@ fn stp_across_a_fault_writes_what_its_behavior_says() {
         to_store_pair(StoreAcrossFault::WritesNothing),
         before.clone(),
     );
-    assert_raised(&after, WRITE_TRANSLATION_FAULT, Some(UPPER_DATA));
+    assert_raised(
+        &after,
+        to_data_abort(
+            FaultStatus::TranslationFaultLevel3,
+            AccessDirection::Write,
+            UPPER_DATA,
+        ),
+    );
     assert!(written.is_empty());
     let (after, written) = run(
         to_store_pair(StoreAcrossFault::WritesBytesBelowFault),
         before,
     );
-    assert_raised(&after, WRITE_TRANSLATION_FAULT, Some(UPPER_DATA));
+    assert_raised(
+        &after,
+        to_data_abort(
+            FaultStatus::TranslationFaultLevel3,
+            AccessDirection::Write,
+            UPPER_DATA,
+        ),
+    );
     assert!(
         written
             == [MemoryDelta::ValueAssignment {
@@ -524,8 +559,7 @@ fn ldr_post_index_into_its_base_takes_each_choice() {
     );
     assert_raised(
         &base(LoadIntoBaseWithWriteback::Undefined),
-        UNDEFINED_INSTRUCTION,
-        None,
+        Exception::UndefinedInstruction,
     );
     let skipped = base(LoadIntoBaseWithWriteback::NoOperation);
     assert_completed(&before.processor, &skipped);
@@ -539,7 +573,7 @@ fn brk_raises_a_breakpoint_with_its_comment() {
         PreciseInstruction::Brk,
         to_state(word, READ_WRITE, READ_WRITE),
     );
-    assert_raised(&after, 0xF200_1234, None);
+    assert_raised(&after, Exception::Breakpoint { comment: 0x1234 });
 }
 
 #[test]
@@ -555,14 +589,12 @@ fn rdvl_reads_a_multiple_of_the_vector_length_or_raises_its_exception() {
         PreciseInstruction::Rdvl(VectorLengthReading::Undefined),
         to_state(word, READ_WRITE, READ_WRITE),
     );
-    assert_raised(&after, UNDEFINED_INSTRUCTION, None);
+    assert_raised(&after, Exception::UndefinedInstruction);
     let (after, _) = run(
-        PreciseInstruction::Rdvl(VectorLengthReading::SmeTrapped(
-            SmeTrapCode::DisabledByCpacr,
-        )),
+        PreciseInstruction::Rdvl(VectorLengthReading::SmeTrapped(SmeTrapCode::Disabled)),
         to_state(word, READ_WRITE, READ_WRITE),
     );
-    assert_raised(&after, SME_DISABLED_BY_CPACR, None);
+    assert_raised(&after, Exception::SmeTrap(SmeTrapCode::Disabled));
 }
 
 #[test]
@@ -576,7 +608,13 @@ fn an_instruction_on_a_page_without_instruction_fetch_faults_before_it_runs() {
             permission: READ_ONLY,
         });
     let (after, _) = run(PreciseInstruction::Brk, before);
-    assert_raised(&after, FETCH_PERMISSION_FAULT, Some(CODE));
+    assert_raised(
+        &after,
+        Exception::InstructionAbort {
+            status: FaultStatus::PermissionFaultLevel3,
+            address: CODE,
+        },
+    );
 }
 
 #[test]

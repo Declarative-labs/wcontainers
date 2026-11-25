@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-processor-architecture-arm64"
-description = "The ARM64 architecture as a program at EL0 sees it."
+description = "The ARM64 architecture: what every privilege level has, and what one level adds."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,13 +13,13 @@ path = "implementation.rs"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [dependencies]
 wcontainers-processor-architecture = { path = "../.." }
+wcontainers-privilege-level = { path = "../../../privilege-level" }
+wcontainers-privilege-level-arm64-user = { path = "../../../privilege-level/implementation/arm64-user" }
 bitflags.workspace = true
-# The fields and exception classes of ESR_EL1 (MIT OR Apache-2.0); already used by the hardware executor.
-aarch64-cpu = "12.0.0"
 
 [dev-dependencies]
 wcontainers-processor-architecture-conformance = { path = "../../conformance" }

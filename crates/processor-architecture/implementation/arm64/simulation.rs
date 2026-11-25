@@ -3,29 +3,25 @@
 use alloc::borrow::Cow;
 use core::convert::Infallible;
 
-use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_processor_architecture::{MemoryDelta, Simulator};
+use wcontainers_privilege_level::PrivilegeLevel;
+use wcontainers_processor_architecture::{
+    MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+};
 
 use crate::encoding::{
     COND, IMM7, IMM9, IMM12, IMM16, RD, RDVL_IMM6, RM, RN, RT, RT2, SHIFT, SHIFT_IMM6,
 };
 use crate::memory::{read_bytes, read_permission};
-use crate::syndrome::{FaultStatus, UNDEFINED_INSTRUCTION, WRITE_NOT_READ, encode_syndrome};
 use crate::{
-    Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS, INSTRUCTION_BYTES,
-    InstructionFetch, LoadIntoBaseWithWriteback, MisalignedStackPointer, PagePermission,
-    PreciseInstruction, Processor, StoreAcrossFault, VectorLength, VectorLengthReading,
+    AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, FaultStatus,
+    GENERAL_PURPOSE_REGISTERS, INSTRUCTION_SIZE, InstructionFetch, LoadIntoBaseWithWriteback,
+    MisalignedStackPointer, PagePermission, PreciseInstruction, Processor, StoreAcrossFault, User,
+    VectorLengthReading,
 };
 
 const REGISTER_BYTES: u64 = size_of::<u64>() as u64;
-/// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires while SCTLR_EL1.SA0 is set, as Linux sets it.
+/// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires, a check Linux turns on at every level.
 const STACK_POINTER_ALIGNMENT: u64 = 16;
-
-#[derive(Clone, Copy)]
-enum AccessDirection {
-    Read,
-    Write,
-}
 
 /// What register number 31 names in an operand.
 #[derive(Clone, Copy)]
@@ -122,94 +118,100 @@ enum FlagSetting {
     Sets,
 }
 
-impl Simulator<Arm64> for PreciseInstruction {
+/// Whether a load with writeback writes the new address to its base.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Writeback {
+    Suppressed,
+    Applied,
+}
+
+impl<Level: PrivilegeLevel> Simulator<Arm64<Level>>
+    for PreciseInstruction<Level::PrecisePrivilegedInstruction>
+where
+    Level::PrecisePrivilegedInstruction: Simulator<Arm64<Level>, Error = Infallible>,
+{
     type Error = Infallible;
 
     /// Fetches the word at the program counter and applies this behavior to it, reading its operands from it.
     fn simulate_in_place(
         &self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, Arm64>],
-        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+        processor: &mut Processor<Level::PrivilegedProcessorSubset>,
+        memory: &[MemoryDelta<'_, Arm64<Level>>],
+        mutation_hook: &mut impl MemorySink<Arm64<Level>>,
     ) -> Result<(), Infallible> {
-        let outcome = fetch(processor, memory).and_then(|word| match *self {
-            Self::AddShiftedRegister64 => {
-                add_shifted_register(processor, word, FlagSetting::Preserves)
-            }
-            Self::AddsShiftedRegister64 => add_shifted_register(processor, word, FlagSetting::Sets),
-            Self::Csel64 => select_conditionally(processor, word),
-            Self::LdrImmediateUnsignedOffset64 {
-                misaligned_stack_pointer,
-            } => load_unsigned_offset(processor, memory, word, misaligned_stack_pointer),
-            Self::StrImmediateUnsignedOffset64 {
-                misaligned_stack_pointer,
-                across_fault,
-            } => {
-                let base = read_base(processor, word, misaligned_stack_pointer)?;
-                let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
-                let value =
-                    read_register(processor, RT.read(word), RegisterThirtyOne::ZeroRegister);
-                store(
-                    memory,
-                    address,
-                    &value.to_le_bytes(),
-                    across_fault,
-                    on_memory_mutated,
-                )
-            }
-            Self::StpSignedOffset64 {
-                misaligned_stack_pointer,
-                across_fault,
-            } => {
-                let base = read_base(processor, word, misaligned_stack_pointer)?;
-                let offset = IMM7.read_signed(word).wrapping_mul(REGISTER_BYTES as i64);
-                let address = base.wrapping_add(offset as u64);
-                let mut bytes = [0; 2 * REGISTER_BYTES as usize];
-                let (low, high) = bytes.split_at_mut(REGISTER_BYTES as usize);
-                for (half, field) in [(low, RT), (high, RT2)] {
-                    let value =
-                        read_register(processor, field.read(word), RegisterThirtyOne::ZeroRegister);
-                    half.copy_from_slice(&value.to_le_bytes());
+        // Not `and_then`: the level's own instructions run whole, so their arm returns from here.
+        let outcome = match fetch(memory, processor.program_counter) {
+            Err(exception) => Err(exception),
+            Ok(word) => match *self {
+                Self::AddShiftedRegister64 => {
+                    add_shifted_register(processor, word, FlagSetting::Preserves)
                 }
-                store(memory, address, &bytes, across_fault, on_memory_mutated)
-            }
-            Self::LdrImmediatePostIndex64 {
-                misaligned_stack_pointer,
-                into_base,
-            } => load_post_index(processor, memory, word, misaligned_stack_pointer, into_base),
-            Self::Brk => Err(Exception {
-                syndrome: encode_syndrome(ESR_EL1::EC::Value::Brk64, u64::from(IMM16.read(word))),
-                fault_address: None,
-            }),
-            Self::Rdvl(VectorLengthReading::Undefined) => Err(UNDEFINED_INSTRUCTION),
-            Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception {
-                syndrome: encode_syndrome(ESR_EL1::EC::Value::TrappedSME, code as u64),
-                fault_address: None,
-            }),
-            Self::Rdvl(VectorLengthReading::Reads(length)) => {
-                let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
-                write_register(
+                Self::AddsShiftedRegister64 => {
+                    add_shifted_register(processor, word, FlagSetting::Sets)
+                }
+                Self::Csel64 => select_conditionally(processor, word),
+                Self::LdrImmediateUnsignedOffset64 {
+                    misaligned_stack_pointer,
+                } => load_unsigned_offset(processor, memory, word, misaligned_stack_pointer),
+                Self::StrImmediateUnsignedOffset64 {
+                    misaligned_stack_pointer,
+                    across_fault,
+                } => store_unsigned_offset(
                     processor,
-                    RD.read(word),
-                    value as u64,
-                    RegisterThirtyOne::ZeroRegister,
-                );
-                Ok(())
-            }
-            Self::MrsCtrEl0 { cache_type } => {
-                write_register(
+                    memory,
+                    word,
+                    misaligned_stack_pointer,
+                    across_fault,
+                    mutation_hook,
+                ),
+                Self::StpSignedOffset64 {
+                    misaligned_stack_pointer,
+                    across_fault,
+                } => store_pair(
                     processor,
-                    RT.read(word),
-                    cache_type,
-                    RegisterThirtyOne::ZeroRegister,
-                );
-                Ok(())
-            }
-        });
+                    memory,
+                    word,
+                    misaligned_stack_pointer,
+                    across_fault,
+                    mutation_hook,
+                ),
+                Self::LdrImmediatePostIndex64 {
+                    misaligned_stack_pointer,
+                    into_base,
+                } => load_post_index(processor, memory, word, misaligned_stack_pointer, into_base),
+                Self::Brk => Err(Exception::Breakpoint {
+                    comment: IMM16.read(word) as u16,
+                }),
+                Self::Rdvl(VectorLengthReading::Undefined) => Err(Exception::UndefinedInstruction),
+                Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception::SmeTrap(code)),
+                Self::Rdvl(VectorLengthReading::Reads(length)) => {
+                    let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
+                    write_register(
+                        processor,
+                        RD.read(word),
+                        value as u64,
+                        RegisterThirtyOne::ZeroRegister,
+                    );
+                    Ok(())
+                }
+                Self::MrsCtrEl0 { cache_type } => {
+                    write_register(
+                        processor,
+                        RT.read(word),
+                        cache_type,
+                        RegisterThirtyOne::ZeroRegister,
+                    );
+                    Ok(())
+                }
+                Self::LevelSpecific(precise) => {
+                    return precise.simulate_in_place(processor, memory, mutation_hook);
+                }
+            },
+        };
         match outcome {
             Ok(()) => {
                 processor.program_counter =
-                    processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
+                    processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
                 processor.exception = None;
             }
             Err(exception) => processor.exception = Some(exception),
@@ -218,30 +220,30 @@ impl Simulator<Arm64> for PreciseInstruction {
     }
 }
 
-impl VectorLength {
-    pub const fn to_bytes(self) -> i64 {
-        let bits: i64 = match self {
-            Self::Bits128 => 128,
-            Self::Bits256 => 256,
-            Self::Bits512 => 512,
-            Self::Bits1024 => 1024,
-            Self::Bits2048 => 2048,
-        };
-        bits / u8::BITS as i64
+/// The user level adds no instruction, so it has none to simulate.
+impl Simulator<Arm64<User>> for Infallible {
+    type Error = Infallible;
+
+    fn simulate_in_place(
+        &self,
+        _: &mut Processor<()>,
+        _: &[MemoryDelta<'_, Arm64<User>>],
+        _: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), Infallible> {
+        match *self {}
     }
 }
 
-// Each formula below changes the processor's registers only when it returns Ok.
+// Each formula below changes the processor's registers only when it returns Ok. Those that read memory take any
+// architecture whose pages have ARM64's permissions, which every `Arm64<Level>` is.
 
-/// Reads the instruction's word, which faults where the program counter is misaligned or its page does not allow
-/// instruction fetches.
-fn fetch(processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Result<u32, Exception> {
-    let address = processor.program_counter;
-    if !address.is_multiple_of(INSTRUCTION_BYTES) {
-        return Err(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::PCAlignmentFault, 0),
-            fault_address: Some(address),
-        });
+/// Reads the instruction's word, or faults where its address is misaligned or its page forbids fetching it.
+fn fetch<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    address: u64,
+) -> Result<u32, Exception> {
+    if !address.is_multiple_of(INSTRUCTION_SIZE) {
+        return Err(Exception::ProgramCounterAlignmentFault { address });
     }
     let status = match read_permission(memory, address) {
         PagePermission::Mapped {
@@ -254,14 +256,11 @@ fn fetch(processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Result<u32
         } => FaultStatus::PermissionFaultLevel3,
         PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
     };
-    Err(Exception {
-        syndrome: encode_syndrome(ESR_EL1::EC::Value::InstrAbortLowerEL, status as u64),
-        fault_address: Some(address),
-    })
+    Err(Exception::InstructionAbort { status, address })
 }
 
-fn add_shifted_register(
-    processor: &mut Processor,
+fn add_shifted_register<LevelSpecific>(
+    processor: &mut Processor<LevelSpecific>,
     word: u32,
     flag_setting: FlagSetting,
 ) -> Result<(), Exception> {
@@ -271,7 +270,7 @@ fn add_shifted_register(
         ShiftType::Lsl => operand << amount,
         ShiftType::Lsr => operand >> amount,
         ShiftType::Asr => ((operand as i64) >> amount) as u64,
-        ShiftType::Ror => return Err(UNDEFINED_INSTRUCTION),
+        ShiftType::Ror => return Err(Exception::UndefinedInstruction),
     };
     let first = read_register(processor, RN.read(word), RegisterThirtyOne::ZeroRegister);
     let (sum, carry) = first.overflowing_add(shifted);
@@ -293,7 +292,10 @@ fn add_shifted_register(
     Ok(())
 }
 
-fn select_conditionally(processor: &mut Processor, word: u32) -> Result<(), Exception> {
+fn select_conditionally<LevelSpecific>(
+    processor: &mut Processor<LevelSpecific>,
+    word: u32,
+) -> Result<(), Exception> {
     let condition = CONDITIONS[COND.read(word) as usize];
     let source = if condition.holds(processor.condition_flags) {
         RN
@@ -314,12 +316,15 @@ fn select_conditionally(processor: &mut Processor, word: u32) -> Result<(), Exce
     Ok(())
 }
 
-fn load_unsigned_offset(
-    processor: &mut Processor,
-    memory: &[MemoryDelta<'_, Arm64>],
+fn load_unsigned_offset<LevelSpecific, Architecture>(
+    processor: &mut Processor<LevelSpecific>,
+    memory: &[MemoryDelta<'_, Architecture>],
     word: u32,
     misaligned_stack_pointer: MisalignedStackPointer,
-) -> Result<(), Exception> {
+) -> Result<(), Exception>
+where
+    Architecture: ProcessorArchitecture<PagePermission = PagePermission>,
+{
     let base = read_base(processor, word, misaligned_stack_pointer)?;
     let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
     let value = load(memory, address)?;
@@ -332,57 +337,111 @@ fn load_unsigned_offset(
     Ok(())
 }
 
+fn store_unsigned_offset<LevelSpecific, Architecture>(
+    processor: &Processor<LevelSpecific>,
+    memory: &[MemoryDelta<'_, Architecture>],
+    word: u32,
+    misaligned_stack_pointer: MisalignedStackPointer,
+    across_fault: StoreAcrossFault,
+    mutation_hook: &mut impl MemorySink<Architecture>,
+) -> Result<(), Exception>
+where
+    Architecture: ProcessorArchitecture<PagePermission = PagePermission>,
+{
+    let base = read_base(processor, word, misaligned_stack_pointer)?;
+    let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
+    let value = read_register(processor, RT.read(word), RegisterThirtyOne::ZeroRegister);
+    store(
+        memory,
+        address,
+        &value.to_le_bytes(),
+        across_fault,
+        mutation_hook,
+    )
+}
+
+fn store_pair<LevelSpecific, Architecture>(
+    processor: &Processor<LevelSpecific>,
+    memory: &[MemoryDelta<'_, Architecture>],
+    word: u32,
+    misaligned_stack_pointer: MisalignedStackPointer,
+    across_fault: StoreAcrossFault,
+    mutation_hook: &mut impl MemorySink<Architecture>,
+) -> Result<(), Exception>
+where
+    Architecture: ProcessorArchitecture<PagePermission = PagePermission>,
+{
+    let base = read_base(processor, word, misaligned_stack_pointer)?;
+    let offset = IMM7.read_signed(word).wrapping_mul(REGISTER_BYTES as i64);
+    let address = base.wrapping_add(offset as u64);
+    let mut bytes = [0; 2 * REGISTER_BYTES as usize];
+    let (low, high) = bytes.split_at_mut(REGISTER_BYTES as usize);
+    for (half, field) in [(low, RT), (high, RT2)] {
+        let value = read_register(processor, field.read(word), RegisterThirtyOne::ZeroRegister);
+        half.copy_from_slice(&value.to_le_bytes());
+    }
+    store(memory, address, &bytes, across_fault, mutation_hook)
+}
+
 /// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
-fn store(
-    memory: &[MemoryDelta<'_, Arm64>],
+fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+    memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
     bytes: &[u8],
     across_fault: StoreAcrossFault,
-    mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+    mutation_hook: &mut impl MemorySink<Architecture>,
 ) -> Result<(), Exception> {
-    let written = match check_access(memory, address, bytes.len() as u64, AccessDirection::Write) {
-        Ok(()) => bytes,
-        Err(abort) => {
-            let below_fault = &bytes[..abort.address.wrapping_sub(address) as usize];
+    let access = AccessDirection::Write;
+    let written = match find_fault(memory, address, bytes.len() as u64, access) {
+        None => bytes,
+        Some((fault_address, status)) => {
+            let below_fault = &bytes[..fault_address.wrapping_sub(address) as usize];
             if across_fault == StoreAcrossFault::WritesBytesBelowFault && !below_fault.is_empty() {
-                on_memory_mutated(MemoryDelta::ValueAssignment {
+                mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
                     start: address,
                     bytes: Cow::Borrowed(below_fault),
                 });
             }
-            return Err(abort.into());
+            return Err(Exception::DataAbort {
+                status,
+                access,
+                address: fault_address,
+            });
         }
     };
-    on_memory_mutated(MemoryDelta::ValueAssignment {
+    mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
         start: address,
         bytes: Cow::Borrowed(written),
     });
     Ok(())
 }
 
-fn load_post_index(
-    processor: &mut Processor,
-    memory: &[MemoryDelta<'_, Arm64>],
+fn load_post_index<LevelSpecific, Architecture>(
+    processor: &mut Processor<LevelSpecific>,
+    memory: &[MemoryDelta<'_, Architecture>],
     word: u32,
     misaligned_stack_pointer: MisalignedStackPointer,
     into_base: LoadIntoBaseWithWriteback,
-) -> Result<(), Exception> {
+) -> Result<(), Exception>
+where
+    Architecture: ProcessorArchitecture<PagePermission = PagePermission>,
+{
     let target = RT.read(word);
     let base_register = RN.read(word);
-    let writes_back = if target == base_register && is_general_purpose(target) {
+    let writeback = if target == base_register && is_general_purpose(target) {
         match into_base {
-            LoadIntoBaseWithWriteback::Undefined => return Err(UNDEFINED_INSTRUCTION),
+            LoadIntoBaseWithWriteback::Undefined => return Err(Exception::UndefinedInstruction),
             LoadIntoBaseWithWriteback::NoOperation => return Ok(()),
-            LoadIntoBaseWithWriteback::WritebackSuppressed => false,
-            LoadIntoBaseWithWriteback::WritebackOverwritesLoad => true,
+            LoadIntoBaseWithWriteback::WritebackSuppressed => Writeback::Suppressed,
+            LoadIntoBaseWithWriteback::WritebackOverwritesLoad => Writeback::Applied,
         }
     } else {
-        true
+        Writeback::Applied
     };
     let address = read_base(processor, word, misaligned_stack_pointer)?;
     let value = load(memory, address)?;
     write_register(processor, target, value, RegisterThirtyOne::ZeroRegister);
-    if writes_back {
+    if writeback == Writeback::Applied {
         let written_back = address.wrapping_add(IMM9.read_signed(word) as u64);
         write_register(
             processor,
@@ -395,8 +454,8 @@ fn load_post_index(
 }
 
 /// Reads the base register of a load or store, which may fault when it is a misaligned stack pointer.
-fn read_base(
-    processor: &Processor,
+fn read_base<LevelSpecific>(
+    processor: &Processor<LevelSpecific>,
     word: u32,
     misaligned_stack_pointer: MisalignedStackPointer,
 ) -> Result<u64, Exception> {
@@ -404,67 +463,48 @@ fn read_base(
     let base = read_register(processor, number, RegisterThirtyOne::StackPointer);
     let misaligned = !is_general_purpose(number) && !base.is_multiple_of(STACK_POINTER_ALIGNMENT);
     if misaligned && misaligned_stack_pointer == MisalignedStackPointer::Faults {
-        return Err(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::SPAlignmentFault, 0),
-            fault_address: None,
-        });
+        return Err(Exception::StackPointerAlignmentFault);
     }
     Ok(base)
 }
 
-fn load(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> Result<u64, Exception> {
-    check_access(memory, address, REGISTER_BYTES, AccessDirection::Read)?;
-    Ok(u64::from_le_bytes(read_bytes(memory, address)))
-}
-
-/// The fault of the lowest byte of an access that faults.
-struct DataAbort {
+fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+    memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
-    status: FaultStatus,
-    direction: AccessDirection,
-}
-
-impl From<DataAbort> for Exception {
-    fn from(abort: DataAbort) -> Self {
-        let write_not_read = match abort.direction {
-            AccessDirection::Read => 0,
-            AccessDirection::Write => WRITE_NOT_READ,
-        };
-        Exception {
-            syndrome: encode_syndrome(
-                ESR_EL1::EC::Value::DataAbortLowerEL,
-                write_not_read | abort.status as u64,
-            ),
-            fault_address: Some(abort.address),
-        }
+) -> Result<u64, Exception> {
+    let access = AccessDirection::Read;
+    match find_fault(memory, address, REGISTER_BYTES, access) {
+        None => Ok(u64::from_le_bytes(read_bytes(memory, address))),
+        Some((fault_address, status)) => Err(Exception::DataAbort {
+            status,
+            access,
+            address: fault_address,
+        }),
     }
 }
 
-fn check_access(
-    memory: &[MemoryDelta<'_, Arm64>],
+/// Finds the lowest address of the access that its page refuses, and the fault's status.
+fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+    memory: &[MemoryDelta<'_, Architecture>],
     start: u64,
     length: u64,
-    direction: AccessDirection,
-) -> Result<(), DataAbort> {
+    access: AccessDirection,
+) -> Option<(u64, FaultStatus)> {
     (0..length)
         .map(|offset| start.wrapping_add(offset))
-        .try_for_each(|address| {
+        .find_map(|address| {
             let status = match read_permission(memory, address) {
                 PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
-                PagePermission::Mapped { data_access, .. } => match (data_access, direction) {
+                PagePermission::Mapped { data_access, .. } => match (data_access, access) {
                     (DataAccess::ReadWrite, _) | (DataAccess::ReadOnly, AccessDirection::Read) => {
-                        return Ok(());
+                        return None;
                     }
                     (DataAccess::ReadOnly, AccessDirection::Write) | (DataAccess::Forbidden, _) => {
                         FaultStatus::PermissionFaultLevel3
                     }
                 },
             };
-            Err(DataAbort {
-                address,
-                status,
-                direction,
-            })
+            Some((address, status))
         })
 }
 
@@ -472,7 +512,11 @@ fn is_general_purpose(number: u32) -> bool {
     (number as usize) < GENERAL_PURPOSE_REGISTERS
 }
 
-fn read_register(processor: &Processor, number: u32, thirty_one: RegisterThirtyOne) -> u64 {
+fn read_register<LevelSpecific>(
+    processor: &Processor<LevelSpecific>,
+    number: u32,
+    thirty_one: RegisterThirtyOne,
+) -> u64 {
     match processor.general_purpose_registers.get(number as usize) {
         Some(value) => *value,
         None => match thirty_one {
@@ -482,8 +526,8 @@ fn read_register(processor: &Processor, number: u32, thirty_one: RegisterThirtyO
     }
 }
 
-fn write_register(
-    processor: &mut Processor,
+fn write_register<LevelSpecific>(
+    processor: &mut Processor<LevelSpecific>,
     number: u32,
     value: u64,
     thirty_one: RegisterThirtyOne,

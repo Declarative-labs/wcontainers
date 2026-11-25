@@ -1,5 +1,7 @@
 //! Where the operands of the ten instructions sit in their encodings.
 
+use core::convert::Infallible;
+
 use crate::Instruction;
 
 /// A run of bits in an instruction's encoding.
@@ -97,7 +99,7 @@ pub const RDVL_IMM6: Field = Field {
     width: 6,
 };
 
-impl Instruction {
+impl Instruction<Infallible> {
     pub const fn to_fixed_bits(self) -> FixedBits {
         let (mask, value) = match self {
             // https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--shifted-register---Add-optionally-shifted-register-
