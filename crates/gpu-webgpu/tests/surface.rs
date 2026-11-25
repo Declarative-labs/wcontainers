@@ -18,7 +18,7 @@ mod draw;
 mod host;
 
 use wcontainers_gpu::{
-    Backend, ColorAttachment, DeviceStatus, Format, FormatUse, LoadOp, PassDesc, SlowPath, StoreOp,
+    Gpu, ColorAttachment, DeviceStatus, Format, FormatUse, LoadOp, PassDesc, SlowPath, StoreOp,
 };
 use wcontainers_gpu_test::Host;
 

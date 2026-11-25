@@ -17,7 +17,7 @@ mod allowance;
 mod clears;
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, FORMAT_FACTS, Format,
+    Gpu, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, FORMAT_FACTS, Format,
     LoadOp, MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp,
     TextureRegion, TextureUsage, WriteMode,
 };
@@ -110,9 +110,9 @@ fn ordered_write_in_a_pass_splits_it() {
 
 fn read_buffer_back(
     b: &mut WebGpu,
-    buffer: &<WebGpu as Backend>::Buffer,
+    buffer: &<WebGpu as Gpu>::Buffer,
     size: u64,
-) -> <WebGpu as Backend>::Readback {
+) -> <WebGpu as Gpu>::Readback {
     b.read_back(&ReadSource::Buffer {
         buffer,
         offset: 0,
@@ -121,7 +121,7 @@ fn read_buffer_back(
     .unwrap()
 }
 
-fn finish(b: &mut WebGpu, rb: <WebGpu as Backend>::Readback, len: usize) -> Vec<u8> {
+fn finish(b: &mut WebGpu, rb: <WebGpu as Gpu>::Readback, len: usize) -> Vec<u8> {
     b.wait_read(&rb);
     let mut got = vec![0; len];
     b.finish_read(rb, &mut got);
@@ -133,7 +133,7 @@ fn buffer(
     size: u64,
     usage: BufferUsage,
     intent: MapIntent,
-) -> <WebGpu as Backend>::Buffer {
+) -> <WebGpu as Gpu>::Buffer {
     b.create_buffer(&BufferDesc {
         size,
         usage: usage | BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::READ_BACK,

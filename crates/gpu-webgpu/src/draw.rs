@@ -1310,7 +1310,7 @@ impl WebGpu {
             let mut bytes = vec![0; size as usize];
             let mut read = Ok(());
             w.split_pass(SlowPath::PackedTargetReadByBlend, |w| {
-                read = wcontainers_gpu::Backend::read_back_now(
+                read = wcontainers_gpu::Gpu::read_back_now(
                     w,
                     &wcontainers_gpu::ReadSource::Buffer {
                         buffer,

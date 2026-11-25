@@ -20,7 +20,7 @@ mod pulled;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use wcontainers_gpu::{Backend, Features};
+use wcontainers_gpu::{Gpu, Features};
 
 /// Milliseconds since the first call.
 fn now() -> f64 {

@@ -17,7 +17,7 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
+    Gpu, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
     CopyBufferTexture, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format,
     FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp,
     TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
@@ -73,7 +73,7 @@ fn level_bytes(format: Format, mip: u32) -> usize {
     (e.width / 4 * e.height / 4 * FORMAT_FACTS[format as usize].block.2) as usize
 }
 
-fn region(texture: &<B as Backend>::Texture, mip: u32) -> TextureRegion<'_, B> {
+fn region(texture: &<B as Gpu>::Texture, mip: u32) -> TextureRegion<'_, B> {
     TextureRegion {
         texture,
         mip,
@@ -83,7 +83,7 @@ fn region(texture: &<B as Backend>::Texture, mip: u32) -> TextureRegion<'_, B> {
     }
 }
 
-fn bc_texture(b: &mut B, format: Format, levels: u32) -> <B as Backend>::Texture {
+fn bc_texture(b: &mut B, format: Format, levels: u32) -> <B as Gpu>::Texture {
     b.create_texture(&TextureDesc {
         dimension: TextureDimension::D2,
         format,
@@ -108,7 +108,7 @@ fn read(b: &mut B, src: &ReadSource<'_, B>, len: usize) -> Vec<u8> {
     out
 }
 
-fn read_level(b: &mut B, texture: &<B as Backend>::Texture, format: Format, mip: u32) -> Vec<u8> {
+fn read_level(b: &mut B, texture: &<B as Gpu>::Texture, format: Format, mip: u32) -> Vec<u8> {
     let src = ReadSource::Texture {
         region: region(texture, mip),
         extent: blocks_extent(mip),
@@ -117,7 +117,7 @@ fn read_level(b: &mut B, texture: &<B as Backend>::Texture, format: Format, mip:
 }
 
 /// Every texel of one level, loaded by a program into an `rgba32float` target.
-fn load_level(b: &mut B, texture: &<B as Backend>::Texture, format: Format, mip: u32) -> Vec<f32> {
+fn load_level(b: &mut B, texture: &<B as Gpu>::Texture, format: Format, mip: u32) -> Vec<f32> {
     let (w, h) = (size(SIZE.0, mip), size(SIZE.1, mip));
     let view = b
         .create_view(

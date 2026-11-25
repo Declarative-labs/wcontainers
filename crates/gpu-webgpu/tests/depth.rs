@@ -15,7 +15,7 @@ mod draw;
 
 use libtest_mimic::{Completion, Failed, Trial};
 use wcontainers_gpu::{
-    AspectOps, Backend, BufferUsage, ColorAttachment, CompareFn, DepthAttachment, DepthStencilDesc,
+    AspectOps, Gpu, BufferUsage, ColorAttachment, CompareFn, DepthAttachment, DepthStencilDesc,
     DeviceStatus, DrawCall, DrawRange, Extent, Features, Format, LoadOp, Origin, PassDesc,
     RasterDesc, ReadSource, StepMode, StoreOp, TextureRegion, TextureUsage, Topology,
     VertexBinding, VertexFormat, Viewport,

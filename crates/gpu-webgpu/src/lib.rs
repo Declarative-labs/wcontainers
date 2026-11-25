@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps,
+    Gpu, BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps,
     CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, FORMAT_COUNT, FORMAT_FACTS,
     Features, FillMode, Filter, Format, FormatCaps, FormatKind, FormatUse, GpuError, Helpers,
     Limits, LossReason, MAX_BINDING_SETS, MapIntent, Object, PassDesc, Program, ProvokingVertex,
@@ -62,7 +62,7 @@ pub struct WebGpu {
     /// cannot carry out.
     lost: Arc<Mutex<Option<LossReason>>>,
     next_id: u64,
-    /// The number of the command encoder being recorded; [`Backend::submit`] moves to the next.
+    /// The number of the command encoder being recorded; [`Gpu::submit`] moves to the next.
     serial: u64,
     /// The highest serial whose work the GPU has finished.
     completed: Arc<AtomicU64>,
@@ -644,7 +644,7 @@ impl WebGpu {
         self.depth24
     }
 
-    /// Registers a host window for [`Backend::create_surface`] under the number the graphics hook
+    /// Registers a host window for [`Gpu::create_surface`] under the number the graphics hook
     /// uses for it.
     pub fn add_window(&mut self, window: u32, surface: wgpu::Surface<'static>) {
         self.windows.insert(window, surface);
@@ -1133,7 +1133,7 @@ fn buffer_usage(u: BufferUsage) -> wgpu::BufferUsages {
     w
 }
 
-impl Backend for WebGpu {
+impl Gpu for WebGpu {
     type Buffer = Buffer;
     type Texture = Texture;
     type TextureView = TextureView;

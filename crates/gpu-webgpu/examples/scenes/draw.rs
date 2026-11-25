@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
+    AspectOps, Gpu, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
     BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, ColorWrites,
     CompareFn, CullMode, DepthAttachment, DepthStencilDesc, DrawCall, DrawRange, Extent,
     FORMAT_FACTS, FillMode, Filter, Format, FrontFace, GpuError, IndexBinding, IndexFormat, LoadOp,
@@ -120,7 +120,7 @@ pub fn shader(
     source: &str,
     entry: &str,
     stage: ShaderStage,
-) -> Result<<B as Backend>::Shader> {
+) -> Result<<B as Gpu>::Shader> {
     let module = naga::front::wgsl::parse_str(source)
         .map_err(|e| anyhow!("{}", e.emit_to_string(source)))?;
     let info = naga::valid::Validator::new(
@@ -137,7 +137,7 @@ pub fn shader(
     }))
 }
 
-pub fn program(b: &mut B, source: &str) -> Result<<B as Backend>::Program> {
+pub fn program(b: &mut B, source: &str) -> Result<<B as Gpu>::Program> {
     let vs = shader(b, source, "vs", ShaderStage::Vertex)?;
     let ps = shader(b, source, "ps", ShaderStage::Fragment)?;
     gpu(b.create_program(&Program::Render {
@@ -147,7 +147,7 @@ pub fn program(b: &mut B, source: &str) -> Result<<B as Backend>::Program> {
 }
 
 /// A buffer holding `data`.
-pub fn buffer(b: &mut B, data: &[u8], usage: BufferUsage) -> Result<<B as Backend>::Buffer> {
+pub fn buffer(b: &mut B, data: &[u8], usage: BufferUsage) -> Result<<B as Gpu>::Buffer> {
     let buf = gpu(b.create_buffer(&BufferDesc {
         size: data.len() as u64,
         usage: usage | BufferUsage::COPY_DST,
@@ -229,7 +229,7 @@ pub fn texture_2d(
     width: u32,
     height: u32,
     usage: TextureUsage,
-) -> Result<(<B as Backend>::Texture, <B as Backend>::TextureView)> {
+) -> Result<(<B as Gpu>::Texture, <B as Gpu>::TextureView)> {
     let t = gpu(b.create_texture(&TextureDesc {
         dimension: TextureDimension::D2,
         format,
@@ -259,14 +259,14 @@ pub fn texture_2d(
 
 /// What a scene draws with, made once; `draw` records it into a pass.
 pub struct Prepared {
-    pub program: <B as Backend>::Program,
-    pub blend: <B as Backend>::Blend,
-    pub depth_stencil: <B as Backend>::DepthStencil,
-    pub raster: <B as Backend>::Raster,
-    pub vertex_layout: <B as Backend>::VertexLayout,
-    pub vertices: <B as Backend>::Buffer,
-    index: Option<<B as Backend>::Buffer>,
-    sets: [Option<<B as Backend>::BindingSet>; 4],
+    pub program: <B as Gpu>::Program,
+    pub blend: <B as Gpu>::Blend,
+    pub depth_stencil: <B as Gpu>::DepthStencil,
+    pub raster: <B as Gpu>::Raster,
+    pub vertex_layout: <B as Gpu>::VertexLayout,
+    pub vertices: <B as Gpu>::Buffer,
+    index: Option<<B as Gpu>::Buffer>,
+    sets: [Option<<B as Gpu>::BindingSet>; 4],
     range: (u32, u32, bool),
     depth: bool,
 }
@@ -476,9 +476,9 @@ pub fn draw_with(b: &mut B, p: &Prepared, immediates: &[u8]) {
 
 /// The targets a scene draws into.
 pub struct Targets {
-    pub color: <B as Backend>::Texture,
-    pub color_view: <B as Backend>::TextureView,
-    depth_view: Option<<B as Backend>::TextureView>,
+    pub color: <B as Gpu>::Texture,
+    pub color_view: <B as Gpu>::TextureView,
+    depth_view: Option<<B as Gpu>::TextureView>,
     depth_format: Option<Format>,
 }
 
@@ -552,7 +552,7 @@ pub fn begin(b: &mut B, t: &Targets, clear: bool) {
 }
 
 /// Starts reading the colour target back.
-pub fn read(b: &mut B, t: &Targets) -> Result<<B as Backend>::Readback> {
+pub fn read(b: &mut B, t: &Targets) -> Result<<B as Gpu>::Readback> {
     gpu(b.read_back(&ReadSource::Texture {
         region: TextureRegion {
             texture: &t.color,
@@ -585,7 +585,7 @@ pub fn render_on(
     which: Scene,
     twist: Twist,
     depth: Format,
-) -> Result<<B as Backend>::Readback> {
+) -> Result<<B as Gpu>::Readback> {
     let p = prepare(b, which, twist)?;
     let t = targets(b, p.depth.then_some(depth))?;
     begin(b, &t, true);

@@ -6,13 +6,13 @@
 use crate::draw;
 use half::f16;
 use wcontainers_gpu::{
-    Backend, BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format,
+    Gpu, BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format,
     LoadOp, Origin, PassDesc, ReadSource, SlowPath, StepMode, StoreOp, TextureRegion, TextureUsage,
     Topology, VertexBinding, VertexFormat, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-type Tex = <WebGpu as Backend>::Texture;
+type Tex = <WebGpu as Gpu>::Texture;
 
 /// Points, one per pixel, carrying the stream's two attributes into two targets.
 const POINTS_WGSL: &str = r#"

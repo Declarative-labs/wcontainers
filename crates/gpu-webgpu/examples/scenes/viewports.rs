@@ -5,7 +5,7 @@
 //! tests/raster.rs and in Chrome by web/check.
 
 use wcontainers_gpu::{
-    Backend, BufferUsage, ColorAttachment, DrawCall, DrawRange, Extent, Format, LoadOp, Origin,
+    Gpu, BufferUsage, ColorAttachment, DrawCall, DrawRange, Extent, Format, LoadOp, Origin,
     PassDesc, RasterDesc, ReadSource, ScissorRect, StepMode, StoreOp, TextureRegion, TextureUsage,
     Topology, VertexBinding, VertexFormat, Viewport,
 };
@@ -70,7 +70,7 @@ fn spread() -> Vec<f32> {
 }
 
 /// Draws the scene and starts reading it back, rows packed RGBA.
-pub fn draw(b: &mut WebGpu, rounded: bool) -> <WebGpu as Backend>::Readback {
+pub fn draw(b: &mut WebGpu, rounded: bool) -> <WebGpu as Gpu>::Readback {
     let (w, h) = SIZE;
     let (target, view) = draw::texture_2d(
         b,

@@ -20,7 +20,7 @@ mod viewports;
 
 use libtest_mimic::{Completion, Failed, Trial};
 use wcontainers_gpu::{
-    Backend, BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent,
+    Gpu, BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent,
     Features, FillMode, Format, GpuError, LoadOp, Origin, PassDesc, RasterDesc, ReadSource,
     StepMode, StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding, VertexFormat,
     Viewport,

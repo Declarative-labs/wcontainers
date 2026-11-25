@@ -7,7 +7,7 @@
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    AddressMode, Backend, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
+    AddressMode, Gpu, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
     BorderColor, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus,
     DrawCall, DrawRange, Extent, FORMAT_FACTS, Filter, Format, FormatUse, LoadOp, MapIntent,
     Origin, PassDesc, ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc,
@@ -227,7 +227,7 @@ pub fn whole() -> Extent {
     }
 }
 
-pub fn at(texture: &<B as Backend>::Texture, x: u32, y: u32) -> TextureRegion<'_, B> {
+pub fn at(texture: &<B as Gpu>::Texture, x: u32, y: u32) -> TextureRegion<'_, B> {
     TextureRegion {
         texture,
         mip: 0,
@@ -243,7 +243,7 @@ pub fn upload(
     format: Format,
     texels: Option<&[u8]>,
     usage: TextureUsage,
-) -> Result<(<B as Backend>::Texture, <B as Backend>::TextureView)> {
+) -> Result<(<B as Gpu>::Texture, <B as Gpu>::TextureView)> {
     let usage = usage | TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
     let (t, v) = draw::texture_2d(b, format, SIZE.0, SIZE.1, usage)?;
     if let Some(texels) = texels {
@@ -282,7 +282,7 @@ pub fn read(b: &mut B, region: &TextureRegion<'_, B>, extent: Extent, len: usize
 
 /// What [`SAMPLED_WGSL`] draws from `view`: the loaded texels, then the filtered ones, each as
 /// float RGBA, rows packed.
-pub fn sampled(b: &mut B, view: &<B as Backend>::TextureView) -> Result<(Vec<f32>, Vec<f32>)> {
+pub fn sampled(b: &mut B, view: &<B as Gpu>::TextureView) -> Result<(Vec<f32>, Vec<f32>)> {
     let sampler = gpu(b.create_sampler(&SamplerDesc {
         min: Filter::Linear,
         mag: Filter::Linear,
@@ -341,10 +341,10 @@ pub fn sampled(b: &mut B, view: &<B as Backend>::TextureView) -> Result<(Vec<f32
 /// One draw of three vertices covering `target`, cleared to `clear` first.
 fn full_draw(
     b: &mut B,
-    program: &<B as Backend>::Program,
-    target: &<B as Backend>::TextureView,
+    program: &<B as Gpu>::Program,
+    target: &<B as Gpu>::TextureView,
     blend: &wcontainers_gpu::BlendDesc,
-    sets: [Option<&<B as Backend>::BindingSet>; 2],
+    sets: [Option<&<B as Gpu>::BindingSet>; 2],
     clear: [u32; 4],
 ) -> Result<()> {
     let blend = gpu(b.create_blend(blend))?;
@@ -624,7 +624,7 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
 pub fn loaded_bits(
     b: &mut B,
     format: Format,
-    view: &<B as Backend>::TextureView,
+    view: &<B as Gpu>::TextureView,
 ) -> Result<Vec<u8>> {
     let (t, bits) = match format {
         Format::Rgb32Uint => ("u32", ""),

@@ -21,7 +21,7 @@ mod views;
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
 
 use wcontainers_gpu::{
-    AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendFactor,
+    AddressMode, AspectOps, Gpu, BindingEntry, BindingResource, BlendComponent, BlendFactor,
     BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn,
     DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Features, Filter,
     Format, FormatUse, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program,
@@ -43,7 +43,7 @@ fn device() -> WebGpu {
         .0
 }
 
-fn constants(b: &mut WebGpu, size: u64, intent: MapIntent) -> <WebGpu as Backend>::Buffer {
+fn constants(b: &mut WebGpu, size: u64, intent: MapIntent) -> <WebGpu as Gpu>::Buffer {
     b.create_buffer(&BufferDesc {
         size,
         usage: BufferUsage::UNIFORM,
@@ -54,9 +54,9 @@ fn constants(b: &mut WebGpu, size: u64, intent: MapIntent) -> <WebGpu as Backend
 
 fn set(
     b: &mut WebGpu,
-    buffer: &<WebGpu as Backend>::Buffer,
+    buffer: &<WebGpu as Gpu>::Buffer,
     offset: u64,
-) -> <WebGpu as Backend>::BindingSet {
+) -> <WebGpu as Gpu>::BindingSet {
     b.create_binding_set(&[BindingEntry {
         binding: 0,
         stages: StageSet::FRAGMENT,
@@ -507,7 +507,7 @@ struct F { color: vec4f }
 
 fn draw_call<'a>(
     k: &'a Kit,
-    bindings: [Option<&'a <WebGpu as Backend>::BindingSet>; 4],
+    bindings: [Option<&'a <WebGpu as Gpu>::BindingSet>; 4],
     viewport: &'a [Viewport],
 ) -> DrawCall<'a, WebGpu> {
     DrawCall {
@@ -684,7 +684,7 @@ const SAMPLE_MIDDLE_WGSL: &str = r#"
 }
 "#;
 
-fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Backend>::Sampler {
+fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Gpu>::Sampler {
     b.create_sampler(&SamplerDesc {
         min: filter,
         mag: filter,
@@ -699,7 +699,7 @@ fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Backend>::Sampler {
 }
 
 /// A 2 by 1 texture of `format` holding 0 and 1 (`depth32float` written through the depth draw).
-fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Backend>::TextureView {
+fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Gpu>::TextureView {
     let (texture, view) = draw::texture_2d(
         b,
         format,
@@ -737,8 +737,8 @@ fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Backend>::TextureView 
 fn sample_middle(
     b: &mut WebGpu,
     k: &Kit,
-    view: &<WebGpu as Backend>::TextureView,
-    sampler: &<WebGpu as Backend>::Sampler,
+    view: &<WebGpu as Gpu>::TextureView,
+    sampler: &<WebGpu as Gpu>::Sampler,
 ) -> f32 {
     let set = b
         .create_binding_set(&[

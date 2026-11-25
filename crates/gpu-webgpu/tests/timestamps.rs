@@ -19,7 +19,7 @@ mod timestamps;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use wcontainers_gpu::{Backend, Features, GpuError, QueryKind};
+use wcontainers_gpu::{Gpu, Features, GpuError, QueryKind};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn backends() -> wgpu::Backends {

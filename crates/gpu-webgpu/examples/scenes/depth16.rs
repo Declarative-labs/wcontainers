@@ -2,14 +2,14 @@
 //! by tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
-    Backend, DeviceStatus, Extent, Format, FormatUse, Origin, ReadSource, TextureRegion,
+    Gpu, DeviceStatus, Extent, Format, FormatUse, Origin, ReadSource, TextureRegion,
     TextureUsage, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
 use crate::draw;
 
-type Tex = <WebGpu as Backend>::Texture;
+type Tex = <WebGpu as Gpu>::Texture;
 
 /// The size of the textures the copies here and in tests/copies.rs move between.
 pub const W: u32 = 8;

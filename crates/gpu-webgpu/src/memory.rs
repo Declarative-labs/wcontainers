@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use wcontainers_gpu::{
-    Backend, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind, GpuError, Origin,
+    Gpu, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind, GpuError, Origin,
     QueryKind, ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
     WriteMode,
 };
@@ -233,7 +233,7 @@ fn filled_by_draw(format: Format) -> bool {
 /// 8-bit, a combined format's depth aspect that depth format.
 fn region_format<B>(texture: &crate::TextureObj, region: &TextureRegion<'_, B>) -> Format
 where
-    B: wcontainers_gpu::Backend,
+    B: wcontainers_gpu::Gpu,
 {
     match (region.stencil, texture.held) {
         (true, _) => Format::Stencil8,

@@ -14,7 +14,7 @@ const LISTED = 40;
 /// How long the replay may take before the job gives up, in milliseconds.
 const LIMIT_MS = 300000;
 const OURS = 'wcontainers_gpu_webgpu';
-const BACKEND_CALL = /::backend::Backend>::([a-z_]+)/;
+const BACKEND_CALL = /::backend::Gpu>::([a-z_]+)/;
 
 const [pkg, stream, out] = process.argv.slice(2);
 if (!out) throw new Error('usage: node replay-profile.mjs <pkg-dir> <stream-file> <out-file>');

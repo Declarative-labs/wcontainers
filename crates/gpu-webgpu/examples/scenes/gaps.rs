@@ -3,7 +3,7 @@
 //! tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, DeviceStatus, Extent, FORMAT_FACTS,
+    Gpu, BufferDesc, BufferUsage, CopyBufferTexture, DeviceStatus, Extent, FORMAT_FACTS,
     Format, MapIntent, Origin, ReadSource, TextureDesc, TextureDimension, TextureRegion,
     TextureUsage, WriteMode,
 };

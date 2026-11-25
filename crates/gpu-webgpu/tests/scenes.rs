@@ -15,7 +15,7 @@ mod allowance;
 
 use draw::Twist;
 use scene::Scene;
-use wcontainers_gpu::{Backend, DeviceStatus, FORMAT_FACTS};
+use wcontainers_gpu::{Gpu, DeviceStatus, FORMAT_FACTS};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn device() -> WebGpu {

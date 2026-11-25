@@ -77,7 +77,7 @@ struct Area {
 }
 
 impl Area {
-    fn of<B: wcontainers_gpu::Backend>(
+    fn of<B: wcontainers_gpu::Gpu>(
         desc: &TextureDesc,
         region: &TextureRegion<'_, B>,
         extent: Extent,
@@ -303,7 +303,7 @@ impl WebGpu {
                 return None;
             }
         };
-        wcontainers_gpu::Backend::wait_read(self, &rb);
+        wcontainers_gpu::Gpu::wait_read(self, &rb);
         let mut out = vec![0; len];
         self.finish_read_impl(rb, &mut out);
         Some(out)

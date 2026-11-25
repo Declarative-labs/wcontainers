@@ -7,7 +7,7 @@ use crate::draw;
 use crate::renames::{Kit, begin, draw_at, finish, kit};
 use anyhow::{Result, ensure};
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, DeviceStatus, Extent, Format, Origin, StageSet,
+    Gpu, BindingEntry, BindingResource, DeviceStatus, Extent, Format, Origin, StageSet,
     TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
@@ -68,7 +68,7 @@ fn whole_view(format: Format) -> TextureViewDesc {
     }
 }
 
-fn write_row(b: &mut WebGpu, texture: &<WebGpu as Backend>::Texture, texels: &[[u8; CHANNELS]]) {
+fn write_row(b: &mut WebGpu, texture: &<WebGpu as Gpu>::Texture, texels: &[[u8; CHANNELS]]) {
     b.write_texture(
         &TextureRegion {
             texture,
@@ -94,8 +94,8 @@ fn write_row(b: &mut WebGpu, texture: &<WebGpu as Backend>::Texture, texels: &[[
 /// view again into the next `ROW`; returns the target's texels and the renames it took.
 fn draw_both_rounds(
     b: &mut WebGpu,
-    texture: &<WebGpu as Backend>::Texture,
-    view: &<WebGpu as Backend>::TextureView,
+    texture: &<WebGpu as Gpu>::Texture,
+    view: &<WebGpu as Gpu>::TextureView,
 ) -> Result<(Vec<u8>, u64)> {
     let width = ROW * ROUNDS.len() as u32;
     let (target, target_view) = draw::texture_2d(

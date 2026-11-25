@@ -20,15 +20,15 @@ mod depth16;
 mod gaps;
 
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
+    AspectOps, Gpu, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
     CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS,
     Format, FormatKind, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath,
     StageSet, StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
-type Tex = <WebGpu as Backend>::Texture;
-type View = <WebGpu as Backend>::TextureView;
+type Tex = <WebGpu as Gpu>::Texture;
+type View = <WebGpu as Gpu>::TextureView;
 
 fn device() -> WebGpu {
     let backends = match std::env::var("WEBGPU_API").as_deref() {

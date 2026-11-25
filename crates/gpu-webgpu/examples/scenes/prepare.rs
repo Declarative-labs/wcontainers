@@ -3,7 +3,7 @@
 //! and the browser page.
 
 use wcontainers_gpu::{
-    Backend, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Format, LoadOp, MAX_COLOR_TARGETS,
+    Gpu, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Format, LoadOp, MAX_COLOR_TARGETS,
     PassDesc, PrepareDesc, SlowPath, StoreOp, TargetLayout, TextureUsage, Topology, Viewport,
 };
 use wcontainers_gpu_webgpu::WebGpu;
