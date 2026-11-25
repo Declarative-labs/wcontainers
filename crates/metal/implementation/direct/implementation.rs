@@ -12,7 +12,11 @@ use std::fmt;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use objc2::rc::Retained;
+use objc2::MainThreadMarker;
+use objc2::rc::{Retained, autoreleasepool};
+use objc2_core_foundation::CGSize;
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSRange, NSString, NSUInteger};
 use objc2_metal::{
@@ -30,6 +34,7 @@ use objc2_metal::{
     MTLTextureUsage, MTLTriangleFillMode, MTLViewport, MTLVisibilityResultMode, MTLWinding,
 };
 use wcontainers_metal::{
+    ConfigureLayerError, LayerDescriptor, MakeLayerError, NextDrawableError, PresentDrawableError,
     BlendFactor, BlendOperation, BlitCommand, BlitOption, CommandBufferStatus, CommitError,
     CompareFunction, ComputeCommand, CullMode, DepthClipMode, DepthStencilDescriptor,
     EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
@@ -188,6 +193,25 @@ struct CommandBufferState {
     committed: Cell<bool>,
 }
 
+/// A window view's Metal layer, and how its drawables were last configured.
+#[derive(Clone)]
+pub struct DirectLayer(Rc<LayerState>);
+
+struct LayerState {
+    raw: Retained<CAMetalLayer>,
+    configured: Cell<Option<LayerDescriptor>>,
+}
+
+/// A drawable of a layer, its texture, and whether it was presented.
+#[derive(Clone)]
+pub struct DirectDrawable(Rc<DrawableState>);
+
+struct DrawableState {
+    raw: Retained<ProtocolObject<dyn CAMetalDrawable>>,
+    texture: DirectTexture,
+    presented: Cell<bool>,
+}
+
 macro_rules! opaque_debug {
     ($($ty:ident),*) => {
         $(impl fmt::Debug for $ty {
@@ -206,7 +230,9 @@ opaque_debug!(
     DirectFunction,
     DirectRenderPipelineState,
     DirectComputePipelineState,
-    DirectCommandBuffer
+    DirectCommandBuffer,
+    DirectLayer,
+    DirectDrawable
 );
 
 impl StandaloneMetal for DirectMetal {
@@ -268,6 +294,8 @@ impl Metal for DirectMetal {
     type RenderPipelineState = DirectRenderPipelineState;
     type ComputePipelineState = DirectComputePipelineState;
     type CommandBuffer = DirectCommandBuffer;
+    type Layer = DirectLayer;
+    type Drawable = DirectDrawable;
 
     fn name(&self) -> String {
         self.device.name().to_string()
@@ -981,6 +1009,102 @@ impl Metal for DirectMetal {
             MTLCommandBufferStatus::Completed => CommandBufferStatus::Completed,
             _ => CommandBufferStatus::Error,
         }
+    }
+
+    fn make_layer(&mut self, window: &dyn HasWindowHandle) -> Result<DirectLayer, MakeLayerError> {
+        if MainThreadMarker::new().is_none() {
+            return Err(MakeLayerError::NotMainThread);
+        }
+        let handle = window.window_handle().map_err(|_| MakeLayerError::NotAppKit)?;
+        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+            return Err(MakeLayerError::NotAppKit);
+        };
+        #[expect(unsafe_code, reason = "the layer of the view a window handle names")]
+        // SAFETY: the handle borrows its view, so the pointer is a live NSView during the call, which is on the main thread.
+        let layer = unsafe { raw_window_metal::Layer::from_ns_view(appkit.ns_view) };
+        #[expect(unsafe_code, reason = "the move of the layer's retain into a typed handle")]
+        // SAFETY: `into_raw` gives a retained `CAMetalLayer`, whose one retain the handle takes over.
+        let raw = unsafe { Retained::from_raw(layer.into_raw().cast::<CAMetalLayer>().as_ptr()) }
+            .ok_or(MakeLayerError::NotAppKit)?;
+        raw.setDevice(Some(&self.device));
+        Ok(DirectLayer(Rc::new(LayerState {
+            raw,
+            configured: Cell::new(None),
+        })))
+    }
+
+    fn configure_layer(
+        &mut self,
+        layer: &DirectLayer,
+        descriptor: &LayerDescriptor,
+    ) -> Result<(), ConfigureLayerError> {
+        if !matches!(
+            descriptor.pixel_format,
+            PixelFormat::Bgra8Unorm
+                | PixelFormat::Bgra8UnormSrgb
+                | PixelFormat::Rgba16Float
+                | PixelFormat::Rgb10a2Unorm
+        ) {
+            return Err(ConfigureLayerError::Invalid("a format no layer takes"));
+        }
+        if descriptor.width == 0 || descriptor.height == 0 {
+            return Err(ConfigureLayerError::Invalid("an empty size"));
+        }
+        let raw = &layer.0.raw;
+        raw.setPixelFormat(pixel_format(descriptor.pixel_format));
+        raw.setDrawableSize(CGSize {
+            width: f64::from(descriptor.width),
+            height: f64::from(descriptor.height),
+        });
+        raw.setDisplaySyncEnabled(descriptor.display_sync_enabled);
+        layer.0.configured.set(Some(*descriptor));
+        Ok(())
+    }
+
+    fn next_drawable(&mut self, layer: &DirectLayer) -> Result<DirectDrawable, NextDrawableError> {
+        let descriptor = layer.0.configured.get().ok_or(NextDrawableError::NotConfigured)?;
+        let raw = autoreleasepool(|_| layer.0.raw.nextDrawable()).ok_or(NextDrawableError::TimedOut)?;
+        let texture = raw.texture();
+        let storage = Retained::as_ptr(&texture).cast::<c_void>() as usize;
+        let state = TextureState {
+            width: texture.width() as u32,
+            height: texture.height() as u32,
+            raw: texture,
+            texture_type: TextureType::Type2D,
+            pixel_format: descriptor.pixel_format,
+            depth: 1,
+            levels: 1,
+            slices: 1,
+            sample_count: 1,
+            render_target: true,
+            pixel_format_view: false,
+            storage,
+        };
+        Ok(DirectDrawable(Rc::new(DrawableState {
+            raw,
+            texture: DirectTexture(Rc::new(state)),
+            presented: Cell::new(false),
+        })))
+    }
+
+    fn drawable_texture(&self, drawable: &DirectDrawable) -> DirectTexture {
+        drawable.0.texture.clone()
+    }
+
+    fn present_drawable(
+        &mut self,
+        command_buffer: &DirectCommandBuffer,
+        drawable: &DirectDrawable,
+    ) -> Result<(), PresentDrawableError> {
+        if command_buffer.0.committed.get() {
+            return Err(PresentDrawableError::Committed);
+        }
+        if drawable.0.presented.replace(true) {
+            return Err(PresentDrawableError::AlreadyPresented);
+        }
+        let shown = ProtocolObject::from_retained(drawable.0.raw.clone());
+        command_buffer.0.raw.presentDrawable(&shown);
+        Ok(())
     }
 }
 

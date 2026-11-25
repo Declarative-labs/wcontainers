@@ -2,6 +2,8 @@
 
 use core::fmt::Debug;
 
+use raw_window_handle::HasWindowHandle;
+
 /// One Metal device and its command queue, whose objects are handles that a clone names again.
 ///
 /// Every call is checked before it reaches Metal: a range outside its buffer or texture, a slot a function reads and no
@@ -20,6 +22,10 @@ pub trait Metal {
     type RenderPipelineState: Clone + Debug;
     type ComputePipelineState: Clone + Debug;
     type CommandBuffer: Clone + Debug;
+    /// The Core Animation layer of a window's view, whose drawables a window shows.
+    type Layer: Clone + Debug;
+    /// One picture of a layer: a texture to draw into, shown once presented.
+    type Drawable: Clone + Debug;
 
     /// Returns the GPU's name, as Metal gives it.
     fn name(&self) -> String;
@@ -102,6 +108,24 @@ pub trait Metal {
     ) -> Result<(), WaitUntilCompletedError>;
     /// Returns how far the GPU has come with the command buffer.
     fn status(&self, command_buffer: &Self::CommandBuffer) -> CommandBufferStatus;
+    /// Returns the Metal layer of a window's view, made there if it has none; called on the main thread.
+    fn make_layer(&mut self, window: &dyn HasWindowHandle) -> Result<Self::Layer, MakeLayerError>;
+    /// Sets the format and size of the layer's drawables, and whether presenting waits for the display.
+    fn configure_layer(
+        &mut self,
+        layer: &Self::Layer,
+        descriptor: &LayerDescriptor,
+    ) -> Result<(), ConfigureLayerError>;
+    /// Returns the layer's next drawable, waiting until one is free.
+    fn next_drawable(&mut self, layer: &Self::Layer) -> Result<Self::Drawable, NextDrawableError>;
+    /// Returns the texture a drawable shows, which passes draw into and nothing else reads.
+    fn drawable_texture(&self, drawable: &Self::Drawable) -> Self::Texture;
+    /// Shows the drawable once the command buffer has completed.
+    fn present_drawable(
+        &mut self,
+        command_buffer: &Self::CommandBuffer,
+        drawable: &Self::Drawable,
+    ) -> Result<(), PresentDrawableError>;
 }
 
 /// A Metal device made on its own, on the system's default GPU.
@@ -1013,6 +1037,50 @@ pub enum EncodeComputeCommandsError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommitError {
     AlreadyCommitted,
+}
+
+/// How a layer's drawables are made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LayerDescriptor {
+    /// One of `Bgra8Unorm`, `Bgra8UnormSrgb`, `Rgba16Float` and `Rgb10a2Unorm`.
+    pub pixel_format: PixelFormat,
+    pub width: u32,
+    pub height: u32,
+    pub display_sync_enabled: bool,
+}
+
+/// Why a layer was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeLayerError {
+    /// A window whose handle is not an AppKit view's.
+    NotAppKit,
+    /// A call off the main thread, where AppKit's views are not reached.
+    NotMainThread,
+}
+
+/// Why a layer was not configured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigureLayerError {
+    /// A format no layer takes, or an empty size.
+    Invalid(&'static str),
+}
+
+/// Why no drawable was given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NextDrawableError {
+    /// The layer was never configured.
+    NotConfigured,
+    /// None was free before Metal's wait ended.
+    TimedOut,
+}
+
+/// Why a drawable was not presented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresentDrawableError {
+    /// The command buffer was already committed.
+    Committed,
+    /// The drawable was presented before.
+    AlreadyPresented,
 }
 
 /// Why a command buffer was not waited for.

@@ -155,7 +155,21 @@ pub struct ReadbackObj<M: Metal> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MetalFence(pub(crate) u64);
 
-/// No object: this implementation makes no resource tables or surfaces yet.
+/// A window's layer and the frame drawn for it.
+pub struct SurfaceObj<M: Metal> {
+    pub(crate) layer: M::Layer,
+    pub(crate) frame: RefCell<Option<Frame<M>>>,
+}
+
+/// The texture a surface's frames are drawn into, in the surface's format, and its view read when presenting.
+pub(crate) struct Frame<M: Metal> {
+    pub(crate) format: Format,
+    pub(crate) drawn: Shared<ViewObj<M>>,
+    /// A view of the same texels as linear values, so presenting moves their bytes.
+    pub(crate) read: Shared<ViewObj<M>>,
+}
+
+/// No object: this implementation makes no resource tables yet.
 #[derive(Clone, Copy, Debug)]
 pub enum Never {}
 

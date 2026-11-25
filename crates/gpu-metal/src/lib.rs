@@ -27,10 +27,12 @@ use wcontainers_metal::{
 };
 
 pub use objects::{
+    SurfaceObj,
     BlendBlock, BufferObj, DepthStencilBlock, MetalFence, Never, ProgramObj, QueryObj, RasterBlock,
     ReadbackObj, SamplerObj, SetObj, ShaderObj, Shared, TextureObj, VertexLayoutBlock, ViewObj,
 };
-use objects::{ReadLayout, SetResource, SlotKind};
+use objects::{Frame, ReadLayout, SetResource, SlotKind};
+use std::cell::RefCell;
 use record::OpenPass;
 
 /// The buffer slots each stage's resources take, from zero.
@@ -98,6 +100,10 @@ pub struct MetalGpu<M: Metal> {
     render_pipelines: HashMap<record::PipelineKey, M::RenderPipelineState>,
     compute_pipelines: HashMap<u64, M::ComputePipelineState>,
     depth_stencil_states: HashMap<u64, M::DepthStencilState>,
+    /// The layers of the windows the host added, by the number its graphics hook names each by.
+    windows: HashMap<u32, M::Layer>,
+    /// What draws a frame into a drawable, made at the first present.
+    present: Option<record::PresentDraw<M>>,
 }
 
 impl<M: Metal> MetalGpu<M> {
@@ -180,7 +186,19 @@ impl<M: Metal> MetalGpu<M> {
             render_pipelines: HashMap::new(),
             compute_pipelines: HashMap::new(),
             depth_stencil_states: HashMap::new(),
+            windows: HashMap::new(),
+            present: None,
         }
+    }
+
+    /// Adds a window the host shows, by the number its graphics hook names it by; called on the main thread.
+    pub fn add_window(&mut self, number: u32, window: &dyn raw_window_handle::HasWindowHandle) -> Result<(), GpuError> {
+        let layer = self
+            .metal
+            .make_layer(window)
+            .map_err(|_| GpuError::Invalid("a window Metal makes no layer of"))?;
+        self.windows.insert(number, layer);
+        Ok(())
     }
 
     fn id(&mut self) -> u64 {
@@ -512,7 +530,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     type Readback = Shared<ReadbackObj<M>>;
     type Fence = MetalFence;
     type ResourceTable = Never;
-    type Surface = Never;
+    type Surface = Shared<SurfaceObj<M>>;
 
     fn caps(&self) -> &Caps {
         &self.caps
@@ -1284,29 +1302,105 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         dst[..n].copy_from_slice(&bytes[..n]);
     }
 
-    fn create_surface(&mut self, _window: u32) -> Result<Self::Surface, GpuError> {
-        Err(GpuError::Invalid(
-            "this implementation makes no surfaces yet",
-        ))
+    fn create_surface(&mut self, window: u32) -> Result<Self::Surface, GpuError> {
+        let layer = self
+            .windows
+            .get(&window)
+            .cloned()
+            .ok_or(GpuError::Invalid("a window the host did not add"))?;
+        Ok(Shared(Rc::new(SurfaceObj {
+            layer,
+            frame: RefCell::new(None),
+        })))
     }
 
     fn configure_surface(
         &mut self,
         surface: &Self::Surface,
-        _format: Format,
-        _width: u32,
-        _height: u32,
-        _vsync: bool,
+        format: Format,
+        width: u32,
+        height: u32,
+        vsync: bool,
     ) -> Result<(), GpuError> {
-        match *surface {}
+        if !self.caps.formats.uses[format as usize].contains(wcontainers_gpu::FormatUse::PRESENT) {
+            return Err(GpuError::Invalid("a surface format without PRESENT"));
+        }
+        self.metal
+            .configure_layer(
+                &surface.layer,
+                &wcontainers_metal::LayerDescriptor {
+                    pixel_format: wcontainers_metal::PixelFormat::Bgra8Unorm,
+                    width,
+                    height,
+                    display_sync_enabled: vsync,
+                },
+            )
+            .map_err(|_| GpuError::Invalid("a layer Metal does not configure"))?;
+        // The frame is drawn into a texture of the surface's format, then into the layer's drawable.
+        let texture = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width,
+            height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            cube: false,
+            reinterpret: false,
+        })?;
+        let whole = |format| TextureViewDesc {
+            format,
+            dimension: ViewDimension::D2,
+            base_mip: 0,
+            mip_count: 1,
+            base_layer: 0,
+            layer_count: 1,
+            stencil: false,
+        };
+        let drawn = self.create_view(&texture, &whole(format))?;
+        let read = self.create_view(&texture, &whole(FORMAT_FACTS[format as usize].linear))?;
+        *surface.frame.borrow_mut() = Some(Frame { format, drawn, read });
+        Ok(())
     }
 
     fn current_texture(&mut self, surface: &Self::Surface) -> Result<Self::TextureView, GpuError> {
-        match *surface {}
+        surface
+            .frame
+            .borrow()
+            .as_ref()
+            .map(|frame| frame.drawn.clone())
+            .ok_or(GpuError::Invalid("a surface not configured"))
     }
 
     fn present(&mut self, surface: &Self::Surface) -> Result<(), GpuError> {
-        match *surface {}
+        let (format, read) = match &*surface.frame.borrow() {
+            Some(frame) => (frame.format, frame.read.clone()),
+            None => return Err(GpuError::Invalid("a surface not configured")),
+        };
+        if format != Format::Bgra8Unorm {
+            self.record_slow_path(wcontainers_gpu::SlowPath::PresentConverted);
+        }
+        let drawable = self
+            .metal
+            .next_drawable(&surface.layer)
+            .map_err(|_| GpuError::Invalid("no drawable to present"))?;
+        let texture = self.metal.drawable_texture(&drawable);
+        let (width, height) = (read.width, read.height);
+        let view = Shared(Rc::new(ViewObj {
+            raw: texture,
+            format: Format::Bgra8Unorm,
+            width,
+            height,
+            samples: 1,
+        }));
+        self.draw_frame(&view, &read)?;
+        let command_buffer = self.command_buffer().ok_or(GpuError::DeviceLost)?;
+        self.metal
+            .present_drawable(&command_buffer, &drawable)
+            .map_err(|_| GpuError::Invalid("a drawable Metal does not present"))?;
+        self.commit();
+        Ok(())
     }
 
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {

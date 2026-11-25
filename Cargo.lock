@@ -5350,10 +5350,13 @@ version = "0.1.0"
 dependencies = [
  "libtest-mimic",
  "naga",
+ "raw-window-handle",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-metal",
  "wcontainers-metal-direct",
+ "wcontainers-test-window",
+ "wcontainers-test-window-appkit",
 ]
 
 [[package]]
@@ -5643,6 +5646,7 @@ name = "wcontainers-metal"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "raw-window-handle",
 ]
 
 [[package]]
@@ -5660,8 +5664,12 @@ dependencies = [
  "naga",
  "naga-types",
  "objc2",
+ "objc2-core-foundation",
  "objc2-foundation",
  "objc2-metal",
+ "objc2-quartz-core",
+ "raw-window-handle",
+ "raw-window-metal",
  "wcontainers-metal",
  "wcontainers-metal-conformance",
 ]

@@ -129,7 +129,6 @@ pub(crate) fn format_caps() -> FormatCaps {
                 F::Rg16Unorm,
                 F::Rg16Snorm,
                 F::Rg16Float,
-                F::Rgba8Unorm,
                 F::Rgba8UnormSrgb,
                 F::Rgba8Snorm,
                 F::Rgb10a2Unorm,
@@ -142,6 +141,7 @@ pub(crate) fn format_caps() -> FormatCaps {
             drawn,
             true,
         ),
+        (&[F::Rgba8Unorm], drawn | FormatUse::PRESENT, true),
         (
             &[F::Bgra8Unorm, F::Bgra8UnormSrgb],
             drawn | FormatUse::PRESENT,

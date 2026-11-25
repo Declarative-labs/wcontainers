@@ -30,6 +30,28 @@ pub(crate) struct PipelineKey {
     class: u8,
 }
 
+/// The frame's copy into a drawable: a program reading the frame at binding 32, and the blocks it draws with.
+pub(crate) struct PresentDraw<M: Metal> {
+    program: Shared<ProgramObj>,
+    blend: Shared<crate::BlendBlock>,
+    depth_stencil: Shared<crate::DepthStencilBlock>,
+    raster: Shared<crate::RasterBlock>,
+    vertex_layout: Shared<crate::VertexLayoutBlock>,
+    _metal: core::marker::PhantomData<M>,
+}
+
+/// The program that moves each texel of a frame into the drawable, by a full-screen triangle.
+const PRESENT_PROGRAM: &str = "
+@group(0) @binding(32) var frame: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(frame, vec2<u32>(at.xy), 0);
+}
+";
+
 /// One color attachment of an open pass.
 struct OpenColor<M: Metal> {
     view: Shared<ViewObj<M>>,
@@ -725,6 +747,117 @@ impl<M: Metal> MetalGpu<M> {
         if let Some(pass) = &mut self.pass {
             pass.commands.extend(commands);
         }
+        Ok(())
+    }
+
+    /// Draws a frame's texels into a drawable's view.
+    pub(crate) fn draw_frame(
+        &mut self,
+        drawable: &Shared<ViewObj<M>>,
+        frame: &Shared<ViewObj<M>>,
+    ) -> Result<(), wcontainers_gpu::GpuError> {
+        use wcontainers_gpu::{
+            BindingEntry, BindingResource, BlendDesc, ColorWrites, CullMode, DepthStencilDesc, FillMode, FrontFace,
+            Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ShaderModule, StageSet, VertexLayoutDesc,
+            Viewport, MAX_VERTEX_STREAMS,
+        };
+        if self.present.is_none() {
+            let vertex = self.create_shader(&ShaderModule::from_wgsl(PRESENT_PROGRAM, "vs", ShaderStage::Vertex)?)?;
+            let fragment =
+                self.create_shader(&ShaderModule::from_wgsl(PRESENT_PROGRAM, "fs", ShaderStage::Fragment)?)?;
+            let program = self.create_program(&Program::Render { vertex: &vertex, fragment: Some(&fragment) })?;
+            let blend = self.create_blend(&BlendDesc {
+                targets: [RenderTargetBlend { blend: None, writes: ColorWrites::all() }; MAX_COLOR_TARGETS],
+                same_for_all: true,
+                alpha_to_coverage: false,
+                logic_op: None,
+            })?;
+            let depth_stencil = self.create_depth_stencil(&DepthStencilDesc {
+                depth_compare: None,
+                depth_write: false,
+                stencil: None,
+                stencil_read_mask: [u8::MAX; 2],
+                stencil_write_mask: [u8::MAX; 2],
+                depth_bounds: None,
+            })?;
+            let raster = self.create_raster(&RasterDesc {
+                fill: FillMode::Solid,
+                cull: CullMode::None,
+                front: FrontFace::CounterClockwise,
+                depth_bias: 0,
+                depth_bias_slope: 0,
+                depth_bias_clamp: 0,
+                depth_clip: true,
+                scissor: false,
+                line_width: 1.0f32.to_bits(),
+                provoking: ProvokingVertex::First,
+                depth_minus_one: false,
+                sample_mask: !0,
+            })?;
+            let vertex_layout = self.create_vertex_layout(&VertexLayoutDesc {
+                streams: [None; MAX_VERTEX_STREAMS],
+                attributes: [None; MAX_VERTEX_STREAMS],
+            })?;
+            self.present = Some(PresentDraw {
+                program,
+                blend,
+                depth_stencil,
+                raster,
+                vertex_layout,
+                _metal: core::marker::PhantomData,
+            });
+        }
+        let Some(draw) = &self.present else {
+            unreachable!("made above")
+        };
+        let (program, blend, depth_stencil, raster, vertex_layout) = (
+            draw.program.clone(),
+            draw.blend.clone(),
+            draw.depth_stencil.clone(),
+            draw.raster.clone(),
+            draw.vertex_layout.clone(),
+        );
+        let set = self.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(frame),
+        }])?;
+        let mut pass = PassDesc { colors: Default::default(), depth: None, empty: None, occlusion: None };
+        pass.colors[0] = Some(wcontainers_gpu::ColorAttachment {
+            view: drawable,
+            depth_slice: 0,
+            resolve: None,
+            load: LoadOp::DontCare,
+            store: StoreOp::Store,
+        });
+        let viewport = [Viewport {
+            x: 0,
+            y: 0,
+            width: (drawable.width as f32).to_bits(),
+            height: (drawable.height as f32).to_bits(),
+            min_depth: 0,
+            max_depth: 1.0f32.to_bits(),
+        }];
+        self.begin_pass(&pass);
+        self.draw(&DrawCall {
+            program: &program,
+            blend: &blend,
+            depth_stencil: &depth_stencil,
+            raster: &raster,
+            vertex_layout: &vertex_layout,
+            bindings: [Some(&set), None, None, None],
+            vertex_buffers: &[],
+            index: None,
+            topology: Topology::TriangleList,
+            restart: false,
+            viewports: &viewport,
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices { first: 0, count: 3, first_instance: 0, instances: 1 },
+        });
+        self.end_pass();
         Ok(())
     }
 

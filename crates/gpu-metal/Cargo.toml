@@ -11,6 +11,7 @@ repository.workspace = true
 wcontainers-gpu = { path = "../gpu" }
 wcontainers-metal = { path = "../metal" }
 naga.workspace = true
+raw-window-handle = "0.6.2"
 
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in"] }
@@ -19,6 +20,9 @@ wcontainers-gpu-test = { path = "../gpu-test" }
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 libtest-mimic = "0.8.1"
 wcontainers-metal-direct = { path = "../metal/implementation/direct" }
+# The suite's window, and reading what it shows: made on the main thread (tests/present.rs).
+wcontainers-test-window = { path = "../test-window" }
+wcontainers-test-window-appkit = { path = "../test-window/implementation/appkit" }
 
 [[test]]
 name = "present"
