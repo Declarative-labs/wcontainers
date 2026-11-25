@@ -451,14 +451,20 @@ impl Metal for DirectMetal {
         buffer
             .settle()
             .map_err(|()| WriteContentsError::UsedByUncommittedWork)?;
-        let contents = buffer.0.raw.contents().cast::<u8>();
-        let at = ns_uinteger(offset);
+        // The place in the buffer's memory, by arithmetic that needs no `unsafe` and is checked by `holds` above.
+        let start = buffer
+            .0
+            .raw
+            .contents()
+            .cast::<u8>()
+            .as_ptr()
+            .wrapping_add(ns_uinteger(offset));
         #[expect(unsafe_code, reason = "the copy into a buffer's shared memory")]
-        // SAFETY: `holds` checked, without overflow, that the range lies inside the buffer, which is at least as long; no
-        // GPU work uses it, since every command buffer that did has completed and none other was encoded since; the CPU
-        // touches it only in these copies.
+        // SAFETY: `holds` checked, without overflow, that the range from `start` lies inside the buffer, which is at
+        // least as long; no GPU work uses it, since every command buffer that did has completed and none other was
+        // encoded since; the CPU touches it only in these copies.
         unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.as_ptr().add(at), bytes.len())
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), start, bytes.len())
         };
         Ok(())
     }
@@ -475,16 +481,18 @@ impl Metal for DirectMetal {
         buffer
             .settle()
             .map_err(|()| ReadContentsError::UsedByUncommittedWork)?;
-        let contents = buffer.0.raw.contents().cast::<u8>();
-        let at = ns_uinteger(offset);
+        // The place in the buffer's memory, by arithmetic that needs no `unsafe` and is checked by `holds` above.
+        let start = buffer
+            .0
+            .raw
+            .contents()
+            .cast::<u8>()
+            .as_ptr()
+            .wrapping_add(ns_uinteger(offset));
         #[expect(unsafe_code, reason = "the copy out of a buffer's shared memory")]
-        // SAFETY: as for `write_contents`: inside the buffer, and no GPU work uses it.
+        // SAFETY: as for `write_contents`: the range from `start` lies inside the buffer, and no GPU work uses it.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                contents.as_ptr().add(at),
-                bytes.as_mut_ptr(),
-                bytes.len(),
-            )
+            std::ptr::copy_nonoverlapping(start, bytes.as_mut_ptr(), bytes.len())
         };
         Ok(())
     }
