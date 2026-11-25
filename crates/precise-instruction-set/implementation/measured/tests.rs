@@ -145,3 +145,30 @@ fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
     let named: Vec<_> = behaviors.iter().map(|(precise, _)| *precise).collect();
     assert_eq!(named, listed);
 }
+
+/// The live chip measures as its recording; it runs only where the host is a Neoverse V2 under KVM.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[test]
+#[ignore = "needs KVM on a Neoverse V2"]
+fn this_chip_measures_as_the_neoverse_v2_recording() {
+    use wcontainers_behavior_source_kvm_single_step::KvmSingleStepMachine;
+
+    let chip = match KvmSingleStepMachine::new() {
+        Ok(chip) => chip,
+        Err(error) => panic!("this host makes no single step machine: {error:?}"),
+    };
+    let Ok(measured) = MeasuredInstructionSet::<KvmSingleStepMachine, Generator>::measure(chip) else {
+        panic!("the chip shows one known behavior of every instruction");
+    };
+    let Ok(recorded) =
+        MeasuredInstructionSet::<Recording, Generator>::measure(read_recording("neoverse-v2"))
+    else {
+        panic!("the recording measures");
+    };
+    for instruction in Arm64::<User>::list_instructions() {
+        assert_eq!(
+            measured.to_precise(instruction),
+            recorded.to_precise(instruction)
+        );
+    }
+}

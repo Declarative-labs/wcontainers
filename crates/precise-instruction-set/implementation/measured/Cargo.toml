@@ -28,5 +28,9 @@ wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-inpu
 wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
+# The chip the chip test measures.
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
+wcontainers-behavior-source-kvm-single-step = { path = "../../../behavior-source/implementation/kvm-single-step" }
+
 [lints]
 workspace = true
