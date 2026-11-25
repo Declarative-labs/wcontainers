@@ -15,6 +15,8 @@ use crate::operand::{Operand, OperandAccess, RegisterThirtyOne, RegisterWidth};
 use crate::registers::{read_register, write_register};
 use crate::{Exception, Instruction, Processor};
 
+pub mod lanes;
+
 /// [FPCR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register)'s fields this module reads, as single bits or the rounding mode's lowest bit.
 pub const ALTERNATIVE_HALF: u64 = 1 << 26;
 pub const DEFAULT_NAN: u64 = 1 << 25;

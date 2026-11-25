@@ -47,6 +47,7 @@ use core::convert::Infallible;
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
+use wcontainers_instruction_input_domain_arm64::advanced_simd::{self, SimdRole};
 use wcontainers_instruction_input_domain_arm64::{
     AccessPlacement, Arm64InputDomain, CodePlacement, DataPage, OperandType, OperandValue,
     encode_word,
@@ -239,6 +240,11 @@ const fn to_group(operand_type: OperandType) -> Group {
         OperandType::StatusFlags | OperandType::WrittenConditionFlags | OperandType::MemoryFill => {
             Group::Written
         }
+        OperandType::AdvancedSimd(operand) => match operand.to_role() {
+            SimdRole::Field => Group::Field,
+            SimdRole::Data => Group::Data,
+            SimdRole::Written => Group::Written,
+        },
     }
 }
 
@@ -622,6 +628,20 @@ impl Cut {
                         let exponent_ones = (1 << precision.to_exponent_bits()) - 1;
                         facts.nonfinite_source |= exponent == exponent_ones;
                         facts.subnormal_source |= exponent == 0 && fraction != 0;
+                    }
+                    // An Advanced SIMD source whose every lane is a NaN or an infinity, at the lanes the word gives.
+                    for (index, operand_type) in self.types.iter().enumerate() {
+                        let OperandType::AdvancedSimd(operand) = *operand_type else {
+                            continue;
+                        };
+                        if facts.held & (1 << index) == 0 {
+                            continue;
+                        }
+                        let value = self.values[index][chosen[index]];
+                        facts.nonfinite_source |=
+                            advanced_simd::is_nonfinite(operand, value, facts.word);
+                        facts.subnormal_source |=
+                            advanced_simd::is_subnormal(operand, value, facts.word);
                     }
                 }
                 Group::Control => {

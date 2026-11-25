@@ -2,6 +2,9 @@
 
 use core::convert::Infallible;
 
+use crate::advanced_simd::{
+    AdvancedSimdOperation, simulate_advanced_simd, to_advanced_simd_operation,
+};
 use crate::branch::{BranchOperation, simulate_branch, to_branch_operation};
 use crate::encoding::IMM16;
 use crate::floating_point::{
@@ -27,6 +30,7 @@ pub enum DocumentedOperation {
     FloatingPoint(FloatingPointOperation),
     Vector(VectorOperation),
     PointerAuthentication(PointerAuthenticationOperation),
+    AdvancedSimd(AdvancedSimdOperation),
     /// A hint or barrier, which changes nothing a single instruction's state shows.
     NoOperation,
     /// Undefined at EL0 whatever its operands.
@@ -93,6 +97,9 @@ pub const fn to_documented_operation(
     if let Some(operation) = to_pointer_authentication_operation(instruction) {
         return Some(DocumentedOperation::PointerAuthentication(operation));
     }
+    if let Some(operation) = to_advanced_simd_operation(instruction) {
+        return Some(DocumentedOperation::AdvancedSimd(operation));
+    }
     to_system_operation(instruction)
 }
 
@@ -118,6 +125,12 @@ pub const fn to_implicit_inputs(instruction: Instruction<Infallible>) -> Implici
             destination: matches!(operation, PointerAuthenticationOperation::Strip),
             program_counter: false,
             floating_point_control: false,
+        },
+        Some(DocumentedOperation::AdvancedSimd(operation)) => ImplicitInputs {
+            condition_flags: false,
+            destination: false,
+            program_counter: false,
+            floating_point_control: operation.reads_control(),
         },
         Some(
             DocumentedOperation::Vector(_)
@@ -202,6 +215,9 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::PointerAuthentication(operation) => {
                 simulate_pointer_authentication(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::AdvancedSimd(operation) => {
+                simulate_advanced_simd(processor, word, operation).map(|()| None)
             }
             DocumentedOperation::NoOperation if crate::planted::is(257) => {
                 Err(Exception::UndefinedInstruction)

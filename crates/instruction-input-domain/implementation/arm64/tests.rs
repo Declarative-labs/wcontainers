@@ -200,6 +200,9 @@ fn read_operand(
                 CodePlacement::PageEnd
             },
         )),
+        OperandType::AdvancedSimd(operand) => {
+            crate::advanced_simd::read_back(operand, word, &state.processor)
+        }
         OperandType::DataPagePermission(page) => {
             let page_address = match page {
                 DataPage::Lower => LOWER_DATA_ADDRESS,
@@ -354,7 +357,11 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                         OperandValue::AccessPlacement(_)
                     ) | (OperandValue::Comparison(_), OperandValue::Comparison(_))
                 );
-                if asked == held || placements {
+                // An Advanced SIMD operand reads back as the first of its values that builds the same register.
+                if asked == held
+                    || placements
+                    || matches!(operand_types.get(index), Some(OperandType::AdvancedSimd(_)))
+                {
                     continue;
                 }
                 // A floating-point register named twice holds its last value.
