@@ -1,21 +1,21 @@
-//! The one virtual machine with one virtual CPU, made and run through kvm-ioctls, with SVE shown where the host has it.
+//! The one virtual machine with one virtual CPU, made and run through the KVM API crate, with SVE where the host has it.
 
-use std::ffi::c_int;
-use std::io;
 use std::mem::offset_of;
 
 use kvm_bindings::{
-    KVM_ARM_VCPU_SVE, KVM_ARM_VM_SMCCC_CTRL, KVM_ARM_VM_SMCCC_FILTER, KVM_DEV_ARM_VGIC_CTRL_INIT,
-    KVM_DEV_ARM_VGIC_GRP_ADDR, KVM_DEV_ARM_VGIC_GRP_CTRL, KVM_REG_ARM_CORE, KVM_REG_ARM64,
-    KVM_REG_ARM64_SYSREG, KVM_REG_ARM64_SYSREG_CRM_SHIFT, KVM_REG_ARM64_SYSREG_CRN_SHIFT,
-    KVM_REG_ARM64_SYSREG_OP0_SHIFT, KVM_REG_ARM64_SYSREG_OP1_SHIFT, KVM_REG_ARM64_SYSREG_OP2_SHIFT,
-    KVM_REG_SIZE_U64, KVM_VGIC_V3_ADDR_TYPE_DIST, KVM_VGIC_V3_ADDR_TYPE_REDIST, kvm_create_device,
-    kvm_device_attr, kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3, kvm_regs, kvm_smccc_filter,
-    kvm_smccc_filter_action_KVM_SMCCC_FILTER_FWD_TO_USER, kvm_vcpu_init, user_pt_regs,
+    KVM_ARM_VCPU_SVE, KVM_ARM_VM_SMCCC_CTRL, KVM_ARM_VM_SMCCC_FILTER, KVM_CAP_ARM_SVE,
+    KVM_DEV_ARM_VGIC_CTRL_INIT, KVM_DEV_ARM_VGIC_GRP_ADDR, KVM_DEV_ARM_VGIC_GRP_CTRL,
+    KVM_EXIT_HYPERCALL, KVM_REG_ARM_CORE, KVM_REG_ARM64, KVM_REG_ARM64_SYSREG,
+    KVM_REG_ARM64_SYSREG_CRM_SHIFT, KVM_REG_ARM64_SYSREG_CRN_SHIFT, KVM_REG_ARM64_SYSREG_OP0_SHIFT,
+    KVM_REG_ARM64_SYSREG_OP1_SHIFT, KVM_REG_ARM64_SYSREG_OP2_SHIFT, KVM_REG_SIZE_U64,
+    KVM_VGIC_V3_ADDR_TYPE_DIST, KVM_VGIC_V3_ADDR_TYPE_REDIST,
+    kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3, kvm_regs, kvm_run,
+    kvm_run__bindgen_ty_1__bindgen_ty_8, kvm_smccc_filter,
+    kvm_smccc_filter_action_KVM_SMCCC_FILTER_FWD_TO_USER, user_pt_regs,
 };
-use kvm_ioctls::{Cap, DeviceFd, Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
-use wcontainers_kvm::Kvm;
+use wcontainers_kvm::{Errno, Kvm};
 use wcontainers_kvm_direct::DirectKvm;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::guest_layout::{DOORBELL_FUNCTION, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS};
 
@@ -24,13 +24,14 @@ use crate::guest_layout::{DOORBELL_FUNCTION, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS
 pub struct MachineError(pub String);
 
 /// The guest memory KVM gives the machine.
-pub(crate) type GuestMemory = <DirectKvm as Kvm>::GuestMemory;
+pub(crate) type GuestMemory = <DirectKvm as Kvm>::UserMemory;
 
 /// The machine, its interrupt controller and its virtual CPU, which drop before it.
 pub(crate) struct Machine {
-    pub(crate) cpu: VcpuFd,
-    _interrupt_controller: DeviceFd,
-    _machine: VmFd,
+    cpu: <DirectKvm as Kvm>::Vcpu,
+    _interrupt_controller: <DirectKvm as Kvm>::Device,
+    _machine: <DirectKvm as Kvm>::Vm,
+    _system: <DirectKvm as Kvm>::System,
 }
 
 /// A register the single step machine reads or writes on its virtual CPU.
@@ -68,6 +69,15 @@ const DOORBELL_FILTER: kvm_smccc_filter = kvm_smccc_filter {
     pad: [0; 15],
 };
 
+/// Returns the filter's bytes as KVM reads them.
+fn filter_bytes(filter: &kvm_smccc_filter) -> Vec<u8> {
+    let mut bytes = vec![u8::MIN; size_of::<kvm_smccc_filter>()];
+    let fields = [filter.base.to_ne_bytes(), filter.nr_functions.to_ne_bytes()].concat();
+    bytes[..fields.len()].copy_from_slice(&fields);
+    bytes[offset_of!(kvm_smccc_filter, action)] = filter.action;
+    bytes
+}
+
 /// Makes the machine with its memory at the guest-physical address, and its one virtual CPU.
 ///
 /// KVM refuses a virtual CPU once the interrupt controller is set up, so the CPU is made first.
@@ -75,104 +85,122 @@ pub(crate) fn create_machine(
     memory_start: u64,
     memory_bytes: usize,
 ) -> Result<(Machine, GuestMemory), MachineError> {
-    let refused = |what: &str, error: kvm_ioctls::Error| MachineError(format!("{what}: {error}"));
-    let system = KvmSystem::new().map_err(|error| refused("opening KVM", error))?;
-    let machine = system
-        .create_vm()
+    let refused = |what: &str, error: Errno| MachineError(format!("{what}: {error}"));
+    let kvm = DirectKvm;
+    let system = kvm.open().map_err(|error| refused("opening KVM", error))?;
+    let machine = kvm
+        .create_vm(&system, u64::MIN)
         .map_err(|error| refused("making the machine", error))?;
-    let filter = DOORBELL_FILTER;
-    machine
-        .set_device_attr(&kvm_device_attr {
-            group: KVM_ARM_VM_SMCCC_CTRL,
-            attr: KVM_ARM_VM_SMCCC_FILTER.into(),
-            addr: (&raw const filter) as u64,
-            ..Default::default()
-        })
-        .map_err(|error| refused("forwarding the doorbell", error))?;
-    let memory = DirectKvm::set_user_memory_region(&machine, 0, memory_start, memory_bytes)
-        .map_err(|error| MachineError(format!("mapping memory: {error}")))?;
-    let mut init = kvm_vcpu_init::default();
-    machine
-        .get_preferred_target(&mut init)
+    kvm.vm_set_device_attr(
+        &machine,
+        KVM_ARM_VM_SMCCC_CTRL,
+        KVM_ARM_VM_SMCCC_FILTER.into(),
+        &filter_bytes(&DOORBELL_FILTER),
+    )
+    .map_err(|error| refused("forwarding the doorbell", error))?;
+    let memory = kvm
+        .create_user_memory(memory_bytes)
+        .map_err(|error| refused("mapping memory", error))?;
+    kvm.set_user_memory_region(&machine, u32::MIN, u32::MIN, memory_start, Some(&memory))
+        .map_err(|error| refused("mapping memory", error))?;
+    let mut init = kvm
+        .arm_preferred_target(&machine)
         .map_err(|error| refused("the preferred CPU", error))?;
-    let scalable_vectors = system.check_extension(Cap::ArmSve);
+    let scalable_vectors = kvm
+        .check_extension(&system, KVM_CAP_ARM_SVE)
+        .is_ok_and(|answer| answer > 0);
     if scalable_vectors {
         init.features[0] |= 1 << KVM_ARM_VCPU_SVE;
     }
-    let cpu = machine
-        .create_vcpu(0)
+    let cpu = kvm
+        .create_vcpu(&machine, u64::MIN)
         .map_err(|error| refused("making the virtual CPU", error))?;
-    cpu.vcpu_init(&init)
+    kvm.arm_vcpu_init(&cpu, &init)
         .map_err(|error| refused("starting the virtual CPU", error))?;
     if scalable_vectors {
-        cpu.vcpu_finalize(&(KVM_ARM_VCPU_SVE as c_int))
+        kvm.arm_vcpu_finalize(&cpu, KVM_ARM_VCPU_SVE as i32)
             .map_err(|error| refused("fixing the virtual CPU's SVE", error))?;
     }
-    let mut device = kvm_create_device {
-        type_: kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
-        ..Default::default()
-    };
-    let interrupt_controller = machine
-        .create_device(&mut device)
+    let interrupt_controller = kvm
+        .create_device(&machine, kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3)
         .map_err(|error| refused("making the interrupt controller", error))?;
     for (kind, address) in [
         (KVM_VGIC_V3_ADDR_TYPE_DIST, GIC_DISTRIBUTOR),
         (KVM_VGIC_V3_ADDR_TYPE_REDIST, GIC_REDISTRIBUTORS),
     ] {
-        interrupt_controller
-            .set_device_attr(&kvm_device_attr {
-                group: KVM_DEV_ARM_VGIC_GRP_ADDR,
-                attr: kind.into(),
-                addr: (&raw const address) as u64,
-                ..Default::default()
-            })
-            .map_err(|error| refused("placing the interrupt controller", error))?;
+        kvm.set_device_attr(
+            &interrupt_controller,
+            KVM_DEV_ARM_VGIC_GRP_ADDR,
+            kind.into(),
+            &address.to_ne_bytes(),
+        )
+        .map_err(|error| refused("placing the interrupt controller", error))?;
     }
-    interrupt_controller
-        .set_device_attr(&kvm_device_attr {
-            group: KVM_DEV_ARM_VGIC_GRP_CTRL,
-            attr: KVM_DEV_ARM_VGIC_CTRL_INIT.into(),
-            ..Default::default()
-        })
-        .map_err(|error| refused("setting up the interrupt controller", error))?;
+    kvm.set_device_attr(
+        &interrupt_controller,
+        KVM_DEV_ARM_VGIC_GRP_CTRL,
+        KVM_DEV_ARM_VGIC_CTRL_INIT.into(),
+        &[],
+    )
+    .map_err(|error| refused("setting up the interrupt controller", error))?;
     let made = Machine {
         cpu,
         _interrupt_controller: interrupt_controller,
         _machine: machine,
+        _system: system,
     };
     Ok((made, memory))
+}
+
+/// Returns the little-endian word of the length at the offset in the bytes.
+fn word(bytes: &[u8], at: usize, length: usize) -> u64 {
+    bytes[at..at + length]
+        .iter()
+        .rev()
+        .fold(u64::MIN, |all, &byte| all << u8::BITS | u64::from(byte))
 }
 
 impl Machine {
     /// Runs the virtual CPU until the guest rings the doorbell.
     pub(crate) fn run(&mut self) -> Result<(), MachineError> {
+        let kvm = DirectKvm;
         loop {
-            match self.cpu.run() {
-                Ok(VcpuExit::Hypercall(call)) if call.nr == u64::from(DOORBELL_FUNCTION) => {
-                    return Ok(());
-                }
-                Ok(other) => return Err(MachineError(format!("unexpected exit {other:?}"))),
+            match kvm.run(&self.cpu) {
+                Ok(()) => break,
                 // A signal ends a run too: then the CPU runs on.
-                Err(error)
-                    if io::Error::from_raw_os_error(error.errno()).kind()
-                        == io::ErrorKind::Interrupted => {}
+                Err(Errno::INTR) => {}
                 Err(error) => return Err(MachineError(format!("running: {error}"))),
             }
+        }
+        let mut run = vec![u8::MIN; size_of::<kvm_run>()];
+        kvm.vcpu_run_page(&self.cpu).read(&mut run);
+        let reason = word(&run, offset_of!(kvm_run, exit_reason), size_of::<u32>());
+        let call = word(
+            &run,
+            offset_of!(kvm_run, __bindgen_anon_1)
+                + offset_of!(kvm_run__bindgen_ty_1__bindgen_ty_8, nr),
+            size_of::<u64>(),
+        );
+        if reason == u64::from(KVM_EXIT_HYPERCALL) && call == u64::from(DOORBELL_FUNCTION) {
+            Ok(())
+        } else {
+            Err(MachineError(format!(
+                "unexpected exit {reason}, function {call:#x}"
+            )))
         }
     }
 
     pub(crate) fn get(&self, register: Register) -> Result<u64, MachineError> {
-        let mut bytes = [0; size_of::<u64>()];
-        self.cpu
-            .get_one_reg(to_id(register), &mut bytes)
+        let mut bytes = [u8::MIN; size_of::<u64>()];
+        DirectKvm
+            .get_one_reg(&self.cpu, to_id(register), &mut bytes)
             .map_err(|error| MachineError(format!("{register:?}: {error}")))?;
         Ok(u64::from_le_bytes(bytes))
     }
 
     pub(crate) fn set(&mut self, register: Register, value: u64) -> Result<(), MachineError> {
-        self.cpu
-            .set_one_reg(to_id(register), &value.to_le_bytes())
-            .map(drop)
+        DirectKvm
+            .set_one_reg(&self.cpu, to_id(register), &value.to_le_bytes())
             .map_err(|error| MachineError(format!("{register:?}: {error}")))
     }
 }

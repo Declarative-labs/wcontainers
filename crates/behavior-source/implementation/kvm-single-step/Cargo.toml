@@ -32,8 +32,7 @@ aarch64-paging = { version = "0.12.3", default-features = false }
 arm-sysregs = { version = "0.5.2", features = ["el1"] }
 
 [target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dependencies]
-# KVM's calls and structures, and the one call kvm-ioctls leaves unsafe, made safe.
-kvm-ioctls = "0.25.1"
+# KVM's structures and numbers, and its API as a safe trait.
 kvm-bindings = "0.14.2"
 wcontainers-kvm = { path = "../../../kvm" }
 wcontainers-kvm-direct = { path = "../../../kvm/implementation/direct" }
