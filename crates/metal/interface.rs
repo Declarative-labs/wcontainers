@@ -691,14 +691,18 @@ pub enum IndexType {
 pub enum RenderCommand<M: Metal + ?Sized> {
     SetRenderPipelineState(M::RenderPipelineState),
     SetDepthStencilState(M::DepthStencilState),
+    /// Binds `length` bytes from `offset`, the bytes the vertex function's bounds checks see at the slot.
     SetVertexBuffer {
         buffer: M::Buffer,
         offset: u64,
+        length: u64,
         index: u32,
     },
+    /// Binds `length` bytes from `offset`, the bytes the fragment function's bounds checks see at the slot.
     SetFragmentBuffer {
         buffer: M::Buffer,
         offset: u64,
+        length: u64,
         index: u32,
     },
     SetVertexBytes {
@@ -848,9 +852,11 @@ pub enum BlitCommand<M: Metal + ?Sized> {
 #[derive(Clone, Debug)]
 pub enum ComputeCommand<M: Metal + ?Sized> {
     SetComputePipelineState(M::ComputePipelineState),
+    /// Binds `length` bytes from `offset`, the bytes the function's bounds checks see at the slot.
     SetBuffer {
         buffer: M::Buffer,
         offset: u64,
+        length: u64,
         index: u32,
     },
     SetBytes {

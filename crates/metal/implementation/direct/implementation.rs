@@ -819,19 +819,20 @@ impl Metal for DirectMetal {
                 ComputeCommand::SetBuffer {
                     buffer,
                     offset,
+                    length,
                     index,
                 } => {
-                    bound.buffers.insert(*index, Bound::Buffer(buffer.clone(), *offset));
+                    bound.buffers.insert(*index, *length);
                     buffer.used_by(command_buffer);
                     #[expect(unsafe_code, reason = "the binding of a buffer to a compute slot")]
-                    // SAFETY: the offset lies inside the buffer and the slot below `MAX_BUFFER_SLOTS`, both checked by
+                    // SAFETY: the bound range lies inside the buffer and the slot below `MAX_BUFFER_SLOTS`, both checked by
                     // `check_compute_commands`; the command buffer keeps the buffer.
                     unsafe {
                         encoder.setBuffer_offset_atIndex(Some(&buffer.0.raw), *offset as NSUInteger, *index as NSUInteger)
                     };
                 }
                 ComputeCommand::SetBytes { bytes, index } => {
-                    bound.buffers.insert(*index, Bound::Bytes(bytes.len() as u64));
+                    bound.buffers.insert(*index, bytes.len() as u64);
                     set_compute_bytes(&encoder, bytes, *index);
                 }
                 ComputeCommand::SetTexture { texture, index } => {
@@ -904,18 +905,11 @@ fn full_chain(side: u32) -> u32 {
     u32::BITS - side.leading_zeros()
 }
 
-/// What a resource bound at a buffer slot is.
-#[derive(Clone)]
-enum Bound {
-    Buffer(DirectBuffer, u64),
-    /// Bytes copied into the command buffer, of this length.
-    Bytes(u64),
-}
-
 /// What one stage has bound, by slot.
 #[derive(Clone, Default)]
 struct StageBindings {
-    buffers: BTreeMap<u32, Bound>,
+    /// The bytes the bounds checks see at each filled buffer slot.
+    buffers: BTreeMap<u32, u64>,
     textures: BTreeMap<u32, DirectTexture>,
     samplers: BTreeMap<u32, ()>,
 }
@@ -930,11 +924,7 @@ struct RenderBindings {
 
 /// Returns the bytes past the offset at a slot, for the bounds checks.
 fn bytes_past(bound: &StageBindings, slot: u32) -> u64 {
-    match bound.buffers.get(&slot) {
-        Some(Bound::Buffer(buffer, offset)) => buffer.0.length.saturating_sub(*offset),
-        Some(Bound::Bytes(length)) => *length,
-        None => 0,
-    }
+    bound.buffers.get(&slot).copied().unwrap_or(0)
 }
 
 /// Returns the buffer of lengths a function's bounds checks read, as bytes, empty when it reads none.
@@ -1096,18 +1086,18 @@ fn check_render_commands(
                 }
                 bound.pipeline = Some(state.clone());
             }
-            RenderCommand::SetVertexBuffer { buffer, offset, index }
-            | RenderCommand::SetFragmentBuffer { buffer, offset, index } => {
+            RenderCommand::SetVertexBuffer { buffer, offset, length, index }
+            | RenderCommand::SetFragmentBuffer { buffer, offset, length, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                if *offset > buffer.0.length {
-                    return Err(out("a buffer offset past its end"));
+                if !buffer.holds(*offset, *length) {
+                    return Err(out("a bound range past its buffer's end"));
                 }
                 let stage = if matches!(command, RenderCommand::SetVertexBuffer { .. }) {
                     &mut bound.vertex
                 } else {
                     &mut bound.fragment
                 };
-                stage.buffers.insert(*index, Bound::Buffer(buffer.clone(), *offset));
+                stage.buffers.insert(*index, *length);
             }
             RenderCommand::SetVertexBytes { bytes, index } | RenderCommand::SetFragmentBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
@@ -1116,7 +1106,7 @@ fn check_render_commands(
                 } else {
                     &mut bound.fragment
                 };
-                stage.buffers.insert(*index, Bound::Bytes(bytes.len() as u64));
+                stage.buffers.insert(*index, bytes.len() as u64);
             }
             RenderCommand::SetVertexTexture { texture, index } => {
                 check_slot(*index, MAX_TEXTURE_SLOTS)?;
@@ -1239,27 +1229,27 @@ fn encode_render_command(
             bound.pipeline = Some(state.clone());
         }
         RenderCommand::SetDepthStencilState(state) => encoder.setDepthStencilState(Some(&state.0)),
-        RenderCommand::SetVertexBuffer { buffer, offset, index } => {
-            bound.vertex.buffers.insert(*index, Bound::Buffer(buffer.clone(), *offset));
+        RenderCommand::SetVertexBuffer { buffer, offset, length, index } => {
+            bound.vertex.buffers.insert(*index, *length);
             used.push(buffer.clone());
             #[expect(unsafe_code, reason = "the binding of a buffer to a vertex slot")]
-            // SAFETY: the offset lies inside the buffer and the slot below `MAX_BUFFER_SLOTS` (check_render_commands);
+            // SAFETY: the bound range lies inside the buffer and the slot below `MAX_BUFFER_SLOTS` (check_render_commands);
             // the command buffer keeps the buffer.
             unsafe { encoder.setVertexBuffer_offset_atIndex(Some(&buffer.0.raw), *offset as NSUInteger, *index as NSUInteger) };
         }
-        RenderCommand::SetFragmentBuffer { buffer, offset, index } => {
-            bound.fragment.buffers.insert(*index, Bound::Buffer(buffer.clone(), *offset));
+        RenderCommand::SetFragmentBuffer { buffer, offset, length, index } => {
+            bound.fragment.buffers.insert(*index, *length);
             used.push(buffer.clone());
             #[expect(unsafe_code, reason = "the binding of a buffer to a fragment slot")]
             // SAFETY: as for the vertex slot.
             unsafe { encoder.setFragmentBuffer_offset_atIndex(Some(&buffer.0.raw), *offset as NSUInteger, *index as NSUInteger) };
         }
         RenderCommand::SetVertexBytes { bytes, index } => {
-            bound.vertex.buffers.insert(*index, Bound::Bytes(bytes.len() as u64));
+            bound.vertex.buffers.insert(*index, bytes.len() as u64);
             set_vertex_bytes(encoder, bytes, *index);
         }
         RenderCommand::SetFragmentBytes { bytes, index } => {
-            bound.fragment.buffers.insert(*index, Bound::Bytes(bytes.len() as u64));
+            bound.fragment.buffers.insert(*index, bytes.len() as u64);
             set_fragment_bytes(encoder, bytes, *index);
         }
         RenderCommand::SetVertexTexture { texture, index } => {
@@ -1470,16 +1460,16 @@ fn check_compute_commands(commands: &[ComputeCommand<DirectMetal>]) -> Result<()
     for command in commands {
         match command {
             ComputeCommand::SetComputePipelineState(state) => pipeline = Some(state),
-            ComputeCommand::SetBuffer { buffer, offset, index } => {
+            ComputeCommand::SetBuffer { buffer, offset, length, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                if *offset > buffer.0.length {
-                    return Err(out("a buffer offset past its end"));
+                if !buffer.holds(*offset, *length) {
+                    return Err(out("a bound range past its buffer's end"));
                 }
-                bound.buffers.insert(*index, Bound::Buffer(buffer.clone(), *offset));
+                bound.buffers.insert(*index, *length);
             }
             ComputeCommand::SetBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                bound.buffers.insert(*index, Bound::Bytes(bytes.len() as u64));
+                bound.buffers.insert(*index, bytes.len() as u64);
             }
             ComputeCommand::SetTexture { texture, index } => {
                 check_slot(*index, MAX_TEXTURE_SLOTS)?;

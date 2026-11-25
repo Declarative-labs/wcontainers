@@ -50,6 +50,15 @@ struct Color { value: vec4<f32> }
 /// A triangle covering every pixel centre of the target.
 const COVERING: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
 
+/// The bytes of the covering triangle's positions.
+const COVERING_BYTES: u64 = 24;
+
+/// The bytes of one color of four floats.
+const COLOR_BYTES: u64 = 16;
+
+/// The bytes of the words the compute test doubles.
+const WORDS_BYTES: u64 = 32;
+
 /// The slots of the tests' resources: the uniform, the sampler, the texture and the storage buffer.
 const SLOTS: [ResourceSlot; 4] = [
     ResourceSlot { group: 0, binding: 0, index: 0 },
@@ -214,7 +223,7 @@ fn covering_draw<M: Metal>(
     let mut commands = vec![
         RenderCommand::SetRenderPipelineState(pipeline.clone()),
         RenderCommand::SetDepthStencilState(depth_stencil.clone()),
-        RenderCommand::SetVertexBuffer { buffer: vertices.clone(), offset: 0, index: VERTICES },
+        RenderCommand::SetVertexBuffer { buffer: vertices.clone(), offset: 0, length: COVERING_BYTES, index: VERTICES },
         RenderCommand::SetViewports(vec![Viewport {
             origin_x: 0.0,
             origin_y: 0.0,
@@ -341,7 +350,7 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
         subject.encode_render_commands(&command_buffer, &pass(&texture), &missing),
         Err(EncodeRenderCommandsError::Unbound(_))
     ));
-    let bound = vec![RenderCommand::SetFragmentBuffer { buffer: color, offset: 0, index: 0 }];
+    let bound = vec![RenderCommand::SetFragmentBuffer { buffer: color, offset: 0, length: COLOR_BYTES, index: 0 }];
     let commands = covering_draw(&state, &vertices, &depth_stencil, bound);
     subject.encode_render_commands(&command_buffer, &pass(&texture), &commands).expect("encode_render_commands");
     finish(&mut subject, &command_buffer);
@@ -426,7 +435,7 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
             &command_buffer,
             &[
                 ComputeCommand::SetComputePipelineState(state),
-                ComputeCommand::SetBuffer { buffer: buffer.clone(), offset: 0, index: 1 },
+                ComputeCommand::SetBuffer { buffer: buffer.clone(), offset: 0, length: WORDS_BYTES, index: 1 },
                 ComputeCommand::DispatchThreadgroups(Size { width: 2, height: 1, depth: 1 }),
             ],
         )
