@@ -127,3 +127,43 @@ pub trait DomainNameResolver {
   clean, unit tests 30 passed (26 before, 4 new on the per-thread watches).
 - Every other call of `Kernel` and `Process` was already built; `KernelWithExecutor` is shared
   across threads through one `spin::Mutex` and `atomic_refcell` records, with no `unsafe`.
+
+## 2026-11-25, night: the arm64 crates of today, and KP1 on his main `1b6b5d6dc`
+
+- Merge `6a0f9ca5d` of `origin/arm64-instructions` `d708c4a55` and merge `3502499e8` of his main
+  `1b6b5d6dc` (the processor core interface): no conflict. Every `interface.rs` of his main and every
+  file beside one is byte-identical to his main (MEASURED, 29 of 29; the branch's 30th,
+  crates/kvm/interface.rs, is the native track's outside-API crate, not on his main).
+- The kernel's fit to today's arm64 crate: a turn's processor state starts with its exclusive
+  monitor open (the registers keep none), and the three new exceptions (`SupervisorCall`,
+  `WaitTrapped`, `SystemAccessTrapped`) end a turn as the old crate's syndromes of them did: with
+  the panic for an exception no exit names.
+- KP1 holds on today's main (MEASURED, ARM64 and x86-64, `-j 12`): `cargo metadata --locked`,
+  `cargo check` and `cargo clippy --no-deps -- -D warnings` of `--lib` of both kernel crates, and
+  rustfmt, exit 0; 0 `.rs` lines with `unsafe` in crates/kernel. Unit tests in the copy without
+  the stand-in: 30 passed on both.
+- New suite cases: `thread_watched_memory_is_read_and_written`, `thread_watch_leaves_the_process`
+  (both need an executor with `PerThreadWatch`) and `embedder_access_is_not_an_inspection`, in the
+  process group as the linter's fixed shape of `tests!` requires. So the stand-in of X3 must
+  implement `PerThreadWatch` for the kernel's suite to build.
+- The harness (built only with X3): its `Hooks` has the two inspection hooks and the driver passes
+  them on; the inspection test checks the order of yields and hooks; embedder.rs's
+  `watch_thread_memory` call takes today's unit return.
+- Linter, kernel crates: 31,321 findings (31,293 at the level run). New in this run's lines: 3
+  `name_unanswered` and 3 `summary_unanswered` in suite.rs, which need the model's key. Logs:
+  SCRATCH/kernel-port/merge-arm64/.
+
+### KP2's first step waits on the size of a space
+
+The kernel's executor must still implement the abi's `Cpu`, for one call: the guest machine reads
+the executor's `address_space()` to copy a whole space on fork, bound a shared block, and cap the
+kernel's ceiling. Neither `Executor` nor `MemorySpace` tells a space's size, and the kernel's own
+`Start` is built by other tracks' crates. A way the interface could tell it:
+
+```rust
+pub trait MemorySpace: Sized {
+    /// Returns the addresses the space holds, from 0.
+    fn addresses(&self) -> Range<u64>;
+    // ...
+}
+```
