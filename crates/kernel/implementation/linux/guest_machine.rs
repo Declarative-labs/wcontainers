@@ -8,10 +8,10 @@ use wcontainers_abi::{
     AddressSpace, Cpu, CpuError, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, SharedId,
     ThreadId,
 };
-use wcontainers_executor::Executor;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
+use wcontainers_executor::{Executor, PageTableOf};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 /// How many bytes ending a range's sharing moves at a time, so a large range needs no buffer of
@@ -21,13 +21,19 @@ const UNSHARED_PIECE_BYTES: u64 = 16 * PAGE_SIZE;
 /// An executor with the memory spaces and registers of the guest threads it runs.
 pub struct GuestMachine<C: Executor> {
     executor: C,
-    memories: BTreeMap<MemoryId, C::GuestMemory>,
+    memories: BTreeMap<MemoryId, Space<C>>,
     /// Each block of shared pages is a space of its own, its pages from address 0.
-    blocks: BTreeMap<SharedId, C::GuestMemory>,
+    blocks: BTreeMap<SharedId, Space<C>>,
     threads: BTreeMap<ThreadId, GuestThread>,
     last_memory: u32,
     last_block: u32,
     last_thread: u32,
+}
+
+/// A memory space and its pages, which the machine alone holds and changes.
+struct Space<C: Executor> {
+    memory: C::GuestMemory,
+    pages: PageTableOf<C>,
 }
 
 /// One guest thread's memory and registers while it is not running.
@@ -68,21 +74,31 @@ impl<C: Executor> GuestMachine<C> {
             .memories
             .get(memory)
             .expect("a thread's memory lives as long as the thread");
-        (&mut self.executor, registers, memory)
+        (&mut self.executor, registers, &memory.memory)
     }
 
     fn memory(&self, memory: MemoryId) -> Result<&C::GuestMemory, CpuError> {
+        self.space(memory).map(|space| &space.memory)
+    }
+
+    fn space(&self, memory: MemoryId) -> Result<&Space<C>, CpuError> {
         self.memories.get(&memory).ok_or(CpuError::BadAddress)
     }
 
-    fn block(&self, shared: SharedId) -> Result<&C::GuestMemory, CpuError> {
+    fn space_mut(&mut self, memory: MemoryId) -> Result<&mut Space<C>, CpuError> {
+        self.memories.get_mut(&memory).ok_or(CpuError::BadAddress)
+    }
+
+    fn block(&self, shared: SharedId) -> Result<&Space<C>, CpuError> {
         self.blocks.get(&shared).ok_or(CpuError::BadAddress)
     }
 
-    fn create(&self) -> Result<C::GuestMemory, CpuError> {
-        self.executor
+    fn create(&self) -> Result<Space<C>, CpuError> {
+        let (memory, pages) = self
+            .executor
             .create_guest_memory()
-            .map_err(|_| CpuError::OutOfMemory)
+            .map_err(|_| CpuError::OutOfMemory)?;
+        Ok(Space { memory, pages })
     }
 }
 
@@ -160,10 +176,11 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
 
     /// The copy is made by the space, which may share pages until they are written.
     fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
-        let copy = self.create()?;
+        let mut copy = self.create()?;
         let whole = self.whole_space();
         let start = whole.start;
-        copy.copy_from(whole, self.memory(source)?, start)
+        copy.pages
+            .copy_from(whole, &self.space(source)?.pages, start)
             .map_err(not_copied)?;
         self.last_memory += 1;
         let id = MemoryId(self.last_memory);
@@ -196,7 +213,8 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         length: u64,
         permissions: Permissions,
     ) -> Result<(), CpuError> {
-        self.memory(memory)?
+        self.space_mut(memory)?
+            .pages
             .set_permissions(span(address, length)?, permissions)
             .map_err(invalid)
     }
@@ -224,8 +242,11 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         address: u64,
         length: u64,
     ) -> Result<(), CpuError> {
-        self.memory(memory)?
-            .map_from(span(address, length)?, self.block(shared)?, offset)
+        let block = self.blocks.get(&shared).ok_or(CpuError::BadAddress)?;
+        let space = self.memories.get_mut(&memory).ok_or(CpuError::BadAddress)?;
+        space
+            .pages
+            .map_from(span(address, length)?, &block.pages, offset)
             .map_err(not_mapped)
     }
 
@@ -236,16 +257,16 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         address: u64,
         length: u64,
     ) -> Result<(), CpuError> {
-        let space = self.memory(memory)?;
+        let Space { memory, pages } = self.space_mut(memory)?;
         let range = span(address, length)?;
         let mut piece = vec![0; usize::try_from(UNSHARED_PIECE_BYTES.min(length)).unwrap_or(0)];
         let mut at = range.start;
         while at < range.end {
             let end = range.end.min(at.saturating_add(UNSHARED_PIECE_BYTES));
             let bytes = &mut piece[..usize::try_from(end - at).expect("a piece fits in memory")];
-            read_space(space, at, bytes)?;
-            space.unmap_from(at..end).map_err(invalid)?;
-            write_space(space, at, bytes)?;
+            read_space(&*memory, at, bytes)?;
+            pages.unmap_from(at..end).map_err(invalid)?;
+            write_space(&*memory, at, bytes)?;
             at = end;
         }
         Ok(())
@@ -257,11 +278,11 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         offset: u64,
         into: &mut [u8],
     ) -> Result<(), CpuError> {
-        read_space(self.block(shared)?, offset, into)
+        read_space(&self.block(shared)?.memory, offset, into)
     }
 
     fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
-        write_space(self.block(shared)?, offset, from)
+        write_space(&self.block(shared)?.memory, offset, from)
     }
 
     fn shared_drop(&mut self, shared: SharedId) {

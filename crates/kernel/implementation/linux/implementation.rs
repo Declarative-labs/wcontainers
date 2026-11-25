@@ -581,6 +581,12 @@ impl Kernel {
                 self.wake_due();
                 syscall::timer::fire_due(self, &mut cx);
             }
+            // A driver on the abi as it stands on main hands a notice here; the kernel waits for
+            // them itself, so none comes this way from the system it waits on, and the event
+            // has no way to tell the driver how it went.
+            Event::BackendNotice { notice } => {
+                let _ = self.backend_notice(&mut cx, notice);
+            }
             Event::TerminalResized { columns, rows } => {
                 self.terminal_resized(&mut cx, columns, rows);
             }

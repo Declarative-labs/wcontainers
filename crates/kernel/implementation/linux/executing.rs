@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
 use wcontainers_abi::{Cpu, Event, Exit, MemoryId, Next};
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_executor::{ExecutionInterrupter, Executor, PerThreadWatch};
 use wcontainers_kernel as interface;
 use wcontainers_kernel::signal_information::SignalInformation;
@@ -323,7 +324,10 @@ impl<
 
 impl<C, State, S> interface::Kernel for KernelWithExecutor<C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    C: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
 {
@@ -476,7 +480,10 @@ pub struct KernelRunner<C: Executor, State, S> {
 
 impl<C, State, S> interface::Runner<C> for KernelRunner<C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    C: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
     State: Send,
     S: crate::System + Send,
 {
@@ -629,7 +636,10 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> interface::ProcessI
 
 impl<C, State, S> interface::Process for KernelProcess<'_, C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    C: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
 {
@@ -729,7 +739,10 @@ where
 impl<C, State, S> interface::ProcessOf<State, KernelWithExecutor<C, State, S>>
     for KernelProcess<'_, C, State, S>
 where
-    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    C: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
 {
@@ -739,17 +752,23 @@ where
 mod tests {
     use super::*;
 
+    use wcontainers_behavior_source::BehaviorSource;
     use wcontainers_byte_sink::ByteSink;
     use wcontainers_byte_source::ByteSource;
     use wcontainers_executor::memory_space::{
-        CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
+        CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
     };
+    use wcontainers_processor_architecture::{MemoryDelta, MemorySink};
+    use wcontainers_processor_architecture_arm64::{Arm64, User};
     use wcontainers_volatile_bytes::VolatileBytes;
+
+    /// The processor's state of a thread at EL0.
+    type Processor = wcontainers_processor_architecture_arm64::Processor<()>;
 
     /// An executor with nothing to configure, which has no memory to run on.
     struct Plain;
 
-    /// What `Plain` has no instance of: its memory, that memory's bytes and an interrupter.
+    /// What `Plain` has no instance of: its memory, that memory's bytes and pages, and an interrupter.
     enum Absent {}
 
     impl Absent {
@@ -761,13 +780,16 @@ mod tests {
 
     impl MemorySpace for Absent {
         type Bytes<'space> = Absent;
+        type PageTable = Absent;
 
         fn borrow(&self, _addresses: Range<u64>) -> Result<Absent, InvalidAddressError> {
             match *self {}
         }
+    }
 
+    impl PageTable for Absent {
         fn set_permissions(
-            &self,
+            &mut self,
             _addresses: Range<u64>,
             _allowed: wcontainers_abi::Permissions,
         ) -> Result<(), InvalidAddressError> {
@@ -775,7 +797,7 @@ mod tests {
         }
 
         fn map_from(
-            &self,
+            &mut self,
             _addresses: Range<u64>,
             _other: &Self,
             _other_start: u64,
@@ -783,12 +805,12 @@ mod tests {
             match *self {}
         }
 
-        fn unmap_from(&self, _addresses: Range<u64>) -> Result<(), InvalidAddressError> {
+        fn unmap_from(&mut self, _addresses: Range<u64>) -> Result<(), InvalidAddressError> {
             match *self {}
         }
 
         fn copy_from(
-            &self,
+            &mut self,
             _addresses: Range<u64>,
             _other: &Self,
             _other_start: u64,
@@ -832,39 +854,39 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     struct NoMemory;
 
+    impl BehaviorSource for Plain {
+        type Architecture = Arm64<User>;
+
+        fn execute_single_instruction_in_place(
+            &mut self,
+            _processor: &mut Processor,
+            _memory: &[MemoryDelta<'_, Self::Architecture>],
+            _mutation_hook: &mut impl MemorySink<Self::Architecture>,
+        ) {
+            unreachable!("the kernel's tests use Plain only for its translator settings")
+        }
+    }
+
     impl Executor for Plain {
-        type Architecture = wcontainers_processor_architecture_arm64::Arm64;
         type TranslatorConfig = ();
         type GuestMemory = Absent;
         type Interrupter = Absent;
         type CreateGuestMemoryError = NoMemory;
 
-        fn create_guest_memory(&self) -> Result<Absent, NoMemory> {
+        fn create_guest_memory(&self) -> Result<(Absent, Absent), NoMemory> {
             Err(NoMemory)
         }
 
         fn execute<'execution>(
             &'execution mut self,
-            _processor: wcontainers_processor_architecture_arm64::Processor,
+            _processor: Processor,
             memory: &'execution Absent,
             _handler: &'execution mut impl wcontainers_executor::TrapHandler,
         ) -> (
-            impl core::future::Future<Output = wcontainers_processor_architecture_arm64::Processor>
-            + 'execution,
+            impl core::future::Future<Output = Processor> + 'execution,
             Absent,
         ) {
             (core::future::ready(memory.anything()), memory.anything())
-        }
-
-        fn execute_single_instruction_in_place(
-            &mut self,
-            _processor: &mut wcontainers_processor_architecture_arm64::Processor,
-            _memory: &[wcontainers_processor_architecture::MemoryDelta<'_, Self::Architecture>],
-            _on_memory_mutated: impl FnMut(
-                wcontainers_processor_architecture::MemoryDelta<'_, Self::Architecture>,
-            ),
-        ) {
-            unreachable!("the kernel's tests use Plain only for its translator settings")
         }
     }
 

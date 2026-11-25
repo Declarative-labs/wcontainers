@@ -597,13 +597,21 @@ impl<'k, 'c, 'x, S: crate::System> CallMemory<'k, 'c, 'x, S> {
     }
 }
 
-impl<S: crate::System> crate::syscall::touch::Memory for CallMemory<'_, '_, '_, S> {
-    fn touch(&mut self, address: u64, length: u64, access: AccessKind) -> bool {
+impl<S: crate::System> CallMemory<'_, '_, '_, S> {
+    /// Meets the watches on a range; false if the call must wait.
+    pub(crate) fn touch(&mut self, address: u64, length: u64, access: AccessKind) -> bool {
         let pid = self.kernel.threads[&self.tid].process;
         self.touch_process(pid, address, length, access)
     }
 
-    fn touch_process(&mut self, pid: Pid, address: u64, length: u64, access: AccessKind) -> bool {
+    /// Meets the watches on a range of process `pid`'s memory as `touch` does on the caller's.
+    pub(crate) fn touch_process(
+        &mut self,
+        pid: Pid,
+        address: u64,
+        length: u64,
+        access: AccessKind,
+    ) -> bool {
         let end = address.saturating_add(length);
         let map = &self.kernel.processes[&pid].map;
         if let Some(described) = &mut map.borrow_mut().watches.described {
@@ -631,7 +639,8 @@ impl<S: crate::System> crate::syscall::touch::Memory for CallMemory<'_, '_, '_, 
         }
     }
 
-    fn own_task(&mut self, id: u64) -> bool {
+    /// Whether a task id names a thread of the caller's process, whose memory is the caller's.
+    pub(crate) fn own_task(&mut self, id: u64) -> bool {
         // A `pid_t` argument, as `process_vm` takes it.
         self.kernel
             .threads
@@ -639,16 +648,19 @@ impl<S: crate::System> crate::syscall::touch::Memory for CallMemory<'_, '_, '_, 
             .is_some_and(|thread| thread.process == self.kernel.threads[&self.tid].process)
     }
 
-    fn file_memory(&mut self, fd: u64) -> Option<(Pid, u64, u64)> {
+    /// The process and the range of its memory that reading descriptor `fd` copies, as
+    /// `/proc/<pid>/cmdline` does; none for any other file.
+    pub(crate) fn file_memory(&mut self, fd: u64) -> Option<(Pid, u64, u64)> {
         self.kernel.file_memory(self.tid, fd)
     }
 
-    fn read(&mut self, address: u64, into: &mut [u8]) -> bool {
+    /// Bytes the call reads to learn what else it touches, once touched; false if unreadable.
+    pub(crate) fn read(&mut self, address: u64, into: &mut [u8]) -> bool {
         let memory = self.kernel.process_of(self.tid).memory;
         self.cx.cpu.read(memory, address, into).is_ok()
     }
 
-    fn stack_pointer(&mut self) -> u64 {
+    pub(crate) fn stack_pointer(&mut self) -> u64 {
         let mut registers = wcontainers_abi::RegisterBlock::ZERO;
         self.cx
             .cpu
@@ -656,15 +668,18 @@ impl<S: crate::System> crate::syscall::touch::Memory for CallMemory<'_, '_, '_, 
         registers.sp
     }
 
-    fn thread_ends(&mut self, ending: Ending) -> Vec<ThreadEnd> {
+    /// What the ends of the threads a call ends touch.
+    pub(crate) fn thread_ends(&mut self, ending: Ending) -> Vec<ThreadEnd> {
         self.kernel.thread_ends(self.tid, ending)
     }
 
-    fn resuming(&mut self) -> bool {
+    /// Whether the call runs again after it made progress and waited.
+    pub(crate) fn resuming(&mut self) -> bool {
         self.kernel.threads[&self.tid].call.started
     }
 
-    fn writable(&mut self, fd: u64) -> Option<bool> {
+    /// Whether a descriptor of the caller is open for writing; none if it is not open.
+    pub(crate) fn writable(&mut self, fd: u64) -> Option<bool> {
         let file = self.kernel.call_file(self.tid, fd as i32).ok()?;
         Some(file.borrow().writable())
     }

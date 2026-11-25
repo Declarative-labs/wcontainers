@@ -74,20 +74,22 @@ pub(super) struct Ids<T> {
     seq: u32,
     last_index: Option<u32>,
     next: u32,
+    /// Where an object of this kind keeps its `kern_ipc_perm`.
+    perm_of: fn(&T) -> &Perm,
 }
 
-impl<T> Default for Ids<T> {
-    fn default() -> Self {
+impl<T> Ids<T> {
+    /// No objects yet, of a kind that keeps its `kern_ipc_perm` where `perm_of` finds it.
+    pub(super) fn new(perm_of: fn(&T) -> &Perm) -> Self {
         Self {
             slots: BTreeMap::new(),
             seq: 0,
             last_index: None,
             next: 0,
+            perm_of,
         }
     }
-}
 
-impl<T> Ids<T> {
     /// The slot a new object gets and its sequence number (`ipc_idr_alloc`'s cyclic allocation),
     /// within `limit` objects; ENOSPC when full.
     pub(super) fn allocate(&mut self, limit: u64) -> Result<(u32, u32), Errno> {
@@ -116,18 +118,12 @@ impl<T> Ids<T> {
             .next_back()
             .map_or(0, |index| (*index).into())
     }
-}
 
-pub(super) trait Object {
-    fn perm(&self) -> &Perm;
-}
-
-impl<T: Object> Ids<T> {
     /// The object with identifier `id`, its sequence number checked (`ipc_obtain_object_check`).
     pub(super) fn checked(&self, id: i32) -> Result<u32, Errno> {
         let index = id as u32 & (IPCMNI - 1);
         match self.slots.get(&index) {
-            Some(object) if object.perm().seq == id as u32 >> IPCMNI_SHIFT => Ok(index),
+            Some(object) if (self.perm_of)(object).seq == id as u32 >> IPCMNI_SHIFT => Ok(index),
             _ => Err(Errno::EINVAL),
         }
     }
@@ -146,7 +142,7 @@ impl<T: Object> Ids<T> {
     fn find_key(&self, key: i32) -> Option<u32> {
         self.slots
             .iter()
-            .find(|(_, object)| object.perm().key == key)
+            .find(|(_, object)| (self.perm_of)(object).key == key)
             .map(|(index, _)| *index)
     }
 }
@@ -170,9 +166,9 @@ struct Segment {
     locked_by: Option<u32>,
 }
 
-impl Object for Segment {
-    fn perm(&self) -> &Perm {
-        &self.perm
+impl Default for Ids<Segment> {
+    fn default() -> Self {
+        Self::new(|segment| &segment.perm)
     }
 }
 
@@ -211,7 +207,7 @@ pub(crate) struct Ipc {
 
 /// Linux's `ipcget`: a new object for `IPC_PRIVATE` or a key with none and `IPC_CREAT`, else the key's
 /// object after `associate`'s checks and the permissions.
-pub(super) fn get<T: Object>(
+pub(super) fn get<T>(
     ids: &Ids<T>,
     credentials: &Credentials,
     key: i32,
@@ -228,10 +224,11 @@ pub(super) fn get<T: Object>(
         Some(index) => {
             let object = &ids.slots[&index];
             associate(object)?;
-            if !object.perm().permits(credentials, flags) {
+            let perm = (ids.perm_of)(object);
+            if !perm.permits(credentials, flags) {
                 return Err(Errno::EACCES);
             }
-            Ok(Some(object.perm().id))
+            Ok(Some(perm.id))
         }
     }
 }
@@ -829,9 +826,9 @@ struct Queue {
     receivers_waiting: u64,
 }
 
-impl Object for Queue {
-    fn perm(&self) -> &Perm {
-        &self.perm
+impl Default for Ids<Queue> {
+    fn default() -> Self {
+        Self::new(|queue| &queue.perm)
     }
 }
 

@@ -46,6 +46,8 @@ wcontainers-kernel-conformance = { path = "../../conformance" }
 # The stand-in executor and its test host, which make the kernel the suite runs on.
 wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+# The single step the unit tests' executor gives, which it never takes.
+wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
 # Counts what a waiting call allocates, on the thread that waits (MIT OR Apache-2.0).

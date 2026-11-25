@@ -2413,7 +2413,7 @@ impl crate::Kernel {
 
     /// A notice the backend sent unasked (`fuse_notify`), and how it went. Nothing is cached, so
     /// most change only what the kernel holds of an inode, or the pages of a mapped file.
-    fn backend_notice<S: crate::System>(
+    pub(crate) fn backend_notice<S: crate::System>(
         &mut self,
         cx: &mut crate::Context<'_, S>,
         notice: &[u8],

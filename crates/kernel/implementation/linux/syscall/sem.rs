@@ -10,7 +10,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use super::Args;
 use super::guest;
-use super::ipc::{Ids, Object, Perm, get, new_perm};
+use super::ipc::{Ids, Perm, get, new_perm};
 use crate::linux::general::*;
 use crate::linux_extra::*;
 use crate::process::{Channel, Pid, Tid};
@@ -58,9 +58,9 @@ struct Array {
     waiters: BTreeMap<Tid, Waiter>,
 }
 
-impl Object for Array {
-    fn perm(&self) -> &Perm {
-        &self.perm
+impl Default for Ids<Array> {
+    fn default() -> Self {
+        Self::new(|array| &array.perm)
     }
 }
 

@@ -1350,12 +1350,7 @@ impl Kernel {
         let (at, _, top) = frame_bounds(thread.alternate_stack, action.sa_flags, registers.sp);
         if crate::user::access_ok(at, top.wrapping_sub(at)) {
             let mut memory = crate::system::CallMemory::new(self, cx, tid);
-            if !crate::syscall::touch::Memory::touch(
-                &mut memory,
-                at,
-                top - at,
-                crate::system::AccessKind::Write,
-            ) {
+            if !memory.touch(at, top - at, crate::system::AccessKind::Write) {
                 return false;
             }
         }
@@ -1372,7 +1367,6 @@ impl Kernel {
 
     /// Meets the embedder's watches on what `rseq_fixup` touches; false if the thread must wait.
     fn rseq_touched<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) -> bool {
-        use crate::syscall::touch::Memory;
         use crate::system::AccessKind::{Read, Write};
         let Some((area, _, _)) = self.threads[&tid].rseq else {
             return true;

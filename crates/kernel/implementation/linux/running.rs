@@ -13,13 +13,14 @@ use wcontainers_executor::{
     Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
     TrapHandler,
 };
-use wcontainers_processor_architecture_arm64::{
-    ConditionFlags, Exception, INSTRUCTION_BYTES, Processor,
-};
+use wcontainers_processor_architecture_arm64::{ConditionFlags, Exception, INSTRUCTION_SIZE};
 
 /// The register a system call's value is returned in on arm64, x0
 /// (<https://man7.org/linux/man-pages/man2/syscall.2.html#:~:text=arm64%20%20%20%20%20%20%20%20%20%20svc%20%230>).
 const RESULT_REGISTER: usize = 0;
+
+/// The processor's state of a thread at EL0, which adds no state to what every level has.
+type Processor = wcontainers_processor_architecture_arm64::Processor<()>;
 
 /// Ends the execution at its first trap and keeps that trap as the exit it is.
 #[derive(Default)]
@@ -75,7 +76,7 @@ pub(crate) fn turn<C: Executor + 'static>(
         // The processor's state keeps the call's instruction at the program counter; the abi
         // leaves it after the call.
         Some(exit @ Exit::Syscall(_)) => {
-            registers.pc = registers.pc.wrapping_add(INSTRUCTION_BYTES);
+            registers.pc = registers.pc.wrapping_add(INSTRUCTION_SIZE);
             exit
         }
         Some(exit) => exit,
@@ -111,11 +112,35 @@ fn finished<F: Future>(execution: F) -> F::Output {
 ///
 /// If there is no exception, or it is one the executor interface hands to a hook first.
 fn exit_of(exception: Option<Exception>, registers: &RegisterBlock) -> Exit {
+    match exception.expect("an execution that no hook ended stopped on an exception") {
+        Exception::UndefinedInstruction => Exit::IllegalInstruction,
+        Exception::Breakpoint { comment } => Exit::Breakpoint { comment },
+        Exception::ProgramCounterAlignmentFault { .. } => Exit::AlignmentFault {
+            address: registers.pc,
+        },
+        Exception::StackPointerAlignmentFault => Exit::AlignmentFault {
+            address: registers.sp,
+        },
+        // A page's fault goes to the handler first, so a data abort it was not told of is an
+        // access the processor requires to be aligned.
+        Exception::DataAbort { address, .. } => Exit::AlignmentFault { address },
+        Exception::Undecoded {
+            syndrome,
+            fault_address,
+        } => exit_of_syndrome(syndrome, fault_address, registers),
+        exception @ (Exception::InstructionAbort { .. } | Exception::SmeTrap(_)) => {
+            panic!("an execution ended on an exception no exit names: {exception:?}")
+        }
+    }
+}
+
+/// Returns the exit of an exception the processor's state keeps as its syndrome and fault address.
+///
+/// # Panics
+///
+/// If the syndrome's class is one no exit names.
+fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock) -> Exit {
     use ESR_EL1::EC::Value as Class;
-    let Exception {
-        syndrome,
-        fault_address,
-    } = exception.expect("an execution that no hook ended stopped on an exception");
     match ESR_EL1::EC.read_as_enum(syndrome) {
         Some(Class::Unknown) => Exit::IllegalInstruction,
         Some(Class::Brk64) => Exit::Breakpoint {
@@ -131,7 +156,7 @@ fn exit_of(exception: Option<Exception>, registers: &RegisterBlock) -> Exit {
         // A page's fault goes to the handler first, so a data abort it was not told of is an
         // access the processor requires to be aligned.
         Some(Class::DataAbortLowerEL) => Exit::AlignmentFault {
-            address: fault_address.expect("a data abort's syndrome makes its address valid"),
+            address: fault_address,
         },
         _ => panic!("an execution ended on an exception no exit names: syndrome {syndrome:#x}"),
     }
@@ -154,6 +179,7 @@ fn to_processor(registers: &RegisterBlock) -> Processor {
         floating_point_status: u64::from(registers.fpsr),
         software_thread_id: registers.tpidr_el0,
         exception: None,
+        level_specific: (),
     }
 }
 
@@ -199,47 +225,82 @@ mod tests {
         assert_eq!(to_registers(&to_processor(&registers)), registers);
     }
 
+    /// The [DFSC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=DFSC%2C%20bits%20%5B5%3A0%5D) of an alignment fault.
+    const ALIGNMENT_FAULT: u64 = 0b10_0001;
+
+    /// An exception the processor's state keeps whole, as ESR_EL1 and FAR_EL1 hold it.
+    fn undecoded(
+        class: ESR_EL1::EC::Value,
+        specific: u64,
+        fault_address: u64,
+    ) -> Option<Exception> {
+        Some(Exception::Undecoded {
+            syndrome: ESR_EL1::EC.val(class as u64).value
+                | ESR_EL1::IL::SET.value
+                | ESR_EL1::ISS.val(specific).value,
+            fault_address,
+        })
+    }
+
     #[test]
     fn traps_without_a_hook_are_the_exits_they_are() {
-        use wcontainers_processor_architecture_arm64::syndrome::encode_syndrome;
+        use ESR_EL1::EC::Value as Class;
         let mut registers = RegisterBlock::ZERO;
-        registers.pc = INSTRUCTION_BYTES;
-        registers.sp = INSTRUCTION_BYTES * 2;
-        let exception = |class, specific, fault_address| {
-            Some(Exception {
-                syndrome: encode_syndrome(class, specific),
-                fault_address,
-            })
-        };
+        registers.pc = INSTRUCTION_SIZE;
+        registers.sp = INSTRUCTION_SIZE * 2;
         let comment = u16::MAX;
-        assert_eq!(
-            exit_of(
-                exception(ESR_EL1::EC::Value::Brk64, u64::from(comment), None),
-                &registers
+        let misaligned = registers.sp + 1;
+        let cases = [
+            (
+                Exception::Breakpoint { comment },
+                Exit::Breakpoint { comment },
             ),
-            Exit::Breakpoint { comment }
-        );
-        assert_eq!(
-            exit_of(exception(ESR_EL1::EC::Value::Unknown, 0, None), &registers),
-            Exit::IllegalInstruction
-        );
-        assert_eq!(
-            exit_of(
-                exception(ESR_EL1::EC::Value::SPAlignmentFault, 0, None),
-                &registers
+            (Exception::UndefinedInstruction, Exit::IllegalInstruction),
+            (
+                Exception::StackPointerAlignmentFault,
+                Exit::AlignmentFault {
+                    address: registers.sp,
+                },
             ),
-            Exit::AlignmentFault {
-                address: registers.sp
-            }
-        );
-        assert_eq!(
-            exit_of(
-                exception(ESR_EL1::EC::Value::PCAlignmentFault, 0, Some(registers.pc)),
-                &registers
+            (
+                Exception::ProgramCounterAlignmentFault {
+                    address: registers.pc,
+                },
+                Exit::AlignmentFault {
+                    address: registers.pc,
+                },
             ),
-            Exit::AlignmentFault {
-                address: registers.pc
-            }
-        );
+        ];
+        for (exception, exit) in cases {
+            assert_eq!(exit_of(Some(exception), &registers), exit, "{exception:?}");
+        }
+        let kept_whole = [
+            (
+                undecoded(Class::Brk64, u64::from(comment), 0),
+                Exit::Breakpoint { comment },
+            ),
+            (undecoded(Class::Unknown, 0, 0), Exit::IllegalInstruction),
+            (
+                undecoded(Class::SPAlignmentFault, 0, 0),
+                Exit::AlignmentFault {
+                    address: registers.sp,
+                },
+            ),
+            (
+                undecoded(Class::PCAlignmentFault, 0, registers.pc),
+                Exit::AlignmentFault {
+                    address: registers.pc,
+                },
+            ),
+            (
+                undecoded(Class::DataAbortLowerEL, ALIGNMENT_FAULT, misaligned),
+                Exit::AlignmentFault {
+                    address: misaligned,
+                },
+            ),
+        ];
+        for (exception, exit) in kept_whole {
+            assert_eq!(exit_of(exception, &registers), exit, "{exception:?}");
+        }
     }
 }

@@ -47,6 +47,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -256,6 +262,12 @@ dependencies = [
  "quote",
  "syn 3.0.10",
 ]
+
+[[package]]
+name = "atomic_refcell"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
 
 [[package]]
 name = "autocfg"
@@ -4750,6 +4762,10 @@ dependencies = [
 name = "wcontainers-kernel-linux"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
+ "allocation-counter",
+ "atomic_refcell",
+ "crossbeam-utils",
  "domain",
  "etherparse",
  "flate2",
@@ -4761,6 +4777,9 @@ dependencies = [
  "smallvec",
  "spin 0.10.1",
  "wcontainers-abi",
+ "wcontainers-behavior-source",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-executor",
  "wcontainers-executor-unicorn",
@@ -4774,6 +4793,7 @@ dependencies = [
  "wcontainers-system",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
