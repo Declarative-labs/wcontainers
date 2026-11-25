@@ -4922,7 +4922,6 @@ dependencies = [
 name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
- "wcontainers-behavior-source",
  "wcontainers-processor-architecture",
 ]
 
@@ -5004,7 +5003,6 @@ version = "0.1.0"
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
 dependencies = [
- "litemap",
  "rangemap",
 ]
 
@@ -5041,6 +5039,17 @@ dependencies = [
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-processor-architecture-conformance",
+]
+
+[[package]]
+name = "wcontainers-processor-cores"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-processor-cores-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-cores",
 ]
 
 [[package]]

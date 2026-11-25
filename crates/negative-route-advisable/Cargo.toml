@@ -8,3 +8,6 @@ path = "interface.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+
+[lints]
+workspace = true

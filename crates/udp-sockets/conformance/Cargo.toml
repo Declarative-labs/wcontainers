@@ -22,3 +22,6 @@ wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
 rustix = { version = "1.1.6", features = ["thread", "time", "linux_4_11"] }
 # The errno values, group addresses, classic BPF opcodes and Ethernet's MTU of Linux, which the contract's errors and checks use.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "if_ether", "if_tun", "net", "no_std"] }
+
+[lints]
+workspace = true

@@ -7,5 +7,7 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
-wcontainers-behavior-source = { path = "../behavior-source" }
 wcontainers-processor-architecture = { path = "../processor-architecture" }
+
+[lints]
+workspace = true
