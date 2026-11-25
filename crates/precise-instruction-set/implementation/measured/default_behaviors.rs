@@ -152,6 +152,9 @@ fn main() {
             Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => {
                 format!("INDISTINGUISHABLE {behaviors:?}")
             }
+            Err(MeasureInstructionError::ExecutionFailed { before, error, .. }) => {
+                format!("CHIP REFUSED {error:?}, first at {}", describe(before, 0))
+            }
         };
         println!(
             "probe {instruction:?}: {states} states, {:.0} ns per state, {outcome}",
@@ -160,7 +163,8 @@ fn main() {
         if probe_only {
             if matches!(
                 measured,
-                Err(MeasureInstructionError::NoBehaviorAgrees { .. })
+                Err(MeasureInstructionError::NoBehaviorAgrees { .. }
+                    | MeasureInstructionError::ExecutionFailed { .. })
             ) {
                 row.disagreeing_instructions += 1;
             }
@@ -188,7 +192,9 @@ fn main() {
                 .collect();
             split.simulate += simulate_started.elapsed();
             let chip_started = Instant::now();
-            let observed = chip.execute_single_instruction(before.clone());
+            let Ok(observed) = chip.execute_single_instruction(before.clone()) else {
+                panic!("{instruction:?}: the chip refused a generated state");
+            };
             split.chip += chip_started.elapsed();
             let compare_started = Instant::now();
             let agree: Vec<bool> = simulated.iter().map(|after| *after == observed).collect();
@@ -274,7 +280,10 @@ fn main() {
                 },
             ],
         };
-        let exception = chip.execute_single_instruction(before).processor.exception;
+        let exception = match chip.execute_single_instruction(before) {
+            Ok(after) => after.processor.exception,
+            Err(refusal) => panic!("{instruction:?}: the chip refused its word: {refusal:?}"),
+        };
         if exception == Some(Exception::UndefinedInstruction) {
             row.absent += 1;
         } else {

@@ -78,6 +78,9 @@ fn main() {
                     MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. } => {
                         format!("{} behaviors carrying it agree", behaviors.len())
                     }
+                    MeasureInstructionError::ExecutionFailed { error, .. } => {
+                        format!("the chip refused a state: {error:?}")
+                    }
                     _ => "no known behavior".to_owned(),
                 };
                 println!(
