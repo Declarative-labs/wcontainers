@@ -18,9 +18,7 @@ use aarch64_cpu::registers::{
 use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_processor_architecture::{
-    MemoryDelta, MemorySink, ProcessorArchitecture, diff_memory,
-};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, InstructionFetch, PagePermission, Processor, User,
@@ -96,8 +94,9 @@ const WINDOW_BYTES: u64 = 16 * PAGE_SIZE;
 const _: () = assert!(HANDLER.is_multiple_of(VECTOR_TABLE_BYTES));
 const _: () = assert!(HANDLER_ENTRY_OFFSET == VECTORS * VECTOR_BYTES);
 
-/// The most changes the memory the guest holds and the next state's may have together for `diff_memory` to pair them,
-/// whose time grows with the product of the two lengths; longer ones are written whole into emptied resident pages.
+/// The most changes the memory the guest holds and the next state's may have together for `MemoryDelta::diff_snapshots`
+/// to pair them, whose time grows with the product of the two lengths; longer ones are written whole into emptied
+/// resident pages.
 const MOST_CHANGES_PAIRED: usize = 64;
 
 /// Entries each of the resolving's buffers keeps between states, so that one state with very many changes does not keep
@@ -493,7 +492,7 @@ impl KvmSingleStepMachine {
         // Unknown from here on: an error or a panic before the caller stores the next record makes the next load reset.
         let mut held = match mem::replace(&mut self.resident.memory, Held::Unknown) {
             Held::Known(held) if has_room && held.len() + memory.len() <= MOST_CHANGES_PAIRED => {
-                diff_memory(&held, memory, &mut |mutation: MemoryDelta<
+                MemoryDelta::diff_snapshots(&held, memory, &mut |mutation: MemoryDelta<
                     '_,
                     Arm64<User>,
                 >| match mutation {
