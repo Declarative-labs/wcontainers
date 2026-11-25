@@ -5,7 +5,10 @@ edition = "2024"
 publish = false
 
 [lib]
-path = "conformance.rs"
+path = "suite.rs"
 
 [dependencies]
 wcontainers-kernel = { path = ".." }
+
+[lints]
+workspace = true

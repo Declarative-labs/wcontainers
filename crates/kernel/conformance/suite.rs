@@ -1,7 +1,8 @@
 //! The tests every implementation of wcontainers-kernel runs, written against its traits alone.
 //!
 //! A kernel's checks take a kernel with two processes, a container's first process and its child,
-//! each of one thread whose id is its process's, both waiting for ever, with ids below [`PROBED`].
+//! each of one thread whose id is its process's, both waiting for ever, with ids among the first
+//! a kernel hands out.
 //! A process's checks take a handle to such a container's first process, started to run serially
 //! and exactly, which leaves its first page unmapped. Its start has written pages for it, as
 //! Linux's `execve` writes the new program's arguments onto its stack before its first
@@ -10,14 +11,15 @@
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
-    Kernel, MemoryError, Process, ReplayDeterminism, TaskId, ThreadOrdering, WatchesFor,
+    ExecutionConfig, ExecutorOf, Kernel, MemoryError, Process, ReplayDeterminism, TaskId,
+    ThreadOrdering, WatchesFor,
 };
 
 /// An id no kernel hands out: past the largest a task can have.
 const ABSENT: TaskId = TaskId(u32::MAX);
 
 /// One past the largest id the checks look for a process at: the ids a kernel hands out first.
-pub const PROBED: u32 = 1 << 12;
+const PROBED: u32 = 1 << 12;
 
 /// The bytes a process's checks write, a word's worth of distinct values.
 const WRITTEN: [u8; size_of::<u64>()] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -48,15 +50,88 @@ pub fn tasks_of_several_processes_are_taken_at_once<K: Kernel>(kernel: K) {
         2,
         "the container's first process and its child"
     );
-    let taken: Vec<TaskId> = kernel
+    let mut taken: Vec<TaskId> = kernel
         .suspend_tasks(&processes)
         .map(|(task, _)| task)
         .collect();
-    assert_eq!(
-        taken, processes,
-        "each process's thread, in the order asked"
-    );
+    taken.sort_unstable();
+    assert_eq!(taken, processes, "each process's thread, once");
     assert!(kernel.suspend_tasks(&processes).next().is_none());
+}
+
+/// Checks that threads taken off the kernel and given back are all taken in, and are then on the
+/// kernel again to be taken once more.
+pub fn taken_tasks_are_resumed<K: Kernel>(kernel: K) {
+    let processes = processes_of(&kernel);
+    let taken: Vec<K::SuspendedTask> = kernel
+        .suspend_tasks(&processes)
+        .map(|(_, task)| task)
+        .collect();
+    assert_eq!(taken.len(), processes.len(), "each process's thread");
+    assert_eq!(
+        kernel.resume_tasks(taken).count(),
+        0,
+        "the kernel took in every thread it gave out"
+    );
+    let mut again: Vec<TaskId> = kernel
+        .suspend_tasks(&processes)
+        .map(|(task, _)| task)
+        .collect();
+    again.sort_unstable();
+    assert_eq!(again, processes, "the resumed threads, each once");
+}
+
+/// Checks that a process taken off the kernel comes back whole: its context is taken in, then its
+/// threads, and it is on the kernel again with its thread to take.
+pub fn suspended_process_is_resumed<K: Kernel>(kernel: K) {
+    for process in processes_of(&kernel) {
+        let (context, tasks) = kernel
+            .suspend_process(process)
+            .expect("the process is on the kernel");
+        let tasks: Vec<K::SuspendedTask> = tasks.map(|(_, task)| task).collect();
+        assert!(
+            kernel.copy_process_context(process).is_none(),
+            "a suspended process is off the kernel"
+        );
+        assert!(
+            kernel.resume_process(context, serial::<K>()).is_none(),
+            "the kernel took the context in"
+        );
+        assert_eq!(kernel.resume_tasks(tasks).count(), 0, "and its threads");
+        let taken: Vec<TaskId> = kernel
+            .suspend_tasks(&[process])
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(taken, [process], "the resumed process's thread");
+    }
+}
+
+/// Checks that a copy of a process's context, resumed while the process it was copied from is on
+/// the kernel, is handed back, and the process stays as it was.
+pub fn copy_beside_its_process_is_handed_back<K: Kernel>(kernel: K) {
+    for process in processes_of(&kernel) {
+        let copy = kernel
+            .copy_process_context(process)
+            .expect("the process is on the kernel");
+        assert!(
+            kernel.resume_process(copy, serial::<K>()).is_some(),
+            "a second context of a process on the kernel is handed back"
+        );
+        let taken: Vec<TaskId> = kernel
+            .suspend_tasks(&[process])
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(taken, [process], "the process's one thread");
+    }
+}
+
+/// The way of running a process every kernel supports.
+fn serial<K: Kernel>() -> ExecutionConfig<ExecutorOf<K>> {
+    ExecutionConfig {
+        thread_ordering: ThreadOrdering::Serial,
+        replay_determinism: ReplayDeterminism::Exact,
+        translator: Default::default(),
+    }
 }
 
 /// Returns the ids below [`PROBED`] the kernel has a process of, in order.
@@ -67,7 +142,7 @@ fn processes_of<K: Kernel>(kernel: &K) -> Vec<TaskId> {
         .collect()
 }
 
-/// Checks what a container's first process tells of itself before it has run.
+/// Checks what a container's first process tells of itself.
 pub fn first_process_tells_of_itself<P: Process>(process: P) {
     assert_eq!(process.parent(), None, "the container's first process");
     assert!(process.mapped_memory() > 0, "its program is mapped");
@@ -190,8 +265,9 @@ pub fn taken_tasks_are_not_taken_again<P: Process>(mut process: P) {
     assert_eq!(tasks.count(), 0, "its one thread is already taken");
 }
 
-/// Checks that asking a process for every thread id but its own takes and returns nothing, though
-/// its child's thread is among them, and that its own thread is still there to take.
+/// Checks that asking a process for every thread id but its own returns nothing, though its
+/// child's thread is among them, and that its own thread is still there to take. Whether the
+/// child's thread stayed on the kernel is not seen here: a handle reaches only its own process.
 pub fn threads_of_another_process_are_not_taken<P: Process>(mut process: P) {
     let id = process.id();
     let others: Vec<TaskId> = (1..PROBED).map(TaskId).filter(|&task| task != id).collect();
@@ -205,7 +281,7 @@ pub fn threads_of_another_process_are_not_taken<P: Process>(mut process: P) {
     assert_eq!(taken, [id], "only its own thread");
 }
 
-/// Checks that a signal whose default is to go on leaves a process that has not run as it was.
+/// Checks that a signal whose default is to go on leaves a waiting process as it was.
 pub fn continue_signal_leaves_the_process<P: Process>(mut process: P) {
     let id = process.id();
     process.send_signal(
@@ -358,6 +434,18 @@ macro_rules! tests {
         #[test]
         fn tasks_of_several_processes_are_taken_at_once() {
             $crate::tasks_of_several_processes_are_taken_at_once($value);
+        }
+        #[test]
+        fn taken_tasks_are_resumed() {
+            $crate::taken_tasks_are_resumed($value);
+        }
+        #[test]
+        fn suspended_process_is_resumed() {
+            $crate::suspended_process_is_resumed($value);
+        }
+        #[test]
+        fn copy_beside_its_process_is_handed_back() {
+            $crate::copy_beside_its_process_is_handed_back($value);
         }
         $crate::tests!(@Process $process ($value) $(($process_value))?);
     };

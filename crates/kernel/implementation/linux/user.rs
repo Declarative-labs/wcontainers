@@ -30,7 +30,7 @@ pub(crate) fn access_ok(address: u64, length: u64) -> bool {
 pub(crate) struct Guest<'a> {
     pub cpu: &'a mut dyn Cpu,
     pub memory: MemoryId,
-    pub map: &'a core::cell::RefCell<AddressMap>,
+    pub map: &'a atomic_refcell::AtomicRefCell<AddressMap>,
     pub limits: &'a [Limit; LIMITS],
     /// Whether the process may lock memory past its limit (`CAP_IPC_LOCK`), for a locked stack's growth.
     pub may_lock_any: bool,
@@ -38,7 +38,7 @@ pub(crate) struct Guest<'a> {
     /// for the embedder.
     pub pid: crate::process::Pid,
     pub tid: crate::process::Tid,
-    pub written: &'a core::cell::RefCell<Vec<crate::system::KernelWrite>>,
+    pub written: &'a atomic_refcell::AtomicRefCell<Vec<crate::system::KernelWrite>>,
 }
 
 impl Guest<'_> {

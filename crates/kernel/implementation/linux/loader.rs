@@ -128,7 +128,7 @@ pub(crate) struct Program {
     /// Its size.
     size: u64,
     /// A program on the backend: the open file it is read through, which its pages are kept by.
-    backend: Option<alloc::rc::Rc<crate::fs::backend::Handle>>,
+    backend: Option<alloc::sync::Arc<crate::fs::backend::Handle>>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
     /// The new program could open it again by the name it was run by, as a script's interpreter
@@ -213,7 +213,7 @@ pub(crate) fn program_of(
     let inode = node.borrow();
     let readable = inode.permits(credentials, R_OK, true);
     let size = match &inode.content {
-        Content::Backend(remote) => Some(remote.size.get()),
+        Content::Backend(remote) => Some(remote.size.load()),
         _ => None,
     };
     let (bytes, backend) = match (&inode.content, size) {
@@ -643,7 +643,8 @@ fn place<S: crate::System>(
         Some((found, _, segments)) => segment_tails(found, segments)?,
         None => Vec::new(),
     };
-    if map.ceiling < map.end {
+    // The container's first program is checked in any space: one too small for it fails the start.
+    if map.ceiling < map.end || kernel.init.is_none() {
         fits_below_ceiling(
             &map,
             (&header, &segments, bias),

@@ -2,7 +2,7 @@
 //! with Docker's profile.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use wcontainers_abi::{RegisterBlock, SystemCallRequest};
@@ -142,7 +142,7 @@ fn set_filter<S: crate::System>(
         .iter()
         .map(|chunk| sock_filter::read_from_bytes(chunk).expect("eight bytes"))
         .collect();
-    let filter = Rc::new(Filter::new(program)?);
+    let filter = Arc::new(Filter::new(program)?);
     let thread = &kernel.threads[&tid];
     let held: usize = thread
         .filters
@@ -172,7 +172,7 @@ fn set_filter<S: crate::System>(
                 && theirs
                     .iter()
                     .zip(&filters)
-                    .all(|(their, our)| Rc::ptr_eq(their, our));
+                    .all(|(their, our)| Arc::ptr_eq(their, our));
             if !shared {
                 if flags & SECCOMP_FILTER_FLAG_TSYNC_ESRCH != 0 {
                     return Err(Errno::ESRCH);
@@ -204,10 +204,11 @@ pub(super) fn filter_call<S: crate::System>(
     if thread.filters.iter().any(|filter| filter.reads_pointer) {
         let mut registers = RegisterBlock::new_zeroed();
         cx.cpu.registers(thread.cpu, &mut registers);
-        (data[2], data[3]) = (registers.pc as u32, (registers.pc >> 32) as u32);
+        (data[2], data[3]) = (registers.pc as u32, (registers.pc >> u32::BITS) as u32);
     }
     for (index, argument) in call.arguments.iter().enumerate() {
-        (data[4 + 2 * index], data[5 + 2 * index]) = (*argument as u32, (*argument >> 32) as u32);
+        (data[4 + 2 * index], data[5 + 2 * index]) =
+            (*argument as u32, (*argument >> u32::BITS) as u32);
     }
     // Newest first; an equal action does not displace an earlier answer.
     let mut answer = SECCOMP_RET_ALLOW;

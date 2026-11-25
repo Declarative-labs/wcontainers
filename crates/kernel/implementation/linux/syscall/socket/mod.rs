@@ -12,10 +12,11 @@ mod resolver;
 
 pub(crate) use inet::Ports;
 
+use crate::linux_extra::{MICROSECONDS_PER_SECOND, NANOSECONDS_PER_MICROSECOND};
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
@@ -32,7 +33,7 @@ use crate::process::{Channel, Pid, Tid};
 use crate::{Context, Errno, Kernel};
 use wcontainers_abi::PAGE_SIZE;
 
-pub(crate) type SocketRef = Rc<RefCell<Socket>>;
+pub(crate) type SocketRef = Arc<AtomicRefCell<Socket>>;
 
 /// What `sk_shutdown` holds.
 const RCV_SHUTDOWN: u8 = 1;
@@ -74,7 +75,7 @@ struct Packet {
     consumed: usize,
     files: Vec<FileRef>,
     cred: Cred,
-    sender: Weak<RefCell<Socket>>,
+    sender: Weak<AtomicRefCell<Socket>>,
     truesize: u64,
     /// Where an internet datagram came from, and what its header and route said.
     source: Option<inet::Endpoint>,
@@ -155,7 +156,7 @@ pub(crate) struct Socket {
     ino: u64,
     uid: u32,
     /// Its file, whose owner hears of urgent bytes and, with `FASYNC`, of I/O.
-    file: Weak<RefCell<OpenFile>>,
+    file: Weak<AtomicRefCell<OpenFile>>,
     /// Urgent bytes a local stream read passed over unread, which Linux's queued count keeps
     /// (`inq_len` is not lowered when `manage_oob` drops them).
     skipped_urgent: u64,
@@ -355,14 +356,14 @@ pub(super) fn write_space<S: crate::System>(
 /// both, so each kind has its own), and paths by their inode.
 #[derive(Default)]
 pub(crate) struct Names {
-    abstract_names: BTreeMap<(u32, Vec<u8>), Weak<RefCell<Socket>>>,
-    paths: BTreeMap<(u64, u64), Weak<RefCell<Socket>>>,
+    abstract_names: BTreeMap<(u32, Vec<u8>), Weak<AtomicRefCell<Socket>>>,
+    paths: BTreeMap<(u64, u64), Weak<AtomicRefCell<Socket>>>,
     /// The ports internet sockets hold.
     inet: Ports,
     /// The port numbers netlink sockets hold.
-    netlink: BTreeMap<u32, Weak<RefCell<Socket>>>,
+    netlink: BTreeMap<u32, Weak<AtomicRefCell<Socket>>>,
     /// Local sockets whose queues were given descriptors, for counting and collecting them.
-    carriers: Vec<Weak<RefCell<Socket>>>,
+    carriers: Vec<Weak<AtomicRefCell<Socket>>>,
     /// The last socket cookie given (`sock_gen_cookie`).
     cookies: u64,
 }
@@ -460,14 +461,14 @@ impl Names {
     }
 
     fn hold_portid(&mut self, portid: u32, socket: &SocketRef) {
-        self.netlink.insert(portid, Rc::downgrade(socket));
+        self.netlink.insert(portid, Arc::downgrade(socket));
     }
 
     fn let_go_portid(&mut self, portid: u32, socket: &SocketRef) {
         if self
             .netlink
             .get(&portid)
-            .is_some_and(|held| core::ptr::eq(held.as_ptr(), Rc::as_ptr(socket)))
+            .is_some_and(|held| core::ptr::eq(held.as_ptr(), Arc::as_ptr(socket)))
         {
             self.netlink.remove(&portid);
         }
@@ -488,6 +489,18 @@ pub(crate) fn of(file: &FileRef) -> Option<SocketRef> {
     match &file.borrow().node.borrow().content {
         Content::Socket(socket) => Some(socket.clone()),
         _ => None,
+    }
+}
+
+/// Hears what the system knows now of the connection to the outside behind `file`, if it is a
+/// socket with one, before a call looks at its state.
+pub(super) fn hear_outside<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    file: &FileRef,
+) {
+    if let Some(socket) = of(file) {
+        outside::hear_now(kernel, cx, &socket);
     }
 }
 
@@ -550,7 +563,7 @@ fn make_file<S: crate::System>(
         link,
         opener,
     );
-    socket.borrow_mut().file = Rc::downgrade(&file);
+    socket.borrow_mut().file = Arc::downgrade(&file);
     Ok(file)
 }
 
@@ -651,7 +664,9 @@ pub(super) fn socket<S: crate::System>(
         return Err(refuse_alg(kernel, cx));
     }
     let (kind, flags) = kind_and_flags(kind)?;
-    let socket = Rc::new(RefCell::new(create(kernel, cx, family, kind, protocol)?));
+    let socket = Arc::new(AtomicRefCell::new(create(
+        kernel, cx, family, kind, protocol,
+    )?));
     let file = make_file(kernel, cx, tid, socket, flags)?;
     install(kernel, tid, file, flags & O_CLOEXEC != 0)
 }
@@ -681,7 +696,7 @@ pub(super) fn socketpair<S: crate::System>(
     let cred = own_cred(kernel, tid);
     let groups = kernel.credentials(tid).groups.clone();
     let ends = [(); 2].map(|()| {
-        Rc::new(RefCell::new(Socket::new(
+        Arc::new(AtomicRefCell::new(Socket::new(
             kernel.next_object(),
             family,
             kind,
@@ -847,7 +862,7 @@ pub(super) fn bind<S: crate::System>(
             kernel
                 .sockets
                 .abstract_names
-                .insert(key, Rc::downgrade(&socket));
+                .insert(key, Arc::downgrade(&socket));
             socket.borrow_mut().name = Some(bytes);
             Ok(0)
         }
@@ -863,7 +878,7 @@ pub(super) fn bind<S: crate::System>(
                 }
             })?;
             let key = node_key(&node);
-            kernel.sockets.paths.insert(key, Rc::downgrade(&socket));
+            kernel.sockets.paths.insert(key, Arc::downgrade(&socket));
             let mut bound = socket.borrow_mut();
             bound.path = Some(key);
             bound.name = Some(path);
@@ -935,7 +950,7 @@ fn autobind<S: crate::System>(
             kernel
                 .sockets
                 .abstract_names
-                .insert(key, Rc::downgrade(socket));
+                .insert(key, Arc::downgrade(socket));
             socket.borrow_mut().name = Some(name);
             return Ok(0);
         }
@@ -999,7 +1014,7 @@ pub(super) fn listen<S: crate::System>(
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
     // `__sys_listen`: the backlog is capped at `net.core.somaxconn`.
-    let backlog = (backlog as i32).min(4096);
+    let backlog = (backlog as i32).min(crate::linux_extra::SOMAXCONN);
     if socket.borrow().inet.is_some() {
         return inet::listen(kernel, cx, tid, &socket, backlog);
     }
@@ -1088,7 +1103,7 @@ pub(super) fn connect<S: crate::System>(
     }
     // The listener's end of the connection, waiting to be accepted; it takes the listener's name
     // and the connecting process's credentials.
-    let embryo = Rc::new(RefCell::new(Socket::new(
+    let embryo = Arc::new(AtomicRefCell::new(Socket::new(
         kernel.next_object(),
         socket.borrow().family,
         kind,
@@ -1133,7 +1148,7 @@ fn dgram_connect<S: crate::System>(
     let old = socket.borrow_mut().peer.replace(other.clone());
     socket.borrow_mut().state = State::Connected;
     if let Some(old) = old
-        && !Rc::ptr_eq(&old, &other)
+        && !Arc::ptr_eq(&old, &other)
     {
         dgram_disconnected(kernel, cx, socket, &old);
     }
@@ -1160,7 +1175,7 @@ fn dgram_disconnected<S: crate::System>(
         .borrow()
         .peer
         .as_ref()
-        .is_some_and(|back| Rc::ptr_eq(back, socket));
+        .is_some_and(|back| Arc::ptr_eq(back, socket));
     if !other.borrow().dead && back {
         other.borrow_mut().error = Errno::ECONNRESET.0 as i32;
         kernel.wake(channel(other));
@@ -1403,7 +1418,7 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
         let back = other
             .peer
             .as_ref()
-            .is_some_and(|back| Rc::ptr_eq(back, socket));
+            .is_some_and(|back| Arc::ptr_eq(back, socket));
         if !back && other.queue.len() > other.max_backlog as usize {
             writable = false;
         }
@@ -1471,7 +1486,7 @@ fn release<S: crate::System>(
             .sockets
             .abstract_names
             .get(&key)
-            .is_some_and(|bound| core::ptr::eq(bound.as_ptr(), Rc::as_ptr(socket)))
+            .is_some_and(|bound| core::ptr::eq(bound.as_ptr(), Arc::as_ptr(socket)))
         {
             kernel.sockets.abstract_names.remove(&key);
         }
@@ -1484,7 +1499,7 @@ fn release<S: crate::System>(
             .borrow()
             .peer
             .as_ref()
-            .is_some_and(|back| Rc::ptr_eq(back, socket));
+            .is_some_and(|back| Arc::ptr_eq(back, socket));
         // The other end keeps pointing at it: a stream sees it shut down, a datagram socket finds
         // it gone at its next send.
         if connection && back {
@@ -1557,7 +1572,7 @@ fn stream_piece(size: u64, sndbuf: u64) -> (u64, u64) {
 #[derive(Clone, Copy)]
 pub(crate) enum Data<'a> {
     Guest(&'a [(u64, u64)]),
-    Kernel(&'a RefCell<Vec<u8>>),
+    Kernel(&'a core::cell::RefCell<Vec<u8>>),
 }
 
 impl Data<'_> {
@@ -1757,7 +1772,7 @@ fn send_stream<S: crate::System>(
                 message.files.clone()
             },
             cred: sent_cred(kernel, tid, socket, &peer, message.cred),
-            sender: Rc::downgrade(socket),
+            sender: Arc::downgrade(socket),
             truesize: truesize(size - pages, pages),
             data,
             source: None,
@@ -1807,7 +1822,7 @@ fn send_stream<S: crate::System>(
             message.files.clone()
         },
         cred: sent_cred(kernel, tid, socket, &peer, message.cred),
-        sender: Rc::downgrade(socket),
+        sender: Arc::downgrade(socket),
         truesize: truesize(1, 0),
         data,
         source: None,
@@ -1970,7 +1985,7 @@ fn send_packet<S: crate::System>(
             .borrow()
             .peer
             .as_ref()
-            .is_some_and(|peer| Rc::ptr_eq(peer, &target));
+            .is_some_and(|peer| Arc::ptr_eq(peer, &target));
         if kind == SOCK_DGRAM && is_peer {
             {
                 let mut own = socket.borrow_mut();
@@ -1997,8 +2012,8 @@ fn send_packet<S: crate::System>(
         .borrow()
         .peer
         .as_ref()
-        .is_some_and(|back| Rc::ptr_eq(back, socket));
-    let full = !Rc::ptr_eq(&target, socket)
+        .is_some_and(|back| Arc::ptr_eq(back, socket));
+    let full = !Arc::ptr_eq(&target, socket)
         && !back
         && target.borrow().queue.len() > target.borrow().max_backlog as usize;
     if written >= sndbuf || full {
@@ -2023,7 +2038,7 @@ fn send_packet<S: crate::System>(
         consumed: 0,
         files: message.files.clone(),
         cred: sent_cred(kernel, tid, socket, &target, message.cred),
-        sender: Rc::downgrade(socket),
+        sender: Arc::downgrade(socket),
         truesize: truesize(total.saturating_sub(pages), pages),
         data,
         source: None,
@@ -2047,9 +2062,9 @@ fn carries(kernel: &mut Kernel, socket: &SocketRef) {
     let carriers = &mut kernel.sockets.carriers;
     if !carriers
         .iter()
-        .any(|held| core::ptr::eq(held.as_ptr(), Rc::as_ptr(socket)))
+        .any(|held| core::ptr::eq(held.as_ptr(), Arc::as_ptr(socket)))
     {
-        carriers.push(Rc::downgrade(socket));
+        carriers.push(Arc::downgrade(socket));
     }
 }
 
@@ -2128,7 +2143,7 @@ pub(crate) fn collect<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_
                 if !of(file).is_some_and(|socket| socket.borrow().local()) {
                     continue;
                 }
-                match held.iter_mut().find(|(seen, _)| Rc::ptr_eq(seen, file)) {
+                match held.iter_mut().find(|(seen, _)| Arc::ptr_eq(seen, file)) {
                     Some((_, count)) => *count += 1,
                     None => held.push((file.clone(), 1)),
                 }
@@ -2138,10 +2153,10 @@ pub(crate) fn collect<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_
     // Candidates: files nothing but queues holds (the list above holds one more each).
     let candidates: Vec<(FileRef, SocketRef, usize)> = held
         .into_iter()
-        .filter(|(file, count)| Rc::strong_count(file) == count + 1)
+        .filter(|(file, count)| Arc::strong_count(file) == count + 1)
         .filter_map(|(file, count)| of(&file).map(|socket| (file, socket, count)))
         .collect();
-    let index_of = |file: &FileRef| candidates.iter().position(|(c, _, _)| Rc::ptr_eq(c, file));
+    let index_of = |file: &FileRef| candidates.iter().position(|(c, _, _)| Arc::ptr_eq(c, file));
     // A candidate held from a queue that is not a candidate's is reached, and so is everything
     // a reached candidate's queue carries.
     let mut from_candidates = alloc::vec![0usize; candidates.len()];
@@ -2776,7 +2791,7 @@ pub(crate) fn send_bytes<S: crate::System>(
     cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
-    bytes: &RefCell<Vec<u8>>,
+    bytes: &core::cell::RefCell<Vec<u8>>,
     flags: u32,
 ) -> Result<u64, Errno> {
     let socket = of(file).expect("a socket");
@@ -2802,7 +2817,7 @@ pub(crate) fn receive_bytes<S: crate::System>(
     flags: u32,
 ) -> Result<Vec<u8>, Errno> {
     let socket = of(file).expect("a socket");
-    let into = RefCell::new(alloc::vec![0; size as usize]);
+    let into = core::cell::RefCell::new(alloc::vec![0; size as usize]);
     let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Kernel(&into), flags)?;
     kernel.released.extend(received.files);
     let mut bytes = into.into_inner();
@@ -3172,7 +3187,7 @@ pub(super) fn recvmsg<S: crate::System>(
         let part = if ns {
             i64::from(time.nanoseconds)
         } else {
-            i64::from(time.nanoseconds / 1000)
+            i64::from(time.nanoseconds / NANOSECONDS_PER_MICROSECOND as u32)
         };
         let mut data = time.seconds.to_le_bytes().to_vec();
         data.extend_from_slice(&part.to_le_bytes());
@@ -3606,7 +3621,7 @@ pub(super) fn setsockopt<S: crate::System>(
             }
             let seconds = i64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
             let micros = i64::from_le_bytes(bytes[8..16].try_into().expect("8 bytes"));
-            if !(0..1_000_000).contains(&micros) {
+            if !(0..MICROSECONDS_PER_SECOND as i64).contains(&micros) {
                 return Err(Errno::EDOM);
             }
             let nanoseconds = if seconds < 0 {
@@ -3614,7 +3629,7 @@ pub(super) fn setsockopt<S: crate::System>(
             } else {
                 (seconds as u64)
                     .saturating_mul(NANOSECONDS_PER_SECOND)
-                    .saturating_add(micros as u64 * 1000)
+                    .saturating_add(micros as u64 * NANOSECONDS_PER_MICROSECOND)
             };
             if matches!(name, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) {
                 own.receive_timeout = nanoseconds;
@@ -3677,7 +3692,7 @@ pub(super) fn setsockopt<S: crate::System>(
                 return Err(kernel.counters.refuse(
                     cx.host,
                     crate::reason::OPTION_NOT_BUILT,
-                    (u64::from(level) << 32) | u64::from(name),
+                    crate::counters::detail(level, name),
                     Errno::ENOPROTOOPT,
                 ));
             }
@@ -3781,7 +3796,7 @@ pub(super) fn setsockopt<S: crate::System>(
                 kernel.counters.count(
                     cx.host,
                     crate::reason::OPTION_NOT_ACTED_ON,
-                    (u64::from(level) << 32) | u64::from(name),
+                    crate::counters::detail(level, name),
                 );
             }
         }
@@ -3824,7 +3839,7 @@ pub(super) fn setsockopt<S: crate::System>(
             return Err(kernel.counters.refuse(
                 cx.host,
                 crate::reason::OPTION_NOT_BUILT,
-                (u64::from(level) << 32) | u64::from(name),
+                crate::counters::detail(level, name),
                 Errno::ENOPROTOOPT,
             ));
         }
@@ -3964,6 +3979,9 @@ pub(super) fn getsockopt<S: crate::System>(
         return Err(Errno::EOPNOTSUPP);
     }
     use crate::linux::net::*;
+    if name == SO_ERROR {
+        outside::hear_now(kernel, cx, &socket);
+    }
     if name == SO_PEERPIDFD {
         return peer_pidfd(kernel, cx, tid, &socket, value, length, room);
     }
@@ -4040,7 +4058,8 @@ pub(super) fn getsockopt<S: crate::System>(
                     .to_le_bytes()
                     .to_vec();
                 bytes.extend_from_slice(
-                    &(nanoseconds % NANOSECONDS_PER_SECOND / 1000).to_le_bytes(),
+                    &(nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND)
+                        .to_le_bytes(),
                 );
                 bytes
             }
@@ -4161,7 +4180,7 @@ pub(super) fn getsockopt<S: crate::System>(
                 return Err(kernel.counters.refuse(
                     cx.host,
                     crate::reason::OPTION_NOT_BUILT,
-                    (u64::from(level) << 32) | u64::from(name),
+                    crate::counters::detail(level, name),
                     Errno::ENOPROTOOPT,
                 ));
             }

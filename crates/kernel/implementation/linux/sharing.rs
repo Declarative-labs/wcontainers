@@ -159,7 +159,7 @@ impl Kernel {
     /// one start, and a process a hook takes off the kernel carries exactly that, and is told the
     /// rest when it is back.
     pub(crate) fn announce_sharing<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
-        self.map_notes.sharing_changed.set(false);
+        self.map_notes.sharing_changed.store(false);
         let mapped = self.shared_mapped();
         if mapped.is_empty() && self.shared_announced.is_empty() {
             return;

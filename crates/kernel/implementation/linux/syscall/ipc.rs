@@ -190,9 +190,10 @@ pub(crate) struct Ipc {
     pub(super) sem: super::sem::Semaphores,
     /// The root of the namespace's mqueue file system (Linux's `mq_mnt`).
     pub(crate) mqueue_root: Option<Node>,
-    pub(super) mq_usage: alloc::rc::Rc<super::mqueue::Usage>,
+    pub(super) mq_usage: alloc::sync::Arc<super::mqueue::Usage>,
     /// The queue each waiting sender or receiver waits in.
-    pub(super) mq_waiting: BTreeMap<Tid, alloc::rc::Weak<core::cell::RefCell<crate::fs::Inode>>>,
+    pub(super) mq_waiting:
+        BTreeMap<Tid, alloc::sync::Weak<atomic_refcell::AtomicRefCell<crate::fs::Inode>>>,
     /// What a waiting receiver (a message) or sender (nothing) was handed, taken when its call runs
     /// again.
     pub(super) mq_ready: BTreeMap<Tid, Option<(u32, Vec<u8>)>>,
@@ -474,7 +475,7 @@ pub(super) fn shmdt<S: crate::System>(
                 if mapping.end - address > *size {
                     break;
                 }
-                if starts_there(mapping) && alloc::rc::Rc::ptr_eq(node, segment) {
+                if starts_there(mapping) && alloc::sync::Arc::ptr_eq(node, segment) {
                     pieces.push((mapping.start, mapping.end));
                 }
             }
@@ -701,7 +702,7 @@ pub(super) fn segment_exists(kernel: &Kernel, file: &Node) -> bool {
         .shm
         .slots
         .values()
-        .any(|segment| alloc::rc::Rc::ptr_eq(&segment.file, file))
+        .any(|segment| alloc::sync::Arc::ptr_eq(&segment.file, file))
 }
 
 /// Destroys removed segments nothing shows (`shm_destroy`).
@@ -747,7 +748,7 @@ fn attachments(kernel: &Kernel) -> BTreeMap<u32, u64> {
                     .shm
                     .slots
                     .iter()
-                    .find(|(_, segment)| alloc::rc::Rc::ptr_eq(&segment.file, node))
+                    .find(|(_, segment)| alloc::sync::Arc::ptr_eq(&segment.file, node))
             {
                 *counts.entry(*index).or_insert(0) += 1;
             }

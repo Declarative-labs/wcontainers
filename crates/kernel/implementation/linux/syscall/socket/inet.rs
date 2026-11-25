@@ -3,10 +3,15 @@
 //! two sockets joined as local streams are, and a UDP datagram goes straight to the socket bound
 //! to its destination.
 
+use crate::linux_extra::{
+    INITIAL_JIFFIES_BEFORE_ZERO, MICROSECONDS_PER_SECOND, NANOSECONDS_PER_JIFFY,
+    NANOSECONDS_PER_MICROSECOND, NANOSECONDS_PER_MILLISECOND, TCP_RTO_MAX, TCP_RTO_MIN,
+    TCP_TIMEOUT_INIT,
+};
 use alloc::collections::VecDeque;
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{
@@ -142,15 +147,15 @@ pub(crate) struct Inet {
     pub remote: Option<Endpoint>,
     pub v6only: bool,
     /// A TCP connect waiting for room in a listener's backlog (`TCP_SYN_SENT`), and the listener.
-    pub connecting: Option<Weak<RefCell<Socket>>>,
+    pub connecting: Option<Weak<AtomicRefCell<Socket>>>,
     /// For a listener: the connects waiting for room, first first.
-    pub waiting: VecDeque<Weak<RefCell<Socket>>>,
+    pub waiting: VecDeque<Weak<AtomicRefCell<Socket>>>,
     /// For a listener with TCP_DEFER_ACCEPT: its connections held back until data comes
     /// (requests acknowledged but not yet established, `inet_rsk(req)->acked`), oldest first.
     pub deferred: Vec<SocketRef>,
     /// For a connection held back: its listener, and when it was made and when its deferral ends,
     /// on the monotonic clock.
-    pub deferral: Option<(Weak<RefCell<Socket>>, u64, u64)>,
+    pub deferral: Option<(Weak<AtomicRefCell<Socket>>, u64, u64)>,
     /// The other end's FIN came (`SOCK_DONE`).
     pub done: bool,
     /// It sent its FIN before the other end (it closes actively and holds the ports a while).
@@ -372,7 +377,7 @@ fn carry_between(kernel: &mut Kernel, from: &SocketRef, to: &SocketRef, size: u6
     let mss = send_mss(family, &inet_ref(from).traffic);
     let now = kernel.entry_now;
     // A socket connected to itself is both ends.
-    if Rc::ptr_eq(from, to) {
+    if Arc::ptr_eq(from, to) {
         let traffic = &mut inet(from).traffic;
         carry(Some(traffic), None, mss, size, fin, now);
         carry(None, Some(traffic), mss, size, fin, now);
@@ -509,7 +514,7 @@ fn hold(kernel: &mut Kernel, socket: &SocketRef, packet: Packet) {
     if inet_ref(socket).probe.is_none() {
         let until = kernel.entry_now
             + core::time::Duration::from_micros(LOOPBACK_RTO_MICROSECONDS.into()).as_nanos() as u64;
-        let probe = crate::syscall::timer::start_held_bytes(kernel, Rc::downgrade(socket), until);
+        let probe = crate::syscall::timer::start_held_bytes(kernel, Arc::downgrade(socket), until);
         inet(socket).probe = Some(probe);
     }
 }
@@ -545,10 +550,9 @@ fn tcp_info<S: crate::System>(
     let state = tcp_state(&own);
     let family = own.family;
     let now = kernel.entry_now;
-    // `tcp_jiffies32` in milliseconds (HZ is 1000 on the reference, measured), which starts
-    // five minutes before zero (`INITIAL_JIFFIES`).
-    let jiffies = (now / 1_000_000).wrapping_sub(300_000) as u32;
-    let since = |at: u64| (now.saturating_sub(at) / 1_000_000) as u32;
+    // `tcp_jiffies32`, which starts before zero (`INITIAL_JIFFIES`).
+    let jiffies = (now / NANOSECONDS_PER_JIFFY).wrapping_sub(INITIAL_JIFFIES_BEFORE_ZERO) as u32;
+    let since = |at: u64| (now.saturating_sub(at) / NANOSECONDS_PER_JIFFY) as u32;
     let mut out = Vec::with_capacity(TCP_INFO_SIZE);
     let u32s = |out: &mut Vec<u8>, values: &[u32]| {
         for value in values {
@@ -577,7 +581,10 @@ fn tcp_info<S: crate::System>(
         // sent its SYN.
         let syn_sent = state == crate::linux_extra::TCP_SYN_SENT;
         out.extend_from_slice(&[state, 0, 0, 0, 0, 0, 0, 1]);
-        u32s(&mut out, &[1_000_000, 0]);
+        u32s(
+            &mut out,
+            &[(TCP_TIMEOUT_INIT / NANOSECONDS_PER_MICROSECOND) as u32, 0],
+        );
         if syn_sent {
             u32s(&mut out, &[TCP_MSS_SYN_SENT, 88]);
         } else {
@@ -687,7 +694,7 @@ fn tcp_info<S: crate::System>(
         ],
     );
     let delivery = if traffic.data_segs_out > 0 {
-        u64::from(mss) * 1_000_000 / u64::from(MODEL_RTT)
+        u64::from(mss) * MICROSECONDS_PER_SECOND / u64::from(MODEL_RTT)
     } else {
         0
     };
@@ -723,7 +730,8 @@ pub(super) struct TimeWait {
 /// The ports in use: every socket holding one, and closed connections still holding theirs.
 #[derive(Default)]
 pub(crate) struct Ports {
-    pub(super) bound: alloc::collections::BTreeMap<(Protocol, u16), Vec<Weak<RefCell<Socket>>>>,
+    pub(super) bound:
+        alloc::collections::BTreeMap<(Protocol, u16), Vec<Weak<AtomicRefCell<Socket>>>>,
     /// Closed TCP connections in TIME_WAIT.
     pub(super) time_wait: Vec<TimeWait>,
     /// Connections to the outside and name lookups under way.
@@ -760,8 +768,8 @@ fn neighbour(kernel: &mut Kernel, to: &[u8; 16], through_lo: bool, tcp: bool) {
     }
 }
 
-fn inet(socket: &SocketRef) -> core::cell::RefMut<'_, Inet> {
-    core::cell::RefMut::map(socket.borrow_mut(), |own| {
+fn inet(socket: &SocketRef) -> atomic_refcell::AtomicRefMut<'_, Inet> {
+    atomic_refcell::AtomicRefMut::map(socket.borrow_mut(), |own| {
         own.inet.as_deref_mut().expect("an internet socket")
     })
 }
@@ -775,8 +783,8 @@ impl Inet {
     }
 }
 
-fn inet_ref(socket: &SocketRef) -> core::cell::Ref<'_, Inet> {
-    core::cell::Ref::map(socket.borrow(), |own| {
+fn inet_ref(socket: &SocketRef) -> atomic_refcell::AtomicRef<'_, Inet> {
+    atomic_refcell::AtomicRef::map(socket.borrow(), |own| {
         own.inet.as_deref().expect("an internet socket")
     })
 }
@@ -800,7 +808,7 @@ pub(super) fn create<S: crate::System>(
         return Err(Errno::EINVAL);
     }
     let refuse = |kernel: &mut Kernel, cx: &mut Context<'_, S>, answer: Errno| {
-        let detail = (u64::from(family) << 32) | (u64::from(kind) << 16) | u64::from(protocol);
+        let detail = crate::counters::socket_detail(family, kind, protocol);
         Err(kernel
             .counters
             .refuse(cx.host, crate::reason::PROTOCOL_NOT_BUILT, detail, answer))
@@ -925,13 +933,13 @@ impl Ports {
     fn hold(&mut self, protocol: Protocol, port: u16, socket: &SocketRef) {
         let holders = self.bound.entry((protocol, port)).or_default();
         holders.retain(|other| other.strong_count() > 0);
-        holders.push(Rc::downgrade(socket));
+        holders.push(Arc::downgrade(socket));
     }
 
     fn let_go(&mut self, protocol: Protocol, port: u16, socket: &SocketRef) {
         if let Some(holders) = self.bound.get_mut(&(protocol, port)) {
             holders.retain(|other| {
-                other.strong_count() > 0 && !core::ptr::eq(other.as_ptr(), Rc::as_ptr(socket))
+                other.strong_count() > 0 && !core::ptr::eq(other.as_ptr(), Arc::as_ptr(socket))
             });
             if holders.is_empty() {
                 self.bound.remove(&(protocol, port));
@@ -994,7 +1002,7 @@ fn conflicts(
     let reuse = flag(&own, SOL_SOCKET, SO_REUSEADDR);
     let reuse_port = flag(&own, SOL_SOCKET, SO_REUSEPORT);
     for other in kernel.sockets.inet.holders(protocol, port) {
-        if Rc::ptr_eq(&other, socket) {
+        if Arc::ptr_eq(&other, socket) {
             continue;
         }
         let them = other.borrow();
@@ -1327,16 +1335,25 @@ fn disconnect_tcp<S: crate::System>(
         State::Connected => reset_peer(kernel, cx, socket),
         State::Closed => {}
     }
+    super::outside::disconnect(kernel, cx, socket);
     let (packets, port) = {
         let mut own = socket.borrow_mut();
+        // A connection made or being made is left with the reset pending, as Linux leaves it.
+        let reset = state == State::Connected
+            || own
+                .inet
+                .as_deref()
+                .is_some_and(|inet| inet.connecting.is_some());
         own.state = State::Closed;
         own.peer = None;
         own.shutdown = 0;
-        own.error = 0;
+        own.error = if reset { Errno::ECONNRESET.0 as i32 } else { 0 };
         let family = own.family;
         let inet = own.inet.as_deref_mut().unwrap();
         inet.remote = None;
         inet.connecting = None;
+        inet.outside = None;
+        inet.room = false;
         inet.done = false;
         // Closing lets go of what the program did not choose (`inet_reset_saddr`, and
         // `tcp_set_state`'s `inet_put_port`, which leaves the port shown); a socket already
@@ -1372,7 +1389,7 @@ fn reset_peer<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, so
         .borrow()
         .peer
         .as_ref()
-        .is_some_and(|back| Rc::ptr_eq(back, socket));
+        .is_some_and(|back| Arc::ptr_eq(back, socket));
     if back {
         reset(kernel, cx, &peer);
     }
@@ -1386,7 +1403,7 @@ fn reset<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket:
         if let Some(listener) = listener.upgrade() {
             inet(&listener)
                 .deferred
-                .retain(|held| !Rc::ptr_eq(held, socket));
+                .retain(|held| !Arc::ptr_eq(held, socket));
         }
         socket.borrow_mut().state = State::Closed;
         super::released(kernel, cx, socket);
@@ -1488,8 +1505,8 @@ fn tcp_connect<S: crate::System>(
         kernel
             .counters
             .count(cx.host, crate::reason::TCP_BACKLOG_WAIT, 0);
-        inet(socket).connecting = Some(Rc::downgrade(&listener));
-        inet(&listener).waiting.push_back(Rc::downgrade(socket));
+        inet(socket).connecting = Some(Arc::downgrade(&listener));
+        inet(&listener).waiting.push_back(Arc::downgrade(socket));
         if nonblocking {
             inet(socket).in_progress = true;
             return Err(Errno::EINPROGRESS);
@@ -1688,9 +1705,9 @@ fn join<S: crate::System>(
     if defer > 0 && requests <= listener.borrow().max_backlog as usize {
         let now = kernel.entry_now;
         let until = now + defer * NANOSECONDS_PER_SECOND;
-        inet(&embryo).deferral = Some((Rc::downgrade(listener), now, until));
+        inet(&embryo).deferral = Some((Arc::downgrade(listener), now, until));
         inet(listener).deferred.push(embryo);
-        crate::syscall::timer::start_deferral(kernel, Rc::downgrade(listener), until);
+        crate::syscall::timer::start_deferral(kernel, Arc::downgrade(listener), until);
     } else {
         listener.borrow_mut().backlog.push_back(embryo);
         super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
@@ -1758,14 +1775,14 @@ fn arrived<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, embry
         let now = kernel.entry_now;
         let sent = !embryo.borrow().queue.is_empty() || inet_ref(embryo).done;
         let next = if sent {
-            now + 200_000_000
+            now + TCP_RTO_MIN
         } else {
             now + deferred_request(&embryo.borrow(), now).map_or(0, |(left, _)| left)
         };
         if let Some((_, _, until)) = inet(embryo).deferral.as_mut() {
             *until = next;
         }
-        crate::syscall::timer::start_deferral(kernel, Rc::downgrade(&listener), next);
+        crate::syscall::timer::start_deferral(kernel, Arc::downgrade(&listener), next);
         return;
     }
     let Some(deferral) = inet(embryo).deferral.take() else {
@@ -1774,7 +1791,7 @@ fn arrived<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, embry
     if let Some(listener) = deferral.0.upgrade() {
         inet(&listener)
             .deferred
-            .retain(|held| !Rc::ptr_eq(held, embryo));
+            .retain(|held| !Arc::ptr_eq(held, embryo));
         listener.borrow_mut().backlog.push_back(embryo.clone());
         super::data_ready(kernel, cx, &listener, EPOLLIN | EPOLLRDNORM);
     }
@@ -1825,7 +1842,7 @@ pub(super) fn deferred_request(socket: &Socket, now: u64) -> Option<(u64, u64)> 
     let (mut fires, mut at, mut timeout) = (0u64, NANOSECONDS_PER_SECOND, NANOSECONDS_PER_SECOND);
     while at <= elapsed {
         fires += 1;
-        timeout = (timeout * 2).min(120_000_000_000);
+        timeout = (timeout * 2).min(TCP_RTO_MAX);
         at += timeout;
     }
     Some((at - elapsed, fires))
@@ -1872,7 +1889,7 @@ pub(super) fn embryo(
         inet.sndbuf_set = listening.sndbuf_set;
         inet.rcvbuf_set = listening.rcvbuf_set;
         new.inet = Some(alloc::boxed::Box::new(inet));
-        Rc::new(RefCell::new(new))
+        Arc::new(AtomicRefCell::new(new))
     };
     let port = inet_ref(listener).local.port;
     kernel.sockets.inet.hold(Protocol::Tcp, port, &embryo);
@@ -2218,7 +2235,7 @@ pub(super) fn released<S: crate::System>(
                     if let (true, Some(until), Some(client)) = (sent, until, client) {
                         crate::syscall::timer::start_deferral(
                             kernel,
-                            Rc::downgrade(&client),
+                            Arc::downgrade(&client),
                             until,
                         );
                     }
@@ -2392,8 +2409,8 @@ fn tcp_send<S: crate::System>(
                 return Err(error);
             }
             let size = (total - sent).min(TCP_PIECE);
-            let data = gather(kernel, cx, tid, message.data, sent, size)?;
-            match super::outside::send(kernel, cx, socket, id, &data) {
+            let mut data = gather(kernel, cx, tid, message.data, sent, size)?;
+            match super::outside::send(kernel, cx, socket, id, &mut data) {
                 Ok(count) => {
                     carry_outside(kernel, socket, count as u64, false, true);
                     sent += count as u64;
@@ -2498,7 +2515,7 @@ fn empty_packet(kernel: &Kernel, tid: Tid, socket: &SocketRef, owner: u32) -> Pa
         consumed: 0,
         files: Vec::new(),
         cred: super::own_cred(kernel, tid),
-        sender: Rc::downgrade(socket),
+        sender: Arc::downgrade(socket),
         truesize: 0,
         source: None,
         arrival: None,
@@ -2591,7 +2608,7 @@ fn urgent_arrives<S: crate::System>(
         consumed: 0,
         files: Vec::new(),
         cred: super::own_cred(kernel, tid),
-        sender: Rc::downgrade(socket),
+        sender: Arc::downgrade(socket),
         truesize: 1,
         source: None,
         arrival: None,
@@ -2724,7 +2741,7 @@ fn sent_control<S: crate::System>(
         Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
-            (u64::from(level) << 32) | u64::from(kind),
+            crate::counters::detail(level, kind),
             Errno::EINVAL,
         ))
     };
@@ -4253,7 +4270,7 @@ pub(super) fn set_option<S: crate::System>(
         Some(Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
-            (u64::from(level) << 32) | u64::from(name),
+            crate::counters::detail(level, name),
             Errno::ENOPROTOOPT,
         )))
     };
@@ -4325,7 +4342,7 @@ pub(super) fn set_option<S: crate::System>(
                         kernel.counters.count(
                             cx.host,
                             crate::reason::OPTION_NOT_ACTED_ON,
-                            (u64::from(level) << 32) | u64::from(name),
+                            crate::counters::detail(level, name),
                         );
                     }
                     store(socket, i32::from(value != 0))
@@ -4371,25 +4388,28 @@ pub(super) fn set_option<S: crate::System>(
                         kernel.counters.count(
                             cx.host,
                             crate::reason::OPTION_NOT_ACTED_ON,
-                            (u64::from(level) << 32) | u64::from(name),
+                            crate::counters::detail(level, name),
                         );
                     }
                     store(socket, value)
                 }
                 // Retransmission's bounds: nothing is lost between the container's own sockets.
                 TCP_RTO_MAX_MS => {
-                    if !(1000..=120_000).contains(&value) {
+                    let most = TCP_RTO_MAX / NANOSECONDS_PER_MILLISECOND;
+                    let least = NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MILLISECOND;
+                    if !(least..=most).contains(&(value as u64)) {
                         return Some(Err(Errno::EINVAL));
                     }
                     store(socket, value)
                 }
-                // Whole jiffies (HZ 1000) of at least two and at most TCP_RTO_MIN.
+                // Whole jiffies of at least two and at most TCP_RTO_MIN (`usecs_to_jiffies`).
                 TCP_RTO_MIN_US => {
-                    let jiffies = (i64::from(value) + 999).div_euclid(1000);
+                    let per_jiffy = (NANOSECONDS_PER_JIFFY / NANOSECONDS_PER_MICROSECOND) as i64;
+                    let jiffies = (i64::from(value) + per_jiffy - 1).div_euclid(per_jiffy);
                     if !(2..=200).contains(&jiffies) {
                         return Some(Err(Errno::EINVAL));
                     }
-                    store(socket, (jiffies * 1000) as i32)
+                    store(socket, (jiffies * per_jiffy) as i32)
                 }
                 TCP_KEEPIDLE | TCP_KEEPINTVL => {
                     if !(1..=32767).contains(&value) {
@@ -4726,7 +4746,7 @@ pub(super) fn get_option<S: crate::System>(
         Some(Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
-            (u64::from(level) << 32) | u64::from(name),
+            crate::counters::detail(level, name),
             Errno::ENOPROTOOPT,
         )))
     };
@@ -4805,14 +4825,14 @@ pub(super) fn get_option<S: crate::System>(
             TCP_REPAIR_WINDOW if room != 20 => Some(Err(Errno::EINVAL)),
             TCP_REPAIR_WINDOW | TCP_AO_REPAIR => Some(Err(Errno::EPERM)),
             // `tcp_clock_ms`: the monotonic clock in milliseconds, with no offset here.
-            TCP_TIMESTAMP => int((kernel.entry_now / 1_000_000) as u32 as i32),
+            TCP_TIMESTAMP => int((kernel.entry_now / NANOSECONDS_PER_MILLISECOND) as u32 as i32),
             // Cubic keeps no information to give, and no SYN is saved, no upper layer protocol
             // set and no fast open key made: nothing.
             TCP_CC_INFO | TCP_SAVED_SYN | TCP_ULP | TCP_FASTOPEN_KEY => Some(Ok(Vec::new())),
             TCP_SAVE_SYN | TCP_TX_DELAY => kept(0),
             TCP_ZEROCOPY_RECEIVE if room < 16 => Some(Err(Errno::EINVAL)),
-            TCP_RTO_MAX_MS => kept(120_000),
-            TCP_RTO_MIN_US => kept(200_000),
+            TCP_RTO_MAX_MS => kept((TCP_RTO_MAX / NANOSECONDS_PER_MILLISECOND) as i32),
+            TCP_RTO_MIN_US => kept((TCP_RTO_MIN / NANOSECONDS_PER_MICROSECOND) as i32),
             _ => not_built(kernel, cx),
         },
         SOL_UDP if protocol == Protocol::Udp => {

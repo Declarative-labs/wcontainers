@@ -6,9 +6,9 @@
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::rc::Weak;
+use alloc::sync::Weak;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use crate::file::OpenFile;
 use crate::fs::Node;
@@ -533,7 +533,7 @@ pub(crate) struct Pty {
     /// The slave's node in devpts, until the master's last close takes it away.
     pub slave_node: Node,
     /// The open files of each side, for their counts and for hanging up.
-    pub files: [Vec<Weak<RefCell<OpenFile>>>; 2],
+    pub files: [Vec<Weak<AtomicRefCell<OpenFile>>>; 2],
     /// Whether each side has had its last close dealt with since it was last opened.
     pub closed: [bool; 2],
     /// Signals for process groups that keys and size changes raised, for the caller to send.

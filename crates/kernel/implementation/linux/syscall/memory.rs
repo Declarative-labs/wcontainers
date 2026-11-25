@@ -223,16 +223,25 @@ pub(super) fn do_mmap<S: crate::System>(
         }
         address
     } else {
-        let hint = page_down(address);
-        let hint_fits = hint >= LOWEST_ADDRESS
-            && hint
-                .checked_add(length)
-                .is_some_and(|end| end <= map.ceiling && map.free_for_placement(hint, end));
+        // A hint below the lowest address a mapping may take is moved up to it
+        // (`round_hint_to_min`).
+        let hint = match page_down(address) {
+            0 => 0,
+            hint => hint.max(LOWEST_ADDRESS),
+        };
+        let hint_fits = hint
+            .checked_add(length)
+            .is_some_and(|end| end <= map.ceiling && map.free_for_placement(hint, end));
         if hint != 0 && hint_fits {
             hint
         } else {
             hint_above = hint != 0 && above;
-            map.find_free(length).ok_or(Errno::ENOMEM)?
+            if hint == 0 && file.is_none() && flags & MAP_SHARED == 0 {
+                map.find_free_anonymous(length)
+            } else {
+                map.find_free(length)
+            }
+            .ok_or(Errno::ENOMEM)?
         }
     };
     if flags & MAP_FIXED_NOREPLACE != 0
@@ -420,7 +429,7 @@ pub(super) fn do_mmap<S: crate::System>(
                     regular.set_mapped();
                     regular.size()
                 }
-                Content::Backend(remote) => remote.size.get(),
+                Content::Backend(remote) => remote.size.load(),
                 _ => 0,
             };
             let file_pages = page_up(size).saturating_sub(offset);
@@ -536,7 +545,7 @@ pub(super) fn remap_file_pages<S: crate::System>(
     };
     let (node, path) = (node.clone(), path.clone());
     let same = |mapping: &Mapping| {
-        matches!(&mapping.backing, Backing::File { node: other, .. } if alloc::rc::Rc::ptr_eq(other, &node))
+        matches!(&mapping.backing, Backing::File { node: other, .. } if alloc::sync::Arc::ptr_eq(other, &node))
             && mapping.permissions == first.permissions
             && mapping.allowed == first.allowed
             && mapping.shared
@@ -578,7 +587,7 @@ pub(super) fn remap_file_pages<S: crate::System>(
     }
     let file_size = match &node.borrow().content {
         Content::Regular(regular) => regular.size(),
-        Content::Backend(remote) => remote.size.get(),
+        Content::Backend(remote) => remote.size.load(),
         _ => 0,
     };
     let file_pages = page_up(file_size).saturating_sub(offset);
@@ -1295,7 +1304,17 @@ fn remap_at<S: crate::System>(
     if request.flags & MREMAP_MAYMOVE == 0 {
         return Err(Errno::ENOMEM);
     }
-    let destination = map.find_free(new_length).ok_or(Errno::ENOMEM)?;
+    // `get_unmapped_area` with no hint, for the mapping's file or anonymous memory.
+    let anonymous = matches!(
+        mapping.backing,
+        Backing::Anonymous | Backing::Heap | Backing::Stack | Backing::Droppable
+    );
+    let destination = if anonymous && !mapping.shared {
+        map.find_free_anonymous(new_length)
+    } else {
+        map.find_free(new_length)
+    }
+    .ok_or(Errno::ENOMEM)?;
     drop(map);
     move_range(cx, kernel, tid, mapping, request, destination)
 }

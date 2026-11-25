@@ -52,7 +52,7 @@ pub(super) fn exit_group<S: crate::System>(
 const MAX_ARG_STRINGS: usize = 0x7fff_ffff;
 
 /// The longest one argument or variable may be (`MAX_ARG_STRLEN`).
-pub(crate) const MAX_ARG_STRLEN: u64 = 32 * 4096;
+pub(crate) const MAX_ARG_STRLEN: u64 = wcontainers_abi::PAGE_SIZE * 32;
 
 /// Reads a null-terminated list of string pointers, as `execve`'s `count` does.
 fn read_pointers(guest: &mut crate::user::Guest<'_>, mut address: u64) -> Result<Vec<u64>, Errno> {
@@ -1602,7 +1602,7 @@ pub(super) fn capget<S: crate::System>(
     let credentials = kernel.credentials(tid).clone();
     let half = |set: u64, upper: bool| {
         if upper {
-            (set >> 32) as u32
+            (set >> u32::BITS) as u32
         } else {
             set as u32
         }
@@ -1638,9 +1638,9 @@ pub(super) fn capset<S: crate::System>(
             u64::from(u32::from_le_bytes(four.try_into().expect("4 bytes")))
         })
     };
-    let effective = word(0) | word(3) << 32;
-    let permitted = word(1) | word(4) << 32;
-    let inheritable = word(2) | word(5) << 32;
+    let effective = word(0) | word(3) << u32::BITS;
+    let permitted = word(1) | word(4) << u32::BITS;
+    let inheritable = word(2) | word(5) << u32::BITS;
     changing(kernel, tid, true, |credentials| {
         let can_set_pcap = credentials.has(crate::linux::general::CAP_SETPCAP);
         // Linux's `cap_capset` rules.

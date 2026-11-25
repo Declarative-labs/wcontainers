@@ -4,7 +4,7 @@
 //! cache. A backend file's block takes each page from the backend when it is first touched
 //! ([`fill`]) and is written back while a shared mapping may write it.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -47,7 +47,7 @@ pub(crate) fn backend_block<S: crate::System>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S>,
     node: &Node,
-    handle: Option<&Rc<Handle>>,
+    handle: Option<&Arc<Handle>>,
     length: u64,
     writer: bool,
 ) -> Result<(), Errno> {
@@ -78,7 +78,7 @@ fn backend_grow<S: crate::System>(
     cx: &mut Context<'_, S>,
     node: &Node,
     old: Option<Block>,
-    through: &Rc<Handle>,
+    through: &Arc<Handle>,
     length: u64,
 ) -> Result<(), Errno> {
     let id = cx
@@ -106,7 +106,7 @@ fn backend_grow<S: crate::System>(
                     handle: through.clone(),
                     written: false,
                     dirtied: false,
-                    sent: core::cell::Cell::new(0),
+                    sent: crossbeam_utils::atomic::AtomicCell::new(0),
                     sent_at_attributes: 0,
                     filled: rangemap::RangeSet::new(),
                     failed: rangemap::RangeSet::new(),
@@ -148,7 +148,7 @@ pub(crate) fn fill(node: &Node, pages: Range<u64>) -> Result<(), Errno> {
         let Content::Backend(remote) = &mut inode.content else {
             return Ok(());
         };
-        let size = remote.size.get();
+        let size = remote.size.load();
         let Some(held) = &mut remote.pages else {
             return Ok(());
         };
@@ -354,7 +354,7 @@ pub(crate) fn backend_stored<S: crate::System>(
     let Content::Backend(remote) = &mut inode.content else {
         return;
     };
-    let size = remote.size.get();
+    let size = remote.size.load();
     let Some(held) = &mut remote.pages else {
         return;
     };
@@ -499,7 +499,7 @@ pub(crate) fn backend_write_back<S: crate::System>(
 ) -> Result<(), Errno> {
     let (handle, size, block) = match &node.borrow().content {
         Content::Backend(remote) => match &remote.pages {
-            Some(pages) if pages.dirtied => (pages.handle.clone(), remote.size.get(), pages.block),
+            Some(pages) if pages.dirtied => (pages.handle.clone(), remote.size.load(), pages.block),
             _ => return Ok(()),
         },
         _ => return Ok(()),
@@ -665,7 +665,7 @@ fn mapped_offset(backing: &Backing, node: &Node) -> Option<u64> {
             node: mapped,
             offset,
             ..
-        } if Rc::ptr_eq(mapped, node) => Some(*offset),
+        } if Arc::ptr_eq(mapped, node) => Some(*offset),
         _ => None,
     }
 }
@@ -679,7 +679,7 @@ pub(crate) fn changed<S: crate::System>(
 ) -> Result<(), Errno> {
     let size = match &node.borrow().content {
         Content::Regular(regular) if regular.block.is_some() => regular.size(),
-        Content::Backend(remote) if remote.pages.is_some() => remote.size.get(),
+        Content::Backend(remote) if remote.pages.is_some() => remote.size.load(),
         _ => return Ok(()),
     };
     let away = kernel.live_maps_away();

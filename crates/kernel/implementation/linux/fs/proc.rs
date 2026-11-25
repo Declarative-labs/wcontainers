@@ -21,6 +21,25 @@ use crate::sysctl::{
     SHMMNI_PATH, SYSCTL_ROOT, VALUE_SEPARATOR,
 };
 
+/// What /proc/cpuinfo says of each processor before its number, and after it.
+const CPUINFO_PROCESSOR: &str = "processor\t: ";
+const CPUINFO_FIELDS: &str = "\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
+CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\n\
+CPU revision\t: 0\n\n";
+
+/// The name of /proc/stat's line of all processors' times, and of one processor's before its
+/// number.
+const STAT_ALL_PROCESSORS: &str = "cpu ";
+const STAT_PROCESSOR: &str = "cpu";
+/// The times /proc/stat gives a processor after its name, or all of them: none is counted.
+const STAT_TIMES: &str = " 0 0 0 0 0 0 0 0 0 0\n";
+/// /proc/stat after the processors' lines: no interrupt or switch counted, then the boot time.
+const STAT_BOOT: &str = "intr 0\nctxt 0\nbtime ";
+/// /proc/stat between the boot time and the processes made.
+const STAT_PROCESSES: &str = "\nprocesses ";
+/// /proc/stat's last lines: one task running, the reader, and no soft interrupt counted.
+const STAT_TASKS: &str = "\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n";
+
 /// Parts a `status` field's name from its value.
 const STATUS_SEPARATOR: char = '\t';
 
@@ -408,6 +427,8 @@ const TIMENS_PAD: char = ' ';
 /// `/proc`'s files of the layout's randomization.
 const RANDOMIZE_VA_SPACE: &str = "sys/kernel/randomize_va_space";
 const MMAP_RND_BITS: &str = "sys/vm/mmap_rnd_bits";
+/// `/proc`'s file of the lowest address a mapping may take.
+const MMAP_MIN_ADDR: &str = "sys/vm/mmap_min_addr";
 const MSG_NEXT_ID: &str = "sys/kernel/msg_next_id";
 const SEM_NEXT_ID: &str = "sys/kernel/sem_next_id";
 const SHM_NEXT_ID: &str = "sys/kernel/shm_next_id";
@@ -530,6 +551,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/vm", Global::Directory),
     ("sys/vm/drop_caches", Global::File(0o200)),
     ("sys/vm/hugetlb_shm_group", Global::File(0o644)),
+    (MMAP_MIN_ADDR, Global::File(0o644)),
     (MMAP_RND_BITS, Global::File(0o600)),
     ("sys/vm/nr_hugepages", Global::File(0o644)),
     ("sys/vm/nr_overcommit_hugepages", Global::File(0o644)),
@@ -1658,7 +1680,7 @@ pub(crate) fn link_target(
                     walk.path_of(&file.node)
                         .unwrap_or_else(|| file.path.clone())
                 }
-                _ if inode.shown_deleted() || file.unnamed() => {
+                _ if file.shown_deleted() || file.unnamed() => {
                     let mut path = file.path.clone();
                     path.extend_from_slice(crate::fs::DELETED.as_bytes());
                     path
@@ -1795,12 +1817,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     }
                 }
                 "cpuinfo" => {
-                    let _ = write!(
-                        out,
-                        "processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
-                         CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\n\
-                         CPU part\t: 0x000\nCPU revision\t: 0\n\n"
-                    );
+                    for processor in 0..machine.processors.get() {
+                        out.push_str(CPUINFO_PROCESSOR);
+                        out.push_str(&processor.to_string());
+                        out.push_str(CPUINFO_FIELDS);
+                    }
                 }
                 // The registered file systems that are built, in Linux's order of registration.
                 "filesystems" => out.push_str(
@@ -1816,10 +1837,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "meminfo" => {
-                    let total = machine.memory_bytes / 1024;
+                    use crate::linux_extra::KIB;
+                    let total = machine.memory_bytes / KIB;
                     let (in_use, shared) = source.memory_in_use;
-                    let free = total - in_use / 1024;
-                    let shared = shared / 1024;
+                    let free = total - in_use / KIB;
+                    let shared = shared / KIB;
                     let _ = write!(
                         out,
                         "MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\
@@ -1832,12 +1854,18 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "stat" => {
-                    let _ = write!(
-                        out,
-                        "cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime {}\n\
-                         processes {}\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n",
-                        source.view.boot.seconds, source.last_pid
-                    );
+                    out.push_str(STAT_ALL_PROCESSORS);
+                    out.push_str(STAT_TIMES);
+                    for processor in 0..machine.processors.get() {
+                        out.push_str(STAT_PROCESSOR);
+                        out.push_str(&processor.to_string());
+                        out.push_str(STAT_TIMES);
+                    }
+                    out.push_str(STAT_BOOT);
+                    out.push_str(&source.view.boot.seconds.to_string());
+                    out.push_str(STAT_PROCESSES);
+                    out.push_str(&source.last_pid.to_string());
+                    out.push_str(STAT_TASKS);
                 }
                 "uptime" => {
                     let up = source.uptime_nanoseconds;
@@ -1911,7 +1939,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     out.push_str("256\n")
                 }
                 // The cap `listen` puts on a backlog.
-                "sys/net/core/somaxconn" => out.push_str("4096\n"),
+                "sys/net/core/somaxconn" => value_line(&mut out, crate::linux_extra::SOMAXCONN),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");
                 }
@@ -2000,6 +2028,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 RANDOMIZE_VA_SPACE => {
                     value_line(&mut out, crate::memory::RANDOMIZE_VA_SPACE);
                 }
+                MMAP_MIN_ADDR => value_line(&mut out, wcontainers_abi::LOWEST_ADDRESS),
                 MMAP_RND_BITS => {
                     let random =
                         crate::memory::LayoutRandomization::for_space(machine.lowest_tier_top);
@@ -2225,16 +2254,18 @@ fn process_file(
             };
             let _ = writeln!(out, "{shown}");
         }
-        // `proc_oom_score`: two thirds of 1000 plus the badness `oom_badness` gives per thousand
-        // pages of the machine, whose resident part is not tracked here (counted).
+        // `proc_oom_score`: two thirds of the score's whole range plus the badness `oom_badness`
+        // gives per that many pages of the machine, whose resident part is not tracked here
+        // (counted). The range is the adjustment's (`OOM_SCORE_ADJ_MAX`, a thousandth each).
         ProcessFile::OomScore => {
             let adj = i64::from(process.oom_score_adj);
             let points = if adj == i64::from(crate::linux_extra::OOM_SCORE_ADJ_MIN) {
                 0
             } else {
+                let range = i64::from(crate::linux_extra::OOM_SCORE_ADJ_MAX);
                 let pages = (source.machine.memory_bytes / PAGE_SIZE) as i64;
-                let badness = adj * (pages / 1000);
-                (1000 + badness * 1000 / pages) * 2 / 3
+                let badness = adj * (pages / range);
+                (range + badness * range / pages) * 2 / 3
             };
             let _ = writeln!(out, "{points}");
         }

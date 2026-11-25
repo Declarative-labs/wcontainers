@@ -1,7 +1,7 @@
 //! The file layer: inodes, directories, mounts and walking paths, as Linux's VFS does them.
 //!
 //! Every file system here lives in the kernel's memory: the in-memory kind (tmpfs), devices, and the
-//! process information tree. An inode is shared through `Rc`, so an open file keeps an unlinked inode
+//! process information tree. An inode is shared through `Arc`, so an open file keeps an unlinked inode
 //! alive as on Linux.
 
 pub(crate) mod backend;
@@ -10,20 +10,20 @@ pub(crate) mod mounts;
 pub(crate) mod proc;
 
 use alloc::collections::BTreeMap;
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use alloc::vec;
-use core::cell::Cell;
+use crossbeam_utils::atomic::AtomicCell;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SharedId};
 
 use crate::Errno;
 use crate::credentials::Credentials;
 use crate::linux::general::*;
 
-pub(crate) type Node = Rc<RefCell<Inode>>;
+pub(crate) type Node = Arc<AtomicRefCell<Inode>>;
 
 /// Linux's limit on symbolic links followed in one walk (`MAXSYMLINKS`).
 const MAX_SYMLINKS: u32 = 40;
@@ -56,7 +56,7 @@ pub(crate) struct FileSystem {
     /// How it is mounted, as `statfs`'s `ST_*` bits.
     pub flags: u32,
     /// For tmpfs, what it holds against its limits.
-    pub space: Option<Rc<Space>>,
+    pub space: Option<Arc<Space>>,
 }
 
 /// The same file system mounted the same way: a read-only bind mount (`/proc/sys`) is another
@@ -81,84 +81,84 @@ const SHORT_SYMLINK: usize = 128;
 /// links and extended attributes take. A limit of zero is none, as on the kernel's internal mount,
 /// which still counts its pages.
 pub(crate) struct Space {
-    max_blocks: Cell<u64>,
-    max_inodes: Cell<u64>,
-    used_blocks: Cell<u64>,
-    used_ispace: Cell<u64>,
+    max_blocks: AtomicCell<u64>,
+    max_inodes: AtomicCell<u64>,
+    used_blocks: AtomicCell<u64>,
+    used_ispace: AtomicCell<u64>,
     /// Files whose pages a mapping's faults may have brought in, which are not known here.
-    mapped: Cell<u64>,
+    mapped: AtomicCell<u64>,
 }
 
 impl Space {
-    pub fn new(max_blocks: u64, max_inodes: u64) -> Rc<Self> {
-        Rc::new(Self {
-            max_blocks: Cell::new(max_blocks),
-            max_inodes: Cell::new(max_inodes),
-            used_blocks: Cell::new(0),
-            used_ispace: Cell::new(0),
-            mapped: Cell::new(0),
+    pub fn new(max_blocks: u64, max_inodes: u64) -> Arc<Self> {
+        Arc::new(Self {
+            max_blocks: AtomicCell::new(max_blocks),
+            max_inodes: AtomicCell::new(max_inodes),
+            used_blocks: AtomicCell::new(0),
+            used_ispace: AtomicCell::new(0),
+            mapped: AtomicCell::new(0),
         })
     }
 
     /// Sets the limits, as mounting with `size=` and `nr_inodes=` does.
     pub fn set_limits(&self, max_blocks: u64, max_inodes: u64) {
-        self.max_blocks.set(max_blocks);
-        self.max_inodes.set(max_inodes);
+        self.max_blocks.store(max_blocks);
+        self.max_inodes.store(max_inodes);
     }
 
     pub fn max_blocks(&self) -> u64 {
-        self.max_blocks.get()
+        self.max_blocks.load()
     }
 
     pub fn max_inodes(&self) -> u64 {
-        self.max_inodes.get()
+        self.max_inodes.load()
     }
 
     /// Takes inode space (`shmem_reserve_inode` takes [`INODE_SPACE`]); `ENOSPC` when too little
     /// is left.
     pub fn take_ispace(&self, amount: u64) -> Result<(), Errno> {
-        let used = self.used_ispace.get();
-        let max = self.max_inodes.get();
+        let used = self.used_ispace.load();
+        let max = self.max_inodes.load();
         if max != 0 && used + amount > max * INODE_SPACE {
             return Err(Errno::ENOSPC);
         }
-        self.used_ispace.set(used + amount);
+        self.used_ispace.store(used + amount);
         Ok(())
     }
 
     pub fn give_ispace(&self, amount: u64) {
-        self.used_ispace.set(self.used_ispace.get() - amount);
+        self.used_ispace.store(self.used_ispace.load() - amount);
     }
 
     /// The pages that may still be taken.
     pub fn free_blocks(&self) -> u64 {
-        match self.max_blocks.get() {
+        match self.max_blocks.load() {
             0 => u64::MAX,
-            max => max.saturating_sub(self.used_blocks.get()),
+            max => max.saturating_sub(self.used_blocks.load()),
         }
     }
 
     pub fn used_blocks(&self) -> u64 {
-        self.used_blocks.get()
+        self.used_blocks.load()
     }
 
     /// The inodes there is still space for, as `statfs` reports them.
     pub fn free_inodes(&self) -> u64 {
-        (self.max_inodes.get() * INODE_SPACE).saturating_sub(self.used_ispace.get()) / INODE_SPACE
+        (self.max_inodes.load() * INODE_SPACE).saturating_sub(self.used_ispace.load()) / INODE_SPACE
     }
 
     /// Whether a file on it has been mapped, so that pages faults bring in may be missing from the
     /// count.
     pub fn has_mapped_files(&self) -> bool {
-        self.mapped.get() != 0
+        self.mapped.load() != 0
     }
 
     fn take_blocks(&self, count: u64) {
-        self.used_blocks.set(self.used_blocks.get() + count);
+        self.used_blocks.store(self.used_blocks.load() + count);
     }
 
     fn give_blocks(&self, count: u64) {
-        self.used_blocks.set(self.used_blocks.get() - count);
+        self.used_blocks.store(self.used_blocks.load() - count);
     }
 }
 
@@ -332,7 +332,7 @@ pub(crate) struct Inode {
     /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
     /// is gone was released when it closed.
     pub flocks: Vec<(
-        alloc::rc::Weak<RefCell<crate::file::OpenFile>>,
+        alloc::sync::Weak<AtomicRefCell<crate::file::OpenFile>>,
         bool,
         crate::process::Pid,
     )>,
@@ -353,6 +353,10 @@ pub(crate) struct Inode {
     /// Made by `O_TMPFILE` without `O_EXCL` and not linked yet, so a link may name it though it has
     /// no links (`I_LINKABLE`).
     pub linkable: bool,
+    /// Names taken from it while it kept other links: the directory, the name, and the kernel's
+    /// last object number then. A file opened by that name before shows it deleted (Linux's
+    /// unhashed dentry, `d_unlinked`).
+    pub removed_names: Vec<(Weak<AtomicRefCell<Inode>>, Vec<u8>, u64)>,
 }
 
 impl Drop for Inode {
@@ -425,7 +429,7 @@ pub(crate) struct Regular {
     /// which are not known here.
     mapped: bool,
     /// The tmpfs its pages count against.
-    space: Option<Rc<Space>>,
+    space: Option<Arc<Space>>,
     /// Whether it is a System V shared memory segment, whose mappings are never merged (Linux's
     /// `shm_vm_ops` has a `close`).
     pub segment: bool,
@@ -466,7 +470,7 @@ impl Drop for Regular {
         if let Some(space) = &self.space {
             space.give_blocks((self.pages.len() + self.allocated.len()) as u64);
             if self.mapped {
-                space.mapped.set(space.mapped.get() - 1);
+                space.mapped.store(space.mapped.load() - 1);
             }
         }
     }
@@ -474,7 +478,7 @@ impl Drop for Regular {
 
 impl Regular {
     /// Counts the file's pages against a tmpfs from now on.
-    fn count_against(&mut self, space: &Option<Rc<Space>>) {
+    fn count_against(&mut self, space: &Option<Arc<Space>>) {
         if let Some(space) = space {
             space.take_blocks((self.pages.len() + self.allocated.len()) as u64);
         }
@@ -489,7 +493,7 @@ impl Regular {
         if !self.mapped
             && let Some(space) = &self.space
         {
-            space.mapped.set(space.mapped.get() + 1);
+            space.mapped.store(space.mapped.load() + 1);
         }
         self.mapped = true;
     }
@@ -743,7 +747,7 @@ pub(crate) struct Directory {
 pub(crate) struct Place {
     /// The directory above; for the root of a mounted file system, the one above the mount point. None
     /// for the root of everything.
-    pub parent: Option<Weak<RefCell<Inode>>>,
+    pub parent: Option<Weak<AtomicRefCell<Inode>>>,
     /// This directory's name in its parent.
     pub name: Vec<u8>,
     /// The root of a file system mounted here.
@@ -855,7 +859,7 @@ impl Inode {
     /// The block size `stat` reports: the backend's for its inodes, else the file system kind's.
     pub fn block_size(&self) -> u32 {
         match &self.content {
-            Content::Backend(remote) if remote.block_size.get() != 0 => remote.block_size.get(),
+            Content::Backend(remote) if remote.block_size.load() != 0 => remote.block_size.load(),
             _ => self.fs.kind.block_size(),
         }
     }
@@ -887,7 +891,7 @@ impl Inode {
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
             Content::Mqueue(queue) => queue.size,
-            Content::Backend(remote) => remote.size.get(),
+            Content::Backend(remote) => remote.size.load(),
             Content::Special
             | Content::Pipe(_)
             | Content::Pidfd(..)
@@ -901,7 +905,7 @@ impl Inode {
     pub fn blocks(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => (file.pages.len() + file.allocated.len()) as u64 * 8,
-            Content::Backend(remote) => remote.blocks.get(),
+            Content::Backend(remote) => remote.blocks.load(),
             _ if self.has_long_target() => 8,
             _ => 0,
         }
@@ -1011,6 +1015,30 @@ impl Inode {
     /// Whether its name is shown as deleted: it was unlinked, or never had one in any directory.
     pub fn shown_deleted(&self) -> bool {
         self.nlink == 0 || self.is_secret()
+    }
+
+    /// Notes that `name` in `directory` no longer leads here, as of the kernel's object number
+    /// `serial`; what was noted of a directory that is gone is dropped.
+    pub fn name_removed(&mut self, directory: &Node, name: &[u8], serial: u64) {
+        self.removed_names.retain(|(place, gone, _)| {
+            place.strong_count() > 0
+                && !(Weak::ptr_eq(place, &Arc::downgrade(directory)) && gone == name)
+        });
+        self.removed_names
+            .push((Arc::downgrade(directory), name.to_vec(), serial));
+    }
+
+    /// Whether `name` in `directory` was taken from it at or after the kernel's object number
+    /// `since`.
+    pub fn name_removed_since(
+        &self,
+        directory: &Weak<AtomicRefCell<Inode>>,
+        name: &[u8],
+        since: u64,
+    ) -> bool {
+        self.removed_names.iter().any(|(place, gone, serial)| {
+            *serial >= since && Weak::ptr_eq(place, directory) && gone == name
+        })
     }
 
     /// Whether opening it with O_DIRECT is allowed (`FMODE_CAN_ODIRECT`): tmpfs's regular files
@@ -1223,7 +1251,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         }
         space.take_blocks(1);
     }
-    Ok(Rc::new(RefCell::new(Inode {
+    Ok(Arc::new(AtomicRefCell::new(Inode {
         fs,
         ino,
         mode: new.mode,
@@ -1236,7 +1264,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         ctime: new.now,
         btime: new.now,
         place: Place {
-            parent: new.parent.as_ref().map(Rc::downgrade),
+            parent: new.parent.as_ref().map(Arc::downgrade),
             name: new.name,
             mounted: None,
             mount_root: false,
@@ -1252,6 +1280,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         dnotify: Vec::new(),
         leases: Vec::new(),
         linkable: false,
+        removed_names: Vec::new(),
     })))
 }
 
@@ -1470,7 +1499,7 @@ impl<'a> Walk<'a> {
         let found = if name == b"." {
             directory.clone()
         } else if name == b".." {
-            if Rc::ptr_eq(directory, self.root) {
+            if Arc::ptr_eq(directory, self.root) {
                 directory.clone()
             } else {
                 let up = directory
@@ -1593,7 +1622,7 @@ impl<'a> Walk<'a> {
         let mut at = node.clone();
         let mut reachable = true;
         loop {
-            if Rc::ptr_eq(&at, self.root) {
+            if Arc::ptr_eq(&at, self.root) {
                 break;
             }
             let up = {
@@ -1653,7 +1682,7 @@ const UNREACHABLE: &[u8] = b"(unreachable)";
 /// Whether two nodes are the same inode. Inodes of the process information tree are made at each
 /// lookup, so those are the same when they are the same entry.
 pub(crate) fn same_inode(a: &Node, b: &Node) -> bool {
-    if Rc::ptr_eq(a, b) {
+    if Arc::ptr_eq(a, b) {
         return true;
     }
     match (&a.borrow().content, &b.borrow().content) {

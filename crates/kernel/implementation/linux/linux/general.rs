@@ -2292,37 +2292,37 @@ pub const FPE_FLTUNK: u32 =
 pub const FPE_CONDTRAP: u32 =
     wcontainers_kernel::signal_information::ArithmeticErrorCode::FPE_CONDTRAP as u32;
 pub const NSIGFPE: u32 = 15;
-pub const SEGV_MAPERR: u32 = crate::siginfo::codes::SEGV_MAPERR as u32;
-pub const SEGV_ACCERR: u32 = crate::siginfo::codes::SEGV_ACCERR as u32;
-pub const SEGV_BNDERR: u32 = crate::siginfo::codes::SEGV_BNDERR as u32;
-pub const SEGV_PKUERR: u32 = crate::siginfo::codes::SEGV_PKUERR as u32;
-pub const SEGV_ACCADI: u32 = crate::siginfo::codes::SEGV_ACCADI as u32;
-pub const SEGV_ADIDERR: u32 = crate::siginfo::codes::SEGV_ADIDERR as u32;
-pub const SEGV_ADIPERR: u32 = crate::siginfo::codes::SEGV_ADIPERR as u32;
-pub const SEGV_MTEAERR: u32 = crate::siginfo::codes::SEGV_MTEAERR as u32;
-pub const SEGV_MTESERR: u32 = crate::siginfo::codes::SEGV_MTESERR as u32;
-pub const SEGV_CPERR: u32 = crate::siginfo::codes::SEGV_CPERR as u32;
+pub const SEGV_MAPERR: u32 = 1;
+pub const SEGV_ACCERR: u32 = 2;
+pub const SEGV_BNDERR: u32 = 3;
+pub const SEGV_PKUERR: u32 = 4;
+pub const SEGV_ACCADI: u32 = 5;
+pub const SEGV_ADIDERR: u32 = 6;
+pub const SEGV_ADIPERR: u32 = 7;
+pub const SEGV_MTEAERR: u32 = 8;
+pub const SEGV_MTESERR: u32 = 9;
+pub const SEGV_CPERR: u32 = 10;
 pub const NSIGSEGV: u32 = 10;
-pub const BUS_ADRALN: u32 = crate::siginfo::codes::BUS_ADRALN as u32;
-pub const BUS_ADRERR: u32 = crate::siginfo::codes::BUS_ADRERR as u32;
-pub const BUS_OBJERR: u32 = crate::siginfo::codes::BUS_OBJERR as u32;
-pub const BUS_MCEERR_AR: u32 = crate::siginfo::codes::BUS_MCEERR_AR as u32;
-pub const BUS_MCEERR_AO: u32 = crate::siginfo::codes::BUS_MCEERR_AO as u32;
+pub const BUS_ADRALN: u32 = 1;
+pub const BUS_ADRERR: u32 = 2;
+pub const BUS_OBJERR: u32 = 3;
+pub const BUS_MCEERR_AR: u32 = 4;
+pub const BUS_MCEERR_AO: u32 = 5;
 pub const NSIGBUS: u32 = 5;
-pub const TRAP_BRKPT: u32 = crate::siginfo::codes::TRAP_BRKPT as u32;
-pub const TRAP_TRACE: u32 = crate::siginfo::codes::TRAP_TRACE as u32;
-pub const TRAP_BRANCH: u32 = crate::siginfo::codes::TRAP_BRANCH as u32;
-pub const TRAP_HWBKPT: u32 = crate::siginfo::codes::TRAP_HWBKPT as u32;
-pub const TRAP_UNK: u32 = crate::siginfo::codes::TRAP_UNK as u32;
-pub const TRAP_PERF: u32 = crate::siginfo::codes::TRAP_PERF as u32;
+pub const TRAP_BRKPT: u32 = 1;
+pub const TRAP_TRACE: u32 = 2;
+pub const TRAP_BRANCH: u32 = 3;
+pub const TRAP_HWBKPT: u32 = 4;
+pub const TRAP_UNK: u32 = 5;
+pub const TRAP_PERF: u32 = 6;
 pub const NSIGTRAP: u32 = 6;
 pub const TRAP_PERF_FLAG_ASYNC: u32 = 1;
-pub const CLD_EXITED: u32 = crate::siginfo::codes::CLD_EXITED as u32;
-pub const CLD_KILLED: u32 = crate::siginfo::codes::CLD_KILLED as u32;
-pub const CLD_DUMPED: u32 = crate::siginfo::codes::CLD_DUMPED as u32;
-pub const CLD_TRAPPED: u32 = crate::siginfo::codes::CLD_TRAPPED as u32;
-pub const CLD_STOPPED: u32 = crate::siginfo::codes::CLD_STOPPED as u32;
-pub const CLD_CONTINUED: u32 = crate::siginfo::codes::CLD_CONTINUED as u32;
+pub const CLD_EXITED: u32 = 1;
+pub const CLD_KILLED: u32 = 2;
+pub const CLD_DUMPED: u32 = 3;
+pub const CLD_TRAPPED: u32 = 4;
+pub const CLD_STOPPED: u32 = 5;
+pub const CLD_CONTINUED: u32 = 6;
 pub const NSIGCHLD: u32 = 6;
 pub const POLL_IN: u32 = wcontainers_kernel::signal_information::PollCode::POLL_IN as u32;
 pub const POLL_OUT: u32 = wcontainers_kernel::signal_information::PollCode::POLL_OUT as u32;
@@ -2331,8 +2331,8 @@ pub const POLL_ERR: u32 = wcontainers_kernel::signal_information::PollCode::POLL
 pub const POLL_PRI: u32 = wcontainers_kernel::signal_information::PollCode::POLL_PRI as u32;
 pub const POLL_HUP: u32 = wcontainers_kernel::signal_information::PollCode::POLL_HUP as u32;
 pub const NSIGPOLL: u32 = 6;
-pub const SYS_SECCOMP: u32 = crate::siginfo::codes::SYS_SECCOMP as u32;
-pub const SYS_USER_DISPATCH: u32 = crate::siginfo::codes::SYS_USER_DISPATCH as u32;
+pub const SYS_SECCOMP: u32 = 1;
+pub const SYS_USER_DISPATCH: u32 = 2;
 pub const NSIGSYS: u32 = 2;
 pub const EMT_TAGOVF: u32 = 1;
 pub const NSIGEMT: u32 = 1;
@@ -3235,15 +3235,6 @@ where
         Self::extract_bit(byte, index)
     }
     #[inline]
-    pub unsafe fn raw_get_bit(this: *const Self, index: usize) -> bool {
-        debug_assert!(index / 8 < core::mem::size_of::<Storage>());
-        let byte_index = index / 8;
-        let byte = unsafe {
-            *(core::ptr::addr_of!((*this).storage) as *const u8).offset(byte_index as isize)
-        };
-        Self::extract_bit(byte, index)
-    }
-    #[inline]
     fn change_bit(byte: u8, index: usize, val: bool) -> u8 {
         let bit_index = if cfg!(target_endian = "big") {
             7 - (index % 8)
@@ -3261,15 +3252,6 @@ where
         *byte = Self::change_bit(*byte, index, val);
     }
     #[inline]
-    pub unsafe fn raw_set_bit(this: *mut Self, index: usize, val: bool) {
-        debug_assert!(index / 8 < core::mem::size_of::<Storage>());
-        let byte_index = index / 8;
-        let byte = unsafe {
-            (core::ptr::addr_of_mut!((*this).storage) as *mut u8).offset(byte_index as isize)
-        };
-        unsafe { *byte = Self::change_bit(*byte, index, val) };
-    }
-    #[inline]
     pub fn get(&self, bit_offset: usize, bit_width: u8) -> u64 {
         debug_assert!(bit_width <= 64);
         debug_assert!(bit_offset / 8 < self.storage.as_ref().len());
@@ -3277,24 +3259,6 @@ where
         let mut val = 0;
         for i in 0..(bit_width as usize) {
             if self.get_bit(i + bit_offset) {
-                let index = if cfg!(target_endian = "big") {
-                    bit_width as usize - 1 - i
-                } else {
-                    i
-                };
-                val |= 1 << index;
-            }
-        }
-        val
-    }
-    #[inline]
-    pub unsafe fn raw_get(this: *const Self, bit_offset: usize, bit_width: u8) -> u64 {
-        debug_assert!(bit_width <= 64);
-        debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
-        debug_assert!((bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>());
-        let mut val = 0;
-        for i in 0..(bit_width as usize) {
-            if unsafe { Self::raw_get_bit(this, i + bit_offset) } {
                 let index = if cfg!(target_endian = "big") {
                     bit_width as usize - 1 - i
                 } else {
@@ -3321,22 +3285,6 @@ where
             self.set_bit(index + bit_offset, val_bit_is_set);
         }
     }
-    #[inline]
-    pub unsafe fn raw_set(this: *mut Self, bit_offset: usize, bit_width: u8, val: u64) {
-        debug_assert!(bit_width <= 64);
-        debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
-        debug_assert!((bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>());
-        for i in 0..(bit_width as usize) {
-            let mask = 1 << i;
-            let val_bit_is_set = val & mask == mask;
-            let index = if cfg!(target_endian = "big") {
-                bit_width as usize - 1 - i
-            } else {
-                i
-            };
-            unsafe { Self::raw_set_bit(this, index + bit_offset, val_bit_is_set) };
-        }
-    }
 }
 impl<T> __IncompleteArrayField<T> {
     #[inline]
@@ -3351,14 +3299,6 @@ impl<T> __IncompleteArrayField<T> {
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self as *mut _ as *mut T
     }
-    #[inline]
-    pub unsafe fn as_slice(&self, len: usize) -> &[T] {
-        ::core::slice::from_raw_parts(self.as_ptr(), len)
-    }
-    #[inline]
-    pub unsafe fn as_mut_slice(&mut self, len: usize) -> &mut [T] {
-        ::core::slice::from_raw_parts_mut(self.as_mut_ptr(), len)
-    }
 }
 impl<T> ::core::fmt::Debug for __IncompleteArrayField<T> {
     fn fmt(&self, fmt: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
@@ -3367,240 +3307,4 @@ impl<T> ::core::fmt::Debug for __IncompleteArrayField<T> {
 }
 impl membarrier_cmd {
     pub const MEMBARRIER_CMD_SHARED: membarrier_cmd = membarrier_cmd::MEMBARRIER_CMD_GLOBAL;
-}
-impl user_desc {
-    #[inline]
-    pub fn seg_32bit(&self) -> super::ctypes::c_uint {
-        unsafe { ::core::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u32) }
-    }
-    #[inline]
-    pub fn set_seg_32bit(&mut self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            self._bitfield_1.set(0usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn seg_32bit_raw(this: *const Self) -> super::ctypes::c_uint {
-        unsafe {
-            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::core::ptr::addr_of!((*this)._bitfield_1),
-                0usize,
-                1u8,
-            ) as u32)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_seg_32bit_raw(this: *mut Self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
-                0usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn contents(&self) -> super::ctypes::c_uint {
-        unsafe { ::core::mem::transmute(self._bitfield_1.get(1usize, 2u8) as u32) }
-    }
-    #[inline]
-    pub fn set_contents(&mut self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            self._bitfield_1.set(1usize, 2u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn contents_raw(this: *const Self) -> super::ctypes::c_uint {
-        unsafe {
-            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::core::ptr::addr_of!((*this)._bitfield_1),
-                1usize,
-                2u8,
-            ) as u32)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_contents_raw(this: *mut Self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
-                1usize,
-                2u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn read_exec_only(&self) -> super::ctypes::c_uint {
-        unsafe { ::core::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u32) }
-    }
-    #[inline]
-    pub fn set_read_exec_only(&mut self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            self._bitfield_1.set(3usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn read_exec_only_raw(this: *const Self) -> super::ctypes::c_uint {
-        unsafe {
-            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::core::ptr::addr_of!((*this)._bitfield_1),
-                3usize,
-                1u8,
-            ) as u32)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_read_exec_only_raw(this: *mut Self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
-                3usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn limit_in_pages(&self) -> super::ctypes::c_uint {
-        unsafe { ::core::mem::transmute(self._bitfield_1.get(4usize, 1u8) as u32) }
-    }
-    #[inline]
-    pub fn set_limit_in_pages(&mut self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            self._bitfield_1.set(4usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn limit_in_pages_raw(this: *const Self) -> super::ctypes::c_uint {
-        unsafe {
-            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::core::ptr::addr_of!((*this)._bitfield_1),
-                4usize,
-                1u8,
-            ) as u32)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_limit_in_pages_raw(this: *mut Self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
-                4usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn seg_not_present(&self) -> super::ctypes::c_uint {
-        unsafe { ::core::mem::transmute(self._bitfield_1.get(5usize, 1u8) as u32) }
-    }
-    #[inline]
-    pub fn set_seg_not_present(&mut self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            self._bitfield_1.set(5usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn seg_not_present_raw(this: *const Self) -> super::ctypes::c_uint {
-        unsafe {
-            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::core::ptr::addr_of!((*this)._bitfield_1),
-                5usize,
-                1u8,
-            ) as u32)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_seg_not_present_raw(this: *mut Self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
-                5usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn useable(&self) -> super::ctypes::c_uint {
-        unsafe { ::core::mem::transmute(self._bitfield_1.get(6usize, 1u8) as u32) }
-    }
-    #[inline]
-    pub fn set_useable(&mut self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            self._bitfield_1.set(6usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn useable_raw(this: *const Self) -> super::ctypes::c_uint {
-        unsafe {
-            ::core::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::core::ptr::addr_of!((*this)._bitfield_1),
-                6usize,
-                1u8,
-            ) as u32)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_useable_raw(this: *mut Self, val: super::ctypes::c_uint) {
-        unsafe {
-            let val: u32 = ::core::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::core::ptr::addr_of_mut!((*this)._bitfield_1),
-                6usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn new_bitfield_1(
-        seg_32bit: super::ctypes::c_uint,
-        contents: super::ctypes::c_uint,
-        read_exec_only: super::ctypes::c_uint,
-        limit_in_pages: super::ctypes::c_uint,
-        seg_not_present: super::ctypes::c_uint,
-        useable: super::ctypes::c_uint,
-    ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
-        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
-        __bindgen_bitfield_unit.set(0usize, 1u8, {
-            let seg_32bit: u32 = unsafe { ::core::mem::transmute(seg_32bit) };
-            seg_32bit as u64
-        });
-        __bindgen_bitfield_unit.set(1usize, 2u8, {
-            let contents: u32 = unsafe { ::core::mem::transmute(contents) };
-            contents as u64
-        });
-        __bindgen_bitfield_unit.set(3usize, 1u8, {
-            let read_exec_only: u32 = unsafe { ::core::mem::transmute(read_exec_only) };
-            read_exec_only as u64
-        });
-        __bindgen_bitfield_unit.set(4usize, 1u8, {
-            let limit_in_pages: u32 = unsafe { ::core::mem::transmute(limit_in_pages) };
-            limit_in_pages as u64
-        });
-        __bindgen_bitfield_unit.set(5usize, 1u8, {
-            let seg_not_present: u32 = unsafe { ::core::mem::transmute(seg_not_present) };
-            seg_not_present as u64
-        });
-        __bindgen_bitfield_unit.set(6usize, 1u8, {
-            let useable: u32 = unsafe { ::core::mem::transmute(useable) };
-            useable as u64
-        });
-        __bindgen_bitfield_unit
-    }
 }

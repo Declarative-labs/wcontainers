@@ -2,35 +2,39 @@
 //! embedder's state and execution configuration of each process kept beside the process's record.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::marker::PhantomData;
+use core::num::NonZeroUsize;
 use core::ops::Range;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
-use wcontainers_abi::{Cpu, MemoryId};
-use wcontainers_executor::{Executor, PerThreadWatch};
+use wcontainers_abi::{Cpu, Event, Exit, MemoryId, Next};
+use wcontainers_executor::{ExecutionInterrupter, Executor, PerThreadWatch};
 use wcontainers_kernel as interface;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{MemoryError, TaskId, WatchesFor, WriteMemoryError};
 
+use crate::guest_machine::GuestMachine;
 use crate::process::Pid;
+use crate::running;
 use crate::suspend::{ProcessContext, SuspendedTask};
 use crate::system::{Unsupported, pid_of};
 
 /// What the embedder keeps of one process: its state, and how it asked for the process to run,
 /// shared by the processes a fork made from it.
 struct ProcessData<E: Executor, State> {
-    config: Rc<interface::ExecutionConfig<E>>,
+    config: Arc<interface::ExecutionConfig<E>>,
     state: State,
 }
 
 /// The embedder's data of one process, of a type only the embedder knows; a fork's child gets a
 /// copy of its parent's.
 pub(crate) struct EmbedderData {
-    value: Box<dyn Any>,
-    copy: fn(&dyn Any) -> Box<dyn Any>,
+    value: Box<dyn Any + Send>,
+    copy: fn(&dyn Any) -> Box<dyn Any + Send>,
 }
 
 impl Clone for EmbedderData {
@@ -43,13 +47,20 @@ impl Clone for EmbedderData {
 }
 
 impl EmbedderData {
-    fn new<E: Executor + 'static, State: Clone + 'static>(data: ProcessData<E, State>) -> Self {
-        fn copy<E: Executor + 'static, State: Clone + 'static>(value: &dyn Any) -> Box<dyn Any> {
+    fn new<E: Executor<TranslatorConfig: Send + Sync> + 'static, State: Clone + Send + 'static>(
+        data: ProcessData<E, State>,
+    ) -> Self {
+        fn copy<
+            E: Executor<TranslatorConfig: Send + Sync> + 'static,
+            State: Clone + Send + 'static,
+        >(
+            value: &dyn Any,
+        ) -> Box<dyn Any + Send> {
             let data = value
                 .downcast_ref::<ProcessData<E, State>>()
                 .expect("the data's own type");
             Box::new(ProcessData::<E, State> {
-                config: Rc::clone(&data.config),
+                config: Arc::clone(&data.config),
                 state: data.state.clone(),
             })
         }
@@ -75,80 +86,223 @@ fn supported<E: Executor>(config: &interface::ExecutionConfig<E>) -> Result<(), 
 /// the system `S`.
 ///
 /// Its state sits behind one lock, so that the kernel interface's calls, which take it shared,
-/// come one at a time. The state is not yet shareable between host threads (it holds `Rc` and
-/// `RefCell` throughout, and the system's waiting calls), so a kernel and what it hands out stay
-/// on one host thread at a time.
-pub struct KernelWithExecutor<C, State, S> {
-    inner: spin::Mutex<Inner<C>>,
+/// come one at a time. The contexts and tasks it hands out share its records, so each is let go of
+/// under that lock too ([`Held`]).
+pub struct KernelWithExecutor<C: Executor, State, S> {
+    shared: Arc<Shared<C>>,
     types: PhantomData<fn() -> (State, S)>,
 }
 
-/// What [`KernelWithExecutor`]'s lock guards.
-struct Inner<C> {
-    kernel: crate::Kernel,
-    executor: C,
+/// What a kernel, its runners and the contexts and tasks it handed out share: its state behind one
+/// lock, what was let go of while another held that lock, for the next holder to drop, and what
+/// ends a guest's turn when the kernel's interface waits for that lock.
+struct Shared<C: Executor> {
+    inner: spin::Mutex<Inner<C>>,
+    let_go: spin::Mutex<Vec<Box<dyn Any + Send>>>,
+    /// The interrupter of the turn a runner runs under the lock, while it runs.
+    running: spin::Mutex<Option<C::Interrupter>>,
+    /// How many of the interface's calls wait for the lock; runners leave it to them.
+    waiting: AtomicUsize,
 }
 
-// SAFETY: every access to the kernel's state and its executor goes through the lock (shared
-// calls) or through an exclusive borrow. What they share through `Rc` stays inside them except in
-// the contexts and tasks the kernel hands out, which an embedder keeps on the host thread it runs
-// the kernel on, as it keeps the kernel itself: neither the state nor an executor such as the
-// stand-in's is shareable between host threads yet (see the type's comment).
-unsafe impl<C, State: Send, S: Send + Sync> Sync for KernelWithExecutor<C, State, S> {}
+/// What [`KernelWithExecutor`]'s lock guards.
+struct Inner<C: Executor> {
+    kernel: crate::Kernel,
+    executor: GuestMachine<C>,
+}
+
+impl<C: Executor> Shared<C> {
+    /// A kernel's shared parts, its state `inner`.
+    fn new(inner: Inner<C>) -> Self {
+        Self {
+            inner: spin::Mutex::new(inner),
+            let_go: spin::Mutex::new(Vec::new()),
+            running: spin::Mutex::new(None),
+            waiting: AtomicUsize::new(0),
+        }
+    }
+
+    /// Takes the lock, ending the turn of a guest that runs under it, then drops what was let go
+    /// of while another held it.
+    fn lock(&self) -> spin::MutexGuard<'_, Inner<C>> {
+        let guard = self.inner.try_lock().unwrap_or_else(|| {
+            self.waiting.fetch_add(1, Ordering::SeqCst);
+            if let Some(turn) = &*self.running.lock() {
+                turn.interrupt();
+            }
+            let guard = self.inner.lock();
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
+            guard
+        });
+        Self::dropped_let_go(&self.let_go);
+        guard
+    }
+
+    /// Takes the lock for a runner, unless it is held or an interface call waits for it.
+    fn try_lock_for_runner(&self) -> Option<spin::MutexGuard<'_, Inner<C>>> {
+        if self.waiting.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
+        let guard = self.inner.try_lock()?;
+        Self::dropped_let_go(&self.let_go);
+        Some(guard)
+    }
+
+    /// Drops what was let go of while another held the lock.
+    fn dropped_let_go(let_go: &spin::Mutex<Vec<Box<dyn Any + Send>>>) {
+        let let_go = core::mem::take(&mut *let_go.lock());
+        drop(let_go);
+    }
+
+    /// Keeps `turn`, the interrupter of the turn about to run under the lock, for the interface's
+    /// calls to end it, and ends it at once if one already waits.
+    fn turn_started(&self, turn: C::Interrupter) {
+        let mut running = self.running.lock();
+        if self.waiting.load(Ordering::SeqCst) != 0 {
+            turn.interrupt();
+        }
+        *running = Some(turn);
+    }
+
+    /// Forgets the interrupter of the turn that has ended.
+    fn turn_ended(&self) {
+        *self.running.lock() = None;
+    }
+
+    /// `value`, which shares the kernel's records, handed out.
+    fn hold<T: Send + 'static>(self: &Arc<Self>, value: T) -> Held<T, C> {
+        Held {
+            value: Some(value),
+            shared: Arc::clone(self),
+        }
+    }
+}
+
+/// A context or task a [`KernelWithExecutor`] handed out. It shares the kernel's records, so it is
+/// dropped under the kernel's lock, or, while that lock is held, by the lock's next holder.
+pub struct Held<T: Send + 'static, C: Executor> {
+    /// Always there, until the kernel takes it back.
+    value: Option<T>,
+    shared: Arc<Shared<C>>,
+}
+
+impl<T: Send + 'static, C: Executor> Held<T, C> {
+    /// The value, if it was handed out by the kernel `shared` is of; else itself.
+    fn take_from(mut self, shared: &Arc<Shared<C>>) -> Result<T, Self> {
+        if !Arc::ptr_eq(&self.shared, shared) {
+            return Err(self);
+        }
+        Ok(self.value.take().expect("a held value is there"))
+    }
+}
+
+impl<T: Send + 'static, C: Executor> core::ops::Deref for Held<T, C> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value.as_ref().expect("a held value is there")
+    }
+}
+
+impl<T: Send + 'static, C: Executor> Drop for Held<T, C> {
+    fn drop(&mut self) {
+        let Some(value) = self.value.take() else {
+            return;
+        };
+        match self.shared.inner.try_lock() {
+            Some(guard) => {
+                drop(value);
+                drop(guard);
+            }
+            None => self.shared.let_go.lock().push(Box::new(value)),
+        }
+    }
+}
 
 /// What a kernel is made from: a fresh kernel, the executor its threads run on, its system, the
 /// container's start, and its first process's execution configuration and state.
 pub struct KernelConfig<C: Executor, State, S: crate::System> {
-    pub kernel: crate::Kernel,
-    pub executor: C,
-    pub system: alloc::sync::Arc<S>,
-    pub start: crate::Start<'static, <S as wcontainers_system::StreamTransport>::Endpoint>,
-    pub execution: interface::ExecutionConfig<C>,
-    pub state: State,
+    kernel: crate::Kernel,
+    executor: C,
+    system: Arc<S>,
+    start: crate::Start<'static, <S as wcontainers_system::StreamTransport>::Endpoint>,
+    execution: interface::ExecutionConfig<C>,
+    state: State,
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
-    KernelWithExecutor<C, State, S>
+impl<C: Executor, State, S: crate::System> KernelConfig<C, State, S> {
+    /// What [`KernelWithExecutor::start`] is given.
+    pub fn new(
+        kernel: crate::Kernel,
+        executor: C,
+        system: Arc<S>,
+        start: crate::Start<'static, <S as wcontainers_system::StreamTransport>::Endpoint>,
+        execution: interface::ExecutionConfig<C>,
+        state: State,
+    ) -> Self {
+        Self {
+            kernel,
+            executor,
+            system,
+            start,
+            execution,
+            state,
+        }
+    }
+}
+
+impl<
+    C: Cpu + Executor<TranslatorConfig: Send + Sync> + 'static,
+    State: Clone + Send + 'static,
+    S: crate::System,
+> KernelWithExecutor<C, State, S>
 {
     /// Starts a container on `kernel`, as [`crate::Kernel::start`], its first process with
     /// `state` and run as `config` says, unless the kernel cannot run it so.
     pub fn start(
         mut kernel: crate::Kernel,
-        mut executor: C,
-        system: &alloc::sync::Arc<S>,
+        executor: C,
+        system: &Arc<S>,
         start: crate::Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
         config: interface::ExecutionConfig<C>,
         state: State,
     ) -> Result<Self, Unsupported> {
         supported(&config)?;
+        let mut executor = GuestMachine::new(executor);
         kernel.start(&mut executor, system, start);
         let first = kernel
             .init
             .expect("a started container has a first process");
         let data = ProcessData {
-            config: Rc::new(config),
+            config: Arc::new(config),
             state,
         };
         if let Some(process) = kernel.processes.get_mut(&first) {
             process.embedder = Some(EmbedderData::new(data));
         }
         Ok(Self {
-            inner: spin::Mutex::new(Inner { kernel, executor }),
+            shared: Arc::new(Shared::new(Inner { kernel, executor })),
             types: PhantomData,
         })
     }
 
-    /// The kernel and the executor, to drive them.
-    pub fn parts(&mut self) -> (&mut crate::Kernel, &mut C) {
-        let inner = self.inner.get_mut();
-        (&mut inner.kernel, &mut inner.executor)
+    /// Drives the kernel and the executor, with the guests' memories and registers, with `drive`,
+    /// under the kernel's lock.
+    pub fn with_parts<R>(
+        &mut self,
+        drive: impl FnOnce(&mut crate::Kernel, &mut GuestMachine<C>) -> R,
+    ) -> R {
+        let mut inner = self.shared.lock();
+        let Inner { kernel, executor } = &mut *inner;
+        drive(kernel, executor)
     }
 
-    /// One process, unless it has ended or carries no state of this embedder.
+    /// One process, unless it has ended or carries no state of this embedder. The kernel's lock
+    /// is held while the handle lasts.
     pub fn process(&mut self, id: TaskId) -> Option<KernelProcess<'_, C, State, S>> {
         let pid = pid_of(id);
-        self.inner
-            .get_mut()
+        let inner = self.shared.lock();
+        inner
             .kernel
             .processes
             .get(&pid)
@@ -158,7 +312,8 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
             .value
             .downcast_ref::<ProcessData<C, State>>()?;
         Some(KernelProcess {
-            inner: self.inner.get_mut(),
+            inner,
+            shared: &self.shared,
             pid,
             read: Vec::new(),
             types: PhantomData,
@@ -168,105 +323,253 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S: crate::System>
 
 impl<C, State, S> interface::Kernel for KernelWithExecutor<C, State, S>
 where
-    C: Cpu + Executor + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
 {
     type Executor = C;
     type Fallback = wcontainers_abi::Warning<'static>;
     type Config = KernelConfig<C, State, S>;
-    type SuspendedTask = SuspendedTask;
-    type ProcessContext = ProcessContext;
+    type Runner = KernelRunner<C, State, S>;
+    type SuspendedTask = Held<SuspendedTask, C>;
+    type ProcessContext = Held<ProcessContext, C>;
 
-    /// Starts the container `config` describes.
+    /// Starts the container `config` describes, its programs told that `parallelism` processors
+    /// are online. Its threads run one at a time, which is within any `parallelism`.
     ///
     /// # Panics
     ///
     /// If the kernel cannot run the first process as its execution configuration asks.
-    fn new(config: Self::Config) -> Self {
+    fn new(
+        config: Self::Config,
+        parallelism: NonZeroUsize,
+    ) -> (Self, impl Iterator<Item = Self::Runner>) {
         let KernelConfig {
-            kernel,
+            mut kernel,
             executor,
             system,
             start,
             execution,
             state,
         } = config;
-        Self::start(kernel, executor, &system, start, execution, state)
-            .unwrap_or_else(|unsupported| panic!("the kernel cannot run as asked: {unsupported:?}"))
+        kernel.machine.processors = parallelism;
+        let kernel = Self::start(kernel, executor, &system, start, execution, state)
+            .unwrap_or_else(|unsupported| {
+                panic!("the kernel cannot run as asked: {unsupported:?}")
+            });
+        let shared = Arc::clone(&kernel.shared);
+        let runners = (0..parallelism.get()).map(move |_| KernelRunner {
+            shared: Arc::clone(&shared),
+            system: Arc::clone(&system),
+            types: PhantomData,
+        });
+        (kernel, runners)
     }
 
-    /// Not built: the executor interface has no call that runs a thread, so this kernel is driven
-    /// through [`crate::Kernel::next`] and [`crate::Kernel::exit`] on the executor it holds.
-    fn run(&self, executor: &mut C) -> interface::StopReason {
-        let _ = executor;
-        unimplemented!("running through the kernel interface is not built")
-    }
-
-    fn suspend_tasks(&self, tasks: &[TaskId]) -> impl Iterator<Item = (TaskId, SuspendedTask)> {
-        let mut inner = self.inner.lock();
+    fn suspend_tasks(
+        &self,
+        tasks: &[TaskId],
+    ) -> impl Iterator<Item = (TaskId, Self::SuspendedTask)> {
+        let mut inner = self.shared.lock();
         let Inner { kernel, executor } = &mut *inner;
-        kernel.suspend_tasks(executor, tasks)
+        let taken: Vec<_> = kernel
+            .suspend_tasks(executor, tasks)
+            .map(|(id, task)| (id, self.shared.hold(task)))
+            .collect();
+        drop(inner);
+        taken.into_iter()
     }
 
     fn suspend_process(
         &self,
         process: TaskId,
     ) -> Option<(
-        ProcessContext,
-        impl Iterator<Item = (TaskId, SuspendedTask)>,
+        Self::ProcessContext,
+        impl Iterator<Item = (TaskId, Self::SuspendedTask)>,
     )> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.shared.lock();
         let Inner { kernel, executor } = &mut *inner;
-        kernel.suspend_process(executor, process)
+        let (context, tasks) = kernel.suspend_process(executor, process)?;
+        let tasks: Vec<_> = tasks
+            .map(|(id, task)| (id, self.shared.hold(task)))
+            .collect();
+        let context = self.shared.hold(context);
+        drop(inner);
+        Some((context, tasks.into_iter()))
     }
 
-    fn copy_process_context(&self, process: TaskId) -> Option<ProcessContext> {
-        self.inner.lock().kernel.copy_process_context(process)
+    fn copy_process_context(&self, process: TaskId) -> Option<Self::ProcessContext> {
+        let inner = self.shared.lock();
+        let copy = inner.kernel.copy_process_context(process)?;
+        let copy = self.shared.hold(copy);
+        drop(inner);
+        Some(copy)
     }
 
-    /// Hands the context back, as the kernel's own resume does, also when it carries no state of
-    /// this embedder or the kernel cannot run it as `config` says.
+    /// Hands the context back, as the kernel's own resume does, also when another kernel handed
+    /// it out, it carries no state of this embedder, or the kernel cannot run it as `config` says.
     fn resume_process(
         &self,
-        mut context: ProcessContext,
+        context: Self::ProcessContext,
         config: interface::ExecutionConfig<C>,
-    ) -> Option<ProcessContext> {
+    ) -> Option<Self::ProcessContext> {
         if supported(&config).is_err() {
             return Some(context);
         }
+        let mut inner = self.shared.lock();
+        let mut context = match context.take_from(&self.shared) {
+            Ok(context) => context,
+            Err(foreign) => return Some(foreign),
+        };
         let Some(data) = context
             .embedder_mut()
             .and_then(|data| data.value.downcast_mut::<ProcessData<C, State>>())
         else {
-            return Some(context);
+            return Some(self.shared.hold(context));
         };
-        let before = core::mem::replace(&mut data.config, Rc::new(config));
-        let refused = self.inner.lock().kernel.resume_process(context);
-        refused.map(|mut context| {
+        let before = core::mem::replace(&mut data.config, Arc::new(config));
+        let refused = inner.kernel.resume_process(context).map(|mut context| {
             if let Some(data) = context
                 .embedder_mut()
                 .and_then(|data| data.value.downcast_mut::<ProcessData<C, State>>())
             {
                 data.config = before;
             }
-            context
-        })
+            self.shared.hold(context)
+        });
+        drop(inner);
+        refused
     }
 
     fn resume_tasks(
         &self,
-        tasks: impl IntoIterator<Item = SuspendedTask>,
-    ) -> impl Iterator<Item = SuspendedTask> {
-        let mut inner = self.inner.lock();
+        tasks: impl IntoIterator<Item = Self::SuspendedTask>,
+    ) -> impl Iterator<Item = Self::SuspendedTask> {
+        // The caller's iterator runs before the lock is taken, since it may do anything.
+        let tasks: Vec<Self::SuspendedTask> = tasks.into_iter().collect();
+        let mut inner = self.shared.lock();
+        let mut handed_back = Vec::new();
+        let mut own = Vec::new();
+        for task in tasks {
+            match task.take_from(&self.shared) {
+                Ok(task) => own.push(task),
+                Err(foreign) => handed_back.push(foreign),
+            }
+        }
         let Inner { kernel, executor } = &mut *inner;
-        kernel.resume_tasks(executor, tasks)
+        handed_back.extend(
+            kernel
+                .resume_tasks(executor, own)
+                .map(|task| self.shared.hold(task)),
+        );
+        drop(inner);
+        handed_back.into_iter()
     }
 }
 
-/// One process of a [`KernelWithExecutor`], for as long as the borrow lasts.
-pub struct KernelProcess<'a, C, State, S> {
-    inner: &'a mut Inner<C>,
+/// What runs a [`KernelWithExecutor`]'s threads on one host thread.
+pub struct KernelRunner<C: Executor, State, S> {
+    shared: Arc<Shared<C>>,
+    system: Arc<S>,
+    types: PhantomData<fn() -> State>,
+}
+
+impl<C, State, S> interface::Runner<C> for KernelRunner<C, State, S>
+where
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    State: Send,
+    S: crate::System + Send,
+{
+    /// Runs the kernel's threads, one turn at a time under the kernel's lock, on `executor` and
+    /// the memories the kernel's own executor made, until none can run, the container ends, or
+    /// one of the kernel interface's calls waits for the lock (`Interrupted`; the turn running
+    /// then is ended). While another runner holds the lock, none can run on this one: it returns
+    /// `Idle` with no time.
+    ///
+    /// A turn runs until its thread traps: a time slice the kernel asks for is not kept, as
+    /// `execute` takes none.
+    fn run(&mut self, executor: &mut C) -> interface::StopReason {
+        let mut timer_told = false;
+        loop {
+            let Some(mut inner) = self.shared.try_lock_for_runner() else {
+                return if self.shared.waiting.load(Ordering::SeqCst) == 0 {
+                    interface::StopReason::Idle { until: None }
+                } else {
+                    interface::StopReason::Interrupted
+                };
+            };
+            let Inner {
+                kernel,
+                executor: machine,
+            } = &mut *inner;
+            match kernel.next() {
+                Next::Run { thread, resume, .. } => {
+                    let (_, registers, memory) = machine.thread_parts(thread);
+                    let exit = running::turn(executor, registers, memory, resume, |turn| {
+                        self.shared.turn_started(turn);
+                    });
+                    self.shared.turn_ended();
+                    kernel.exit(machine, &self.system, exit);
+                    if exit == Exit::Stop {
+                        return interface::StopReason::Interrupted;
+                    }
+                }
+                // The kernel's waits to settle, or the time it waits for may have come.
+                Next::Idle {
+                    until_nanoseconds: Some(0),
+                } => kernel.event(machine, &self.system, Event::Timer),
+                Next::Idle {
+                    until_nanoseconds: Some(_),
+                } if !timer_told => {
+                    timer_told = true;
+                    kernel.event(machine, &self.system, Event::Timer);
+                }
+                Next::Idle { until_nanoseconds } => {
+                    return interface::StopReason::Idle {
+                        until: until_nanoseconds.map(Duration::from_nanos),
+                    };
+                }
+                Next::Finished { status } => {
+                    return interface::StopReason::Finished(process_end(
+                        status,
+                        kernel.start_failure(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// How the container's first process ended, from its wait status `status` and the error that kept
+/// its program from starting, if one did.
+fn process_end(
+    status: i32,
+    start_failure: Option<interface::errno::Errno>,
+) -> interface::ProcessEnd {
+    if let Some(error) = start_failure {
+        return interface::ProcessEnd::NotStarted { error };
+    }
+    match crate::wait::decode(status) {
+        crate::wait::Ended::Exited(code) => interface::ProcessEnd::Exited {
+            code: u8::try_from(code).expect("an exit status is its low byte"),
+        },
+        crate::wait::Ended::Killed {
+            signal,
+            core_dumped,
+        } => interface::ProcessEnd::Signaled {
+            signal: u32::try_from(signal)
+                .ok()
+                .and_then(crate::siginfo::signal)
+                .expect("a process ends by a signal Linux names"),
+            core_dumped,
+        },
+    }
+}
+
+/// One process of a [`KernelWithExecutor`], holding the kernel's lock for as long as it lasts.
+pub struct KernelProcess<'a, C: Executor, State, S> {
+    inner: spin::MutexGuard<'a, Inner<C>>,
+    shared: &'a Arc<Shared<C>>,
     pid: Pid,
     /// The bytes of the last read.
     read: Vec<u8>,
@@ -275,9 +578,10 @@ pub struct KernelProcess<'a, C, State, S> {
 
 impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> KernelProcess<'_, C, State, S> {
     fn handle(&mut self) -> crate::Process<'_> {
+        let inner = &mut *self.inner;
         crate::Process {
-            kernel: &mut self.inner.kernel,
-            cpu: &mut self.inner.executor,
+            kernel: &mut inner.kernel,
+            cpu: &mut inner.executor,
             pid: self.pid,
         }
     }
@@ -325,7 +629,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> interface::ProcessI
 
 impl<C, State, S> interface::Process for KernelProcess<'_, C, State, S>
 where
-    C: Cpu + Executor + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
 {
@@ -395,29 +699,37 @@ where
     fn suspend_threads(
         &mut self,
         threads: &[TaskId],
-    ) -> impl Iterator<Item = (TaskId, SuspendedTask)> {
-        self.handle().suspend_tasks(threads)
+    ) -> impl Iterator<Item = (TaskId, Held<SuspendedTask, C>)> {
+        let shared = self.shared;
+        let taken: Vec<_> = self
+            .handle()
+            .suspend_tasks(threads)
+            .map(|(id, task)| (id, shared.hold(task)))
+            .collect();
+        taken.into_iter()
     }
 
     fn suspend_process(
         mut self,
     ) -> (
-        ProcessContext,
-        impl Iterator<Item = (TaskId, SuspendedTask)>,
+        Held<ProcessContext, C>,
+        impl Iterator<Item = (TaskId, Held<SuspendedTask, C>)>,
     ) {
+        let shared = self.shared;
         let (context, tasks) = self.handle().suspend_process();
-        (context, tasks)
+        let tasks: Vec<_> = tasks.map(|(id, task)| (id, shared.hold(task))).collect();
+        (shared.hold(context), tasks.into_iter())
     }
 
-    fn copy_process_context(&self) -> ProcessContext {
-        self.kernel().context_copy(self.pid)
+    fn copy_process_context(&self) -> Held<ProcessContext, C> {
+        self.shared.hold(self.kernel().context_copy(self.pid))
     }
 }
 
 impl<C, State, S> interface::ProcessOf<State, KernelWithExecutor<C, State, S>>
     for KernelProcess<'_, C, State, S>
 where
-    C: Cpu + Executor + 'static,
+    C: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
     State: Clone + Send + 'static,
     S: crate::System + Send,
 {
@@ -427,12 +739,122 @@ where
 mod tests {
     use super::*;
 
-    /// An executor with nothing to configure.
+    use wcontainers_byte_sink::ByteSink;
+    use wcontainers_byte_source::ByteSource;
+    use wcontainers_executor::memory_space::{
+        CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
+    };
+    use wcontainers_volatile_bytes::VolatileBytes;
+
+    /// An executor with nothing to configure, which has no memory to run on.
     struct Plain;
+
+    /// What `Plain` has no instance of: its memory, that memory's bytes and an interrupter.
+    enum Absent {}
+
+    impl Absent {
+        /// Any value at all, as there is no `Absent` to ask.
+        fn anything<T>(&self) -> T {
+            match *self {}
+        }
+    }
+
+    impl MemorySpace for Absent {
+        type Bytes<'space> = Absent;
+
+        fn borrow(&self, _addresses: Range<u64>) -> Result<Absent, InvalidAddressError> {
+            match *self {}
+        }
+
+        fn set_permissions(
+            &self,
+            _addresses: Range<u64>,
+            _allowed: wcontainers_abi::Permissions,
+        ) -> Result<(), InvalidAddressError> {
+            match *self {}
+        }
+
+        fn map_from(
+            &self,
+            _addresses: Range<u64>,
+            _other: &Self,
+            _other_start: u64,
+        ) -> Result<(), MapMemoryError> {
+            match *self {}
+        }
+
+        fn unmap_from(&self, _addresses: Range<u64>) -> Result<(), InvalidAddressError> {
+            match *self {}
+        }
+
+        fn copy_from(
+            &self,
+            _addresses: Range<u64>,
+            _other: &Self,
+            _other_start: u64,
+        ) -> Result<(), CopyMemoryError> {
+            match *self {}
+        }
+    }
+
+    impl VolatileBytes for Absent {
+        fn len(&self) -> u64 {
+            match *self {}
+        }
+
+        fn read(&self, _into: &mut [u8]) -> usize {
+            match *self {}
+        }
+
+        fn write(&self, _bytes: &[u8]) -> usize {
+            match *self {}
+        }
+
+        fn read_to<Sink: ByteSink>(&self, _sink: &mut Sink) -> Result<usize, Sink::Error> {
+            match *self {}
+        }
+
+        fn write_from<Source: ByteSource>(
+            &self,
+            _source: &mut Source,
+        ) -> Result<usize, Source::Error> {
+            match *self {}
+        }
+    }
+
+    impl wcontainers_executor::ExecutionInterrupter for Absent {
+        fn interrupt(&self) {
+            match *self {}
+        }
+    }
+
+    /// Why `Plain` gives no memory.
+    #[derive(Debug, PartialEq, Eq)]
+    struct NoMemory;
 
     impl Executor for Plain {
         type Architecture = wcontainers_processor_architecture_arm64::Arm64;
         type TranslatorConfig = ();
+        type GuestMemory = Absent;
+        type Interrupter = Absent;
+        type CreateGuestMemoryError = NoMemory;
+
+        fn create_guest_memory(&self) -> Result<Absent, NoMemory> {
+            Err(NoMemory)
+        }
+
+        fn execute<'execution>(
+            &'execution mut self,
+            _processor: wcontainers_processor_architecture_arm64::Processor,
+            memory: &'execution Absent,
+            _handler: &'execution mut impl wcontainers_executor::TrapHandler,
+        ) -> (
+            impl core::future::Future<Output = wcontainers_processor_architecture_arm64::Processor>
+            + 'execution,
+            Absent,
+        ) {
+            (core::future::ready(memory.anything()), memory.anything())
+        }
 
         fn execute_single_instruction_in_place(
             &mut self,
@@ -480,7 +902,7 @@ mod tests {
     #[test]
     fn a_copy_has_its_own_state_and_shares_the_configuration() {
         let data = EmbedderData::new(ProcessData::<Plain, u32> {
-            config: Rc::new(config(
+            config: Arc::new(config(
                 interface::ThreadOrdering::Serial,
                 interface::ReplayDeterminism::Exact,
             )),
@@ -497,6 +919,6 @@ mod tests {
             .downcast_ref::<ProcessData<Plain, u32>>()
             .expect("the same type");
         assert_eq!((original.state, copied.state), (1, 2));
-        assert!(Rc::ptr_eq(&original.config, &copied.config));
+        assert!(Arc::ptr_eq(&original.config, &copied.config));
     }
 }

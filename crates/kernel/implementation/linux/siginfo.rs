@@ -73,74 +73,118 @@ signals!(
     SIGRT_28, SIGRT_29, SIGRT_30, SIGRT_31, SIGRTMAX,
 );
 
-/// The numbers of the codes whose enums carry fields, which `as` cannot give, as the generated
-/// bindings name them.
-#[allow(
-    dead_code,
-    reason = "every code Linux names, whether the kernel gives it or not"
-)]
-pub(crate) mod codes {
-    use super::*;
-
-    const BOUNDS: AddressBounds = AddressBounds { lower: 0, upper: 0 };
-    const LSB: AddressLeastSignificantBit = match AddressLeastSignificantBit::new(0) {
-        Some(lsb) => lsb,
-        None => panic!("bit 0 is a bit of an address"),
-    };
-    const PERF: TrapCode = TrapCode::TRAP_PERF {
-        data: PerfEventSignalData(0),
-        event_type: PerfEventType(0),
-        delivery: PerfEventDelivery::Synchronous,
-    };
-
-    macro_rules! codes {
-        ($($name:ident = $value:expr),* $(,)?) => {
-            $(pub(crate) const $name: u32 = number(&$value) as u32;)*
-        };
-    }
-
-    codes!(
-        SEGV_MAPERR = SegmentationFaultCode::SEGV_MAPERR,
-        SEGV_ACCERR = SegmentationFaultCode::SEGV_ACCERR,
-        SEGV_BNDERR = SegmentationFaultCode::SEGV_BNDERR(BOUNDS),
-        SEGV_PKUERR = SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
-        SEGV_ACCADI = SegmentationFaultCode::SEGV_ACCADI,
-        SEGV_ADIDERR = SegmentationFaultCode::SEGV_ADIDERR,
-        SEGV_ADIPERR = SegmentationFaultCode::SEGV_ADIPERR,
-        SEGV_MTEAERR = SegmentationFaultCode::SEGV_MTEAERR,
-        SEGV_MTESERR = SegmentationFaultCode::SEGV_MTESERR,
-        SEGV_CPERR = SegmentationFaultCode::SEGV_CPERR,
-        BUS_ADRALN = BusErrorCode::BUS_ADRALN,
-        BUS_ADRERR = BusErrorCode::BUS_ADRERR,
-        BUS_OBJERR = BusErrorCode::BUS_OBJERR,
-        BUS_MCEERR_AR = BusErrorCode::BUS_MCEERR_AR(LSB),
-        BUS_MCEERR_AO = BusErrorCode::BUS_MCEERR_AO(LSB),
-        TRAP_BRKPT = TrapCode::TRAP_BRKPT,
-        TRAP_TRACE = TrapCode::TRAP_TRACE,
-        TRAP_BRANCH = TrapCode::TRAP_BRANCH,
-        TRAP_HWBKPT = TrapCode::TRAP_HWBKPT,
-        TRAP_UNK = TrapCode::TRAP_UNK,
-        TRAP_PERF = PERF,
-        CLD_EXITED = ChildTerminationCode::CLD_EXITED(ExitStatus(u8::MIN)),
-        CLD_KILLED = ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
-        CLD_DUMPED = ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
-        CLD_TRAPPED = ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
-        CLD_STOPPED = ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
-        CLD_CONTINUED = ChildStateCode::CLD_CONTINUED,
-        SYS_SECCOMP = BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
-        SYS_USER_DISPATCH = BadSystemCallCode::SYS_USER_DISPATCH,
-    );
+/// A code of the interface, which Linux gives as a number in `si_code`.
+pub(crate) trait Code: Copy {
+    /// The number Linux gives the code.
+    fn number(self) -> i32;
 }
 
-/// The number Linux gives a code: the discriminant of the interface's `repr(i32)` enum.
-pub(crate) const fn number<T: Copy>(code: &T) -> i32 {
-    // SAFETY: called only with the interface's code enums, each `repr(i32)`, whose values start
-    // with their discriminant as an `i32` (a primitive representation).
-    unsafe { core::ptr::from_ref(code).cast::<i32>().read() }
+/// The codes whose enums carry no fields, whose discriminants `as` gives.
+macro_rules! plain_codes {
+    ($($code:ty),* $(,)?) => {
+        $(impl Code for $code {
+            fn number(self) -> i32 {
+                self as i32
+            }
+        })*
+    };
+}
+
+plain_codes!(
+    SendCode,
+    QueueCode,
+    PollCode,
+    IllegalInstructionCode,
+    ArithmeticErrorCode,
+);
+
+// The codes whose enums carry fields, which `as` cannot give, by the generated bindings' numbers
+// for them. The `numbers_are_the_interfaces` test checks they are the interface's discriminants.
+
+impl Code for SegmentationFaultCode {
+    fn number(self) -> i32 {
+        use crate::linux::general::*;
+        (match self {
+            Self::SEGV_MAPERR => SEGV_MAPERR,
+            Self::SEGV_ACCERR => SEGV_ACCERR,
+            Self::SEGV_BNDERR(_) => SEGV_BNDERR,
+            Self::SEGV_PKUERR(_) => SEGV_PKUERR,
+            Self::SEGV_ACCADI => SEGV_ACCADI,
+            Self::SEGV_ADIDERR => SEGV_ADIDERR,
+            Self::SEGV_ADIPERR => SEGV_ADIPERR,
+            Self::SEGV_MTEAERR => SEGV_MTEAERR,
+            Self::SEGV_MTESERR => SEGV_MTESERR,
+            Self::SEGV_CPERR => SEGV_CPERR,
+        }) as i32
+    }
+}
+
+impl Code for BusErrorCode {
+    fn number(self) -> i32 {
+        use crate::linux::general::*;
+        (match self {
+            Self::BUS_ADRALN => BUS_ADRALN,
+            Self::BUS_ADRERR => BUS_ADRERR,
+            Self::BUS_OBJERR => BUS_OBJERR,
+            Self::BUS_MCEERR_AR(_) => BUS_MCEERR_AR,
+            Self::BUS_MCEERR_AO(_) => BUS_MCEERR_AO,
+        }) as i32
+    }
+}
+
+impl Code for TrapCode {
+    fn number(self) -> i32 {
+        use crate::linux::general::*;
+        (match self {
+            Self::TRAP_BRKPT => TRAP_BRKPT,
+            Self::TRAP_TRACE => TRAP_TRACE,
+            Self::TRAP_BRANCH => TRAP_BRANCH,
+            Self::TRAP_HWBKPT => TRAP_HWBKPT,
+            Self::TRAP_UNK => TRAP_UNK,
+            Self::TRAP_PERF { .. } => TRAP_PERF,
+        }) as i32
+    }
+}
+
+impl Code for ChildTerminationCode {
+    fn number(self) -> i32 {
+        use crate::linux::general::*;
+        (match self {
+            Self::CLD_EXITED(_) => CLD_EXITED,
+            Self::CLD_KILLED(_) => CLD_KILLED,
+            Self::CLD_DUMPED(_) => CLD_DUMPED,
+        }) as i32
+    }
+}
+
+impl Code for ChildStateCode {
+    fn number(self) -> i32 {
+        use crate::linux::general::*;
+        (match self {
+            Self::CLD_TRAPPED(_) => CLD_TRAPPED,
+            Self::CLD_STOPPED(_) => CLD_STOPPED,
+            Self::CLD_CONTINUED => CLD_CONTINUED,
+        }) as i32
+    }
+}
+
+impl Code for BadSystemCallCode {
+    fn number(self) -> i32 {
+        use crate::linux::general::*;
+        (match self {
+            Self::SYS_SECCOMP(_) => SYS_SECCOMP,
+            Self::SYS_USER_DISPATCH => SYS_USER_DISPATCH,
+        }) as i32
+    }
+}
+
+/// The number Linux gives a code.
+pub(crate) fn number(code: &impl Code) -> i32 {
+    code.number()
 }
 
 /// The code of `candidates` whose number Linux gives as `code`.
-fn code_of<T: Copy>(candidates: impl IntoIterator<Item = T>, code: i32) -> Option<T> {
+fn code_of<T: Code>(candidates: impl IntoIterator<Item = T>, code: i32) -> Option<T> {
     candidates
         .into_iter()
         .find(|candidate| number(candidate) == code)
@@ -676,6 +720,132 @@ const PTRACE_EVENT_SHIFT: u32 = u8::BITS;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::string::{String, ToString};
+    use alloc::vec::Vec;
+
+    /// The discriminants the interface writes for the variants of its enum `name`, read from its
+    /// source: every variant of the code enums carries one (`NAME = 3,`, `NAME(..) = 3,` or
+    /// `NAME { .. } = 3,`).
+    fn discriminants(name: &str) -> Vec<(String, i32)> {
+        let source = include_str!("../../signal_information.rs");
+        let opening = format!("pub enum {name} {{");
+        let start = source.find(&opening).expect("the interface names the enum") + opening.len();
+        // The enum's body without comments or attributes, and without the fields of its variants.
+        let mut flat = String::new();
+        let mut depth = 0usize;
+        'lines: for line in source[start..].lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            for character in line.chars() {
+                match character {
+                    '(' | '{' => depth += 1,
+                    ')' | '}' if depth == 0 => break 'lines,
+                    ')' | '}' => depth -= 1,
+                    _ if depth == 0 => flat.push(character),
+                    _ => {}
+                }
+            }
+        }
+        flat.split(',')
+            .map(str::trim)
+            .filter(|variant| !variant.is_empty())
+            .map(|variant| {
+                let (variant, value) = variant
+                    .split_once('=')
+                    .unwrap_or_else(|| panic!("{name}::{variant} has no discriminant"));
+                (
+                    variant.trim().to_string(),
+                    value.trim().parse().expect("a number"),
+                )
+            })
+            .collect()
+    }
+
+    /// The numbers the kernel gives the codes whose enums carry fields, from the generated
+    /// bindings, are the discriminants the interface writes for them.
+    #[test]
+    fn numbers_are_the_interfaces() {
+        fn check<T: Code + core::fmt::Debug>(name: &str, codes: &[T]) -> usize {
+            let written = discriminants(name);
+            assert_eq!(written.len(), codes.len(), "every variant of {name}");
+            for code in codes {
+                let debug = format!("{code:?}");
+                let variant = debug
+                    .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+                    .next()
+                    .expect("a variant name");
+                let (_, value) = written
+                    .iter()
+                    .find(|(written, _)| written == variant)
+                    .unwrap_or_else(|| panic!("{name}::{variant} is in the interface"));
+                assert_eq!(code.number(), *value, "{name}::{debug}");
+            }
+            codes.len()
+        }
+        let lsb = AddressLeastSignificantBit::new(0).expect("bit 0");
+        let checked = check(
+            "SegmentationFaultCode",
+            &[
+                SegmentationFaultCode::SEGV_MAPERR,
+                SegmentationFaultCode::SEGV_ACCERR,
+                SegmentationFaultCode::SEGV_BNDERR(AddressBounds { lower: 0, upper: 0 }),
+                SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
+                SegmentationFaultCode::SEGV_ACCADI,
+                SegmentationFaultCode::SEGV_ADIDERR,
+                SegmentationFaultCode::SEGV_ADIPERR,
+                SegmentationFaultCode::SEGV_MTEAERR,
+                SegmentationFaultCode::SEGV_MTESERR,
+                SegmentationFaultCode::SEGV_CPERR,
+            ],
+        ) + check(
+            "BusErrorCode",
+            &[
+                BusErrorCode::BUS_ADRALN,
+                BusErrorCode::BUS_ADRERR,
+                BusErrorCode::BUS_OBJERR,
+                BusErrorCode::BUS_MCEERR_AR(lsb),
+                BusErrorCode::BUS_MCEERR_AO(lsb),
+            ],
+        ) + check(
+            "TrapCode",
+            &[
+                TrapCode::TRAP_BRKPT,
+                TrapCode::TRAP_TRACE,
+                TrapCode::TRAP_BRANCH,
+                TrapCode::TRAP_HWBKPT,
+                TrapCode::TRAP_UNK,
+                TrapCode::TRAP_PERF {
+                    data: PerfEventSignalData(0),
+                    event_type: PerfEventType(0),
+                    delivery: PerfEventDelivery::Synchronous,
+                },
+            ],
+        ) + check(
+            "ChildTerminationCode",
+            &[
+                ChildTerminationCode::CLD_EXITED(ExitStatus(0)),
+                ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
+                ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
+            ],
+        ) + check(
+            "ChildStateCode",
+            &[
+                ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
+                ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
+                ChildStateCode::CLD_CONTINUED,
+            ],
+        ) + check(
+            "BadSystemCallCode",
+            &[
+                BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
+                BadSystemCallCode::SYS_USER_DISPATCH,
+            ],
+        );
+        assert_eq!(checked, 29);
+    }
 
     /// Every code from the queue codes to the kernel's own, on every signal, with zero fields and
     /// with every field byte set: each comes back from the interface's record as it was.
