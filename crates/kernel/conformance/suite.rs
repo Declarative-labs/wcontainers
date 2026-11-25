@@ -8,6 +8,7 @@
 //! Linux's `execve` writes the new program's arguments onto its stack before its first
 //! instruction.
 
+use wcontainers_executor::PerThreadWatch;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
@@ -315,6 +316,72 @@ pub fn watched_memory_is_read_and_written<P: Process>(mut process: P) {
     }
 }
 
+/// Checks that the embedder reads and writes memory one thread's accesses watch, with no time used.
+///
+/// The memory is read and written again after the watch ends.
+pub fn thread_watched_memory_is_read_and_written<P: Process>(mut process: P)
+where
+    ExecutorOf<P::Kernel>: PerThreadWatch,
+{
+    let id = process.id();
+    let before = process.cpu_time();
+    let range = first_written(&mut process);
+    for watches in [WatchesFor::All, WatchesFor::Writes, WatchesFor::None] {
+        process.watch_thread_memory(id, range.clone(), watches);
+        process
+            .write_memory(range.clone(), &WRITTEN)
+            .expect("a page one thread watches is written by the embedder");
+        assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    }
+    assert_eq!(process.cpu_time(), before, "the process has not run");
+}
+
+/// Checks that watches of one thread leave the process its memory and its one thread.
+///
+/// The watches are set beside the whole process's and for a thread the process does not have, and
+/// none of them is an inspection.
+pub fn thread_watch_leaves_the_process<P: Process>(mut process: P)
+where
+    ExecutorOf<P::Kernel>: PerThreadWatch,
+{
+    let id = process.id();
+    let range = first_written(&mut process);
+    process.watch_memory(range.clone(), WatchesFor::Writes);
+    process.watch_thread_memory(id, range.clone(), WatchesFor::All);
+    process.watch_thread_memory(ABSENT, range.clone(), WatchesFor::All);
+    process
+        .write_memory(range.clone(), &WRITTEN)
+        .expect("a watched page is written by the embedder");
+    process.watch_memory(range.clone(), WatchesFor::None);
+    assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    process.watch_thread_memory(id, range.clone(), WatchesFor::None);
+    process.watch_thread_memory(ABSENT, range.clone(), WatchesFor::None);
+    assert_eq!(read(&mut process, range), WRITTEN);
+    assert!(
+        !process.is_inspected(),
+        "the embedder is not another process"
+    );
+    let (_, tasks) = process.suspend_process();
+    let ids: Vec<TaskId> = tasks.map(|(task, _)| task).collect();
+    assert_eq!(ids, [id], "the watched process still has its thread");
+}
+
+/// Checks that the embedder reading, writing and watching a process is not an inspection.
+///
+/// Only another process reading its state is one.
+pub fn embedder_access_is_not_an_inspection<P: Process>(mut process: P) {
+    let range = first_written(&mut process);
+    process.watch_memory(range.clone(), WatchesFor::All);
+    process
+        .write_memory(range.clone(), &WRITTEN)
+        .expect("a written page is written");
+    assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    process.watch_memory(range, WatchesFor::None);
+    let copy = process.copy_process_context();
+    assert!(!process.is_inspected(), "only another process inspects");
+    drop(copy);
+}
+
 /// Returns the range of [`WRITTEN`]'s length at the start of the first range of pages written for
 /// the process since its start, which wrote its program's arguments at least.
 fn first_written<P: Process>(process: &mut P) -> core::ops::Range<u64> {
@@ -391,6 +458,18 @@ macro_rules! tests {
             #[test]
             fn watched_memory_is_read_and_written() {
                 $crate::watched_memory_is_read_and_written($value);
+            }
+            #[test]
+            fn thread_watched_memory_is_read_and_written() {
+                $crate::thread_watched_memory_is_read_and_written($value);
+            }
+            #[test]
+            fn thread_watch_leaves_the_process() {
+                $crate::thread_watch_leaves_the_process($value);
+            }
+            #[test]
+            fn embedder_access_is_not_an_inspection() {
+                $crate::embedder_access_is_not_an_inspection($value);
             }
         }
     };

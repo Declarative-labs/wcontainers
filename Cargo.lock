@@ -4765,6 +4765,7 @@ dependencies = [
 name = "wcontainers-kernel-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-executor",
  "wcontainers-kernel",
 ]
 
