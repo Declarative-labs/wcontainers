@@ -12,6 +12,105 @@ every correction of 2026-11-20, is unchecked.** The form before it had been corr
 after its sixth independent check (docs/status-threads.md says what changed each time). Nothing here is
 built. The owner rules on section 16 first.
 
+## Restart, 2026-11-25: the plan on the committed interfaces
+
+This section wins over everything below it. The plan below was written against the legacy abi (its
+`Cpu`, `Host`, `Next`, `Exit`, `Event`), which the owner's committed interfaces replace. Every interface
+name used here is on main 95bceadf0, or in the withdrawn or proposed lists of
+docs/status-threads-restart.md (the check that resolves each one is there too).
+
+### What the committed interfaces already give
+
+- `Kernel` is `Sync`; `Kernel::new` takes `parallelism` and hands back one `Runner` for each; a
+  `Runner` is `Send` and is run by its own host thread with its own executor (`Runner::run`). This is
+  the plan's "one worker for each processor", and the plan's `Start`, `next`, `exit`, `run_until_finished`
+  and the processor argument go.
+- `Executor::execute` runs one guest thread until a trap and hands back an `ExecutionInterrupter`.
+  The kernel keeps the interrupter of every running turn, so a call-in, a group stop, a signal to a
+  running thread and the end of a slice are each an `interrupt` of the right turns. The plan's
+  `StopFlag`, `stop_thread`, `thread_stopper` and the stop word's bits go; how the executor makes its
+  interrupter safe is the executor track's.
+- `TrapHandler` is the kernel's own: a system call and a fault are handled inside `Runner::run`. The
+  plan's `Carry::Leave`, `KernelEntered` and `Kernel::enter` become private to the kernel.
+- `MemorySpace` borrows by `&self` and `PageTable` changes by `&mut self`: guest threads hold the
+  space shared while the one owner of the table changes it under the process's lock, which is the
+  plan's 7.4 split.
+- `ProcessTracer` hooks take `&self` and `System` is `Sync` (ruled 2026-11-19). `StopReason::Idle`
+  carries the deadline, so the plan's `on_deadline_changed` and its timer event go.
+- `ThreadOrdering` (`Serial`, `Parallel`), `ReplayDeterminism` and `ExecutionConfig` are as the plan
+  says; the runtime refuses what is not built with `ThreadOrderingUnsupported`.
+- `watch_thread_memory` on `Process` and `PerThreadWatch` on the executor are the plan's per-thread
+  watch (section 8).
+
+### What is missing, asked of the owner as code (docs/status-threads-restart.md)
+
+1. Nothing on `Executor` receives a process's ordering, replay guarantee or `TranslatorConfig`, so no
+   executor can choose the Parallel form or the progress count. Proposed: a `CodeForm` given to
+   `create_guest_memory`; an executor that cannot run a form refuses it with its
+   `CreateGuestMemoryError`, and the kernel then runs that memory as `Serial`, counted and warned (this
+   replaces the plan's `parallel_limits`). T2 waits on it.
+2. An atomic compare and exchange on guest memory for the words the kernel changes while siblings run
+   (`FUTEX_WAKE_OP`, robust-list marks): proposed on `VolatileBytes`, with the guest-memory primitive
+   already in the owner's joint review. T2 waits on it.
+3. Decision 12 (a stopped task's count and pc): T8 waits on it.
+4. Decision 18 (an optional thread in the hooks for writes from another process): T4 waits on it.
+
+T1 also needs two answers the kernel and runtime tracks have already asked: a time slice or interrupt
+for `Runner::run`, and parking an idle host thread instead of spinning.
+
+### The decisions of section 16, as they stand
+
+| # | State | Answer |
+|---|---|---|
+| 1 | decided here | the rule of section 3 with its corrections; executor limits are a fact about each task, counted and warned; code kept per owner under `CLONE_VM` |
+| 2 | ruled 2026-11-22 | `parallelism` is required, no default; the runtime gives each runner a host thread; 16 runners on 8 cores is no question |
+| 3 | decided here | `External`'s `Serial` half with T8, its `Parallel` half after new figures; until T8 `External` is refused at the start, and after T2 (`Parallel`, `External`) runs as `Serial` until its half is built |
+| 4 | ruled 2026-11-22 | no engine patch ever; the Parallel form uses the standard's atomic accesses and fences wherever order matters; a fast path only behind a start-up probe of the capability |
+| 5 | ruled 2026-11-25 | the ordered form for x86 guests run `Parallel` on hosts with weaker ordering is built (T6), its own form in the cache key, never used on x86 hosts; `Parallel` keeps one meaning |
+| 6 | ruled 2026-11-22 | folded into the instruction behaviors: the three differences are recorded behaviors of the Parallel form |
+| 7 | ruled 2026-11-22 | moot: no lock every system call takes is the end state (T1, T7) |
+| 8 | decided here | batches from outside a hook as section 6 says; no `process(id)` read call is added (no caller needs one); a call into the kernel from inside a hook panics and names the call |
+| 9 | withdrawn | its list was against the legacy abi; what is still needed is the four questions above |
+| 10 | decided here | the plan's suggested names, verb first; nothing is named for the legacy calls |
+| 11 | decided here | the kernel calls the memory in before a hook that can fire while other threads of an `Exact` `Parallel` process run, so a batch inside a hook never meets a running sibling; no interface change; revisited at T4 by its measured cost |
+| 12 | owner's | question 3 |
+| 13 | later, with Distributed Everything | cross-machine (owner, 2026-11-22) |
+| 14 | later, with Distributed Everything | cross-machine; until then no wait for another machine ever happens inside a hook |
+| 15 | ruled implementation | the plan's "due a turn" |
+| 16 | decided here | the take of dirty memory reads across every place showing a page; paid only by an embedder that asks |
+| 17 | with T8 | its answer needs the replay primitives, which are not designed |
+| 18 | owner's | question 4 |
+| 19 | decided here | a task taken out while it waits is treated as Linux treats a signal with no handler during that call |
+| 20 | later, with Distributed Everything | until then a `Serial` process and a `Serial` task with its overlappers stay on one kernel, asked of the embedder |
+| 21 | decided here | when a source first becomes writable through a mapping, the shared-memory hook fires for every process that already shows it |
+| 22 | decided here | the cost is accepted for `CLONE_VM`, bounded and counted |
+| 23 | later, with Distributed Everything | cross-machine |
+
+### The milestones, re-cut (they replace section 13's order and its interface lists)
+
+- **TH0, TH1, TH2**: inventory, this section, and the thread-test design page (docs/thread-tests.md) for
+  the owner. The thread test suite (deterministic scheduler, bounded search of thread orders,
+  register-isolation fuzzing, hostile guests) is built only after he has gone through that page.
+- **T1, processes in parallel, every process `Serial`.** After the kernel is driven only through
+  `Runner::run` and `Executor::execute` (the kernel track's KP2), the runtime runs containers through the
+  runners (its RT2), and the executors are on the committed interfaces (the executor track's X3). The
+  guest turn runs outside every kernel lock; one run queue ordered by weighted time under its own short
+  lock; each process's records under their own lock and objects shared between processes under theirs,
+  so that no lock is taken by every system call; section 3's rule with everything `Serial`; call-ins by
+  `interrupt`. Bar: section 12's T1 tests that use fixed pause points; four processes that only compute
+  on four runners in under half their one-runner time; a system-call-heavy workload and a parallel
+  build at 1, 2, 4, 8 and 16 runners; the one-runner system call cost within noise of before.
+- **T7, splitting further**, only where T1's measurements show a contended lock.
+- **T2, one process's threads in parallel on WebAssembly, ARM64 guests.** After T1, questions 1 and 2,
+  and the translator's and executor's milestones that put them on the committed interfaces. Standard
+  atomics and fences; no engine patch; wasmtime and headless Chrome.
+- **T6, x86 guests in parallel**, the ordered form on ARM64 and WebAssembly hosts included (decision 5).
+  The ordered form names the kind of access it needs, so that it can move to acquire and release
+  accesses when engines have them.
+- **TS, the thread test suite**, as the owner rules on docs/thread-tests.md; then **T3** (language
+  runtimes), **T4** (per-thread watches, question 4), **T5** (the native executor, in the native track),
+  **T8** (replay per process, question 3 and the replay primitives).
+
 Three things in the corrections were decided by the orchestrator after the checks. They are
 **proposed, to be confirmed by the owner**, and not ruled (decisions 14 and 19):
 - **a task taken out of its kernel while it waits is treated exactly as Linux treats a signal with no
