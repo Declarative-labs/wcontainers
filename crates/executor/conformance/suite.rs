@@ -1,9 +1,10 @@
 //! The tests every implementation of wcontainers-executor runs, written against its traits alone.
 //!
-//! The guests the suite runs are written for the architecture the executor names, through [`GuestArchitecture`]:
-//! the architecture's interface has no way to place a value in a register or to name a system call instruction.
+//! The guests the suite runs are written for ARM64, the one architecture an executor runs today: the architecture's
+//! interface has no way to place a value in a register or to name a system call instruction.
 
 use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::fmt::{Debug, Write};
 use std::ops::Range;
 use std::pin::pin;
@@ -17,60 +18,36 @@ use wcontainers_abi::{
     Access, LOWEST_ADDRESS, PAGE_MASK, PAGE_SIZE, Permissions, SYSTEM_CALL_ARGUMENT_COUNT,
     SystemCallNumber, SystemCallRequest, WORD,
 };
+pub use wcontainers_behavior_source_conformance;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
-    TrapHandler,
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, PageTableOf,
+    ProcessorStateOf, SystemCallResponse, TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
-use wcontainers_processor_architecture_conformance::leave_same_memory;
 use wcontainers_volatile_bytes::VolatileBytes;
 
 mod arm64;
 
-/// What the suite must know of an architecture to write its guests, none of which its interface says.
-pub trait GuestArchitecture: ProcessorArchitecture {
-    /// Returns a guest that makes the system call and reaches a breakpoint, finished as if the call returned it.
-    fn build_system_call(code: u64, request: SystemCallRequest, returned: u64) -> Guest<Self>;
-
-    /// Returns a guest that stores the 64-bit value at the address and then reaches a breakpoint.
-    fn build_store(code: u64, address: u64, value: u64) -> Guest<Self>;
-
-    /// Returns a guest that loads 64 bits from the address then a breakpoint, finished as if it read the value.
-    fn build_load(code: u64, address: u64, value: u64) -> Guest<Self>;
-
-    /// Returns a guest whose only instruction is an undefined one.
-    fn build_undefined_instruction(code: u64) -> Guest<Self>;
-
-    /// Returns a guest that counts a register down from the count, not zero, and then reaches a breakpoint.
-    fn build_count_down(code: u64, count: u64) -> Guest<Self>;
-
-    /// Returns every state the guest may stop at when its first instruction traps and is answered terminate.
-    fn list_stops_at_first_instruction(
-        guest: &Guest<Self>,
-        trap: FirstTrap,
-    ) -> Vec<Self::ProcessorState>;
-}
-
 /// A guest program: its code, placed at the address its start state names, and the states it starts and ends at.
-pub struct Guest<Architecture: ProcessorArchitecture> {
-    pub code: Vec<u8>,
-    pub start: Architecture::ProcessorState,
+struct Guest<Architecture: ProcessorArchitecture> {
+    code: Vec<u8>,
+    start: Architecture::ProcessorState,
     /// The state at the trap that ends the guest, when every trap before it lets it go on.
-    pub finished: Architecture::ProcessorState,
+    finished: Architecture::ProcessorState,
 }
 
 /// What stops a guest at its first instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FirstTrap {
+enum FirstTrap {
     SystemCall,
     MemoryFault { address: u64, access: Access },
 }
@@ -130,7 +107,9 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     generator: Generator,
 ) where
     Chip: Executor,
-    Chip::Architecture: Clone + Eq,
+    Chip::Architecture: Clone,
+    <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Chip::Architecture, Error = Infallible>,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
     <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug,
     <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
@@ -147,14 +126,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
             states += 1;
             let Ok(simulated) = precise.simulate(before.clone());
             let executed = executor.execute_single_instruction(before.clone());
-            let start = before.memory_mutations.len();
-            let agree = simulated.processor == executed.processor
-                && leave_same_memory(
-                    &before.memory_mutations,
-                    &simulated.memory_mutations[start..],
-                    &executed.memory_mutations[start..],
-                );
-            if !agree {
+            if simulated != executed {
                 disagreeing += 1;
                 first.get_or_insert_with(|| describe(&before, &simulated, &executed));
             }
@@ -174,15 +146,14 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
 }
 
 /// Checks that a system call answered with a value goes on after the call with the value in the result register.
-pub fn system_call_answered_return_goes_on_with_the_value<Chip: Executor>(mut executor: Chip)
+pub fn system_call_answered_return_goes_on_with_the_value<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_system_call(CODE, REQUEST, RETURNED);
-    place(&memory, &guest);
-    let mut handler = Recorder::new(Some(RETURNED), None::<(&Chip::GuestMemory, _)>);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_system_call(CODE, REQUEST, RETURNED);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(Some(RETURNED), None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.system_calls,
@@ -198,38 +169,32 @@ where
 }
 
 /// Checks that a system call answered terminate ends execute at the call.
-pub fn system_call_answered_terminate_stops_at_the_call<Chip: Executor>(mut executor: Chip)
+pub fn system_call_answered_terminate_stops_at_the_call<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_system_call(CODE, REQUEST, RETURNED);
-    place(&memory, &guest);
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_system_call(CODE, REQUEST, RETURNED);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.system_calls,
         [REQUEST],
         "the system calls the handler was given"
     );
-    assert_stops_at_first_instruction::<Chip::Architecture>(
-        &guest,
-        FirstTrap::SystemCall,
-        &stopped,
-    );
+    assert_stops_at_first_instruction(&guest, FirstTrap::SystemCall, &stopped);
 }
 
 /// Checks that a store to a page that allows nothing faults and, retried after the handler allows the page, stores.
-pub fn memory_fault_answered_retry_runs_the_access_again<Chip: Executor>(mut executor: Chip)
+pub fn memory_fault_answered_retry_runs_the_access_again<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_store(CODE, DATA, STORED);
-    place(&memory, &guest);
-    let mut handler = Recorder::new(None, Some((&memory, DATA_PERMISSIONS)));
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_store(CODE, DATA, STORED);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, Some((&mut table, DATA_PERMISSIONS)));
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.memory_faults,
@@ -245,15 +210,14 @@ where
 }
 
 /// Checks that a store to a page that allows nothing, answered terminate, stops at the store and writes nothing.
-pub fn memory_fault_answered_terminate_stops_at_the_access<Chip: Executor>(mut executor: Chip)
+pub fn memory_fault_answered_terminate_stops_at_the_access<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_store(CODE, DATA, STORED);
-    place(&memory, &guest);
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_store(CODE, DATA, STORED);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.memory_faults,
@@ -264,7 +228,7 @@ where
         address: DATA,
         access: Access::Write,
     };
-    assert_stops_at_first_instruction::<Chip::Architecture>(&guest, fault, &stopped);
+    assert_stops_at_first_instruction(&guest, fault, &stopped);
     assert_eq!(
         read_bytes(&memory, page(DATA)),
         zeros(page(DATA)),
@@ -273,30 +237,28 @@ where
 }
 
 /// Checks that an undefined instruction ends execute with its fault in the state returned and calls no handler.
-pub fn undefined_instruction_ends_execute_with_the_fault<Chip: Executor>(mut executor: Chip)
+pub fn undefined_instruction_ends_execute_with_the_fault<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_undefined_instruction(CODE);
-    place(&memory, &guest);
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_undefined_instruction(CODE);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     handler.assert_no_trap();
     assert_eq!(stopped, guest.finished, "the state execute returned");
 }
 
 /// Checks that a guest interrupted from another thread, every interrupt answered continue, ends as it would without.
-pub fn interrupts_answered_continue_change_nothing<Chip: Executor>(mut executor: Chip)
+pub fn interrupts_answered_continue_change_nothing<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_count_down(CODE, COUNT);
-    place(&memory, &guest);
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_count_down(CODE, COUNT);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute_interrupted(&mut executor, guest.start.clone(), &memory, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
@@ -307,16 +269,15 @@ where
 }
 
 /// Checks that an interrupt from another thread, answered terminate, ends a guest that would run on long after it.
-pub fn interrupt_answered_terminate_ends_execute<Chip: Executor>(mut executor: Chip)
+pub fn interrupt_answered_terminate_ends_execute<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_count_down(CODE, LONG_COUNT);
-    place(&memory, &guest);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_count_down(CODE, LONG_COUNT);
+    place(&memory, &mut table, &guest);
     let mut handler =
-        Recorder::new(None, None::<(&Chip::GuestMemory, _)>).terminating_at_interrupts();
+        Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>).terminating_at_interrupts();
     let stopped = execute_interrupted(&mut executor, guest.start.clone(), &memory, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
@@ -330,16 +291,15 @@ where
 }
 
 /// Checks that an interrupt raised before the execution is first polled is answered at its start, before the guest runs.
-pub fn interrupt_before_the_first_poll_is_answered_at_the_start<Chip: Executor>(mut executor: Chip)
+pub fn interrupt_before_the_first_poll_is_answered_at_the_start<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_count_down(CODE, COUNT);
-    place(&memory, &guest);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_count_down(CODE, COUNT);
+    place(&memory, &mut table, &guest);
     let mut handler =
-        Recorder::new(None, None::<(&Chip::GuestMemory, _)>).terminating_at_interrupts();
+        Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>).terminating_at_interrupts();
     let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut handler);
     interrupter.interrupt();
     let stopped = block_on(execution);
@@ -352,44 +312,48 @@ where
 }
 
 /// Checks that an interrupt raised after its execution ended reaches neither it nor the next execution.
-pub fn interrupt_after_the_end_does_nothing<Chip: Executor>(mut executor: Chip)
+pub fn interrupt_after_the_end_does_nothing<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
-    let guest = Chip::Architecture::build_count_down(CODE, COUNT);
-    place(&memory, &guest);
-    let mut first = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_count_down(CODE, COUNT);
+    place(&memory, &mut table, &guest);
+    let mut first = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut first);
     let stopped = block_on(execution);
     interrupter.interrupt();
-    assert_eq!(stopped, guest.finished, "the state the first execution returned");
-    let mut next = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    assert_eq!(
+        stopped, guest.finished,
+        "the state the first execution returned"
+    );
+    let mut next = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut next);
     assert_eq!(
         (first.interrupts, next.interrupts),
         (usize::MIN, usize::MIN),
         "the interrupts the handlers were given"
     );
-    assert_eq!(stopped, guest.finished, "the state the next execution returned");
+    assert_eq!(
+        stopped, guest.finished,
+        "the state the next execution returned"
+    );
 }
 
 /// Checks that a new space reads as zeros and that guest code placed in it without permissions faults on its fetch.
-pub fn new_space_reads_as_zeros_and_allows_nothing<Chip: Executor>(mut executor: Chip)
+pub fn new_space_reads_as_zeros_and_allows_nothing<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let memory = create_memory(&executor);
+    let (memory, _table) = create_memory(&executor);
     assert_eq!(
         read_bytes(&memory, CODE..END),
         zeros(CODE..END),
         "the bytes of a new space"
     );
-    let guest = Chip::Architecture::build_store(CODE, DATA, STORED);
+    let guest = arm64::build_store(CODE, DATA, STORED);
     write_bytes(&memory, CODE, &guest.code);
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
     assert_eq!(
         handler.memory_faults,
@@ -400,13 +364,13 @@ where
         address: CODE,
         access: Access::Execute,
     };
-    assert_stops_at_first_instruction::<Chip::Architecture>(&guest, fault, &stopped);
+    assert_stops_at_first_instruction(&guest, fault, &stopped);
 }
 
-/// Checks that every method of the space refuses addresses that end past those a program can use.
+/// Checks that every method of the space and its table refuses addresses that end past those a program can use.
 pub fn addresses_outside_the_space_are_refused<Chip: Executor>(executor: Chip) {
-    let memory = create_memory(&executor);
-    let other = create_memory(&executor);
+    let (memory, mut table) = create_memory(&executor);
+    let (_other, other_table) = create_memory(&executor);
     let end = Chip::Architecture::ADDRESSABLE.end;
     let outside = end..end.saturating_add(PAGE_SIZE);
     for addresses in [outside.clone(), end - PAGE_SIZE..outside.end] {
@@ -416,35 +380,35 @@ pub fn addresses_outside_the_space_are_refused<Chip: Executor>(executor: Chip) {
         );
         assert_eq!(memory.zero(addresses.clone()), Err(InvalidAddressError));
         assert_eq!(
-            memory.set_permissions(addresses.clone(), DATA_PERMISSIONS),
+            table.set_permissions(addresses.clone(), DATA_PERMISSIONS),
             Err(InvalidAddressError)
         );
         assert_eq!(
-            memory.map_from(addresses.clone(), &other, CODE),
+            table.map_from(addresses.clone(), &other_table, CODE),
             Err(MapMemoryError::InvalidAddress(InvalidAddressError))
         );
         assert_eq!(
-            memory.unmap_from(addresses.clone()),
+            table.unmap_from(addresses.clone()),
             Err(InvalidAddressError)
         );
         assert_eq!(
-            memory.copy_from(addresses, &other, CODE),
+            table.copy_from(addresses, &other_table, CODE),
             Err(CopyMemoryError::InvalidAddress(InvalidAddressError))
         );
     }
     assert_eq!(
-        memory.map_from(page(CODE), &other, outside.start),
+        table.map_from(page(CODE), &other_table, outside.start),
         Err(MapMemoryError::InvalidAddress(InvalidAddressError))
     );
     assert_eq!(
-        memory.copy_from(page(CODE), &other, outside.start),
+        table.copy_from(page(CODE), &other_table, outside.start),
         Err(CopyMemoryError::InvalidAddress(InvalidAddressError))
     );
 }
 
 /// Checks that zero clears the bytes of its addresses, across pages, and no others.
 pub fn zero_clears_only_its_addresses<Chip: Executor>(executor: Chip) {
-    let memory = create_memory(&executor);
+    let (memory, _table) = create_memory(&executor);
     let written = pattern(FIRST_PATTERN, length(&(CODE..END)));
     write_bytes(&memory, CODE, &written);
     assert_eq!(memory.zero(LONG), Ok(()));
@@ -454,34 +418,33 @@ pub fn zero_clears_only_its_addresses<Chip: Executor>(executor: Chip) {
 }
 
 /// Checks that permissions bind guest code, a load allowed and a store and a fetch refused, but not borrowed bytes.
-pub fn permissions_bind_guest_code_and_not_borrowed_bytes<Chip: Executor>(mut executor: Chip)
+pub fn permissions_bind_guest_code_and_not_borrowed_bytes<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let readable = create_memory(&executor);
-    let load = Chip::Architecture::build_load(CODE, DATA, STORED);
-    place(&readable, &load);
+    let (readable, mut readable_table) = create_memory(&executor);
+    let load = arm64::build_load(CODE, DATA, STORED);
+    place(&readable, &mut readable_table, &load);
     write_bytes(&readable, DATA, &STORED.to_le_bytes());
     assert_eq!(
-        readable.set_permissions(page(DATA), Permissions::READ),
+        readable_table.set_permissions(page(DATA), Permissions::READ),
         Ok(())
     );
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let loaded = execute(&mut executor, load.start.clone(), &readable, &mut handler);
     handler.assert_no_trap();
     assert_eq!(loaded, load.finished, "the state the load returned");
 
-    let read_only = create_memory(&executor);
-    let store = Chip::Architecture::build_store(CODE, DATA, STORED);
-    place(&read_only, &store);
+    let (read_only, mut read_only_table) = create_memory(&executor);
+    let store = arm64::build_store(CODE, DATA, STORED);
+    place(&read_only, &mut read_only_table, &store);
     let before = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&read_only, DATA, &before);
     assert_eq!(
-        read_only.set_permissions(page(DATA), Permissions::READ),
+        read_only_table.set_permissions(page(DATA), Permissions::READ),
         Ok(())
     );
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, store.start.clone(), &read_only, &mut handler);
     assert_eq!(
         handler.memory_faults,
@@ -492,7 +455,7 @@ where
         address: DATA,
         access: Access::Write,
     };
-    assert_stops_at_first_instruction::<Chip::Architecture>(&store, fault, &stopped);
+    assert_stops_at_first_instruction(&store, fault, &stopped);
     assert_eq!(
         read_bytes(&read_only, page(DATA)),
         before,
@@ -501,7 +464,7 @@ where
     let after = pattern(SECOND_PATTERN, length(&page(DATA)));
     write_bytes(&read_only, DATA, &after);
     assert_eq!(
-        read_only.set_permissions(page(DATA), Permissions::empty()),
+        read_only_table.set_permissions(page(DATA), Permissions::empty()),
         Ok(())
     );
     assert_eq!(
@@ -510,14 +473,19 @@ where
         "the borrowed bytes of a page that allows nothing"
     );
 
-    let not_executable = create_memory(&executor);
-    place(&not_executable, &store);
+    let (not_executable, mut not_executable_table) = create_memory(&executor);
+    place(&not_executable, &mut not_executable_table, &store);
     assert_eq!(
-        not_executable.set_permissions(page(CODE), Permissions::READ),
+        not_executable_table.set_permissions(page(CODE), Permissions::READ),
         Ok(())
     );
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
-    let stopped = execute(&mut executor, store.start.clone(), &not_executable, &mut handler);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+    let stopped = execute(
+        &mut executor,
+        store.start.clone(),
+        &not_executable,
+        &mut handler,
+    );
     assert_eq!(
         handler.memory_faults,
         [(CODE, Access::Execute)],
@@ -527,20 +495,62 @@ where
         address: CODE,
         access: Access::Execute,
     };
-    assert_stops_at_first_instruction::<Chip::Architecture>(&store, fault, &stopped);
+    assert_stops_at_first_instruction(&store, fault, &stopped);
 }
 
-/// Checks that after a space maps another's page, a write on either side, borrowed or by a guest, is seen on both.
-pub fn map_from_shares_the_bytes_both_ways<Chip: Executor>(mut executor: Chip)
+/// Checks that a table changes the permissions of the space made with it and of no other space.
+pub fn page_table_changes_its_own_space_only<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let first = create_memory(&executor);
-    let second = create_memory(&executor);
+    let (own, mut own_table) = create_memory(&executor);
+    let (other, _other_table) = create_memory(&executor);
+    let store = arm64::build_store(CODE, DATA, STORED);
+    write_bytes(&other, CODE, &store.code);
+    place(&own, &mut own_table, &store);
+    assert_eq!(
+        own_table.set_permissions(page(DATA), DATA_PERMISSIONS),
+        Ok(())
+    );
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+    let stopped = execute(&mut executor, store.start.clone(), &other, &mut handler);
+    assert_eq!(
+        handler.memory_faults,
+        [(CODE, Access::Execute)],
+        "the memory faults of a space whose table gave no permission"
+    );
+    let fault = FirstTrap::MemoryFault {
+        address: CODE,
+        access: Access::Execute,
+    };
+    assert_stops_at_first_instruction(&store, fault, &stopped);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+    let stopped = execute(&mut executor, store.start.clone(), &own, &mut handler);
+    handler.assert_no_trap();
+    assert_eq!(
+        stopped, store.finished,
+        "the state the store in its own space returned"
+    );
+    assert_eq!(
+        read_bytes(&other, page(DATA)),
+        zeros(page(DATA)),
+        "the other space's bytes after the store"
+    );
+}
+
+/// Checks that after a table maps another table's page, a write on either side, borrowed or by a guest, is seen on both.
+pub fn map_from_shares_the_bytes_both_ways<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let (first, first_table) = create_memory(&executor);
+    let (second, mut second_table) = create_memory(&executor);
     let shared = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&first, DATA, &shared);
-    assert_eq!(second.map_from(page(DATA + SHIFT), &first, DATA), Ok(()));
+    assert_eq!(
+        second_table.map_from(page(DATA + SHIFT), &first_table, DATA),
+        Ok(())
+    );
     assert_eq!(
         read_bytes(&second, page(DATA + SHIFT)),
         shared,
@@ -561,13 +571,13 @@ where
         "the bytes the mapping shows after a write"
     );
 
-    let store = Chip::Architecture::build_store(CODE, DATA + SHIFT, STORED);
-    place(&second, &store);
+    let store = arm64::build_store(CODE, DATA + SHIFT, STORED);
+    place(&second, &mut second_table, &store);
     assert_eq!(
-        second.set_permissions(page(DATA + SHIFT), DATA_PERMISSIONS),
+        second_table.set_permissions(page(DATA + SHIFT), DATA_PERMISSIONS),
         Ok(())
     );
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, store.start.clone(), &second, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
@@ -583,12 +593,15 @@ where
 
 /// Checks that an unmapped page reads as zeros, not shared any more, while the other space keeps its bytes.
 pub fn unmap_from_zeroes_this_side_only<Chip: Executor>(executor: Chip) {
-    let first = create_memory(&executor);
-    let second = create_memory(&executor);
+    let (first, first_table) = create_memory(&executor);
+    let (second, mut second_table) = create_memory(&executor);
     let kept = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&first, DATA, &kept);
-    assert_eq!(second.map_from(page(DATA + SHIFT), &first, DATA), Ok(()));
-    assert_eq!(second.unmap_from(page(DATA + SHIFT)), Ok(()));
+    assert_eq!(
+        second_table.map_from(page(DATA + SHIFT), &first_table, DATA),
+        Ok(())
+    );
+    assert_eq!(second_table.unmap_from(page(DATA + SHIFT)), Ok(()));
     assert_eq!(
         read_bytes(&second, page(DATA + SHIFT)),
         zeros(page(DATA)),
@@ -612,20 +625,25 @@ pub fn unmap_from_zeroes_this_side_only<Chip: Executor>(executor: Chip) {
 }
 
 /// Checks that a copy carries bytes, permissions and mappings, and that later writes to either side stay there.
-pub fn copy_from_carries_bytes_permissions_and_mappings<Chip: Executor>(mut executor: Chip)
+pub fn copy_from_carries_bytes_permissions_and_mappings<Chip>(mut executor: Chip)
 where
-    Chip::Architecture: GuestArchitecture,
-    ProcessorStateOf<Chip>: Debug,
+    Chip: Executor<Architecture = arm64::Chip>,
 {
-    let source = create_memory(&executor);
-    let copy = create_memory(&executor);
-    let mapped = create_memory(&executor);
-    let store = Chip::Architecture::build_store(CODE, DATA, STORED);
-    place(&source, &store);
+    let (source, mut source_table) = create_memory(&executor);
+    let (copy, mut copy_table) = create_memory(&executor);
+    let (mapped, mapped_table) = create_memory(&executor);
+    let store = arm64::build_store(CODE, DATA, STORED);
+    place(&source, &mut source_table, &store);
     let data = pattern(FIRST_PATTERN, length(&page(DATA)));
     write_bytes(&source, DATA, &data);
-    assert_eq!(source.set_permissions(page(DATA), DATA_PERMISSIONS), Ok(()));
-    assert_eq!(source.map_from(page(MAPPED), &mapped, MAPPED), Ok(()));
+    assert_eq!(
+        source_table.set_permissions(page(DATA), DATA_PERMISSIONS),
+        Ok(())
+    );
+    assert_eq!(
+        source_table.map_from(page(MAPPED), &mapped_table, MAPPED),
+        Ok(())
+    );
     write_bytes(
         &mapped,
         MAPPED,
@@ -633,7 +651,7 @@ where
     );
 
     assert_eq!(
-        copy.copy_from(CODE + SHIFT..END + SHIFT, &source, CODE),
+        copy_table.copy_from(CODE + SHIFT..END + SHIFT, &source_table, CODE),
         Ok(())
     );
     assert_eq!(
@@ -649,12 +667,12 @@ where
         "the bytes of the copied mapping"
     );
 
-    let moved = Chip::Architecture::build_store(CODE + SHIFT, DATA + SHIFT, STORED);
+    let moved = arm64::build_store(CODE + SHIFT, DATA + SHIFT, STORED);
     assert_eq!(
         moved.code, store.code,
         "the store guest's code depends on where it is"
     );
-    let mut handler = Recorder::new(None, None::<(&Chip::GuestMemory, _)>);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, moved.start.clone(), &copy, &mut handler);
     handler.assert_no_trap();
     assert_eq!(
@@ -683,7 +701,7 @@ where
 
 /// Checks that borrowed bytes have the length of their addresses.
 pub fn borrowed_bytes_have_the_length_of_their_addresses<Chip: Executor>(executor: Chip) {
-    let memory = create_memory(&executor);
+    let (memory, _table) = create_memory(&executor);
     for addresses in [page(DATA), LONG] {
         let bytes = memory
             .borrow(addresses.clone())
@@ -704,7 +722,7 @@ pub fn borrowed_bytes_have_the_length_of_their_addresses<Chip: Executor>(executo
 
 /// Checks that read and write copy as many bytes as the shorter of borrow and buffer holds, across pages too.
 pub fn read_and_write_copy_as_many_as_the_shorter_holds<Chip: Executor>(executor: Chip) {
-    let memory = create_memory(&executor);
+    let (memory, _table) = create_memory(&executor);
     let bytes = memory
         .borrow(LONG)
         .expect("the suite's addresses lie inside the space");
@@ -752,7 +770,7 @@ pub fn read_and_write_copy_as_many_as_the_shorter_holds<Chip: Executor>(executor
 
 /// Checks that bytes across pages, read to a vector, a queue and a slice, arrive whole in one read each.
 pub fn read_to_fills_the_standard_sinks<Chip: Executor>(executor: Chip) {
-    let memory = create_memory(&executor);
+    let (memory, _table) = create_memory(&executor);
     let written = pattern(FIRST_PATTERN, length(&LONG));
     write_bytes(&memory, LONG.start, &written);
     let mut vector = Vec::new();
@@ -769,7 +787,7 @@ pub fn read_to_fills_the_standard_sinks<Chip: Executor>(executor: Chip) {
 
 /// Checks that bytes written across pages from a slice and a queue arrive whole in one write each.
 pub fn write_from_drains_the_standard_sources<Chip: Executor>(executor: Chip) {
-    let memory = create_memory(&executor);
+    let (memory, _table) = create_memory(&executor);
     let from_slice = pattern(FIRST_PATTERN, length(&LONG));
     write_all_from(&memory, &mut from_slice.as_slice());
     assert_eq!(
@@ -833,11 +851,11 @@ where
 }
 
 /// Records every trap of a guest and answers each as the test chose.
-struct Recorder<'space, Space> {
+struct Recorder<'table, Table> {
     /// The value every system call returns; none terminates the guest.
     returned: Option<u64>,
-    /// The space whose faulting page gets the permissions before the first fault is retried; later faults terminate.
-    retry_after: Option<(&'space Space, Permissions)>,
+    /// The table whose faulting page gets the permissions before the first fault is retried; later faults terminate.
+    retry_after: Option<(&'table mut Table, Permissions)>,
     system_calls: Vec<SystemCallRequest>,
     memory_faults: Vec<(u64, Access)>,
     interrupts: usize,
@@ -845,8 +863,11 @@ struct Recorder<'space, Space> {
     terminate_at_interrupts: bool,
 }
 
-impl<'space, Space: MemorySpace> Recorder<'space, Space> {
-    const fn new(returned: Option<u64>, retry_after: Option<(&'space Space, Permissions)>) -> Self {
+impl<'table, Table: PageTable> Recorder<'table, Table> {
+    const fn new(
+        returned: Option<u64>,
+        retry_after: Option<(&'table mut Table, Permissions)>,
+    ) -> Self {
         Self {
             returned,
             retry_after,
@@ -876,7 +897,7 @@ impl<'space, Space: MemorySpace> Recorder<'space, Space> {
     }
 }
 
-impl<Space: MemorySpace> TrapHandler for Recorder<'_, Space> {
+impl<Table: PageTable> TrapHandler for Recorder<'_, Table> {
     fn handle_system_call(&mut self, request: SystemCallRequest) -> SystemCallResponse {
         self.system_calls.push(request);
         match self.returned {
@@ -888,10 +909,10 @@ impl<Space: MemorySpace> TrapHandler for Recorder<'_, Space> {
     fn handle_memory_fault(&mut self, address: u64, access: Access) -> MemoryFaultResponse {
         self.memory_faults.push((address, access));
         match self.retry_after.take() {
-            Some((space, allowed)) => {
+            Some((table, allowed)) => {
                 let faulting = page(address & !PAGE_MASK);
                 assert_eq!(
-                    space.set_permissions(faulting, allowed),
+                    table.set_permissions(faulting, allowed),
                     Ok(()),
                     "the handler's permissions"
                 );
@@ -977,7 +998,8 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn create_memory<Chip: Executor>(executor: &Chip) -> Chip::GuestMemory {
+/// Returns a new space of the executor and the table of its pages.
+fn create_memory<Chip: Executor>(executor: &Chip) -> (Chip::GuestMemory, PageTableOf<Chip>) {
     match executor.create_guest_memory() {
         Ok(memory) => memory,
         Err(_) => panic!("the executor made no guest memory"),
@@ -985,26 +1007,24 @@ fn create_memory<Chip: Executor>(executor: &Chip) -> Chip::GuestMemory {
 }
 
 /// Writes the guest's code where its start state names and allows the code's page to be read and executed.
-fn place<Architecture: GuestArchitecture, Space: MemorySpace>(
+fn place<Architecture: ProcessorArchitecture, Space: MemorySpace>(
     space: &Space,
+    table: &mut Space::PageTable,
     guest: &Guest<Architecture>,
 ) {
     write_bytes(space, CODE, &guest.code);
-    assert_eq!(space.set_permissions(page(CODE), CODE_PERMISSIONS), Ok(()));
+    assert_eq!(table.set_permissions(page(CODE), CODE_PERMISSIONS), Ok(()));
 }
 
-fn assert_stops_at_first_instruction<Architecture>(
-    guest: &Guest<Architecture>,
+fn assert_stops_at_first_instruction(
+    guest: &Guest<arm64::Chip>,
     trap: FirstTrap,
-    stopped: &Architecture::ProcessorState,
-) where
-    Architecture: GuestArchitecture,
-    Architecture::ProcessorState: Debug,
-{
-    let stops = Architecture::list_stops_at_first_instruction(guest, trap);
+    stopped: &<arm64::Chip as ProcessorArchitecture>::ProcessorState,
+) {
     assert!(
-        stops.contains(stopped),
-        "execute returned {stopped:?} for {trap:?}, where it may return one of {stops:?}"
+        arm64::is_stop_at_first_instruction(guest, trap, stopped),
+        "execute returned {stopped:?} for {trap:?}, from {:?}",
+        guest.start
     );
 }
 
@@ -1029,7 +1049,11 @@ where
         .borrow(LONG)
         .expect("the suite's addresses lie inside the space");
     let count = bytes.write_from(source).expect("the source gave the bytes");
-    assert_eq!(count, length(&LONG), "the bytes one write from a source took");
+    assert_eq!(
+        count,
+        length(&LONG),
+        "the bytes one write from a source took"
+    );
 }
 
 fn write_bytes<Space: MemorySpace>(space: &Space, start: u64, bytes: &[u8]) {
@@ -1083,7 +1107,7 @@ fn length(addresses: &Range<u64>) -> usize {
         .expect("the suite's addresses fit in host memory")
 }
 
-/// Runs each suite function above as its own test on its values, made anew for every test.
+/// Runs each suite function above as its own test on its values, made anew for every test, and the behavior source's.
 ///
 /// The values are an executor, the precise instruction set it should agree with and the generator of the states.
 #[macro_export]
@@ -1160,6 +1184,11 @@ macro_rules! tests {
         }
 
         #[test]
+        fn page_table_changes_its_own_space_only() {
+            $crate::page_table_changes_its_own_space_only($executor);
+        }
+
+        #[test]
         fn map_from_shares_the_bytes_both_ways() {
             $crate::map_from_shares_the_bytes_both_ways($executor);
         }
@@ -1192,6 +1221,12 @@ macro_rules! tests {
         #[test]
         fn write_from_drains_the_standard_sources() {
             $crate::write_from_drains_the_standard_sources($executor);
+        }
+
+        mod behavior_source {
+            use super::*;
+
+            $crate::wcontainers_behavior_source_conformance::tests!($executor, $generator);
         }
     };
 }

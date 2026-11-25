@@ -14,7 +14,7 @@ use wcontainers_executor::memory_space::{
 };
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, DataAccess, InstructionFetch, PagePermission,
+    Arm64, DataAccess, InstructionFetch, PagePermission, User,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -31,13 +31,13 @@ static CHANGES: AtomicU64 = AtomicU64::new(u64::MIN);
 pub(crate) struct SpaceCopy {
     /// The count of changes the copy is current at; None until taken, or once a change it cannot follow is made.
     changes: Option<u64>,
-    deltas: Vec<MemoryDelta<'static, Arm64>>,
+    deltas: Vec<MemoryDelta<'static, Arm64<User>>>,
     /// The place in the deltas of each page's bytes, by the page's first address.
     page_bytes: BTreeMap<u64, usize>,
 }
 
 impl SpaceCopy {
-    pub(crate) fn deltas(&self) -> &[MemoryDelta<'static, Arm64>] {
+    pub(crate) fn deltas(&self) -> &[MemoryDelta<'static, Arm64<User>>] {
         &self.deltas
     }
 
@@ -132,7 +132,7 @@ impl SimulatedMemory {
     /// Applies a change an instruction made, whatever the permissions, to the space and to the copy it ran on.
     ///
     /// The copy stays current only if no other change came between: otherwise it is taken anew at the next refresh.
-    pub(crate) fn apply(&self, delta: MemoryDelta<'_, Arm64>, copy: &mut SpaceCopy) {
+    pub(crate) fn apply(&self, delta: MemoryDelta<'_, Arm64<User>>, copy: &mut SpaceCopy) {
         match delta {
             MemoryDelta::ValueAssignment { start, bytes } => {
                 let before = self.shared.write_counted(start, &bytes);
@@ -340,12 +340,16 @@ impl VolatileBytes for SimulatedBytes<'_> {
 
     fn read(&self, into: &mut [u8]) -> usize {
         let count = into.len().min(to_count(self.len()));
-        self.space.shared.read_at(self.addresses.start, &mut into[..count])
+        self.space
+            .shared
+            .read_at(self.addresses.start, &mut into[..count])
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
         let count = bytes.len().min(to_count(self.len()));
-        self.space.shared.write_at(self.addresses.start, &bytes[..count])
+        self.space
+            .shared
+            .write_at(self.addresses.start, &bytes[..count])
     }
 
     /// Copies all the bytes out and hands them to the sink, since a slice of the guest's bytes may not be lent.
@@ -391,7 +395,7 @@ fn copy_page(page: &Page) -> Page {
 }
 
 fn check_inside(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
-    let bounds = Arm64::ADDRESSABLE.start..=Arm64::ADDRESSABLE.end;
+    let bounds = Arm64::<User>::ADDRESSABLE.start..=Arm64::<User>::ADDRESSABLE.end;
     let inside = bounds.contains(&addresses.start)
         && bounds.contains(&addresses.end)
         && addresses.start <= addresses.end;

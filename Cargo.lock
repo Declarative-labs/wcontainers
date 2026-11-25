@@ -4332,10 +4332,16 @@ dependencies = [
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-abi",
+ "wcontainers-behavior-source-conformance",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-executor",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4412,6 +4418,26 @@ dependencies = [
  "wcontainers-system",
  "wcontainers-system-seeded-test-policy",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-executor-simulation"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-recording",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-executor",
+ "wcontainers-executor-conformance",
+ "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-measured",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]

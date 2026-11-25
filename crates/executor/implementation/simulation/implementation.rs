@@ -4,21 +4,18 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_abi::{
-    Access, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber,
-    SystemCallRequest,
-};
+use wcontainers_abi::Access;
+use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
-    TrapHandler,
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::{
+    MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+};
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
-use wcontainers_processor_architecture_arm64::syndrome::{UNDEFINED_INSTRUCTION, WRITE_NOT_READ};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, Exception, INSTRUCTION_BYTES, Instruction, Processor,
+    AccessDirection, Arm64, Exception, PreciseInstruction, Processor, User,
 };
 
 mod memory;
@@ -32,7 +29,7 @@ pub struct Simulation<Set> {
     set: Set,
 }
 
-impl<Set: PreciseInstructionSet<Arm64>> Simulation<Set> {
+impl<Set: PreciseInstructionSet<Arm64<User>>> Simulation<Set> {
     /// Returns a chip that runs each instruction as the set simulates it.
     ///
     /// TODO: temporary placeholder until the executor interface says how an executor is built.
@@ -55,8 +52,9 @@ impl ExecutionInterrupter for SimulationInterrupter {
 }
 
 /// What the executor does when an instruction raised its exception.
+///
+/// No listed instruction makes a system call, so the simulation never gives the handler one.
 enum Trap {
-    SystemCall,
     MemoryFault {
         address: u64,
         access: Access,
@@ -65,8 +63,44 @@ enum Trap {
     Final,
 }
 
-impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
-    type Architecture = Arm64;
+impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set> {
+    type Architecture = Arm64<User>;
+
+    /// Runs the instruction at the program counter, taking a word none of the listed instructions match as undefined.
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut Processor<()>,
+        memory: &[MemoryDelta<'_, Arm64<User>>],
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) {
+        let word = u32::from_le_bytes(read_bytes(memory, processor.program_counter));
+        let listed = Arm64::<User>::list_instructions().find(|instruction| {
+            let fixed = instruction.to_fixed_bits();
+            word & fixed.mask == fixed.value
+        });
+        if let Some(instruction) = listed {
+            let Ok(()) = self.set.to_precise(instruction).simulate_in_place(
+                processor,
+                memory,
+                mutation_hook,
+            );
+            return;
+        }
+        // A breakpoint changes nothing but the exception, so on a copy it gives the fault of the fetch, if any.
+        let mut fetched = processor.clone();
+        let Ok(()) = PreciseInstruction::Brk.simulate_in_place(
+            &mut fetched,
+            memory,
+            &mut |_: MemoryDelta<'_, Arm64<User>>| {},
+        );
+        let fetch_fault = fetched
+            .exception
+            .filter(|exception| !matches!(exception, Exception::Breakpoint { .. }));
+        processor.exception = Some(fetch_fault.unwrap_or(Exception::UndefinedInstruction));
+    }
+}
+
+impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
     type TranslatorConfig = ();
     type GuestMemory = SimulatedMemory;
     type Interrupter = SimulationInterrupter;
@@ -82,18 +116,18 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
     /// The execution blocks: it runs to its end in its first poll, answering an interrupt between two instructions.
     fn execute<'execution>(
         &'execution mut self,
-        mut processor: Processor,
+        mut processor: Processor<()>,
         memory: &'execution SimulatedMemory,
         handler: &'execution mut impl TrapHandler,
     ) -> (
-        impl Future<Output = Processor> + 'execution,
+        impl Future<Output = Processor<()>> + 'execution,
         SimulationInterrupter,
     ) {
         let interrupter = SimulationInterrupter::default();
         let raised = Arc::clone(&interrupter.raised);
         let execution = async move {
             let mut copy = SpaceCopy::default();
-            let mut changes = Vec::new();
+            let mut changes: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
             loop {
                 if raised.swap(false, Ordering::Acquire) {
                     match handler.handle_interrupt() {
@@ -103,9 +137,11 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
                 }
                 let before = processor.clone();
                 memory.refresh(&mut copy);
-                self.execute_single_instruction_in_place(&mut processor, copy.deltas(), |delta| {
-                    changes.push(delta.into_owned())
-                });
+                self.execute_single_instruction_in_place(
+                    &mut processor,
+                    copy.deltas(),
+                    &mut changes,
+                );
                 for delta in changes.drain(..) {
                     memory.apply(delta, &mut copy);
                 }
@@ -113,18 +149,6 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
                     continue;
                 };
                 match to_trap(exception) {
-                    Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
-                        SystemCallResponse::Return(value) => {
-                            // x0 holds the result: https://man7.org/linux/man-pages/man2/syscall.2.html
-                            if let Some(result) = processor.general_purpose_registers.first_mut() {
-                                *result = value;
-                            }
-                            processor.program_counter =
-                                processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
-                            processor.exception = None;
-                        }
-                        SystemCallResponse::Terminate => return processor,
-                    },
                     Trap::MemoryFault { address, access } => {
                         match handler.handle_memory_fault(address, access) {
                             MemoryFaultResponse::Retry => processor = before,
@@ -137,66 +161,35 @@ impl<Set: PreciseInstructionSet<Arm64>> Executor for Simulation<Set> {
         };
         (execution, interrupter)
     }
-
-    /// Runs the instruction at the program counter, taking a word none of the listed instructions match as undefined.
-    fn execute_single_instruction_in_place(
-        &mut self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, Arm64>],
-        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    ) {
-        let word = u32::from_le_bytes(read_bytes(memory, processor.program_counter));
-        let listed = Arm64::list_instructions().find(|instruction| {
-            let fixed = instruction.to_fixed_bits();
-            word & fixed.mask == fixed.value
-        });
-        if let Some(instruction) = listed {
-            let Ok(()) = self.set.to_precise(instruction).simulate_in_place(
-                processor,
-                memory,
-                on_memory_mutated,
-            );
-            return;
-        }
-        // A breakpoint changes nothing but the exception, so on a copy it gives the fault of the fetch, if any.
-        let mut fetched = processor.clone();
-        let Ok(()) =
-            self.set
-                .to_precise(Instruction::Brk)
-                .simulate_in_place(&mut fetched, memory, |_| {});
-        let fetch_fault = fetched
-            .exception
-            .filter(|exception| !has_class(*exception, ESR_EL1::EC::Value::Brk64));
-        processor.exception = Some(fetch_fault.unwrap_or(UNDEFINED_INSTRUCTION));
-    }
-}
-
-fn has_class(exception: Exception, class: ESR_EL1::EC::Value) -> bool {
-    ESR_EL1::EC.read(exception.syndrome) == class as u64
 }
 
 fn to_trap(exception: Exception) -> Trap {
-    let writes = exception.syndrome & WRITE_NOT_READ == WRITE_NOT_READ;
-    let access = match ESR_EL1::EC.read_as_enum(exception.syndrome) {
-        Some(ESR_EL1::EC::Value::SVC64) => return Trap::SystemCall,
-        Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => Access::Execute,
-        Some(ESR_EL1::EC::Value::DataAbortLowerEL) if writes => Access::Write,
-        Some(ESR_EL1::EC::Value::DataAbortLowerEL) => Access::Read,
-        _ => return Trap::Final,
-    };
-    match exception.fault_address {
-        Some(address) => Trap::MemoryFault { address, access },
-        None => Trap::Final,
-    }
-}
-
-fn to_request(processor: &Processor) -> SystemCallRequest {
-    let registers = &processor.general_purpose_registers;
-    // The arguments are x0 onwards: https://man7.org/linux/man-pages/man2/syscall.2.html
-    let mut arguments = [u64::MIN; SYSTEM_CALL_ARGUMENT_COUNT];
-    arguments.copy_from_slice(&registers[..SYSTEM_CALL_ARGUMENT_COUNT]);
-    SystemCallRequest {
-        number: SystemCallNumber(registers[SYSTEM_CALL_NUMBER_REGISTER]),
-        arguments,
+    match exception {
+        Exception::InstructionAbort { address, .. } => Trap::MemoryFault {
+            address,
+            access: Access::Execute,
+        },
+        Exception::DataAbort {
+            access: AccessDirection::Read,
+            address,
+            ..
+        } => Trap::MemoryFault {
+            address,
+            access: Access::Read,
+        },
+        Exception::DataAbort {
+            access: AccessDirection::Write,
+            address,
+            ..
+        } => Trap::MemoryFault {
+            address,
+            access: Access::Write,
+        },
+        Exception::UndefinedInstruction
+        | Exception::ProgramCounterAlignmentFault { .. }
+        | Exception::StackPointerAlignmentFault
+        | Exception::Breakpoint { .. }
+        | Exception::SmeTrap(_)
+        | Exception::Undecoded { .. } => Trap::Final,
     }
 }
