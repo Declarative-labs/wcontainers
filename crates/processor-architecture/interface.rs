@@ -66,6 +66,12 @@ pub trait ProcessorArchitecture: Sized {
             obeys_concrete_eq::<Self::PagePermission>(),
     ;
 
+    /// A processor's clone is the same value.
+    proof fn clone_is_identity()
+        ensures
+            vstd::pervasive::obeys_clone_eq::<Self::ProcessorState>(),
+    ;
+
     /// Returns the set of instructions of the architecture.
     fn list_instructions() -> (instructions: Self::Instructions)
         ensures
@@ -284,7 +290,6 @@ impl<'memory, Architecture: ProcessorArchitecture> MemorySink<Architecture>
 }
 
 /// All state that some instruction might mutate during execution.
-#[derive(Clone)]
 pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
     pub processor: Architecture::ProcessorState,
     /// The changes that have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
@@ -292,7 +297,7 @@ pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
 }
 
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum MemoryDelta<'memory, Architecture: ProcessorArchitecture> {
     PermissionAssignment {
         addresses: Range<u64>,
@@ -313,6 +318,59 @@ impl<'memory, Architecture: ProcessorArchitecture> View for MemoryDelta<'memory,
             MemoryDelta::PermissionAssignment { addresses, permission } =>
                 Assignment::PermissionAssignment { addresses: *addresses, permission: *permission },
             MemoryDelta::ValueAssignment { start, bytes } => Assignment::ValueAssignment { start: *start, bytes: bytes@ },
+        }
+    }
+}
+
+// VERUS: no specification of a derived `Clone`, so the clones are written out and say what they copy.
+impl<'memory, Architecture: ProcessorArchitecture> Clone for ExecutionState<'memory, Architecture> {
+    // As a derived `Clone` is.
+    #[inline]
+    fn clone(&self) -> (cloned: Self)
+        ensures
+            cloned.processor == self.processor,
+            memory_of(cloned.memory_mutations@) == memory_of(self.memory_mutations@),
+    {
+        proof {
+            Architecture::clone_is_identity();
+        }
+        let cloned = ExecutionState {
+            processor: self.processor.clone(),
+            memory_mutations: self.memory_mutations.clone(),
+        };
+        proof {
+            assert(vstd::pervasive::cloned(self.processor, cloned.processor));
+            assert(assignments(cloned.memory_mutations@) =~= assignments(self.memory_mutations@)) by {
+                assert forall|index: int| 0 <= index < self.memory_mutations@.len()
+                    implies #[trigger] cloned.memory_mutations@[index]@ == self.memory_mutations@[index]@ by {
+                    assert(vstd::pervasive::cloned(self.memory_mutations[index], cloned.memory_mutations[index]));
+                }
+            }
+        }
+        cloned
+    }
+}
+
+impl<'memory, Architecture: ProcessorArchitecture> Clone for MemoryDelta<'memory, Architecture> {
+    // As a derived `Clone` is.
+    #[inline]
+    fn clone(&self) -> (cloned: Self)
+        ensures
+            cloned@ == self@,
+    {
+        match self {
+            MemoryDelta::PermissionAssignment { addresses, permission } => MemoryDelta::PermissionAssignment {
+                addresses: addresses.start..addresses.end,
+                permission: *permission,
+            },
+            MemoryDelta::ValueAssignment { start, bytes } => MemoryDelta::ValueAssignment {
+                start: *start,
+                // As `Cow::clone` does: the owned bytes are copied.
+                bytes: match bytes {
+                    Cow::Borrowed(borrowed) => Cow::Borrowed(*borrowed),
+                    Cow::Owned(owned) => Cow::Owned(bytes_to_vec(owned.as_slice())),
+                },
+            },
         }
     }
 }
@@ -1016,11 +1074,16 @@ fn add_unpaired<Architecture: ProcessorArchitecture>(
                 }
                 assert(well_formed(before) ==> well_formed(written@)) by {
                     if well_formed(before) {
+                        assert(slice@.len() <= usize::MAX);
                         assert forall|index: int| 0 <= index < written@.len() implies #[trigger] written@[index].0 < written@[index].1 <= address_count() by {
-                            if index >= before.len() {
-                                assert(end <= ADDRESSES_END + ADDRESSES_END);
-                            } else {
+                            if index < before.len() {
+                                assert(first_pushed[index] == before[index]);
                                 assert(written@[index] == before[index]);
+                            } else if index < first_pushed.len() {
+                                assert(first_pushed[index] == (*start as u128, below_end));
+                                assert(written@[index] == first_pushed[index]);
+                            } else {
+                                assert(written@[index] == (0u128, (end - ADDRESSES_END) as u128));
                             }
                         }
                     }
